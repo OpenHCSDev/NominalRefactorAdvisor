@@ -45,6 +45,15 @@ class Receipt(SemanticRecord):
         return self.kind.weight * self.count
 
 
+@dataclass(frozen=True)
+class KeywordCuredReceipt(Receipt):
+    """A guard that building these classes by keyword clears: they are constructed
+    by position, so a move that reorders or adds their fields would rebind those
+    calls. Keywording every construction first leaves nothing to rebind."""
+
+    constructed: tuple[str, ...] = ()
+
+
 class ScoredByReceipts:
     """A verdict whose score is the sum of its receipts and whose guards refuse it."""
 
@@ -64,5 +73,16 @@ class ScoredByReceipts:
     def permitted(self) -> bool:
         return not self.refusals
 
+    @property
+    def keyword_cure(self) -> tuple[str, ...]:
+        """The classes to build by keyword first, when that clears every guard that
+        fired; empty when nothing fired or some guard has no such cure."""
 
-__all__ = ("Receipt", "ReceiptKind", "ScoredByReceipts")
+        refusals = self.refusals
+        cured = [receipt for receipt in refusals if isinstance(receipt, KeywordCuredReceipt)]
+        if not refusals or len(cured) != len(refusals):
+            return ()
+        return tuple(dict.fromkeys(symbol for receipt in cured for symbol in receipt.constructed))
+
+
+__all__ = ("KeywordCuredReceipt", "Receipt", "ReceiptKind", "ScoredByReceipts")

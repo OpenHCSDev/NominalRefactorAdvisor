@@ -11,6 +11,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
+    followed_reexports,
 )
 from tests.dataclass_field_wrappers import FIELD_WRAPPERS
 from nominal_refactor_advisor.class_overlap import (
@@ -401,3 +402,76 @@ def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
     ]
     assert [receipt.detail.split("`")[1] for receipt in positional] == ["First"]
     assert not candidate.permitted
+
+
+SITES = (
+    "pkg.sites",
+    "from dataclasses import dataclass\n\nfrom pkg.summaries import Scope as Area\n\n\n"
+    "@dataclass(frozen=True)\nclass Location:\n"
+    "    file_path: str\n    line: int\n    symbol: str\n\n\n"
+    "@dataclass(frozen=True)\nclass Evidence(Location):\n    kind: str\n\n\n"
+    "@dataclass(frozen=True)\nclass CallSite:\n"
+    "    file_path: str\n    line: int\n    symbol: str\n    target: str\n\n\n"
+    "@dataclass(frozen=True)\nclass ProofEdge:\n"
+    "    file_path: str\n    line: int\n    symbol: str\n    authority: str\n\n\n"
+    "def edge(site: CallSite) -> ProofEdge:\n"
+    "    return ProofEdge(site.file_path, site.line, site.symbol, Area.__name__)\n",
+)
+
+
+def test_verdicts_touching_a_class_are_the_scan_verdicts_naming_it():
+    """A move asks only about the classes it names, on every virtual source; the
+    narrowed search must find exactly the verdicts and uses the whole scan does,
+    inherited pairs and aliased imports included."""
+
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules(
+            tuple(_module(name, source) for name, source in (SPREAD, SITES))
+        )
+    )
+    index = build_compact_class_family_index(projections)
+    scan = ClassOverlapVerdicts(projections, index)
+
+    def named(candidates, symbol):
+        return [
+            (candidate.owner.symbol, candidate.restating_symbols, candidate.move)
+            for candidate in candidates
+            if symbol in (candidate.owner.symbol, *candidate.restating_symbols)
+        ]
+
+    assert len(scan.candidates) >= 3
+    for symbol in index.classes_by_symbol:
+        asked = ClassOverlapVerdicts(projections, index)
+        assert named(asked.candidates_touching(frozenset({symbol})), symbol) == named(
+            scan.candidates, symbol
+        )
+    assert {use.consumer for use in scan.uses.uses_for("pkg.summaries.Scope")} >= {"edge"}
+
+
+def test_a_use_through_a_renamed_re_export_names_the_class_it_binds() -> None:
+    """`pkg` re-exports `X` as `Y`, so `Y()` read from `pkg`, by name or through
+    `import pkg`, constructs `pkg.a.X`: Python resolves it there, and so must the
+    use index, or a redirect or deletion of `X` misses these readers."""
+
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules(
+            tuple(
+                _module(name, source)
+                for name, source in (
+                    ("pkg.a", "class X:\n    pass\n"),
+                    ("pkg", "from pkg.a import X as Y\n"),
+                    ("pkg.b", "from pkg import Y\n\n\ndef by_name():\n    return Y()\n"),
+                    ("pkg.c", "import pkg\n\n\ndef through_module():\n    return pkg.Y()\n"),
+                )
+            )
+        )
+    )
+    scan = ClassOverlapVerdicts(projections, build_compact_class_family_index(projections))
+
+    assert {use.consumer for use in scan.uses.uses_for("pkg.a.X")} == {"by_name", "through_module"}
+
+
+def test_a_re_export_cycle_stops_at_the_name_it_comes_back_to() -> None:
+    aliases = {"pkg": {"Y": "pkg.other.Z"}, "pkg.other": {"Z": "pkg.Y"}}
+    assert followed_reexports("pkg.Y", aliases) == "pkg.other.Z"
+    assert followed_reexports("pkg.unbound", aliases) == "pkg.unbound"

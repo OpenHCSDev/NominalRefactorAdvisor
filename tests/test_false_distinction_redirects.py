@@ -434,6 +434,67 @@ def test_a_test_that_only_constructs_the_subclass_blocks_the_redirect(tmp_path: 
     )
 
 
+SEND_FAILURES = {
+    "pkg/__init__.py": "",
+    "pkg/send.py": (
+        "class SendFailure(Exception):\n    pass\n\n\nclass SendUnknown(SendFailure):\n    pass\n\n\n"
+        "class SendNotWritten(SendFailure):\n    pass\n\n\n"
+        "def send(written):\n    raise SendNotWritten('no') if not written else SendUnknown('maybe')\n"
+    ),
+}
+IDENTITY_READS = {
+    "type-name-of-the-base": (
+        "from pkg.send import SendFailure, send\n\n\ndef report(written):\n    try:\n"
+        "        send(written)\n    except SendFailure as error:\n"
+        "        return f'failed: {type(error).__name__}: {error}'\n"
+    ),
+    "builtins-type-of-the-base": (
+        "import builtins\n\nfrom pkg.send import SendFailure, send\n\n\ndef report(written):\n"
+        "    try:\n        send(written)\n    except SendFailure as error:\n"
+        "        return builtins.type(error)\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(IDENTITY_READS))
+def test_a_catch_reading_the_caught_class_tells_its_subclasses_apart(tmp_path: Path, name: str):
+    _write(tmp_path, {**SEND_FAILURES, "pkg/report.py": IDENTITY_READS[name]})
+    assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+
+CATCH_ALL_READ = (
+    "from pkg.send import send\n\n\ndef report(written):\n    try:\n"
+    "        send(written)\n    except (KeyError, Exception) as error:\n"
+    "        return error.__class__\n"
+)
+
+
+def test_a_catch_all_reading_the_class_treats_every_exception_alike(tmp_path: Path):
+    _write(tmp_path, {**SEND_FAILURES, "pkg/report.py": CATCH_ALL_READ})
+    assert sorted(finding.summary.split("`")[1] for finding in _findings(NameOnlySubclassDetector, tmp_path)) == [
+        "SendNotWritten",
+        "SendUnknown",
+    ]
+
+
+def test_a_catch_reading_only_the_message_keeps_the_subclasses_alike(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            **SEND_FAILURES,
+            "pkg/report.py": (
+                "from pkg.send import SendFailure, send\n\n\ndef report(written):\n    try:\n"
+                "        send(written)\n    except SendFailure as error:\n"
+                "        return f'{error!r} {type(written).__name__}'\n"
+            ),
+        },
+    )
+    assert sorted(finding.summary.split("`")[1] for finding in _findings(NameOnlySubclassDetector, tmp_path)) == [
+        "SendNotWritten",
+        "SendUnknown",
+    ]
+
+
 @pytest.mark.parametrize(
     ("source", "kind"),
     (
@@ -452,6 +513,15 @@ def test_name_use_kinds_wherever_they_appear(tmp_path: Path, source: str, kind: 
     (tmp_path / "m.py").write_text(source)
     (module,) = parse_python_modules(tmp_path, use_parse_cache=False)
     assert {use.kind for use in NameUse.in_module(module) if use.name == "Target"} == {kind}
+
+
+def test_a_handler_reading_the_caught_class_reads_its_identity(tmp_path: Path):
+    (tmp_path / "m.py").write_text("try:\n    pass\nexcept Target as e:\n    type(e)\n")
+    (module,) = parse_python_modules(tmp_path, use_parse_cache=False)
+    assert {use.kind for use in NameUse.in_module(module) if use.name == "Target"} == {
+        NameUseKind.CATCH,
+        NameUseKind.READ_IDENTITY,
+    }
 
 
 def test_a_test_naming_a_member_alone_keeps_the_members_apart(tmp_path: Path):
@@ -485,3 +555,66 @@ def test_a_class_declared_in_a_test_is_never_reported(tmp_path: Path):
         },
     )
     assert _findings(NameOnlySubclassDetector, tmp_path, include_tests=True) == []
+
+
+STORED_FAILURES = {
+    "pyproject.toml": (
+        "[project]\nname = 'pkg'\nversion = '0'\n\n"
+        "[tool.nominal-refactor-advisor]\ndurable-bases = ['pkg.tables:DurableTables']\n"
+    ),
+    "pkg/__init__.py": "",
+    "pkg/tables.py": "class DurableTables:\n    pass\n",
+    "pkg/failures.py": (
+        "class TurnFailure(Exception):\n    pass\n\n\n"
+        "class QueuedInputNotSent(TurnFailure):\n    pass\n\n\n"
+        "def fail():\n    raise QueuedInputNotSent('unwritten')\n"
+    ),
+    "pkg/ledger.py": (
+        "from dataclasses import dataclass\n\n"
+        "from pkg.failures import TurnFailure\nfrom pkg.tables import DurableTables\n\n\n"
+        "class LedgerTable(DurableTables):\n    pass\n\n\n"
+        "@dataclass(frozen=True)\nclass FailedTurnEvidence(LedgerTable):\n"
+        "    turn_id: str\n    failure: type[TurnFailure]\n"
+    ),
+}
+
+
+def test_redirect_refuses_a_member_a_stored_row_can_name(tmp_path: Path):
+    """agent-comms 88e245f7: deleting a TurnFailure member left `failed_turn_evidence`
+    rows naming it, and the install's table rebuild failed its CHECK. A row of a
+    class below a declared durable base holding the family is the member's reader."""
+
+    _write(tmp_path, STORED_FAILURES)
+    operation = RedirectEmptySubclassOperation(target=_target(tmp_path, "QueuedInputNotSent"))
+    with pytest.raises(ValueError, match="pkg.ledger.FailedTurnEvidence.failure can hold it"):
+        operation.source_edits(_snapshot(tmp_path))
+
+
+def test_redirect_of_a_member_nothing_stores_still_applies(tmp_path: Path):
+    files = dict(STORED_FAILURES)
+    files["pkg/ledger.py"] = files["pkg/ledger.py"].replace(
+        "    failure: type[TurnFailure]\n", "    failure_text: str\n"
+    )
+    _write(tmp_path, files)
+    operation = RedirectEmptySubclassOperation(target=_target(tmp_path, "QueuedInputNotSent"))
+    assert operation.source_edits(_snapshot(tmp_path))
+
+
+def test_fold_refuses_members_a_stored_row_can_hold(tmp_path: Path):
+    """A stored enum field keeps the member's value: folding it away leaves rows
+    whose value no member declares."""
+
+    files = dict(MODE_PACKAGE)
+    files["pyproject.toml"] = STORED_FAILURES["pyproject.toml"]
+    files["pkg/tables.py"] = STORED_FAILURES["pkg/tables.py"]
+    files["pkg/runs.py"] = (
+        "from dataclasses import dataclass\n\nfrom pkg.modes import Mode\n"
+        "from pkg.tables import DurableTables\n\n\n"
+        "@dataclass(frozen=True)\nclass Run(DurableTables):\n    mode: 'Mode'\n"
+    )
+    _write(tmp_path, files)
+    operation = FoldEnumMembersOperation(
+        target=_target(tmp_path, "Mode"), members=("FAST", "QUICK")
+    )
+    with pytest.raises(ValueError, match="pkg.runs.Run.mode can hold it"):
+        operation.source_edits(_snapshot(tmp_path))

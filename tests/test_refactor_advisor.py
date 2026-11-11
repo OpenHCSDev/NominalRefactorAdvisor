@@ -12,6 +12,7 @@ import sys
 from abc import ABC
 from collections.abc import Mapping
 from dataclasses import fields, replace
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 from unittest.mock import Mock
@@ -3598,20 +3599,8 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
         "        marker_kinds=stats.marker_kinds,\n"
         "        sink_kinds=('alias',),\n"
         "    )\n\n\n"
-        "def describe(payload_candidate: EmbeddedCandidateAlias, other):\n"
-        "    untouched = other.static_payload_line_count\n"
-        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}:{untouched}'\n\n\n"
-        "def untyped_owner(payload_candidate):\n"
-        "    return payload_candidate.static_payload_line_count\n\n\n"
-        "def rebound_owner(payload_candidate: EmbeddedStaticPayloadCandidate, other):\n"
-        "    payload_candidate = other\n"
-        "    return payload_candidate.static_payload_line_count\n\n\n"
-        "def shadowed(EmbeddedStaticPayloadCandidate, stats):\n"
-        "    return EmbeddedStaticPayloadCandidate(\n"
-        "        static_payload_line_count=stats.payload_line_count,\n"
-        "        marker_kinds=stats.marker_kinds,\n"
-        "        sink_kinds=(),\n"
-        "    )\n",
+        "def describe(payload_candidate: EmbeddedCandidateAlias):\n"
+        "    return f'{payload_candidate.static_payload_line_count}:{payload_candidate.marker_kinds}'\n",
     )
     source_index = build_source_index(parse_python_modules(tmp_path), ())
     source_by_path = {module_path.as_posix(): module_path.read_text()}
@@ -3679,7 +3668,7 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     assert "-        marker_kinds=stats.marker_kinds," in diff
     assert (
         "+    return f'{payload_candidate.static_payload_stats.payload_line_count}:"
-        "{payload_candidate.static_payload_stats.marker_kinds}:{untouched}'" in diff
+        "{payload_candidate.static_payload_stats.marker_kinds}'" in diff
     )
     simulation.apply()
     rewritten = module_path.read_text()
@@ -3698,20 +3687,36 @@ def test_refactor_recipe_replaces_projected_fields_with_existing_carrier(
     ) in rewritten
     assert "payload_candidate.static_payload_stats.payload_line_count" in rewritten
     assert "payload_candidate.static_payload_stats.marker_kinds" in rewritten
-    assert "other.static_payload_line_count" in rewritten
-    assert "return payload_candidate.static_payload_line_count" in rewritten
-    assert (
-        "payload_candidate = other\n"
-        "    return payload_candidate.static_payload_line_count"
-    ) in rewritten
-    assert (
-        "return EmbeddedStaticPayloadCandidate(\n"
-        "        static_payload_line_count=stats.payload_line_count,\n"
-        "        marker_kinds=stats.marker_kinds,\n"
-        "        sink_kinds=(),\n"
-        "    )"
-    ) in rewritten
     build_source_index(parse_python_modules(tmp_path), ())
+
+
+@pytest.mark.parametrize(
+    "consumer",
+    (
+        "def untyped_owner(candidate):\n    return candidate.count\n",
+        "def rebound(candidate: Candidate, other):\n    candidate = other\n    return candidate.count\n",
+        "def positional(stats: Stats):\n    return Candidate(stats.count, 'x')\n",
+    ),
+)
+def test_carrier_replacement_refuses_a_use_it_cannot_rewrite(tmp_path: Path, consumer: str) -> None:
+    """A read whose receiver may be the class, or a construction it cannot carry,
+    would keep the deleted field: the move refuses instead of skipping it."""
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\nclass Stats:\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Candidate:\n    count: int\n    name: str\n\n\n" + consumer,
+    )
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Candidate"),
+        carrier_field_declaration="stats: Stats",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError):
+        operation.source_edits(snapshot)
 
 
 def test_carrier_field_projection_rejects_ambiguous_source_fields() -> None:
@@ -6268,6 +6273,39 @@ def test_refactor_recipe_removes_import_names(
     build_source_index(parse_python_modules(tmp_path), ())
 
 
+def test_remove_import_names_refuses_a_guarded_binding(tmp_path: Path) -> None:
+    """A name bound only under `if TYPE_CHECKING:` is not a runtime import;
+    removing it by module name silently did nothing (j-board, cohort_schema)."""
+
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/consumer.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n    from pkg.alpha import Beta\n\n\n"
+        "def f() -> None:\n    pass\n",
+    )
+    _write_module(tmp_path, "pkg/alpha.py", "class Beta:\n    pass\n")
+    module_path = tmp_path / "pkg/consumer.py"
+    source_index = build_source_index(parse_python_modules(tmp_path), ())
+
+    recipe = RefactorRecipe(recipe_id="remove-guarded").with_operation(
+        RemoveImportNamesOperation(
+            target=SourceRewriteTarget(file_path=module_path.as_posix()),
+            module_name="pkg.alpha",
+            import_names=("Beta",),
+        )
+    )
+
+    with pytest.raises(ValueError, match="No matching import statement for name removal"):
+        recipe.simulate(
+            _indexed_snapshot(
+                source_index,
+                {module_path.as_posix(): module_path.read_text()},
+            ),
+        )
+
+
 @pytest.mark.native_proof
 def test_refactor_recipe_converts_manual_registry_to_autoregister(
     tmp_path: Path,
@@ -7633,8 +7671,17 @@ def test_relocation_keeps_star_and_module_object_readers_working(
             "value = source.Moved.value + Moved.value - 3\n",
             "value = Moved.value + Moved.value - 3\n",
         ),
+        (
+            "from pkg import source as source_module\n\nsb = source_module\n"
+            "value = sb.Moved.value\n",
+            "value = Moved.value\n",
+        ),
     ),
-    ids=("local-variables-of-the-binding-name", "name-the-file-also-imports"),
+    ids=(
+        "local-variables-of-the-binding-name",
+        "name-the-file-also-imports",
+        "module-level-alias-of-the-binding",
+    ),
 )
 def test_relocation_reads_only_the_module_scope_uses_of_a_source_binding(
     tmp_path: Path,
@@ -17518,8 +17565,51 @@ def test_codemod_simulation_presents_operation_preflight_failure_report(
         CodemodExecutionMode.SIMULATE,
     ).execute(snapshot, presenter)
 
-    report = presenter.present_operation_preflight_failure.call_args.args[0]
-    assert report.operation == "move_symbols_to_module"
+    error = presenter.present_operation_preflight_failure.call_args.args[0]
+    assert error.report.operation == "move_symbols_to_module"
+    assert exit_code == 1
+
+
+def test_codemod_simulation_reports_every_refused_recipe_in_one_run(
+    tmp_path: Path,
+) -> None:
+    """A batch whose recipes each refuse names all of them, not the first alone,
+    so one run is enough to fix every refusal."""
+
+    source_path = tmp_path / "pkg/source.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n\n\n"
+        "class Other(LocalBase):\n    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    _write_module(tmp_path, "pkg/elsewhere.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=tuple(
+                RefactorRecipe(f"move-{name.lower()}-only").with_operation(
+                    MoveSymbolsToModuleOperation(
+                        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                        symbol_qualnames=(name,),
+                        destination_path=(tmp_path / f"pkg/{destination}.py").as_posix(),
+                    )
+                )
+                for name, destination in (("Helper", "destination"), ("Other", "elsewhere"))
+            )
+        )
+    )
+
+    presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    exit_code = CodemodPlanExecutionRequest(
+        sequence,
+        CodemodExecutionMode.SIMULATE,
+    ).execute(snapshot, presenter)
+
+    error = presenter.present_operation_preflight_failure.call_args.args[0]
+    assert [report.operation for report in error.reports] == ["move_symbols_to_module"] * 2
+    assert "Helper" in str(error) and "Other" in str(error)
     assert exit_code == 1
 
 
@@ -18103,7 +18193,10 @@ def test_module_cli_apply_cannot_bypass_authority_preflight(
     assert result.returncode == 1
     assert payload["preflight_failed"] is True
     assert payload["applied"] is False
-    assert payload["preflight_report"]["operation"] == "authority_claims"
+    (refused,) = (
+        report for report in payload["preflight_report"]["reports"] if report["status"] == "failed"
+    )
+    assert refused["operation"] == "authority_claims"
     assert module_path.read_text() == original_source
 
 
@@ -19165,11 +19258,11 @@ def test_module_cli_reports_multi_symbol_move_preflight_failure_from_stdin(
     assert result.stderr == ""
     assert payload["preflight_failed"] is True
     assert payload["applied"] is False
-    assert payload["preflight_report"]["operation"] == "move_symbols_to_module"
-    assert payload["preflight_report"]["status"] == "failed"
-    assert payload["preflight_report"]["details"]["source_local_dependency_names"] == [
-        "LocalBase"
-    ]
+    (refused,) = (
+        report for report in payload["preflight_report"]["reports"] if report["status"] == "failed"
+    )
+    assert refused["operation"] == "move_symbols_to_module"
+    assert refused["details"]["source_local_dependency_names"] == ["LocalBase"]
     assert "class Helper" in source_path.read_text()
 
 
@@ -27810,3 +27903,57 @@ def test_proved_scan_index_names_its_own_findings(tmp_path: Path) -> None:
     assert index.target_ids_for_finding_ids((child.stable_id,))
     assert index.target_ids_for_finding_ids((parent.stable_id,)) == ()
     assert proved.source_index.target_ids_for_finding_ids((parent.stable_id,))
+
+
+def test_carrier_replacement_refuses_an_abstract_carrier_with_members(tmp_path: Path) -> None:
+    """agent-comms ThreadImported holding an ImportedConversation (ABC with two members):
+    the reply Toad decodes could no longer say which conversation it held."""
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from abc import ABC\nfrom dataclasses import dataclass\n\n\n"
+        "@dataclass(frozen=True)\nclass Conversation(ABC):\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Snapshot(Conversation):\n    path: str\n\n\n"
+        "@dataclass(frozen=True)\nclass Kept(Conversation):\n    session: str\n\n\n"
+        "@dataclass(frozen=True)\nclass Imported:\n    count: int\n    name: str\n\n\n"
+        "def reply(conversation: Conversation) -> Imported:\n"
+        "    return Imported(count=conversation.count, name='x')\n",
+    )
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Imported"),
+        carrier_field_declaration="conversation: Conversation",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="cannot be decoded back"):
+        operation.source_edits(snapshot)
+
+
+def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_path: Path) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\n\n\n"
+        "class DurableTables:\n    pass\n\n\n"
+        "@dataclass(frozen=True)\nclass Stats:\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Reply(DurableTables):\n    count: int\n    name: str\n\n\n"
+        "def reply(stats: Stats) -> Reply:\n    return Reply(count=stats.count, name='x')\n",
+    )
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Reply"),
+        carrier_field_declaration="stats: Stats",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.nominal-refactor-advisor]\ndurable-bases = ["pkg.mod:DurableTables"]\n'
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"moves its keys \(count -> stats.count\)"):
+        operation.source_edits(snapshot)
+    (tmp_path / "pyproject.toml").write_text("[tool.nominal-refactor-advisor]\n")
+    simulation = RefactorRecipe("carrier").with_operation(operation).simulate(
+        CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report

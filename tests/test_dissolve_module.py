@@ -413,6 +413,8 @@ def test_a_guard_hiding_no_cycle_becomes_a_runtime_import(tmp_path: Path) -> Non
     # The deleted guard was the flag's last reader, so its import goes too.
     assert "TYPE_CHECKING" not in reader
     assert "from pkg.owner import Moved" in reader
+    # The emptied guard leaves no extra blank lines behind.
+    assert "\n\n\n\n" not in reader, f"triple blank lines after guard deletion:\n{reader}"
     imported = _run(tmp_path, "import typing, pkg.reader; assert typing.get_type_hints(pkg.reader.read)")
     assert imported.returncode == 0, imported.stderr
 
@@ -456,6 +458,30 @@ def test_a_guard_hiding_a_cycle_is_refused(tmp_path: Path) -> None:
         "    pass\n",
     )
     report = _promote(tmp_path, "pkg/reader.py", "pkg.owner", "Moved").preflight_reports(
+        _snapshot(tmp_path)
+    )[0]
+    assert report.status is CodemodPreflightStatus.FAILED
+    assert "hides a cycle" in report.message
+
+
+def test_a_guard_hiding_a_cycle_through_a_package_init_is_refused(tmp_path: Path) -> None:
+    """Importing `pkg.sub.owner` first executes `pkg/sub/__init__.py`; if that
+    init imports from the reader, promoting the guard creates a cycle through
+    the package init that the old graph missed."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/sub/__init__.py", "from pkg.reader import read\n")
+    _write(tmp_path, "pkg/sub/owner.py", "class Moved:\n    pass\n")
+    _write(
+        tmp_path,
+        "pkg/reader.py",
+        "from typing import TYPE_CHECKING\n\n"
+        "if TYPE_CHECKING:\n"
+        "    from pkg.sub.owner import Moved\n\n\n"
+        "def read(moved: 'Moved') -> None:\n"
+        "    pass\n",
+    )
+    report = _promote(tmp_path, "pkg/reader.py", "pkg.sub.owner", "Moved").preflight_reports(
         _snapshot(tmp_path)
     )[0]
     assert report.status is CodemodPreflightStatus.FAILED

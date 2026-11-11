@@ -9,6 +9,7 @@ from dataclasses import MISSING, dataclass
 from dataclasses import fields as dataclass_fields
 from enum import StrEnum
 from functools import lru_cache
+from nominal_refactor_advisor.case_root import Case
 from typing import (
     ClassVar,
     Generic,
@@ -407,6 +408,28 @@ class _StrEnumPayloadValueCodec(
             raise TypeError(
                 f"string-enum payload codec requires {self.enum_type.__name__}"
             )
+        return value.value
+
+
+@dataclass(frozen=True)
+class CasePayloadValueCodec(PayloadValueCodec[type[Case]]):
+    """One case of a folded family, read from its value and written back as it."""
+
+    case_root: type[Case]
+    declared_default: type[Case]
+
+    def read(self, payload: Mapping[str, JsonValue], field_name: str) -> type[Case]:
+        value = payload.get(field_name)
+        if value is None:
+            return self.declared_default
+        try:
+            return self.case_root.of(value)
+        except ValueError as error:
+            raise ValueError(f"Unsupported {field_name!r} value: {value!r}") from error
+
+    def serialize(self, value: object) -> JsonValue:
+        if not (isinstance(value, type) and issubclass(value, self.case_root)):
+            raise TypeError(f"case payload codec requires a {self.case_root.__name__} case")
         return value.value
 
 

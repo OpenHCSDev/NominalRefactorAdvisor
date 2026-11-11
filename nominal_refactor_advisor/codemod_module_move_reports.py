@@ -141,6 +141,10 @@ class ModuleMoveObstacleKind(StrEnum):
         "annotation_evaluation_mode_change",
         "annotation evaluation mode changes",
     )
+    DESTINATION_READ_BEFORE_DEFINITION = (
+        "destination_read_before_definition",
+        "destination statements read a moved symbol, when the module runs, above where it must land",
+    )
 
     def __new__(
         cls,

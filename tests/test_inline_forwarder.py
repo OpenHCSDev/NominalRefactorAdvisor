@@ -96,7 +96,11 @@ def test_a_forwarder_is_inlined_and_its_guarded_import_leaves(tmp_path: Path) ->
             "reorders the evaluation",
         ),
         ("def untyped(actor, todo):\n    actor.require_may_change(todo)\n", "on a receiver typed"),
-        ("TABLE = {'change': 'require_may_change'}\n", "in a string"),
+        (
+            "TABLE = {'change': 'require_may_change'}\n\n\n"
+            "def run(actor: Actor, todo, kind: str) -> None:\n    getattr(actor, TABLE[kind])(todo)\n",
+            "in a string",
+        ),
     ),
 )
 def test_inlining_is_refused_where_a_call_cannot_inline(
@@ -209,3 +213,101 @@ def test_an_ignored_parameter_is_not_inlined_away(tmp_path: Path) -> None:
     report = _inline(tmp_path).preflight_reports(snapshot)
     assert report[0].status is CodemodPreflightStatus.FAILED
     assert "exactly once" in report[0].message
+
+
+def test_a_forwarder_that_overrides_its_base_is_refused(tmp_path: Path) -> None:
+    """Deleting an override sends every receiver typed as the base to the base's
+    answer, though no call this proof types names the subclass (agent-comms
+    `SystemRecord.compacted_at` over `ClaudeRecord.compacted_at`)."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/records.py",
+        "class Subtype:\n"
+        "    def compacted_at(self) -> tuple:\n        return (1,)\n\n\n"
+        "class Record:\n"
+        "    def compacted_at(self) -> tuple:\n        return ()\n\n\n"
+        "class SystemRecord(Record):\n"
+        "    def __init__(self, subtype: Subtype) -> None:\n        self.subtype = subtype\n\n"
+        "    def compacted_at(self) -> tuple:\n        return self.subtype.compacted_at()\n\n\n"
+        "def read(record: Record) -> tuple:\n    return record.compacted_at()\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/records.py").as_posix(),
+            qualname="SystemRecord.compacted_at",
+        )
+    )
+    (report,) = operation.preflight_reports(snapshot)
+    assert report.status is CodemodPreflightStatus.FAILED, report
+    assert "overrides ('Record',)" in report.message
+
+
+@pytest.mark.parametrize(
+    ("consumer", "refused"),
+    (
+        ("def word(claims):\n    return f'A {claims} report: require_may_change'\n", False),
+        ("TABLE = {'change': 'require_may_change'}\nNAMES = ('require_may_change',)\n", False),
+        (
+            "NAMES = ('require_may_change',)\n\n\nclass Row:\n"
+            "    def field(self, name: str):\n        return getattr(self, name)\n",
+            False,
+        ),
+        (
+            "NAMES = ('require_may_change',)\n\n\n"
+            "def call(actor: Actor, name: str):\n    return getattr(actor, name)\n",
+            True,
+        ),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(name):\n    return vars(Actor)[name]\n", True),
+        (
+            "class Other:\n    def run(self):\n        pass\n\n\nNAMES = ('require_may_change',)\n\n\n"
+            "def patch(fake):\n    for owner, method in ((Other, 'run'),):\n        setattr(owner, method, fake)\n",
+            False,
+        ),
+        (
+            "NAMES = ('require_may_change',)\n\n\n"
+            "def patch(fake):\n    for owner, method in ((Actor, 'require_may_change'),):\n        setattr(owner, method, fake)\n",
+            True,
+        ),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(actor: Actor, name):\n    return type(actor).__dict__[name]\n", True),
+        ("NAMES = ('require_may_change',)\n\n\ndef call(actor: Actor, name):\n    return vars(actor)[name]\n", False),
+    ),
+)
+def test_only_a_string_that_can_feed_a_lookup_refuses(
+    tmp_path: Path, consumer: str, refused: bool
+) -> None:
+    """A string reaches the method only through a lookup by a non-constant name on
+    a family receiver; another class's own lookup, or none at all, leaves it text."""
+    _identity(tmp_path)
+    _write(tmp_path, "pkg/orders.py", "class Todo:\n    def require_maintainer(self, actor) -> None:\n        pass\n")
+    _write(tmp_path, "pkg/consumer.py", "from pkg.identity import Actor\n\n\n" + consumer)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    (report,) = _inline(tmp_path).preflight_reports(snapshot)
+    assert (report.status is CodemodPreflightStatus.FAILED) is refused, report
+
+
+def test_a_property_forwarder_inlines_as_the_chain_it_reads(tmp_path: Path) -> None:
+    """agent-comms `TargetField.annotation` returns `self.plan.annotation`: every
+    read becomes that chain on the read's receiver, and the property goes."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/fields.py",
+        "class Plan:\n    annotation: object = int\n\n\n"
+        "class TargetField:\n"
+        "    def __init__(self, plan: Plan) -> None:\n        self.plan = plan\n\n"
+        "    @property\n    def annotation(self) -> object:\n        return self.plan.annotation\n\n\n"
+        "def kind(field: TargetField) -> object:\n    return field.annotation\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/fields.py").as_posix(), qualname="TargetField.annotation"
+        )
+    )
+    simulation = RefactorRecipe("inline").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[(tmp_path / "pkg/fields.py").as_posix()]
+    assert "def annotation" not in rewritten
+    assert "return field.plan.annotation\n" in rewritten

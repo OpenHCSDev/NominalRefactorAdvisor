@@ -168,8 +168,22 @@ class AnalysisPathScope:
             for group in (requested_roots, context_roots)
         )
         if context_roots:
+            # A context root widens what the scan reads; it never drops the roots
+            # asked for. A sibling repository (`--context-root ../toad`) neither
+            # contains nor sits inside a requested root, so that root stays an
+            # analysis root too, ahead of the context, and its modules still
+            # answer for one another. Nested roots are already covered.
+            disjoint = tuple(
+                root
+                for root in requested_roots
+                if not any(
+                    cls._root_contains_path(context, root)
+                    or cls._root_contains_path(root, context)
+                    for context in context_roots
+                )
+            )
             return cls(
-                analysis_roots=context_roots,
+                analysis_roots=(*disjoint, *context_roots),
                 report_roots=requested_roots,
             )
         if auto_context:

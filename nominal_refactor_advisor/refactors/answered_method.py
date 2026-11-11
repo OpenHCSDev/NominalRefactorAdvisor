@@ -5,8 +5,10 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from functools import cached_property
+from collections.abc import Sequence
 from typing import ClassVar
 
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -32,7 +34,8 @@ class AnsweredMethod:
 
     snapshot: CodemodSourceSnapshot
     source_class: ResolvedClassTarget
-    method: ast.FunctionDef | ast.AsyncFunctionDef
+    method: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign
+    """The member's declaration in the class body."""
 
     @property
     def name(self) -> str:
@@ -73,6 +76,25 @@ class AnsweredMethod:
             if symbol in classes and self.name in _class_node(self.snapshot, symbol).bound_names_of_body
         )
 
+    @cached_property
+    def overridden(self) -> tuple[str, ...]:
+        """What the method itself overrides (the class index's answer)."""
+
+        return self.snapshot.required_class_family_index.overridden_declarations(self.symbol, self.name)
+
+    def require_sole_dispatch(self, verb: str) -> None:
+        """Refuse when the method takes part in dispatch: a descendant overrides it, or
+        it overrides an ancestor. Either way a receiver this proof cannot see reaches it
+        through the MRO, so removing it from this class changes what that call does."""
+
+        if self.overriding:
+            raise ValueError(f"{self.overriding!r} override {self.name!r}; {verb} breaks their dispatch")
+        if self.overridden:
+            raise ValueError(
+                f"{self.symbol}.{self.name} overrides {self.overridden!r}; {verb} sends every "
+                "receiver typed as the base to the base's answer"
+            )
+
     def named_class(self, file_path: str, name: str, scopes: tuple[ast.AST, ...]) -> ClassBinding | None:
         """What a name binds where a call reads it, when that says whether it is the family: a
         family class, another class the scan declares, a module, or an import from outside the
@@ -84,6 +106,26 @@ class AnsweredMethod:
             if binding is None:
                 continue
             return binding.class_binding(self, file_path, scope)
+        return None
+
+    def class_symbol(
+        self, file_path: str, expression: ast.expr, parents: dict[ast.AST, ast.AST]
+    ) -> str | None:
+        """The scanned class an expression names where it stands: `Name` by its
+        binding, `module.Name` through the module it imports; None for anything else."""
+
+        scopes = _name_scopes(expression, parents)
+        match expression:
+            case ast.Name(id=name):
+                binding = self.named_class(file_path, name, scopes)
+                return binding.symbol if isinstance(binding, (NamedClass, OtherClass)) else None
+            case ast.Attribute(value=ast.Name(id=module), attr=name):
+                binding = self.named_class(file_path, module, scopes)
+                if not isinstance(binding, OtherModule):
+                    return None
+                provider = self.snapshot.module_import_graph.unique_source_file_for_module_name(binding.symbol)
+                found = None if provider is None else self.declared_class(provider.file_path, name)
+                return found.symbol if isinstance(found, (NamedClass, OtherClass)) else None
         return None
 
     def declared_class(self, file_path: str, qualname: str) -> ClassBinding | None:
@@ -124,19 +166,48 @@ class AnsweredMethod:
     def admits(self, binding: ReceiverBinding, where: str) -> None:
         """Refuse a call whose receiver would change what the method means."""
 
-    def answering_calls(self) -> tuple[MethodCall, ...]:
-        """The calls the method answers, each receiver typed by the class binding, the
+    def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
+        """The reference as a use the method answers: a method is answered by a call
+        alone, since any other reference would lose it."""
+
+        if site.call is None:
+            raise ValueError(f"{site.where} uses {self.name!r} other than by calling it")
+        self.admits(binding, site.where)
+        return MethodCall(site.file_path, site.attribute, site.call)
+
+    def answering_calls(
+        self, session: TypeCheckerSession | None = None
+    ) -> tuple[AnsweredUse, ...]:
+        """The uses the member answers, each receiver typed by the class binding, the
         declarations or the checker."""
 
+        return self.answered_uses(self.reaching(self.references(), session))
+
+    def answered_uses(
+        self, reached: Sequence[tuple[TypedReceiver, ReceiverBinding]]
+    ) -> tuple[AnsweredUse, ...]:
+        """The reached references as uses the member answers; one nested in another refuses."""
+
+        answering = [self.answer(receiver.site, binding) for receiver, binding in reached if receiver.site]
+        nested = [
+            site for site in answering
+            for other in answering
+            if other is not site and other.node in ast.walk(site.node)
+        ]
+        if nested:
+            raise ValueError(f"{nested[0].where} nests one answered use inside another")
+        return tuple(answering)
+
+    def references(self) -> list[TypedReceiver]:
+        """Every attribute reference spelling the member's name, each with its receiver
+        to type; a string reaching it or a `super()` read from the family refuses."""
+
         snapshot = self.snapshot
-        typing = snapshot.declared_receiver_typing
-        answering: list[MethodCall] = []
-        undeclared: dict[ReceiverSpan, MethodReference] = {}
+        receivers: list[TypedReceiver] = []
         for parsed in snapshot.parsed_modules:
             if self.name not in parsed.source:
                 continue
             parents = parsed.fact(ModuleNodeIndex).parents
-            resolver = ProbeOwnerResolver.of(parsed)
             for node in ast.walk(parsed.module):
                 where = f"{parsed.file_path}:{getattr(node, 'lineno', 0)}"
                 if _dynamic_access(node, self.name):
@@ -150,43 +221,110 @@ class AnsweredMethod:
                     parsed.file_path, node,
                     parent if isinstance(parent, ast.Call) and parent.func is node else None,
                 )
-                enclosing = _enclosing_class(snapshot, parsed.file_path, node, parents)
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and (
                     node.value.func.id == "super"
                 ):
-                    if enclosing in self.family:
+                    if _enclosing_class(snapshot, parsed.file_path, node, parents) in self.family:
                         raise ValueError(f"{where} reaches {self.name!r} through super()")
                     continue
-                bound = self.bound_class(
-                    node.value, parsed.file_path, enclosing, _name_scopes(node, parents),
+                receivers.append(TypedReceiver(parsed, node.value, node, where, site))
+        return receivers
+
+    def reaching(
+        self,
+        receivers: Sequence[TypedReceiver],
+        session: TypeCheckerSession | None = None,
+    ) -> list[tuple[TypedReceiver, ReceiverBinding]]:
+        """The receivers that are the family, each with what binds it: by the class
+        binding, the declarations, then one type-checker session for the rest. A
+        receiver typed as some family classes and some others refuses.
+
+        With `session`, reuse an existing build instead of starting a new one;
+        this lets a caller that checks several methods pay the build cost once."""
+
+        snapshot = self.snapshot
+        typing = snapshot.declared_receiver_typing
+        reached: list[tuple[TypedReceiver, ReceiverBinding]] = []
+        undeclared: dict[ReceiverSpan, TypedReceiver] = {}
+        for receiver in receivers:
+            parents = receiver.parsed.fact(ModuleNodeIndex).parents
+            if _rebound(receiver.expression, parents):
+                raise ValueError(
+                    f"{receiver.where} reads `{ast.unparse(receiver.expression)}`, which its "
+                    "function rebinds, so no annotation types it"
                 )
-                if bound is not None:
-                    if bound.reaches_family():
-                        answering.append(site.answered(self, bound))
-                    continue
-                owner = resolver.owner(node.value).resolved(typing)
-                spans = owner.type_checker_spans()
-                if spans:
-                    undeclared[spans[0]] = site
-                elif self.answers(tuple(getattr(owner, "class_symbols", tuple)()), where):
-                    answering.append(site.answered(self, ReceiverBinding(self.symbol)))
+            enclosing = _enclosing_class(snapshot, receiver.parsed.file_path, receiver.anchor, parents)
+            bound = self.bound_class(
+                receiver.expression, receiver.parsed.file_path, enclosing,
+                _name_scopes(receiver.anchor, parents),
+            )
+            if bound is not None:
+                if bound.reaches_family():
+                    reached.append((receiver, bound))
+                continue
+            owner = ProbeOwnerResolver.of(receiver.parsed).owner(receiver.expression).resolved(typing)
+            spans = owner.type_checker_spans()
+            if spans:
+                undeclared[spans[0]] = receiver
+            elif self.answers(tuple(getattr(owner, "class_symbols", tuple)()), receiver.where):
+                reached.append((receiver, ReceiverBinding(self.symbol)))
         if undeclared:
-            with TypeCheckerSession.session(SourceTexts(snapshot.parsed_modules)) as session:
+            owned_session = session is None
+            if owned_session:
+                session = TypeCheckerSession.started(SourceTexts(snapshot.parsed_modules))
+            try:
                 answers = session.receiver_types(undeclared)
-            for span, site in undeclared.items():
+            finally:
+                if owned_session:
+                    session.stop()
+            for span, receiver in undeclared.items():
                 answer = answers.get(span)
                 if not isinstance(answer, InferredReceiverType):
-                    raise ValueError(f"{site.where}: the type checker gives no type for the receiver")
-                if self.answers(answer.classes, site.where):
-                    answering.append(site.answered(self, ReceiverBinding(self.symbol)))
-        nested = [
-            site for site in answering
-            for other in answering
-            if other is not site and other.call in ast.walk(site.call)
-        ]
-        if nested:
-            raise ValueError(f"{nested[0].where} nests one answered call inside another")
-        return tuple(answering)
+                    raise ValueError(f"{receiver.where}: the type checker gives no type for the receiver")
+                if self.answers(answer.classes, receiver.where):
+                    reached.append((receiver, ReceiverBinding(self.symbol)))
+        return reached
+
+    def lookup_reaching_family(
+        self, session: TypeCheckerSession | None = None
+    ) -> str | None:
+        """Where an attribute lookup by a name that is not a constant may run on a
+        family receiver; such a lookup can reach the member through any string that
+        spells it. A lookup that only takes names, or whose receiver this proof
+        cannot type, may."""
+
+        receivers: list[TypedReceiver] = []
+        namespaces: list[TypedReceiver] = []
+        for parsed in self.snapshot.parsed_modules:
+            for node in ast.walk(parsed.module):
+                namespace = _namespace_lookup(node)
+                if namespace is not None:
+                    where = f"{parsed.file_path}:{node.lineno}"
+                    if isinstance(namespace, ast.Call):
+                        return where
+                    namespaces.append(TypedReceiver(parsed, namespace, node, where, None))
+                    continue
+                if not isinstance(node, ast.Call):
+                    continue
+                names = AttributeLookup.name_arguments(node)
+                if not names or all(isinstance(name, ast.Constant) for name in names):
+                    continue
+                where = f"{parsed.file_path}:{node.lineno}"
+                if AttributeLookup.callee_name(node.func) in AttributeLookup.NAME_LOOKUPS:
+                    return where
+                index = parsed.fact(ModuleNodeIndex)
+                for receiver in _literal_loop_values(node.args[0], index.parents) or (node.args[0],):
+                    receivers.append(TypedReceiver(parsed, receiver, node, where, None))
+        try:
+            reached = self.reaching(receivers, session)
+            classes = [
+                receiver for receiver, binding in self.reaching(namespaces, session)
+                if isinstance(binding, ClassBinding)
+            ]
+        except ValueError as error:
+            return str(error)
+        found = [receiver for receiver, _binding in reached] + classes
+        return found[0].where if found else None
 
 
 @dataclass(frozen=True)
@@ -286,7 +424,11 @@ class ImportedName(NameBinding):
         provider = None if module is None else graph.unique_source_file_for_module_name(module)
         if provider is None:
             return OutsideScan(str(module))
-        return moved.declared_class(provider.file_path, self.alias.name)
+        declared = moved.declared_class(provider.file_path, self.alias.name)
+        submodule = f"{module}.{self.alias.name}"
+        if declared is None and graph.unique_source_file_for_module_name(submodule) is not None:
+            return OtherModule(submodule)
+        return declared
 
 
 @dataclass(frozen=True)
@@ -309,6 +451,16 @@ class DeclaredClass(NameBinding):
         return moved.declared_class(file_path, self.node.name) if isinstance(scope, ast.Module) else None
 
 
+@dataclass(frozen=True)
+class AliasBinding(NameBinding):
+    """`Alias = Name` in the scope: whatever `Name` binds there, the alias binds too."""
+
+    value: ast.Name
+
+    def class_binding(self, moved: AnsweredMethod, file_path: str, scope: ast.AST) -> ClassBinding | None:
+        return moved.named_class(file_path, self.value.id, (scope,))
+
+
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
 
@@ -328,6 +480,15 @@ class _ScopeBindings:
                 pending.extend(ast.iter_child_nodes(node))
         return found
 
+    def assigned_value(self, target: ast.Name) -> ast.Name | None:
+        """The name a plain `target = other` binds the target to, if that is all it does."""
+
+        for node in self.nodes():
+            match node:
+                case ast.Assign(targets=[bound], value=ast.Name() as value) if bound is target:
+                    return value
+        return None
+
     def binding(self, name: str) -> NameBinding | None:
         last: NameBinding | None = None
         for node in self.nodes():
@@ -344,10 +505,69 @@ class _ScopeBindings:
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
                 last = NameBinding()
             elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
-                last = NameBinding()
+                assigned = self.assigned_value(node)
+                last = (
+                    NameBinding()
+                    if assigned is None or assigned.id == name
+                    else AliasBinding(assigned)
+                )
             elif isinstance(node, ast.arg) and node.arg == name:
                 last = NameBinding()
         return last
+
+
+def _literal_loop_values(
+    expression: ast.expr, parents: dict[ast.AST, ast.AST]
+) -> tuple[ast.expr, ...] | None:
+    """The values a loop target takes when its loop runs over a literal: for `for a, b
+    in ((X, "m"), (Y, "n")):`, `a` is X, then Y. None when the name is no such target."""
+
+    if not isinstance(expression, ast.Name):
+        return None
+    loop = parents.get(expression)
+    while loop is not None and not isinstance(loop, ast.For):
+        loop = parents.get(loop)
+    if loop is None or not isinstance(loop.iter, (ast.Tuple, ast.List)):
+        return None
+    match loop.target:
+        case ast.Name(id=name) if name == expression.id:
+            return tuple(loop.iter.elts)
+        case ast.Tuple(elts=targets):
+            position = next(
+                (i for i, target in enumerate(targets) if isinstance(target, ast.Name) and target.id == expression.id),
+                None,
+            )
+            if position is None:
+                return None
+            values = []
+            for element in loop.iter.elts:
+                if not isinstance(element, (ast.Tuple, ast.List)) or len(element.elts) != len(targets):
+                    return None
+                values.append(element.elts[position])
+            return tuple(values)
+    return None
+
+
+def _rebound(expression: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
+    """Whether a receiver name is a parameter its enclosing function also assigns:
+    the annotation then types only some of the values it holds."""
+
+    if not isinstance(expression, ast.Name):
+        return False
+    function = parents.get(expression)
+    while function is not None and not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+        function = parents.get(function)
+    if function is None:
+        return False
+    arguments = function.args
+    if expression.id not in {
+        argument.arg for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+    }:
+        return False
+    return any(
+        isinstance(node, ast.Name) and node.id == expression.id and isinstance(node.ctx, ast.Store)
+        for node in _ScopeBindings(function).nodes()
+    )
 
 
 def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
@@ -393,6 +613,17 @@ def _enclosing_class(
 
 
 @dataclass(frozen=True)
+class TypedReceiver:
+    """One receiver expression to type, the node it is read at, and what it is for."""
+
+    parsed: ParsedModule
+    expression: ast.expr
+    anchor: ast.AST
+    where: str
+    site: MethodReference | None
+
+
+@dataclass(frozen=True)
 class MethodReference:
     """One attribute reference by the method's name, called or not, before its receiver is typed."""
 
@@ -404,36 +635,123 @@ class MethodReference:
     def where(self) -> str:
         return f"{self.file_path}:{self.attribute.lineno}"
 
-    def answered(self, moved: AnsweredMethod, binding: ReceiverBinding) -> MethodCall:
-        """The reference as a call the method answers: one that is not a call would lose
-        the method, and the method may refuse the binding."""
-
-        if self.call is None:
-            raise ValueError(f"{self.where} uses {moved.name!r} other than by calling it")
-        moved.admits(binding, self.where)
-        return MethodCall(self.file_path, self.call, self.attribute)
 
 
 @dataclass(frozen=True)
-class MethodCall:
-    """One call the moved method answers, and the receiver it is called on."""
+class AnsweredUse:
+    """One use of the member the proof answers: the attribute, and the expression a
+    rewrite replaces."""
 
     file_path: str
-    call: ast.Call
     attribute: ast.Attribute
 
     @property
+    def node(self) -> ast.expr:
+        return self.attribute
+
+    @property
     def where(self) -> str:
-        return f"{self.file_path}:{self.call.lineno}"
+        return f"{self.file_path}:{self.node.lineno}"
 
 
-_DYNAMIC_ACCESS = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+@dataclass(frozen=True)
+class MethodCall(AnsweredUse):
+    """One call the moved method answers, and the receiver it is called on."""
+
+    call: ast.Call
+
+    @property
+    def node(self) -> ast.expr:
+        return self.call
+
+
+@dataclass(frozen=True)
+class AnsweredProperty(AnsweredMethod):
+    """A property of a class family: it is answered by every read of its name on a
+    family receiver. A write or delete would need a setter it does not have."""
+
+    def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
+        if not isinstance(site.attribute.ctx, ast.Load):
+            raise ValueError(f"{site.where} assigns or deletes the property {self.name!r}")
+        self.admits(binding, site.where)
+        return AnsweredUse(site.file_path, site.attribute)
+
+
+@dataclass(frozen=True)
+class AnsweredField(AnsweredMethod):
+    """A field of a class family, declared `name: T` in the class body: it is
+    answered by every read and every write of its name on a family receiver."""
+
+    @property
+    def name(self) -> str:
+        declaration = self.method
+        assert isinstance(declaration, ast.AnnAssign) and isinstance(declaration.target, ast.Name)
+        return declaration.target.id
+
+    def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
+        if isinstance(site.attribute.ctx, ast.Del):
+            raise ValueError(f"{site.where} deletes the field {self.name!r}")
+        self.admits(binding, site.where)
+        return AnsweredUse(site.file_path, site.attribute)
+
+
+class AttributeLookup:
+    """The calls that reach an attribute by its name as a value."""
+
+    OBJECT_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"getattr", "hasattr", "setattr", "delattr"})
+    """Lookups that take an object, then the attribute name."""
+    NAME_LOOKUPS: ClassVar[frozenset[str]] = frozenset({"attrgetter", "methodcaller"})
+    """Lookups that take only attribute names (methodcaller: one, then call arguments)."""
+    LOOKUPS: ClassVar[frozenset[str]] = OBJECT_LOOKUPS | NAME_LOOKUPS
+
+    @staticmethod
+    def callee_name(func: ast.expr) -> str | None:
+        match func:
+            case ast.Name(id=name) | ast.Attribute(attr=name):
+                return name
+        return None
+
+    @classmethod
+    def name_arguments(cls, call: ast.Call) -> list[ast.expr]:
+        """The arguments a lookup reads as attribute names; none for any other call."""
+
+        callee = cls.callee_name(call.func)
+        if callee in cls.OBJECT_LOOKUPS:
+            return call.args[1:2]
+        if callee == "methodcaller":
+            return call.args[:1]
+        if callee in cls.NAME_LOOKUPS:
+            return list(call.args)
+        return []
+
+
+def _namespace_lookup(node: ast.AST) -> ast.expr | None:
+    """The object whose namespace a read takes by a name that is not a constant
+    (`x.__dict__[k]`, `x.__dict__.get(k)`, `vars(x)[k]`), or None for any other
+    node. Only a class's namespace holds its methods and properties: an
+    instance's holds its own values. `type(x)` comes back as the call itself,
+    a class this proof cannot name."""
+
+    def namespace_of(expression: ast.expr) -> ast.expr | None:
+        match expression:
+            case ast.Attribute(value=owner, attr="__dict__"):
+                return owner
+            case ast.Call(func=ast.Name(id="vars"), args=[owner]):
+                return owner
+        return None
+
+    match node:
+        case ast.Subscript(value=value, slice=key) if not isinstance(key, ast.Constant):
+            return namespace_of(value)
+        case ast.Call(func=ast.Attribute(value=value, attr="get"), args=[key, *_]) if not isinstance(key, ast.Constant):
+            return namespace_of(value)
+    return None
 
 
 def _dynamic_access(node: ast.AST, name: str) -> bool:
     """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
 
-    return (
-        isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in _DYNAMIC_ACCESS
-        and len(node.args) > 1 and isinstance(node.args[1], ast.Constant) and node.args[1].value == name
+    return isinstance(node, ast.Call) and any(
+        isinstance(argument, ast.Constant) and argument.value == name
+        for argument in AttributeLookup.name_arguments(node)
     )

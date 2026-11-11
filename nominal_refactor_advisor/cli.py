@@ -108,7 +108,6 @@ from nominal_refactor_advisor.codemod_paths import (
 )
 from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
-    CodemodOperationPreflightReport,
     CodemodPlanPreflightReport,
 )
 from nominal_refactor_advisor.codemod_runtime import (
@@ -1693,9 +1692,7 @@ class CodemodSimulationPayload(DataclassJsonReport):
 class CodemodPreflightFailurePayload(DataclassJsonReport):
     """JSON-ready metadata for a codemod preflight failure."""
 
-    report: CodemodOperationPreflightReport = json_report_field(
-        field_name="preflight_report"
-    )
+    report: JsonReport = json_report_field(field_name="preflight_report")
 
     @json_report_property()
     def preflight_failed(self) -> bool:
@@ -2950,7 +2947,7 @@ class CodemodPlanExecutionPresenter(ABC):
     @abstractmethod
     def present_operation_preflight_failure(
         self,
-        report: CodemodOperationPreflightReport,
+        error: CodemodOperationPreflightError,
     ) -> None:
         raise NotImplementedError
 
@@ -3055,7 +3052,7 @@ class SimulateCodemodExecutionStrategy(CodemodExecutionStrategy):
         try:
             simulation = sequence.simulate(snapshot)
         except CodemodOperationPreflightError as error:
-            presenter.present_operation_preflight_failure(error.report)
+            presenter.present_operation_preflight_failure(error)
             return 1
         applied = cls.applies_changes and simulation.is_clean
         if applied:
@@ -3138,23 +3135,24 @@ class CodemodCliExecution(
 
     def present_operation_preflight_failure(
         self,
-        report: CodemodOperationPreflightReport,
+        error: CodemodOperationPreflightError,
     ) -> None:
-        self.emit_preflight_failure(report)
+        self.emit_preflight_failure(error)
 
     def emit_preflight_failure(
         self,
-        report: CodemodOperationPreflightReport,
+        error: CodemodOperationPreflightError,
     ) -> None:
         if self.execution_request.json_report_requested(self.args.json):
             print(
                 json.dumps(
-                    json_report_object(CodemodPreflightFailurePayload(report)),
+                    json_report_object(CodemodPreflightFailurePayload(error.presented)),
                     indent=2,
                 )
             )
         else:
-            print(f"Codemod preflight failed: {report.message}", file=sys.stderr)
+            for report in error.reports:
+                print(f"Codemod preflight failed: {report.message}", file=sys.stderr)
 
     def emit_preflight_report(
         self,
@@ -3632,11 +3630,11 @@ class CodemodSynthesisExecution(
 
     def operation_preflight_failure_payload(
         self,
-        report: CodemodOperationPreflightReport,
+        error: CodemodOperationPreflightError,
     ) -> JsonObject:
         return {
             **self.unexecuted_payload(),
-            **json_report_object(CodemodPreflightFailurePayload(report)),
+            **json_report_object(CodemodPreflightFailurePayload(error.presented)),
         }
 
     def with_projected_findings(
@@ -3711,11 +3709,11 @@ class CodemodSynthesisExecution(
 
     def present_operation_preflight_failure(
         self,
-        report: CodemodOperationPreflightReport,
+        error: CodemodOperationPreflightError,
     ) -> None:
         print(
             json.dumps(
-                self.operation_preflight_failure_payload(report),
+                self.operation_preflight_failure_payload(error),
                 indent=2,
             )
         )

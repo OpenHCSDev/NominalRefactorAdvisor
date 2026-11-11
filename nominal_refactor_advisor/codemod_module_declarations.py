@@ -364,6 +364,34 @@ class ModuleSymbolTable:
             if name in self.bound_names_for_statement(statement)
         )
 
+    def eager_reads_before(self, names: frozenset[str], line: int) -> tuple[str, ...]:
+        """The top-level statements above `line` that read one of `names` when the
+        module runs: a base list, a decorator, a default, a class body, any
+        module-level expression. Function and lambda bodies run later, and a
+        `TYPE_CHECKING` block never runs, so neither counts."""
+
+        guards = TypeCheckingGuardProjection.from_module(self.module).guards
+        found: list[str] = []
+        for statement in self.module.body:
+            if statement.lineno >= line or statement in guards:
+                continue
+            pending: list[ast.AST] = [statement]
+            while pending:
+                node = pending.pop()
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names:
+                    found.append(f"{node.id} at line {node.lineno}")
+                    break
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    pending.extend((*node.decorator_list, *node.args.defaults, *(
+                        default for default in node.args.kw_defaults if default is not None
+                    )))
+                    continue
+                if isinstance(node, ast.Lambda):
+                    pending.extend(node.args.defaults)
+                    continue
+                pending.extend(ast.iter_child_nodes(node))
+        return tuple(found)
+
     def insertion_line_after_bindings(
         self,
         names: Iterable[str],
@@ -533,7 +561,7 @@ class ModuleSymbolTable:
         ) or (
             not resolution.is_ambiguous
             and any(
-                available_identity == identity
+                available_identity.means_same_object(identity)
                 and required_scope.is_satisfied_by(binding.scope)
                 for binding, available_identity in resolution.unique_candidates
             )
@@ -561,7 +589,7 @@ class ModuleSymbolTable:
         if resolution.is_ambiguous:
             return True
         return any(
-            available_identity != identity
+            not available_identity.means_same_object(identity)
             for _, available_identity in resolution.unique_candidates
         )
 

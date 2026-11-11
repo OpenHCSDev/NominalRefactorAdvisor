@@ -435,8 +435,26 @@ class ClassBodyIndex:
     def overlaps(self) -> tuple[ClassBodyOverlap, ...]:
         """Every pair of classes sharing at least one pairing declaration."""
 
+        return self._overlaps_of(self.holders.values())
+
+    def overlaps_sharing_with(self, symbols: frozenset[str]) -> tuple[ClassBodyOverlap, ...]:
+        """The pairs of `overlaps` sharing a declaration one of `symbols` makes
+        itself, in the same order: the pairs among the holders of those
+        classes' own declarations, theirs included."""
+
+        return self._overlaps_of(
+            self.holders[identity]
+            for symbol in symbols
+            if symbol in self.declarations_by_symbol
+            for declaration in self.declarations_by_symbol[symbol].values()
+            for identity in declaration.identities
+        )
+
+    def _overlaps_of(
+        self, holder_groups: Iterable[tuple[str, ...]]
+    ) -> tuple[ClassBodyOverlap, ...]:
         pairs: set[tuple[str, str]] = set()
-        for symbols in self.holders.values():
+        for symbols in holder_groups:
             if len(symbols) > self.holder_limit:
                 continue
             pairs.update(combinations(sorted(symbols), 2))

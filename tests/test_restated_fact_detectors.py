@@ -11,6 +11,7 @@ from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluator,
 )
+from nominal_refactor_advisor.refactors.module_move import DissolveModuleOperation
 from nominal_refactor_advisor.detectors._restated_facts import (DeadModuleDetector, ExactKeySetDetector, ForeignAbsenceProbeDetector, ForwardingFacadeDetector, LegacyPathMarkerDetector, NamedAttributeDetector, OwnTypeTestDetector, StringKindDispatchDetector)
 from nominal_refactor_advisor.detectors._restated_identity import RestatedIdentityDetector
 from nominal_refactor_advisor.patterns import PatternId
@@ -517,6 +518,27 @@ def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path
     assert dead == ["orphan"]
 
 
+def test_an_empty_dead_module_dissolves(tmp_path: Path):
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "used.py").write_text("VALUE = 1\n")
+    (package / "main.py").write_text(
+        "from pkg.used import VALUE\n\n\nif __name__ == '__main__':\n    print(VALUE)\n"
+    )
+    (package / "shell.py").write_text('"""Moved into pkg.used."""\n')
+    (finding,) = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == DeadModuleDetector.effective_detector_id()
+    ]
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = DeadModuleDetector().evaluate_recipe_for_finding(finding, snapshot)
+    (operation,) = evaluation.executable_recipe.operations
+    assert isinstance(operation, DissolveModuleOperation)
+    assert operation.target.file_path.endswith("pkg/shell.py")
+
+
 # ---- forwarding facades
 
 FACADE = (
@@ -545,7 +567,32 @@ def test_members_that_only_forward_to_a_held_object_are_a_facade(tmp_path: Path)
     ]
     assert finding.metrics.forwarded_member_count == 3
     assert finding.metrics.impact_delta.lower_bound_removable_loc == 3
-    assert "No codemod operation performs this factoring yet" in finding.summary
+    assert "Recipe: `InlineForwarderOperation`" in finding.summary
+
+
+def test_a_facade_s_forwards_are_inlined_where_each_proves(tmp_path: Path):
+    source = (
+        "class Inner:\n"
+        "    size = 1\n"
+        "    def run(self, a):\n        return a\n\n\n"
+        "class Facade:\n"
+        "    def __init__(self, inner: Inner):\n        self._inner = inner\n"
+        "    @property\n    def size(self):\n        return self._inner.size\n"
+        "    def run(self, a):\n        return self._inner.run(a)\n\n\n"
+        "def use(facade: Facade):\n    return facade.size, facade.run(1)\n"
+    )
+    (finding,) = _findings(tmp_path, ForwardingFacadeDetector, {"m": source})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = ForwardingFacadeDetector().evaluate_recipe_for_finding(finding, snapshot)
+    recipe = evaluation.executable_recipe
+    assert [operation.target.qualname for operation in recipe.operations] == [
+        "Facade.size",
+        "Facade.run",
+    ]
+    simulation = recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    (rewritten,) = simulation.simulation.rewritten_sources.values()
+    assert "return facade._inner.size, facade._inner.run(1)\n" in rewritten
 
 
 def test_a_constructed_held_object_names_its_constructor(tmp_path: Path):
@@ -606,6 +653,20 @@ def test_an_alias_of_a_replacement_under_a_legacy_name_is_a_marker(tmp_path: Pat
     source = "def load(path):\n    return path\n\n\nlegacy_load = load\n"
     (finding,) = _findings(tmp_path, LegacyPathMarkerDetector, {"m": source})
     assert "(alias, of load)" in finding.summary
+
+
+def test_a_member_overriding_an_inherited_one_is_dispatch_not_a_forward(tmp_path: Path):
+    source = (
+        "class Base:\n"
+        "    @property\n    def rows(self):\n        return ()\n"
+        "    def paths(self):\n        return ()\n\n\n"
+        "class Decoded(Base):\n"
+        "    def __init__(self, tool):\n        self.tool = tool\n"
+        "    @property\n    def rows(self):\n        return self.tool.rows\n"
+        "    def paths(self):\n        return self.tool.paths()\n"
+        "    @property\n    def name(self):\n        return self.tool.name\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
 
 
 def test_an_annotated_held_class_is_named_without_its_metadata(tmp_path: Path):

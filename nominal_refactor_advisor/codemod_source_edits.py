@@ -101,6 +101,13 @@ class SourceNodeDecoratorPolicy(Case):
     def start_line(cls, node: ast.stmt) -> int:
         return node.lineno
 
+    @classmethod
+    def region_start(cls, node: Callable[[], ast.stmt]) -> int | None:
+        """Where an edited region starts when not at its target's own line; the
+        target's node is read only by a policy that needs it."""
+
+        return None
+
 
 class Exclude(SourceNodeDecoratorPolicy):
     value = "exclude"
@@ -117,6 +124,10 @@ class Include(SourceNodeDecoratorPolicy):
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> None:
         pass
+
+    @classmethod
+    def region_start(cls, node: Callable[[], ast.stmt]) -> int | None:
+        return cls.start_line(node())
 
     @classmethod
     def start_line(cls, node: ast.stmt) -> int:
@@ -1065,7 +1076,7 @@ class TextFileChange(ABC):
             file_changes = tuple(group)
             kinds = {type(change) for change in file_changes}
             if len(kinds) != 1:
-                raise ValueError(
+                raise PhysicalSourceEditConflictError(
                     f"{file_path!r} is both edited and carried: "
                     f"{tuple(sorted(kind.__name__ for kind in kinds))!r}"
                 )
@@ -1109,7 +1120,7 @@ class TextFileEdit(TextFileChange):
         file_path = changes[0].file_path
         sources = {edit.source for edit in changes}
         if len(sources) != 1:
-            raise ValueError(f"Text edits of {file_path!r} read different texts")
+            raise PhysicalSourceEditConflictError(f"Text edits of {file_path!r} read different texts")
         (source,) = sources
         spans = sorted(
             {
@@ -1120,7 +1131,7 @@ class TextFileEdit(TextFileChange):
         )
         for (_, first_end, _), (second_start, _, _) in pairwise(spans):
             if second_start < first_end:
-                raise ValueError(f"Text edits of {file_path!r} overlap at offset {second_start}")
+                raise PhysicalSourceEditConflictError(f"Text edits of {file_path!r} overlap at offset {second_start}")
         rewritten = cls.applied(source, spans)
         if rewritten == source:
             return ()
@@ -2220,7 +2231,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 replacement_by_span[replacement_span] = replacement
                 continue
             if existing.replacement_source != replacement.replacement_source:
-                raise ValueError(
+                raise PhysicalSourceEditConflictError(
                     "Offset replacements assign different source to the same span: "
                     f"{replacement.start_offset}:{replacement.end_offset}"
                 )
@@ -2231,7 +2242,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         )
         for first, second in pairwise(ordered):
             if first.overlaps(second):
-                raise ValueError(
+                raise PhysicalSourceEditConflictError(
                     "Offset replacement spans overlap: "
                     f"{first.start_offset}:{first.end_offset} and "
                     f"{second.start_offset}:{second.end_offset}"
@@ -2253,6 +2264,9 @@ class SourceTargetEditor:
 
     sources: Mapping[str, str]
     target: AstTargetDigest
+    first_line: int | None = None
+    """Where the editable region starts when not at the target's own line: its
+    first decorator, for a region that includes decorators."""
 
     @property
     def file_lines(self) -> list[str]:
@@ -2261,8 +2275,12 @@ class SourceTargetEditor:
         )
 
     @property
+    def start_line(self) -> int:
+        return self.target.line if self.first_line is None else self.first_line
+
+    @property
     def target_lines(self) -> list[str]:
-        return self.file_lines[self.target.line - 1 : self.target.end_line]
+        return self.file_lines[self.start_line - 1 : self.target.end_line]
 
     def replacement_source(
         self,
@@ -2272,8 +2290,8 @@ class SourceTargetEditor:
         ordered_windows = self.ordered_windows(replacements)
         for window in reversed(ordered_windows):
             replacement = window.physical_edit
-            start_index = replacement.start_line - self.target.line
-            end_index = replacement.end_line - self.target.line + 1
+            start_index = replacement.start_line - self.start_line
+            end_index = replacement.end_line - self.start_line + 1
             lines[start_index:end_index] = list(replacement.replacement_lines)
         return "".join(lines)
 
@@ -2304,8 +2322,8 @@ class SourceTargetEditor:
         )
         return SourceSpanEdit.from_replacement_lines(
             file_path=self.target.file_path,
-            start_line=self.target.line + start_index,
-            end_line=self.target.line + end_index,
+            start_line=self.start_line + start_index,
+            end_line=self.start_line + end_index,
             replacement_lines=SourceTargetEditor.source_lines(replacement_source),
             rationale=rationale
             or f"Replace source text inside {self.target.qualname!r}.",
@@ -2353,8 +2371,8 @@ class SourceTargetEditor:
             suffix_count += 1
         replacement_end = len(replacement_lines) - suffix_count
         return SourceLineSpan(
-            start_line=self.target.line + prefix_count,
-            end_line=self.target.line + len(current_lines) - suffix_count - 1,
+            start_line=self.start_line + prefix_count,
+            end_line=self.start_line + len(current_lines) - suffix_count - 1,
         ).line_replacement(
             file_path=self.target.file_path,
             replacement_lines=replacement_lines[prefix_count:replacement_end],
@@ -2373,7 +2391,7 @@ class SourceTargetEditor:
                 window.physical_edit.end_line,
             ),
         )
-        previous_end = self.target.line - 1
+        previous_end = self.start_line - 1
         for window in ordered_windows:
             replacement = window.physical_edit
             if replacement.file_path != self.target.file_path:
@@ -2382,7 +2400,7 @@ class SourceTargetEditor:
                     f"target file {self.target.file_path!r}"
                 )
             if (
-                replacement.start_line < self.target.line
+                replacement.start_line < self.start_line
                 or replacement.end_line > self.target.end_line
             ):
                 raise ValueError(

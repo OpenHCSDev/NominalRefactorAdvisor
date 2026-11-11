@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod_workflow import (
 )
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.refactor_concepts import PackageMoveConcept
+from nominal_refactor_advisor.refactors.package_move import DestinationTable
 
 TABLE = """
 | Package | Existing owners and initial source closure | What belongs here |
@@ -872,3 +873,72 @@ def test_a_move_into_a_new_subpackage_declares_it(tmp_path: Path) -> None:
     )
     assert imported.returncode == 0, imported.stderr
     assert imported.stdout.strip() == "(1, 2)"
+
+
+NESTED_TABLE = """
+| Package | Existing owners | What belongs here |
+|---|---|---|
+| `core/runtime` | `runtime_stores.py` | Runtime stores. |
+"""
+
+
+def _nested_package(root: Path) -> None:
+    """openhcs keeps its flat modules one level down: `pkg/core/runtime_stores.py`
+    moves into `pkg/core/runtime/`, a package inside the package holding it."""
+
+    _write(root, "pkg/__init__.py", "")
+    _write(root, "pkg/core/__init__.py", "")
+    _write(root, "pkg/core/runtime/__init__.py", "")
+    _write(root, "pkg/core/runtime_stores.py", "class Store:\n    held = 3\n")
+    _write(
+        root,
+        "pkg/app.py",
+        "from pkg.core.runtime_stores import Store\n\nVALUE = Store.held\n",
+    )
+
+
+def test_a_flat_module_inside_a_package_moves_into_the_row_beneath_it(tmp_path: Path) -> None:
+    _nested_package(tmp_path)
+    (destination,) = DestinationTable.from_texts((NESTED_TABLE,)).destinations(
+        parse_python_modules(tmp_path)
+    )
+    assert Path(destination.source_path).relative_to(tmp_path).as_posix() == "pkg/core/runtime_stores.py"
+    assert Path(destination.destination_path).relative_to(tmp_path).as_posix() == (
+        "pkg/core/runtime/runtime_stores.py"
+    )
+
+    report = _goal(tmp_path, NESTED_TABLE)
+    assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED, report.to_markdown()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    replay = report.replay_sequence.simulate(snapshot)
+    assert replay.is_clean
+    replay.apply()
+    assert not (tmp_path / "pkg/core/runtime_stores.py").exists()
+    imported = subprocess.run(
+        [sys.executable, "-c", "from pkg.app import VALUE; print(VALUE)"],
+        cwd=tmp_path, capture_output=True, text=True, check=False,
+    )
+    assert imported.returncode == 0, imported.stderr
+    assert imported.stdout.strip() == "3"
+    assert "pkg.core.runtime.runtime_stores" in (tmp_path / "pkg/app.py").read_text()
+
+
+def test_a_row_naming_a_module_nra_cannot_place_is_refused_by_name(tmp_path: Path) -> None:
+    """`pkg/storage/missing_stores.py` is in neither `core` nor the root, so the
+    `core/runtime` row cannot place it; the goal refuses instead of reporting
+    `achieved` with nothing moved."""
+
+    _nested_package(tmp_path)
+    _write(tmp_path, "pkg/storage/__init__.py", "")
+    _write(tmp_path, "pkg/storage/missing_stores.py", "class Missing:\n    held = 4\n")
+    table = """
+| Package | Existing owners | What belongs here |
+|---|---|---|
+| `core/runtime` | `runtime_stores.py`, `missing_stores.py` | Runtime stores. |
+"""
+    with pytest.raises(
+        ValueError,
+        match=r"`core/runtime` names `missing_stores`, but `storage/missing_stores.py` sits "
+        r"outside `core` or the root, where the row reads its flat modules",
+    ):
+        _goal(tmp_path, table)

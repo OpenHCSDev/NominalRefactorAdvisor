@@ -114,6 +114,24 @@ class DeclaredRoot:
         return cls.line_length_of(tomllib.loads(pyproject.read_text()))
 
     @classmethod
+    def durable_bases_for(cls, path: Path) -> frozenset[str]:
+        """The roots of stored state ``path``'s repository declares, as qualified
+        class names: rows of a class below one outlive the code that wrote them, so
+        a move that changes their keys is a data migration::
+
+            [tool.nominal-refactor-advisor]
+            durable-bases = ["package.module:Root", ...]
+        """
+
+        pyproject = cls.nearest_pyproject(path)
+        if pyproject is None:
+            return frozenset()
+        match tomllib.loads(pyproject.read_text()):
+            case {"tool": {"nominal-refactor-advisor": {"durable-bases": list(bases)}}}:
+                return frozenset(str(base).replace(":", ".") for base in bases)
+        return frozenset()
+
+    @classmethod
     def first_party_for(cls, path: Path) -> frozenset[str]:
         """The top-level modules ruff's import sort counts as first party for
         ``path``'s repository: everything directly under each ``[tool.ruff] src``

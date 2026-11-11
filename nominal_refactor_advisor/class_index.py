@@ -378,6 +378,28 @@ class NoDataclassDeclaration(CompactDataclassFacet):
 
 
 @dataclass(frozen=True)
+class ForeignBase:
+    """A base outside the scan. One the standard library binds is asked directly
+    whether it declares a name; any other may, so it counts as declaring it."""
+
+    spelled: str
+
+    STANDARD_MODULES: ClassVar[tuple[str, ...]] = (
+        "builtins", "abc", "typing", "collections.abc", "enum",
+    )
+
+    def may_declare(self, name: str) -> bool:
+        bare = self.spelled.split("[", 1)[0]
+        module_name, _, attribute = bare.rpartition(".")
+        for candidate in (module_name,) if module_name else self.STANDARD_MODULES:
+            module = sys.modules.get(candidate)
+            base = None if module is None else getattr(module, attribute, None)
+            if isinstance(base, type) or hasattr(base, "__mro_entries__"):
+                return hasattr(base, name) and getattr(base, name) is not getattr(object, name, None)
+        return True
+
+
+@dataclass(frozen=True)
 class ClassDeclaration(QualifiedDeclaration):
     """Source-form-independent identity shared by repository class indexes."""
 
@@ -401,6 +423,25 @@ class ClassDeclaration(QualifiedDeclaration):
     """Whether its metaclass registers the classes it creates; set by the index."""
 
     qualified_name = AliasProperty[str]("symbol")
+
+    @property
+    def member_binding_names(self) -> frozenset[str]:
+        """Every name the class body binds; each index's declarations read it from their source."""
+
+        raise NotImplementedError(type(self).__name__)
+
+    @property
+    def unresolved_base_names(self) -> tuple[str, ...]:
+        """The spelled bases the index could not bind to a scanned class."""
+
+        if len(self.resolved_base_symbols) == len(self.declared_base_names):
+            return ()
+        resolved = {symbol.rsplit(".", 1)[-1] for symbol in self.resolved_base_symbols}
+        return tuple(
+            spelled
+            for spelled in self.declared_base_names
+            if spelled.split("[", 1)[0].rsplit(".", 1)[-1] not in resolved
+        )
 
     def with_resolved_base_symbols(
         self,
@@ -1123,7 +1164,7 @@ class CompactIndexedClass(CompactClassHeader):
     """AST-free class declaration used to reconstruct inheritance globally."""
 
     @property
-    def bound_member_names(self) -> frozenset[str]:
+    def member_binding_names(self) -> frozenset[str]:
         """Every name the class body binds, by assignment or by `def`."""
 
         return frozenset(
@@ -2390,6 +2431,28 @@ class ClassDeclarationIndex(Generic[ClassDeclarationT]):
     def ancestor_symbols(self, class_symbol: str) -> tuple[str, ...]:
         return self.inheritance_graph.reachable_from(class_symbol)
 
+    def overridden_declarations(self, class_symbol: str, member: str) -> tuple[str, ...]:
+        """What the class's `member` overrides: each scanned ancestor that declares
+        it, and each base outside the scan not known to lack it. A receiver typed as
+        one of them reaches the class's member by dispatch."""
+
+        lineage = (class_symbol, *self.ancestor_symbols(class_symbol))
+        classes = self.classes_by_symbol
+        return (
+            *(
+                classes[symbol].qualname
+                for symbol in lineage[1:]
+                if symbol in classes and member in classes[symbol].member_binding_names
+            ),
+            *(
+                spelled
+                for symbol in lineage
+                if symbol in classes
+                for spelled in classes[symbol].unresolved_base_names
+                if ForeignBase(spelled).may_declare(member)
+            ),
+        )
+
     def descendant_symbols(self, base_symbol: str) -> tuple[str, ...]:
         if base_symbol not in self.classes_by_symbol:
             return ()
@@ -2599,7 +2662,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
 
     @staticmethod
     def _binds_member(owner: CompactIndexedClass, member_name: str) -> bool:
-        return member_name in owner.bound_member_names
+        return member_name in owner.member_binding_names
 
     @classmethod
     def from_modules(
@@ -2711,14 +2774,14 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
         if mro is None:
             raise ValueError(f"`{symbol}` has no closed runtime MRO")
         for declaration in mro.declarations:
-            if "__new__" in declaration.bound_member_names:
+            if "__new__" in declaration.member_binding_names:
                 raise ValueError(
                     f"`{declaration.symbol}` defines `__new__`, which sees the arguments as passed"
                 )
         for entry in mro.__mro__:
             if not isinstance(entry, DeclarationMroType):
                 continue
-            if "__init__" in entry.declaration.bound_member_names:
+            if "__init__" in entry.declaration.member_binding_names:
                 raise ValueError(
                     f"`{entry.declaration.symbol}` defines the `__init__` `{symbol}` runs"
                 )
@@ -6326,7 +6389,10 @@ class CompactClassFamilyIndexBuilder:
         first, *rest = parts
         alias_target = import_aliases.get(first)
         if alias_target is not None:
-            candidate = ".".join((alias_target, *rest)) if rest else alias_target
+            candidate = followed_reexports(
+                ".".join((alias_target, *rest)) if rest else alias_target,
+                import_aliases_by_module_name,
+            )
             if candidate in known_symbols:
                 return candidate
             unique_by_suffix = unique_symbols_by_suffix
@@ -6346,6 +6412,34 @@ class CompactClassFamilyIndexBuilder:
         if allow_unique_unqualified and len(parts) == 1:
             return unique_symbols_by_name.get(parts[0])
         return None
+
+
+def followed_reexports(
+    target: str, import_aliases_by_module_name: Mapping[str, Mapping[str, str]]
+) -> str:
+    """The name `target` finally binds, through every module that re-binds it.
+
+    A package whose `__init__` says `from .a import X as Y` binds `Y` to
+    `pkg.a.X`, so `pkg.Y` names `pkg.a.X`, as Python resolves it. The longest
+    dotted prefix a module re-binds is replaced by what it binds, and the walk
+    repeats until no prefix is re-bound or a name comes round again."""
+
+    seen = {target}
+    while True:
+        segments = target.split(".")
+        for end in range(len(segments), 1, -1):
+            rebound = import_aliases_by_module_name.get(".".join(segments[: end - 1]), {}).get(
+                segments[end - 1]
+            )
+            if rebound is not None:
+                followed = ".".join((rebound, *segments[end:]))
+                break
+        else:
+            return target
+        if followed in seen:
+            return target
+        seen.add(followed)
+        target = followed
 
 
 def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:

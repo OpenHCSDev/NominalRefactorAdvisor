@@ -92,6 +92,50 @@ should answer once. m consumers × n cases of restated decisions become m + n.
 Verify subagent work from the diff and by re-running the command yourself; a
 report is a claim.
 
+## Running a sweep: what the agent-comms sweep taught (2026-11-11)
+
+- **Fill the plan, simulate once, apply once.** Compose every plan with
+  `--codemod-compose-sequence A.json B.json …` and simulate the whole sequence
+  from the branch head. A simulate per slice is the incremental loop. Inside
+  that one simulate, a refusal is the only evidence that an operation is
+  missing.
+- **`no_evaluator` does not mean no operation.** Before calling something a
+  gap, grep the registered operations and the ones nothing constructs.
+  `CreateMixinOperation` + `ComposeExistingClassOperation` was the
+  extract-new-base that people kept asking for, and
+  `KeywordizeConstructionOperation` existed for a whole night with no
+  synthesis branch that built it. Sort rejections by their stated reason
+  first. The reason names the real gap.
+- **Authored plans are not blocked by the unproved horizon.** Only synthesized
+  one-shot export is. When the planner cannot prove a decision, author it with
+  existing operations (`patch_target`, `insert_before_target`,
+  `compose_existing_class`) and let each operation's preflight prove its site.
+  A hand edit is worse than an authored op, never better.
+- **Select by declaration in plans that chain.** Synthesized recipes select by
+  `target_id` from the scan that made them, and those ids go stale once an
+  earlier plan rewrites the file. Use `file_path` + `target_qualname`, or
+  regenerate from a scan of the tree the plan will run on.
+- **A stage that deletes members says what each class keeps.** Deleting a
+  class's only member with `patch_target` leaves an empty body, and parse
+  validation refuses it. `compose_existing` writes `pass` (or keeps the
+  docstring) on its own. When deleting an override, put the new parent first
+  in the base list so every deleted member still resolves to the same winner.
+- **Scan with every consumer.** `dead_module` and `dissolve_module` only see
+  the scan. Pass `--context-root` for each sibling repository that imports the
+  package (agent-comms: Toad) before deleting a module. Scan from the
+  repository root so `[project.scripts]` counts.
+- **Check which NRA you are running.** Installing the target package into the
+  NRA venv can replace an editable NRA with the target's pinned wheel. After
+  any `uv pip install`, print `nominal_refactor_advisor.__file__`.
+- **Results travel; caches do not.** Finding ids hash detector, pattern,
+  summary and evidence, not the engine build. So picks and plans posted as
+  JSON match on any agent's scan of the same source. `git grep "^class NAME"`
+  every new class name before submitting a pick.
+- **A string that must fail by name stays a string.** Evidence that a class
+  does not exist yet (`ClassDeclared("Name")`) cannot be written as a
+  reference. Every other string standing in for a type is slop, and is work
+  for this plan.
+
 ## Start with worked transformations
 
 Read [theory → evidence → migration](references/theory-to-workflow.md) for the
@@ -341,3 +385,60 @@ Keep a concise checkpoint with exact source revision, recipe, commands, results,
 proof limits and unfinished work. Publish only within the user's authorization,
 and verify CI for the exact pushed revision. Keep task caches in an owned root
 and clean them after workers exit, retaining recipes and validation evidence.
+
+## Engine gaps found during the sweep (2026-11-11, evening)
+
+1. **Narrowed composition moves (852ca705).** `candidates_touching` rebuilt
+   three repo-wide indexes per virtual snapshot to look up ~3 classes. Now
+   ClassUseIndex resolves references lazily by terminal name, overlaps start
+   from the asked classes' own holders, and inheriting pairs start from the
+   classes inheriting their identities. 93.9 → 84.0 s on the 30-pick goal,
+   identical JSON report. Also fixed a latent bug: the cached and uncached
+   paths filtered verdicts by different keys, so a ComposeExisting verdict
+   owned by a third class came or went depending on cache state.
+
+2. **Every refused recipe in one run (b29c899b).** `require_clean` now raises
+   `CodemodPlanPreflightError` with every failed report, and `edit_batch_for_recipes`
+   collects each recipe's refusal instead of stopping at the first. A 5-recipe
+   batch with 4 refusals went from 4 runs to 1.
+
+3. **Stored-row refusal (752f143a).** Deleting a class or enum member that a
+   stored record's field can hold (classes below `durable-bases`) refuses,
+   naming the field. Prevents the CHECK constraint failure that broke install
+   88e245f7.
+
+4. **Module-level alias binding (9c4559a6).** `sb = source_bindings_module`
+   followed transitively is now a binding of the source module. Its reads get
+   rewritten; its assignment is not a use.
+
+5. **Silent no-op refusal (eb339dbc).** `remove_import_names` with
+   scope=RUNTIME on a name bound under `if TYPE_CHECKING:` now refuses
+   instead of producing zero edits and preflighting as passed.
+
+6. **Guard blank lines (abe5641d).** An emptied guard block goes through
+   `for_statement_span`, absorbing its separator lines.
+
+7. **Package-init cycle edges (0ce90a1d).** The import graph now includes
+   ancestor package edges: importing `a.b.c` triggers `a` and `a.b` through
+   `known_import_targets`, and `import_would_create_cycle` checks every
+   triggered module. The importing module itself is excluded (a package init
+   importing from its own submodules is normal Python). Without this,
+   `promote_guarded_import` approved 107 promotions on openhcs where 14 failed
+   at runtime through package-init cycles.
+
+8. **TypeCheckerSession-per-method (99cbdf5d).** `InlineForwarderOperation`
+   spawned a fresh mypy session per forwarded method's string-name check.
+   4 findings × ~3 sessions/method = ~12 sessions, explaining the 10 GB /
+   8 minute forwarder_inline goal. Now builds one session at the top and
+   threads it through `answering_calls()` and `_MethodNameStrings.require_none()`.
+   20 inline_forwarder tests pass in 31.56 s.
+
+9. **Trajectory search collision (874c54b3, f76a3b8e).** Five bare
+   `ValueError`s on the simulation path escaped the trajectory search's
+   `PhysicalSourceEditConflictError` catch block and crashed the run:
+   same-span-different-source and overlapping spans in
+   `replacements_in_span`, plus "both edited and carried", "read different
+   texts" and "overlap at offset" in `TextFileChange.rewrites` /
+   `TextFileEdit.folded`. The line-span counterpart at
+   `_coalesced_group:729` already raised the typed error; these five
+   were the oversight.

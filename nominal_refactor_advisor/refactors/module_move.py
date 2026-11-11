@@ -1497,11 +1497,12 @@ class _SourceModuleObjectReads:
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
         index = parsed.fact(ModuleNodeIndex)
-        chains = frozenset(
+        imported = frozenset(
             chain
             for chain in cls._bound_chains(index, identity, source_parts)
             if chain[0] not in retargeted
         )
+        chains, aliasing = cls._aliased_chains(parsed.module, imported)
         if not chains:
             return cls(file_path, (), (), frozenset(), ())
         bindings = index.bound_name_counts
@@ -1533,6 +1534,8 @@ class _SourceModuleObjectReads:
                     if parts == chain and named.member_name in moved_names:
                         accesses.append((outermost, named))
                         rewritten_loads[chain[0]] += 1
+                elif parts == chain and outermost in aliasing:
+                    continue
                 elif parts == chain:
                     raise ValueError(
                         f"{file_path!r} uses the source module object "
@@ -1642,6 +1645,39 @@ class _SourceModuleObjectReads:
                             ImportBoundNameProjection(node).alias_bound_name(alias),
                             *source_parts[len(alias_parts) :],
                         )
+
+    @classmethod
+    def _aliased_chains(
+        cls, module: ast.Module, imported: frozenset[tuple[str, ...]]
+    ) -> tuple[frozenset[tuple[str, ...]], frozenset[ast.expr]]:
+        """The bindings of the source module object: its imports, and each
+        module-level `alias = <binding>` of one, transitively. An alias is one
+        more binding whose reads are rewritten like the import's (rebinding it
+        refuses as for any binding); the assignment's own spellings, the alias
+        and the binding it copies, are not uses of the module object."""
+
+        chains = set(imported)
+        aliasing: set[ast.expr] = set()
+        grew = True
+        while grew:
+            grew = False
+            for statement in module.body:
+                match statement:
+                    case ast.Assign(targets=[ast.Name(id=alias) as target], value=value) if (
+                        value not in aliasing and _SourceModuleObjectReads._spelled(value) in chains
+                    ):
+                        chains.add((alias,))
+                        aliasing.update((value, target))
+                        grew = True
+        return frozenset(chains), frozenset(aliasing)
+
+    @staticmethod
+    def _spelled(node: ast.expr) -> tuple[str, ...] | None:
+        parts: list[str] = []
+        while isinstance(node, ast.Attribute):
+            parts.append(node.attr)
+            node = node.value
+        return (node.id, *reversed(parts)) if isinstance(node, ast.Name) else None
 
     @staticmethod
     def _read_chain(
@@ -2161,6 +2197,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 import_graph=import_graph,
             )
         )
+        insertion_line = destination_table.insertion_line_after_bindings(
+            destination_dependency_names,
+            (dependency.scope for dependency in import_dependencies),
+        )
         return ModuleMoveDependencyReport(
             selection=selection,
             destination_path=destination_table.file_path,
@@ -2168,10 +2208,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             import_dependencies=import_dependencies,
             source_local_dependencies=source_local_resolution.import_dependencies,
             destination_dependency_names=destination_dependency_names,
-            destination_insertion_line=destination_table.insertion_line_after_bindings(
-                destination_dependency_names,
-                (dependency.scope for dependency in import_dependencies),
-            ),
+            destination_insertion_line=insertion_line,
             source_annotation_evaluation_mode=source_annotation_mode,
             destination_annotation_evaluation_mode=(destination_annotation_mode),
             moved_annotation_count=moved_dependencies.annotation_count,
@@ -2194,6 +2231,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY,
                     unresolved_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.DESTINATION_READ_BEFORE_DEFINITION,
+                    destination_table.eager_reads_before(frozenset(moved_names), insertion_line),
                 ),
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY,

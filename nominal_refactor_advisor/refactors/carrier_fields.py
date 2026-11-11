@@ -3,33 +3,29 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 
 from nominal_refactor_advisor.ast_projection import CallKeywords
-from nominal_refactor_advisor.ast_tools import AstParentIndex
-from nominal_refactor_advisor.binding_proofs import (
-    FunctionNominalParameterBindingAuthority,
-)
-from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
     _class_base_source_names,
 )
-from nominal_refactor_advisor.codemod import NominalConstructorCall
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.refactors.answered_method import AnsweredField
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import (
-    CodemodSelectorContext,
     ResolvedClassTarget,
 )
 from nominal_refactor_advisor.codemod_source_edits import (
     PhysicalSourceEdit,
-    SourceLineSpan,
     SourceNodeSpan,
     SourceTargetEditor,
     SourceTextGeometry,
@@ -120,7 +116,7 @@ class CarrierFieldProjection(CodemodPayloadRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
+class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
     """Replace projected primitive fields with one existing carrier field."""
 
     field_projections: tuple[CarrierFieldProjection, ...] = codemod_payload_field(
@@ -162,52 +158,171 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         self,
         context: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
+        """Every construction of the class, in any module, passes the projected
+        fields off one carrier value and becomes `carrier=value`; every read of a
+        projected field on a receiver typed to the class becomes a read through
+        the carrier. A construction or a read this proof cannot rewrite refuses."""
+
         _target_identifier, target, class_node = self.target_node_from_context(context)
         if not isinstance(class_node, ast.ClassDef):
             raise ValueError("Field carrier replacement requires a class target")
         target_class = ResolvedClassTarget(target, class_node)
         target_symbol = target_class.required_symbol(context)
-        source_path = target.file_path
-        source = context.sources_by_file_path[source_path]
-        geometry = SourceTextGeometry(source)
-        root = context.module_nodes_by_file_path[source_path]
-        replacements = [
-            *self.class_field_replacements(class_node, geometry),
-            *self.constructor_projection_replacements(
-                context,
-                source_path,
-                root,
-                geometry,
-                constructor_symbol=target_symbol,
-            ),
-        ]
-        covered_lines = tuple(
-            SourceLineSpan.from_offsets(geometry, item.start_offset, item.end_offset)
-            for item in replacements
+        descendants = context.required_class_family_index.descendant_symbols(target_symbol)
+        if descendants:
+            projected = frozenset(self.field_projection_map)
+            compact_index = context.compact_class_index
+            declaring_descendants = tuple(
+                symbol
+                for symbol in descendants
+                if (cls := compact_index.classes_by_symbol.get(symbol)) is not None
+                and projected & cls.direct_declared_member_names
+            )
+            if declaring_descendants:
+                raise ValueError(
+                    f"`{target.qualname}` has descendants declaring projected fields: "
+                    f"{sorted(declaring_descendants)!r}"
+                )
+        declarations = {
+            self.field_name_for_statement(statement): statement
+            for statement in class_node.body
+            if self.field_name_for_statement(statement) in self.field_projection_map
+        }
+        fields = tuple(
+            AnsweredField(context, target_class, declarations[name])
+            for name in self.field_projection_map
+            if name in declarations
         )
-        replacements.extend(
-            self.attribute_projection_replacements(
-                context,
-                source_path,
-                root,
-                geometry,
-                target_symbol=target_symbol,
-                covered_lines=covered_lines,
+        if not fields:
+            raise ValueError(f"`{target.qualname}` declares none of the projected fields")
+        self.require_concrete_carrier(context, fields[0], target.file_path)
+        self.require_not_stored(context, target_class)
+        geometries: dict[str, SourceTextGeometry] = {}
+
+        def geometry(file_path: str) -> SourceTextGeometry:
+            return geometries.setdefault(
+                file_path, SourceTextGeometry(context.sources_by_file_path[file_path])
+            )
+
+        replacements: dict[str, list[SourceTextSpanReplacement]] = {
+            target.file_path: list(self.class_field_replacements(class_node, geometry(target.file_path)))
+        }
+        for parsed in context.parsed_modules:
+            if class_node.name not in parsed.source:
+                continue
+            parents = parsed.fact(ModuleNodeIndex).parents
+            for call in (node for node in ast.walk(parsed.module) if isinstance(node, ast.Call)):
+                if fields[0].class_symbol(parsed.file_path, call.func, parents) != target_symbol:
+                    continue
+                replacements.setdefault(parsed.file_path, []).extend(
+                    self.construction_replacements(call, geometry(parsed.file_path), parsed.file_path)
+                )
+        reached = fields[0].reaching([reference for field in fields for reference in field.references()])
+        for field in fields:
+            for use in field.answered_uses(
+                [(receiver, binding) for receiver, binding in reached if receiver.site.attribute.attr == field.name]
+            ):
+                if not isinstance(use.attribute.ctx, ast.Load):
+                    raise ValueError(f"{use.where} writes the projected field {field.name!r}")
+                start, end = geometry(use.file_path).required_node_offsets(use.attribute)
+                replacements.setdefault(use.file_path, []).append(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=start,
+                        end_offset=end,
+                        replacement_source=(
+                            f"{ast.unparse(use.attribute.value)}.{self.carrier_field_name}."
+                            f"{self.field_projection_map[field.name]}"
+                        ),
+                    )
+                )
+        return tuple(
+            edit
+            for file_path, file_replacements in replacements.items()
+            for edit in geometry(file_path).physical_edits(
+                file_path=file_path,
+                replacements=tuple(file_replacements),
+                rationale=self.rationale
+                or (
+                    f"Replace projected fields on {target.qualname!r} with carrier "
+                    f"field {self.carrier_field_name!r}."
+                ),
             )
         )
-        if not replacements:
+
+    def require_not_stored(self, context: CodemodSourceSnapshot, target: ResolvedClassTarget) -> None:
+        """Rows of a class below a root of stored state the repository declares
+        (``durable-bases``) keep their old keys, so holding the carrier is a data
+        migration this move does not carry. A live reply needs no declaration: its
+        typed readers move with it, or the move refuses."""
+
+        symbol = target.required_symbol(context)
+        lineage = {symbol, *context.required_class_family_index.ancestor_symbols(symbol)}
+        stored = sorted(lineage & DeclaredRoot.durable_bases_for(Path(target.file_path)))
+        if stored:
+            moved = ", ".join(
+                f"{name} -> {self.carrier_field_name}.{attribute}"
+                for name, attribute in self.field_projection_map.items()
+            )
             raise ValueError(
-                f"Field carrier replacement found no edits in {source_path!r}"
+                f"`{symbol}` is a `{stored[0]}`, whose rows are already stored: holding "
+                f"the carrier moves its keys ({moved}), a migration this move does not carry"
             )
-        return geometry.physical_edits(
-            file_path=source_path,
-            replacements=replacements,
-            rationale=self.rationale
-            or (
-                f"Replace projected fields on {target.qualname!r} with carrier "
-                f"field {self.carrier_field_name!r}."
-            ),
+
+    def require_concrete_carrier(
+        self, context: CodemodSourceSnapshot, field: AnsweredField, file_path: str
+    ) -> None:
+        """The held field must be rebuildable from what the record stores: a record
+        typed by an abstract class with members cannot say which member it held, so
+        any decoder of the record (a wire reply, a stored row) fails on it."""
+
+        declaration = self.carrier_field.parsed_field_statement
+        assert isinstance(declaration, ast.AnnAssign)
+        annotation = declaration.annotation
+        if not isinstance(annotation, ast.Name):
+            return
+        binding = field.named_class(
+            file_path, annotation.id, (context.module_nodes_by_file_path[file_path],)
         )
+        if binding is None:
+            return
+        compact = context.compact_class_index
+        carrier = compact.classes_by_symbol.get(binding.symbol)
+        members = compact.descendant_symbols(binding.symbol)
+        if carrier is not None and carrier.is_abstract and members:
+            raise ValueError(
+                f"`{annotation.id}` is abstract with members {sorted(members)!r}: a record "
+                "holding it cannot be decoded back to the member it held"
+            )
+
+    def construction_replacements(
+        self, call: ast.Call, geometry: SourceTextGeometry, file_path: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """One construction with its projected keywords replaced by the carrier: line
+        by line when each keyword owns its line, else the argument list in place."""
+
+        where = f"{file_path}:{call.lineno}"
+        if call.args:
+            raise ValueError(f"{where} constructs the class by position; keyword it first")
+        projected = tuple(keyword for keyword in call.keywords if keyword.arg in self.field_projection_map)
+        if len(projected) != len(self.field_projection_map):
+            raise ValueError(f"{where} does not pass every projected field")
+        carrier = self.projected_keyword_carrier_source(projected, geometry)
+        if carrier is None:
+            raise ValueError(f"{where} does not read every projected field off one carrier value")
+        lines = [keyword.value.lineno for keyword in call.keywords]
+        if len(set(lines)) == len(lines) and call.lineno not in lines:
+            first, *rest = projected
+            indent = geometry.line_indent(self.node_start_offset(geometry, first.value))
+            return (
+                self.line_span_replacement(
+                    geometry, first.value, f"{indent}{self.carrier_field_name}={carrier},\n"
+                ),
+                *(self.line_span_replacement(geometry, keyword.value, "") for keyword in rest),
+            )
+        replacement = self.carrier_argument_list(call, projected, carrier, geometry)
+        if replacement is None:
+            raise ValueError(f"{where} has an argument whose source this edit cannot keep")
+        return (replacement,)
 
     def class_field_replacements(
         self,
@@ -244,58 +359,40 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         )
         return tuple(replacements)
 
-    def constructor_projection_replacements(
+    def carrier_argument_list(
         self,
-        context: CodemodSelectorContext,
-        source_path: str,
-        root: ast.Module,
+        call: ast.Call,
+        projected_keywords: tuple[ast.keyword, ...],
+        carrier_source: str,
         geometry: SourceTextGeometry,
-        *,
-        constructor_symbol: str,
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        replacements: list[SourceTextSpanReplacement] = []
-        parent_index = AstParentIndex.of(root)
-        for call in (node for node in ast.walk(root) if isinstance(node, ast.Call)):
-            nominal_call = NominalConstructorCall.from_context(
-                context,
-                source_path,
-                parent_index.enclosing_function(call),
-                call,
-            )
-            if (
-                nominal_call is None
-                or nominal_call.constructor_symbol != constructor_symbol
-            ):
+    ) -> SourceTextSpanReplacement | None:
+        """The call's arguments with the projected keywords replaced, in place
+        of the first of them, by one carrier keyword."""
+
+        projected = {id(keyword) for keyword in projected_keywords}
+        parts: list[str] = []
+        for argument in call.args:
+            if (segment := geometry.segment_for_node(argument)) is None:
+                return None
+            parts.append(segment)
+        for keyword in call.keywords:
+            if keyword is projected_keywords[0]:
+                parts.append(f"{self.carrier_field_name}={carrier_source}")
                 continue
-            projected_keywords = tuple(
-                keyword
-                for keyword in call.keywords
-                if keyword.arg in self.field_projection_map
-            )
-            if len(projected_keywords) != len(self.field_projection_map):
+            if id(keyword) in projected:
                 continue
-            carrier_source = self.projected_keyword_carrier_source(
-                projected_keywords,
-                geometry,
+            if (segment := geometry.segment_for_node(keyword.value)) is None:
+                return None
+            parts.append(
+                f"**{segment}" if keyword.arg is None else f"{keyword.arg}={segment}"
             )
-            if carrier_source is None:
-                continue
-            first_keyword = projected_keywords[0]
-            replacements.append(
-                self.line_span_replacement(
-                    geometry,
-                    first_keyword.value,
-                    (
-                        f"{geometry.line_indent(self.node_start_offset(geometry, first_keyword.value))}"
-                        f"{self.carrier_field_name}={carrier_source},\n"
-                    ),
-                )
-            )
-            replacements.extend(
-                self.line_span_replacement(geometry, keyword.value, "")
-                for keyword in projected_keywords[1:]
-            )
-        return tuple(replacements)
+        _, func_end = geometry.required_node_offsets(call.func)
+        _, call_end = geometry.required_node_offsets(call)
+        return SourceTextSpanReplacement.from_offsets(
+            start_offset=func_end,
+            end_offset=call_end,
+            replacement_source=f"({', '.join(parts)})",
+        )
 
     def projected_keyword_carrier_source(
         self,
@@ -321,65 +418,6 @@ class ReplaceFieldsWithCarrierOperation(SourceReprovedOperation):
         if len(carrier_sources) != 1:
             return None
         return next(iter(carrier_sources))
-
-    def attribute_projection_replacements(
-        self,
-        context: CodemodSelectorContext,
-        source_path: str,
-        root: ast.Module,
-        geometry: SourceTextGeometry,
-        *,
-        target_symbol: str,
-        covered_lines: tuple[SourceLineSpan, ...],
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        replacements: list[SourceTextSpanReplacement] = []
-        projection_map = self.field_projection_map
-        carrier_field_name = self.carrier_field_name
-        parent_index = AstParentIndex.of(root)
-        module_bindings = ModuleNominalBindingAuthority(
-            context.parsed_module_for_source_path(source_path)
-        )
-        parameter_bindings_by_function: dict[
-            ast.FunctionDef | ast.AsyncFunctionDef,
-            FunctionNominalParameterBindingAuthority,
-        ] = {}
-        for attribute in (
-            node for node in ast.walk(root) if isinstance(node, ast.Attribute)
-        ):
-            carrier_attribute = projection_map.get(attribute.attr)
-            if carrier_attribute is None:
-                continue
-            if SourceNodeSpan(attribute).line_span.overlaps_any(covered_lines):
-                continue
-            function_scope = parent_index.enclosing_function(attribute.value)
-            if not isinstance(attribute.value, ast.Name) or function_scope is None:
-                continue
-            parameter_bindings = parameter_bindings_by_function.setdefault(
-                function_scope,
-                FunctionNominalParameterBindingAuthority(
-                    module_bindings,
-                    function_scope,
-                ),
-            )
-            owner_symbol = parameter_bindings.type_name_for_reference(
-                attribute.value.id
-            )
-            if owner_symbol != target_symbol:
-                continue
-            value_source = geometry.segment_for_node(attribute.value)
-            if value_source is None:
-                continue
-            start_offset, end_offset = geometry.required_node_offsets(attribute)
-            replacements.append(
-                SourceTextSpanReplacement.from_offsets(
-                    start_offset=start_offset,
-                    end_offset=end_offset,
-                    replacement_source=(
-                        f"{value_source}.{carrier_field_name}.{carrier_attribute}"
-                    ),
-                )
-            )
-        return tuple(replacements)
 
     @staticmethod
     def field_name_for_statement(statement: ast.stmt) -> str | None:

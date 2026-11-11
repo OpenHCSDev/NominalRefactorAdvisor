@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import typing
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
@@ -81,6 +82,31 @@ class ModuleImportBindingIdentity(DataclassJsonReport, ABC):
         """Return the from-import member, when this identity has one."""
 
         raise NotImplementedError
+
+    @property
+    def runtime_origin(self) -> tuple[str, str] | None:
+        """The class a deprecated `typing` alias stands for (`typing.Iterable` is
+        `collections.abc.Iterable`), as (module, qualname); None for anything else."""
+
+        if self.module_name != "typing" or self.imported_name is None:
+            return None
+        origin = getattr(typing, self.imported_name, None)
+        origin = getattr(origin, "__origin__", None)
+        if not isinstance(origin, type):
+            return None
+        return (origin.__module__, origin.__qualname__)
+
+    def means_same_object(self, other: ModuleImportBindingIdentity) -> bool:
+        """Whether two imports bind the same runtime object: the same import, or a
+        `typing` alias and the class it stands for."""
+
+        if self == other:
+            return True
+        return (self.runtime_origin or self.own_origin) == (other.runtime_origin or other.own_origin)
+
+    @property
+    def own_origin(self) -> tuple[str, str] | None:
+        return None if self.imported_name is None else (self.module_name, self.imported_name)
 
     def is_destination_declaration(
         self,

@@ -86,6 +86,15 @@ from nominal_refactor_advisor.refactors.class_member_authority import (
     PromoteExactDataclassFieldsToExistingAuthorityOperation as PromoteExactDataclassFieldsToExistingAuthorityOperation,
     PromoteExactLeafMethodsToAncestorOperation as PromoteExactLeafMethodsToAncestorOperation,
 )
+from nominal_refactor_advisor.refactors.capability_guard import (
+    CapabilityGuardToOverrideOperation as CapabilityGuardToOverrideOperation,
+)
+from nominal_refactor_advisor.refactors.capability_requirement import (
+    DeclaredCapabilityRequirementOperation as DeclaredCapabilityRequirementOperation,
+)
+from nominal_refactor_advisor.refactors.carrier_member import (
+    CarrierFieldBecomesMemberOperation as CarrierFieldBecomesMemberOperation,
+)
 from nominal_refactor_advisor.refactors.function_operations import (
     AliasFunctionOperation as AliasFunctionOperation,
     CallExpressionSourcePayload as CallExpressionSourcePayload,
@@ -416,6 +425,7 @@ from nominal_refactor_advisor.codemod_paths import (
     _source_path_candidate_set as _source_path_candidate_set,
 )
 from nominal_refactor_advisor.codemod_payload import (
+    CasePayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -763,7 +773,14 @@ class ReplaceTargetOperation(SourceReprovedOperation):
 
 @dataclass(frozen=True, kw_only=True)
 class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
-    """Compile ordered exact transformations into one current-target rewrite."""
+    """Compile ordered exact transformations into one current-target rewrite.
+
+    `decorators: "include"` widens the patched region to the declaration's
+    decorators, so a patch can edit a decorator's arguments."""
+
+    decorators: type[SourceNodeDecoratorPolicy] = codemod_payload_field(
+        CasePayloadValueCodec(SourceNodeDecoratorPolicy, Exclude), default=Exclude
+    )
 
     def source_edits_from_snapshot(
         self,
@@ -774,6 +791,9 @@ class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
             SourceTargetEditor(
                 snapshot.sources_by_file_path,
                 target_digest,
+                first_line=self.decorators.region_start(
+                    lambda: self.target_node_from_context(snapshot)[2]
+                ),
             ).exact_text_patch(
                 self,
                 rationale=self.rationale
