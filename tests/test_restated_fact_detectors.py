@@ -608,6 +608,20 @@ def test_an_alias_of_a_replacement_under_a_legacy_name_is_a_marker(tmp_path: Pat
     assert "(alias, of load)" in finding.summary
 
 
+def test_a_member_overriding_an_inherited_one_is_dispatch_not_a_forward(tmp_path: Path):
+    source = (
+        "class Base:\n"
+        "    @property\n    def rows(self):\n        return ()\n"
+        "    def paths(self):\n        return ()\n\n\n"
+        "class Decoded(Base):\n"
+        "    def __init__(self, tool):\n        self.tool = tool\n"
+        "    @property\n    def rows(self):\n        return self.tool.rows\n"
+        "    def paths(self):\n        return self.tool.paths()\n"
+        "    @property\n    def name(self):\n        return self.tool.name\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
+
+
 def test_an_annotated_held_class_is_named_without_its_metadata(tmp_path: Path):
     source = (
         "from typing import Annotated\n\n\nclass Facade:\n"

@@ -674,8 +674,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
             raise ValueError(f"{qualname!r} is not declared in {source_path!r}")
         forwarder = _ForwarderBody.of(method, qualname)
         answered = AnsweredMethod(snapshot, source_class, method)
-        if answered.overriding:
-            raise ValueError(f"{answered.overriding!r} override {method_name!r}; inlining skips their dispatch")
+        answered.require_sole_dispatch("inlining it")
         for parsed in snapshot.parsed_modules:
             _MethodNameStrings.require_none(parsed, method_name)
         replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}

@@ -109,8 +109,7 @@ class MovedMethod(AnsweredMethod):
         moved = cls(snapshot, source_class, method, target, receiver_parameter, destination_name)
         if moved.new_name in target.bound_names:
             raise ValueError(f"{target.qualname!r} already binds {moved.new_name!r}")
-        if moved.overriding:
-            raise ValueError(f"{moved.overriding!r} override {method_name!r}; moving it breaks their dispatch")
+        moved.require_sole_dispatch("moving it")
         moved.source, moved.member  # the decorators and the body must both decide the move
         return moved
 

@@ -209,3 +209,32 @@ def test_an_ignored_parameter_is_not_inlined_away(tmp_path: Path) -> None:
     report = _inline(tmp_path).preflight_reports(snapshot)
     assert report[0].status is CodemodPreflightStatus.FAILED
     assert "exactly once" in report[0].message
+
+
+def test_a_forwarder_that_overrides_its_base_is_refused(tmp_path: Path) -> None:
+    """Deleting an override sends every receiver typed as the base to the base's
+    answer, though no call this proof types names the subclass (agent-comms
+    `SystemRecord.compacted_at` over `ClaudeRecord.compacted_at`)."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/records.py",
+        "class Subtype:\n"
+        "    def compacted_at(self) -> tuple:\n        return (1,)\n\n\n"
+        "class Record:\n"
+        "    def compacted_at(self) -> tuple:\n        return ()\n\n\n"
+        "class SystemRecord(Record):\n"
+        "    def __init__(self, subtype: Subtype) -> None:\n        self.subtype = subtype\n\n"
+        "    def compacted_at(self) -> tuple:\n        return self.subtype.compacted_at()\n\n\n"
+        "def read(record: Record) -> tuple:\n    return record.compacted_at()\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = InlineForwarderOperation(
+        target=SourceRewriteTarget(
+            file_path=(tmp_path / "pkg/records.py").as_posix(),
+            qualname="SystemRecord.compacted_at",
+        )
+    )
+    (report,) = operation.preflight_reports(snapshot)
+    assert report.status is CodemodPreflightStatus.FAILED, report
+    assert "overrides ('Record',)" in report.message

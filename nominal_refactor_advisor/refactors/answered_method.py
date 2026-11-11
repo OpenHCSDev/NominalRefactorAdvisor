@@ -73,6 +73,25 @@ class AnsweredMethod:
             if symbol in classes and self.name in _class_node(self.snapshot, symbol).bound_names_of_body
         )
 
+    @cached_property
+    def overridden(self) -> tuple[str, ...]:
+        """What the method itself overrides (the class index's answer)."""
+
+        return self.snapshot.required_class_family_index.overridden_declarations(self.symbol, self.name)
+
+    def require_sole_dispatch(self, verb: str) -> None:
+        """Refuse when the method takes part in dispatch: a descendant overrides it, or
+        it overrides an ancestor. Either way a receiver this proof cannot see reaches it
+        through the MRO, so removing it from this class changes what that call does."""
+
+        if self.overriding:
+            raise ValueError(f"{self.overriding!r} override {self.name!r}; {verb} breaks their dispatch")
+        if self.overridden:
+            raise ValueError(
+                f"{self.symbol}.{self.name} overrides {self.overridden!r}; {verb} sends every "
+                "receiver typed as the base to the base's answer"
+            )
+
     def named_class(self, file_path: str, name: str, scopes: tuple[ast.AST, ...]) -> ClassBinding | None:
         """What a name binds where a call reads it, when that says whether it is the family: a
         family class, another class the scan declares, a module, or an import from outside the

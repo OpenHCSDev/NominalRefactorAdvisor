@@ -667,7 +667,15 @@ class LegacyPathMarkerDetector(
         )
 
 
-class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
+def _class_family_index(
+    projections_by_family: CompactProjectionGroups,
+) -> CompactClassFamilyIndex:
+    return CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+
+
+class ForwardingFacadeDetector(
+    JoinedRestatedFactDetector[CompactClassFamilyIndex, RestatingSite]
+):
     """A class holding an object in an attribute, with members that only forward to it.
 
     It stands beside `RepeatedPropertyAliasHookDetector` and does not subsume it:
@@ -677,7 +685,11 @@ class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
     class (a different fact, owned by the held class).
     """
 
-    module_projection_family = ForwardingFacadeSiteFamily
+    module_projection_families = (
+        ForwardingFacadeSiteFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(_class_family_index)
     restated = RestatedFact(
         fact="The forwarding members restate the held class's attribute and method set, so they silently go stale when the held class changes.",
         owner="The owner is the held class: consumers read it directly, or the facade is-a held class and inherits it.",
@@ -700,7 +712,18 @@ class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
             if site.detail[0] != ForwardingFacadeSiteFamily.CLASS_SITE
         ]
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def restates(self, site: RestatingSite, context: CompactClassFamilyIndex) -> bool:
+        """A member that overrides what an ancestor declares is the family's dispatch,
+        not a forward: a receiver typed as the ancestor reaches it through the MRO."""
+
+        if site.detail[0] == ForwardingFacadeSiteFamily.CLASS_SITE:
+            return True
+        return not _overrides_inherited(context, site.file_path, site.symbol, site.detail[0])
+
+    def admits(self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex) -> bool:
+        return len(self.forwards(sites)) >= ForwardingFacadeSiteFamily.MIN_FORWARDS
+
+    def describe(self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex) -> str:
         facade = sites[0]
         held_class = facade.detail[1]
         resolved = (
@@ -717,7 +740,7 @@ class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
         )
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: None
+        self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
     ) -> tuple[SourceLocation, ...]:
         facade, *members = sites
         return (
@@ -731,9 +754,19 @@ class ForwardingFacadeDetector(SingleFamilyRestatedFactDetector):
         )
 
     def finding_context(
-        self, sites: Sequence[RestatingSite], context: None
+        self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
     ) -> dict[str, object]:
         return {"metrics": ForwardingFacadeMetrics(len(self.forwards(sites)))}
+
+
+def _overrides_inherited(
+    index: CompactClassFamilyIndex, file_path: str, qualname: str, member: str
+) -> bool:
+    """Whether the member overrides a declaration the class inherits; a class the
+    index does not know is not proven free of one."""
+
+    symbol = index.symbol_for(file_path=file_path, qualname=qualname)
+    return symbol is None or bool(index.overridden_declarations(symbol, member))
 
 
 class DeadModuleDetector(JoinedRestatedFactDetector[UnreachedModules, RestatingSite]):
