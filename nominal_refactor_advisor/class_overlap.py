@@ -841,7 +841,7 @@ class ClassOverlapVerdicts:
                 *self._kept_difference_receipts(overlap),
                 *self._consumer_receipts(first, second),
                 *self._family_receipts(first, second),
-                *self._construction_receipts(first, second),
+                *self._construction_receipts(first, second, move),
                 *self._identity_receipts(owner, restating, move),
                 *self._positional_construction_receipts(
                     move, (first, second)
@@ -1226,7 +1226,9 @@ class ClassOverlapVerdicts:
 
     @staticmethod
     def _construction_receipts(
-        first: CompactIndexedClass, second: CompactIndexedClass
+        first: CompactIndexedClass,
+        second: CompactIndexedClass,
+        move: type[ClassOverlapMove] | None = None,
     ) -> tuple[Receipt, ...]:
         if _construction(first) == _construction(second):
             return (
@@ -1256,7 +1258,19 @@ class ClassOverlapVerdicts:
             != second.class_decorators_are_promotion_safe
         ):
             differences.append("decorator safety")
-        detail = ", ".join(differences) if differences else "class creation"
+        if not differences:
+            differences.append("class creation")
+        if move is ExtractMixin and all(
+            d.startswith("class keywords") for d in differences
+        ):
+            return (
+                Receipt(
+                    OverlapReceiptKind.SAME_CONSTRUCTION,
+                    "class keywords differ but a new mixin does not inherit them",
+                    (_location(first), _location(second)),
+                ),
+            )
+        detail = ", ".join(differences)
         return (
             Receipt(
                 OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
