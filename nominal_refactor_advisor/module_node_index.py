@@ -56,6 +56,7 @@ class ModuleNodeIndex(ParsedModuleFact):
     parents: AstParentIndex = field(repr=False)
     loads: Counter[str] = field(repr=False)
     attribute_bases: frozenset[str]
+    attributes_by_attr: dict[str, tuple[ast.Attribute, ...]] = field(repr=False)
     bound_name_counts: Counter[str] = field(repr=False)
     binding_sites: dict[str, tuple[ast.AST, ...]] = field(repr=False)
     identifier_text: str = field(repr=False)
@@ -69,6 +70,7 @@ class ModuleNodeIndex(ParsedModuleFact):
         parents = parsed_module.syntax_index.parent_index
         loads: Counter[str] = Counter()
         attribute_bases: set[str] = set()
+        attributes_by_attr: dict[str, list[ast.Attribute]] = {}
         bound: Counter[str] = Counter()
         package_heads: set[str] = set()
         sites: dict[str, list[ast.AST]] = {}
@@ -116,8 +118,11 @@ class ModuleNodeIndex(ParsedModuleFact):
                     else:
                         bound[name] += 1
                         sites.setdefault(name, []).append(node)
-                case ast.Attribute(value=ast.Name(id=name)):
+                case ast.Attribute(attr=attr_name, value=ast.Name(id=name)):
                     attribute_bases.add(name)
+                    attributes_by_attr.setdefault(attr_name, []).append(node)
+                case ast.Attribute(attr=attr_name) if not isinstance(node.value, ast.Name):
+                    attributes_by_attr.setdefault(attr_name, []).append(node)
         bound.update(package_heads)
         return cls(
             module=parsed_module.module,
@@ -128,6 +133,9 @@ class ModuleNodeIndex(ParsedModuleFact):
             parents=parents,
             loads=loads,
             attribute_bases=frozenset(attribute_bases),
+            attributes_by_attr={
+                name: tuple(nodes) for name, nodes in attributes_by_attr.items()
+            },
             bound_name_counts=bound,
             binding_sites={name: tuple(nodes) for name, nodes in sites.items()},
             identifier_text=(

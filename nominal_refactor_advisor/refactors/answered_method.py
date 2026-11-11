@@ -207,15 +207,18 @@ class AnsweredMethod:
         for parsed in snapshot.parsed_modules:
             if self.name not in parsed.source:
                 continue
-            parents = parsed.fact(ModuleNodeIndex).parents
-            for node in ast.walk(parsed.module):
-                where = f"{parsed.file_path}:{getattr(node, 'lineno', 0)}"
-                if _dynamic_access(node, self.name):
-                    raise ValueError(f"{where} reaches {self.name!r} by a string")
-                if node is self.method or not (
-                    isinstance(node, ast.Attribute) and node.attr == self.name
-                ):
+            index = parsed.fact(ModuleNodeIndex)
+            parents = index.parents
+            for call in index.calls:
+                if _dynamic_access(call, self.name):
+                    raise ValueError(
+                        f"{parsed.file_path}:{call.lineno} "
+                        f"reaches {self.name!r} by a string"
+                    )
+            for node in index.attributes_by_attr.get(self.name, ()):
+                if node is self.method:
                     continue
+                where = f"{parsed.file_path}:{node.lineno}"
                 parent = parents.get(node)
                 site = MethodReference(
                     parsed.file_path, node,
