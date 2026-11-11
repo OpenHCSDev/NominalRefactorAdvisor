@@ -433,9 +433,12 @@ and clean them after workers exit, retaining recipes and validation evidence.
    threads it through `answering_calls()` and `_MethodNameStrings.require_none()`.
    20 inline_forwarder tests pass in 31.56 s.
 
-9. **Trajectory search collision (874c54b3).** Two offset-span edit conflicts
-   in `replacements_in_span` (same-span-different-source and overlapping
-   spans) raised bare `ValueError`, which escaped the trajectory search's
-   `PhysicalSourceEditConflictError` catch block and crashed the run. The
-   line-span counterpart at `_coalesced_group:729` already raised the typed
-   error; these two were the oversight.
+9. **Trajectory search collision (874c54b3, f76a3b8e).** Five bare
+   `ValueError`s on the simulation path escaped the trajectory search's
+   `PhysicalSourceEditConflictError` catch block and crashed the run:
+   same-span-different-source and overlapping spans in
+   `replacements_in_span`, plus "both edited and carried", "read different
+   texts" and "overlap at offset" in `TextFileChange.rewrites` /
+   `TextFileEdit.folded`. The line-span counterpart at
+   `_coalesced_group:729` already raised the typed error; these five
+   were the oversight.

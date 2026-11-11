@@ -51,6 +51,9 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanReplacement,
     SourceTextGeometry,
     SourceTextSpanReplacement,
+    TextFileChange,
+    TextFileCreation,
+    TextFileEdit,
 )
 from nominal_refactor_advisor.codemod_spacing import (
     DestinationInsertionSpacing,
@@ -973,3 +976,68 @@ def test_overlapping_offset_replacements_raise_edit_conflict() -> None:
     )
     with pytest.raises(PhysicalSourceEditConflictError, match="overlap"):
         geometry.replacements_in_span(0, len(source), replacements)
+
+
+def test_text_file_edits_reading_different_sources_raise_edit_conflict() -> None:
+    """Two TextFileEdits of one file that read different source texts is a conflict."""
+
+    from nominal_refactor_advisor.refactors.module_move import RelocateSymbolsToModuleOperation
+
+    op = RelocateSymbolsToModuleOperation
+    edits = (
+        TextFileEdit(
+            operation_type=op, file_path="pyproject.toml", rationale="a",
+            source="[project]\nname = 'old'\n",
+            replacements=(SourceTextSpanReplacement.from_offsets(start_offset=18, end_offset=21, replacement_source="new"),),
+        ),
+        TextFileEdit(
+            operation_type=op, file_path="pyproject.toml", rationale="b",
+            source="[project]\nname = 'other'\n",
+            replacements=(SourceTextSpanReplacement.from_offsets(start_offset=18, end_offset=23, replacement_source="new"),),
+        ),
+    )
+    with pytest.raises(PhysicalSourceEditConflictError, match="different texts"):
+        TextFileEdit.folded(edits)
+
+
+def test_text_file_edits_with_overlapping_spans_raise_edit_conflict() -> None:
+    """Two TextFileEdits of one file whose replacement spans overlap is a conflict."""
+
+    from nominal_refactor_advisor.refactors.module_move import RelocateSymbolsToModuleOperation
+
+    op = RelocateSymbolsToModuleOperation
+    source = "[project]\nname = 'old'\nversion = '1.0'\n"
+    edits = (
+        TextFileEdit(
+            operation_type=op, file_path="pyproject.toml", rationale="a",
+            source=source,
+            replacements=(SourceTextSpanReplacement.from_offsets(start_offset=10, end_offset=25, replacement_source="x"),),
+        ),
+        TextFileEdit(
+            operation_type=op, file_path="pyproject.toml", rationale="b",
+            source=source,
+            replacements=(SourceTextSpanReplacement.from_offsets(start_offset=20, end_offset=35, replacement_source="y"),),
+        ),
+    )
+    with pytest.raises(PhysicalSourceEditConflictError, match="overlap"):
+        TextFileEdit.folded(edits)
+
+
+def test_text_file_both_edited_and_carried_raises_edit_conflict() -> None:
+    """A file that is both edited and carried (two different TextFileChange kinds)
+    raises a conflict, not a bare ValueError."""
+
+    from nominal_refactor_advisor.refactors.module_move import RelocateSymbolsToModuleOperation
+
+    op = RelocateSymbolsToModuleOperation
+    edit = TextFileEdit(
+        operation_type=op, file_path="pyproject.toml", rationale="a",
+        source="[project]\n",
+        replacements=(SourceTextSpanReplacement.from_offsets(start_offset=0, end_offset=9, replacement_source="[tool]"),),
+    )
+    creation = TextFileCreation(
+        operation_type=op, file_path="pyproject.toml", rationale="b",
+        text="[tool]\n",
+    )
+    with pytest.raises(PhysicalSourceEditConflictError, match="both edited and carried"):
+        TextFileChange.rewrites([edit, creation])
