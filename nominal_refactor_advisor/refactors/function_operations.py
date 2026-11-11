@@ -16,6 +16,10 @@ from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod,
     AnsweredProperty,
 )
+from nominal_refactor_advisor.type_checker_session import (
+    SourceTexts,
+    TypeCheckerSession,
+)
 from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC,
@@ -762,41 +766,45 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
         forwarder = prop or _ForwarderBody.of(method, qualname)
         answered = (AnsweredMethod if prop is None else AnsweredProperty)(snapshot, source_class, method)
         answered.require_sole_dispatch("inlining it")
-        _MethodNameStrings.require_none(answered)
-        replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
-        for call in answered.answering_calls():
-            parents = snapshot.parsed_module_for_source_path(call.file_path).fact(ModuleNodeIndex).parents
-            if not forwarder.returns and forwarder.value_used(call.node, parents):
-                raise ValueError(f"{call.where} uses the value of {method_name!r}, which returns None")
-            replacements.setdefault(call.file_path, []).append(
-                (call.node, forwarder.inlined(call.node, call.attribute.value, call.file_path))
-            )
-        callee = _ForwardedNames(snapshot, source_path, forwarder)
-        edits: list[NominalSourceEdit] = []
-        for file_path, file_replacements in replacements.items():
-            geometry = SourceTextGeometry(snapshot.sources_by_file_path[file_path])
-            edits.append(
-                geometry.nominal_edit(
-                    file_path=file_path,
-                    replacements=tuple(
-                        SourceTextSpanReplacement.from_offsets(
-                            start_offset=start,
-                            end_offset=end,
-                            replacement_source=replacement,
-                        )
-                        for node, replacement in file_replacements
-                        for start, end in (
-                            method_deletion_offsets(geometry, node)
-                            if node is method
-                            else geometry.required_node_offsets(node),
-                        )
-                    ),
-                    rationale=self.rationale or f"Inline the forwarder {qualname!r}.",
+        session = TypeCheckerSession.started(SourceTexts(snapshot.parsed_modules))
+        try:
+            _MethodNameStrings.require_none(answered, session)
+            replacements: dict[str, list[tuple[ast.AST, str]]] = {source_path: [(method, "")]}
+            for call in answered.answering_calls(session):
+                parents = snapshot.parsed_module_for_source_path(call.file_path).fact(ModuleNodeIndex).parents
+                if not forwarder.returns and forwarder.value_used(call.node, parents):
+                    raise ValueError(f"{call.where} uses the value of {method_name!r}, which returns None")
+                replacements.setdefault(call.file_path, []).append(
+                    (call.node, forwarder.inlined(call.node, call.attribute.value, call.file_path))
                 )
-            )
-            if any(node is not method for node, _replacement in file_replacements):
-                edits.extend(callee.imports_into(file_path))
-        edits.extend(imports_only_read_by(snapshot.module_nodes_by_file_path[source_path], source_path, method))
+            callee = _ForwardedNames(snapshot, source_path, forwarder)
+            edits: list[NominalSourceEdit] = []
+            for file_path, file_replacements in replacements.items():
+                geometry = SourceTextGeometry(snapshot.sources_by_file_path[file_path])
+                edits.append(
+                    geometry.nominal_edit(
+                        file_path=file_path,
+                        replacements=tuple(
+                            SourceTextSpanReplacement.from_offsets(
+                                start_offset=start,
+                                end_offset=end,
+                                replacement_source=replacement,
+                            )
+                            for node, replacement in file_replacements
+                            for start, end in (
+                                method_deletion_offsets(geometry, node)
+                                if node is method
+                                else geometry.required_node_offsets(node),
+                            )
+                        ),
+                        rationale=self.rationale or f"Inline the forwarder {qualname!r}.",
+                    )
+                )
+                if any(node is not method for node, _replacement in file_replacements):
+                    edits.extend(callee.imports_into(file_path))
+            edits.extend(imports_only_read_by(snapshot.module_nodes_by_file_path[source_path], source_path, method))
+        finally:
+            session.stop()
         return tuple(edits)
 
 
@@ -808,7 +816,10 @@ class _MethodNameStrings:
     of words, a wire key) and outlives the method harmlessly."""
 
     @staticmethod
-    def require_none(answered: AnsweredMethod) -> None:
+    def require_none(
+        answered: AnsweredMethod,
+        session: TypeCheckerSession | None = None,
+    ) -> None:
         name = answered.name
         for parsed in answered.snapshot.parsed_modules:
             if name not in parsed.source:
@@ -817,7 +828,7 @@ class _MethodNameStrings:
             for node in index.string_constants:
                 if node.value != name or _MethodNameStrings.docstring(node, index.parents):
                     continue
-                lookup = answered.lookup_reaching_family()
+                lookup = answered.lookup_reaching_family(session)
                 if lookup is not None:
                     raise ValueError(
                         f"{parsed.file_path!r}:{node.lineno} names {name!r} in a string, and "
