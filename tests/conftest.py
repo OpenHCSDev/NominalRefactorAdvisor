@@ -116,7 +116,11 @@ def _isolated_default_advisor_cache() -> Iterator[None]:
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     """`-n auto` takes the cores nobody else is using.
 
-    The suite shares its machine with other agents' runs. One-minute load average counts
-    the runnable processes already competing, so the free cores are the CPUs minus that
-    load, never fewer than one worker; `--maxprocesses` still caps the result."""
-    return max(1, (os.cpu_count() or 1) - round(os.getloadavg()[0]))
+    The suite shares its machine with other agents' runs, so the free cores are the CPUs
+    minus the processes runnable right now, never fewer than one worker;
+    `--maxprocesses` still caps the result. The kernel's instantaneous runnable count
+    (`/proc/loadavg`, field four, which includes this process) is the competition; the
+    one-minute average also counts work that already finished, such as the dependency
+    install before a CI run, which left a fresh 4-core runner with 3 workers."""
+    running, _, _ = Path("/proc/loadavg").read_text().split()[3].partition("/")
+    return max(1, (os.cpu_count() or 1) - (int(running) - 1))
