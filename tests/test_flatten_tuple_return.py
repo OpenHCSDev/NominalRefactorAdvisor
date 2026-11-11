@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -104,6 +102,55 @@ def test_for_loop_reader_becomes_if_walrus(tmp_path: Path) -> None:
     rewritten = simulation.simulation.rewritten_sources.get(consumer_path, "")
     assert "if (message := v.warning()) is not None:" in rewritten
     assert "for message in v.warning():" not in rewritten
+
+
+def test_next_iter_reader_collapses(tmp_path: Path) -> None:
+    """``next(iter(v.warning()), None)`` → ``v.warning()``"""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "base.py").write_text(BASE)
+    (package / "strict.py").write_text(STRICT)
+    (package / "consumer.py").write_text(
+        "from pkg.base import Validator\n\n\n"
+        "def first_warning(v: Validator) -> str | None:\n"
+        "    return next(iter(v.warning()), None)\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _operation(tmp_path)
+    recipe = RefactorRecipe(recipe_id="test", operations=(operation,))
+    document = CodemodPlanDocument(recipes=(recipe,))
+    simulation = document.simulate(snapshot)
+    consumer_path = (tmp_path / "pkg/consumer.py").as_posix()
+    rewritten = simulation.simulation.rewritten_sources.get(consumer_path, "")
+    assert "next(iter(" not in rewritten
+    assert "v.warning()" in rewritten
+
+
+def test_truthiness_reader_passes_through(tmp_path: Path) -> None:
+    """``if v.warning():`` stays unchanged — None is already falsy."""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "base.py").write_text(BASE)
+    (package / "strict.py").write_text(STRICT)
+    (package / "consumer.py").write_text(
+        "from pkg.base import Validator\n\n\n"
+        "def has_warning(v: Validator) -> bool:\n"
+        "    if v.warning():\n"
+        "        return True\n"
+        "    return False\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _operation(tmp_path)
+    recipe = RefactorRecipe(recipe_id="test", operations=(operation,))
+    document = CodemodPlanDocument(recipes=(recipe,))
+    simulation = document.simulate(snapshot)
+    consumer_path = (tmp_path / "pkg/consumer.py").as_posix()
+    rewritten = simulation.simulation.rewritten_sources.get(
+        consumer_path, snapshot.sources_by_file_path[consumer_path]
+    )
+    assert "if v.warning():" in rewritten
 
 
 def test_annotation_flattens(tmp_path: Path) -> None:
