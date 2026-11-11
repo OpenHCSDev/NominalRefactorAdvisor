@@ -17523,8 +17523,51 @@ def test_codemod_simulation_presents_operation_preflight_failure_report(
         CodemodExecutionMode.SIMULATE,
     ).execute(snapshot, presenter)
 
-    report = presenter.present_operation_preflight_failure.call_args.args[0]
-    assert report.operation == "move_symbols_to_module"
+    error = presenter.present_operation_preflight_failure.call_args.args[0]
+    assert error.report.operation == "move_symbols_to_module"
+    assert exit_code == 1
+
+
+def test_codemod_simulation_reports_every_refused_recipe_in_one_run(
+    tmp_path: Path,
+) -> None:
+    """A batch whose recipes each refuse names all of them, not the first alone,
+    so one run is enough to fix every refusal."""
+
+    source_path = tmp_path / "pkg/source.py"
+    _write_module(
+        tmp_path,
+        "pkg/source.py",
+        "class LocalBase:\n    pass\n\n\nclass Helper(LocalBase):\n    pass\n\n\n"
+        "class Other(LocalBase):\n    pass\n",
+    )
+    _write_module(tmp_path, "pkg/destination.py", "")
+    _write_module(tmp_path, "pkg/elsewhere.py", "")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    sequence = CodemodPlanSequence.from_document(
+        CodemodPlanDocument(
+            recipes=tuple(
+                RefactorRecipe(f"move-{name.lower()}-only").with_operation(
+                    MoveSymbolsToModuleOperation(
+                        target=SourceRewriteTarget(file_path=source_path.as_posix()),
+                        symbol_qualnames=(name,),
+                        destination_path=(tmp_path / f"pkg/{destination}.py").as_posix(),
+                    )
+                )
+                for name, destination in (("Helper", "destination"), ("Other", "elsewhere"))
+            )
+        )
+    )
+
+    presenter = Mock(spec=CodemodPlanExecutionPresenter)
+    exit_code = CodemodPlanExecutionRequest(
+        sequence,
+        CodemodExecutionMode.SIMULATE,
+    ).execute(snapshot, presenter)
+
+    error = presenter.present_operation_preflight_failure.call_args.args[0]
+    assert [report.operation for report in error.reports] == ["move_symbols_to_module"] * 2
+    assert "Helper" in str(error) and "Other" in str(error)
     assert exit_code == 1
 
 
@@ -18108,7 +18151,10 @@ def test_module_cli_apply_cannot_bypass_authority_preflight(
     assert result.returncode == 1
     assert payload["preflight_failed"] is True
     assert payload["applied"] is False
-    assert payload["preflight_report"]["operation"] == "authority_claims"
+    (refused,) = (
+        report for report in payload["preflight_report"]["reports"] if report["status"] == "failed"
+    )
+    assert refused["operation"] == "authority_claims"
     assert module_path.read_text() == original_source
 
 
@@ -19170,11 +19216,11 @@ def test_module_cli_reports_multi_symbol_move_preflight_failure_from_stdin(
     assert result.stderr == ""
     assert payload["preflight_failed"] is True
     assert payload["applied"] is False
-    assert payload["preflight_report"]["operation"] == "move_symbols_to_module"
-    assert payload["preflight_report"]["status"] == "failed"
-    assert payload["preflight_report"]["details"]["source_local_dependency_names"] == [
-        "LocalBase"
-    ]
+    (refused,) = (
+        report for report in payload["preflight_report"]["reports"] if report["status"] == "failed"
+    )
+    assert refused["operation"] == "move_symbols_to_module"
+    assert refused["details"]["source_local_dependency_names"] == ["LocalBase"]
     assert "class Helper" in source_path.read_text()
 
 

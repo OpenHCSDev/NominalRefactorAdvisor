@@ -659,20 +659,27 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def edit_batch_for_recipes(
         self, recipes: Iterable[RefactorRecipe]
     ) -> NominalEditBatch:
-        """Derive original edit records once under this compiler's source context."""
-        return NominalEditBatch(
-            self,
-            tuple(
-                edit
-                for recipe in recipes
-                for index, operation in enumerate(recipe.operations)
-                for edit in operation.originated_edits(
-                    self,
-                    recipe_id=recipe.recipe_id,
-                    plan_item_index=index,
+        """Derive original edit records once under this compiler's source context.
+
+        Each recipe's edits derive from this one context, so a recipe that refuses
+        stops no other: every refusal is collected and raised together."""
+        edits: list[NominalSourceEdit] = []
+        refused: list[CodemodOperationPreflightReport] = []
+        for recipe in recipes:
+            try:
+                edits.extend(
+                    edit
+                    for index, operation in enumerate(recipe.operations)
+                    for edit in operation.originated_edits(
+                        self,
+                        recipe_id=recipe.recipe_id,
+                        plan_item_index=index,
+                    )
                 )
-            ),
-        )
+            except CodemodOperationPreflightError as error:
+                refused.extend(error.reports)
+        CodemodPlanPreflightReport(tuple(refused)).require_clean()
+        return NominalEditBatch(self, tuple(edits))
 
     def planned_rewrites_for_recipes(
         self,
@@ -1334,7 +1341,7 @@ class CodemodPlanDocumentPreflight:
                 candidate.planned_rewrites
                 edit_batch = candidate
             except CodemodOperationPreflightError as error:
-                report = CodemodPlanPreflightReport((*report.reports, error.report))
+                report = CodemodPlanPreflightReport((*report.reports, *error.reports))
         return cls(
             document=document,
             base_snapshot=snapshot,
