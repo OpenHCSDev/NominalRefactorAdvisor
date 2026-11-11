@@ -202,8 +202,11 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
                 replacements.setdefault(parsed.file_path, []).extend(
                     self.construction_replacements(call, geometry(parsed.file_path), parsed.file_path)
                 )
+        reached = fields[0].reaching([reference for field in fields for reference in field.references()])
         for field in fields:
-            for use in field.answering_calls():
+            for use in field.answered_uses(
+                [(receiver, binding) for receiver, binding in reached if receiver.site.attribute.attr == field.name]
+            ):
                 if not isinstance(use.attribute.ctx, ast.Load):
                     raise ValueError(f"{use.where} writes the projected field {field.name!r}")
                 start, end = geometry(use.file_path).required_node_offsets(use.attribute)

@@ -179,6 +179,27 @@ class AnsweredMethod:
         """The uses the member answers, each receiver typed by the class binding, the
         declarations or the checker."""
 
+        return self.answered_uses(self.reaching(self.references()))
+
+    def answered_uses(
+        self, reached: Sequence[tuple[TypedReceiver, ReceiverBinding]]
+    ) -> tuple[AnsweredUse, ...]:
+        """The reached references as uses the member answers; one nested in another refuses."""
+
+        answering = [self.answer(receiver.site, binding) for receiver, binding in reached if receiver.site]
+        nested = [
+            site for site in answering
+            for other in answering
+            if other is not site and other.node in ast.walk(site.node)
+        ]
+        if nested:
+            raise ValueError(f"{nested[0].where} nests one answered use inside another")
+        return tuple(answering)
+
+    def references(self) -> list[TypedReceiver]:
+        """Every attribute reference spelling the member's name, each with its receiver
+        to type; a string reaching it or a `super()` read from the family refuses."""
+
         snapshot = self.snapshot
         receivers: list[TypedReceiver] = []
         for parsed in snapshot.parsed_modules:
@@ -205,15 +226,7 @@ class AnsweredMethod:
                         raise ValueError(f"{where} reaches {self.name!r} through super()")
                     continue
                 receivers.append(TypedReceiver(parsed, node.value, node, where, site))
-        answering = [self.answer(receiver.site, binding) for receiver, binding in self.reaching(receivers)]
-        nested = [
-            site for site in answering
-            for other in answering
-            if other is not site and other.node in ast.walk(site.node)
-        ]
-        if nested:
-            raise ValueError(f"{nested[0].where} nests one answered use inside another")
-        return tuple(answering)
+        return receivers
 
     def reaching(
         self, receivers: Sequence[TypedReceiver]
