@@ -127,3 +127,51 @@ def test_a_family_member_reaching_no_answer_is_refused(tmp_path: Path) -> None:
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="reaches neither"):
         operation.source_edits(snapshot)
+
+
+PHASES = (
+    "class MaintenancePhase:\n    pass\n\n\n"
+    "class DrainingPhase(MaintenancePhase):\n    pass\n\n\n"
+    "class HeldPhase(MaintenancePhase):\n    pass\n\n\n"
+    "class MaintenanceState:\n"
+    "    phase: type[MaintenancePhase]\n\n"
+    "    def __init__(self, phase: type[MaintenancePhase]) -> None:\n        self.phase = phase\n\n"
+    "    def require_draining(self) -> None:\n"
+    "        if self.phase is not DrainingPhase:\n"
+    "            raise ValueError('Only an acquired draining phase can be cleared')\n"
+)
+
+
+def _phases(root: Path, source: str = PHASES) -> CapabilityGuardToOverrideOperation:
+    (root / "pkg").mkdir(exist_ok=True)
+    (root / "pkg/__init__.py").write_text("")
+    (root / "pkg/phases.py").write_text(source)
+    path = (root / "pkg/phases.py").as_posix()
+    return CapabilityGuardToOverrideOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="MaintenanceState.require_draining"),
+        base=SourceRewriteTarget(file_path=path, qualname="MaintenancePhase"),
+        method_name="require_draining",
+    )
+
+
+def test_a_guard_on_a_field_s_class_is_asked_of_that_class(tmp_path: Path) -> None:
+    """agent-comms MaintenanceState.require_draining: `self.phase is not DrainingPhase`."""
+    probe = (
+        "from pkg.phases import DrainingPhase, HeldPhase, MaintenanceState\n"
+        "MaintenanceState(DrainingPhase).require_draining()\n"
+        "try:\n    MaintenanceState(HeldPhase).require_draining()\nexcept ValueError as error:\n    print(error)\n"
+    )
+    operation = _phases(tmp_path)
+    before = _run(tmp_path, probe)
+    _apply(tmp_path, operation)
+    source = (tmp_path / "pkg/phases.py").read_text()
+    assert "        self.phase.require_draining()\n" in source
+    assert " is not " not in source
+    assert _run(tmp_path, probe) == before
+
+
+def test_an_exact_class_test_with_descendants_is_refused(tmp_path: Path) -> None:
+    operation = _phases(tmp_path, PHASES + "\n\nclass LateDraining(DrainingPhase):\n    pass\n")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="descend from it"):
+        operation.source_edits(snapshot)

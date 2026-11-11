@@ -37,15 +37,19 @@ from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
 
 @dataclass(frozen=True)
 class CapabilityGuard:
-    """`if not issubclass(subject, Capability): raise ...` (or `isinstance`) as one
-    statement of a function, read once from its source."""
+    """One statement of a function that refuses a value lacking a capability, read
+    once from its source: `if not issubclass(x, C): raise ...`, `if not
+    isinstance(x, C): raise ...` or `if x is not C: raise ...`, where `x` is a name
+    or an attribute of the function's own receiver."""
 
     statement: ast.If
-    subject: ast.Name
+    subject: ast.expr
     capability: ast.expr
     raised: ast.Raise
     on_class: bool
-    """Whether the subject is a class (issubclass) rather than an instance."""
+    """Whether the subject is a class rather than an instance."""
+    exact: bool
+    """Whether the test is the class itself (`is not`) rather than a subclass."""
 
     @classmethod
     def in_function(cls, function: ast.FunctionDef | ast.AsyncFunctionDef) -> CapabilityGuard:
@@ -56,26 +60,38 @@ class CapabilityGuard:
                         op=ast.Not(),
                         operand=ast.Call(
                             func=ast.Name(id="issubclass" | "isinstance" as test),
-                            args=[ast.Name() as subject, capability],
+                            args=[(ast.Name() | ast.Attribute()) as subject, capability],
                             keywords=[],
                         ),
                     ),
                     body=[ast.Raise() as raised],
                     orelse=[],
                 ):
-                    return cls(statement, subject, capability, raised, test == "issubclass")
+                    return cls(statement, subject, capability, raised, test == "issubclass", False)
+                case ast.If(
+                    test=ast.Compare(
+                        left=(ast.Name() | ast.Attribute()) as subject,
+                        ops=[ast.IsNot()],
+                        comparators=[capability],
+                    ),
+                    body=[ast.Raise() as raised],
+                    orelse=[],
+                ):
+                    return cls(statement, subject, capability, raised, True, True)
         raise ValueError(
-            f"`{function.name}` has no `if not issubclass(x, C): raise` guard at its top level"
+            f"`{function.name}` has no capability guard that raises at its top level"
         )
 
     def raised_on(self, receiver: str) -> str:
         """The raise with the subject read as the method's own receiver."""
 
-        subject = self.subject.id
+        subject = ast.dump(self.subject)
 
         class Receiver(ast.NodeTransformer):
-            def visit_Name(self, node: ast.Name) -> ast.expr:
-                return ast.Name(id=receiver, ctx=node.ctx) if node.id == subject else node
+            def visit(self, node: ast.AST) -> ast.AST:
+                if isinstance(node, ast.expr) and ast.dump(node) == subject:
+                    return ast.Name(id=receiver, ctx=ast.Load())
+                return super().visit(node)
 
         return ast.unparse(Receiver().visit(copy.deepcopy(self.raised)))
 
@@ -153,6 +169,13 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
             raise ValueError(f"`{ast.unparse(guard.capability)}` is not a class the scan declares")
         subject = self.subject_family(snapshot, base_answer, owner, function, guard, parents, source_path)
         base_symbol = base.required_symbol(snapshot)
+        if guard.exact:
+            below = subject & frozenset(snapshot.required_class_family_index.descendant_symbols(capability))
+            if below:
+                raise ValueError(
+                    f"the guard tests `{ast.unparse(guard.capability)}` itself, and {sorted(below)!r} "
+                    "descend from it: an override would let them pass"
+                )
         self.require_dispatch(snapshot, subject, base_symbol, capability)
         capability_class = ResolvedClassTarget.from_rewrite_target(
             snapshot, self.class_target(snapshot, capability)
@@ -184,7 +207,7 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
             if self.method_name in base.bound_names:
                 raise ValueError(f"`{base.qualname}` already binds {self.method_name!r}")
             start, end = geometry(source_path).required_node_offsets(guard.statement)
-            add(source_path, start, end, f"{guard.subject.id}.{self.method_name}()")
+            add(source_path, start, end, f"{ast.unparse(guard.subject)}.{self.method_name}()")
             raised = guard.raised_on(receiver)
             add(base.file_path, *self.appended(
                 geometry(base.file_path), base.node,
@@ -216,31 +239,54 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
 
         index = snapshot.required_class_family_index
         first = function.args.args[0].arg if function.args.args else None
-        if owner is not None and guard.subject.id == first:
-            declared = owner.required_symbol(snapshot)
-        else:
-            annotation = next(
-                (
-                    argument.annotation
-                    for argument in (*function.args.args, *function.args.kwonlyargs)
-                    if argument.arg == guard.subject.id
-                ),
-                None,
-            )
-            match annotation:
-                case ast.Subscript(value=ast.Name(id="type"), slice=inner) if guard.on_class:
-                    annotation = inner
-            match annotation:
-                case ast.Subscript(value=inner):
-                    annotation = inner
-            declared = (
-                None if annotation is None else answered.class_symbol(source_path, annotation, parents)
-            )
-            if declared is None:
-                raise ValueError(
-                    f"`{guard.subject.id}` has no annotation naming a class the scan declares"
+        match guard.subject:
+            case ast.Name(id=name) if owner is not None and name == first:
+                declared = owner.required_symbol(snapshot)
+            case ast.Name(id=name):
+                declared = self.annotated(
+                    answered, guard, parents, source_path,
+                    next(
+                        (
+                            argument.annotation
+                            for argument in (*function.args.args, *function.args.kwonlyargs)
+                            if argument.arg == name
+                        ),
+                        None,
+                    ),
                 )
+            case ast.Attribute(value=ast.Name(id=name), attr=field) if owner is not None and name == first:
+                declared = self.annotated(
+                    answered, guard, parents, source_path,
+                    next(
+                        (
+                            statement.annotation
+                            for statement in owner.node.body
+                            if isinstance(statement, ast.AnnAssign)
+                            and isinstance(statement.target, ast.Name)
+                            and statement.target.id == field
+                        ),
+                        None,
+                    ),
+                )
+            case _:
+                declared = None
+        if declared is None:
+            raise ValueError(
+                f"`{ast.unparse(guard.subject)}` has no annotation naming a class the scan declares"
+            )
         return frozenset((declared, *index.descendant_symbols(declared)))
+
+    @staticmethod
+    def annotated(answered, guard, parents, source_path, annotation: ast.expr | None) -> str | None:
+        """The class an annotation names for the subject: `type[T]` for a class, `T` for an instance."""
+
+        match annotation:
+            case ast.Subscript(value=ast.Name(id="type"), slice=inner) if guard.on_class:
+                annotation = inner
+        match annotation:
+            case ast.Subscript(value=inner):
+                annotation = inner
+        return None if annotation is None else answered.class_symbol(source_path, annotation, parents)
 
     def require_dispatch(
         self, snapshot: CodemodSourceSnapshot, subject: frozenset[str], base: str, capability: str
