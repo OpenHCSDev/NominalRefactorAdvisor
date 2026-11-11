@@ -2161,6 +2161,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 import_graph=import_graph,
             )
         )
+        insertion_line = destination_table.insertion_line_after_bindings(
+            destination_dependency_names,
+            (dependency.scope for dependency in import_dependencies),
+        )
         return ModuleMoveDependencyReport(
             selection=selection,
             destination_path=destination_table.file_path,
@@ -2168,10 +2172,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             import_dependencies=import_dependencies,
             source_local_dependencies=source_local_resolution.import_dependencies,
             destination_dependency_names=destination_dependency_names,
-            destination_insertion_line=destination_table.insertion_line_after_bindings(
-                destination_dependency_names,
-                (dependency.scope for dependency in import_dependencies),
-            ),
+            destination_insertion_line=insertion_line,
             source_annotation_evaluation_mode=source_annotation_mode,
             destination_annotation_evaluation_mode=(destination_annotation_mode),
             moved_annotation_count=moved_dependencies.annotation_count,
@@ -2194,6 +2195,10 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY,
                     unresolved_names,
+                ),
+                ModuleMoveObstacle(
+                    ModuleMoveObstacleKind.DESTINATION_READ_BEFORE_DEFINITION,
+                    destination_table.eager_reads_before(frozenset(moved_names), insertion_line),
                 ),
                 ModuleMoveObstacle(
                     ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY,
