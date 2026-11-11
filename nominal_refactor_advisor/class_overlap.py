@@ -1221,11 +1221,31 @@ class ClassOverlapVerdicts:
                     (_location(first), _location(second)),
                 ),
             )
+        differences: list[str] = []
+        if (
+            first.dataclass_declaration.runtime_declaration
+            != second.dataclass_declaration.runtime_declaration
+        ):
+            differences.append("dataclass declaration")
+        if first.metaclass_names != second.metaclass_names:
+            differences.append(
+                f"metaclass ({first.metaclass_names!r} vs {second.metaclass_names!r})"
+            )
+        if first.class_keyword_names != second.class_keyword_names:
+            differences.append(
+                f"class keywords ({first.class_keyword_names!r} vs "
+                f"{second.class_keyword_names!r})"
+            )
+        if (
+            first.class_decorators_are_promotion_safe
+            != second.class_decorators_are_promotion_safe
+        ):
+            differences.append("decorator safety")
+        detail = ", ".join(differences) if differences else "class creation"
         return (
             Receipt(
                 OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
-                "class creation differs (dataclass declaration, metaclass, class "
-                "keywords or decorators), so construction and field semantics differ",
+                f"`{first.qualname}` and `{second.qualname}` differ in {detail}",
                 (_location(first), _location(second)),
             ),
         )
