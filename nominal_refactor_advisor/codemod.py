@@ -419,6 +419,7 @@ from nominal_refactor_advisor.codemod_paths import (
     _source_path_candidate_set as _source_path_candidate_set,
 )
 from nominal_refactor_advisor.codemod_payload import (
+    CasePayloadValueCodec,
     PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -766,17 +767,26 @@ class ReplaceTargetOperation(SourceReprovedOperation):
 
 @dataclass(frozen=True, kw_only=True)
 class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
-    """Compile ordered exact transformations into one current-target rewrite."""
+    """Compile ordered exact transformations into one current-target rewrite.
+
+    `decorators: "include"` widens the patched region to the declaration's
+    decorators, so a patch can edit a decorator's arguments."""
+
+    decorators: type[SourceNodeDecoratorPolicy] = codemod_payload_field(
+        CasePayloadValueCodec(SourceNodeDecoratorPolicy, Exclude), default=Exclude
+    )
 
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
         _, target_digest = self.target_digest(snapshot)
+        _identifier, _digest, node = self.target_node_from_context(snapshot)
         return (
             SourceTargetEditor(
                 snapshot.sources_by_file_path,
                 target_digest,
+                first_line=self.decorators.start_line(node),
             ).exact_text_patch(
                 self,
                 rationale=self.rationale

@@ -2253,6 +2253,9 @@ class SourceTargetEditor:
 
     sources: Mapping[str, str]
     target: AstTargetDigest
+    first_line: int | None = None
+    """Where the editable region starts when not at the target's own line: its
+    first decorator, for a region that includes decorators."""
 
     @property
     def file_lines(self) -> list[str]:
@@ -2261,8 +2264,12 @@ class SourceTargetEditor:
         )
 
     @property
+    def start_line(self) -> int:
+        return self.target.line if self.first_line is None else self.first_line
+
+    @property
     def target_lines(self) -> list[str]:
-        return self.file_lines[self.target.line - 1 : self.target.end_line]
+        return self.file_lines[self.start_line - 1 : self.target.end_line]
 
     def replacement_source(
         self,
@@ -2272,8 +2279,8 @@ class SourceTargetEditor:
         ordered_windows = self.ordered_windows(replacements)
         for window in reversed(ordered_windows):
             replacement = window.physical_edit
-            start_index = replacement.start_line - self.target.line
-            end_index = replacement.end_line - self.target.line + 1
+            start_index = replacement.start_line - self.start_line
+            end_index = replacement.end_line - self.start_line + 1
             lines[start_index:end_index] = list(replacement.replacement_lines)
         return "".join(lines)
 
@@ -2304,8 +2311,8 @@ class SourceTargetEditor:
         )
         return SourceSpanEdit.from_replacement_lines(
             file_path=self.target.file_path,
-            start_line=self.target.line + start_index,
-            end_line=self.target.line + end_index,
+            start_line=self.start_line + start_index,
+            end_line=self.start_line + end_index,
             replacement_lines=SourceTargetEditor.source_lines(replacement_source),
             rationale=rationale
             or f"Replace source text inside {self.target.qualname!r}.",
@@ -2353,8 +2360,8 @@ class SourceTargetEditor:
             suffix_count += 1
         replacement_end = len(replacement_lines) - suffix_count
         return SourceLineSpan(
-            start_line=self.target.line + prefix_count,
-            end_line=self.target.line + len(current_lines) - suffix_count - 1,
+            start_line=self.start_line + prefix_count,
+            end_line=self.start_line + len(current_lines) - suffix_count - 1,
         ).line_replacement(
             file_path=self.target.file_path,
             replacement_lines=replacement_lines[prefix_count:replacement_end],
@@ -2373,7 +2380,7 @@ class SourceTargetEditor:
                 window.physical_edit.end_line,
             ),
         )
-        previous_end = self.target.line - 1
+        previous_end = self.start_line - 1
         for window in ordered_windows:
             replacement = window.physical_edit
             if replacement.file_path != self.target.file_path:
@@ -2382,7 +2389,7 @@ class SourceTargetEditor:
                     f"target file {self.target.file_path!r}"
                 )
             if (
-                replacement.start_line < self.target.line
+                replacement.start_line < self.start_line
                 or replacement.end_line > self.target.end_line
             ):
                 raise ValueError(
