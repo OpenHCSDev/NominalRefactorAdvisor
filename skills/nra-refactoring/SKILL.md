@@ -425,3 +425,17 @@ and clean them after workers exit, retaining recipes and validation evidence.
    importing from its own submodules is normal Python). Without this,
    `promote_guarded_import` approved 107 promotions on openhcs where 14 failed
    at runtime through package-init cycles.
+
+8. **TypeCheckerSession-per-method (99cbdf5d).** `InlineForwarderOperation`
+   spawned a fresh mypy session per forwarded method's string-name check.
+   4 findings × ~3 sessions/method = ~12 sessions, explaining the 10 GB /
+   8 minute forwarder_inline goal. Now builds one session at the top and
+   threads it through `answering_calls()` and `_MethodNameStrings.require_none()`.
+   20 inline_forwarder tests pass in 31.56 s.
+
+9. **Trajectory search collision (874c54b3).** Two offset-span edit conflicts
+   in `replacements_in_span` (same-span-different-source and overlapping
+   spans) raised bare `ValueError`, which escaped the trajectory search's
+   `PhysicalSourceEditConflictError` catch block and crashed the run. The
+   line-span counterpart at `_coalesced_group:729` already raised the typed
+   error; these two were the oversight.
