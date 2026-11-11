@@ -385,3 +385,43 @@ Keep a concise checkpoint with exact source revision, recipe, commands, results,
 proof limits and unfinished work. Publish only within the user's authorization,
 and verify CI for the exact pushed revision. Keep task caches in an owned root
 and clean them after workers exit, retaining recipes and validation evidence.
+
+## Engine gaps found during the sweep (2026-11-11, evening)
+
+1. **Narrowed composition moves (852ca705).** `candidates_touching` rebuilt
+   three repo-wide indexes per virtual snapshot to look up ~3 classes. Now
+   ClassUseIndex resolves references lazily by terminal name, overlaps start
+   from the asked classes' own holders, and inheriting pairs start from the
+   classes inheriting their identities. 93.9 → 84.0 s on the 30-pick goal,
+   identical JSON report. Also fixed a latent bug: the cached and uncached
+   paths filtered verdicts by different keys, so a ComposeExisting verdict
+   owned by a third class came or went depending on cache state.
+
+2. **Every refused recipe in one run (b29c899b).** `require_clean` now raises
+   `CodemodPlanPreflightError` with every failed report, and `edit_batch_for_recipes`
+   collects each recipe's refusal instead of stopping at the first. A 5-recipe
+   batch with 4 refusals went from 4 runs to 1.
+
+3. **Stored-row refusal (752f143a).** Deleting a class or enum member that a
+   stored record's field can hold (classes below `durable-bases`) refuses,
+   naming the field. Prevents the CHECK constraint failure that broke install
+   88e245f7.
+
+4. **Module-level alias binding (9c4559a6).** `sb = source_bindings_module`
+   followed transitively is now a binding of the source module. Its reads get
+   rewritten; its assignment is not a use.
+
+5. **Silent no-op refusal (eb339dbc).** `remove_import_names` with
+   scope=RUNTIME on a name bound under `if TYPE_CHECKING:` now refuses
+   instead of producing zero edits and preflighting as passed.
+
+6. **Guard blank lines (abe5641d).** An emptied guard block goes through
+   `for_statement_span`, absorbing its separator lines.
+
+7. **Package-init cycle edges (0ce90a1d).** The import graph now includes
+   ancestor package edges: importing `a.b.c` triggers `a` and `a.b` through
+   `known_import_targets`, and `import_would_create_cycle` checks every
+   triggered module. The importing module itself is excluded (a package init
+   importing from its own submodules is normal Python). Without this,
+   `promote_guarded_import` approved 107 promotions on openhcs where 14 failed
+   at runtime through package-init cycles.
