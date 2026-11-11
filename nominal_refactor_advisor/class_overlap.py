@@ -60,6 +60,7 @@ from nominal_refactor_advisor.class_index import (
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    followed_reexports,
 )
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
@@ -222,10 +223,11 @@ class ClassUseIndex:
     """Which consumers use each scanned class, and how.
 
     A reference is resolved only when a class it may name is asked about. Every
-    answer the resolver gives ends in the same name as the reference's last part,
-    or, for a single imported name, its import target's last part, so a reference
-    is filed under those names and resolved as a whole, longest prefix first,
-    exactly as when every reference is resolved up front."""
+    answer the resolver gives ends in the same name as one of the reference's
+    parts, or as the last part of an imported prefix's target once it follows
+    every re-export rename (`followed_reexports`), so a reference is filed under
+    those names and resolved as a whole, longest prefix first, exactly as when
+    every reference is resolved up front."""
 
     resolver: CompactClassReferenceResolver
     references_by_terminal_name: Mapping[
@@ -246,7 +248,13 @@ class ClassUseIndex:
                 parts = reference.reference_parts
                 names = {*parts}
                 if parts[0] in aliases:
-                    names.add(aliases[parts[0]].rpartition(".")[2])
+                    for length in range(1, len(parts) + 1):
+                        names.add(
+                            followed_reexports(
+                                ".".join((aliases[parts[0]], *parts[1:length])),
+                                resolver.import_aliases_by_module_name,
+                            ).rpartition(".")[2]
+                        )
                 for name in names:
                     filed[name][module_order, reference_order] = (projection, reference)
         return cls(

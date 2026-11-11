@@ -6389,7 +6389,10 @@ class CompactClassFamilyIndexBuilder:
         first, *rest = parts
         alias_target = import_aliases.get(first)
         if alias_target is not None:
-            candidate = ".".join((alias_target, *rest)) if rest else alias_target
+            candidate = followed_reexports(
+                ".".join((alias_target, *rest)) if rest else alias_target,
+                import_aliases_by_module_name,
+            )
             if candidate in known_symbols:
                 return candidate
             unique_by_suffix = unique_symbols_by_suffix
@@ -6409,6 +6412,34 @@ class CompactClassFamilyIndexBuilder:
         if allow_unique_unqualified and len(parts) == 1:
             return unique_symbols_by_name.get(parts[0])
         return None
+
+
+def followed_reexports(
+    target: str, import_aliases_by_module_name: Mapping[str, Mapping[str, str]]
+) -> str:
+    """The name `target` finally binds, through every module that re-binds it.
+
+    A package whose `__init__` says `from .a import X as Y` binds `Y` to
+    `pkg.a.X`, so `pkg.Y` names `pkg.a.X`, as Python resolves it. The longest
+    dotted prefix a module re-binds is replaced by what it binds, and the walk
+    repeats until no prefix is re-bound or a name comes round again."""
+
+    seen = {target}
+    while True:
+        segments = target.split(".")
+        for end in range(len(segments), 1, -1):
+            rebound = import_aliases_by_module_name.get(".".join(segments[: end - 1]), {}).get(
+                segments[end - 1]
+            )
+            if rebound is not None:
+                followed = ".".join((rebound, *segments[end:]))
+                break
+        else:
+            return target
+        if followed in seen:
+            return target
+        seen.add(followed)
+        target = followed
 
 
 def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:

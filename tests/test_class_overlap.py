@@ -11,6 +11,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
+    followed_reexports,
 )
 from tests.dataclass_field_wrappers import FIELD_WRAPPERS
 from nominal_refactor_advisor.class_overlap import (
@@ -445,3 +446,32 @@ def test_verdicts_touching_a_class_are_the_scan_verdicts_naming_it():
             scan.candidates, symbol
         )
     assert {use.consumer for use in scan.uses.uses_for("pkg.summaries.Scope")} >= {"edge"}
+
+
+def test_a_use_through_a_renamed_re_export_names_the_class_it_binds() -> None:
+    """`pkg` re-exports `X` as `Y`, so `Y()` read from `pkg`, by name or through
+    `import pkg`, constructs `pkg.a.X`: Python resolves it there, and so must the
+    use index, or a redirect or deletion of `X` misses these readers."""
+
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules(
+            tuple(
+                _module(name, source)
+                for name, source in (
+                    ("pkg.a", "class X:\n    pass\n"),
+                    ("pkg", "from pkg.a import X as Y\n"),
+                    ("pkg.b", "from pkg import Y\n\n\ndef by_name():\n    return Y()\n"),
+                    ("pkg.c", "import pkg\n\n\ndef through_module():\n    return pkg.Y()\n"),
+                )
+            )
+        )
+    )
+    scan = ClassOverlapVerdicts(projections, build_compact_class_family_index(projections))
+
+    assert {use.consumer for use in scan.uses.uses_for("pkg.a.X")} == {"by_name", "through_module"}
+
+
+def test_a_re_export_cycle_stops_at_the_name_it_comes_back_to() -> None:
+    aliases = {"pkg": {"Y": "pkg.other.Z"}, "pkg.other": {"Z": "pkg.Y"}}
+    assert followed_reexports("pkg.Y", aliases) == "pkg.other.Z"
+    assert followed_reexports("pkg.unbound", aliases) == "pkg.unbound"
