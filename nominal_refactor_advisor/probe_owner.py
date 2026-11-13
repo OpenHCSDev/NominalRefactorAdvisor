@@ -24,6 +24,7 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.declared_receivers import (
     DeclaredReceiverTyping,
+    NamedContainer,
     ReceiverPath,
     ReceiverPathBuilder,
 )
@@ -111,10 +112,9 @@ class ProbeOwner(ABC):
 
 
 @dataclass(frozen=True)
-class ResolvedProbeOwner(ProbeOwner):
+class ResolvedProbeOwner(ProbeOwner, NamedContainer):
     """The receiver's declared annotation binds to this qualified class."""
 
-    qualified_name: str
 
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
         return context.classes.describe_field(self.qualified_name, field_name)
@@ -124,10 +124,9 @@ class ResolvedProbeOwner(ProbeOwner):
 
 
 @dataclass(frozen=True)
-class TypeCheckerProbeOwner(ProbeOwner):
+class TypeCheckerProbeOwner(ProbeOwner, NamedContainer):
     """The type checker infers the receiver as the one scanned class of this name."""
 
-    qualified_name: str
     inferred: str
 
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:

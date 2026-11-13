@@ -18,7 +18,10 @@ from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseParticipant,
     ClosedCarrierCollapseComponent,
 )
-from nominal_refactor_advisor.carrier_expansion import ResolvedFieldBindingCall
+from nominal_refactor_advisor.carrier_expansion import (
+    ForwardedCarrierExpansion,
+    ResolvedFieldBindingCall,
+)
 from nominal_refactor_advisor.product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
@@ -103,10 +106,8 @@ class ConstructedProductCallEdge(ResolvedFieldBindingCall, ParameterConveyorCall
 
 
 @dataclass(frozen=True)
-class ForwardedProductCallEdge(ParameterConveyorCallEdge):
+class ForwardedProductCallEdge(ParameterConveyorCallEdge, ForwardedCarrierExpansion):
     product_authority: CompactProductAuthority
-    resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
 
     @property
     def authority(self) -> CompactProductAuthority:
