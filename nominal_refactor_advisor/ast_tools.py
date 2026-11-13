@@ -911,20 +911,30 @@ class ParsedModule(SourceFileIdentity):
         return family.project_cached_demand(self.family_batch(family).items, demand)
 
     @cached_property
-    def scoped_observations(self) -> tuple[ScopedAstObservation, ...]:
-        """Every located node with its innermost class and function names."""
+    def _scoped_observation_index(self) -> _ScopedObservationIndex:
+        """Every located node with its innermost class and function names,
+        indexed by node type for O(1) per-family lookups."""
 
         index = self.syntax_index
-        return tuple(
-            ScopedAstObservation(
+        all_obs: list[ScopedAstObservation] = []
+        by_type: dict[type[ast.AST], list[ScopedAstObservation]] = {}
+        for node, scope_id in zip(index.depth_first_nodes, index.scope_ids, strict=True):
+            if "lineno" not in node._attributes:
+                continue
+            scope = index.scopes[scope_id]
+            obs = ScopedAstObservation(
                 node=node,
                 class_name=(scope.class_names[-1] if scope.class_names else None),
                 function_name=(scope.function_names[-1] if scope.function_names else None),
             )
-            for node, scope_id in zip(index.depth_first_nodes, index.scope_ids, strict=True)
-            for scope in (index.scopes[scope_id],)
-            if "lineno" in node._attributes
-        )
+            all_obs.append(obs)
+            by_type.setdefault(type(node), []).append(obs)
+        return _ScopedObservationIndex(tuple(all_obs), by_type)
+
+    @cached_property
+    def scoped_observations(self) -> tuple[ScopedAstObservation, ...]:
+        """Every located node with its innermost class and function names."""
+        return self._scoped_observation_index.all
 
     @cached_property
     def class_names(self) -> frozenset[str]:
@@ -1982,6 +1992,30 @@ class ScopedAstObservation:
         if BuiltinCallName.mentions_isinstance(text):
             return ScopedAstObservationRole.NODE_TYPE_GUARD.value
         return ScopedAstObservationRole.GUARDED_DELEGATE.value
+
+
+class _ScopedObservationIndex:
+    """Scoped observations indexed by node type for O(1) family lookups."""
+
+    __slots__ = ("all", "by_type")
+
+    def __init__(
+        self,
+        all_observations: tuple[ScopedAstObservation, ...],
+        by_type: dict[type[ast.AST], list[ScopedAstObservation]],
+    ) -> None:
+        self.all = all_observations
+        self.by_type = by_type
+
+    def of_types(
+        self, node_types: tuple[type[ast.AST], ...]
+    ) -> tuple[ScopedAstObservation, ...]:
+        if len(node_types) == 1:
+            return tuple(self.by_type.get(node_types[0], ()))
+        result: list[ScopedAstObservation] = []
+        for nt in node_types:
+            result.extend(self.by_type.get(nt, ()))
+        return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -3727,11 +3761,7 @@ def _node_display_name(node: ast.AST) -> str:
 def collect_scoped_observations(
     parsed_module: ParsedModule, node_types: tuple[type[ast.AST], ...]
 ) -> tuple[ScopedAstObservation, ...]:
-    return tuple(
-        observation
-        for observation in parsed_module.scoped_observations
-        if isinstance(observation.node, node_types)
-    )
+    return parsed_module._scoped_observation_index.of_types(node_types)
 
 
 def collect_scoped_shapes(

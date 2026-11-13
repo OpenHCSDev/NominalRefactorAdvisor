@@ -30,6 +30,7 @@ from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
+    ModuleSyntaxIndex,
     ParsedModule,
     ParsedModuleSet,
     ParsedModuleSetFact,
@@ -180,14 +181,19 @@ class Scope:
                     yield value
 
     @classmethod
-    def of_module(cls, module: ast.Module) -> Iterator[Scope]:
+    def of_module(cls, module: ast.Module, syntax_index: ModuleSyntaxIndex | None = None) -> Iterator[Scope]:
         """The module's own scope and every definition's, each once."""
 
         yield cls(module.body)
-        for node in ast.walk(module):
-            match node:
-                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+        if syntax_index is not None:
+            for node_type in (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef):
+                for _idx, node in syntax_index.indexed_nodes_of_type(node_type):
                     yield cls(node.body)
+        else:
+            for node in ast.walk(module):
+                match node:
+                    case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
+                        yield cls(node.body)
 
 
 @dataclass(frozen=True)
@@ -441,7 +447,7 @@ class IdenticalArmsSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         }
         for arms in (
             arms
-            for scope in Scope.of_module(parsed_module.module)
+            for scope in Scope.of_module(parsed_module.module, index)
             for arms in IdenticalArms.in_scope(scope)
         ):
             yield cls.site(
@@ -646,7 +652,7 @@ class UndistinguishedTypeArmsSiteFamily(RestatingSiteFamily[RestatingSiteModule]
         }
         for arms in (
             arms
-            for scope in Scope.of_module(parsed_module.module)
+            for scope in Scope.of_module(parsed_module.module, index)
             for arms in UndistinguishedTypeArms.in_scope(scope)
         ):
             branch = arms.merged[0].branch
@@ -1381,12 +1387,11 @@ def enum_uses(
 ) -> tuple[list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]]:
     """Every `Owner.MEMBER` and every other spelling of an owner that `owners` admits."""
 
-    module = parsed.module
     parents = parsed.syntax_index.parent_by_node
     member_uses: list[EnumMemberUse] = []
     class_uses: list[EnumClassUse] = []
     groups: list[MemberGroup] = []
-    for node in ast.walk(module):
+    for node in parsed.syntax_index.depth_first_nodes:
         match node:
             case ast.Attribute(value=ast.Name(id=owner) | ast.Attribute(attr=owner)) if owners(
                 owner

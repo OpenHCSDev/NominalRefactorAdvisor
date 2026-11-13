@@ -444,18 +444,12 @@ def tested_reads(test: ast.expr) -> Iterator[tuple[ast.expr, str, bool]]:
 def enclosing_symbols(parsed_module: ParsedModule) -> dict[int, str]:
     """The dotted name of the def or class enclosing each node."""
 
-    children = parsed_module.syntax_index.named_scope_children
+    index = parsed_module.syntax_index
     symbols: dict[int, str] = {}
-    for prefix, scope in walk_scopes(parsed_module):
-        symbol = prefix.rstrip(".") or "<module>"
-        for statement in statements_of(scope):
-            for node in scope_nodes(statement):
-                symbols[id(node)] = symbol
-        for nested in children[scope]:
-            for child in ast.iter_child_nodes(nested):
-                if not isinstance(child, ast.stmt):
-                    for node in ast.walk(child):
-                        symbols.setdefault(id(node), symbol)
+    for node, scope_id in zip(index.depth_first_nodes, index.scope_ids, strict=True):
+        scope = index.scopes[scope_id]
+        symbol = ".".join(scope.names) if scope.names else "<module>"
+        symbols[id(node)] = symbol
     return symbols
 
 
@@ -481,7 +475,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
         resolver = ProbeOwnerResolver.of(parsed_module)
         reads = []
         calls = []
-        for node in ast.walk(parsed_module.module):
+        for node in parsed_module.syntax_index.depth_first_nodes:
             symbol = symbols.get(id(node), "<module>")
             for test in branch_tests(node):
                 for read, member, called in tested_reads(test):
