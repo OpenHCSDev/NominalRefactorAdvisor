@@ -179,6 +179,15 @@ Each concept key pairs with one or more detector IDs
 (`--codemod-goal-detector`). The detector provides findings; the concept
 provides the recipe synthesizer.
 
+**Goal search often finds "Nothing to do?!"** — it found targets but
+the synthesizer produced zero recipes. This means the closed-world proof
+failed for every candidate (method names too common, string references,
+etc.). When this happens, author the plan with `patch_target` and
+`add_class_base` instead. The goal search is fast for target
+identification (~1s for 23 targets) but the synthesizer hedges on
+anything it can't fully prove. Don't wait for it to prove what you
+can author.
+
 ## Worked examples
 
 Read [theory → evidence → migration](references/theory-to-workflow.md)
