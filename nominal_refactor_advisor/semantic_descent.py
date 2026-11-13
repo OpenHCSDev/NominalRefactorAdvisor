@@ -5703,17 +5703,6 @@ class ConstructionAuthorityResolver:
         return False
 
     @cached_property
-    def authority_ids_by_name(self) -> dict[str, frozenset[str]]:
-        """Materialize the legacy set-valued name index only on direct demand."""
-
-        return {
-            name: frozenset(
-                (authority_ids,) if isinstance(authority_ids, str) else authority_ids
-            )
-            for name, authority_ids in self.compact_authority_ids_by_name.items()
-        }
-
-    @cached_property
     def compact_authority_ids_by_name(
         self,
     ) -> dict[str, CompactAuthorityIdsByNameValue]:
