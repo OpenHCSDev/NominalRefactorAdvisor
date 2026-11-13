@@ -12,11 +12,14 @@ import ast
 from collections import defaultdict
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from collections.abc import Sequence
+
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
+    CrossModuleCollectorCandidateDetector,
     DetectorConfig,
     PerModuleIssueDetector,
     high_confidence_spec,
@@ -674,3 +677,138 @@ class LoopRelookupDetector(PerModuleIssueDetector):
                 )
             )
         return findings
+
+
+# ---------------------------------------------------------------------------
+# Detector 5: same function/method name in 2+ modules, no shared ancestor
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _PhantomFamilySite:
+    """One definition of a name that appears across modules without a shared declaration."""
+    file_path: str
+    line: int
+    name: str
+    class_name: str | None
+
+
+@dataclass(frozen=True)
+class _PhantomFamilyCandidate:
+    """A name defined in 2+ modules with no shared ancestor declaring it."""
+    name: str
+    sites: tuple[_PhantomFamilySite, ...]
+
+
+_MIN_PHANTOM_MODULES = 2
+_SKIP_COMMON_NAMES = frozenset({
+    "setup", "teardown", "main", "run", "execute", "process", "handle",
+    "validate", "serialize", "deserialize", "parse", "render", "format",
+    "reset", "close", "open", "start", "stop", "configure", "initialize",
+})
+
+
+def _phantom_family_candidates(
+    modules: ParsedModuleSet,
+) -> Sequence[_PhantomFamilyCandidate]:
+    """Find function/method names defined in 2+ modules of one package."""
+
+    name_sites: dict[str, list[_PhantomFamilySite]] = defaultdict(list)
+
+    for module in modules:
+        module_path = str(module.path)
+        _collect_module_definitions(module.module, module_path, name_sites)
+
+    candidates: list[_PhantomFamilyCandidate] = []
+    for name, sites in sorted(name_sites.items()):
+        if name in _SKIP_COMMON_NAMES:
+            continue
+        distinct_modules = {s.file_path for s in sites}
+        if len(distinct_modules) < _MIN_PHANTOM_MODULES:
+            continue
+        candidates.append(_PhantomFamilyCandidate(
+            name=name,
+            sites=tuple(sites),
+        ))
+
+    return candidates
+
+
+def _collect_module_definitions(
+    tree: ast.Module,
+    module_path: str,
+    name_sites: dict[str, list[_PhantomFamilySite]],
+) -> None:
+    """Collect all non-private function/method names from a module."""
+
+    for node in tree.body:
+        match node:
+            case ast.ClassDef(name=class_name, body=body):
+                for item in body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        if item.name.startswith("_"):
+                            continue
+                        name_sites[item.name].append(_PhantomFamilySite(
+                            file_path=module_path,
+                            line=item.lineno,
+                            name=item.name,
+                            class_name=class_name,
+                        ))
+            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name):
+                if name.startswith("_"):
+                    continue
+                name_sites[name].append(_PhantomFamilySite(
+                    file_path=module_path,
+                    line=node.lineno,
+                    name=name,
+                    class_name=None,
+                ))
+
+
+class PhantomFamilyDetector(
+    CrossModuleCollectorCandidateDetector[_PhantomFamilyCandidate],
+):
+    candidate_collector = _phantom_family_candidates
+    finding_spec = high_confidence_spec(
+        PatternId.PHANTOM_FAMILY,
+        "Same name across modules with no shared declaration",
+        (
+            "A function or method name appears in multiple modules of one package "
+            "with no shared ancestor declaring it. The name promises a family that "
+            "does not exist. Each body is independently maintained and can drift; "
+            "callers cannot dispatch through a common type."
+        ),
+        "one declared owner (ABC, base method, or family) that each site overrides",
+        "same non-private name defined in 2+ modules with no common declaring ancestor",
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (ObservationTag.METHOD_ROLE,),
+    )
+
+    def _finding_for_candidate(
+        self, candidate: _PhantomFamilyCandidate
+    ) -> RefactorFinding:
+        evidence = tuple(
+            SourceLocation(
+                site.file_path,
+                site.line,
+                f"{site.class_name}.{site.name}" if site.class_name else site.name,
+            )
+            for site in candidate.sites
+        )
+        module_count = len({s.file_path for s in candidate.sites})
+        classes = [s.class_name for s in candidate.sites if s.class_name]
+        if classes:
+            owners = ", ".join(f"`{c}`" for c in classes)
+            summary = (
+                f"`{candidate.name}` defined on {owners} across "
+                f"{module_count} modules with no shared declaring ancestor"
+            )
+        else:
+            summary = (
+                f"`{candidate.name}` defined as a module function in "
+                f"{module_count} modules with no shared import"
+            )
+        return self.build_finding(summary, evidence)

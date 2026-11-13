@@ -28077,3 +28077,43 @@ def test_detects_unused_method_parameter(tmp_path: Path) -> None:
     assert finding.pattern_id == PatternId.UNUSED_METHOD_PARAMETER
     assert "external_decoders" in finding.summary
     assert "data" in finding.summary
+
+
+def test_detects_phantom_family(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        (
+            "class AlphaBackend:\n"
+            "    def record_progress(self, progress):\n"
+            "        self.log.append(progress)\n"
+        ),
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        (
+            "class BetaTracker:\n"
+            "    def record_progress(self, progress):\n"
+            "        self.store.write(progress)\n"
+        ),
+    )
+    _write_module(
+        tmp_path,
+        "pkg/gamma.py",
+        (
+            "def record_progress(root, progress):\n"
+            "    root.events.append(progress)\n"
+        ),
+    )
+    findings = analyze_path(tmp_path)
+    phantom_findings = [
+        finding
+        for finding in findings
+        if finding.detector_id == "phantom_family"
+    ]
+    assert len(phantom_findings) == 1
+    finding = phantom_findings[0]
+    assert finding.pattern_id == PatternId.PHANTOM_FAMILY
+    assert "record_progress" in finding.summary

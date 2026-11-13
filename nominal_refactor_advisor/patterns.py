@@ -645,6 +645,20 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.EXACT_LOOKUP,),
     )
+    PHANTOM_FAMILY = _pattern(
+        stable_id=55,
+        display_name="Same Name Across Modules With No Shared Declaration",
+        required_relation=(
+            "A function or method name appears in multiple modules of one package "
+            "with no shared ancestor declaring it. The repeated name promises a "
+            "family that does not exist: each body is independently maintained, "
+            "they can drift, and callers cannot dispatch through a common type."
+        ),
+        witness_capabilities=(
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+    )
     LINEAR_SCAN_BY_NAME = _pattern(
         stable_id=53,
         display_name="Linear Scan Where a Dict Lookup Suffices",
