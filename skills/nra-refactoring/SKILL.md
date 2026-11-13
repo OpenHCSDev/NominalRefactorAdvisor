@@ -92,6 +92,29 @@ should answer once. m consumers × n cases of restated decisions become m + n.
 Verify subagent work from the diff and by re-running the command yourself; a
 report is a claim.
 
+## Do not wait on synthesized recipes
+
+The recipe synthesizer hedges: if one decision is unresolved, it produces
+nothing (`no_evaluator`). Not a partial plan with the gap named — nothing.
+On NRA's own codebase (2026-11-13): 4,919 findings, zero synthesized recipes.
+Every finding `no-recipe`. That hedge is the tool flinching, not protecting you.
+
+**Author plans from existing operations. That is the primary path.**
+The synthesizer's job should be producing candidate recipes with unresolved
+choices marked for the agent to fill. Until it does, a finding without a
+recipe is a finding the agent composes a plan for, using the 110 registered
+operations directly. The operations have preflights that prove each site;
+what the synthesizer refused to decide, the agent decides and the preflight
+checks.
+
+When a finding names the restated fact and its owner, the plan writes itself:
+`patch_target` for exact text, `insert_class_member` for a dict or property,
+`compose_existing_class` for MI, `create_mixin` for a new shared parent,
+`factor_exact_method_role` for repeated methods, `dispatch_to_polymorphism`
+for string dispatch. Every operation's preflight is a proved check; an
+authored plan with proved operations is stronger than a synthesized recipe
+that hedged its way to silence.
+
 ## Running a sweep: what the agent-comms sweep taught (2026-11-11)
 
 - **Fill the plan, simulate once, apply once.** Compose every plan with
