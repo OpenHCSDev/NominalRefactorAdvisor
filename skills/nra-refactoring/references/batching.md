@@ -1,58 +1,60 @@
 # Composing high-leverage NRA plans
 
-## Choose the appropriate stage boundary
+## Pick the right stage boundary
 
-`CodemodPlanSequence.from_operations(...)` makes each operation a separate
-projected stage. Later operations resolve targets against earlier output.
-Use it when a later operation needs a newly moved declaration, altered signature,
-new base or changed binding.
+`CodemodPlanSequence.from_operations(...)` makes each operation its own
+projected stage. Later operations resolve their targets against earlier
+output. Use it when a later operation needs a freshly moved declaration, a
+changed signature, a new base or a changed binding.
 
-Use `CodemodPlanDocument` for a cohesive group that must resolve against the same
-snapshot. Compose documents and sequences with `CodemodPlanSequence.compose(...)`.
-Do not assume two kinds of batching have identical declaration-time effects.
+Use `CodemodPlanDocument` for a group that belongs together and has to resolve
+against the same snapshot. Combine documents and sequences with
+`CodemodPlanSequence.compose(...)`. The two kinds of batching don't behave the
+same at declaration time, so don't treat them as interchangeable.
 
-A concrete trap: inserting a method and then an alias with two separately
-reindexed `InsertClassMemberOperation` stages can put the alias above the method.
-Put the dependent insertions in one document, method first; or anchor the alias
-after an existing method. A parse-clean simulation cannot detect every incorrect
-class-body evaluation. The maintained example is
-`docs/examples/cohesive_class_members.py` and its explanation in
+A real trap: insert a method and then an alias as two separately reindexed
+`InsertClassMemberOperation` stages, and the alias can land above the method.
+Put the dependent insertions in one document, method first, or anchor the alias
+after a method that already exists. A parse-clean simulation won't catch every
+class body that evaluates wrong. The maintained example is
+`docs/examples/cohesive_class_members.py`, explained in
 `docs/source/api/getting_started.rst`.
 
-## Author the migration closure
+## Write out the whole migration
 
-A useful ownership trajectory often has this shape, adapted to the actual source:
+A good ownership trajectory usually looks like this, adjusted to the source in
+front of you:
 
-1. Reuse or declare the destination authority and introduce needed imports.
-2. Establish inheritance and move existing members without copying their bodies.
-3. Retain the richer context/evidence object and project old reads through it.
-4. Change signatures and declaration-resolved callers with explicit cardinality.
-5. Remove obsolete assignments, forwarding hooks and imports after reviewing
-   their remaining uses and evaluation effects.
-6. Inspect projected global findings and extend the plan where the new state
-   exposes a further ownership collapse.
+1. Reuse or declare the destination owner and add the imports it needs.
+2. Set up inheritance and move existing members without copying their bodies.
+3. Keep the richer context/evidence object and project the old reads through it.
+4. Change signatures and declaration-resolved callers, with explicit cardinality.
+5. Remove the dead assignments, forwarding hooks and imports, after checking
+   what still uses them and what their evaluation does.
+6. Look at the projected global findings, and extend the plan if the new state
+   shows another ownership collapse.
 
-Do not add all six phases when the change only needs two. Moving a field does
-not automatically migrate its users. Changing a signature does not automatically
-change callers. Deleting an assignment removes its evaluation too. Bound and
-unbound method calls have different receiver requirements; inspect actual call
-lookup, not just the common callee name.
+Don't add all six phases when the change needs two. Moving a field doesn't
+migrate its users. Changing a signature doesn't change its callers. Deleting
+an assignment deletes whatever running it did, too. Bound and unbound method
+calls need different receivers, so check how the call is really looked up, not
+just that the callee has the same name.
 
-Use these maintained examples as starting points, after checking their baseline
-and targets; do not run historical recipes blindly on current source:
+Start from these maintained examples, but check their baseline and targets
+first. Don't run old recipes blindly against current source:
 
 - `docs/examples/renderer_refactor.py`: ancestor extraction, parameter projection,
   declared-call migration and sequence composition.
 - `docs/examples/lexical_binding_authority_refactor.py`: moving a dependency closure
   and separating identities across modules.
-- `docs/examples/retain_resolution_refactor.py`: retaining an authority rather
-  than mirroring one of its fields.
+- `docs/examples/retain_resolution_refactor.py`: keeping an authority instead of
+  mirroring one of its fields.
 - `docs/examples/assignment_projection_refactor.py`: inheritance plus field collapse.
 
 ## Iterate in projected source without writing every stage
 
-With the current CLI and an authored JSON plan, preview the sequence and its
-next-state evidence:
+With the current CLI and a hand-written JSON plan, preview the sequence and
+the evidence for the next state:
 
 ```bash
 python -m nominal_refactor_advisor path/to/package \
@@ -75,35 +77,40 @@ for builder in builders:
     current = result.final_snapshot
 ```
 
-Here `sources` must cover the supplied proof context, not just edited files;
-`builders` are authored functions returning current public plan objects. Preserve
-the recipes and stage boundaries as a composed plan for final simulation and
-transactional application, rather than manually copying `current` onto disk.
+`sources` has to cover all the context you're relying on, not just the files
+you edit. `builders` are your own functions that return current public plan
+objects. Keep the recipes and stage boundaries as one composed plan for the
+final simulation and transactional apply. Don't copy `current` onto disk by
+hand.
 
-Inspect the rejected report to identify missing proof or ambiguous selection.
-Narrow a selector only when actual source evidence supports it. Do not increase
-cardinality, weaken guards or insert fallback behavior to make a plan pass.
+When a plan gets rejected, read the report to see what proof is missing or
+which selection is ambiguous. Narrow a selector only when the source backs it
+up. Don't raise the cardinality, weaken a guard or bolt on fallback behavior
+just to make the plan pass.
 
-Use projected findings as opportunities, not orders. Some findings have no recipe
-because source establishes repetition but not ownership. Synthesized continuations
-still require the supported planning horizon and the practitioner's semantic
-review. Exhaustive exploration is bounded by the selected goals, source scope,
-detector set and state/branch limits; it is not completeness over arbitrary futures.
+Projected findings are leads, not orders. Some findings have no recipe because
+the source shows repetition but not who should own it. Synthesized
+continuations still need the supported planning horizon and your own review of
+what the code means. Exhaustive exploration stops at the goals you picked, the
+source scope, the detector set and the state/branch limits. It does not cover
+arbitrary futures.
 
-## What the bootstrapping evidence actually demonstrates
+## What the bootstrapping run really shows
 
 The September 2026 NRA work composed eight builders into a 40-stage replay
-across six production modules. The replay preserved its original snapshot and
-matched the final formatted production sources. Its value was batching dependent
-transformations with intermediate source validation and one combined destination.
-Some stages contained authored bodies: this was not an automatic equivalence
-proof or an automatically chosen globally correct trajectory.
+across six production modules. The replay kept its original snapshot and
+matched the final formatted production sources. What you get from it is
+dependent transformations batched together, with source checked between
+stages, landing in one combined result. Some stages had hand-written bodies.
+It is not an automatic equivalence proof, and the tool did not pick a
+globally correct trajectory by itself.
 
-The detailed historical record is
-`docs/plans/native_behavior_proof_pause_20260915.md`, with the five recipes linked
-by `docs/plans/native_behavior_proof_progress_20260915.md`. Treat those documents
-as a dated case study, not the current API or current CI status.
+The detailed history is in `docs/plans/native_behavior_proof_pause_20260915.md`,
+and `docs/plans/native_behavior_proof_progress_20260915.md` links the five
+recipes. Treat both as a dated case study, not the current API or current CI
+status.
 
-Do not infer a token/tool-call savings ratio from stage count or final diff size.
-Manual edits can also be batched. If measuring leverage, record actual authoring,
-application, test cycles and cumulative work against a comparable baseline.
+Don't derive a token or tool-call savings ratio from stage count or final diff
+size. You can batch manual edits too. To measure leverage, record real
+authoring time, application, test cycles and total work against a baseline you
+can compare to.
