@@ -1,4 +1,10 @@
-"""Efficiency detectors: patterns where runtime work restates a fact the structure already holds."""
+"""Efficiency detectors: patterns where runtime work restates a fact the structure already holds.
+
+Each detector here finds code that re-derives information a declaration already provided.
+The cost is runtime (O(n^2) loops, repeated lookups) and maintenance (the restated route
+drifts from its source). Paper1 Corollary 4.10: passing runs cannot reveal the outside
+supply; the structure that makes the dependence checkable must be preserved.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +22,10 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
 )
 
+
+# ---------------------------------------------------------------------------
+# Detector 1: callback parameter threaded through intermediate signatures
+# ---------------------------------------------------------------------------
 
 _MIN_THREADING_FUNCTIONS = 2
 
@@ -146,6 +156,210 @@ class CallbackThreadingDetector(PerModuleIssueDetector):
                         f"{', '.join(site.function_name for site in sites)}"
                     ),
                     evidence,
+                )
+            )
+        return findings
+
+
+# ---------------------------------------------------------------------------
+# Detector 2: loop element discarded and re-looked up
+# ---------------------------------------------------------------------------
+
+
+def _for_target_names(target: ast.expr) -> set[str]:
+    """All simple names bound by a for-loop target, including unpacking."""
+    names: set[str] = set()
+    match target:
+        case ast.Name(id=name):
+            names.add(name)
+        case ast.Tuple(elts=elements) | ast.List(elts=elements):
+            for elt in elements:
+                names.update(_for_target_names(elt))
+        case ast.Starred(value=inner):
+            names.update(_for_target_names(inner))
+    return names
+
+
+def _unparse_short(node: ast.expr) -> str:
+    """Short readable form for evidence labels."""
+    match node:
+        case ast.Name(id=name):
+            return name
+        case ast.Attribute(value=inner, attr=attr):
+            return f"{_unparse_short(inner)}.{attr}"
+        case ast.Call(func=func):
+            return f"{_unparse_short(func)}(...)"
+    return "?"
+
+
+def _names_in(node: ast.AST) -> set[str]:
+    """All Name.id values reachable from a node."""
+    return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
+
+
+def _element_attr_args(
+    call: ast.Call, target_names: set[str],
+) -> list[tuple[str, str]]:
+    """Return (target_name, attr) pairs for call arguments that are target.attr."""
+    hits: list[tuple[str, str]] = []
+    for arg in (*call.args, *(kw.value for kw in call.keywords)):
+        match arg:
+            case ast.Attribute(value=ast.Name(id=var), attr=attr) if var in target_names:
+                hits.append((var, attr))
+    return hits
+
+
+@dataclass(frozen=True)
+class _LoopRelookup:
+    """One site where a loop body uses element.attr as a lookup key."""
+    loop_line: int
+    iterator_label: str
+    call_line: int
+    call_label: str
+    element_attr: str
+    target_name: str
+    enclosing_function: str
+
+
+def _find_relookups_in_for(
+    for_node: ast.For | ast.AsyncFor,
+    enclosing_function: str,
+) -> list[_LoopRelookup]:
+    """Find calls in a for-loop body that look up a value using element.attr.
+
+    The general pattern:
+        for element in source:
+            result = lookup(..., element.attr)
+
+    The element was yielded by the iterator. The body uses element.attr as a key
+    to recover related information. When lookup and source share a name (same
+    class, same variable, same first argument), it strongly suggests the same
+    collection is queried twice — the iterator already had what the lookup
+    re-derives.
+
+    This is not specific to any particular API. It catches any loop where:
+    1. The target binds one or more names
+    2. A call in the body takes target.attr as an argument
+    3. That call shares at least one name with the iterator expression
+       (the "same source" signal)
+    """
+
+    target_names = _for_target_names(for_node.target)
+    if not target_names:
+        return []
+
+    source_names = _names_in(for_node.iter)
+    if not source_names:
+        return []
+
+    iter_label = _unparse_short(for_node.iter)
+    relookups: list[_LoopRelookup] = []
+
+    for node in ast.walk(for_node):
+        if not isinstance(node, ast.Call):
+            continue
+
+        hits = _element_attr_args(node, target_names)
+        if not hits:
+            continue
+
+        call_names = _names_in(node.func)
+        for arg in node.args:
+            if isinstance(arg, ast.Name):
+                call_names.add(arg.id)
+        for kw in node.keywords:
+            if isinstance(kw.value, ast.Name):
+                call_names.add(kw.value.id)
+
+        if not (call_names & source_names - target_names):
+            continue
+
+        call_label = _unparse_short(node.func)
+        for target_name, attr in hits:
+            relookups.append(_LoopRelookup(
+                loop_line=for_node.lineno,
+                iterator_label=iter_label,
+                call_line=node.lineno,
+                call_label=call_label,
+                element_attr=attr,
+                target_name=target_name,
+                enclosing_function=enclosing_function,
+            ))
+
+    return relookups
+
+
+def _collect_loop_relookups(module: ParsedModule) -> list[_LoopRelookup]:
+    """Walk every function in the module for for-loops with relookup calls."""
+
+    results: list[_LoopRelookup] = []
+    index = module.syntax_index
+
+    for _node_index, func_node in (
+        *index.indexed_nodes_of_type(ast.FunctionDef),
+        *index.indexed_nodes_of_type(ast.AsyncFunctionDef),
+    ):
+        for node in ast.walk(func_node):
+            if isinstance(node, (ast.For, ast.AsyncFor)):
+                results.extend(_find_relookups_in_for(node, func_node.name))
+
+    return results
+
+
+class LoopRelookupDetector(PerModuleIssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.LOOP_RELOOKUP,
+        "Loop element discarded and re-looked up by attribute",
+        (
+            "A for-loop body calls a function passing element.attr as a lookup key, "
+            "where element was already yielded by the iterator. The call shares a "
+            "name with the iterator source, indicating the same collection is queried "
+            "twice. When the lookup scans the collection this is O(n^2). The fix: "
+            "the iterator yields the needed value directly, or a dict keyed by the "
+            "attribute is built once before the loop."
+        ),
+        "iterator yields the needed value directly; no second lookup",
+        "loop body uses element.attr to re-derive a value the iterator provided",
+        (CapabilityTag.EXACT_LOOKUP,),
+        (ObservationTag.DATAFLOW_ROOT,),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        relookups = _collect_loop_relookups(module)
+        if not relookups:
+            return []
+
+        grouped: dict[tuple[int, str], list[_LoopRelookup]] = defaultdict(list)
+        for rl in relookups:
+            grouped[(rl.loop_line, rl.iterator_label)].append(rl)
+
+        findings: list[RefactorFinding] = []
+        for (loop_line, iterator), sites in sorted(grouped.items()):
+            evidence = [
+                SourceLocation(
+                    str(module.path),
+                    loop_line,
+                    f"for ... in {iterator}",
+                ),
+            ]
+            for site in sites:
+                evidence.append(SourceLocation(
+                    str(module.path),
+                    site.call_line,
+                    f"{site.call_label}(..., {site.target_name}.{site.element_attr})",
+                ))
+
+            call_names = sorted({s.call_label for s in sites})
+            findings.append(
+                self.build_finding(
+                    (
+                        f"loop over `{iterator}` re-looks up {len(sites)} "
+                        f"element(s) via {', '.join(f'`{c}`' for c in call_names)} "
+                        f"in {sites[0].enclosing_function}"
+                    ),
+                    tuple(evidence),
                 )
             )
         return findings

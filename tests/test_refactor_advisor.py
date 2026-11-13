@@ -27987,4 +27987,38 @@ def test_detects_callback_threading(tmp_path: Path) -> None:
     assert "observer" in finding.summary
     assert "outer" in finding.summary
     assert "middle" in finding.summary
+
+
+def test_detects_loop_relookup(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "class Registry:\n"
+            "    @classmethod\n"
+            "    def record_fields(cls, record):\n"
+            "        return [(f, f.key) for f in record.bindings]\n\n"
+            "    @classmethod\n"
+            "    def field_plan(cls, record, name):\n"
+            "        return next(b for b in record.bindings if b.name == name)\n\n\n"
+            "def decode(cls, value):\n"
+            "    for f, key in Registry.record_fields(cls):\n"
+            "        plan = Registry.field_plan(cls, f.name)\n"
+            "        value[f.name] = plan.decode(value.get(key))\n"
+            "    return value\n"
+        ),
+    )
+    findings = analyze_path(tmp_path)
+    relookup_findings = [
+        finding
+        for finding in findings
+        if finding.detector_id == "loop_relookup"
+    ]
+    assert len(relookup_findings) == 1
+    finding = relookup_findings[0]
+    assert finding.pattern_id == PatternId.LOOP_RELOOKUP
+    assert "record_fields" in finding.summary
+    assert "field_plan" in finding.summary
+    assert "decode" in finding.summary
     assert "inner" not in finding.summary

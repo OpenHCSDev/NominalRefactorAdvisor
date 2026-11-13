@@ -624,6 +624,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.SHARED_ALGORITHM_AUTHORITY,),
     )
+    LOOP_RELOOKUP = _pattern(
+        stable_id=52,
+        display_name="Loop Element Discarded and Re-Looked Up",
+        required_relation=(
+            "An element yielded by an iterator is discarded and then recovered "
+            "by a lookup on the same collection using an attribute of that element. "
+            "The lookup restates information the iterator already provided."
+        ),
+        witness_capabilities=(CapabilityTag.EXACT_LOOKUP,),
+    )
 
     def __new__(
         cls,
