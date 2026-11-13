@@ -1,502 +1,308 @@
 ---
 name: nra-refactoring
-description: "Use NominalRefactorAdvisor (NRA), domain-driven ownership reasoning, and source-checked OpenHCS cases to discover underowned Python semantics, adjudicate a nominal contract, and compose proof-gated multistage refactoring DSL plans. Applies to NRA-assisted architectural refactoring and interpreting its scan or proof results."
+description: "Use NominalRefactorAdvisor (NRA) to find slop, trace its owner, and compose proved codemod plans that fold it. Applies to NRA-assisted refactoring and interpreting its scan results."
 ---
 
 # NRA Refactoring
 
-**The agent does the ownership investigation and proposes the refactor**, then
-lets NRA manage deterministic source transformations and intermediate states.
-Do not hand the practitioner an unfilled checklist as the result. Optimize for
-collapsing semantic surface area: independent authorities, repeated decisions,
-forwarding layers and duplicated implementation. Stage count and fewer lines
-are useful observations, not the objective or proof of correct factoring.
+**You investigate, propose the fix, and NRA applies it deterministically.**
+Don't hand someone a checklist. Collapse the slop: repeated decisions,
+forwarding layers, duplicated implementation. The goal is fewer facts
+maintained by hand, not fewer lines or more stages.
 
-## Architectural objective: polymorphism maximalism
+## Goal: polymorphism over switches
 
-For behavior-bearing domain families, **prefer an ABC and concrete subclasses**
-over enums plus case switches, handler tables or detached configuration maps.
-Co-locate each case's related declarations, data, invariants and behavior on its
-class; put common algorithms on the public parent and leave only irreducible
-hooks on leaves. Compose overlapping nominal capabilities through inheritance
-and meaningful MI instead of copying implementation or externalizing selection.
-Derive discovery/lookup from the declared family where needed. A consumer should
-invoke the public contract, not repeatedly recover which concrete case it has.
+For families with behavior, **use an ABC and concrete subclasses** —
+not enums with case switches, handler tables or config maps.
+Put each case's data and behavior on its class. Put shared algorithms on
+the parent. Leave only what differs on the leaves. Compose overlapping
+capabilities through MI instead of copying code or routing around it.
+A consumer calls the method, never figures out which case it has.
 
-An enum needs a specific value-only/boundary justification; it is not an equally
-preferred endpoint when other code still interprets its members. Maximize
-polymorphic ownership and shared derivation, **not class count**. The agent
-proposes and justifies this architecture against the user's supplied domain rules and task-authorized
-specifications/declarations; source patterns do not independently establish
-business meaning. Resolve routine source questions yourself, and surface genuinely
-missing or contested domain decisions. NRA must separately check the chosen
-migration's binding, MRO, effects and behavioral obligations.
-Do not turn an unresolved proof into a reason to praise the existing mirror:
-record the blocker and work toward proving or refining the nominal design.
+An enum earns its place only when values cross a boundary and nothing
+interprets them. Maximize what inheritance derives, **not class count**.
+You decide the architecture from the code and the task. Source patterns
+are leads, not business rules. NRA checks the chosen migration's MRO,
+bindings and effects — that's its job. If a proof doesn't go through,
+record the blocker and keep working, don't declare the existing code
+correct because the tool couldn't finish.
 
 ## The front door: count, declare the family, let NRA fold it
 
-The rule this whole skill serves: **a consumer that knows which subclass it has
-is under-abstracting.** Every `isinstance`, `match` class pattern or member
-comparison outside the family's own decoder restates a case decision the family
-should answer once. m consumers × n cases of restated decisions become m + n.
+**A consumer that knows which subclass it has is under-abstracting.**
+Every `isinstance`, `match` class pattern or member comparison outside
+the family's own decoder restates a case decision the family should
+answer once. m consumers × n cases → m + n.
 
-1. **Count first.** `python -m nominal_refactor_advisor PKG --count-member-awareness
-   [--json]` lists, per family (foreign modules such as
-   `ast`, declared `ForeignFamily`/`ForeignAdapter` families, enums), every consumer
-   that tests two or more members **on the same subject**, grouped by member set,
-   and which of them bypass an owner that already exists. Largest bypassing group
-   first. Tests on `x` and `x.value` are a structural path, not a case branch,
-   and do not count. Then run the full scan (`--json`, budget 600, `complete`, zero
-   omitted): its restated-fact detectors (string dispatch on a kind, attribute by
-   name, exact key sets, foreign absence probes, forwarding facades, legacy paths,
-   dead modules) each report the fact restated, the owner that should hold it and the
-   factoring; a finding whose recipe names an operation is fixable now, the rest are
-   the codemod backlog. They are findings, never "leads": a restated fact is slop by
-   definition, and only its fix can be unproved.
+1. **Count first.** `python -m nominal_refactor_advisor PKG
+   --count-member-awareness [--json]` shows every consumer that tests
+   two or more members on the same subject, grouped by the set of
+   members it checks. Largest bypassing group first. Then run the full
+   scan (`--json`, budget 600, `complete`, zero omitted): each restated-
+   fact detector reports what's restated, the owner that should hold it,
+   and the fix. A finding whose recipe names an operation is fixable now.
+   The rest are the codemod backlog. They're findings, not "leads" — a
+   restated fact is slop by definition. Only the fix can be unproved.
+
 2. **Pick the owner shape** for the top group:
-   - consumers only ask *which nodes are in the set* → a `ForeignFamily`
-     (`foreign_family.py`, e.g. `FunctionDefinition`): `within(nodes)` is the
-     one type test;
-   - consumers ask the members *different questions* → a `ForeignAdapter` family
-     (e.g. `AssignmentStatement`): one adapter per foreign class keyed on
-     `adapts`, `decoded(node)` is the one type test, siblings keep only
-     irreducible differences. A null member (`adapts = object`) replaces
-     `None` checks at call sites. When the old owner is a bag of static
-     projection methods (e.g. the deleted `AstExpressionProjection`), name the
-     family's properties after its methods: concept `static_projection_adapter`
-     then rewrites every `Projector.question(x)` to `Family.decoded(x).question`
-     and the bag is deleted;
-   - our own enum read as cases outside the enum → a class family on the enum's
-     owner.
-   Never a one-element `within((x,))` or one-member set: that is a disguised
-   predicate.
-3. **Fold through the goal search, never by hand.** Each fold ships as detector
-   + operation + recipe + concept. Dry run, then apply:
-   `python -m nominal_refactor_advisor PKG --codemod-refactor-goal CONCEPT
-   --codemod-goal-detector DETECTOR --codemod-apply --json`.
-   `CONCEPT` is the concept key (class name minus `Concept`, snake case: e.g.
-   `foreign_family_routing`, `foreign_adapter_bind_chain`). The fold must prove
-   each site (e.g. AST-equality of each arm's expression to the adapter
-   property's body) and refuse anything it cannot prove; refusals are the next
-   widening, not a reason to hand-edit.
-4. **CI is the behaviour proof.** Commit the applied diff alone, with the command,
-   wall time and stop reason in the message. Re-run the census: the group must
-   shrink.
-5. **Every refactor also improves NRA.** A script you needed becomes an NRA
-   command, a dodge an agent used becomes a detector, a refusal that blocked a
-   real site becomes a proved widening, two near-copies you touched collapse
-   into a shared base. A refactor that leaves the tool unchanged left the next
-   one just as expensive.
+   - consumers only ask *which nodes are in the set* → `ForeignFamily`
+   - consumers ask the members *different questions* → `ForeignAdapter`
+     family: one adapter per foreign class, `decoded(node)` is the one
+     type test, siblings keep only what differs
+   - own enum read as cases outside it → class family on the enum's owner
 
-Verify subagent work from the diff and by re-running the command yourself; a
+3. **Fold through the goal search.** Each fold ships as detector +
+   operation + recipe + concept:
+   `python -m nominal_refactor_advisor PKG --codemod-refactor-goal
+   CONCEPT --codemod-goal-detector DETECTOR --codemod-apply --json`.
+   The fold proves each site and refuses anything it can't prove.
+   Refusals are the next thing to widen, not a reason to hand-edit.
+
+4. **CI proves behavior.** Commit the applied diff with the command and
+   wall time. Re-run the census: the group must shrink.
+
+5. **Every refactor also improves NRA.** A script you needed becomes a
+   command, a dodge an agent used becomes a detector, a refusal that
+   blocked a real site becomes a widening. A refactor that leaves the
+   tool unchanged left the next one just as expensive.
+
+Check subagent work from the diff and by re-running the command; a
 report is a claim.
 
-## Do not wait on synthesized recipes
+## Don't wait on synthesized recipes
 
-The recipe synthesizer hedges: if one decision is unresolved, it produces
-nothing (`no_evaluator`). Not a partial plan with the gap named — nothing.
-On NRA's own codebase (2026-11-13): 4,919 findings, zero synthesized recipes.
-Every finding `no-recipe`. That hedge is the tool flinching, not protecting you.
+The recipe synthesizer hedges: one unresolved decision and it gives you
+nothing (`no_evaluator`). Not a partial plan with the gap named —
+nothing. NRA on itself (2026-11-13): 4,919 findings, zero recipes.
+The synthesizer flinches where the agent should decide.
 
 **Author plans from existing operations. That is the primary path.**
-The synthesizer's job should be producing candidate recipes with unresolved
-choices marked for the agent to fill. Until it does, a finding without a
-recipe is a finding the agent composes a plan for, using the 110 registered
-operations directly. The operations have preflights that prove each site;
-what the synthesizer refused to decide, the agent decides and the preflight
-checks.
+The synthesizer should produce candidate recipes with choices marked.
+Until it does, every finding is a finding the agent composes a plan for,
+using the 110 registered operations directly. The operations have
+preflights that prove each site. What the synthesizer refused to decide,
+the agent decides and the preflight checks.
 
-When a finding names the restated fact and its owner, the plan writes itself:
-`patch_target` for exact text, `insert_class_member` for a dict or property,
-`compose_existing_class` for MI, `create_mixin` for a new shared parent,
-`factor_exact_method_role` for repeated methods, `dispatch_to_polymorphism`
-for string dispatch. Every operation's preflight is a proved check; an
-authored plan with proved operations is stronger than a synthesized recipe
-that hedged its way to silence.
+When a finding names the restated fact and its owner, the plan writes
+itself: `patch_target` for exact text, `insert_class_member` for a dict
+or property, `compose_existing_class` for MI, `create_mixin` for a new
+shared parent, `factor_exact_method_role` for repeated methods,
+`dispatch_to_polymorphism` for string dispatch. Every operation's
+preflight is a proved check. An authored plan with proved operations is
+stronger than a synthesized recipe that hedged its way to silence.
 
-## Running a sweep: what the agent-comms sweep taught (2026-11-11)
+## Running a sweep: lessons from agent-comms (2026-11-11)
 
-- **Fill the plan, simulate once, apply once.** Compose every plan with
-  `--codemod-compose-sequence A.json B.json …` and simulate the whole sequence
-  from the branch head. A simulate per slice is the incremental loop. Inside
-  that one simulate, a refusal is the only evidence that an operation is
-  missing.
-- **`no_evaluator` does not mean no operation.** Before calling something a
-  gap, grep the registered operations and the ones nothing constructs.
-  `CreateMixinOperation` + `ComposeExistingClassOperation` was the
-  extract-new-base that people kept asking for, and
-  `KeywordizeConstructionOperation` existed for a whole night with no
-  synthesis branch that built it. Sort rejections by their stated reason
-  first. The reason names the real gap.
-- **Authored plans are not blocked by the unproved horizon.** Only synthesized
-  one-shot export is. When the planner cannot prove a decision, author it with
-  existing operations (`patch_target`, `insert_before_target`,
-  `compose_existing_class`) and let each operation's preflight prove its site.
-  A hand edit is worse than an authored op, never better.
-- **Select by declaration in plans that chain.** Synthesized recipes select by
-  `target_id` from the scan that made them, and those ids go stale once an
-  earlier plan rewrites the file. Use `file_path` + `target_qualname`, or
-  regenerate from a scan of the tree the plan will run on.
-- **A stage that deletes members says what each class keeps.** Deleting a
-  class's only member with `patch_target` leaves an empty body, and parse
-  validation refuses it. `compose_existing` writes `pass` (or keeps the
-  docstring) on its own. When deleting an override, put the new parent first
-  in the base list so every deleted member still resolves to the same winner.
-- **Scan with every consumer.** `dead_module` and `dissolve_module` only see
-  the scan. Pass `--context-root` for each sibling repository that imports the
-  package (agent-comms: Toad) before deleting a module. Scan from the
-  repository root so `[project.scripts]` counts.
-- **Check which NRA you are running.** Installing the target package into the
-  NRA venv can replace an editable NRA with the target's pinned wheel. After
-  any `uv pip install`, print `nominal_refactor_advisor.__file__`.
-- **Results travel; caches do not.** Finding ids hash detector, pattern,
-  summary and evidence, not the engine build. So picks and plans posted as
-  JSON match on any agent's scan of the same source. `git grep "^class NAME"`
-  every new class name before submitting a pick.
-- **A string that must fail by name stays a string.** Evidence that a class
-  does not exist yet (`ClassDeclared("Name")`) cannot be written as a
-  reference. Every other string standing in for a type is slop, and is work
-  for this plan.
+- **Fill the plan, simulate once, apply once.** Compose with
+  `--codemod-compose-sequence A.json B.json …`, simulate the whole
+  sequence from the branch head. One simulate per slice is the
+  incremental loop. A refusal inside is the only evidence an operation
+  is missing.
+- **`no_evaluator` does not mean no operation.** Grep the registered
+  operations before calling something a gap. `CreateMixinOperation` +
+  `ComposeExistingClassOperation` was the extract-new-base everyone kept
+  asking for, and `KeywordizeConstructionOperation` existed a whole
+  night with no synthesis branch building it. Sort rejections by their
+  stated reason first. The reason names the real gap.
+- **Authored plans are never blocked.** Only synthesized one-shot export
+  is. Author with existing operations (`patch_target`,
+  `insert_before_target`, `compose_existing_class`) and let each
+  preflight prove its site. A hand edit is worse than an authored op.
+- **Select by declaration, not by id.** Synthesized recipes use
+  `target_id` from the scan, and those go stale once an earlier plan
+  rewrites the file. Use `file_path` + `target_qualname`, or rescan.
+- **Deleting a class's only member needs `compose_existing`**, which
+  writes `pass` on its own. `patch_target` leaves an empty body and
+  parse validation refuses it.
+- **Scan with every consumer.** `dead_module` and `dissolve_module` only
+  see the scan. Pass `--context-root` for sibling repos that import
+  the package before deleting a module.
+- **Check which NRA you're running.** Installing the target into the NRA
+  venv can replace editable NRA with a pinned wheel. After any
+  `uv pip install`, print `nominal_refactor_advisor.__file__`.
+- **Results travel; caches don't.** Finding ids hash detector, pattern,
+  summary and evidence, not the build. Plans posted as JSON match on any
+  agent's scan of the same source.
 
-## Start with worked transformations
+## Worked examples
 
-Read [theory → evidence → migration](references/theory-to-workflow.md) for the
-shared Paper 1 anchor: intended answers govern the relation, the agent performs
-the investigation and design reasoning, and NRA checks supported source/proof
-obligations. The guide includes a worked #60 settings-and-capabilities migration.
+Read [theory → evidence → migration](references/theory-to-workflow.md)
+for the Paper 1 anchor. The guide includes a worked #60 migration.
 
-Use the [anti-pattern → owned-structure cookbook](references/pattern-cookbook.md)
-for concrete declaration, ABC, shared-algorithm, registration, MI and state moves.
-For a complete executable trajectory, read the
-[action-dispatch batching example](references/action-batch.md): it uses the existing
-DSL, includes a new-case maintenance experiment and tests changed-source rejection.
-The example is an authored exact-fixture migration, not automatic async extraction.
-For a current source-backed string-dispatch lead and a full migration-closure
-receipt, read [string dispatch → whole plan](references/source-backed-dispatch-planning.md).
-The lead preserves intervening unmatched guards and has no executable recipe.
-For cheap long-condition and repeated-literal-roster leads, and the way to
-turn clustered source questions into one admitted multistage trajectory, read
-[heuristic leads → trajectory](references/heuristic-to-trajectory.md).
+Use the [pattern cookbook](references/pattern-cookbook.md) for concrete
+ABC, shared-algorithm, registration, MI and state moves.
 
-## Establish the actual source and contracts
+The [action-dispatch example](references/action-batch.md) uses the DSL
+end-to-end with a new-case experiment and changed-source rejection.
 
-Resolve the requested checkout, branch, dirty work and Python import location
-before using examples or cached results. Multiple NRA worktrees and installed
-versions can coexist. Do not silently analyze one and apply to another.
+[String dispatch → whole plan](references/source-backed-dispatch-planning.md)
+shows a source-backed dispatch lead through full migration closure.
 
-Use the current NRA checkout as the API authority:
+[Heuristic leads → trajectory](references/heuristic-to-trajectory.md)
+turns clustered findings into one multistage plan.
 
-- `docs/source/api/getting_started.rst`: CLI, ordered plans and insertion rules.
-- `docs/source/api/codemod_catalog.rst`: declaration-generated operation catalog.
-- `docs/source/api/public_api.rst`: shared proof and execution contracts.
-- `docs/source/development/nominal_architecture_playbook.rst`: architectural reasoning.
-- `nominal_refactor_advisor/codemod_runtime.py`: recipes, plans and ordered stages.
-- `nominal_refactor_advisor/codemod_architecture_guards.py`: guards.
-- `nominal_refactor_advisor/codemod.py`: public Python exports.
+## Source and contracts
 
-Inspect `python -m nominal_refactor_advisor --help` in the intended environment.
-Discover operations through their registered declarations and generated catalog;
-selected source/registrations outrank stale catalog prose. Do not maintain a
-second operation inventory in this skill. Read the applicable
-operation's constructor, preflight and proof scope before adapting a recipe.
+Resolve the checkout, branch and Python location before using examples
+or cached results. Multiple NRA worktrees can coexist. Don't silently
+analyze one and apply to another.
 
-## Reason globally, choose ownership explicitly
+API authority is the current NRA checkout:
 
-Record any supplied domain rules, authoritative declarations and task scope first;
-do not replace them with a pattern inferred from code. Bound a **source corpus**
-(revision, import roots, selected production modules), without requiring the user
-to invent a domain noun or enumerate source pairs before investigation. NRA
-observations and cheap exact-string, substring or helper-prefix searches may help select/rank that corpus; false
-positives are acceptable as retrieval. Within the selected boundary, census **every original `ClassDef`** through
-NRA's `ModuleSyntaxIndex`, then join eligible direct declarations to its
-canonical class-family projection for actual bases, methods, ABC/Enum/dataclass
-roles. Conditional/function-local/ambiguous classes remain original syntax
-rows marked unprojected OPEN; do not invent family members. Only then overlay
-residual rosters, string-key accesses, case comparisons, dispatch, forwarded
-parameters and delegated state. Keep unaligned classes as alternative-owner
-and counterevidence rows. Then the agent names bounded domain questions from the joined
-source, rather than requiring the user to supply them. Reuse NRA's lexical/product-flow
-owners rather than a second parser, roster or call resolver. Keep original
-positions, nested executable ownership, unmatched/OPEN cases, aliases, rebinding,
-ordered guards, final fallback and alternate callers. A literal or substring match, matching helper name or nominally resolved
-callee is a useful lead, not live binding, domain identity or behavioral proof.
-The agent—not the user—clusters source-backed leads into candidate maintenance
-questions, keeping nonmatches and unsupported sites visible.
+- `docs/source/api/getting_started.rst`: CLI, plans, insertion rules
+- `docs/source/api/codemod_catalog.rst`: the operation catalog
+- `docs/source/api/public_api.rst`: proof and execution contracts
+- `docs/source/development/nominal_architecture_playbook.rst`: reasoning
+- `codemod_runtime.py`: recipes, plans and ordered stages
+- `codemod_architecture_guards.py`: guards
+- `codemod.py`: public Python exports
 
-Look inside otherwise different methods and classes for substantial shared
-sub-behavior entangled with their independent responsibilities. Whole-method
-names, text or body identity are insufficient: trace every occurrence of the
-same behavior, its inputs, effects, ordering, role and determining declaration.
-Factor the admitted shared algorithm onto its meaningful parent; use MI for
-overlapping capabilities while retaining each class's irreducible behavior.
-Performance changes must preserve the global source and role evidence needed
-for this trace. A demand-driven view may defer work, but it must still answer
-complete later queries and preserve ambiguous, unmatched and OPEN cases.
+Run `python -m nominal_refactor_advisor --help` in the target
+environment. Discover operations through their registrations and the
+generated catalog. Don't keep a second operation inventory here.
 
-Start with the bounded class-first corpus; expand to a complete scan of the
-relevant package and dependency context **when a proposed ownership claim
-depends on that context**. Use `--context-root` for explicit global context
-while limiting reported findings to selected paths. Tests are excluded by
-default; do not exclude production dependencies merely to obtain a smaller or
-cleaner scan. Inspect `scan_status` and analyzed/omitted detector counts.
-A `focused_local_partial` loop result is useful feedback, not a global
-ownership audit.
+## How to investigate ownership
 
-For each proposed change, **the agent must trace** the declaration that
-determines each answer, its implementations, consumers and dependent projections.
-Follow [the owner-finding procedure](references/finding-owners.md) and supply
-an actual ranked, source-backed ownership proposal with counterevidence;
-do not ask the user to perform the trace. Repetition identifies a maintenance object;
-it does not alone establish its correct owner. Look for an existing richer
-authority before introducing another carrier, wrapper or registry.
+Record the task rules and the code structure first — don't replace them
+with a pattern inferred from one file. Start from the classes:
 
-For this project's nominal architecture:
+1. Census every `ClassDef` through NRA's `ModuleSyntaxIndex`
+2. Join to the class-family projection for bases, methods, ABC/Enum roles
+3. Overlay the restated facts: rosters, string keys, dispatch, forwarded
+   params, delegated state
+4. Cluster the leads into candidate questions
 
-- Where an admitted domain contract supports it, put shared implementation on
-  its meaningful public ancestor and irreducible behavior on substitutable
-  children. MI requires positive MRO, constructor and method-lookup evidence;
-  priority checks are not automatically replaceable by inheritance.
-- Where an admitted closed-family contract supports it, put leaf behavior on
-  its owner and derive consumers. An enum plus another handwritten roster or
-  a service that retains the same dispatch does not remove an authority.
-- Derive views from declarations or original proof objects. A typed class can
-  still mirror another authority; introducing classes is not sufficient.
-- Trust guaranteed fields and ABC contracts directly. Fix the violated boundary
-  instead of adding `getattr` defaults, string-key fallbacks or Protocol substitutes.
+**The agent traces the owners, not the user.** Follow
+[finding-owners.md](references/finding-owners.md): trace the declaration
+that determines each answer, its implementations, consumers and
+projections. Repetition identifies a maintenance object; it doesn't
+alone establish who should own it. Look for an existing richer owner
+before adding another wrapper or registry.
 
-When a lead suggests Enum behavior, an ABC, multiple inheritance or
-class-definition registration, read [nominal mechanism choices](references/nominal-mechanisms.md).
-It contrasts the user's status/dict/flag examples with exact #38/#44/#58/#60/#69
-primary-source transitions and falsifiers; no mechanism is an automatic fix.
-Preserve real external formats and genuinely optional contracts. These are
-ownership rules, not a blanket ban on strings, branches or dictionaries.
+For each proposed change, trace every occurrence of the shared behavior:
+inputs, effects, ordering, role, the declaration that determines it.
+Factor shared algorithms onto the meaningful parent. Use MI for
+overlapping capabilities. Keep each class's irreducible behavior.
 
-Sketch the destination ownership and migration closure before editing: declaration,
-bases/MRO, moved members, fields, signatures, callers, imports and obsolete uses.
-Consider what the projected change will expose next; do not optimize a single
-finding into a local minimum that leaves competing authorities intact.
+Architecture rules for this project:
+- Shared implementation on the public ancestor, irreducible behavior on
+  substitutable children. MI needs positive MRO and constructor evidence.
+- Leaf behavior on its owner, consumers derive. An enum plus a
+  handwritten roster doesn't remove the dispatch.
+- Derive views from declarations. A typed class can still mirror another
+  owner; introducing classes isn't sufficient.
+- Trust guaranteed fields and ABC contracts directly. Fix the violated
+  boundary instead of adding `getattr` defaults or Protocol substitutes.
 
-## Produce a bounded decision receipt before prescribing a refactor
+Read [nominal mechanisms](references/nominal-mechanisms.md) when a lead
+suggests an Enum, ABC, MI or registration.
 
-Use [the reusable transformations and case contrasts](references/architecture-decisions.md)
-for the task-relative required-answer model and exact #44/#58/#60 positive/negative
-controls. **Extract and fill**: bounded context, domain noun and required questions; the
-existing declarations and executable consumers with source revision and original
-positions; each independently writable authority versus derived view; proposed
-required/forbidden implementation–consumer/class pairs (`R*`), with the supplied
-rule or task-authorized specification licensing each judgment; independent
-provider roles, alternative UI/transport/schema ownership; and every OPEN
-binding, alias, priority, unknown/fallback, dynamic or alternate-caller row.
-Beside the implementation pairs, report raw record shapes from the complete scan.
-Use full JSON with `--json --raw-findings --json-payload full` and an explicit
-scan budget large enough to finish; inspect `supporting_raw_findings`:
-`mapping_read` projections and their bypassed schema owners, and
-`unmodeled_record_shape` key sets with their function/subject sites. Distinguish
-constructor decode sites that descend to a schema from other raw consumers.
-Include `redundant_type_check` source/declaration pairs, with boundary validation
-and exact-type/subclass intent explicitly checked before deleting guards. These
-structural leads do not supply domain meaning or prove runtime equivalence.
-A missing subclass is required only if the admitted relation demands it. The
-Agent must propose and justify a relation (or a specific alternative) from the
-admitted task intent and source; its `R*` remains **provisional** until the
-bounded context admits its pairs and exclusions under explicit task decision
-authority. The agent may derive pairs entailed by already authorized rules
-without asking the user to enumerate or approve each edge. First inspect more code, tests,
-history and counterexamples to settle source uncertainty yourself; their authority
-to prescribe intended behavior depends on the task, not merely their existence.
-Ask the user only the **minimal set of precise questions** when genuinely
-unavailable domain intent prevents an authorized choice; do not
-outsource routine source tracing or pattern recognition. Neither an agent nor human assertion
-proves equivalence.
+## Before prescribing a refactor
 
-This separates the leverage layers: cheap heuristics and NRA observations
-find where to look; the agent proposes and justifies an ownership decision against
-the supplied or task-authorized domain contract; NRA's existing selectors, staged
-planner, preflights and guards then mechanize and check a chosen trajectory.
-An admitted domain rule is an input to these checks, not a theorem NRA proves
-about the user's business intent. For a **prescriptive** plan, first admit the
-required/forbidden relation and determining owner(s) under that decision authority. Before admission, label any
-candidate DSL sequence exploratory/unproved and never present it as the repair.
-There may be one determining authority *per admitted fact family*, not one
-class/aggregate for independent domain, UI, transport and setup roles.
+Use [architecture-decisions.md](references/architecture-decisions.md)
+for the required-answer model and the #44/#58/#60 controls.
+
+Fill in: what the code does now (declarations, consumers, with source
+revision and lines); which facts are independently maintained vs derived;
+the proposed required/forbidden pairs (what should inherit what, what
+should not); and every unresolved question. Include raw record shapes
+from the full scan (`--json --raw-findings --json-payload full`).
+
+The agent decides routine source questions. Ask Tristan only for
+genuinely missing domain intent. Neither an agent's claim nor a human's
+assertion proves behavioral equivalence — the tests prove it.
+
+Sketch the destination before editing: declaration, bases/MRO, moved
+members, fields, signatures, callers, imports, deleted paths. Think
+about what the change exposes next; don't optimize one finding into a
+local minimum that leaves competing owners intact.
 
 ## Compose a trajectory, not isolated edits
 
-Use the recursive improvement loop: start from real consumer friction; trace
-the entangled shared behavior and admit its owner/consumer relation under the
-binding rules; fix the existing owner and delete the replaced paths; mechanize
-the supported work in NRA; replay the original case and its counterexamples;
-then measure the actual work removed. Apply this to NRA's own implementation
-too. Check admitted relations mechanically with existing guards where supported;
-neither cleaner output nor a faster local helper establishes end-to-end success.
+Start from real consumer friction. Trace the shared behavior. Fix the
+owner. Delete the replaced paths. Mechanize what NRA supports. Run the
+tests. Measure the actual work removed.
 
-Retain a complete scan's findings, source manifest and available proof objects.
-Use that landscape to assemble the largest supported ordered codemod batch;
-simulate dependent stages on projected source, apply with revision checks, and
-validate the real consumer. Keep remaining unsupported or unproved obligations
-as an explicit OPEN worklist. Reuse valid evidence before requesting another
-full scan; changed dependencies still require reproof, and serialized reports
-do not preserve native execution proofs. Measure verified structural obligations
-discharged, rather than commits, test counts or scans performed.
+Keep the complete scan's findings and source manifest. Assemble the
+largest supported ordered codemod batch. Simulate dependent stages on
+projected source. Apply with revision checks. Validate the consumer.
+Keep unsupported obligations as an explicit OPEN list.
 
-Read [references/batching.md](references/batching.md) and
-[ownership-to-DSL gates](references/ownership-to-dsl.md) when authoring or
-extending an ordered plan. Prefer declaration-selected movement, promotion, projection,
-rename and call-migration operations over copying implementations into authored
-replacement bodies. Use exact target patches when needed, but label the semantic
-decision and unsupported DSL gap honestly.
+Read [batching.md](references/batching.md) and
+[ownership-to-dsl.md](references/ownership-to-dsl.md) when composing
+plans. Prefer declaration-selected operations (move, promote, project,
+rename, call-migration) over copying implementations into authored
+replacement bodies. Use `patch_target` when needed, but say what the
+semantic decision is and what DSL gap remains.
 
-For selected class-field metadata keyword removal, use the existing declaration
-selectors with `remove_field_metadata_keywords`; it preserves surviving source
-and supports calls inside generated-field initializers. The explicit
-`prune_field_metadata_keywords` variant also elides an emptied constructor from
-direct `typing.Annotated` metadata. Admit that extra semantic decision first:
-Core's plain `Column()` can be redundant while `FrozenColumn()` still owns
-immutability. Neither operation infers that a SQL check is redundant; trace its
-representation owner before selecting it. See the generated operation catalogue
-and getting-started example for the current payloads and refusal boundaries.
+Simulate, inspect projected findings, extend the trajectory. NRA's
+global analysis helps choose the trajectory; preflight alone doesn't.
 
-Simulate dependent stages against projected source, inspect projected findings
-and selectors, then extend the same trajectory. NRA's global ownership analysis
-helps choose the trajectory; operation preflight alone does not choose it.
-Do not bypass an unproved planning horizon to export or apply a synthesized plan.
-
-Review one combined diff and apply through the revision-checked NRA transaction
-when authorized. Application rechecks supplied analysis-only source files too.
-If source changed since simulation, rebuild and simulate rather than forcing a
-stale write set. Rescan after creating modules or changing dependency boundaries.
+Apply through the revision-checked transaction. If source changed since
+simulation, resimulate. Rescan after creating modules or changing
+dependency boundaries.
 
 ## Keep evidence distinct
 
 Report separately:
+- **Coverage:** what was analyzed, what was omitted, scan mode
+- **Ownership:** which pairs are proposed, which are proven, which are open
+- **Replay:** exact stages, preflight results, final source
+- **Behavior:** which tests passed, which proof obligations remain
 
-- **Coverage:** analyzed source/dependency context, detector omissions and scan mode.
-- **Ownership:** admitted or provisional `R*`, determining authority per fact,
-  independent provider/adapter roles, and applicable claims/guards.
-- **Replay:** exact stages, preflight requirements, final source and unchanged input.
-- **Behavior:** the specific native proof obligations or executed tests that passed.
+`is_clean` means the configured preflights and guards passed. Check
+which guards were present — an empty suite certifies nothing.
 
-`is_clean` means the configured operation preflights and guards passed. Inspect
-which guards were present; an empty suite does not certify global architecture.
-For a refused operation, inspect the complete causal chain. A class-creation
-refusal names the original class and line; that class may precede the selected
-target in its module. Do not report the target itself as having an unproved hook
-when the named earlier declaration is what opened its binding evidence.
-Valid Python, resolved callees or signature binding do not prove an authored
-body/expression equivalent. Class simulation does not execute metaclasses or
-class bodies. Preserve fail-closed unsupported native behavior; do not fabricate
-creator frames, suppress failures or reinterpret observations as invocation proofs.
+For a refused operation, read the full causal chain. Don't report the
+target as the problem when the refusal names a different declaration.
 
-Unchanged parsed modules can retain local evidence through an authenticated
-transition. Changed dependencies still require fresh global resolution, including
-absence and ambiguity. Cross-process cached summaries are not completed native
-execution proofs. Consult the current proof-reuse contracts for cache work.
+Don't claim done until the proposed pairs are represented and behavior
+tests pass. Otherwise stop with named OPEN obligations, not a
+completion claim. Keep a checkpoint: source revision, recipe, commands,
+results, proof limits, unfinished work.
 
-Validate unproved behavior, integrations and the refactoring tool itself. Batch
-tests after a coherent sequence when its intermediate states need not run, but
-do not replace behavioral validation with syntax replay. Use bounded parallel
-tests within the available resource budget; this user's usual bounds are 60
-seconds per shard, or 165 for larger shards. Preserve timed-out/failed evidence;
-split slow shards without weakening inputs or assertions. Check CLI budget flag
-scope: a shell timeout bounds the command when its internal flag does not.
+## Engine gaps (2026-11-11)
 
-Claim completion only when the admitted relation is represented with every
-intended consumer deriving from its authority **and** scoped behavior/equivalence
-gates pass. Otherwise stop with named OPEN obligations, not a completion claim.
-Keep a concise checkpoint with exact source revision, recipe, commands, results,
-proof limits and unfinished work. Publish only within the user's authorization,
-and verify CI for the exact pushed revision. Keep task caches in an owned root
-and clean them after workers exit, retaining recipes and validation evidence.
-
-## Engine gaps found during the sweep (2026-11-11, evening)
-
-1. **Narrowed composition moves (852ca705).** `candidates_touching` rebuilt
-   three repo-wide indexes per virtual snapshot to look up ~3 classes. Now
-   ClassUseIndex resolves references lazily by terminal name, overlaps start
-   from the asked classes' own holders, and inheriting pairs start from the
-   classes inheriting their identities. 93.9 → 84.0 s on the 30-pick goal,
-   identical JSON report. Also fixed a latent bug: the cached and uncached
-   paths filtered verdicts by different keys, so a ComposeExisting verdict
-   owned by a third class came or went depending on cache state.
-
-2. **Every refused recipe in one run (b29c899b).** `require_clean` now raises
-   `CodemodPlanPreflightError` with every failed report, and `edit_batch_for_recipes`
-   collects each recipe's refusal instead of stopping at the first. A 5-recipe
-   batch with 4 refusals went from 4 runs to 1.
-
-3. **Stored-row refusal (752f143a).** Deleting a class or enum member that a
-   stored record's field can hold (classes below `durable-bases`) refuses,
-   naming the field. Prevents the CHECK constraint failure that broke install
-   88e245f7.
-
-4. **Module-level alias binding (9c4559a6).** `sb = source_bindings_module`
-   followed transitively is now a binding of the source module. Its reads get
-   rewritten; its assignment is not a use.
-
-5. **Silent no-op refusal (eb339dbc).** `remove_import_names` with
-   scope=RUNTIME on a name bound under `if TYPE_CHECKING:` now refuses
-   instead of producing zero edits and preflighting as passed.
-
-6. **Guard blank lines (abe5641d).** An emptied guard block goes through
-   `for_statement_span`, absorbing its separator lines.
-
+1. **Narrowed composition moves (852ca705).** `candidates_touching`
+   rebuilt three repo-wide indexes per virtual snapshot. Now
+   ClassUseIndex resolves lazily. 93.9 → 84.0 s, identical report.
+2. **All refusals in one run (b29c899b).** `edit_batch_for_recipes`
+   collects every refusal instead of stopping at the first.
+3. **Stored-row refusal (752f143a).** Deleting a class a stored record's
+   field can hold now refuses, naming the field.
+4. **Module-level alias binding (9c4559a6).** `sb = source_module`
+   followed transitively is now a binding.
+5. **Silent no-op refusal (eb339dbc).** `remove_import_names` on a
+   TYPE_CHECKING name now refuses instead of producing zero edits.
+6. **Guard blank lines (abe5641d).** Emptied guard blocks absorb their
+   separator lines.
 7. **Package-init cycle edges (0ce90a1d).** The import graph now includes
-   ancestor package edges: importing `a.b.c` triggers `a` and `a.b` through
-   `known_import_targets`, and `import_would_create_cycle` checks every
-   triggered module. The importing module itself is excluded (a package init
-   importing from its own submodules is normal Python). Without this,
-   `promote_guarded_import` approved 107 promotions on openhcs where 14 failed
-   at runtime through package-init cycles.
-
-8. **TypeCheckerSession-per-method (99cbdf5d).** `InlineForwarderOperation`
-   spawned a fresh mypy session per forwarded method's string-name check.
-   4 findings × ~3 sessions/method = ~12 sessions, explaining the 10 GB /
-   8 minute forwarder_inline goal. Now builds one session at the top and
-   threads it through `answering_calls()` and `_MethodNameStrings.require_none()`.
-   20 inline_forwarder tests pass in 31.56 s.
-
+   ancestor package edges.
+8. **TypeCheckerSession-per-method (99cbdf5d).** One session per run
+   instead of per method. 10 GB / 8 min → 31 s.
 9. **Trajectory search collision (874c54b3, f76a3b8e).** Five bare
-   `ValueError`s on the simulation path escaped the trajectory search's
-   `PhysicalSourceEditConflictError` catch block and crashed the run:
-   same-span-different-source and overlapping spans in
-   `replacements_in_span`, plus "both edited and carried", "read different
-   texts" and "overlap at offset" in `TextFileChange.rewrites` /
-   `TextFileEdit.folded`. The line-span counterpart at
-   `_coalesced_group:729` already raised the typed error; these five
-   were the oversight.
+   `ValueError`s escaped the typed-error catch block.
 
 ## Efficiency detectors and their codemod paths (2026-11-13)
 
-Five detectors in `_efficiency.py` find runtime work that restates a fact the
-structure already holds. Each names a restated fact; the codemod pipeline fixes
-it. None has a synthesized recipe yet — author plans using existing operations.
+Five detectors in `_efficiency.py` find runtime work that restates a
+fact the structure already holds. None has a synthesized recipe — author
+plans using existing operations.
 
 | Detector | PatternId (stable) | What it finds | Codemod path |
 |---|---|---|---|
-| `callback_threading` | CALLBACK_THREADING (51) | param forwarded unchanged through 2+ signatures | `project_function_parameter` to redirect reads, `replace_function_signature` to remove the param, `patch_target` on callers |
-| `loop_relookup` | LOOP_RELOOKUP (52) | loop body re-looks up an element the iterator already yielded | `patch_target` on the iterator to yield the plan with the field; or `insert_class_member` for a `_by_name` dict |
-| `linear_scan_by_name` | LINEAR_SCAN_BY_NAME (53) | `next(x for x in SEQ if x.attr == key)` | `insert_class_member` to add a dict keyed by the attribute, `patch_target` on the scan |
-| `unused_method_parameter` | UNUSED_METHOD_PARAMETER (54) | method param unused in the body | `factor_exact_method_role` for the cross-class proof, `replace_function_signature` to remove; cross-class v2 pending |
-| `phantom_family` | PHANTOM_FAMILY (55) | same name in 2+ modules, no shared ancestor | `create_mixin` + `add_class_base` + `fold_shared_declarations_into_base` |
+| `callback_threading` | 51 | param forwarded unchanged through 2+ signatures | `project_function_parameter`, `replace_function_signature`, `patch_target` |
+| `loop_relookup` | 52 | loop body re-looks up an element the iterator already yielded | `patch_target` on iterator; or `insert_class_member` for a dict |
+| `linear_scan_by_name` | 53 | `next(x for x in SEQ if x.attr == key)` | `insert_class_member` for a dict, `patch_target` on the scan |
+| `unused_method_parameter` | 54 | method param unused in the body | `factor_exact_method_role` for cross-class proof, `replace_function_signature` |
+| `phantom_family` | 55 | same name in 2+ modules, no shared ancestor | `create_mixin` + `add_class_base` + `fold_shared_declarations_into_base` |
 
-**Self-scan results (2026-11-13, NRA on NRA):** 4,919 findings from 37 detectors.
-Top clusters: `own_type_test` (1,167), `phantom_family` (858),
-`unused_method_parameter` (632), `foreign_absence_probe` (514),
-`restated_identity` (349), `linear_scan_by_name` (217), `missing_mixin` (140).
-The `_base.py` file at 7,779 lines holds 200 classes including 73 candidate
-dataclasses and 41 concrete detectors — AGENT-4 textbook.
-
-**Operation vocabulary for efficiency fixes:** authored plans compose from
-`patch_target` (exact text replacement), `insert_class_member` (add dict/property),
-`insert_before_target` (add import/declaration), `replace_function_signature`
-(remove param), and the proved hierarchy operations (`factor_exact_method_role`,
-`compose_existing_class`, `create_mixin`). Each operation's preflight proves its
-site; a hand edit is worse than an authored op, never better.
+**Self-scan (2026-11-13, NRA on NRA):** 4,919 findings, 37 detectors.
+Top: `own_type_test` (1,167), `phantom_family` (858),
+`unused_method_parameter` (632), `foreign_absence_probe` (514).
+`_base.py` at 7,779 lines with 200 classes is AGENT-4 textbook.
 
 **Cross-class analysis for detector #4:** `factor_exact_method_role` and
-`ExactMethodRoleComponent` already group exact methods across class cohorts.
-The unused-parameter check is a special case: instead of comparing body
-equivalence, compare parameter usage. The traversal — find every concrete
-override of a method name across the family — is the same path. Extending it
-avoids building a second cross-class walker.
+`ExactMethodRoleComponent` already group exact methods across class
+cohorts. The unused-parameter check is a special case of that traversal.
+Extending it avoids building a second cross-class walker.
