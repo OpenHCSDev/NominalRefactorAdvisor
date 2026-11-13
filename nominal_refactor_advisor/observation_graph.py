@@ -19,6 +19,7 @@ from nominal_refactor_advisor.export_tools import (
     PublicExportPolicy,
     derive_public_exports,
 )
+from nominal_refactor_advisor.models import SourceLineReference
 from nominal_refactor_advisor.registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     class_name_registry_key,
@@ -63,13 +64,11 @@ class _CoherenceCohortCacheKey:
 
 
 @dataclass(frozen=True)
-class StructuralObservation(SemanticRecord):
+class StructuralObservation(SemanticRecord, SourceLineReference):
     """Normalized structural fact emitted by a collected shape."""
 
-    file_path: str
     owner_symbol: str
     nominal_witness: str
-    line: int
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel
     observed_name: str

@@ -112,6 +112,7 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     RegistrationMetrics,
     SemanticMirrorMetricRelation,
+    SourceLineReference,
     SourceLocation,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
@@ -1001,14 +1002,12 @@ class AuthorityClaimCarrier(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class AuthorityProofEdge(SemanticRecord):
+class AuthorityProofEdge(SemanticRecord, SourceLineReference):
     """Concrete graph/source edge proving an authority claim."""
 
     edge_kind: AuthorityProofEdgeKind
     authority_id: str
     authority_kind: SemanticAuthorityKind | None
-    file_path: str
-    line: int
     symbol: str
     detail: str = ""
 
@@ -3000,13 +2999,15 @@ class SemanticDescentProjectionKindCount(SemanticRecord):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SemanticDescentCertificateSummary(AuthorityProjectionNames, SemanticRecord):
+class SemanticDescentCertificateSummary(
+    AuthorityProjectionNames,
+    SemanticRecord,
+    SourceLineReference,
+):
     """Compact report row for one missing semantic-descent certificate."""
 
     authority_kind: SemanticAuthorityKind
     projection_kind: PresentationProjectionKind
-    file_path: str
-    line: int
     matched_fact_count: int
     coverage_ratio: float
     matched_tokens: tuple[str, ...]

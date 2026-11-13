@@ -43,7 +43,7 @@ from nominal_refactor_advisor.cache_paths import AdvisorCacheLayout
 from nominal_refactor_advisor.class_creation_store import CreatedClassStore
 from nominal_refactor_advisor.class_index import CompactModuleClassHeader
 from nominal_refactor_advisor.declared_root import DeclaredRoot
-from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.models import SourceLineReference, SourceLocation
 from nominal_refactor_advisor.owner_candidates import (
     OwnerCandidate,
     OwnerCost,
@@ -158,15 +158,13 @@ class DeclaredOwnerPackages(OwnerPackagesDeclaration):
 
 
 @dataclass(frozen=True)
-class InstalledRegistrationOwner:
+class InstalledRegistrationOwner(SourceLineReference):
     """One installed class that registers its family's classes, with its receipt."""
 
     distribution: str
     version: str
     record_digest: str
     symbol: str
-    file_path: str
-    line: int
     role: RegistrationRole
 
     @property

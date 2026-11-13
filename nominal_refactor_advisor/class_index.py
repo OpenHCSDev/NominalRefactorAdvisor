@@ -122,6 +122,7 @@ from nominal_refactor_advisor.class_mro import (
     DeclarationMroType,
     DeclaredBases,
 )
+from nominal_refactor_advisor.models import SourceLineReference
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.product_declarations import (
@@ -400,15 +401,13 @@ class ForeignBase:
 
 
 @dataclass(frozen=True)
-class ClassDeclaration(QualifiedDeclaration):
+class ClassDeclaration(QualifiedDeclaration, SourceLineReference):
     """Source-form-independent identity shared by repository class indexes."""
 
     symbol: str
     module_name: str
     qualname: str
     simple_name: str
-    file_path: str
-    line: int
     declared_base_names: tuple[str, ...]
     resolved_base_symbols: tuple[str, ...] = field(default=(), kw_only=True)
     dataclass_declaration: CompactDataclassFacet = field(
@@ -991,15 +990,13 @@ class CompactDataclassFieldDeclaration(NamedTuple):
 
 
 @dataclass(frozen=True)
-class CompactProductField:
+class CompactProductField(SourceLineReference):
     """One effective dataclass field retaining its nominal declaration source."""
 
     name: str
     role: CompactDataclassFieldRole
     binding: DataclassInitBinding
     declaring_class_symbol: str
-    file_path: str
-    line: int
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1948,7 +1945,7 @@ class LatentRosterMatch:
 
 
 @dataclass(frozen=True)
-class LatentRosterObservation:
+class LatentRosterObservation(SourceLineReference):
     """One source roster, with parsing and family matching owned once."""
 
     policy_tokens: ClassVar[frozenset[str]] = frozenset(
@@ -1970,9 +1967,7 @@ class LatentRosterObservation:
     )
     mutation_methods: ClassVar[frozenset[str]] = frozenset({"extend", "update"})
 
-    file_path: str
     roster_name: str
-    line: int
     roster_kind: str
     projection_role: str
     member_names: tuple[str, ...]

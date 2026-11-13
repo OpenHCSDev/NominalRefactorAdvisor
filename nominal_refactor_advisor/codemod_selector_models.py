@@ -31,7 +31,7 @@ from nominal_refactor_advisor.json_reports import (
     JsonValue,
     json_report_object,
 )
-from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.models import SourceLineReference, SourceLocation
 from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
@@ -369,11 +369,9 @@ class RegexPatternSet:
 
 
 @dataclass(frozen=True)
-class CallSiteDigest:
+class CallSiteDigest(SourceLineReference):
     """Concrete call-site coordinate selected from source text."""
 
-    file_path: str
-    line: int
     symbol: str
     enclosing_target_id: str | None = None
 

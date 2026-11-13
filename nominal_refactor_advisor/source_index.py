@@ -28,6 +28,7 @@ from nominal_refactor_advisor.json_reports import (
 )
 from nominal_refactor_advisor.models import (
     RefactorFinding,
+    SourceLineReference,
     SourceLocation,
     stable_source_location_id,
 )
@@ -172,16 +173,14 @@ class SourceFileDigest(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class AstTargetDigest(DataclassJsonReport):
+class AstTargetDigest(DataclassJsonReport, SourceLineReference):
     """Stable AST target address for one module, class, function, or method."""
 
     target_id: str
     file_id: str
-    file_path: str
     node_kind: AstTargetNodeKind = json_report_field(field_name="node_type")
     name: str
     qualname: str
-    line: int
     end_line: int
     parameters: tuple[str, ...] = ()
     decorators: tuple[str, ...] = ()
@@ -234,13 +233,11 @@ class AstTargetDigest(DataclassJsonReport):
 
 
 @dataclass(frozen=True)
-class EvidenceDigest(DataclassJsonReport):
+class EvidenceDigest(DataclassJsonReport, SourceLineReference):
     """Stable source-address row for one finding evidence coordinate."""
 
     evidence_id: str
     file_id: str | None
-    file_path: str
-    line: int
     symbol: str
     finding_ids: tuple[str, ...]
     target_ids: tuple[str, ...] = ()

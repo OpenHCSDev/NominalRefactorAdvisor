@@ -10,6 +10,8 @@ from typing import (
     Self,
 )
 
+from nominal_refactor_advisor.models import SourceLineReference
+
 
 class CompactProductAuthorityViolation(StrEnum):
     """One typed reason a dataclass declaration cannot prove a plain product."""
@@ -150,12 +152,10 @@ class CompactProductDeclarationFailure(NamedTuple):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ProductDeclarationSite:
+class ProductDeclarationSite(SourceLineReference):
     """The source site that declares one product class: its symbol, file and line."""
 
     class_symbol: str
-    file_path: str
-    line: int
 
 
 @dataclass(frozen=True, kw_only=True)

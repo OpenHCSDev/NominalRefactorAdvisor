@@ -72,6 +72,7 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     RegistrationMetrics,
     RepeatedMethodMetrics,
+    SourceLineReference,
     SourceLocation,
     WitnessCarrierMetrics,
 )
@@ -191,10 +192,8 @@ class CompactConcreteTypeCaseFunctionFact(CompactModuleIdentity):
 
 
 @dataclass(frozen=True)
-class CompactImplicitSelfMixinFact:
-    file_path: str
+class CompactImplicitSelfMixinFact(SourceLineReference):
     qualname: str
-    line: int
     method_names: tuple[str, ...]
     method_lines: tuple[int, ...]
     cast_type_names: tuple[str, ...]
@@ -569,9 +568,7 @@ def _compact_implicit_self_contract_mixin_candidates(
 
 
 @dataclass(frozen=True)
-class _DataclassNamespaceProjection:
-    file_path: str
-    line: int
+class _DataclassNamespaceProjection(SourceLineReference):
     class_name: str
     field_names: tuple[str, ...]
     namespace_field_names: tuple[str, ...]
@@ -579,10 +576,8 @@ class _DataclassNamespaceProjection:
 
 
 @dataclass(frozen=True)
-class _CliArgumentSpecProjection:
-    file_path: str
+class _CliArgumentSpecProjection(SourceLineReference):
     name: str
-    line: int
     field_names: tuple[str, ...]
 
 

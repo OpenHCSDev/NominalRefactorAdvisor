@@ -173,24 +173,24 @@ from nominal_refactor_advisor.models import (
     CallSiteCountMetric,
     CertifiedFindingSpec,
     DispatchCountMetrics,
-    FindingMetrics,
     FindingBuildContext,
     FindingBuildContextKwargs,
+    FindingMetrics,
     FindingObligationClass,
     FindingSemantics,
     FindingSpec,
+    HierarchyCandidateMetrics,
     HighConfidenceCertifiedFindingSpec,
     HighConfidenceFindingSpec,
-    HierarchyCandidateMetrics,
     ImpactDelta,
     MappingMetrics,
     OrchestrationMetrics,
     ParameterThreadMetrics,
     ProbeCountMetrics,
     RefactorFinding,
-    RequiredRelationDeclaration,
     RegistrationMetrics,
     RepeatedMethodMetrics,
+    RequiredRelationDeclaration,
     ResolutionAxisMetrics,
     SemanticFieldRole,
     SentinelSimulationMetrics,
@@ -6187,10 +6187,8 @@ class ClassMethodLineWitnessCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class NominalAuthorityShape:
-    file_path: str
+class NominalAuthorityShape(SourceLineReference):
     class_name: str
-    line: int
     declared_base_names: tuple[str, ...]
     ancestor_names: tuple[str, ...]
     field_names: tuple[str, ...]
@@ -6748,11 +6746,9 @@ class InjectiveRegistryProofSurface(KeyedRegistryAxisSurface):
 
 
 @dataclass(frozen=True)
-class KeyedRegistryAxisFact(KeyedRegistryAxisSurface):
+class KeyedRegistryAxisFact(KeyedRegistryAxisSurface, SourceLineReference):
     """Neutral source observation; unresolved keys are not counterexamples."""
 
-    file_path: str
-    line: int
     class_name: str
     missing_maturity_signals: tuple[str, ...]
     injectivity_proof: InjectiveTypeRegistryProof | None

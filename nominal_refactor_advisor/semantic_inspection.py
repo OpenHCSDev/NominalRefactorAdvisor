@@ -85,11 +85,9 @@ class ImportSummaryKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class ImportSummary(SemanticInspectionRecord):
+class ImportSummary(SemanticInspectionRecord, SourceLineReference):
     import_id: str
-    file_path: str
     module_name: str
-    line: int
     import_kind: ImportSummaryKind
     imported_module: str | None
     imported_names: tuple[str, ...]
@@ -234,11 +232,9 @@ class FindingSummary(SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class EvidenceSummary(SemanticInspectionRecord):
+class EvidenceSummary(SemanticInspectionRecord, SourceLineReference):
     evidence_id: str
     file_id: str | None
-    file_path: str
-    line: int
     symbol: str
     finding_ids: tuple[str, ...]
     target_ids: tuple[str, ...]
@@ -264,11 +260,9 @@ class SemanticInspectionReport(SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class _TargetKey:
-    file_path: str
+class _TargetKey(SourceLineReference):
     node_kind: AstTargetNodeKind
     qualname: str
-    line: int
 
 
 @dataclass(frozen=True)

@@ -27,14 +27,13 @@ from nominal_refactor_advisor.declared_receivers import (
     ReceiverPath,
     ReceiverPathBuilder,
 )
+from nominal_refactor_advisor.models import SourceLineReference
 
 
 @dataclass(frozen=True)
-class ReceiverSpan:
+class ReceiverSpan(SourceLineReference):
     """Where a probe's receiver expression is, as the type checker addresses it."""
 
-    file_path: str
-    line: int
     column: int
     end_line: int
     end_column: int

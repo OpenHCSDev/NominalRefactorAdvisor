@@ -48,6 +48,7 @@ from nominal_refactor_advisor.class_symbols import (
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import AssignmentStatement
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.models import SourceLineReference
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
@@ -94,23 +95,19 @@ class CompactClassSyntaxFacets:
 
 
 @dataclass(frozen=True)
-class CompactNamedProjectionSurface:
+class CompactNamedProjectionSurface(SourceLineReference):
     """Top-level tuple/list/dict references used by registry projections."""
 
-    file_path: str
     surface_name: str
-    line: int
     sequence_references: tuple[tuple[str, str | None], ...] = ()
     dict_key_references: tuple[tuple[str, str | None], ...] = ()
     dict_value_references: tuple[tuple[str, str | None], ...] = ()
 
 
 @dataclass(frozen=True)
-class CompactSourceLocation:
+class CompactSourceLocation(SourceLineReference):
     """Source position shared by compact structural observations."""
 
-    file_path: str
-    line: int
 
 
 @dataclass(frozen=True)
