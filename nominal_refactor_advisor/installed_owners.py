@@ -298,13 +298,13 @@ class InstalledDistributionOwners:
                     store.stores_created_class(), store.stores_subclass()
                 )[:1]:
                     yield InstalledRegistrationOwner(
-                        name,
-                        version,
-                        record_digest,
-                        f"{module_name}.{node.name}",
-                        str(path),
-                        node.lineno,
-                        role,
+                        file_path=str(path),
+                        line=node.lineno,
+                        distribution=name,
+                        version=version,
+                        record_digest=record_digest,
+                        symbol=f"{module_name}.{node.name}",
+                        role=role,
                     )
 
 
