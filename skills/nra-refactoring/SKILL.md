@@ -442,3 +442,38 @@ and clean them after workers exit, retaining recipes and validation evidence.
    `TextFileEdit.folded`. The line-span counterpart at
    `_coalesced_group:729` already raised the typed error; these five
    were the oversight.
+
+## Efficiency detectors and their codemod paths (2026-11-13)
+
+Five detectors in `_efficiency.py` find runtime work that restates a fact the
+structure already holds. Each names a restated fact; the codemod pipeline fixes
+it. None has a synthesized recipe yet — author plans using existing operations.
+
+| Detector | PatternId (stable) | What it finds | Codemod path |
+|---|---|---|---|
+| `callback_threading` | CALLBACK_THREADING (51) | param forwarded unchanged through 2+ signatures | `project_function_parameter` to redirect reads, `replace_function_signature` to remove the param, `patch_target` on callers |
+| `loop_relookup` | LOOP_RELOOKUP (52) | loop body re-looks up an element the iterator already yielded | `patch_target` on the iterator to yield the plan with the field; or `insert_class_member` for a `_by_name` dict |
+| `linear_scan_by_name` | LINEAR_SCAN_BY_NAME (53) | `next(x for x in SEQ if x.attr == key)` | `insert_class_member` to add a dict keyed by the attribute, `patch_target` on the scan |
+| `unused_method_parameter` | UNUSED_METHOD_PARAMETER (54) | method param unused in the body | `factor_exact_method_role` for the cross-class proof, `replace_function_signature` to remove; cross-class v2 pending |
+| `phantom_family` | PHANTOM_FAMILY (55) | same name in 2+ modules, no shared ancestor | `create_mixin` + `add_class_base` + `fold_shared_declarations_into_base` |
+
+**Self-scan results (2026-11-13, NRA on NRA):** 4,919 findings from 37 detectors.
+Top clusters: `own_type_test` (1,167), `phantom_family` (858),
+`unused_method_parameter` (632), `foreign_absence_probe` (514),
+`restated_identity` (349), `linear_scan_by_name` (217), `missing_mixin` (140).
+The `_base.py` file at 7,779 lines holds 200 classes including 73 candidate
+dataclasses and 41 concrete detectors — AGENT-4 textbook.
+
+**Operation vocabulary for efficiency fixes:** authored plans compose from
+`patch_target` (exact text replacement), `insert_class_member` (add dict/property),
+`insert_before_target` (add import/declaration), `replace_function_signature`
+(remove param), and the proved hierarchy operations (`factor_exact_method_role`,
+`compose_existing_class`, `create_mixin`). Each operation's preflight proves its
+site; a hand edit is worse than an authored op, never better.
+
+**Cross-class analysis for detector #4:** `factor_exact_method_role` and
+`ExactMethodRoleComponent` already group exact methods across class cohorts.
+The unused-parameter check is a special case: instead of comparing body
+equivalence, compare parameter usage. The traversal — find every concrete
+override of a method name across the family — is the same path. Extending it
+avoids building a second cross-class walker.
