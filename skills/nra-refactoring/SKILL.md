@@ -357,6 +357,14 @@ Top: `own_type_test` (1,167), `phantom_family` (858),
 `unused_method_parameter` (632), `foreign_absence_probe` (514).
 `_base.py` at 7,779 lines with 200 classes is AGENT-4 textbook.
 
+**The `_base.py` god file (7,779 lines, 201 classes):** 97 candidate
+dataclasses and 41 concrete detectors live in the "base" module. The
+base should hold only the base classes (`IssueDetector`,
+`PerModuleIssueDetector`, `CrossModuleCandidateDetector`). The 138
+non-base declarations should move to their own modules via
+`extract_symbol_closure_to_new_module`. This is a `package_move`
+concept target, the single highest-leverage structural change in NRA.
+
 **Cross-class analysis for detector #4:** `factor_exact_method_role` and
 `ExactMethodRoleComponent` already group exact methods across class
 cohorts. The unused-parameter check is a special case of that traversal.
