@@ -28048,3 +28048,32 @@ def test_detects_linear_scan_by_name(tmp_path: Path) -> None:
     attrs = {f.summary for f in scan_findings}
     assert any(".name" in s for s in attrs)
     assert any("find_binding" in s for s in attrs)
+
+
+def test_detects_unused_method_parameter(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "from dataclasses import dataclass\n\n\n"
+            "@dataclass(frozen=True)\n"
+            "class Decoder:\n"
+            "    target: type\n\n"
+            "    def external_decoders(self, data):\n"
+            "        return self.target.decoders()\n\n"
+            "    def decode(self, data):\n"
+            "        return self.target(data)\n"
+        ),
+    )
+    findings = analyze_path(tmp_path)
+    unused_findings = [
+        finding
+        for finding in findings
+        if finding.detector_id == "unused_method_parameter"
+    ]
+    assert len(unused_findings) == 1
+    finding = unused_findings[0]
+    assert finding.pattern_id == PatternId.UNUSED_METHOD_PARAMETER
+    assert "external_decoders" in finding.summary
+    assert "data" in finding.summary

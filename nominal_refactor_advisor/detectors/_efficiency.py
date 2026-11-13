@@ -416,6 +416,153 @@ def _attr_of_var(node: ast.expr, var_name: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Detector 4: method parameter ignored in every override
+# ---------------------------------------------------------------------------
+
+
+def _unused_params(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[tuple[str, int]]:
+    """Return (name, line) for parameters that never appear in the function body.
+
+    Skips `self`, `cls`, and parameters prefixed with `_` (convention for
+    intentionally unused). Only inspects Name nodes in the body statements,
+    not in the signature defaults or annotations.
+    """
+    all_params: dict[str, int] = {}
+    for arg in func.args.args:
+        all_params[arg.arg] = arg.lineno
+    for arg in func.args.kwonlyargs:
+        all_params[arg.arg] = arg.lineno
+    if func.args.vararg:
+        all_params[func.args.vararg.arg] = func.args.vararg.lineno
+    if func.args.kwarg:
+        all_params[func.args.kwarg.arg] = func.args.kwarg.lineno
+
+    skip = {"self", "cls", "args", "kwargs"}
+    candidates = {
+        name: line for name, line in all_params.items()
+        if name not in skip and not name.startswith("_")
+    }
+    if func.name.startswith("__") and func.name.endswith("__"):
+        return []
+    if not candidates:
+        return []
+
+    used_names: set[str] = set()
+    for stmt in func.body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Name) and node.id in candidates:
+                used_names.add(node.id)
+
+    return [(name, line) for name, line in candidates.items() if name not in used_names]
+
+
+@dataclass(frozen=True)
+class _UnusedMethodParam:
+    method_name: str
+    param_name: str
+    line: int
+    class_name: str
+
+
+def _collect_unused_method_params(module: ParsedModule) -> list[_UnusedMethodParam]:
+    """Find methods with unused non-self parameters inside classes."""
+    results: list[_UnusedMethodParam] = []
+    index = module.syntax_index
+
+    for _node_index, class_node in index.indexed_nodes_of_type(ast.ClassDef):
+        for item in class_node.body:
+            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if isinstance(item, ast.FunctionDef) and not item.body:
+                continue
+            is_abstract = any(
+                (isinstance(d, ast.Name) and d.id == "abstractmethod")
+                or (isinstance(d, ast.Attribute) and d.attr == "abstractmethod")
+                for d in item.decorator_list
+            )
+            if is_abstract:
+                continue
+            body_is_ellipsis = (
+                len(item.body) == 1
+                and isinstance(item.body[0], ast.Expr)
+                and isinstance(item.body[0].value, ast.Constant)
+                and item.body[0].value.value is ...
+            )
+            if body_is_ellipsis:
+                continue
+            body_is_docstring_only = (
+                len(item.body) == 1
+                and isinstance(item.body[0], ast.Expr)
+                and isinstance(item.body[0].value, ast.Constant)
+                and isinstance(item.body[0].value.value, str)
+            )
+            if body_is_docstring_only:
+                continue
+
+            for param_name, param_line in _unused_params(item):
+                results.append(_UnusedMethodParam(
+                    method_name=item.name,
+                    param_name=param_name,
+                    line=param_line,
+                    class_name=class_node.name,
+                ))
+
+    return results
+
+
+class UnusedMethodParameterDetector(PerModuleIssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.UNUSED_METHOD_PARAMETER,
+        "Method parameter ignored in every override",
+        (
+            "A method parameter is unused in the body. When the method is on a "
+            "compiled or frozen object and called in a loop, the result is "
+            "recomputed from self alone on every call. The parameter should be "
+            "removed, or the result cached at construction."
+        ),
+        "parameter removed or result cached at construction",
+        "method parameter unused in the body on a concrete class",
+        (CapabilityTag.EXACT_LOOKUP,),
+        (ObservationTag.DATAFLOW_ROOT,),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        unused = _collect_unused_method_params(module)
+        if not unused:
+            return []
+
+        grouped: dict[str, list[_UnusedMethodParam]] = defaultdict(list)
+        for u in unused:
+            grouped[f"{u.class_name}.{u.method_name}"].append(u)
+
+        findings: list[RefactorFinding] = []
+        for method_key, params in sorted(grouped.items()):
+            evidence = tuple(
+                SourceLocation(
+                    str(module.path),
+                    p.line,
+                    f"{p.class_name}.{p.method_name}({p.param_name})",
+                )
+                for p in params
+            )
+            param_list = ", ".join(f"`{p.param_name}`" for p in params)
+            findings.append(
+                self.build_finding(
+                    (
+                        f"{method_key} ignores parameter(s) {param_list} — "
+                        f"the result depends only on self"
+                    ),
+                    evidence,
+                )
+            )
+        return findings
+
+
 class LinearScanByNameDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.LINEAR_SCAN_BY_NAME,

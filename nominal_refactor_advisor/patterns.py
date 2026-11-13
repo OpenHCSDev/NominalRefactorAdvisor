@@ -634,6 +634,17 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.EXACT_LOOKUP,),
     )
+    UNUSED_METHOD_PARAMETER = _pattern(
+        stable_id=54,
+        display_name="Method Parameter Ignored in Every Override",
+        required_relation=(
+            "A method parameter is unused in the method body. When the method "
+            "is on a compiled or frozen object and called in a loop, the result "
+            "is recomputed from self alone on every call for nothing. The parameter "
+            "should be removed, or the result cached at construction."
+        ),
+        witness_capabilities=(CapabilityTag.EXACT_LOOKUP,),
+    )
     LINEAR_SCAN_BY_NAME = _pattern(
         stable_id=53,
         display_name="Linear Scan Where a Dict Lookup Suffices",
