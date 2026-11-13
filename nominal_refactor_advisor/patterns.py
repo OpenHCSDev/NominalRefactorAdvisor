@@ -614,6 +614,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    CALLBACK_THREADING = _pattern(
+        stable_id=51,
+        display_name="Callback Threaded Through Signatures",
+        required_relation=(
+            "A parameter forwarded unchanged through intermediate signatures "
+            "belongs to the layer that uses it; intermediate plumbing restates "
+            "the route at every signature."
+        ),
+        witness_capabilities=(CapabilityTag.SHARED_ALGORITHM_AUTHORITY,),
+    )
 
     def __new__(
         cls,

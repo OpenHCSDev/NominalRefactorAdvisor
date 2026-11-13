@@ -27957,3 +27957,34 @@ def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_pat
         CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     )
     assert simulation.is_clean, simulation.preflight_report
+
+
+def test_detects_callback_threading(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "NO_OBSERVER = lambda: None\n\n\n"
+            "def outer(task, *, observer=NO_OBSERVER):\n"
+            "    return middle(task, observer=observer)\n\n\n"
+            "def middle(task, *, observer=NO_OBSERVER):\n"
+            "    return inner(task, observer=observer)\n\n\n"
+            "def inner(task, *, observer=NO_OBSERVER):\n"
+            "    observer()\n"
+            "    return task\n"
+        ),
+    )
+    findings = analyze_path(tmp_path)
+    callback_findings = [
+        finding
+        for finding in findings
+        if finding.detector_id == "callback_threading"
+    ]
+    assert len(callback_findings) == 1
+    finding = callback_findings[0]
+    assert finding.pattern_id == PatternId.CALLBACK_THREADING
+    assert "observer" in finding.summary
+    assert "outer" in finding.summary
+    assert "middle" in finding.summary
+    assert "inner" not in finding.summary
