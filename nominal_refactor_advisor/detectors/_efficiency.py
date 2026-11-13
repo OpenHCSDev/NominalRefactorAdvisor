@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from collections.abc import Sequence
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import RefactorFinding, SourceLineReference, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
@@ -685,10 +685,8 @@ class LoopRelookupDetector(PerModuleIssueDetector):
 
 
 @dataclass(frozen=True)
-class _PhantomFamilySite:
+class _PhantomFamilySite(SourceLineReference):
     """One definition of a name that appears across modules without a shared declaration."""
-    file_path: str
-    line: int
     name: str
     class_name: str | None
 
