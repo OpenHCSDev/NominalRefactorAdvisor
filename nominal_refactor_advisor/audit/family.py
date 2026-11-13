@@ -22,7 +22,7 @@ class UnknownMember(LookupError):
 
 
 class Family:
-    _declared: ClassVar[list[type["Family"]]]
+    _declared: ClassVar[list[type[Family]]]
     _affix: ClassVar[str]
     family_name: ClassVar[str]
 

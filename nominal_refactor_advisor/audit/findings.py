@@ -94,7 +94,7 @@ class Package:
     unparsed: tuple[str, ...]
 
     @classmethod
-    def load(cls, repo: Repository, rev: str, root: str) -> "Package":
+    def load(cls, repo: Repository, rev: str, root: str) -> Package:
         parent = Path(root).parent
         modules, unparsed = [], []
         for path in sorted(repo.python_paths(rev, root)):
@@ -657,7 +657,7 @@ class Overlay:
     findings: dict[type[Finding], list[Finding]]
 
     @classmethod
-    def run(cls, package: Package) -> "Overlay":
+    def run(cls, package: Package) -> Overlay:
         return cls(package, {kind: list(kind.detect(package)) for kind in Finding.members()})
 
     def baseline(self) -> Baseline:

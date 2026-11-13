@@ -53,7 +53,7 @@ class Census(JsonReport):
     unparsed: tuple[Unparsed, ...]
 
     @classmethod
-    def of(cls, table: NodeTable, outcomes: Iterable[ParseOutcome]) -> "Census":
+    def of(cls, table: NodeTable, outcomes: Iterable[ParseOutcome]) -> Census:
         outcomes = tuple(outcomes)
         return cls(table, tuple(m for o in outcomes for m in o.measured()),
                    tuple(u for o in outcomes for u in o.unparsed()))

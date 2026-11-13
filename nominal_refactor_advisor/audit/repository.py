@@ -214,7 +214,7 @@ class Change(Family, ABC, root=True):
 
     @classmethod
     @abstractmethod
-    def from_paths(cls, paths: list[str]) -> "Change": ...
+    def from_paths(cls, paths: list[str]) -> Change: ...
 
     @abstractmethod
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome: ...
@@ -255,7 +255,7 @@ class Added(Change, name="A"):
     path: str
 
     @classmethod
-    def from_paths(cls, paths: list[str]) -> "Added":
+    def from_paths(cls, paths: list[str]) -> Added:
         return cls(paths[-1])
 
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
@@ -274,7 +274,7 @@ class Copied(Added, name="C"):
     arity = 2
 
     @classmethod
-    def from_paths(cls, paths: list[str]) -> "Copied":
+    def from_paths(cls, paths: list[str]) -> Copied:
         return cls(paths[-1], paths[0])
 
 
@@ -283,7 +283,7 @@ class Modified(Change, name="M"):
     path: str
 
     @classmethod
-    def from_paths(cls, paths: list[str]) -> "Modified":
+    def from_paths(cls, paths: list[str]) -> Modified:
         return cls(paths[-1])
 
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
@@ -305,7 +305,7 @@ class Renamed(Change, name="R"):
     arity = 2
 
     @classmethod
-    def from_paths(cls, paths: list[str]) -> "Renamed":
+    def from_paths(cls, paths: list[str]) -> Renamed:
         return cls(paths[0], paths[-1])
 
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
@@ -326,7 +326,7 @@ class Deleted(Change, name="D"):
     path: str
 
     @classmethod
-    def from_paths(cls, paths: list[str]) -> "Deleted":
+    def from_paths(cls, paths: list[str]) -> Deleted:
         return cls(paths[-1])
 
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:

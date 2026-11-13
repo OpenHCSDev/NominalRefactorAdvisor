@@ -276,12 +276,12 @@ class Tally:
     counts: collections.Counter = field(default_factory=collections.Counter)
     code_lines: int = 0
 
-    def __add__(self, other: "Tally") -> "Tally":
+    def __add__(self, other: Tally) -> Tally:
         counts = collections.Counter(self.counts)
         counts.update(other.counts)        # Counter's + would drop negative totals; changes can be negative
         return Tally(counts, self.code_lines + other.code_lines)
 
-    def __sub__(self, other: "Tally") -> "Tally":
+    def __sub__(self, other: Tally) -> Tally:
         counts = collections.Counter(self.counts)
         counts.subtract(other.counts)
         return Tally(counts, self.code_lines - other.code_lines)

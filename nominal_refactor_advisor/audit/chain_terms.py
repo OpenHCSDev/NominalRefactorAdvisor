@@ -32,7 +32,7 @@ class TermKind(Family, ABC, root=True, affix="Term"):
     def matches(cls, term: ast.expr) -> bool: ...
 
     @staticmethod
-    def of(term: ast.expr) -> type["TermKind"]:
+    def of(term: ast.expr) -> type[TermKind]:
         target = _operand(term)
         return next(kind for kind in TermKind.members() if kind.matches(target))
 
@@ -140,7 +140,7 @@ class ChainProfile:
     kinds: tuple[tuple[str, int], ...]
 
     @classmethod
-    def of(cls, chain: ast.BoolOp) -> "ChainProfile":
+    def of(cls, chain: ast.BoolOp) -> ChainProfile:
         counts = collections.Counter(TermKind.of(term) for term in chain.values)
         ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0].declared_position()))
         return cls(tuple((kind.family_name, count) for kind, count in ordered))
