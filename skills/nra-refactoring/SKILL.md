@@ -91,6 +91,22 @@ shared parent, `factor_exact_method_role` for repeated methods,
 preflight is a proved check. An authored plan with proved operations is
 stronger than a synthesized recipe that hedged its way to silence.
 
+## Authored plan gotchas (learned 2026-11-13)
+
+- **`ensure_import` takes `import_source`** (the full import line as a
+  string), not `import_module`/`import_names`.
+- **`patch_target` does substring matching** within the target class.
+  `"line: int"` matches `"from_namespace_line: int"`. Use the full
+  indented source line including leading whitespace to disambiguate.
+- **`add_class_base` changes field order.** Base fields come first in
+  the MRO. Any positional constructor call breaks. After applying, grep
+  every changed class for positional construction and convert to kwargs.
+  Script: `ast.walk` for `ast.Call` with `node.args` and func name in
+  the changed set.
+- **`patch_target` replacement `""` (empty) removes the line.** But it
+  leaves a blank line. The codemod pipeline handles this — parse
+  validation still passes.
+
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
 - **Fill the plan, simulate once, apply once.** Compose with
@@ -123,6 +139,45 @@ stronger than a synthesized recipe that hedged its way to silence.
 - **Results travel; caches don't.** Finding ids hash detector, pattern,
   summary and evidence, not the build. Plans posted as JSON match on any
   agent's scan of the same source.
+
+## Goal search: the automatic trajectory finder
+
+The most powerful move: NRA explores every proved refactoring trajectory
+and emits a multi-stage plan. Use it when a concept + detector pair exists.
+
+```bash
+# Find and apply all forwarder inlines
+nominal-refactor-advisor PKG \
+  --codemod-refactor-goal forwarder_inline \
+  --codemod-goal-detector forwarding_facade \
+  --codemod-apply
+
+# Just explore without applying
+nominal-refactor-advisor PKG \
+  --codemod-refactor-goal CONCEPT \
+  --codemod-goal-detector DETECTOR
+```
+
+**Do NOT pass `--codemod-simulate` with goal search** — it rejects the
+combination. The goal search simulates internally at each stage.
+
+Registered concept keys (from `refactor_concepts.py`):
+`auto_register`, `auto_register_class_registry`,
+`auto_register_mro_ordering`, `auto_register_strategy_family`,
+`call_mapping_authority`, `class_body_composition`,
+`class_family_authority`, `constructor_kwarg_carrier_projection`,
+`constructor_kwarg_collapse`, `dataclass_payload_projection`,
+`dead_module_dissolution`, `declaration_reference`,
+`derived_projection`, `false_distinction_erasure`,
+`foreign_adapter_bind_chain`, `foreign_family_routing`,
+`forwarder_inline`, `legacy_path_erasure`, `nominal_boundary`,
+`optional_ast_field_decoder`, `package_move`,
+`semantic_carrier`, `static_projection_adapter`,
+`tuple_dict_return_nominalization`.
+
+Each concept key pairs with one or more detector IDs
+(`--codemod-goal-detector`). The detector provides findings; the concept
+provides the recipe synthesizer.
 
 ## Worked examples
 
