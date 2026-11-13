@@ -306,6 +306,170 @@ def _collect_loop_relookups(module: ParsedModule) -> list[_LoopRelookup]:
     return results
 
 
+# ---------------------------------------------------------------------------
+# Detector 3: linear scan by attribute where a dict lookup suffices
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _LinearScan:
+    """One site where a sequence is scanned to find an element by attribute."""
+    line: int
+    spelling: str
+    sequence_label: str
+    attribute: str
+    enclosing_function: str
+
+
+def _linear_scan_sites(
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[_LinearScan]:
+    """Find `next(x for x in SEQ if x.ATTR == KEY)` and `[x for x in SEQ if x.ATTR == KEY][0]`.
+
+    Both are O(n) scans finding one element by attribute comparison. A dict keyed
+    by that attribute answers the same question in O(1). The scan is the linear
+    search the dict replaces.
+    """
+    results: list[_LinearScan] = []
+
+    for node in ast.walk(func):
+        match node:
+            case ast.Call(
+                func=ast.Name(id="next"),
+                args=[ast.GeneratorExp() as genexp],
+            ):
+                hit = _scan_from_comprehension(genexp, "next(...)")
+                if hit is not None:
+                    results.append(_LinearScan(
+                        line=node.lineno,
+                        spelling="next(... for ... if .attr == key)",
+                        sequence_label=hit[0],
+                        attribute=hit[1],
+                        enclosing_function=func.name,
+                    ))
+
+            case ast.Subscript(
+                value=ast.ListComp() as listcomp,
+                slice=ast.Constant(value=0),
+            ):
+                hit = _scan_from_comprehension(listcomp, "[...][0]")
+                if hit is not None:
+                    results.append(_LinearScan(
+                        line=node.lineno,
+                        spelling="[... for ... if .attr == key][0]",
+                        sequence_label=hit[0],
+                        attribute=hit[1],
+                        enclosing_function=func.name,
+                    ))
+
+    return results
+
+
+def _scan_from_comprehension(
+    comp: ast.GeneratorExp | ast.ListComp,
+    label: str,
+) -> tuple[str, str] | None:
+    """Extract (sequence_label, attribute) from a comprehension that filters by attribute equality.
+
+    Matches:  x for x in SEQ if x.ATTR == KEY   (one generator, one if, equality test)
+    Returns (readable SEQ label, ATTR name) or None.
+    """
+    if len(comp.generators) != 1:
+        return None
+    gen = comp.generators[0]
+    if len(gen.ifs) != 1:
+        return None
+
+    match gen.target:
+        case ast.Name(id=var_name):
+            pass
+        case _:
+            return None
+
+    condition = gen.ifs[0]
+    attr_name = _equality_attribute_filter(condition, var_name)
+    if attr_name is None:
+        return None
+
+    seq_label = _unparse_short(gen.iter)
+    return (seq_label, attr_name)
+
+
+def _equality_attribute_filter(condition: ast.expr, var_name: str) -> str | None:
+    """If condition is `var.ATTR == expr` or `expr == var.ATTR`, return ATTR."""
+    match condition:
+        case ast.Compare(
+            left=left,
+            ops=[ast.Eq()],
+            comparators=[right],
+        ):
+            attr = _attr_of_var(left, var_name) or _attr_of_var(right, var_name)
+            return attr
+    return None
+
+
+def _attr_of_var(node: ast.expr, var_name: str) -> str | None:
+    """If node is `var_name.ATTR`, return ATTR."""
+    match node:
+        case ast.Attribute(value=ast.Name(id=name), attr=attr) if name == var_name:
+            return attr
+    return None
+
+
+class LinearScanByNameDetector(PerModuleIssueDetector):
+    finding_spec = high_confidence_spec(
+        PatternId.LINEAR_SCAN_BY_NAME,
+        "Linear scan by attribute where a dict lookup suffices",
+        (
+            "A sequence is scanned with next(x for x in SEQ if x.attr == key) or "
+            "the [... if ...][0] spelling to find one element by attribute. A dict "
+            "keyed by that attribute answers the same question in O(1). When the "
+            "sequence is a field of a frozen or cached plan, the dict can be built "
+            "once at construction."
+        ),
+        "dict keyed by the attribute, built once; O(1) lookup",
+        "linear scan of a sequence filtering by attribute equality",
+        (CapabilityTag.EXACT_LOOKUP,),
+        (ObservationTag.DATAFLOW_ROOT,),
+    )
+
+    def _findings_for_module(
+        self, module: ParsedModule, config: DetectorConfig
+    ) -> list[RefactorFinding]:
+        index = module.syntax_index
+        scans: list[_LinearScan] = []
+
+        for _node_index, func_node in (
+            *index.indexed_nodes_of_type(ast.FunctionDef),
+            *index.indexed_nodes_of_type(ast.AsyncFunctionDef),
+        ):
+            scans.extend(_linear_scan_sites(func_node))
+
+        if not scans:
+            return []
+
+        findings: list[RefactorFinding] = []
+        for scan in scans:
+            evidence = (
+                SourceLocation(
+                    str(module.path),
+                    scan.line,
+                    f"{scan.spelling} over {scan.sequence_label}",
+                ),
+            )
+            findings.append(
+                self.build_finding(
+                    (
+                        f"linear scan of `{scan.sequence_label}` by "
+                        f"`.{scan.attribute}` in {scan.enclosing_function} — "
+                        f"a dict keyed by `{scan.attribute}` is O(1)"
+                    ),
+                    evidence,
+                )
+            )
+        return findings
+
+
 class LoopRelookupDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.LOOP_RELOOKUP,

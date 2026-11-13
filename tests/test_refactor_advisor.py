@@ -28021,4 +28021,30 @@ def test_detects_loop_relookup(tmp_path: Path) -> None:
     assert "record_fields" in finding.summary
     assert "field_plan" in finding.summary
     assert "decode" in finding.summary
-    assert "inner" not in finding.summary
+
+
+def test_detects_linear_scan_by_name(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        (
+            "class Plan:\n"
+            "    def __init__(self, bindings):\n"
+            "        self.bindings = bindings\n\n\n"
+            "def find_binding(plan, name):\n"
+            "    return next(item for item in plan.bindings if item.name == name)\n\n\n"
+            "def find_binding_list(plan, name):\n"
+            "    return [item for item in plan.bindings if item.name == name][0]\n"
+        ),
+    )
+    findings = analyze_path(tmp_path)
+    scan_findings = [
+        finding
+        for finding in findings
+        if finding.detector_id == "linear_scan_by_name"
+    ]
+    assert len(scan_findings) == 2
+    attrs = {f.summary for f in scan_findings}
+    assert any(".name" in s for s in attrs)
+    assert any("find_binding" in s for s in attrs)

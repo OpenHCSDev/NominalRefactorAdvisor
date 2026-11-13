@@ -634,6 +634,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.EXACT_LOOKUP,),
     )
+    LINEAR_SCAN_BY_NAME = _pattern(
+        stable_id=53,
+        display_name="Linear Scan Where a Dict Lookup Suffices",
+        required_relation=(
+            "A sequence is scanned to find the element whose attribute matches a "
+            "supplied key. A dict keyed by that attribute answers the same question "
+            "in O(1); the scan restates the mapping the sequence already implies."
+        ),
+        witness_capabilities=(CapabilityTag.EXACT_LOOKUP,),
+    )
 
     def __new__(
         cls,
