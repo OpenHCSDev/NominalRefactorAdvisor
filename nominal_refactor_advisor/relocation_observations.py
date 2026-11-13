@@ -184,11 +184,13 @@ def function_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast
 
 
 def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
-    yield node
-    if isinstance(node, (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)):
-        return
-    for child in ast.iter_child_nodes(node):
-        yield from scope_nodes(child)
+    _scope_boundaries = (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if not isinstance(current, _scope_boundaries):
+            stack.extend(ast.iter_child_nodes(current))
 
 
 # ---- the class shapes every family join reads

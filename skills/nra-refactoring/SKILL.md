@@ -378,3 +378,42 @@ concept target, the single highest-leverage structural change in NRA.
 `ExactMethodRoleComponent` already group exact methods across class
 cohorts. The unused-parameter check is a special case of that traversal.
 Extending it avoids building a second cross-class walker.
+
+## Performance architecture
+
+Cold scan of NRA itself (846 .py files): ~142s baseline → ~98s with
+`analysis_workers=0` (auto-parallel). Warm cache: 0.6s. The cache
+stores per-module collected-family items (~1.8GB pickle) and per-detector
+analysis findings.
+
+**Where the time goes (cold, from cProfile):**
+- 62% in `family_batch` / `collect_family_items`: 42K (module × family)
+  collection operations, each walking or filtering the module's AST
+- 14% in pickle serialization: 18K cache entries written to disk
+- 8% in initial parse: reading and parsing 846 Python files
+- 7% in syntax index build: one DFS walk per module
+- 9% other: type checking, GC, sorting, cross-module aggregation
+
+**The bottleneck is O(modules × families).** Each of ~50 CollectedFamily
+subclasses independently collects items from each of ~846 modules. The
+`family_batch` cache on ParsedModule prevents duplicate collections
+within one scan, but each unique (module, family) pair still runs its
+collector once. The collectors use the syntax index's pre-built node-type
+index (`indexed_nodes_of_type`) or `scoped_observations` (both cached
+per module), so per-family overhead is modest (~1-3ms). The cost is the
+sum of 42K modest operations.
+
+**Parallelism:** `analysis_workers=0` auto-selects process-pool workers
+for per-module detection (`_per_module_findings`) and global detector
+sharding (`_missing_global_detector_findings`). The contextual-global
+path (`_contextual_global_findings`) runs sequentially. Workers fork
+from the parent with `gc.freeze()` to avoid COW overhead; each worker
+gets its own copy of the ParsedModule family caches.
+
+**For 10x (target ~14s), the architecture needs:**
+1. Async or batched cache writes to remove I/O from the critical path
+2. Parallel contextual-global detection
+3. Pre-computed per-module projections shared across global detectors
+4. Or: a single-pass multi-family collector that walks each module once
+   and dispatches to all interested families, replacing 42K independent
+   collections with 846 dispatched walks

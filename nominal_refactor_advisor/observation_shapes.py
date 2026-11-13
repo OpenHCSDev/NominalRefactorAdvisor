@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from nominal_refactor_advisor.class_composition import CompositeClassSpec
@@ -496,11 +497,20 @@ class DeclaredClassScope:
         """Whether a scanned module is, contains, or sits inside the module of `name`."""
 
         owner = name.rpartition(".")[0]
-        return any(
-            owner == scanned
-            or owner.startswith(f"{scanned}.")
-            or scanned.startswith(f"{owner}.")
-            for scanned in self.module_names
+        scanned_set, scanned_dots = self._module_index()
+        if owner in scanned_set:
+            return True
+        owner_dot = f"{owner}."
+        for scanned_dot in scanned_dots:
+            if owner.startswith(scanned_dot) or scanned_dot.startswith(owner_dot):
+                return True
+        return False
+
+    @lru_cache(maxsize=1)
+    def _module_index(self) -> tuple[frozenset[str], tuple[str, ...]]:
+        return (
+            frozenset(self.module_names),
+            tuple(f"{m}." for m in self.module_names),
         )
 
 

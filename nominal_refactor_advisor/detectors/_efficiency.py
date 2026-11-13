@@ -475,6 +475,18 @@ def _collect_unused_method_params(module: ParsedModule) -> list[_UnusedMethodPar
     results: list[_UnusedMethodParam] = []
     index = module.syntax_index
 
+    abstract_method_names: set[str] = set()
+    for _ni, cls in index.indexed_nodes_of_type(ast.ClassDef):
+        for member in cls.body:
+            if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if any(
+                (isinstance(d, ast.Name) and d.id == "abstractmethod")
+                or (isinstance(d, ast.Attribute) and d.attr == "abstractmethod")
+                for d in member.decorator_list
+            ):
+                abstract_method_names.add(member.name)
+
     for _node_index, class_node in index.indexed_nodes_of_type(ast.ClassDef):
         for item in class_node.body:
             if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -487,6 +499,8 @@ def _collect_unused_method_params(module: ParsedModule) -> list[_UnusedMethodPar
                 for d in item.decorator_list
             )
             if is_abstract:
+                continue
+            if item.name in abstract_method_names:
                 continue
             body_is_ellipsis = (
                 len(item.body) == 1

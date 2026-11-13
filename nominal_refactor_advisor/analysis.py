@@ -4475,7 +4475,7 @@ def analyze_path(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    analysis_workers: int = 1,
+    analysis_workers: int = 0,
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
     """Parse a filesystem root and return sorted refactor findings."""
@@ -4509,7 +4509,7 @@ def analyze_paths(
     *,
     cache_dir: Path | None = None,
     use_parse_cache: bool = True,
-    analysis_workers: int = 1,
+    analysis_workers: int = 0,
     source_policy: PythonSourcePathPolicy | None = None,
 ) -> list[RefactorFinding]:
     """Parse multiple filesystem roots and return sorted refactor findings."""

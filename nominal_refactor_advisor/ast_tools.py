@@ -3658,14 +3658,16 @@ def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
 def walk_function_body_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
     """Walk a function body without entering nested definition bodies."""
 
+    _scope_types = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
     nodes: list[ast.AST] = []
     stack = list(reversed(statements_without_docstring(body)))
     while stack:
         node = stack.pop()
         nodes.append(node)
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        stack.extend(reversed(tuple(ast.iter_child_nodes(node))))
+        if not isinstance(node, _scope_types):
+            children = list(ast.iter_child_nodes(node))
+            children.reverse()
+            stack.extend(children)
     return tuple(nodes)
 
 
@@ -3726,11 +3728,9 @@ def collect_scoped_observations(
     parsed_module: ParsedModule, node_types: tuple[type[ast.AST], ...]
 ) -> tuple[ScopedAstObservation, ...]:
     return tuple(
-        (
-            observation
-            for observation in parsed_module.scoped_observations
-            if isinstance(observation.node, node_types)
-        )
+        observation
+        for observation in parsed_module.scoped_observations
+        if isinstance(observation.node, node_types)
     )
 
 
