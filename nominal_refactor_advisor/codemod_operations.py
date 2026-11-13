@@ -55,10 +55,10 @@ class RefactorRecipeOperation(
     ABC,
     metaclass=AutoRegisterMeta,
 ):
-    """Agent-authored codemod operation compiled through source-index geometry.
+    """A codemod operation an agent writes in a recipe.
 
-    The registry imports every module of the refactors package on its first read,
-    so an operation's membership never depends on an importer loading its module.
+    The registry imports every module in the refactors package on first read, so
+    which operations exist never depends on who imported what.
     """
 
     __registry_config__ = RegistryConfig(
@@ -81,7 +81,7 @@ class RefactorRecipeOperation(
         self,
         simulation: CodemodPlanDocumentSimulation,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        """Inspect declared relations against the complete rendered document."""
+        """Check the declared relations against the full rendered document."""
         return ()
 
     @classmethod
@@ -145,7 +145,7 @@ class RefactorRecipeOperation(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[TextFileEdit, ...]:
-        """Edits of files outside the Python source index this operation keeps true."""
+        """Edits to files outside the Python source index that this operation keeps in sync."""
 
         del context
         return ()
@@ -162,7 +162,7 @@ class RefactorRecipeOperation(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[AuthorityClaim, ...]:
-        """Derive authority claims established by this operation."""
+        """Owner claims this operation sets up."""
 
         del context
         return ()
@@ -171,7 +171,7 @@ class RefactorRecipeOperation(
         self,
         context: CodemodSelectorContext,
     ) -> tuple[ArchitectureGuardRule, ...]:
-        """Derive post-refactor invariants established by this operation."""
+        """Rules that must hold after this operation runs."""
 
         del context
         return ()
@@ -216,6 +216,6 @@ class RefactorRecipeOperation(
 
 @dataclass(frozen=True, kw_only=True)
 class SourcePayloadOperation(RefactorRecipeOperation, ABC):
-    """Recipe operation whose declaration owns required Python source text."""
+    """Recipe operation that carries required Python source text."""
 
     source: str = codemod_payload_field(RequiredStringPayloadValueCodec())

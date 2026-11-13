@@ -891,9 +891,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.DESCRIPTOR_DERIVED_VIEW,
         "Path projection properties should be derived descriptors",
-        "Several properties project Path-valued views from owned base fields through the same `/` algebra. That is a descriptor-derived view family: the varying suffixes should be data while the projection algorithm lives in one reusable descriptor.",
-        "single descriptor authority for repeated Path projection properties",
-        "same class repeats Path projection properties over owned base fields",
+        "Several properties build Path views from owned base fields with the same `/` expression. Only the suffixes differ. Make the suffixes data and write the projection once as a descriptor.",
+        "one descriptor for repeated Path projection properties",
+        "the same class repeats Path projection properties over owned base fields",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -1025,9 +1025,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.DESCRIPTOR_DERIVED_VIEW,
         "Collection projection properties should be derived descriptors",
-        "Sibling properties that only map one owned collection to member attributes are descriptor-derived views. Repeating `tuple(item.attr for item in self.collection)` per property makes each projected attribute look like behavior when the actual semantic object is the collection projection relation.",
-        "single collection-projection descriptor parameterized by collection and member attribute",
-        "same class repeats collection projection properties over one owned collection",
+        "Sibling properties that only map one owned collection to member attributes are descriptor-shaped. Repeating `tuple(item.attr for item in self.collection)` per property makes each attribute look like behavior. The real thing is the collection projection.",
+        "one collection-projection descriptor parameterized by collection and member attribute",
+        "the same class repeats collection projection properties over one owned collection",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -1060,10 +1060,10 @@ class ResidualClosedAxisIndirectionDetector(
     candidate_collector = staticmethod(_residual_closed_axis_indirection_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Enum-keyed table and residual branches suggest scattered case ownership",
-        "A function indexes an enum-keyed table and also branches on that axis. For behavior-bearing cases, prefer a public ABC with shared algorithms on the parent and case-owned declarations, data and hooks on concrete subclasses; derive consumers and any needed registration from that family rather than retain another enum-to-handler roster. Compose independently meaningful capabilities through inheritance only after checking MRO, construction and substitutability. If the sites only encode values or an external vocabulary, establish that distinct role before recommending a hierarchy. This source observation does not prove case binding, callable effects, complete coverage or rewrite equivalence; preserve unmatched cases, branch priority and unknown-input behavior in a staged migration.",
-        "class-owned polymorphic behavior instead of independently maintained tables and case branches, where the domain contract supports it",
-        "same function indexes an enum-keyed table and branches on that enum axis",
+        "Enum-keyed table plus leftover branches suggest scattered case ownership",
+        "A function indexes an enum-keyed table and also branches on the same enum. If the cases carry behavior, prefer a public ABC: shared algorithms on the parent, per-case declarations, data and hooks on concrete subclasses. Derive consumers and any registration from that family instead of keeping another enum-to-handler list. Compose independent capabilities through inheritance only after checking MRO, construction and substitutability. If the sites only encode values or an outside vocabulary, show that role is distinct before proposing a hierarchy. This observation does not prove case binding, callable effects, full coverage or rewrite equivalence. Migrate in stages and keep unmatched cases, branch priority and unknown-input behavior.",
+        "class-owned polymorphic behavior instead of separately maintained tables and case branches, if the task rules allow it",
+        "the same function indexes an enum-keyed table and branches on that enum",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -1102,10 +1102,10 @@ class DerivedWrapperSpecShadowDetector(
     candidate_collector = staticmethod(_derived_wrapper_spec_shadow_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Generated wrapper spec family should collapse into the authoritative spec family",
-        "The docs treat writable wrapper-spec tables as secondary authorities when they just point back at an existing spec family and feed code generation. Wrapper metadata should live on the authoritative spec records so generated wrappers are derived from one source rather than synchronized across parallel tables.",
-        "single authoritative spec family carrying wrapper-generation metadata",
-        "secondary spec table references an authoritative spec family entry-by-entry and is only consumed by wrapper generation",
+        "Generated wrapper spec family should fold into the main spec family",
+        "A writable wrapper-spec table is a second source of truth when it only points back at an existing spec family and feeds code generation. Put the wrapper metadata on the main spec records and generate wrappers from them.",
+        "one spec family carrying the wrapper-generation metadata",
+        "a second spec table references the main spec family entry by entry and is only used for wrapper generation",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -1256,10 +1256,10 @@ declare_candidate_rule_detector(
     CrossModuleAxisShadowFamilyCandidate,
     high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Cross-module shadow family should collapse into one axis authority",
-        "The docs require one authoritative owner per closed semantic axis. When one module already owns an enum/keyed family nominally and another module reintroduces a second family over the same cases, the axis has split authority and local behavior should derive from the authoritative family instead.",
-        "single authoritative closed-axis family reused across modules",
-        "same keyed enum axis is modeled by an authoritative family in one module and a shadow selector family in another",
+        "Shadow family in another module should fold into one axis owner",
+        "A closed axis should have one owner. One module already owns an enum or keyed family, and another module builds a second family over the same cases. Derive the local behavior from the owner.",
+        "one closed-axis family reused across modules",
+        "the same keyed enum axis is modeled by an owning family in one module and a shadow selector family in another",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -1290,10 +1290,10 @@ class ResidualClosedAxisBranchingDetector(
     )
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
-        "Manual closed-axis branching should derive from existing keyed authority",
-        "The docs require one authoritative owner per closed enum/key axis. When a keyed nominal family already owns that axis, downstream `if`/`match` ladders over the same cases become residual shadow dispatch.",
-        "behavior derived from authoritative keyed family rather than downstream enum branching",
-        "function branches on an enum axis already owned by a keyed nominal family in another module",
+        "Manual closed-axis branching should derive from the existing keyed family",
+        "A closed enum or key axis should have one owner. A keyed family already owns it, so `if`/`match` ladders over the same cases downstream are leftover shadow dispatch.",
+        "behavior derived from the keyed family instead of downstream enum branching",
+        "function branches on an enum axis already owned by a keyed family in another module",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -1567,9 +1567,9 @@ class ExternalEnumCaseRecoveryDetector(
     finding_spec = high_confidence_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "External enum case recovery suggests class-owned polymorphic behavior",
-        "Functions outside an enum declaration inspect multiple declared cases. For behavior-bearing cases, prefer a public ABC whose concrete subclasses own their related declarations, data and behavior, with common algorithms inherited from the parent. Consumers should invoke that contract rather than inspect tags or maintain parallel tables; moving the same switch into a shared Enum method does not achieve this. A value-only enum or external wire vocabulary needs a separately justified role, not an automatic subclass conversion. Trace existing classes and alternative owners, then plan the complete consumer migration; this observation alone proves neither runtime binding nor a required hierarchy, complete coverage or behavioral equivalence.",
-        "a shared public contract with case-owned behavior rather than repeated member interpretation, subject to the domain decision",
-        "multiple declared enum members are inspected outside their nominal owner",
+        "Functions outside an enum declaration inspect several of its cases. If the cases carry behavior, prefer a public ABC whose concrete subclasses own their declarations, data and behavior, with shared algorithms on the parent. Consumers should call that contract instead of checking tags or keeping parallel tables. Moving the same switch into an Enum method does not get you there. A value-only enum or outside wire vocabulary needs its own justification, not an automatic conversion to subclasses. Trace existing classes and other possible owners, then plan the full consumer migration. This observation alone does not prove runtime binding, a required hierarchy, full coverage or behavioral equivalence.",
+        "a shared public contract with case-owned behavior instead of repeated member checks, if the task rules allow it",
+        "several enum members are inspected outside the enum that owns them",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -1619,10 +1619,10 @@ class ParallelKeyedAxisFamilyDetector(
     )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
-        "Parallel keyed families should collapse into one axis authority",
-        "The docs require one authoritative nominal owner per closed semantic axis. When two modules each define a keyed family over the same enum/key cases, the axis has split ownership even if both sides are nominal.",
-        "single cross-module keyed-axis authority with module-local adapters derived from it",
-        "same keyed enum axis is modeled by multiple nominal families across modules",
+        "Parallel keyed families should fold into one axis owner",
+        "A closed axis should have one owner. Two modules each define a keyed family over the same enum or key cases, so ownership is split even though both sides are proper classes.",
+        "one cross-module keyed-axis owner with module-local adapters derived from it",
+        "the same keyed enum axis is modeled by several families across modules",
         (
             CapabilityTag.AUTHORITATIVE_DISPATCH,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -1681,10 +1681,10 @@ class ParallelKeyedTableAndFamilyDetector(
     )
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Keyed table and keyed family should collapse into one auto-registered axis family",
-        "The docs require one authoritative owner per closed semantic axis. When a module keeps one keyed table of per-case records and a second keyed nominal family over the same cases, the axis is split across data and behavior. If the family already carries the runtime behavior boundary, the table should derive from that family instead of competing with it.",
-        "single authoritative metaclass-registry axis family with derived table/view projections",
-        "same enum/key axis is encoded by both a keyed table and a keyed nominal family",
+        "Keyed table and keyed family should fold into one auto-registered axis family",
+        "A closed axis should have one owner. A module keeps a keyed table of per-case records and also a keyed family over the same cases, so the axis is split between data and behavior. If the family already holds the runtime behavior, derive the table from it.",
+        "one auto-registered axis family with table and view projections derived from it",
+        "the same enum or key axis is encoded by both a keyed table and a keyed family",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.AUTHORITATIVE_DISPATCH,
@@ -1744,9 +1744,9 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "AutoRegister root repeats inherited registry configuration",
-        "An AutoRegisterMeta root that directly repeats registry protocol fields already declared by a base is carrying boilerplate instead of relying on inheritance. The registry key, skip policy, and related protocol fields should be inherited from the shared nominal base. If AutoRegisterMeta cannot honor inherited registry config, fix the metaclass package rather than repeating the fields on every root.",
-        "inherited AutoRegister registry protocol configuration",
-        "AutoRegisterMeta class repeats registry protocol assignments from an inherited base",
+        "An AutoRegisterMeta root repeats registry settings its base already declares. Inherit the registry key, skip policy and related fields from the shared base. If AutoRegisterMeta can't honor inherited config, fix the metaclass package instead of repeating fields on every root.",
+        "inherited AutoRegister registry configuration",
+        "AutoRegisterMeta class repeats registry assignments from an inherited base",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -1834,9 +1834,9 @@ class AutoRegisterExplicitPriorityOrderingDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "AutoRegister family uses explicit priority ordering instead of MRO",
-        "An AutoRegisterMeta family whose registered leaves carry a `priority`, `precedence`, `rank`, or `order` class attribute is maintaining a second ordering authority beside the inheritance graph. If ordering is semantic, the nominal hierarchy and MRO should carry it; if ordering is only presentation, it should be a derived view outside the registered family.",
-        "MRO-owned ordering for registered semantic families",
-        "AutoRegisterMeta family declares or consumes a class-level priority-like axis to sort registered implementations",
+        "An AutoRegisterMeta family whose leaves carry a `priority`, `precedence`, `rank` or `order` class attribute keeps a second ordering next to the inheritance graph. If the order matters, let the hierarchy and MRO carry it. If it's only for display, derive it in a view outside the family.",
+        "MRO-owned ordering for registered families",
+        "AutoRegisterMeta family declares or reads a class-level priority to sort registered implementations",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -1986,9 +1986,9 @@ class NominalInstanceExplicitOrderingDetector(
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Nominal declaration catalog uses explicit ordering instead of MRO",
-        "An abstract nominal value family carries a `priority`, `precedence`, `rank`, or `order` instance field, while class-owned declarations supply that field and a consumer sorts by it. The field is a second ordering authority beside the inheritance graph. Give each declaration one nominal catalog node and derive the sequence from its MRO.",
-        "MRO-owned sequence for nominal declaration catalogs",
-        "class-owned instances of an abstract family supply an explicit ordering axis consumed by sorted(..., key=...)",
+        "An abstract value family has a `priority`, `precedence`, `rank` or `order` field. Class-owned declarations fill it in and a consumer sorts by it. That is a second ordering next to the inheritance graph. Give each declaration one class node and derive the sequence from its MRO.",
+        "MRO-owned sequence for declaration catalogs",
+        "class-owned instances of an abstract family supply an ordering field that is read by sorted(..., key=...)",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.MRO_ORDERING,
@@ -2175,9 +2175,9 @@ class RepeatedKeyedFamilyDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Repeated keyed family scaffolding should collapse into one typed metaclass-registry base",
-        "The docs encourage aggressive metaprogramming when several nominal families repeat the same class-level registration and lookup shell. When many roots restate `registry_key_attr`, `_registry`, and `for_*` lookup methods, the family algorithm should live in one typed `metaclass-registry` base.",
-        "single typed metaclass-registry substrate for keyed nominal registries",
-        "same keyed family registration and lookup shell repeated across nominal family roots",
+        "Several families repeat the same class-level registration and lookup shell: `registry_key_attr`, `_registry` and `for_*` lookup methods on each root. Put that algorithm in one typed `metaclass-registry` base.",
+        "one typed metaclass-registry base for keyed registries",
+        "the same registration and lookup shell is repeated across family roots",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -2810,10 +2810,10 @@ declare_candidate_rule_detector(
     NonInjectiveTypeRegistryCandidate,
     high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
-        "Type registry must be injective over its key axis",
-        "A nominal registry is only type-safe when each concrete implementation has one canonical key and each key resolves to one implementation. Duplicate keys, duplicate type identities, or concrete descendants without keys mean the registry cannot serve as an injective authority.",
-        "injective type registry with one stable key per concrete implementation",
-        "registry key axis aliases multiple implementation types or misses concrete descendants",
+        "Type registry must map keys to types one-to-one",
+        "A registry is only type-safe when each concrete implementation has one key and each key resolves to one implementation. Duplicate keys, duplicate types, or concrete subclasses with no key mean the registry can't be trusted as a one-to-one map.",
+        "one-to-one type registry with one stable key per concrete implementation",
+        "registry keys alias several implementation types or miss concrete subclasses",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -2843,9 +2843,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Mature injective registry is a metaclass-registration candidate",
-        "A registry with a stable key axis, lookup lifecycle, consumer fanout, and an injective type-to-key proof has the shape needed for declaration-owned registration. Replacing its mechanics with AutoRegisterMeta still requires proving that dynamic registration timing and external plugin lifecycle are compatible.",
-        "AutoRegisterMeta-backed ABC with an injective type-key proof",
-        "registry axis proves one key per implementation type plus mature lookup and consumer fanout, but migration lifecycle remains unproven",
+        "A registry with a stable key axis, a lookup lifecycle, many consumers and a proven one-to-one type-to-key map is ready for declaration-owned registration. Before switching to AutoRegisterMeta, check that dynamic registration timing and any outside plugin lifecycle still work.",
+        "AutoRegisterMeta-backed ABC with a one-to-one type-key map",
+        "the registry proves one key per implementation type, with mature lookup and many consumers, but the migration lifecycle is unproven",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -2874,10 +2874,10 @@ declare_candidate_rule_detector(
     RegistryProjectionSurfaceCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Manual registry projection surfaces should derive from the injective registry",
-        "Once a registry proves one canonical key per implementation type, export rosters, key/type maps, and option lists are projections of that registry authority. Hand-maintaining those surfaces creates shadow authorities that can drift away from the type-safe registry.",
-        "generated projection surface derived from an injective registry proof",
-        "manual list or dict surface repeats keys/types already proven by an injective registry",
+        "Manual registry projections should derive from the registry",
+        "Once a registry has one key per implementation type, export lists, key/type maps and option lists are projections of it. Maintaining them by hand creates shadow copies that can drift from the registry.",
+        "generated projection derived from a one-to-one registry",
+        "manual list or dict repeats keys and types the registry already proves",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -2930,10 +2930,10 @@ declare_candidate_rule_detector(
     RegistryProjectionPolicyAuthorityCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Repeated registry subset projections should share a nominal policy authority",
-        "A partial projection of an injective registry is a quotient of the registry axis. When several surfaces repeat the same quotient hint, the hint should become a first-class projection policy instead of living as independent allowlists.",
-        "nominal registry projection policy reused by generated subset surfaces",
-        "multiple registry projection surfaces repeat the same subset hint without one owner",
+        "Repeated registry subset projections should share one policy",
+        "A partial projection of a one-to-one registry is a subset of its key axis. When several surfaces repeat the same subset hint, make it a real projection policy instead of separate allowlists.",
+        "registry projection policy reused by generated subset surfaces",
+        "several registry projections repeat the same subset hint with no single owner",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -2971,9 +2971,9 @@ class KeyedRecordInfrastructureDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Manual keyed-record infrastructure should derive from one substrate",
-        "Repeated keyed records, indexes, and lookup mechanics create writable mapping authorities beside their record declarations. The docs prefer one typed keyed-record substrate whose indexes and lookup behavior are derived from declared records.",
-        "single authoritative typed keyed-record substrate with derived indexes",
-        "manual keyed-record construction or registration and lookup mechanics repeat across tables",
+        "Repeated keyed records, indexes and lookup code create writable mappings next to the record declarations. Use one typed keyed-record base that derives indexes and lookup from the declared records.",
+        "one typed keyed-record base with derived indexes",
+        "keyed-record construction or registration and lookup code repeats across tables",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.CLOSED_FAMILY_DISPATCH,
@@ -3005,9 +3005,9 @@ class ManualStructuralRecordMechanicsDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated structural record mechanics should derive from field metadata",
-        "When several frozen dataclass records hand-write validation, tuple-style field projection, round-trip reconstruction, and fieldwise transform logic, those mechanics have become a second authority beside the field declarations. The docs prefer one metadata-driven record substrate that derives those mechanics from typed fields.",
-        "single typed structural-record substrate with derived validation, projection, and transform mechanics",
-        "same dataclass record lifecycle mechanics repeated across sibling structural record classes",
+        "Several frozen dataclass records hand-write validation, tuple-style field projection, round-trip reconstruction and per-field transforms. That code is now a second source of truth next to the field declarations. Derive it from the typed fields with one metadata-driven record base.",
+        "one typed record base that derives validation, projection and transforms",
+        "the same dataclass record lifecycle code is repeated across sibling record classes",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -3053,10 +3053,10 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
     )
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Repeated concrete-type recovery should become nominal family behavior",
-        "When several functions repeatedly recover the same semantic family through concrete `isinstance` checks on one carried attribute, the family boundary is still latent. The docs want one nominal ABC and concrete leaf behavior exposed through typed properties or hooks instead of repeated leaf decoding.",
-        "single ABC-backed family for the carried subject, with repeated case recovery moved into nominal properties or hooks",
-        "same attribute-carried family is re-decoded through repeated concrete runtime type checks across several functions",
+        "Repeated concrete-type recovery should become class-family behavior",
+        "Several functions recover the same family with concrete `isinstance` checks on one carried attribute, so the family boundary is still implicit. Use one ABC and expose leaf behavior through typed properties or hooks instead of decoding leaves repeatedly.",
+        "one ABC-backed family for the carried subject, with case recovery moved into properties or hooks",
+        "the same attribute-carried family is decoded again with concrete runtime type checks across several functions",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -3137,9 +3137,9 @@ class ImplicitSelfContractMixinDetector(
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Concrete mixins should not hide consumer contracts behind `self`-casts",
-        "The docs reserve mixins for orthogonal reusable concerns that participate in nominal MRO cleanly. When a concrete mixin erases `self` through `cast(..., self)` to reach consumer-owned fields, the mixin is carrying non-orthogonal family logic through a hidden contract instead of a declared base or policy.",
-        "declared nominal base or policy row for the shared algorithm instead of a hidden mixin self-contract",
-        "concrete mixin methods erase `self` through casts and depend on consumer-owned attributes across several subclasses",
+        "Mixins are for independent reusable concerns that fit cleanly in the MRO. A concrete mixin that uses `cast(..., self)` to reach consumer-owned fields is carrying family logic through a hidden contract. Declare a base or policy instead.",
+        "declared base or policy row for the shared algorithm instead of a hidden mixin self-contract",
+        "concrete mixin methods cast `self` and depend on consumer-owned attributes across several subclasses",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3192,9 +3192,9 @@ class RepeatedResultAssemblyPipelineDetector(
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated result-assembly pipeline should collapse into one authoritative assembler",
-        "Several owners repeat the same downstream result-assembly stages and differ only in the upstream source or projection that feeds the pipeline. The docs treat that as shared algorithm authority that should move into one template method or authoritative helper with one orthogonal source hook.",
-        "single authoritative result-assembly pipeline with one source hook",
-        "same staged assembly tail is repeated across sibling functions or methods",
+        "Several owners repeat the same downstream result-assembly steps and differ only in the upstream source or projection. Move the steps into one template method or helper with one source hook.",
+        "one result-assembly pipeline with one source hook",
+        "the same assembly tail is repeated across sibling functions or methods",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -3253,9 +3253,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.STAGED_ORCHESTRATION,
         "Candidate detector should declare collector strategy",
-        "Detector classes repeatedly implement `_candidate_items()` as a one-line forwarding method. That is boilerplate control flow: the detector identity and finding rendering are semantic, while candidate collection is a typed class-level strategy that can be inherited.",
-        "typed metaprogrammed detector base that derives candidate collection from a declared strategy",
-        "detector class repeats collector forwarding method instead of declaring a collector",
+        "Detector classes repeat `_candidate_items()` as a one-line forwarder. That is boilerplate. The detector's identity and finding rendering matter, and candidate collection is a typed class-level strategy that can be inherited.",
+        "typed detector base that derives candidate collection from a declared strategy",
+        "detector class repeats a collector forwarding method instead of declaring a collector",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3286,9 +3286,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Candidate template method should receive typed candidates directly",
-        "Detector classes repeatedly accept `candidate: object`, immediately cast it to a nominal candidate type, and then never use the object-typed parameter again. That cast belongs in the generic detector base contract: the implementation hook should receive the typed candidate directly.",
-        "generic typed candidate detector base with no per-detector cast prelude",
-        "candidate-rendering template method starts with a local cast of its only payload parameter",
+        "Detector classes take `candidate: object`, cast it to a candidate type right away, and never use the object-typed parameter again. Put that cast in the generic detector base so the hook receives the typed candidate.",
+        "generic typed candidate detector base with no per-detector cast",
+        "candidate-rendering method starts by casting its only parameter",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3318,10 +3318,10 @@ DeclarativeDetectorClassDetector = declare_candidate_rule_detector(
     DeclarativeDetectorClassCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Metadata-only detector class should be declared through detector algebra",
-        "A detector class whose body only assigns finding metadata and a renderer is not carrying implementation behavior. Its class shell is derivable from the candidate type, detector base, registry key, and declaration line.",
-        "one detector-declaration algebra that derives metadata-only detector classes",
-        "detector class repeats a nominal class shell around only declarative assignments",
+        "Metadata-only detector class should be declared through the detector helper",
+        "A detector class whose body only assigns finding metadata and a renderer has no behavior of its own. Its class shell can be derived from the candidate type, detector base, registry key and declaration line.",
+        "one detector declaration helper that derives metadata-only detector classes",
+        "detector class repeats a class shell around only declarative assignments",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3351,10 +3351,10 @@ declare_candidate_rule_detector(
     StaticTypedObservationDetectorCandidate,
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
-        "Static observation detector should derive from typed observation algebra",
-        "A static detector whose evidence method only collects one typed observation family and maps its line/symbol payload into `SourceLocation` is repeating the same module-observation algorithm. The detector should declare the observation family, item type, evidence threshold, and summary template while the ABC owns collection and evidence projection.",
-        "typed observation detector algebra with one shared collection/projection algorithm",
-        "detector class shell repeats collect/map/summary mechanics for one observation family",
+        "Static observation detector should derive from typed observation base",
+        "A static detector whose evidence method only collects one typed observation family and maps its line and symbol into `SourceLocation` repeats the same module-observation code. Have the detector declare the observation family, item type, evidence threshold and summary template, and let the ABC do collection and evidence projection.",
+        "typed observation detector base with one shared collection and projection algorithm",
+        "detector class repeats collect, map and summary code for one observation family",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3388,10 +3388,10 @@ declare_candidate_rule_detector(
     SchemaAccessorFamilyCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Schema-shaped accessor family should derive from one projection schema",
-        "Several public methods on one class fetch one enum-keyed payload field with `self.required(...)` or `self.optional(...)`, then repeat local runtime guards or coercions before returning the value. That is a hidden field schema spread across methods: the enum member, requiredness, accepted type, coercion, and error policy should be declared once and projected through a typed accessor engine.",
-        "single authoritative projection schema for enum-keyed payload fields",
-        "same class repeats payload accessor methods over one closed enum/key axis",
+        "Accessor family should derive from one projection schema",
+        "Several public methods on one class fetch one enum-keyed payload field with `self.required(...)` or `self.optional(...)`, then repeat local guards or coercions before returning. That is a field schema spread across methods. Declare the enum member, requiredness, accepted type, coercion and error policy once and project through a typed accessor.",
+        "one projection schema for enum-keyed payload fields",
+        "the same class repeats payload accessor methods over one closed enum or key axis",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3424,10 +3424,10 @@ declare_candidate_rule_detector(
     TupleIndexSemanticOpacityCandidate,
     high_confidence_certified_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
-        "Carrier tuple context should become a named semantic record",
-        "A typed carrier pipeline that accesses context as `pair[0]`, `pair[1]`, or nested numeric tuple paths has collapsed the control-flow smell but introduced a positional data smell. The semantic-compressor normal form is a named product record, authority-owned context object, or step result type whose field names carry the invariant.",
+        "Positional tuple context should become a named record",
+        "A typed carrier pipeline that reads context as `pair[0]`, `pair[1]` or nested numeric tuple paths fixed the control-flow smell but added a positional-data smell. Use a named record, an owner-held context object or a step result type whose field names carry the invariant.",
         "named effect context record instead of positional tuple plumbing",
-        "effect pipeline stores semantic context in numeric tuple indexes",
+        "effect pipeline keeps its context in numeric tuple indexes",
         (
             CapabilityTag.UNIT_RATE_COHERENCE,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -3469,10 +3469,10 @@ class FindingSpecConstructionBoilerplateDetector(
     candidate_collector = FindingSpecConstructionCandidateCollector.collect
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "FindingSpec construction should use its typed semantic factory",
-        "FindingSpec factories own semantic tier defaults and canonical coordinate order. Calling the record constructor directly repeats either that schema, those defaults, or both at every detector declaration.",
-        "one typed FindingSpec factory per semantic tier",
-        "FindingSpec record is constructed directly instead of through its semantic-tier factory",
+        "FindingSpec construction should use its typed factory",
+        "FindingSpec factories own the tier defaults and the canonical argument order. Calling the constructor directly repeats that schema, those defaults, or both, at every detector declaration.",
+        "one typed FindingSpec factory per tier",
+        "FindingSpec is constructed directly instead of through its tier factory",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -3520,9 +3520,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Detector finding builder should derive detector_id",
-        "Concrete detectors repeatedly call `self.finding_spec.build(self.detector_id, ...)`. The detector id is instance-owned template context, not per-finding payload; a shared `build_finding(...)` hook should inject it once.",
-        "typed detector template method that injects detector identity into finding construction",
-        "finding renderer manually passes detector-owned identity into its own spec builder",
+        "Concrete detectors repeatedly call `self.finding_spec.build(self.detector_id, ...)`. The detector id belongs to the detector instance, not to each finding. A shared `build_finding(...)` hook should inject it once.",
+        "typed detector template method that injects the detector id when building findings",
+        "finding renderer passes the detector's own id into its spec builder by hand",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3554,8 +3554,8 @@ DirectBuildFindingRendererDetector = declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Direct build_finding renderer should be a typed renderer value",
-        "A `_finding_for_candidate` method whose entire body is `return self.build_finding(...)` does not own control flow. It is a data renderer over one candidate type, so the candidate-to-finding algorithm should live once in the ABC and the detector should supply a typed renderer object.",
-        "typed candidate finding renderer reused by detector ABC machinery",
+        "A `_finding_for_candidate` method whose whole body is `return self.build_finding(...)` has no control flow. It is a data renderer for one candidate type. Put the candidate-to-finding algorithm once in the ABC and have the detector supply a typed renderer.",
+        "typed candidate finding renderer reused by the detector ABC",
         "detector method is only a build_finding payload declaration",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -3588,10 +3588,10 @@ declare_candidate_rule_detector(
     EnumMetadataTableCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Enum metadata table should be carried by enum members",
-        "An enum whose properties only index a module-level table by `self` splits member identity from member metadata. The metadata should move into enum construction so each member carries its own typed semantic record.",
+        "Enum metadata table should live on the enum members",
+        "An enum whose properties only index a module-level table by `self` splits member identity from member metadata. Move the metadata into enum construction so each member carries its own typed record.",
         "enum member construction owns the member metadata",
-        "enum properties read a parallel metadata table keyed by the same enum family",
+        "enum properties read a parallel metadata table keyed by the same enum",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -3637,10 +3637,10 @@ declare_candidate_rule_detector(
     DataclassNamespaceCliMirrorCandidate,
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Dataclass config surfaces should derive namespace and CLI adapters",
-        "A dataclass already owns its field names and defaults. Re-enumerating those fields in a namespace constructor and an argparse specification table creates parallel configuration surfaces that can drift from the typed record.",
-        "one dataclass field authority that derives namespace construction and CLI argument rows",
-        "dataclass fields are mirrored manually in both from-namespace construction and CLI argument specs",
+        "Dataclass config should derive its namespace and CLI adapters",
+        "A dataclass already owns its field names and defaults. Listing them again in a namespace constructor and an argparse table makes parallel config that can drift from the record.",
+        "one dataclass field list that derives namespace construction and CLI argument rows",
+        "dataclass fields are mirrored by hand in both from-namespace construction and CLI argument specs",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3682,10 +3682,10 @@ declare_candidate_rule_detector(
     ManualFiberTagCandidate,
     high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
-        "Manual fiber tag should become nominal family",
-        "A string-valued instance tag is manually selecting behavior while the same instance still carries fields from several incompatible fibers. That leaves the family above the zero-incoherence threshold and admits disagreement states the host type system could rule out.",
-        "host-native nominal fiber decomposition with one subclass per behavior fiber",
-        "manual instance tag drives behavior while irrelevant coordinates remain constructible on every fiber",
+        "Manual variant tag should become a class family",
+        "A string tag on an instance picks behavior by hand, while the same instance still carries fields from several incompatible variants. The class family stays inconsistent and allows states the type system could rule out.",
+        "native class decomposition with one subclass per behavior variant",
+        "a manual instance tag drives behavior while fields for the other variants stay constructible on every variant",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.PROVENANCE,
@@ -3721,9 +3721,9 @@ class StructuralConfusabilityDetector(
     candidate_collector = staticmethod(_structural_confusability_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
-        "Consumer observes a confusable duck-typed family",
-        "A consumer only observes a partial structural view, and several unrelated classes are confusable under that view. Without a nominal witness, the distortion floor stays above zero and the family boundary remains implicit.",
-        "ABC-backed nominal witness for a structurally confusable implementation family",
+        "Consumer sees a look-alike duck-typed family",
+        "A consumer sees only part of the structure, and several unrelated classes look the same through that view. Without a nominal base to tell them apart, the family boundary stays implicit.",
+        "ABC-backed nominal base for a family of look-alike implementations",
         "consumer depends on a partial structural view shared by several unrelated classes",
         (
             CapabilityTag.NOMINAL_IDENTITY,
@@ -3754,10 +3754,10 @@ class SemanticWitnessFamilyDetector(
     candidate_collector = _witness_carrier_family_candidates
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,
-        "Renamed semantic carrier roles need one nominal inheritance spine",
-        "Several frozen dataclass carriers repeat location and naming roles under distinct field names. One root should own family identity while reusable role mixins own the orthogonal slices and compose through MRO.",
-        "one authoritative nominal carrier root plus reusable semantic-role mixins",
-        "same carrier family repeats a renamed semantic-role spine across sibling frozen dataclasses",
+        "Renamed carrier roles need one inheritance spine",
+        "Several frozen dataclass carriers repeat location and naming roles under different field names. One root should own the family identity and reusable role mixins should own the independent slices, composed through MRO.",
+        "one nominal carrier root plus reusable role mixins",
+        "the same carrier family repeats a renamed role spine across sibling frozen dataclasses",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.PROVENANCE,

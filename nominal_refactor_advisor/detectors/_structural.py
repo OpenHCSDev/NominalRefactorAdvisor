@@ -107,9 +107,9 @@ class RepeatedPropertyAliasHookDetector(
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated property hook aliases should move into a shared base or mixin",
-        "Several subclasses re-declare the same one-line property hook over the same backing attribute. That is non-orthogonal hook duplication and should live once in a shared base or mixin.",
-        "single authoritative hook property implementation for a nominal subclass family",
-        "same property hook alias repeats across siblings of one base family",
+        "Several subclasses redeclare the same one-line property over the same backing attribute. Declare it once in a shared base or mixin.",
+        "one property implementation on the shared base",
+        "the same property alias repeats across siblings of one base",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -214,9 +214,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Exact tiny methods expose one repeated nominal role",
-        "Several classes without one nominal ancestor own the same complete tiny method declaration. The exact method role is one maintenance object, but the current snapshot does not prove whether an existing authority or a new inheritance boundary should own it.",
-        "one proved nominal authority derives the exact method role for every participant",
-        "unrelated classes repeat the same promotion-safe method declaration with a closed receiver contract; ownership placement remains a practitioner decision",
+        "Several classes with no common base each own the same complete tiny method. One owner should hold it, but the scan can't tell whether that's an existing class or a new base.",
+        "one proven owner provides the method for every participant",
+        "unrelated classes repeat the same method, and the receiver is closed; you decide where it goes",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -252,9 +252,9 @@ ExactLeafMethodAncestorPromotionDetector = declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Closed leaf family repeats methods owned by its direct authority",
-        "Every direct leaf of one resolved nominal authority owns the same complete promotion-safe method set. The complete direct-child relation, exact source identity, receiver contract, and absence of competing ancestor definitions prove the existing authority as the unique promotion target.",
-        "the existing direct authority owns each exact shared method once",
-        "all direct children are leaves, the authority is unique, and the complete exact method batch is closed over authority-declared receiver members",
+        "Every direct leaf of one resolved base owns the same complete set of safe-to-promote methods. The child list, source identity, receiver contract and lack of competing ancestor definitions show the existing base is the only place to promote them.",
+        "the existing base owns each shared method once",
+        "all direct children are leaves, the base is unique, and the whole method batch only uses members the base declares",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -291,9 +291,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Sibling implementations expose one repeated algorithm",
-        "Sibling classes that share a base implement the same statement skeleton at several maintenance sites. The common statements and varying expression coordinates prove semantic overlap, but do not by themselves prove where that algorithm belongs in the reachable inheritance design.",
-        "one proved nominal authority derives the shared algorithm without duplicating its residue semantics",
-        "same method across sibling classes has an anti-unifiable statement skeleton with small residue",
+        "Sibling classes under one base implement the same statement skeleton in several places. The shared statements and varying expressions show the overlap, but not where in the inheritance tree the algorithm belongs.",
+        "one proven owner provides the shared algorithm without duplicating its varying parts",
+        "the same method across sibling classes has one statement skeleton with a small varying part",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -339,9 +339,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Class-family methods expose one repeated algorithm family",
-        "A class family has several methods with compatible anti-unifiable bodies over the same base and subclass set. Their combined evidence establishes a shared maintenance object while leaving its correct inheritance placement unresolved.",
-        "one proved nominal authority derives the complete shared method family and its irreducible residue",
-        "multiple semantic-overlap method observations share the same base and subclass family",
+        "A class family has several methods whose bodies line up over the same base and subclass set. Together they show one shared maintenance target, but not where in the inheritance tree it belongs.",
+        "one proven owner provides the whole shared method family and its varying parts",
+        "several overlapping-method findings share the same base and subclass family",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -379,9 +379,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Overlapping inheritance families require one authority proof",
-        "A base class has several intersecting subclass method families. Each family is only a local view; the complete class-set lattice is the evidence boundary that any safe authority assignment must cover.",
-        "one proved authority assignment covers the complete inheritance lattice without duplicating algorithms or residue semantics",
-        "multiple semantic-overlap method families under one root have intersecting but non-identical subclass sets",
+        "A base class has several overlapping subclass method families. Each is only a partial view. Any safe owner assignment has to cover the full set of overlapping subclass sets.",
+        "one proven owner assignment covers the whole inheritance structure without duplicating algorithms or varying parts",
+        "several overlapping-method families under one root have intersecting but different subclass sets",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -421,9 +421,9 @@ class ReflectiveSelfAttributeEscapeDetector(
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Reflective self-attribute access hides a nominal contract",
-        "A class uses reflective self-attribute access with a hardcoded string instead of declaring the field or property on the nominal carrier. That keeps the contract partial, stringly, and fail-soft.",
-        "declared fail-loud nominal attribute contract on the carrier family",
-        "class template probes its own required state through reflective string access",
+        "A class reads its own attributes through getattr or similar with a hardcoded string, instead of declaring the field or property on the base. The contract stays partial, stringly and fails quietly.",
+        "declared attribute on the base that fails loudly when missing",
+        "class template reads its own required state through a string attribute lookup",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -460,9 +460,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated MRO base bundle should become a named ABC mixin",
-        "Several classes repeat the same contiguous base bundle. That bundle is already a semantic composition unit, so it should have a nominal name and be reused as one ABC/mixin rather than respelled across implementation classes.",
-        "named ABC/mixin for one repeated semantic MRO bundle",
-        "class family repeats the same composable base sequence in each class declaration",
+        "Several classes repeat the same run of base classes. That run is already a unit, so give it a name and reuse it as one ABC or mixin.",
+        "one named ABC or mixin for the repeated base run",
+        "class family repeats the same base sequence in each declaration",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -493,9 +493,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual sibling-registry unions should derive from one authoritative query",
-        "A module manually unions sibling class-level registry queries even though one authoritative query or shared root can derive the full family set.",
-        "one derived registry-union query on an authoritative metaclass-registry root or traversal helper",
-        "manual union of sibling registry queries repeats information already present in class-time registration",
+        "A module unions several sibling registry queries by hand, though one query or shared root can produce the whole set.",
+        "one derived registry-union query on a registry root or traversal helper",
+        "the manual union repeats what class-time registration already knows",
         (
             CapabilityTag.CLASS_LEVEL_REGISTRATION,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -526,9 +526,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
         "Concrete class-object union should be a shared nominal contract",
-        "A function accepts a union of concrete class objects, then treats the parameter as one constructor or class-level capability. That concrete roster is a local re-encoding of a nominal contract.",
-        "one shared ABC used as type[SharedContract] or a TypeVar bound to it",
-        "function parameter annotation unions concrete class objects while the body calls common class-level behavior on that parameter",
+        "A function accepts a union of concrete classes, then uses the parameter as one constructor or class-level capability. That list of classes restates a shared contract.",
+        "one shared ABC used as type[SharedContract], or a TypeVar bound to it",
+        "parameter is annotated as a union of concrete classes while the body calls common class-level behavior on it",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,
@@ -649,9 +649,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Accumulator folds should derive from one fold algebra",
-        "Several methods instantiate the same accumulator, stream one source iterable through different accumulator step hooks, and return the same projection. The loop skeleton is an algebraic fold and should be one reusable composition primitive.",
-        "single accumulator-fold substrate with declarative step hooks",
-        "same owner class repeats accumulator initialization, loop, and result projection with only the step hook varying",
+        "Several methods create the same accumulator, feed one iterable through different step hooks, and return the same projection. That loop is a fold. Write it once.",
+        "one accumulator-fold base with declared step hooks",
+        "the same class repeats accumulator setup, loop and result projection and differs only in the step hook",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -686,9 +686,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Catalog-installing mixins should share one subclass hook",
-        "Several mixins repeat the same `__init_subclass__` template: delegate to `super()` and install one classvar-held catalog. Only the catalog attribute is orthogonal; the subclass hook is one shared algorithm.",
-        "one reusable catalog-installing subclass hook with declarative catalog attribute residue",
-        "sibling mixins repeat an identical class-creation hook over different catalog classvars",
+        "Several mixins repeat the same `__init_subclass__`: call `super()` and install one classvar catalog. Only the catalog attribute differs. Share the hook.",
+        "one reusable catalog-installing subclass hook, with the catalog attribute as data",
+        "sibling mixins repeat the same class-creation hook over different catalog classvars",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.MRO_ORDERING,
@@ -723,9 +723,9 @@ declare_candidate_rule_detector(
     high_confidence_certified_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Regex group extractor methods should derive from descriptors",
-        "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. The pattern field and matcher mode are data; the extractor algorithm should be one descriptor or helper substrate.",
-        "one regex group extraction descriptor with declared pattern and matcher coordinates",
-        "same class repeats regex group extractor methods over different pattern fields",
+        "Several methods repeat `match = pattern.<mode>(text); return match.group(n) if match else None`. The pattern field and match mode are data. Write the extractor once as a descriptor or helper.",
+        "one regex group descriptor with declared pattern and match mode",
+        "the same class repeats regex group extractor methods over different pattern fields",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
@@ -754,9 +754,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Dynamic self-field selection hides a nominal contract",
-        "A class selects one of its own fields through reflective indirection instead of declaring one fail-loud hook or one canonical field.",
-        "declared nominal count/value hook instead of selector-driven reflective lookup",
-        "class template selects its own state through dynamic reflective field names",
+        "A class picks one of its own fields by name at runtime instead of declaring one fail-loud hook or one canonical field.",
+        "declared count or value hook instead of lookup by field name",
+        "class template picks its own state by dynamic field name",
         (
             CapabilityTag.FAIL_LOUD_CONTRACTS,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -774,9 +774,9 @@ declare_candidate_rule_detector(
     high_confidence_spec(
         PatternId.NOMINAL_BOUNDARY,
         "String-backed reflective lookup is simulating nominal identity",
-        "The docs say a class family should not smuggle behavior through string selectors and reflection. When subclasses only supply constant names that are resolved through globals, getattr, or __dict__, the boundary should become one declared nominal hook or typed handle.",
-        "declared nominal hook or typed family handle instead of string selector plus reflection",
-        "class family encodes behavior with constant selector strings and resolves it reflectively",
+        "A class family shouldn't pass behavior through string selectors and reflection. When subclasses only supply constant names resolved through globals, getattr or __dict__, use one declared hook or typed handle.",
+        "declared hook or typed family handle instead of a string selector plus reflection",
+        "class family encodes behavior as constant selector strings and resolves them by reflection",
         (
             CapabilityTag.NOMINAL_IDENTITY,
             CapabilityTag.FAIL_LOUD_CONTRACTS,

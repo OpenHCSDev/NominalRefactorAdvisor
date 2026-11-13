@@ -51,8 +51,8 @@ class FragmentedFamilyAuthorityDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Parallel key-family tables should become one authoritative record",
-        "Several dicts keyed by the same nominal family collectively encode one semantic record. The docs treat that as fragmented authority that should collapse into one authoritative schema.",
-        "single authoritative enum-keyed planning record",
+        "Several dicts keyed by the same family together describe one record. Merge them into one record that owns all the fields.",
+        "one enum-keyed record that holds everything",
         "one key family is split across parallel metadata tables",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
@@ -91,10 +91,10 @@ declare_candidate_rule_detector(
     DerivedQueryIndexCandidate,
     high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Repeated linear query helpers should derive keyed indexes from the immutable authority",
-        "Several lookup helpers linearly rescan the same immutable authority to answer different key queries. The docs treat those repeated scans as a derived-index surface that should be materialized once.",
-        "one authoritative immutable family plus derived keyed indexes",
-        "same immutable authority is rescanned by multiple query helpers with different key selectors",
+        "Repeated lookup helpers should build keyed indexes from the one source of truth",
+        "Several lookup helpers rescan the same immutable data to answer different key queries. Build the indexes once and look them up.",
+        "one immutable family plus keyed indexes built from it",
+        "the same immutable data is rescanned by several query helpers with different keys",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -122,9 +122,9 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated finding-assembly pipeline should move into a detector base",
-        "Several detectors repeat the same candidate-to-finding pipeline with only orthogonal hooks varying. The docs prefer one template-method substrate plus mixins for residue.",
-        "candidate-driven detector template with abstract hooks and mixins",
-        "same finding assembly stages repeat across sibling detector classes",
+        "Several detectors repeat the same candidate-to-finding pipeline and differ only in small hooks. Put the pipeline in one template base and let each detector supply the hooks.",
+        "candidate-driven detector base with abstract hooks and mixins",
+        "the same finding-assembly steps repeat across sibling detector classes",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -176,10 +176,10 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
 class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
-        "Projection-style record rebuild should collapse into one authoritative builder",
-        "Several call sites rebuild the same nominal record by projecting overlapping source authorities field-by-field, often with guard/default residue mixed into the call. The docs treat that as fragmented builder authority: the projection belongs in one authoritative constructor, classmethod, or helper.",
-        "one authoritative projection builder for a repeated record family",
-        "same nominal record is re-projected from overlapping sources at several call sites",
+        "Rebuilding a record by projecting fields should live in one builder",
+        "Several call sites build the same record by copying fields from overlapping sources, often with guards and defaults mixed in. Move that projection into one constructor, classmethod or helper.",
+        "one projection builder for a repeated record family",
+        "the same record is rebuilt from overlapping sources at several call sites",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.PROVENANCE,
@@ -226,9 +226,9 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated guarded spec wrappers should collapse into mixins",
-        "Several observation-spec methods differ only by a scope guard and one delegate helper call. The docs prefer one shared wrapper substrate with orthogonal scope mixins.",
-        "shared wrapper substrate with orthogonal scope mixins",
-        "guard-and-delegate wrapper logic repeats across sibling observation specs",
+        "Several observation-spec methods differ only by a scope guard and one delegate call. Share one wrapper and add the scope guards as mixins.",
+        "one shared wrapper with scope mixins",
+        "guard-and-delegate logic repeats across sibling observation specs",
         (
             CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
             CapabilityTag.NOMINAL_IDENTITY,
@@ -291,9 +291,9 @@ class StructuralObservationProjectionDetector(
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated property projection builders should share one projection substrate",
-        "Several classes repeat the same property-backed constructor projection schema with only role hooks varying. The docs prefer one authoritative projection template.",
-        "single authoritative projection builder with role hooks",
-        "same property-backed constructor schema is manually rebuilt across many classes",
+        "Several classes repeat the same property-backed constructor projection and differ only in role hooks. Use one projection template.",
+        "one projection builder with role hooks",
+        "the same property-backed constructor is rebuilt by hand across many classes",
         (
             CapabilityTag.AUTHORITATIVE_MAPPING,
             CapabilityTag.NOMINAL_IDENTITY,

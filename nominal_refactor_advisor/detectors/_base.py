@@ -516,8 +516,8 @@ class DetectorCacheGranularity(StrEnum):
 class IssueDetector(
     RequiredRelationDeclaration, AnswerDeclaration, metaclass=AutoRegisterMeta
 ):
-    """Metaclass-registered detector base class. The registry imports every module of
-    this package on its first read, so no importer has to load the family by hand."""
+    """Detector base class, registered by metaclass. The registry imports every module in
+    this package on first read, so nothing has to load the family by hand."""
 
     __registry_config__ = RegistryConfig(
         registry_dict=LazyDiscoveryDict(),
@@ -1047,7 +1047,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         target_projections_by_family: CompactProjectionGroups,
         config: DetectorConfig,
     ) -> bool:
-        """Conservatively admit context unless an exact witness rejects it."""
+        """Accept the context unless an exact witness rules it out."""
 
         predicate = cls.compact_report_context_promotion_predicate
         if predicate is not None:

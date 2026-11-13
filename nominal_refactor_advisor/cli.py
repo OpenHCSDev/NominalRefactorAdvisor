@@ -336,32 +336,27 @@ _CLI_ARGUMENT_SPECS = (
             nargs="*",
             default=["nominal_refactor_advisor"],
             help=(
-                "File or directory paths to analyze "
-                "(defaults to nominal_refactor_advisor)."
+                "File or directory paths to analyze (default: nominal_refactor_advisor)."
             ),
         ),
         CliArgumentSpec(
             flags=("--json",),
             action="store_true",
-            help="Emit JSON instead of Markdown.",
+            help="Print JSON instead of Markdown.",
         ),
         CliArgumentSpec(
             flags=("--json-payload",),
             default="agent",
             value_type=str,
             help=(
-                "JSON payload profile: agent, full, summary, or loop. The agent "
-                "profile is the default and skips source index and observation "
-                "graph payloads; loop emits compact findings for fast edit cycles."
+                "JSON profile: agent, full, summary or loop. agent is the default and leaves out source index and observation graph payloads. loop prints compact findings for fast edit cycles."
             ),
         ),
         CliArgumentSpec(
             flags=("--raw-findings",),
             action="store_true",
             help=(
-                "Show full raw finding details even when semantic refactor gate "
-                "is active. Raw findings are supporting evidence, not the default "
-                "evidence surface."
+                "Show full raw finding details even when the refactor gate is on. Raw findings back up the gate output; they are not the main report."
             ),
         ),
         CliArgumentSpec(
@@ -369,8 +364,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=0,
             help=(
-                "Number of concurrent parser workers for Python source loading. "
-                "Use 0 to choose automatically."
+                "Parser worker count for loading Python source. 0 picks automatically."
             ),
         ),
         CliArgumentSpec(
@@ -378,8 +372,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=0,
             help=(
-                "Number of detector-analysis worker processes. Use 0 to choose "
-                "automatically for package scans, or 1 for sequential analysis."
+                "Detector worker process count. 0 picks automatically for package scans. 1 runs sequentially."
             ),
         ),
         CliArgumentSpec(
@@ -387,16 +380,14 @@ _CLI_ARGUMENT_SPECS = (
             action="store_true",
             default=False,
             help=(
-                "Include test files and test directories in source discovery. "
-                "By default repo scans analyze production source only."
+                "Include test files and test directories. By default scans cover production source only."
             ),
         ),
         CliArgumentSpec(
             flags=("--cache-dir",),
             value_type=Path,
             help=(
-                "AST parse cache directory. Defaults to an NRA cache-home entry "
-                "keyed by the analysis root."
+                "AST parse cache directory. Default is an NRA cache-home entry keyed by the analysis root."
             ),
         ),
         CliArgumentSpec(
@@ -406,8 +397,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             default=[],
             help=(
-                "Parse and analyze this root for global source context while "
-                "limiting reported findings to the positional paths."
+                "Parse and analyze this root for global context, but only report findings under the positional paths."
             ),
         ),
         CliArgumentSpec(
@@ -415,42 +405,41 @@ _CLI_ARGUMENT_SPECS = (
             action="store_false",
             dest="auto_context_root",
             default=True,
-            help=("Do not infer package-level context roots for file-only scans."),
+            help=("Don't infer package-level context roots for file-only scans."),
         ),
         CliArgumentSpec(
             flags=("--no-cache",),
             action="store_false",
             dest="use_parse_cache",
             default=True,
-            help="Disable the AST parse cache for this run.",
+            help="Turn off the AST parse cache for this run.",
         ),
         CliArgumentSpec(
             flags=("--include-plans",),
             action="store_true",
-            help="Also emit non-actionable subsystem structural hypotheses.",
+            help="Also print subsystem structural hypotheses (not actionable).",
         ),
         CliArgumentSpec(
             flags=("--include-execution-plan",),
             action="store_true",
             help=(
-                "Also emit graph-grounded classes derived from shared structural "
-                "evidence."
+                "Also print classes derived from shared structural evidence in the graph."
             ),
         ),
         CliArgumentSpec(
             flags=("--plans-only",),
             action="store_true",
-            help="Emit only subsystem-level structural hypotheses.",
+            help="Print only subsystem-level structural hypotheses.",
         ),
         CliArgumentSpec(
             flags=("--include-economics",),
             action="store_true",
-            help="Emit portfolio-level payoff economics.",
+            help="Print portfolio-level payoff economics.",
         ),
         CliArgumentSpec(
             flags=("--include-change-budget",),
             action="store_true",
-            help="Also split working-tree LOC changes by backend/detector/test role.",
+            help="Also split working-tree LOC changes by backend, detector and test role.",
         ),
         CliArgumentSpec(
             flags=("--include-structural-overlap",),
@@ -459,8 +448,7 @@ _CLI_ARGUMENT_SPECS = (
             default=None,
             default_supplied=True,
             help=(
-                "Report non-actionable structural-overlap evidence for groups of "
-                "findings and source targets."
+                "Report structural-overlap evidence for groups of findings and source targets (not actionable)."
             ),
         ),
         CliArgumentSpec(
@@ -469,7 +457,7 @@ _CLI_ARGUMENT_SPECS = (
             dest="include_structural_overlap",
             default=None,
             default_supplied=True,
-            help=("Skip the non-actionable structural-overlap evidence report."),
+            help=("Skip the structural-overlap evidence report (not actionable)."),
         ),
         CliArgumentSpec(
             flags=("--prove-economics",),
@@ -479,34 +467,27 @@ _CLI_ARGUMENT_SPECS = (
         CliArgumentSpec(
             flags=("--predict-scan",),
             action="store_true",
-            help="Predict scan impact from Python files changed relative to --compare-ref.",
+            help="Predict scan impact from Python files changed since --compare-ref.",
         ),
         CliArgumentSpec(
             flags=("--count-member-awareness",),
             action="store_true",
             help=(
-                "Count which consumer functions name the members of a foreign "
-                "module, declared family or enum, grouped by exact member set, "
-                "and which of them also call an owner of that set."
+                "Count which consumer functions name the members of a foreign module, declared family or enum, grouped by exact member set, and which of them also call an owner of that set."
             ),
         ),
         CliArgumentSpec(
             flags=("--introspection-trace",),
             value_type=Path,
             help=(
-                "With --count-member-awareness: a trace written by "
-                "`pytest -p nra_introspection_trace`, "
-                "for the field uses generic introspection derives."
+                "With --count-member-awareness: a trace written by `pytest -p nra_introspection_trace`, used for the field uses that generic introspection derives."
             ),
         ),
         CliArgumentSpec(
             flags=("--search-refactors",),
             action="store_true",
             help=(
-                "Play every refactor concept's goal search in memory, score each "
-                "end state on slop removed per token of its diff, add-member edits "
-                "removed and members made derived, and keep the moves no other "
-                "move beats, looking --search-depth moves ahead."
+                "Play out every refactor concept's goal search in memory. Score each end state on slop removed per token of diff, add-member edits removed and members made derived. Keep the moves nothing else beats, looking --search-depth moves ahead."
             ),
         ),
         *SearchBudgetArguments.specs(),
@@ -514,45 +495,42 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--detector-capabilities",),
             action="store_true",
             help=(
-                "Emit the declaration-derived detector required-relation, MRO, "
-                "and recipe capability inventory as JSON without scanning."
+                "Print the detector capability inventory (required relations, MRO, recipes) as JSON, derived from declarations, without scanning."
             ),
         ),
         CliArgumentSpec(
             flags=("--fail-on-proof-regression",),
             action="store_true",
-            help="Return exit code 1 when --prove-economics fails its gate.",
+            help="Exit with code 1 when --prove-economics fails its gate.",
         ),
         CliArgumentSpec(
             flags=("--calibrate",),
             value_type=Path,
-            help="Run a detector calibration manifest instead of a path scan.",
+            help="Run a detector calibration manifest instead of scanning paths.",
         ),
         CliArgumentSpec(
             flags=("--fail-on-calibration-regression",),
             action="store_true",
-            help="Return exit code 1 when --calibrate fails its manifest gate.",
+            help="Exit with code 1 when --calibrate fails its manifest gate.",
         ),
         CliArgumentSpec(
             flags=("--scan-budget-seconds",),
             value_type=float,
             default=None,
             help=(
-                "Stop the scan after this many seconds and report it incomplete. "
-                "Without it a scan runs to completion; --prove-economics judges "
-                "its scans against its own budget."
+                "Stop the scan after this many seconds and report it incomplete. Without it the scan runs to the end. --prove-economics judges its scans against its own budget."
             ),
         ),
         CliArgumentSpec(
             flags=("--compare-ref",),
             default="HEAD",
-            help="Git ref used for --include-change-budget.",
+            help="Git ref for --include-change-budget.",
         ),
         CliArgumentSpec(
             flags=("--structural-overlap-max-groups",),
             value_type=int,
             default=25,
-            help="Maximum structural-overlap evidence groups to report.",
+            help="Maximum number of structural-overlap groups to report.",
         ),
         CliArgumentSpec(
             flags=("--structural-overlap-min-findings",),
@@ -569,17 +547,14 @@ _CLI_ARGUMENT_SPECS = (
             flags=("--codemod-plan",),
             value_type=Path,
             help=(
-                "Load caller-supplied authority boundary codemod plan JSON. "
-                "Use '-' to read the plan from stdin. Plans enable "
-                "simulatable rewrites for semantic agent-required candidates."
+                "Load a codemod plan JSON (the authority boundary you supply). Use '-' to read it from stdin. Plans make rewrites simulatable for candidates that need an agent decision."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-validate-plan",),
             action="store_true",
             help=(
-                "Load --codemod-plan, validate codemod DSL JSON structure, emit "
-                "the normalized plan, and exit without scanning."
+                "Load --codemod-plan, check its codemod DSL structure, print the normalized plan and exit without scanning."
             ),
         ),
         CliArgumentSpec(
@@ -587,9 +562,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             nargs="+",
             help=(
-                "Load one or more codemod plan JSON documents; use '-' for one "
-                "stdin document. Compose them in argument order, emit a "
-                "normalized CodemodPlanDocument, and exit without scanning."
+                "Load one or more codemod plan JSON documents ('-' reads one from stdin). Combine them in argument order, print a normalized CodemodPlanDocument and exit without scanning."
             ),
         ),
         CliArgumentSpec(
@@ -597,35 +570,28 @@ _CLI_ARGUMENT_SPECS = (
             value_type=Path,
             nargs="+",
             help=(
-                "Load one or more codemod plan document or sequence JSON files; "
-                "use '-' for one stdin document. Compose them in argument order "
-                "as an ordered CodemodPlanSequence, and exit without scanning."
+                "Load one or more codemod plan document or sequence JSON files ('-' reads one from stdin). Combine them in argument order into a CodemodPlanSequence and exit without scanning."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-synthesize-plan",),
             action="store_true",
             help=(
-                "Scan paths, synthesize executable finding-backed codemod DSL "
-                "recipes, emit the synthesis report, and exit. Combine with "
-                "--codemod-simulate or --codemod-apply to "
-                "execute the synthesized batch in the same scan."
+                "Scan paths, build executable codemod DSL recipes from the findings, print the synthesis report and exit. Add --codemod-simulate or --codemod-apply to run the batch in the same scan."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-synthesize-class-plan",),
             action="store_true",
             help=(
-                "Scan paths, cluster findings into graph-derived refactor classes, "
-                "and emit the executable typed DSL plan for each class."
+                "Scan paths, group findings into refactor classes from the graph, and print the executable typed DSL plan for each class."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-plan-out",),
             value_type=Path,
             help=(
-                "With a plan-producing codemod command, write the reusable "
-                "CodemodPlanDocument or CodemodPlanSequence JSON to this path."
+                "With a plan-producing codemod command, write the reusable CodemodPlanDocument or CodemodPlanSequence JSON to this path."
             ),
         ),
         CliArgumentSpec(
@@ -633,67 +599,56 @@ _CLI_ARGUMENT_SPECS = (
             action="store_true",
             dest="codemod_source_index",
             help=(
-                "Scan paths, emit JSON source-index target rows for codemod "
-                "DSL authoring, and exit."
+                "Scan paths, print JSON source-index target rows for writing codemod DSL, and exit."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-resolve-selector",),
             value_type=Path,
             help=(
-                "Load one codemod target selector JSON object, resolve it "
-                "against scanned paths, emit selected target rows, and exit. "
-                "Use '-' to read the selector from stdin."
+                "Load one codemod target selector JSON object, resolve it against the scanned paths, print the selected target rows and exit. Use '-' to read the selector from stdin."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-target-source",),
             value_type=Path,
             help=(
-                "Load one codemod target selector JSON object, resolve it "
-                "against scanned paths, emit exact selected target source spans, "
-                "and exit. Use '-' to read the selector from stdin."
+                "Load one codemod target selector JSON object, resolve it against the scanned paths, print the exact source spans it selects and exit. Use '-' to read the selector from stdin."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-preflight",),
             action="store_true",
             help=(
-                "Run operation-specific codemod preflight checks and emit "
-                "machine-readable reports without simulating or applying rewrites."
+                "Run per-operation codemod preflight checks and print machine-readable reports. Does not simulate or apply rewrites."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-simulate",),
             action="store_true",
             help=(
-                "Simulate all currently planned codemod rewrites, emit a "
-                "structured JSON report with parse validation and unified diff, "
-                "and exit without applying changes."
+                "Simulate every planned codemod rewrite, print a JSON report with parse checks and a unified diff, and exit. Nothing is applied."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-project-findings",),
             action="store_true",
             help=(
-                "With --codemod-simulate, rescan the simulated source state "
-                "in memory and include before/after finding deltas."
+                "With --codemod-simulate, rescan the simulated source in memory and include before/after finding deltas."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-project-source-index",),
             action="store_true",
             help=(
-                "With --codemod-project-findings, include the simulated "
-                "source-index payload in JSON output."
+                "With --codemod-project-findings, include the simulated source-index payload in the JSON output."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-continuation-plan-out",),
             value_type=Path,
             help=(
-                "With --codemod-project-findings, write the synthesized next-stage "
-                "CodemodPlanSequence JSON to this path."
+                "With --codemod-project-findings, write the next-stage CodemodPlanSequence JSON to this path."
             ),
         ),
         CliArgumentSpec(
@@ -721,17 +676,14 @@ _CLI_ARGUMENT_SPECS = (
             dest="codemod_goal_detectors",
             default=[],
             help=(
-                "Restrict one-shot plan synthesis to findings from this detector "
-                "(can be repeated)."
+                "Limit one-shot plan synthesis to findings from this detector (repeatable)."
             ),
         ),
         CliArgumentSpec(
             flags=("--codemod-owner-picks",),
             value_type=Path,
             help=(
-                "A picks file choosing, for --codemod-refactor-goal, the owner of "
-                "each extract-mixin finding among its ranked owner candidates; "
-                "each pick cites the receipt it rests on (#67)."
+                "A picks file for --codemod-refactor-goal. For each extract-mixin finding it chooses one owner from the ranked candidates, and each pick cites the receipt it rests on (#67)."
             ),
         ),
         CliArgumentSpec(
@@ -739,10 +691,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=8,
             help=(
-                "Trajectory depth proved for --codemod-refactor-goal; a concept "
-                "that knows its stage count raises it (package_move: two per "
-                "module). A run that reaches it along one clean path writes "
-                "the proved prefix as a plan."
+                "Trajectory depth to prove for --codemod-refactor-goal. A concept that knows its stage count raises it (package_move: two per module). A run that reaches it along one clean path writes the proved prefix as a plan."
             ),
         ),
         CliArgumentSpec(
@@ -750,8 +699,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=512,
             help=(
-                "Maximum exact source states exhaustively explored for "
-                "--codemod-refactor-goal."
+                "Maximum exact source states to explore exhaustively for --codemod-refactor-goal."
             ),
         ),
         CliArgumentSpec(
@@ -759,8 +707,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=int,
             default=256,
             help=(
-                "Maximum compatible recipe batches enumerated at each exact "
-                "source state for --codemod-refactor-goal."
+                "Maximum compatible recipe batches to enumerate at each exact source state for --codemod-refactor-goal."
             ),
         ),
     )
@@ -773,9 +720,7 @@ _CLI_ARGUMENT_SPECS = (
             value_type=destination_table_text,
             default=[],
             help=(
-                "A Markdown destination table (a row per package: `package` | "
-                "its owners and modules | ...) that --codemod-refactor-goal "
-                "package_move moves flat modules by (can be repeated)."
+                "A Markdown destination table (one row per package: `package` | its owners and modules | ...) that --codemod-refactor-goal package_move uses to move flat modules (repeatable)."
             ),
         ),
         CliArgumentSpec(
@@ -784,7 +729,7 @@ _CLI_ARGUMENT_SPECS = (
             dest="excluded_pattern_ids",
             value_type=int,
             default=[],
-            help="Pattern ID to exclude from findings (can be specified multiple times).",
+            help="Pattern ID to exclude from findings (repeatable).",
         ),
     )
 )
@@ -2000,8 +1945,9 @@ def format_structural_overlap_markdown(
         f"{structural_overlap.observed_key_count}; groups: "
         f"{structural_overlap.group_count}",
         (
-            "   - These groups share a current-snapshot coordinate. They do not "
-            "prove an authority choice, finding removal, or trajectory."
+            "   - These groups share a coordinate in the current snapshot. They "
+            "don't prove which owner to pick, that a finding can go, or a "
+            "refactor path."
         ),
     ]
     for group in structural_overlap.groups[:10]:
@@ -2020,16 +1966,16 @@ def format_raw_findings_suppressed_markdown(findings: list[RefactorFinding]) -> 
         (
             "Raw finding evidence suppressed:",
             (
-                "   - Full finding details are hidden because semantic refactor "
-                "gate is active."
+                "   - Full finding details are hidden because the refactor gate "
+                "is on."
             ),
             (
-                "   - Use the gate to inspect authority proof obligations before "
-                "evaluating any transformation."
+                "   - Read the gate first. It lists what must be proven before "
+                "you change anything."
             ),
             (
-                "   - Use --raw-findings when the gate requests SSOT evidence "
-                "inspection, otherwise only after the authority boundary is chosen."
+                "   - Use --raw-findings when the gate asks for raw evidence. "
+                "Otherwise wait until you've chosen the owner."
             ),
             f"   - Suppressed finding count: {len(findings)}",
         )
@@ -2494,7 +2440,7 @@ class CliCommand(CliArguments, ABC, metaclass=AutoRegisterMeta):
         roots: tuple[Path, ...],
         config: DetectorConfig,
     ) -> PythonSourcePathPolicy:
-        """The files under `roots` this command reads: every file `policy` admits."""
+        """The files under `roots` this command reads: every file `policy` allows."""
 
         return policy
 
@@ -3968,7 +3914,7 @@ class CodemodRefactorGoalCliCommand(
 
 @dataclass(frozen=True)
 class ScanAnalysisOutcome(ABC):
-    """What one scan's analysis produced, however the cache served it.
+    """What one scan's analysis produced, whichever way the cache served it.
 
     Mixins add what an outcome kind has: a cache status, a validated cache
     identity, a scan-completeness status. Each downstream step asks the outcome.
