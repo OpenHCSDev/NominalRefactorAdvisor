@@ -22,6 +22,7 @@ from nominal_refactor_advisor.refactors.target_deletion import (
 from nominal_refactor_advisor.codemod import RefactorRecipeOperation
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
+    CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
 )
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
@@ -542,6 +543,7 @@ class ProbeOwnerQuery:
     classes: ScannedClasses
     typing: DeclaredReceiverTyping
     spans: tuple[ReceiverSpan, ...]
+    modules: tuple[CompactModuleClassProjection, ...]
 
     @classmethod
     def of(cls, projections_by_family: CompactProjectionGroups) -> ProbeOwnerQuery:
@@ -557,12 +559,45 @@ class ProbeOwnerQuery:
                 for site in module.sites
                 for span in site.owner.resolved(typing).type_checker_spans()
             ),
+            tuple(projections),
         )
 
     @property
     def file_paths(self) -> frozenset[str]:
+        """The files holding a receiver to type, and every scanned module they
+        import, transitively: everything a type of those receivers can come from.
+        A scanned class no such file reaches can be no receiver's type."""
+
+        by_name = {module.module_name: module for module in self.modules}
+
+        def imported(module: CompactModuleClassProjection) -> set[str]:
+            names: set[str] = set()
+            for _local_name, target in module.import_aliases:
+                parts = target.split(".")
+                for end in range(len(parts), 0, -1):
+                    candidate = ".".join(parts[:end])
+                    if candidate in by_name:
+                        names.add(candidate)
+                        break
+            names.update(
+                name
+                for origin in module.star_import_origins
+                for name in origin.imported_modules()
+                if name in by_name
+            )
+            return names
+
+        by_path = {module.file_path: module for module in self.modules}
+        pending = [by_path[span.file_path] for span in self.spans if span.file_path in by_path]
+        reached: dict[str, CompactModuleClassProjection] = {}
+        while pending:
+            module = pending.pop()
+            if module.module_name in reached:
+                continue
+            reached[module.module_name] = module
+            pending.extend(by_name[name] for name in imported(module) - reached.keys())
         return frozenset(span.file_path for span in self.spans) | frozenset(
-            indexed_class.file_path for indexed_class in self.classes.by_symbol.values()
+            module.file_path for module in reached.values()
         )
 
     def answered(self, sources: TypeCheckerSources) -> ProbeOwnerContext:

@@ -1549,6 +1549,10 @@ class CompactModuleStarImportOrigin(ABC):
     ) -> StarNameSettlement:
         raise NotImplementedError
 
+    def imported_modules(self) -> tuple[str, ...]:
+        """The module this star import names, when the repository can name it."""
+        return ()
+
     @abstractmethod
     def within(self, module_names: Collection[str]) -> bool:
         raise NotImplementedError
@@ -1585,6 +1589,9 @@ class ResolvedStarImportOrigin(CompactModuleStarImportOrigin):
         if exposure.introduces_uncertainty:
             return NameUncertain()
         return untouched
+
+    def imported_modules(self) -> tuple[str, ...]:
+        return (self.module_name,)
 
     def within(self, module_names: Collection[str]) -> bool:
         return self.module_name in module_names
