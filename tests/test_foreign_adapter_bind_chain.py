@@ -1,6 +1,7 @@
 """Bind chains fold into adapter property reads, behaviour intact."""
 
 from __future__ import annotations
+from tests.detector_findings import detector_findings
 
 import os
 import subprocess
@@ -201,7 +202,6 @@ def test_operation_round_trips_through_json(tmp_path: Path) -> None:
 def test_bind_chain_finding_recipe_folds_the_evidenced_function(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.analysis import analyze_path
     from nominal_refactor_advisor.detectors._runtime import (
         ForeignAdapterBindChainDetector,
     )
@@ -209,7 +209,7 @@ def test_bind_chain_finding_recipe_folds_the_evidenced_function(
     (tmp_path / "a.py").write_text(_source(), encoding="utf-8")
     (finding,) = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "foreign_adapter_bind_chain")
         if item.detector_id == "foreign_adapter_bind_chain"
     ]
     assert [item.line for item in finding.evidence] == [5]
@@ -224,6 +224,6 @@ def test_bind_chain_finding_recipe_folds_the_evidenced_function(
     simulation.apply()
     assert [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "foreign_adapter_bind_chain")
         if item.detector_id == "foreign_adapter_bind_chain"
     ] == []

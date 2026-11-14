@@ -15380,7 +15380,7 @@ def test_detects_candidate_collector_boilerplate(
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "candidate_collector_boilerplate")
         if item.detector_id == "candidate_collector_boilerplate"
     ]
     assert {finding.evidence[0].symbol for finding in findings} == {
@@ -15483,7 +15483,7 @@ def test_detects_typed_candidate_cast_boilerplate(tmp_path: Path) -> None:
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "typed_candidate_cast_boilerplate")
         if item.detector_id == "typed_candidate_cast_boilerplate"
     ]
     assert len(findings) == 1
@@ -15500,7 +15500,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "declarative_detector_class")
         if item.detector_id == "declarative_detector_class"
     ]
 
@@ -15616,7 +15616,7 @@ def test_declarative_detector_collapse_keeps_unrepresented_source(
     )
     findings = tuple(
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "declarative_detector_class")
         if item.detector_id == "declarative_detector_class"
     )
     assert len(findings) == 1
@@ -15640,7 +15640,7 @@ def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "static_typed_observation_detector")
         if item.detector_id == "static_typed_observation_detector"
     ]
     assert len(findings) == 1
@@ -15656,7 +15656,7 @@ def test_detects_enum_metadata_table_parallel_to_enum_members(tmp_path: Path) ->
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "enum_metadata_table")
         if item.detector_id == "enum_metadata_table"
     ]
 
@@ -15676,7 +15676,7 @@ def test_finding_spec_construction_derives_redundant_semantic_defaults(
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "finding_spec_construction_boilerplate")
         if item.detector_id == "finding_spec_construction_boilerplate"
     ]
     assert len(findings) == 1
@@ -15693,7 +15693,7 @@ def test_detects_finding_spec_build_boilerplate(tmp_path: Path) -> None:
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "finding_spec_build_boilerplate")
         if item.detector_id == "finding_spec_build_boilerplate"
     ]
     assert len(findings) == 1
@@ -15710,7 +15710,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "direct_build_finding_renderer")
         if item.detector_id == "direct_build_finding_renderer"
     ]
     assert len(findings) == 1
@@ -15827,7 +15827,7 @@ def test_finding_spec_construction_detector_owns_canonical_builder_guidance(
     )
     findings = [
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "finding_spec_construction_boilerplate")
         if item.detector_id == "finding_spec_construction_boilerplate"
     ]
     assert len(findings) == 1
@@ -27123,7 +27123,7 @@ def test_detects_tuple_index_semantic_opacity_in_carrier_pipeline(
     finding = next(
         (
             item
-            for item in analyze_path(tmp_path)
+            for item in detector_findings(parse_python_modules(tmp_path), "tuple_index_semantic_opacity")
             if item.detector_id == "tuple_index_semantic_opacity"
         )
     )

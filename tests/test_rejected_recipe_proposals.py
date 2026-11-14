@@ -1,5 +1,6 @@
 """Blocked proposals remain inspectable without entering executable planning."""
 
+from tests.detector_findings import detector_findings
 import json
 from dataclasses import replace
 from types import ModuleType
@@ -9,7 +10,6 @@ import pytest
 from registry_test_sources import _type_keyed_behavior_projection_source
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
-from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.refactors.semantic_mirror import (
     MappingSemanticMirrorRecipeStrategy,
     SemanticDescentRecipeEvaluation,
@@ -48,7 +48,7 @@ def subject():
     snapshot = CodemodSourceSnapshot.from_source_mapping({"/repo/subject.py": source})
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(snapshot.parsed_modules))
+        for finding in detector_findings(ParsedModuleSet.of(snapshot.parsed_modules), "type_keyed_behavior_projection")
         if finding.detector_id == "type_keyed_behavior_projection"
     )
     assert len(findings) == 1

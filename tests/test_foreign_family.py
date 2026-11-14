@@ -1,6 +1,7 @@
 """Foreign-class filters route through one declared family, behaviour intact."""
 
 from __future__ import annotations
+from tests.detector_findings import detector_findings
 
 import ast
 import json
@@ -172,11 +173,10 @@ SYNC_ONLY = (
 
 
 def _routable_findings(root: Path):
-    from nominal_refactor_advisor.analysis import analyze_path
 
     return [
         finding
-        for finding in analyze_path(root)
+        for finding in detector_findings(parse_python_modules(root), "foreign_family_routable_filter")
         if finding.detector_id == "foreign_family_routable_filter"
     ]
 

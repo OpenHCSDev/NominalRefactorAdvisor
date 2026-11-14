@@ -1,11 +1,12 @@
 """A value computed from module attributes and written out at many sites is a lead."""
 
+from tests.detector_findings import detector_findings
+from nominal_refactor_advisor.ast_tools import parse_python_modules
 from pathlib import Path
 
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
-from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
 from nominal_refactor_advisor.detectors._base import DetectorConfig
@@ -68,7 +69,7 @@ def test_lead_is_discovered_by_normal_analysis(tmp_path: Path):
         (tmp_path / f"{name}.py").write_text(f"import sys\nKEY = {VERSION_PAIR}\n")
     leads = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "repeated_module_expression_lead")
         if finding.detector_id == "repeated_module_expression_lead"
     ]
     assert len(leads) == 1

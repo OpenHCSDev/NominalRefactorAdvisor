@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.detector_findings import detector_findings
 
 from dataclasses import replace
 from pathlib import Path
@@ -1826,7 +1827,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     modules = parse_python_modules(tmp_path)
     finding = next(
         item
-        for item in analyze_modules(modules)
+        for item in detector_findings(modules, "autoregister_explicit_priority_ordering")
         if item.detector_id == "autoregister_explicit_priority_ordering"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
@@ -1965,7 +1966,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         source_modules = parse_python_modules(source_root)
         source_finding = next(
             item
-            for item in analyze_modules(source_modules)
+            for item in detector_findings(source_modules, "autoregister_explicit_priority_ordering")
             if item.detector_id == "autoregister_explicit_priority_ordering"
         )
         source_snapshot = CodemodSourceSnapshot.from_modules(
@@ -2060,7 +2061,7 @@ def test_repeated_builder_call_rejects_identity_constructor_wrapper(
     modules = parse_python_modules(tmp_path)
     finding = next(
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "repeated_builder_calls")
         if item.detector_id == "repeated_builder_calls"
     )
     assert isinstance(finding.metrics, ConstructorOwnedMappingMetrics)
@@ -2123,7 +2124,7 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
     modules = parse_python_modules(tmp_path)
     finding = next(
         item
-        for item in analyze_path(tmp_path)
+        for item in detector_findings(parse_python_modules(tmp_path), "repeated_builder_calls")
         if item.detector_id == "repeated_builder_calls"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))

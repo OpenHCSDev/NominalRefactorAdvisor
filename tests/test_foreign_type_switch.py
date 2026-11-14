@@ -1,8 +1,9 @@
 """isinstance tests on one foreign module's classes, scattered across modules."""
 
+from tests.detector_findings import detector_findings
+from nominal_refactor_advisor.ast_tools import parse_python_modules
 from pathlib import Path
 
-from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.patterns import PatternId
 
 
@@ -11,7 +12,7 @@ def _findings(tmp_path: Path, sources: dict[str, str]):
         (tmp_path / f"{name}.py").write_text(source)
     return [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "foreign_type_switch")
         if finding.detector_id == "foreign_type_switch"
     ]
 

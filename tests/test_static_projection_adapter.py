@@ -1,6 +1,7 @@
 """Static projection calls become adapter property reads, behaviour intact."""
 
 from __future__ import annotations
+from tests.detector_findings import detector_findings
 
 import os
 import subprocess
@@ -11,7 +12,6 @@ import pytest
 
 import static_projection_fixture  # noqa: F401  (the projector must be loaded)
 import static_projection_reexport  # noqa: F401
-from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
@@ -155,7 +155,7 @@ def test_operation_round_trips_through_json(tmp_path: Path) -> None:
 def test_finding_recipe_rewrites_the_evidenced_module(tmp_path: Path) -> None:
     (tmp_path / "a.py").write_text(SOURCE, encoding="utf-8")
     (finding,) = [
-        item for item in analyze_path(tmp_path) if item.detector_id == DETECTOR_ID
+        item for item in detector_findings(parse_python_modules(tmp_path), DETECTOR_ID) if item.detector_id == DETECTOR_ID
     ]
     assert sorted(item.line for item in finding.evidence) == [9, 10, 17]
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
@@ -168,7 +168,7 @@ def test_finding_recipe_rewrites_the_evidenced_module(tmp_path: Path) -> None:
     assert simulation.is_clean
     simulation.apply()
     assert [
-        item for item in analyze_path(tmp_path) if item.detector_id == DETECTOR_ID
+        item for item in detector_findings(parse_python_modules(tmp_path), DETECTOR_ID) if item.detector_id == DETECTOR_ID
     ] == []
 
 

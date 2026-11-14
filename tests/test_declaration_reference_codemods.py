@@ -1,10 +1,10 @@
 """Codemods that write a spelled declaration as the reference it spells, with their replay checks."""
 
 from __future__ import annotations
+from tests.detector_findings import detector_findings
 
 from pathlib import Path
 
-from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
@@ -33,7 +33,7 @@ def _write(root: Path, sources: dict[str, str]) -> None:
 
 def _identity_findings(root: Path):
     return [
-        finding for finding in analyze_path(root) if finding.detector_id == DETECTOR_ID
+        finding for finding in detector_findings(parse_python_modules(root), DETECTOR_ID) if finding.detector_id == DETECTOR_ID
     ]
 
 

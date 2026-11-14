@@ -1,9 +1,10 @@
 """A string-dispatch lead retains source order without manufacturing a recipe."""
 
+from tests.detector_findings import detector_findings
+from nominal_refactor_advisor.ast_tools import parse_python_modules
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
-from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.cli import MARKDOWN_RENDERER
 from nominal_refactor_advisor.codemod import FindingRecipeEvaluator
@@ -59,7 +60,7 @@ def test_normal_scan_discovers_the_heuristic_without_a_recipe(tmp_path: Path):
         "            return 3\n"
     )
     findings = [
-        finding for finding in analyze_path(tmp_path)
+        finding for finding in detector_findings(parse_python_modules(tmp_path), "string_literal_dispatch_ownership_lead")
         if finding.detector_id == "string_literal_dispatch_ownership_lead"
     ]
     assert len(findings) == 1
@@ -224,7 +225,7 @@ def test_normal_scan_discovers_guarded_lead_without_recipe(tmp_path: Path):
         "        return 2\n"
     )
     findings = [
-        finding for finding in analyze_path(tmp_path)
+        finding for finding in detector_findings(parse_python_modules(tmp_path), "guarded_string_case_ownership_lead")
         if finding.detector_id == "guarded_string_case_ownership_lead"
     ]
     assert len(findings) == 1

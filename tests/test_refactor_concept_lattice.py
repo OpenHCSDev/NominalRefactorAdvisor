@@ -1,4 +1,5 @@
 from __future__ import annotations
+from tests.detector_findings import detector_findings
 
 import importlib
 import pkgutil
@@ -19,7 +20,6 @@ from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationD
 from nominal_refactor_advisor.detectors._structural import ExactLeafMethodAncestorPromotionDetector
 from nominal_refactor_advisor.detectors._systemic import AutoRegisterExplicitPriorityOrderingDetector, DeclarativeDetectorClassDetector, DirectBuildFindingRendererDetector, InheritedAutoRegisterConfigBoilerplateDetector
 from nominal_refactor_advisor import semantic_match
-from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
@@ -872,7 +872,7 @@ def _repeated_builder_evaluation_for_source(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "repeated_builder_calls")
         if finding.detector_id == "repeated_builder_calls"
     )
     assert len(findings) == 1
