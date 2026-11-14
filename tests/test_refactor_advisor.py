@@ -19,6 +19,7 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.detector_findings import detector_findings
 from nominal_refactor_advisor.codemod_imports import ImportFromSource, ImportLayout
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
@@ -4248,7 +4249,7 @@ def _exact_tiny_method_role_findings(
 ) -> tuple[RefactorFinding, ...]:
     return tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in detector_findings(ParsedModuleSet.of(modules), _EXACT_TINY_METHOD_ROLE_DETECTOR_ID)
         if finding.detector_id == _EXACT_TINY_METHOD_ROLE_DETECTOR_ID
     )
 
@@ -4258,7 +4259,7 @@ def _exact_leaf_method_ancestor_promotion_findings(
 ) -> tuple[RefactorFinding, ...]:
     return tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(modules))
+        for finding in detector_findings(ParsedModuleSet.of(modules), _EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID)
         if finding.detector_id == _EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID
     )
 
@@ -5173,7 +5174,7 @@ def test_repeated_property_alias_findings_do_not_invent_a_mixin_authority(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "repeated_property_alias_hooks")
         if finding.detector_id == "repeated_property_alias_hooks"
     )
     plan = codemod_plan_from_findings(
@@ -5223,7 +5224,7 @@ def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
     source_index = build_source_index(modules, findings)
@@ -14627,7 +14628,7 @@ def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "injective_type_registry")
             if finding.detector_id == "injective_type_registry"
         )
     )
@@ -14649,7 +14650,7 @@ def test_detects_non_injective_type_registry(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "non_injective_type_registry")
             if finding.detector_id == "non_injective_type_registry"
         )
     )
@@ -14671,7 +14672,7 @@ def test_detects_registry_projection_surface_from_injective_registry(
 
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "registry_projection_surface")
         if finding.detector_id == "registry_projection_surface"
     ]
 
@@ -14711,7 +14712,7 @@ def test_detects_cross_module_registry_projection_surface(
 
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "registry_projection_surface")
         if finding.detector_id == "registry_projection_surface"
     ]
 
@@ -14749,7 +14750,7 @@ def test_classifies_registry_projection_roles_for_cli_config_and_tests(
 
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "registry_projection_surface")
         if finding.detector_id == "registry_projection_surface"
     ]
 
@@ -14780,7 +14781,7 @@ def test_registry_projection_requires_policy_for_suspicious_subset(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "registry_projection_surface")
         if finding.detector_id == "registry_projection_surface"
         and "MODE_CHOICES" in finding.summary
     )
@@ -14805,7 +14806,7 @@ def test_registry_projection_accepts_named_subset_policy_hint(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "registry_projection_surface")
         if finding.detector_id == "registry_projection_surface"
         and "PUBLIC_MODE_CHOICES" in finding.summary
     )
@@ -14831,7 +14832,7 @@ def test_detects_repeated_registry_projection_policy_hint_authority(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "registry_projection_policy_authority")
         if finding.detector_id == "registry_projection_policy_authority"
     )
 
@@ -15124,7 +15125,7 @@ def require_secondary_executor(value):
 
     findings = tuple(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "exact_type_guard_inheritance_retreat")
         if finding.detector_id == "exact_type_guard_inheritance_retreat"
     )
     finding = next(
@@ -15193,7 +15194,7 @@ def require_executor(value):
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "exact_type_guard_inheritance_retreat")
         if finding.detector_id == "exact_type_guard_inheritance_retreat"
     )
 
@@ -15233,7 +15234,7 @@ def require_boundary(value):
 
     findings = tuple(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "exact_type_guard_inheritance_retreat")
         if finding.detector_id == "exact_type_guard_inheritance_retreat"
     )
 
@@ -15446,7 +15447,7 @@ def test_detects_candidate_collector_boilerplate(
         local_operation.source_edits(drifted_snapshot)
     assert {
         finding.evidence[0].symbol
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "candidate_collector_boilerplate")
         if finding.detector_id == "candidate_collector_boilerplate"
     } == {
         "LocalDetector._candidate_items",
@@ -15797,7 +15798,7 @@ def test_direct_build_finding_renderer_preserves_source_comments(
     )
     findings = tuple(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "direct_build_finding_renderer")
         if finding.detector_id == "direct_build_finding_renderer"
     )
     snapshot = CodemodSourceSnapshot.from_modules(
@@ -16443,7 +16444,7 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16514,7 +16515,7 @@ def test_repeated_builder_replay_reproves_changed_participant_mapping(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16578,7 +16579,7 @@ def build_{index}(source: PlanSource):
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16623,7 +16624,7 @@ def delta(source: PlanSource):
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16655,7 +16656,7 @@ def test_repeated_builder_resolves_existing_forward_reference_annotations(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16708,7 +16709,7 @@ def test_repeated_builder_rejects_same_named_distinct_source_types(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16743,7 +16744,7 @@ def test_repeated_builder_preserves_inherited_builder_implementation(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16813,7 +16814,7 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16867,7 +16868,7 @@ def test_repeated_builder_rejects_shadowed_consumer_family_authority(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16901,7 +16902,7 @@ class External:
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16930,7 +16931,7 @@ def test_repeated_builder_inherited_descent_reproves_authority_mapping(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -16975,7 +16976,7 @@ def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -17005,7 +17006,7 @@ def test_repeated_builder_rejects_unproved_source_projection_type(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -18598,7 +18599,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     simulation = sequence.simulate(snapshot)
     findings = tuple(
         finding
-        for finding in analyze_modules(ParsedModuleSet.of(simulation.final_snapshot.parsed_modules))
+        for finding in detector_findings(ParsedModuleSet.of(simulation.final_snapshot.parsed_modules), "manual_class_registration")
         if finding.detector_id == "manual_class_registration"
     )
     continuation_report = simulation.continuation_report_from_findings(findings)
@@ -21659,7 +21660,7 @@ def test_semantic_carrier_goal_policy_derives_targets_from_concept_mro(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, REPEATED_BUILDER_CALLS_DETECTOR_ID)
         if finding.detector_id == REPEATED_BUILDER_CALLS_DETECTOR_ID
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -22175,7 +22176,7 @@ def test_codemod_class_plan_groups_typed_synthesis_records(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules, DetectorConfig())
+        for finding in detector_findings(modules, DetectorConfig(), "manual_class_registration")
         if finding.detector_id == "manual_class_registration"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -22783,7 +22784,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "manual_class_registration")
         if finding.detector_id == "manual_class_registration"
     )
     source_index = build_source_index(modules, findings)
@@ -22869,7 +22870,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
     simulation.document_simulation.apply()
     remaining = tuple(
         finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
+        for finding in detector_findings(parse_python_modules(tmp_path), "manual_class_registration")
         if finding.detector_id == "manual_class_registration"
     )
     assert len(remaining) == 1
@@ -22901,7 +22902,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "semantic_mirror_without_descent")
         if finding.detector_id == "semantic_mirror_without_descent"
     )
     source_index = build_source_index(modules, findings)
@@ -22956,7 +22957,7 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     assert "STEP_TABLE = {'load': LoadStep, 'save': SaveStep}" in rewritten
     remaining = tuple(
         finding
-        for finding in analyze_modules(parse_python_modules(tmp_path))
+        for finding in detector_findings(parse_python_modules(tmp_path), "semantic_mirror_without_descent")
         if finding.detector_id == "semantic_mirror_without_descent"
     )
     assert len(remaining) == 1
@@ -23099,7 +23100,7 @@ def test_detects_inherited_autoregister_config_boilerplate(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "inherited_autoregister_config_boilerplate")
         if finding.detector_id == "inherited_autoregister_config_boilerplate"
     )
 
@@ -23119,7 +23120,7 @@ def test_detects_autoregister_family_priority_axis_ordering(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "autoregister_explicit_priority_ordering")
         if finding.detector_id == "autoregister_explicit_priority_ordering"
     )
 
@@ -23139,7 +23140,7 @@ def test_detects_nominal_instance_catalog_ordering_outside_autoregister(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "nominal_instance_explicit_ordering")
         if finding.detector_id == "nominal_instance_explicit_ordering"
     )
 
@@ -23174,7 +23175,7 @@ def test_detects_autoregister_family_precedence_axis_ordering(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "autoregister_explicit_priority_ordering")
         if finding.detector_id == "autoregister_explicit_priority_ordering"
     )
 
@@ -23194,7 +23195,7 @@ def test_detects_external_autoregister_registry_priority_sort(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "autoregister_explicit_priority_ordering")
         if finding.detector_id == "autoregister_explicit_priority_ordering"
     )
 
@@ -23273,7 +23274,7 @@ def test_detects_latent_implementation_string_roster(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "latent_implementation_roster")
             if finding.detector_id == "latent_implementation_roster"
         )
     )
@@ -23291,7 +23292,7 @@ def test_detects_class_level_latent_implementation_roster(tmp_path: Path) -> Non
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "latent_implementation_roster")
             if finding.detector_id == "latent_implementation_roster"
         )
     )
@@ -23345,7 +23346,7 @@ def test_detects_latent_implementation_class_roster(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "latent_implementation_roster")
             if finding.detector_id == "latent_implementation_roster"
         )
     )
@@ -23380,7 +23381,7 @@ def test_detects_latent_implementation_subset_roster_with_policy_hint(
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "latent_implementation_roster")
             if finding.detector_id == "latent_implementation_roster"
         )
     )
@@ -23399,7 +23400,7 @@ def test_detects_latent_implementation_dict_projection_roster(
     )
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "latent_implementation_roster")
         if finding.detector_id == "latent_implementation_roster"
     ]
     assert any("dict_keys" in finding.summary for finding in findings)
@@ -23417,7 +23418,7 @@ def test_detects_inline_update_dict_implementation_roster(
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "latent_implementation_roster")
             if finding.detector_id == "latent_implementation_roster"
             and "PAYLOAD_HANDLERS" in finding.summary
             and "inline_Dict.update" in finding.summary
@@ -23632,7 +23633,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "parallel_mirrored_leaf_family")
         if finding.detector_id == "parallel_mirrored_leaf_family"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -23736,7 +23737,7 @@ def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
     _write_module(tmp_path, "pkg/mod.py", source)
     findings = tuple(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "parallel_mirrored_leaf_family")
         if finding.detector_id == "parallel_mirrored_leaf_family"
     )
     original_snapshot = CodemodSourceSnapshot.from_modules(
@@ -23791,7 +23792,7 @@ def test_parallel_mirrored_leaf_recipe_rejects_bound_role_authority_name(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "parallel_mirrored_leaf_family")
         if finding.detector_id == "parallel_mirrored_leaf_family"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -23922,7 +23923,7 @@ def test_behavior_bearing_registration_syntax_is_detected_but_not_deleted(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "manual_class_registration")
         if finding.detector_id == "manual_class_registration"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -25738,7 +25739,7 @@ def test_detects_schema_shaped_accessor_family(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "schema_accessor_family")
             if finding.detector_id == "schema_accessor_family"
         )
     )
@@ -25801,7 +25802,7 @@ def test_detects_projection_property_family(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "projection_property_family")
             if finding.detector_id == "projection_property_family"
         )
     )
@@ -25818,7 +25819,7 @@ def test_detects_collection_projection_property_family(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "collection_projection_property_family")
             if finding.detector_id == "collection_projection_property_family"
         )
     )
@@ -26141,7 +26142,7 @@ def test_method_family_groups_subclasses_of_unresolved_external_base(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
 
@@ -26210,7 +26211,7 @@ def test_method_family_uses_transitive_inheritance_closure(tmp_path: Path) -> No
     )
     summaries = [
         finding.summary
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     assert any(
@@ -26235,7 +26236,7 @@ def test_global_method_family_uses_transitive_overlap_lattice(
 
     global_finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "overlapping_inheritance_families")
         if finding.detector_id == "overlapping_inheritance_families"
     )
 
@@ -26295,7 +26296,7 @@ def test_method_family_candidate_identity_includes_the_resolved_base(
 
     semantic_findings = tuple(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     )
 
@@ -26316,7 +26317,7 @@ def test_method_family_prefers_specific_base_for_duplicate_closure(
     )
     summaries = [
         finding.summary
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     assert any("over `ReportExporter`" in summary for summary in summaries)
@@ -26346,7 +26347,7 @@ def test_method_family_uses_cross_module_inheritance_closure(tmp_path: Path) -> 
     )
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID)
         if finding.detector_id == _SEMANTIC_OVERLAP_METHOD_DETECTOR_ID
     ]
     finding = next(
@@ -26366,7 +26367,7 @@ def test_method_family_detects_whole_family_template(tmp_path: Path) -> None:
     )
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "semantic_overlap_method_family")
         if finding.detector_id == "semantic_overlap_method_family"
     ]
     finding = next(finding for finding in findings if "Exporter" in finding.summary)
@@ -26792,7 +26793,7 @@ def test_implicit_self_contract_mixin_shows_each_consumer_where_it_is_declared(
     )
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "implicit_self_contract_mixin")
         if finding.detector_id == "implicit_self_contract_mixin"
     )
     consumers = {
@@ -26935,7 +26936,7 @@ def incomplete(status: CacheStatus) -> bool:
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "external_enum_case_recovery")
         if finding.detector_id == "external_enum_case_recovery"
     )
 
@@ -26989,7 +26990,7 @@ def method_reference(value: str) -> bool:
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "external_enum_case_recovery")
         if finding.detector_id == "external_enum_case_recovery"
     )
 
@@ -27008,7 +27009,7 @@ def test_detects_catalog_installing_mixin_family(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "catalog_installing_mixin_family")
             if finding.detector_id == "catalog_installing_mixin_family"
         )
     )
@@ -27058,7 +27059,7 @@ def test_detects_regex_group_extractor_family(tmp_path: Path) -> None:
     finding = next(
         (
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "regex_group_extractor_family")
             if finding.detector_id == "regex_group_extractor_family"
         )
     )
@@ -27140,7 +27141,7 @@ def test_tuple_index_semantic_opacity_keeps_nested_function_evidence_bounded(
 
     findings = tuple(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "tuple_index_semantic_opacity")
         if finding.detector_id == "tuple_index_semantic_opacity"
     )
 
@@ -27159,7 +27160,7 @@ def test_detects_type_keyed_behavior_projected_away_from_nominal_types(
 
     finding = next(
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "type_keyed_behavior_projection")
         if finding.detector_id == "type_keyed_behavior_projection"
     )
 
@@ -27226,7 +27227,7 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "type_keyed_behavior_projection")
         if finding.detector_id == "type_keyed_behavior_projection"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -27301,7 +27302,7 @@ def test_type_keyed_behavior_recipe_requires_mro_equivalent_lookup(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "type_keyed_behavior_projection")
         if finding.detector_id == "type_keyed_behavior_projection"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -27550,7 +27551,7 @@ def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
     modules = parse_python_modules(tmp_path)
     findings = tuple(
         finding
-        for finding in analyze_modules(modules)
+        for finding in detector_findings(modules, "type_keyed_behavior_projection")
         if finding.detector_id == "type_keyed_behavior_projection"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
@@ -27849,7 +27850,7 @@ def test_phantom_family_counts_an_override_with_what_it_overrides(tmp_path: Path
     def phantom_findings() -> list[RefactorFinding]:
         return [
             finding
-            for finding in analyze_path(tmp_path)
+            for finding in detector_findings(parse_python_modules(tmp_path), "phantom_family")
             if finding.detector_id == "phantom_family"
         ]
 
@@ -27900,7 +27901,7 @@ def test_unused_method_parameter_reads_every_declaration_of_the_method(
     )
     findings = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), "unused_method_parameter")
         if finding.detector_id == "unused_method_parameter"
     ]
     (finding,) = findings

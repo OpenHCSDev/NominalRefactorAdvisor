@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.analysis import analyze_path
+from tests.detector_findings import detector_findings
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.refactors.target_deletion import EraseDeadCompatibilityOperation
 from nominal_refactor_advisor.codemod import (
@@ -37,7 +37,7 @@ def _findings(tmp_path: Path, detector: type, sources: dict[str, str]):
     detector_id = detector.effective_detector_id()
     return [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), detector_id)
         if finding.detector_id == detector_id
     ]
 
@@ -491,7 +491,7 @@ def test_imported_named_main_guarded_and_declared_modules_are_reached(tmp_path: 
         (package / f"{name}.py").write_text(source)
     dead = [
         finding.evidence[0].symbol
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), DeadModuleDetector.effective_detector_id())
         if finding.detector_id == DeadModuleDetector.effective_detector_id()
     ]
     assert dead == ["pkg.anchor", "pkg.loader"]
@@ -512,7 +512,7 @@ def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path
     (tmp_path / "orphan.py").write_text("VALUE = 1\n")
     dead = [
         finding.evidence[0].symbol
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), DeadModuleDetector.effective_detector_id())
         if finding.detector_id == DeadModuleDetector.effective_detector_id()
     ]
     assert dead == ["orphan"]
@@ -545,7 +545,7 @@ def test_a_registry_that_discovers_a_package_reaches_the_modules_its_walk_import
     (tmp_path / "orphan.py").write_text("VALUE = 1\n")
     dead = sorted(
         finding.evidence[0].symbol
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), DeadModuleDetector.effective_detector_id())
         if finding.detector_id == DeadModuleDetector.effective_detector_id()
     )
     assert dead == ["orphan", "pkg.plugins.deep.two"]
@@ -562,7 +562,7 @@ def test_an_empty_dead_module_dissolves(tmp_path: Path):
     (package / "shell.py").write_text('"""Moved into pkg.used."""\n')
     (finding,) = [
         finding
-        for finding in analyze_path(tmp_path)
+        for finding in detector_findings(parse_python_modules(tmp_path), DeadModuleDetector.effective_detector_id())
         if finding.detector_id == DeadModuleDetector.effective_detector_id()
     ]
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
