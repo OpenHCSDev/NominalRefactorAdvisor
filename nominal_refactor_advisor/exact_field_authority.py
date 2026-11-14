@@ -26,6 +26,7 @@ from nominal_refactor_advisor.class_families.parsed_index import (
 )
 from nominal_refactor_advisor.class_index import (
     ClassBodyModuleScope,
+    ClassCohort,
     ClassBodyNormalForm,
     ModuleNominalBindingSnapshot,
 )
@@ -181,7 +182,7 @@ class ExactDataclassFieldParticipant:
 
 
 @dataclass(frozen=True)
-class ExactDataclassFieldAuthorityComponent:
+class ExactDataclassFieldAuthorityComponent(ClassCohort):
     """One source-proved repeated field prefix without an existing owner."""
 
     participants: tuple[ExactDataclassFieldParticipant, ...]

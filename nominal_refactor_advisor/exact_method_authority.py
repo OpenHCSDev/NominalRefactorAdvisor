@@ -12,6 +12,7 @@ from typing import ClassVar, Self
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
     CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
+    ClassCohort,
     ClosedLeafMethodAuthorityProof,
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -82,7 +83,7 @@ class CompactExactMethodOrbit:
 
 
 @dataclass(frozen=True)
-class ExactMethodOrbitComponent:
+class ExactMethodOrbitComponent(ClassCohort):
     """Shared declaration-derived surface of one exact-method orbit cohort."""
 
     orbits: tuple[CompactExactMethodOrbit, ...]

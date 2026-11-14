@@ -2866,6 +2866,22 @@ CLASS_METHOD_OWNERSHIP_HOOK_NAMES = frozenset(("__init_subclass__",))
 NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
 
 
+class ClassCohort(ABC):
+    """The classes of one module that a proved component covers."""
+
+    @property
+    @abstractmethod
+    def file_path(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def participant_class_names(self) -> tuple[str, ...]:
+        """The qualified names of the covered classes, in the component's order."""
+
+        raise NotImplementedError
+
+
 class ClosedLeafMethodAuthorityViolation(StrEnum):
     """One failed proof obligation for promoting leaf methods to an ancestor."""
 

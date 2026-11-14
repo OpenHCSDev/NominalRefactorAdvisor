@@ -22,6 +22,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
 from nominal_refactor_advisor.class_index import (
+    ClassCohort,
     ClassLineBindingSnapshots,
     ModuleNominalBindingSnapshot,
 )
@@ -758,6 +759,24 @@ class NamedClassMemberAuthoritySourceRewriteABC(SourceRewriteABC):
     targets: ClassMemberPromotionTargets
     base_name: str
     rationale: str
+    component: ClassCohort
+
+    @classmethod
+    def required(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        component: ClassCohort,
+        *,
+        base_name: str,
+        rationale: str,
+    ) -> Self:
+        targets = ClassMemberPromotionTargets.require_new_authority(
+            snapshot,
+            source_path=component.file_path,
+            class_names=component.participant_class_names,
+            authority_name=base_name,
+        )
+        return cls(targets, base_name, rationale, component)
 
     @property
     def authority_claim(self) -> AuthorityClaim:
@@ -799,23 +818,6 @@ class _ExactDataclassFieldAuthoritySourceRewrite(
     """Physical rewrite derived from one current repeated-field proof."""
 
     component: ExactDataclassFieldAuthorityComponent
-
-    @classmethod
-    def required(
-        cls,
-        snapshot: CodemodSourceSnapshot,
-        component: ExactDataclassFieldAuthorityComponent,
-        *,
-        base_name: str,
-        rationale: str,
-    ) -> _ExactDataclassFieldAuthoritySourceRewrite:
-        targets = ClassMemberPromotionTargets.require_new_authority(
-            snapshot,
-            source_path=component.file_path,
-            class_names=component.participant_class_names,
-            authority_name=base_name,
-        )
-        return cls(targets, base_name, rationale, component)
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         return DataclassFieldPromotionReplacementPlan(
@@ -1165,23 +1167,6 @@ class _ExactMethodRoleSourceRewrite(NamedClassMemberAuthoritySourceRewriteABC):
     """Physical rewrite derived from one currently proven method role."""
 
     component: ExactMethodRoleComponent
-
-    @classmethod
-    def required(
-        cls,
-        snapshot: CodemodSourceSnapshot,
-        component: ExactMethodRoleComponent,
-        *,
-        base_name: str,
-        rationale: str,
-    ) -> _ExactMethodRoleSourceRewrite:
-        targets = ClassMemberPromotionTargets.require_new_authority(
-            snapshot,
-            source_path=component.file_path,
-            class_names=component.participant_class_names,
-            authority_name=base_name,
-        )
-        return cls(targets, base_name, rationale, component)
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         return LayoutNeutralClassMemberPromotionReplacementPlan(

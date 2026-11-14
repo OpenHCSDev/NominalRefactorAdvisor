@@ -618,6 +618,12 @@ or more in NRA. The repair depends on how the owners sit:
   between would have dropped three positions.
 - The duck the copies call (`_source_rewrite(...).source_edits()`) gets
   its own ABC in the same change (`SourceRewriteABC`).
+- The copies differ only in a parameter's type: the parent holds the
+  field as the contract both types meet and each member narrows it
+  (`ClassCohort`; `NamedClassMemberAuthoritySourceRewriteABC.component`
+  and its one `required`). A generic parent was tried first and does not
+  type-check here: the operation base returns the rewrite, and an
+  invariant type parameter rejects the members' narrower overrides.
 
 Leave a group alone when the shared member is a JSON report property
 whose position in the output the class order decides, or when a registry
@@ -678,19 +684,6 @@ not from the top of the list:
   `codemod_workflow.py` (key order), three top-level declarations in
   `codemod_module_declarations.py` (registry lineage), `result` in
   `native_call.py`, `_member` across the source entries.
-- Next concrete parent, traced and not yet written: "the classes of one
-  module that a proved component covers". `ExactDataclassFieldAuthorityComponent`
-  (`exact_field_authority.py`) and `ExactMethodOrbitComponent`
-  (`exact_method_authority.py`) both answer `file_path` and
-  `participant_class_names` with no shared parent, and the two rewrites
-  built from them (`_ExactDataclassFieldAuthoritySourceRewrite.required`,
-  `_ExactMethodRoleSourceRewrite.required` in
-  `refactors/class_member_authority.py`) are the same fifteen lines. An
-  ABC for the cohort in `class_index.py` (both modules import it), the
-  rewrite base holding `component: ClassCohort` and the one `required`,
-  each rewrite narrowing the field's type. A generic rewrite base does
-  not type-check: the operation base returns the rewrite and an
-  invariant parameter rejects the narrower overrides.
 - `own_type_test` 282: 128 are in the native-execution kernel
   (`source_execution.py` 57, `captured_reference.py` 32,
   `native_compilation.py` 22, `product_flow.py` 17). After `closed()`,
