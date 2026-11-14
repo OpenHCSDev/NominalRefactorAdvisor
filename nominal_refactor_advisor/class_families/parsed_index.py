@@ -17,6 +17,7 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSetFact,
 )
 from nominal_refactor_advisor.class_index import (
+    ABSTRACT_BASE_NAMES,
     ModuleClassHeaderCore,
     ClassDeclaration,
     ClassLineBindingSnapshots,
@@ -440,7 +441,7 @@ class UnindexedClassStatement(ClassStatement):
         """A base spelled `ABC` or `ABCMeta`, or a direct method decorated with
         something spelled `abstractmethod`. No bindings are at hand to check."""
 
-        return bool({"ABC", "ABCMeta"} & set(self.base_terminal_names)) or any(
+        return bool(ABSTRACT_BASE_NAMES & set(self.base_terminal_names)) or any(
             method.spells("abstractmethod") for method in self.methods
         )
 

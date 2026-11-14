@@ -16,7 +16,7 @@ import inspect
 import re
 import sys
 import typing
-from abc import ABC, abstractmethod
+from abc import ABC, ABCMeta, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import (
     Collection,
@@ -5037,7 +5037,7 @@ def _compact_class_references(
 def _is_abstract_class(
     node: ast.ClassDef, module_binding_snapshot: ModuleNominalBindingSnapshot
 ) -> bool:
-    if {"ABC", "ABCMeta"} & {
+    if ABSTRACT_BASE_NAMES & {
         terminal_name
         for base in node.bases
         if (terminal_name := _terminal_reference_name(base)) is not None
@@ -6001,6 +6001,8 @@ PROPERTY_REDEFINITION_ATTRIBUTES = frozenset(
     (property.setter.__name__, property.deleter.__name__)
 )
 ABSTRACT_METHOD_DECORATOR = native_identity(abstractmethod)
+ABSTRACT_BASE_NAMES = frozenset((ABC.__name__, ABCMeta.__name__))
+"""The spelled bases that make a class abstract: `ABC`, or `ABCMeta` named as a base."""
 FINAL_DECORATOR = native_identity(typing.final)
 OVERLOAD_DECORATOR = native_identity(typing.overload)
 STATIC_METHOD_DECORATOR = native_identity(staticmethod)
