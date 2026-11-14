@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import cache, cached_property
 from typing import Self
 
-from nominal_refactor_advisor.ast_projection import names_mentioned
+from nominal_refactor_advisor.ast_projection import names_mentioned, nodes_of
 from nominal_refactor_advisor.ast_tools import BuiltinCallName, ParsedModule
 from nominal_refactor_advisor.refactors.cases_family import body_without_docstring
 from nominal_refactor_advisor.codemod_foreign_family_source import (
@@ -201,9 +201,7 @@ class BindChain:
     ) -> tuple[Self, ...]:
         """Every chain headed by a statement of `function`; `elif` tails are no heads."""
 
-        branches = tuple(
-            node for node in ast.walk(function) if isinstance(node, ast.If)
-        )
+        branches = tuple(nodes_of(ast.If, function))
         tails = {
             id(tail)
             for branch in branches

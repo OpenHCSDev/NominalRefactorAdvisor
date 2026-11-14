@@ -18,6 +18,7 @@ from typing import Annotated
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.audit.dispatch import TypeTests
 from nominal_refactor_advisor.audit.project import Project
 from nominal_refactor_advisor.audit.gate import Counts, InventoryMeasure, PerFileMeasure
@@ -211,7 +212,7 @@ class DeclaredSpellings:
         tree = ast.parse(source, path)
         functions = (node.name for node in tree.body
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
-        classes = (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
+        classes = nodes_of(ast.ClassDef, tree)
         return ModuleDeclarations(
             tuple(filter(cls.multiword, functions)),
             tuple((node.name, tuple(base.id if isinstance(base, ast.Name) else base.attr

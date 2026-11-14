@@ -19,6 +19,7 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_tools import walk_function_body_nodes
 from nominal_refactor_advisor.carrier_collapse import (
@@ -520,9 +521,8 @@ class _ClosedCarrierCollapseSourceRewrite:
     def _call_node(self, file_path: str, source_span: SourceByteSpan) -> ast.Call:
         matches = tuple(
             node
-            for node in ast.walk(self.context.module_nodes_by_file_path[file_path])
-            if isinstance(node, ast.Call)
-            and SourceByteSpan.from_node(node) == source_span
+            for node in nodes_of(ast.Call, self.context.module_nodes_by_file_path[file_path])
+            if SourceByteSpan.from_node(node) == source_span
         )
         if len(matches) != 1:
             raise ValueError(

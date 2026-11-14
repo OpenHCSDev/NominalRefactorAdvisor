@@ -19,6 +19,7 @@ from typing import (
     TypeAlias,
 )
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_namespace import PROMOTABLE_METHOD_DECORATOR_IDENTITIES
 from nominal_refactor_advisor.class_symbols import (
@@ -149,9 +150,8 @@ class ClassMethodReceiverRequirements:
         return cls(
             frozenset(
                 node.attr
-                for node in ast.walk(method)
-                if isinstance(node, ast.Attribute)
-                and isinstance(node.value, ast.Name)
+                for node in nodes_of(ast.Attribute, method)
+                if isinstance(node.value, ast.Name)
                 and node.value.id in aliases
             )
         )

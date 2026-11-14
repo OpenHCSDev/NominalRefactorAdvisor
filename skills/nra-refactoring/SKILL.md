@@ -566,13 +566,17 @@ and answers `location`; a fact overrides `witness_name`.
 prove a change to a detector the corpus never fires, dump that
 detector's findings on its test fixture before and after.
 
-**The names in a subtree.** `ast_projection.name_nodes(*roots)` yields
-the bare-name nodes of any subtrees, in walk order. `names_mentioned`,
+**The nodes of one type in a subtree.** `ast_projection.nodes_of(ast.Call,
+*roots)` yields the nodes of one type in any subtrees, in walk order,
+typed. `name_nodes(*roots)` is that for bare names; `names_mentioned`,
 `names_read` and `names_bound` give the set of ids for every name, the
 loaded ones, and the stored or deleted ones. Don't write
-`for n in ast.walk(x) if isinstance(n, ast.Name)` again: 56 places did,
-plus six private helpers, before 2026-11-14. A site keeps only its own
-extra condition (`for n in name_nodes(x) if n.id in wanted`). The
+`for n in ast.walk(x): if isinstance(n, ast.Call)` again: 106 places
+did (56 for names, 50 for other types), plus six private helpers,
+before 2026-11-14. A site keeps only its own extra condition
+(`for n in name_nodes(x) if n.id in wanted`). For a whole parsed module
+read `syntax_index.instances_of` instead (above). Loops that `match`
+on several node types, or test a tuple of types, still walk. The
 ordered names of an assignment target (`a, (b, *c) = ...`) are a
 different question.
 

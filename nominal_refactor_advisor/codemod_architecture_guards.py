@@ -29,6 +29,7 @@ from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
     name_nodes,
+    nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import BuiltinCallName
 from nominal_refactor_advisor.codemod_paths import (
@@ -143,8 +144,7 @@ class ForbiddenCallArchitectureGuardConstraint(
                 call_name,
                 f"Forbidden call {call_name!r}",
             )
-            for node in ast.walk(module)
-            if isinstance(node, ast.Call)
+            for node in nodes_of(ast.Call, module)
             for call_name in (ExpressionReference.decoded(node.func).qualified_name,)
             if call_name in self.names
         )
@@ -165,8 +165,8 @@ class ForbiddenAttributeArchitectureGuardConstraint(
                 node.attr,
                 f"Forbidden attribute {node.attr!r}",
             )
-            for node in ast.walk(module)
-            if isinstance(node, ast.Attribute) and node.attr in self.names
+            for node in nodes_of(ast.Attribute, module)
+            if node.attr in self.names
         )
 
 
@@ -198,8 +198,7 @@ class ForbiddenImportArchitectureGuardConstraint(
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         return tuple(
             self.match(node, alias.name, f"Forbidden import {alias.name!r}")
-            for node in ast.walk(module)
-            if isinstance(node, ast.ImportFrom)
+            for node in nodes_of(ast.ImportFrom, module)
             for alias in node.names
             if alias.name in self.names
         )

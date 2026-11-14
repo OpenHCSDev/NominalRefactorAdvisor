@@ -36,6 +36,7 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValues,
     single_name_targets,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -937,9 +938,8 @@ def _compact_sorted_key_calls(
             {
                 child.value.id
                 for argument in node.args
-                for child in ast.walk(argument)
-                if isinstance(child, ast.Attribute)
-                and child.attr == "__registry__"
+                for child in nodes_of(ast.Attribute, argument)
+                if child.attr == "__registry__"
                 and isinstance(child.value, ast.Name)
             }
         )
@@ -949,8 +949,7 @@ def _compact_sorted_key_calls(
                 continue
             key_attribute_names.update(
                 child.attr
-                for child in ast.walk(keyword.value)
-                if isinstance(child, ast.Attribute)
+                for child in nodes_of(ast.Attribute, keyword.value)
             )
             for child in ast.walk(keyword.value):
                 if not (

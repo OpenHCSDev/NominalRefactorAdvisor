@@ -19,6 +19,7 @@ from typing import ClassVar
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.audit.findings import Package, RawShape
 from nominal_refactor_advisor.audit.identity import TypePositions
@@ -69,8 +70,8 @@ class StringFieldMetadata(PerFileOccurrenceMeasure):
     @staticmethod
     def sites(repo: Project, module: ModuleScope) -> Iterator[ast.AST]:
         binding = DecoratorBinding.of(dataclasses.field, module)
-        for node in ast.walk(module.tree):
-            if isinstance(node, ast.Call) and binding.marks(node.func):
+        for node in nodes_of(ast.Call, module.tree):
+            if binding.marks(node.func):
                 yield node
 
     @staticmethod

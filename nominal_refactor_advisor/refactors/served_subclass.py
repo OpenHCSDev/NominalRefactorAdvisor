@@ -21,6 +21,7 @@ from functools import cached_property
 from nominal_refactor_advisor.ast_projection import (
     name_nodes,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
@@ -412,8 +413,8 @@ class FamilyMemberReads:
                         )
                     failures.extend(
                         f"{where.format(line=read.lineno)} reads {read.attr!r}"
-                        for read in ast.walk(statement)
-                        if isinstance(read, ast.Attribute) and read.attr in leaving
+                        for read in nodes_of(ast.Attribute, statement)
+                        if read.attr in leaving
                         and _is_own_receiver(read.value)
                     )
         if failures:

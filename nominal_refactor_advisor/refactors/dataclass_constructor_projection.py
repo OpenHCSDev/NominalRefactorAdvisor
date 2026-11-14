@@ -25,6 +25,7 @@ from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     StatementValue,
+    nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import (
     statements_without_docstring,
@@ -460,8 +461,7 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
             <= frozenset(
                 CallKeywords.of(call.keywords).names
             )
-            for call in ast.walk(function_return.return_node.value)
-            if isinstance(call, ast.Call)
+            for call in nodes_of(ast.Call, function_return.return_node.value)
         )
 
     def projection_target(

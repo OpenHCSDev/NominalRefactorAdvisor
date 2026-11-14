@@ -15,7 +15,11 @@ from operator import attrgetter
 
 from collections.abc import Iterator
 
-from nominal_refactor_advisor.ast_projection import name_nodes, names_mentioned
+from nominal_refactor_advisor.ast_projection import (
+    name_nodes,
+    names_mentioned,
+    nodes_of,
+)
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
@@ -112,9 +116,7 @@ def _keyword_forward_names(
     """Collect (line, col, name) of Name nodes used as same-name keyword arguments."""
 
     forwards: set[tuple[int, int, str]] = set()
-    for node in ast.walk(func):
-        if not isinstance(node, ast.Call):
-            continue
+    for node in nodes_of(ast.Call, func):
         for keyword in node.keywords:
             if (
                 keyword.arg is not None
@@ -272,10 +274,7 @@ def _find_relookups_in_for(
     iter_label = _unparse_short(for_node.iter)
     relookups: list[_LoopRelookup] = []
 
-    for node in ast.walk(for_node):
-        if not isinstance(node, ast.Call):
-            continue
-
+    for node in nodes_of(ast.Call, for_node):
         hits = _element_attr_args(node, target_names)
         if not hits:
             continue

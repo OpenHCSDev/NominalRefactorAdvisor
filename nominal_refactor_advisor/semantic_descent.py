@@ -36,6 +36,7 @@ from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
@@ -1474,13 +1475,12 @@ class SemanticClassSupplement:
         if constructed_type_names is None:
             collected_constructed_type_names: set[str] = set()
             for statement in FunctionDefinition.within(node.body):
-                for child in ast.walk(statement):
-                    if isinstance(child, ast.Call):
-                        collected_constructed_type_names.update(
-                            PresentationAuthorityConstructionCollector.construction_type_names(
-                                child
-                            )
+                for child in nodes_of(ast.Call, statement):
+                    collected_constructed_type_names.update(
+                        PresentationAuthorityConstructionCollector.construction_type_names(
+                            child
                         )
+                    )
         else:
             collected_constructed_type_names = set(constructed_type_names)
         if not (
@@ -4978,13 +4978,12 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             frame.constructed_type_names.update(type_name_tuple)
 
     def _record_class_construction_type_names_for_node(self, node: ast.AST) -> None:
-        for child in ast.walk(node):
-            if isinstance(child, ast.Call):
-                self._record_class_construction_type_names(
-                    PresentationAuthorityConstructionCollector.construction_type_names(
-                        child
-                    )
+        for child in nodes_of(ast.Call, node):
+            self._record_class_construction_type_names(
+                PresentationAuthorityConstructionCollector.construction_type_names(
+                    child
                 )
+            )
 
     def _record_owner_constructions(
         self,
@@ -5693,13 +5692,12 @@ class ConstructionAuthorityResolver:
         )
         constructed_type_names: set[str] = set()
         for statement in FunctionDefinition.within(indexed_class.node.body):
-            for child in ast.walk(statement):
-                if isinstance(child, ast.Call):
-                    constructed_type_names.update(
-                        PresentationAuthorityConstructionCollector.construction_type_names(
-                            child
-                        )
+            for child in nodes_of(ast.Call, statement):
+                constructed_type_names.update(
+                    PresentationAuthorityConstructionCollector.construction_type_names(
+                        child
                     )
+                )
         return declared_type_names, frozenset(constructed_type_names)
 
     @cached_property
@@ -6810,9 +6808,7 @@ class PresentationAuthorityConstructionCollector:
         minimum_field_count: int,
     ) -> tuple[PresentationAuthorityConstruction, ...]:
         constructions: list[PresentationAuthorityConstruction] = []
-        for child in ast.walk(node):
-            if not isinstance(child, ast.Call):
-                continue
+        for child in nodes_of(ast.Call, node):
             constructions.extend(
                 cls._constructions_for_call(
                     child,

@@ -29,6 +29,7 @@ from pathlib import Path
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonText,
@@ -691,8 +692,7 @@ class DeclaredDefinition:
         """Every statement of the body at every depth: a `finally` left unchanged under an
         edited `try` is still the same statement, and `transfer` pays each occurrence once
         however many enclosing statements also match."""
-        return (node for statement in self.node.body for node in ast.walk(statement)
-                if isinstance(node, ast.stmt))
+        return (node for statement in self.node.body for node in nodes_of(ast.stmt, statement))
 
     @cached_property
     def shapes(self) -> Counter[str]:

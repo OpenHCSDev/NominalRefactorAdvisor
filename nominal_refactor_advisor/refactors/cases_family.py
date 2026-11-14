@@ -36,6 +36,7 @@ from nominal_refactor_advisor.ast_projection import (
     name_nodes,
     names_read,
     names_bound,
+    nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
@@ -1418,9 +1419,8 @@ class CasesFamily(Cases, Descent):
         )
         applications = [
             node
-            for node in ast.walk(function)
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
+            for node in nodes_of(ast.Call, function)
+            if isinstance(node.func, ast.Attribute)
             and receiver is not None
             and is_name(node.func.value, [receiver])
             and model.attribute_name(node.func.attr) in model.inlined
@@ -1558,10 +1558,9 @@ class CasesFamily(Cases, Descent):
             if is_name(argument.annotation, ["bool"])
         }
         assignments: dict[str, list[ast.expr]] = {}
-        for node in ast.walk(function):
+        for node in nodes_of(ast.Assign, function):
             if (
-                isinstance(node, ast.Assign)
-                and len(node.targets) == 1
+                len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)
             ):
                 assignments.setdefault(node.targets[0].id, []).append(node.value)
@@ -1668,10 +1667,9 @@ class CasesFamily(Cases, Descent):
                     else []
                 )
                 for test in tests:
-                    for part in ast.walk(test):
+                    for part in nodes_of(ast.Attribute, test):
                         if (
-                            isinstance(part, ast.Attribute)
-                            and part.attr in decided
+                            part.attr in decided
                             and isinstance(part.value, ast.Attribute)
                             and part.value.attr in held
                             and is_name(part.value.value, [receiver])
@@ -2574,9 +2572,8 @@ class ValueReads:
                 receiver = function.args.args[0].arg
                 held.update(
                     id(node)
-                    for node in ast.walk(function)
-                    if isinstance(node, ast.Attribute)
-                    and node.attr in fields
+                    for node in nodes_of(ast.Attribute, function)
+                    if node.attr in fields
                     and is_name(node.value, [receiver])
                 )
         return frozenset(held)
@@ -3059,8 +3056,8 @@ class Guard(Site):
             )
         renames = {
             id(node): f"cls.{model.attribute_name(node.attr)}"
-            for node in ast.walk(guard.test)
-            if isinstance(node, ast.Attribute) and self.field_read(node.value)
+            for node in nodes_of(ast.Attribute, guard.test)
+            if self.field_read(node.value)
         }
         generic = [
             f"if {ast.unparse(rebuilt(guard.test, renames))}:",

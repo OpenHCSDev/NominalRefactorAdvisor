@@ -28,6 +28,7 @@ import ast
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar, TypeAlias
+from nominal_refactor_advisor.ast_projection import nodes_of
 
 FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -104,10 +105,9 @@ class CreatedClassStore:
 
     @staticmethod
     def _calls_of(function: FunctionNode, method: str) -> Iterator[ast.Call]:
-        for node in ast.walk(function):
+        for node in nodes_of(ast.Call, function):
             if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
+                isinstance(node.func, ast.Attribute)
                 and node.func.attr == method
             ):
                 yield node

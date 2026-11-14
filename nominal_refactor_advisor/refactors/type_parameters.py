@@ -17,7 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
-from nominal_refactor_advisor.ast_projection import name_nodes
+from nominal_refactor_advisor.ast_projection import name_nodes, nodes_of
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassReferenceResolver,
 )
@@ -167,9 +167,8 @@ class ModuleTypeArguments:
         )
         found = tuple(
             DroppedArgument(node, self.declarations[symbol])
-            for node in ast.walk(self.snapshot.module_nodes_by_file_path[self.file_path])
-            if isinstance(node, ast.Subscript)
-            and (symbol := resolver.symbol_for_reference(node.value)) in self.declarations
+            for node in nodes_of(ast.Subscript, self.snapshot.module_nodes_by_file_path[self.file_path])
+            if (symbol := resolver.symbol_for_reference(node.value)) in self.declarations
         )
         nested = {
             id(inner.subscript)
@@ -213,8 +212,8 @@ class ModuleTypeArguments:
         pattern = re.compile(rf"\b(?:{names})\s*\[")
         return tuple(
             f"{self.file_path}:{node.lineno}"
-            for node in ast.walk(self.snapshot.module_nodes_by_file_path[self.file_path])
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            for node in nodes_of(ast.Constant, self.snapshot.module_nodes_by_file_path[self.file_path])
+            if isinstance(node.value, str)
             and pattern.search(node.value)
         )
 

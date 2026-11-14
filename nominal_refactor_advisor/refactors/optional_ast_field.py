@@ -32,7 +32,11 @@ from metaclass_registry import (
     extract_key_from_class_name,
 )
 
-from nominal_refactor_advisor.ast_projection import name_nodes, names_mentioned
+from nominal_refactor_advisor.ast_projection import (
+    name_nodes,
+    names_mentioned,
+    nodes_of,
+)
 from nominal_refactor_advisor.refactors.cases_family import handback
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
@@ -657,9 +661,8 @@ class IfPresentProbeSite(SingleNodeProbeSite):
         reads = [
             node
             for body_statement in statement.body
-            for node in ast.walk(body_statement)
-            if isinstance(node, ast.Attribute)
-            and node.attr == self.field
+            for node in nodes_of(ast.Attribute, body_statement)
+            if node.attr == self.field
             and _same_expression(node.value, self.subject)
         ]
         decoded = self.decoder.single(authority.source_of(self.subject))
@@ -1433,8 +1436,7 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             if isinstance(node.ctx, ast.Store)
         ) | frozenset(
             argument.arg
-            for argument in ast.walk(self.function.args)
-            if isinstance(argument, ast.arg)
+            for argument in nodes_of(ast.arg, self.function.args)
         )
 
     def ancestors(self, node: ast.AST) -> Iterator[tuple[ast.AST, ast.AST]]:

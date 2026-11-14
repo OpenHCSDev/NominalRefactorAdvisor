@@ -27,6 +27,7 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValue,
     name_nodes,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import (
@@ -1043,9 +1044,7 @@ class Enumerated(Rewritten, ABC):
 
         for module in snapshot.parsed_modules:
             for scope in FunctionDefinition.within(module.syntax_index.breadth_first_nodes):
-                for node in ast.walk(scope):
-                    if not isinstance(node, ast.ImportFrom):
-                        continue
+                for node in nodes_of(ast.ImportFrom, scope):
                     source = module.module_path_identity.resolve_import_from_module(
                         imported_module=node.module, level=node.level
                     )
@@ -1247,9 +1246,8 @@ class Branch(ABC):
         renames: list[tuple[ast.AST, str]] = [
             (node, f"self.{forwarded}")
             for statement in statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Attribute)
-            and _is_name(node.value, self.subject)
+            for node in nodes_of(ast.Attribute, statement)
+            if _is_name(node.value, self.subject)
             and (forwarded := family.forwarded_field(class_name, node.attr))
         ]
         renames += self.renames(statements, {id(node.value) for node, _ in renames})
@@ -1958,8 +1956,8 @@ def _enum_typed_names(tree: ast.Module, enum_names: frozenset[str]) -> frozenset
 
     return frozenset(
         node.arg
-        for node in ast.walk(tree)
-        if isinstance(node, ast.arg) and _is_any_name(node.annotation, enum_names)
+        for node in nodes_of(ast.arg, tree)
+        if _is_any_name(node.annotation, enum_names)
     )
 
 
@@ -2285,9 +2283,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
     ) -> None:
         """``(k for k, v in cls.map().items() if p(v))`` iterates the family as ``v``."""
 
-        generator = next(
-            node for node in ast.walk(method) if isinstance(node, ast.GeneratorExp)
-        )
+        generator = next(nodes_of(ast.GeneratorExp, method))
         loop = generator.generators[0]
         rewrite.replace(keyed.module, loop.target, value)
         rewrite.replace(keyed.module, loop.iter, f"{keyed.root}.{self.family_method}()")

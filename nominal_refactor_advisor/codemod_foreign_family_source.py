@@ -10,6 +10,7 @@ from functools import cached_property
 from importlib import import_module
 from typing import ClassVar, Self
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.ast_tools import BuiltinCallName, ParsedModule
 from nominal_refactor_advisor.refactors.cases_family import handback
 from nominal_refactor_advisor.codemod_declaration_source import (
@@ -191,9 +192,8 @@ class ComprehensionFilterSite(FilterSiteABC):
     def in_scope(cls, root: ast.AST) -> tuple[Self, ...]:
         return tuple(
             cls(clause.target.id, clause.ifs[0], clause.iter)
-            for clause in ast.walk(root)
-            if isinstance(clause, ast.comprehension)
-            and clause.ifs
+            for clause in nodes_of(ast.comprehension, root)
+            if clause.ifs
             and isinstance(clause.target, ast.Name)
             and cls.tested_variable(clause.ifs[0], clause.target)
         )

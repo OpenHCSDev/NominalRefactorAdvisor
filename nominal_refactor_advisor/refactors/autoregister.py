@@ -16,6 +16,7 @@ from nominal_refactor_advisor.assignment_projection import (
 from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
     names_mentioned,
+    nodes_of,
 )
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
@@ -1156,9 +1157,8 @@ class AutoRegisterMroOrderingDerivation:
         matches = tuple(
             (statement, node, ordering_field_name)
             for statement in FunctionDefinition.within(root_node.body)
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Call)
-            and (ordering_field_name := cls.registry_ordering_field_name(node))
+            for node in nodes_of(ast.Call, statement)
+            if (ordering_field_name := cls.registry_ordering_field_name(node))
             is not None
         )
         return matches[0] if len(matches) == 1 else None

@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar, NamedTuple
 
-from nominal_refactor_advisor.ast_projection import name_nodes, names_read
+from nominal_refactor_advisor.ast_projection import name_nodes, names_read, nodes_of
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod as AnsweredMethod,
     ClassBinding as ClassBinding,
@@ -121,7 +121,7 @@ class MovedMethod(AnsweredMethod):
     @cached_property
     def locals(self) -> frozenset[str]:
         return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
-            argument.arg for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)
+            argument.arg for argument in nodes_of(ast.arg, self.method.args)
         )
 
     def bound_class(
@@ -218,7 +218,7 @@ class MovedMethod(AnsweredMethod):
         call whose first argument shares its opening line aligns its continuation to it."""
 
         shifts: dict[int, int] = {}
-        calls = tuple(node for node in ast.walk(self.method) if isinstance(node, ast.Call))
+        calls = tuple(nodes_of(ast.Call, self.method))
         for start, end, replacement, node in renames:
             delta = len(replacement) - (end - start)
             if not delta:
@@ -241,8 +241,8 @@ class MovedMethod(AnsweredMethod):
         destination is already bound, and the local import was the hidden cycle."""
 
         lines: set[int] = set()
-        for node in ast.walk(self.method):
-            if isinstance(node, ast.ImportFrom) and set(
+        for node in nodes_of(ast.ImportFrom, self.method):
+            if set(
                 ImportBoundNameProjection(node).names()
             ) == {self.destination.name}:
                 if node.lineno != (node.end_lineno or node.lineno):
@@ -258,7 +258,7 @@ class MovedMethod(AnsweredMethod):
         annotations = tuple(
             annotation
             for annotation in (
-                *(argument.annotation for argument in ast.walk(self.method.args) if isinstance(argument, ast.arg)),
+                *(argument.annotation for argument in nodes_of(ast.arg, self.method.args)),
                 self.method.returns,
             )
             if annotation is not None

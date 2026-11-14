@@ -21,6 +21,7 @@ from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias,
     ImportBoundNameProjection,
@@ -186,15 +187,13 @@ class ModuleReferenceScope:
         for expression, annotation in self.type_expressions():
             metadata = {
                 id(part)
-                for node in ast.walk(expression)
-                if isinstance(node, ast.Subscript)
-                and self.called(node.value) in self.TYPE_METADATA
+                for node in nodes_of(ast.Subscript, expression)
+                if self.called(node.value) in self.TYPE_METADATA
                 for part in self.metadata_parts(node)
             }
-            for node in ast.walk(expression):
+            for node in nodes_of(ast.Constant, expression):
                 if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
+                    isinstance(node.value, str)
                     and id(node) not in metadata
                 ):
                     names = self.annotation_names(node.value)
@@ -328,8 +327,7 @@ class ModuleReferenceScope:
         found: dict[tuple[str, str], None] = {}
         inner = {
             id(node.value)
-            for node in ast.walk(parsed)
-            if isinstance(node, ast.Attribute)
+            for node in nodes_of(ast.Attribute, parsed)
         }
         for node in ast.walk(parsed):
             match node:

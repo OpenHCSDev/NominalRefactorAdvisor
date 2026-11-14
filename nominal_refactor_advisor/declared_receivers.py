@@ -36,7 +36,7 @@ from dataclasses import dataclass, field
 from functools import cache, cached_property
 from typing import ClassVar
 
-from nominal_refactor_advisor.ast_projection import names_mentioned
+from nominal_refactor_advisor.ast_projection import names_mentioned, nodes_of
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     variadic_parameters,
@@ -2202,9 +2202,7 @@ def _own_nodes(function: FunctionNode) -> Iterator[ast.AST]:
             case ast.Lambda():
                 pass
             case ast.ListComp() | ast.SetComp() | ast.DictComp() | ast.GeneratorExp():
-                stack.extend(
-                    walrus for walrus in ast.walk(node) if isinstance(walrus, ast.NamedExpr)
-                )
+                stack.extend(nodes_of(ast.NamedExpr, node))
                 stack.append(node.generators[0].iter)
             case _:
                 stack.extend(ast.iter_child_nodes(node))

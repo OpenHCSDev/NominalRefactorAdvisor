@@ -27,6 +27,7 @@ from nominal_refactor_advisor.ast_projection import (
     name_nodes,
     names_mentioned,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.declared_family import ForeignAdapter
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -877,8 +878,7 @@ def _reads_dotted_path(module: ast.Module, module_name: str) -> bool:
     return any(
         (reference := LexicalValueReference.from_expression(node)) is not None
         and reference.parts == parts
-        for node in ast.walk(module)
-        if isinstance(node, ast.Attribute)
+        for node in nodes_of(ast.Attribute, module)
     )
 
 
@@ -3071,8 +3071,8 @@ class _SiblingFileReads:
         """Every string constant the module spells, any one of which may name a file."""
         return frozenset(
             node.value
-            for node in ast.walk(module)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            for node in nodes_of(ast.Constant, module)
+            if isinstance(node.value, str)
         )
 
     @staticmethod

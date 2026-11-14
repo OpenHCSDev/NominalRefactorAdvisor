@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TYPE_CHECKING
 
+from nominal_refactor_advisor.ast_projection import nodes_of
 from nominal_refactor_advisor.codemod_selector_models import SelectionCountExpectation
 from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
@@ -88,10 +89,7 @@ class DeclaredCallRewriteABC(ABC):
     def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
         nodes = {
             SourceByteSpan.require_node(node): node
-            for node in ast.walk(
-                self.snapshot.ast_target_nodes_by_id[self.caller.target_id]
-            )
-            if isinstance(node, ast.Call)
+            for node in nodes_of(ast.Call, self.snapshot.ast_target_nodes_by_id[self.caller.target_id])
         }
         replacements = []
         for call in self.selected_calls:

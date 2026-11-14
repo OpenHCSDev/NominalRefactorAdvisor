@@ -16,12 +16,25 @@ from nominal_refactor_advisor.value_expression import (
 
 
 
+AstNodeT = TypeVar("AstNodeT", bound=ast.AST)
+
+
+def nodes_of(node_type: type[AstNodeT], *roots: ast.AST) -> Iterator[AstNodeT]:
+    """Every node of one type in these subtrees, in walk order.
+
+    A parsed module already holds its own walk: read
+    ``parsed_module.syntax_index.instances_of(node_type)`` for a whole module.
+    """
+
+    return (
+        node for root in roots for node in ast.walk(root) if isinstance(node, node_type)
+    )
+
+
 def name_nodes(*roots: ast.AST) -> Iterator[ast.Name]:
     """Every bare-name node in these subtrees, in walk order."""
 
-    return (
-        node for root in roots for node in ast.walk(root) if isinstance(node, ast.Name)
-    )
+    return nodes_of(ast.Name, *roots)
 
 
 def names_mentioned(*roots: ast.AST) -> frozenset[str]:

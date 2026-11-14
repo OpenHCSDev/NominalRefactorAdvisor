@@ -33,6 +33,7 @@ from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     name_nodes,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -791,9 +792,8 @@ def obsolete_import_edits(
         alias.name
         for other in snapshot.parsed_modules
         if other.file_path != parsed_module.file_path
-        for statement in ast.walk(other.module)
-        if isinstance(statement, ast.ImportFrom)
-        and other.module_path_identity.resolve_import_from_module(
+        for statement in nodes_of(ast.ImportFrom, other.module)
+        if other.module_path_identity.resolve_import_from_module(
             imported_module=statement.module, level=statement.level
         )
         == parsed_module.module_name
@@ -1473,8 +1473,8 @@ def require_no_positional_self_construction(
         if snapshot.class_overlap_verdicts.class_index.class_for(symbol) is None:
             continue
         owner = OverlapClass.for_symbol(snapshot, symbol)
-        for node in ast.walk(owner.node):
-            if isinstance(node, ast.Call) and node.args and _is_own_class(node.func):
+        for node in nodes_of(ast.Call, owner.node):
+            if node.args and _is_own_class(node.func):
                 raise ValueError(
                     f"{owner.file_path}:{node.lineno} builds its own class with "
                     f"{len(node.args)} positional argument(s)"
@@ -1605,9 +1605,7 @@ class FieldOrderDigest:
         proof = snapshot.module_binding_proof
         serializes = False
         sink: int | None = None
-        for node in ast.walk(method):
-            if not isinstance(node, ast.Call):
-                continue
+        for node in nodes_of(ast.Call, method):
             witness = proof.reference_or_builtin_witness_at(
                 module, node.func, line=node.lineno
             )
@@ -1954,8 +1952,8 @@ def _receiver_class_calls(
 
     calls = tuple(
         node
-        for node in ast.walk(function)
-        if isinstance(node, ast.Call) and node.args and builds_receiver_class(node.func)
+        for node in nodes_of(ast.Call, function)
+        if node.args and builds_receiver_class(node.func)
     )
     if calls:
         rebound = {receiver, "type"} & frozenset(
