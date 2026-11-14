@@ -2553,12 +2553,19 @@ class StableCacheValue:
 _NORMAL_FORMERS: dict[type, Callable[[_StableCacheWalk, Any], object]] = {}
 """Each type's normal-form branch, chosen once per process."""
 
+_SCALAR_FORM_TYPES = frozenset((str, int, bool, float, bytes, type(None)))
+"""Values whose form costs less than looking it up."""
+
 
 class _StableCacheWalk:
     def __init__(self, relocation: CheckoutRelocation | None) -> None:
         self.roots = () if relocation is None else relocation.root_texts
         self.bound_to_checkout = False
         self.retains_syntax = False
+        self.forms: dict[int, object] = {}
+        """Each container's or record's form, by the object: collected items share
+        positions, spans and branches, and each is walked once. Every object the
+        walk meets is held by the value being walked, so no id is reused."""
 
     def text(self, value: str) -> object:
         for root in self.roots:
@@ -2576,7 +2583,14 @@ class _StableCacheWalk:
             former = _NORMAL_FORMERS[value_type]
         except KeyError:
             former = _NORMAL_FORMERS[value_type] = _StableCacheWalk.former_for(value_type)
-        return former(self, value)
+        if value_type in _SCALAR_FORM_TYPES:
+            return former(self, value)
+        forms = self.forms
+        try:
+            return forms[id(value)]
+        except KeyError:
+            form = forms[id(value)] = former(self, value)
+            return form
 
     @staticmethod
     def former_for(value_type: type) -> Callable[[_StableCacheWalk, Any], object]:
