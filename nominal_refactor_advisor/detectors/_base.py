@@ -85,7 +85,6 @@ from nominal_refactor_advisor.class_syntax_facets import (
 )
 from nominal_refactor_advisor.registration_facets import (
     CompactManualSelectorAxis,
-    CompactManualSubclassRegistrationSite,
 )
 from nominal_refactor_advisor.semantic_match import (
     Maybe,
@@ -131,8 +130,6 @@ from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,
     DeclaredFamilyBase,
-    LatentRosterMatch,
-    LatentRosterObservation,
     ModuleNominalBindingAuthority,
     RegistryLookupShape,
     RegistryLookupStyle,
@@ -1697,7 +1694,31 @@ class CollectsItselfUnderConfig(ABC):
         raise NotImplementedError
 
 
-class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
+SubscriptContractT = TypeVar("SubscriptContractT")
+
+
+class SubscriptedCandidateType:
+    """A detector whose candidate type is a type argument of a base it subscripts."""
+
+    @classmethod
+    def _subscripted_candidate_type(
+        cls, contract: type[SubscriptContractT]
+    ) -> type[SubscriptContractT] | None:
+        """The first type argument, along the MRO, that answers the contract."""
+
+        return next(
+            (
+                argument
+                for klass in cls.__mro__
+                for base in types.get_original_bases(klass)
+                for argument in typing.get_args(base)
+                if isinstance(argument, type) and issubclass(argument, contract)
+            ),
+            None,
+        )
+
+
+class DerivedCandidateCollectorMixin(SubscriptedCandidateType, Generic[CandidateItemT]):
     candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
     collector_scope: ClassVar[CandidateCollectorScope | None] = None
     collector_uses_config: ClassVar[bool] = False
@@ -1727,15 +1748,7 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
         contract = cls.self_collecting_contract
         if contract is None:
             return None
-        return next(
-            (
-                argument
-                for base in types.get_original_bases(cls)
-                for argument in typing.get_args(base)
-                if isinstance(argument, type) and issubclass(argument, contract)
-            ),
-            None,
-        )
+        return cls._subscripted_candidate_type(contract)
 
     @classmethod
     def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:
@@ -2094,7 +2107,20 @@ class CompactMultiProjectionCandidateDetector(
         raise NotImplementedError
 
 
+class CollectsItselfFromCompactContext(ABC, Generic[CompactCandidateContextT]):
+    """A candidate type that finds its candidates in a detector's compact context. A
+    compact-context detector over it has no candidate method to write."""
+
+    @classmethod
+    @abstractmethod
+    def from_compact_context(
+        cls, context: CompactCandidateContextT, config: DetectorConfig
+    ) -> tuple[Self, ...]:
+        raise NotImplementedError
+
+
 class CompactContextCandidateDetector(
+    SubscriptedCandidateType,
     CompactProjectionCandidateDetector[CompactProjectionItemT, CandidateItemT],
     Generic[CompactProjectionItemT, CompactCandidateContextT, CandidateItemT],
     ABC,
@@ -2143,13 +2169,35 @@ class CompactContextCandidateDetector(
     ) -> CompactCandidateContextT:
         raise NotImplementedError
 
-    @abstractmethod
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if (
+            _has_finding_spec_contract(cls)
+            and cls._candidates_from_compact_context
+            is CompactContextCandidateDetector._candidates_from_compact_context
+            and cls._subscripted_candidate_type(CollectsItselfFromCompactContext) is None
+        ):
+            raise TypeError(
+                f"{cls.__name__} must say how it finds candidates: subscript a candidate "
+                "type that collects itself from the compact context, or override "
+                "_candidates_from_compact_context"
+            )
+
     def _candidates_from_compact_context(
         self,
         context: CompactCandidateContextT,
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
-        raise NotImplementedError
+        """The subscripted candidate type's own candidates in the context."""
+
+        candidate_type = type(self)._subscripted_candidate_type(
+            CollectsItselfFromCompactContext
+        )
+        assert candidate_type is not None
+        return cast(
+            Sequence[CandidateItemT],
+            candidate_type.from_compact_context(context, config),
+        )
 
 
 class CompactClassRepositoryProjectionMixin(
@@ -5213,41 +5261,6 @@ class NominalAuthorityShape(SourceLineReference):
     is_dataclass_family: bool
 
 
-@dataclass(frozen=True)
-class LatentImplementationRosterCandidate(ClassLineWitnessCandidate):
-    roster: LatentRosterObservation
-    match: LatentRosterMatch
-    concrete_class_names: tuple[str, ...]
-    key_attr_name: str | None
-
-
-@dataclass(frozen=True)
-class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
-    registration_site: CompactManualSubclassRegistrationSite
-    consumer_locations: tuple[SourceLocation, ...]
-    concrete_class_names: tuple[str, ...]
-
-    @property
-    def registry_name(self) -> str:
-        return self.registration_site.registry_name
-
-    @property
-    def guard_summary(self) -> str | None:
-        return self.registration_site.guard_summary
-
-    @property
-    def consumer_names(self) -> tuple[str, ...]:
-        return tuple((location.symbol for location in self.consumer_locations))
-
-
-@dataclass(frozen=True)
-class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
-    selector_method_name: str
-    predicate_method_name: str
-    context_param_name: str
-    concrete_class_names: tuple[str, ...]
-
-
 class NameFamilyClassNamesMixin(ABC):
     name_family: tuple[str, ...]
     class_names = AliasProperty[tuple[str, ...]]("name_family")
@@ -5315,6 +5328,7 @@ class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
 @dataclass(frozen=True)
 class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
     keyword_names: tuple[str, ...]
+
 
 @dataclass(frozen=True)
 class PropertyHookGroup(ClassLineNumbersGroup):

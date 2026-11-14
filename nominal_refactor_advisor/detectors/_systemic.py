@@ -156,6 +156,7 @@ from nominal_refactor_advisor.detectors._base import (
     PipelineAssemblyStage,
     ResultAssemblyPipelineFunction,
     _PIPELINE_RETURN_STAGE,
+    CollectsItselfFromCompactContext,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
@@ -1327,36 +1328,6 @@ class ExternalEnumCaseRecoverySite:
         )
 
 
-@dataclass(frozen=True)
-class ExternalEnumCaseRecoveryCandidate(EvidenceLocated):
-    """One enum whose cases are recovered outside its declaration."""
-
-    enum_class: CompactIndexedClass
-    sites: tuple[ExternalEnumCaseRecoverySite, ...]
-    case_names: tuple[str, ...]
-
-    @property
-    def branch_site_count(self) -> int:
-        return sum(site.branch_site_count for site in self.sites)
-
-    @property
-    def authority_evidence(self) -> SourceLocation:
-        return self.enum_class.location
-
-    @property
-    def projection_evidence(self) -> SourceLocation:
-        if not self.sites:
-            raise ValueError("external enum recovery requires one projection site")
-        return self.sites[0].function.location
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            self.authority_evidence,
-            *(site.function.location for site in self.sites[:5]),
-        )
-
-
 def unique_direct_enum_classes(
     class_index: CompactClassFamilyIndex,
 ) -> dict[str, CompactIndexedClass]:
@@ -1444,52 +1415,81 @@ def recovered_enum_sites(
     return sites
 
 
-def _external_enum_case_recovery_candidates(
-    context: CompactClassRepositoryContext,
-    config: DetectorConfig,
-) -> tuple[ExternalEnumCaseRecoveryCandidate, ...]:
-    enum_classes = unique_direct_enum_classes(context.class_index)
-    keyed_axis_names = {
-        spec.key_type_name
-        for spec in _compact_keyed_family_axis_specs_from_context(context)
-    }
-    sites_by_enum_name: dict[str, list[ExternalEnumCaseRecoverySite]] = defaultdict(
-        list
-    )
-    for projection in context.projections:
-        for function in projection.closed_axis_branch_functions:
-            if PythonSourcePathPolicy.is_test_path(Path(function.file_path)):
-                continue
-            for enum_name, site in recovered_enum_sites(
-                context.class_index, enum_classes, function
-            ).items():
-                enum_class = enum_classes[enum_name]
-                if enum_name in keyed_axis_names or not site.case_names:
-                    continue
-                if (
-                    function.file_path == enum_class.file_path
-                    and function.qualname.startswith(f"{enum_class.qualname}.")
-                ):
-                    continue
-                sites_by_enum_name[enum_name].append(site)
-    candidates: list[ExternalEnumCaseRecoveryCandidate] = []
-    for enum_name, sites in sites_by_enum_name.items():
-        case_names = sorted_tuple(
-            {case_name for site in sites for case_name in site.case_names}
+@dataclass(frozen=True)
+class ExternalEnumCaseRecoveryCandidate(CollectsItselfFromCompactContext[CompactClassRepositoryContext], EvidenceLocated):
+    """One enum whose cases are recovered outside its declaration."""
+
+    enum_class: CompactIndexedClass
+    sites: tuple[ExternalEnumCaseRecoverySite, ...]
+    case_names: tuple[str, ...]
+
+    @property
+    def branch_site_count(self) -> int:
+        return sum(site.branch_site_count for site in self.sites)
+
+    @property
+    def authority_evidence(self) -> SourceLocation:
+        return self.enum_class.location
+
+    @property
+    def projection_evidence(self) -> SourceLocation:
+        if not self.sites:
+            raise ValueError("external enum recovery requires one projection site")
+        return self.sites[0].function.location
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            self.authority_evidence,
+            *(site.function.location for site in self.sites[:5]),
         )
-        if len(case_names) < config.min_string_cases:
-            continue
-        candidates.append(
-            ExternalEnumCaseRecoveryCandidate(
-                enum_class=enum_classes[enum_name],
-                sites=tuple(sites),
-                case_names=case_names,
+
+    @classmethod
+    def from_compact_context(
+        cls, context: CompactClassRepositoryContext, config: DetectorConfig
+    ) -> tuple[Self, ...]:
+        enum_classes = unique_direct_enum_classes(context.class_index)
+        keyed_axis_names = {
+            spec.key_type_name
+            for spec in _compact_keyed_family_axis_specs_from_context(context)
+        }
+        sites_by_enum_name: dict[str, list[ExternalEnumCaseRecoverySite]] = defaultdict(
+            list
+        )
+        for projection in context.projections:
+            for function in projection.closed_axis_branch_functions:
+                if PythonSourcePathPolicy.is_test_path(Path(function.file_path)):
+                    continue
+                for enum_name, site in recovered_enum_sites(
+                    context.class_index, enum_classes, function
+                ).items():
+                    enum_class = enum_classes[enum_name]
+                    if enum_name in keyed_axis_names or not site.case_names:
+                        continue
+                    if (
+                        function.file_path == enum_class.file_path
+                        and function.qualname.startswith(f"{enum_class.qualname}.")
+                    ):
+                        continue
+                    sites_by_enum_name[enum_name].append(site)
+        candidates: list[Self] = []
+        for enum_name, sites in sites_by_enum_name.items():
+            case_names = sorted_tuple(
+                {case_name for site in sites for case_name in site.case_names}
             )
+            if len(case_names) < config.min_string_cases:
+                continue
+            candidates.append(
+                cls(
+                    enum_class=enum_classes[enum_name],
+                    sites=tuple(sites),
+                    case_names=case_names,
+                )
+            )
+        return sorted_tuple(
+            candidates,
+            key=lambda candidate: candidate.enum_class.symbol,
         )
-    return sorted_tuple(
-        candidates,
-        key=lambda candidate: candidate.enum_class.symbol,
-    )
 
 
 class ExternalEnumCaseRecoveryDetector(
@@ -1536,13 +1536,6 @@ class ExternalEnumCaseRecoveryDetector(
             ObservationTag.DATAFLOW_ROOT,
         ),
     )
-
-    def _candidates_from_compact_context(
-        self,
-        context: CompactClassRepositoryContext,
-        config: DetectorConfig,
-    ) -> tuple[ExternalEnumCaseRecoveryCandidate, ...]:
-        return _external_enum_case_recovery_candidates(context, config)
 
     def _finding_for_candidate(
         self,

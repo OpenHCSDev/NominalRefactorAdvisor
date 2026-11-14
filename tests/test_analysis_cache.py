@@ -5355,7 +5355,7 @@ def test_compact_concrete_family_candidates_preserve_semantics(
     context = runtime_detectors._compact_concrete_family_context(projections, config)
 
     predicate_candidates = (
-        runtime_detectors._compact_predicate_selected_concrete_family_candidates(
+        runtime_detectors.PredicateSelectedConcreteFamilyCandidate.from_compact_context(
             context, config
         )
     )
@@ -5471,7 +5471,7 @@ def test_compact_roster_candidates_preserve_semantics(
     context = runtime_detectors._compact_concrete_family_context(projections, config)
 
     manual_candidates = (
-        runtime_detectors._compact_manual_concrete_subclass_roster_candidates(
+        runtime_detectors.ManualConcreteSubclassRosterCandidate.from_compact_context(
             context, config
         )
     )
@@ -5490,7 +5490,7 @@ def test_compact_roster_candidates_preserve_semantics(
         "GuidedRequest",
     )
     latent_candidates = (
-        runtime_detectors._compact_latent_implementation_roster_candidates(
+        runtime_detectors.LatentImplementationRosterCandidate.from_compact_context(
             context, config
         )
     )
