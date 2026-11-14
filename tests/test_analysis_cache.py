@@ -654,11 +654,12 @@ def test_detector_shard_cache_identity_ignores_orchestration_implementation(
         "nominal_refactor_advisor.analysis",
         "nominal_refactor_advisor.analysis_cache",
     }
-    detector_modules = {
-        name
-        for detector_type in IssueDetector.registered_detector_types()
-        for name in detector_implementation_module_names(detector_type)
-    }
+    with ScanCache.scope():  # one dependency graph for every detector, as in a scan
+        detector_modules = {
+            name
+            for detector_type in IssueDetector.registered_detector_types()
+            for name in detector_implementation_module_names(detector_type)
+        }
 
     assert not orchestration & detector_modules
     assert "nominal_refactor_advisor.detectors._base" in detector_modules
