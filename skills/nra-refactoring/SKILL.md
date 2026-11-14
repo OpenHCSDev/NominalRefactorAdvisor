@@ -580,6 +580,26 @@ on several node types, or test a tuple of types, still walk. The
 ordered names of an assignment target (`a, (b, *c) = ...`) are a
 different question.
 
+**A visitor that stays in its scope.** `ast_tools.OwnScopeNodeVisitor`
+skips nested defs, classes and lambdas whole. Inherit it instead of
+writing `visit_FunctionDef` / `visit_AsyncFunctionDef` / `visit_ClassDef`
+/ `visit_Lambda` that return: five visitors did until 2026-11-14. The
+hand-written scope walks (`walk_function_body_nodes`, `scope_walk`,
+`declared_receivers._own_nodes`) each draw the boundary differently
+(lambdas, decorators, comprehensions), so they are different questions
+and stay apart.
+
+**A lookup that may stay open: ask `.closed()`.** In the capture kernel
+a lookup returns evidence or an `OpenCapturedReference`. A consumer that
+needs the evidence writes `x = lookup(...).closed()`. Evidence
+(`ClosedEvidence`: `NamespaceEvidenceABC`, `AdmittedExecutionPrefixABC`)
+answers itself; the open reference raises its rejection. Don't write
+`if isinstance(x, OpenCapturedReference): x.require_closed()` followed
+by a dead `return` or a `cast`: sixteen places did, and the type checker
+could not see that the value was evidence afterwards (13 errors went
+away with them). A function that hands the open reference back to its
+caller still tests for it; that is a different move.
+
 **Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
 target and guards against its return; `remove_import_bindings` drops
 imports a module no longer reads. Neither proves the target is

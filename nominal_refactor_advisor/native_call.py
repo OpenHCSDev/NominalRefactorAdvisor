@@ -1079,10 +1079,7 @@ class NativeDictionaryResultCall(NativeCallAuthority, ABC):
         self.namespace()
 
     def namespace(self) -> NamespaceEvidenceABC:
-        namespace = self._namespace()
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
-        namespace = cast(NamespaceEvidenceABC, namespace)
+        namespace = self._namespace().closed()
         namespace.require_admitted(self.environment.kernel.initial)
         return namespace
 

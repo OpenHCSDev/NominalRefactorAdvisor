@@ -30,6 +30,8 @@ from types import (
 )
 from typing import (
     ClassVar,
+    NoReturn,
+    Self,
     TYPE_CHECKING,
     TypeAlias,
     TypeVar,
@@ -297,14 +299,8 @@ class CapturedReferenceResolution(NativeScalarValueABC):
         position: CompactFlowPosition,
     ) -> None:
         """Require dictionary storage plus prior-value and receiver release."""
-        namespace = self.dictionary_namespace(resolver.initial)
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
-            return
-        prefix = resolver._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
-            return
+        namespace = self.dictionary_namespace(resolver.initial).closed()
+        prefix = resolver._admitted_prefix(context, position).closed()
         namespace.require_available(resolver, prefix)
         NativeCreationBackend.current().require_dictionary_store(key)
         namespace.require_slot_release(resolver, key, context, position)
@@ -536,8 +532,12 @@ class OpenCapturedReference(OpaqueCapturedObjectOperations):
             if isinstance(error, BaseExceptionGroup):
                 pending.extend(error.exceptions)
 
-    def require_closed(self) -> None:
+    def closed(self) -> NoReturn:
+        """An open reference is no evidence: it refuses where evidence answers itself."""
         raise self.rejection("Object capture")
+
+    def require_closed(self) -> None:
+        self.closed()
 
     def open_reference(self) -> OpenCapturedReference:
         return self
@@ -639,9 +639,7 @@ class CapturedNativeObject(NativeTypeCapture):
         """Admit the native root under the original capture and execution premise."""
         root = NativeMroBase.OBJECT.python_type
         self.require_native_identity(NativeDeclaration(root))
-        prefix = resolver._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
+        prefix = resolver._admitted_prefix(context, position).closed()
         NativeCreationBackend.current().require_static_type_release(root)
         return root
 
@@ -652,10 +650,7 @@ class CapturedNativeObject(NativeTypeCapture):
         context: CompactFlowContext,
         position: CompactFlowPosition,
     ) -> None:
-        namespace = self.attribute_namespace(resolver.initial, attribute)
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
-            return
+        namespace = self.attribute_namespace(resolver.initial, attribute).closed()
         namespace.require_slot_release(resolver, attribute, context, position)
 
     def require_release(self) -> None:
@@ -727,7 +722,19 @@ NamespaceEntryT = TypeVar("NamespaceEntryT")
 FoldT = TypeVar("FoldT")
 
 
-class NamespaceEvidenceABC(ABC):
+class ClosedEvidence(ABC):
+    """What a lookup answers when it is not an OpenCapturedReference.
+
+    A lookup that may stay unproved returns evidence or an open reference.  A consumer
+    that needs the evidence asks ``lookup(...).closed()``: evidence answers itself and
+    the open reference raises its rejection.
+    """
+
+    def closed(self) -> Self:
+        return self
+
+
+class NamespaceEvidenceABC(ClosedEvidence):
     """A canonical admitted namespace identity and its initial binding evidence.
 
     Source-created namespaces must carry proven creation, not substitute a
@@ -769,10 +776,7 @@ class NamespaceEvidenceABC(ABC):
         position: CompactFlowPosition,
     ) -> CapturedReferenceResolution | None:
         """Resolve destination storage and release under its admitted active frame."""
-        prefix = resolver._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
-        prefix = cast(AdmittedExecutionPrefixABC, prefix)
+        prefix = resolver._admitted_prefix(context, position).closed()
         previous = resolver._namespace_resolution(self, key, prefix, frozenset())
         if previous is not None:
             previous.require_release_from(
@@ -1167,10 +1171,8 @@ class SourceOperationAuthority(SourceActivationAuthorityABC):
     def prefix(self) -> AdmittedExecutionPrefixABC:
         prefix = self.environment.kernel._admitted_prefix(
             self.context, self.operation.position
-        )
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
-        return cast(AdmittedExecutionPrefixABC, prefix)
+        ).closed()
+        return prefix
 
 
 class CompletedSourceOperation(
@@ -1198,7 +1200,7 @@ class CompletedSourceOperation(
         return result
 
 
-class AdmittedExecutionPrefixABC(ABC):
+class AdmittedExecutionPrefixABC(ClosedEvidence):
     """A supplied activation/order proof, not an inferred source-parent relation.
 
     Intervals retain their own context, canonical activation frame and local
@@ -2243,8 +2245,7 @@ class NamespaceMemberInventory(
         namespace: NamespaceEvidenceABC | OpenCapturedReference,
         key: NativeDictionaryKey,
     ) -> None:
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
+        namespace = namespace.closed()
         if namespace is not self.namespace:
             return
         occurrence, names = context
@@ -2284,9 +2285,7 @@ class NamespaceMemberInventory(
         receiver = kernel._read_use(
             mutation.target.receiver_use, occurrence.source.context, frozenset()
         )
-        namespace = receiver.dictionary_namespace(kernel.initial)
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
+        namespace = receiver.dictionary_namespace(kernel.initial).closed()
         if namespace is not self.namespace:
             return
         key = kernel._read_use(
@@ -2364,9 +2363,7 @@ class CapturedReferenceKernel(
         context: CompactFlowContext,
         position: CompactFlowPosition,
     ) -> frozenset[NativeDictionaryKey]:
-        prefix = self._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
+        prefix = self._admitted_prefix(context, position).closed()
         return NamespaceMemberInventory(self, namespace, prefix).names
 
     def _namespace_resolution(
@@ -2434,9 +2431,7 @@ class CapturedReferenceKernel(
         return self.read(read)
 
     def require_interval_frame(self, interval: SingleFlowPrefix) -> None:
-        prefix = self._admitted_prefix(interval.context, interval.position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
+        prefix = self._admitted_prefix(interval.context, interval.position).closed()
         if prefix.endpoint.frame is not interval.frame:
             raise ValueError("Interval capture requires its original activation frame")
 
@@ -2564,9 +2559,7 @@ class CapturedReferenceKernel(
 
     def _package_at_import(self, context: ImportQuery) -> str:
         flow_context, binding, pending = context
-        prefix = self._admitted_prefix(flow_context, binding.position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
+        prefix = self._admitted_prefix(flow_context, binding.position).closed()
         package = self._slot(
             prefix.endpoint.frame.globals,
             ImportFromModuleName.package_binding,

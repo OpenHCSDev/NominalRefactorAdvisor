@@ -249,9 +249,7 @@ class SourceNativeFrameResolver(NativeFrameOriginResolverABC[CompactFlowContext]
         origin: SourceNativeFrameOrigin,
     ) -> CompactFlowContext:
         endpoint = self.native_frame_prefix.endpoint
-        namespace = endpoint.frame.locals
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
+        namespace = endpoint.frame.locals.closed()
         namespace.require_native_creator(origin.execution)
         return endpoint.context
 
@@ -447,9 +445,7 @@ class SourceDefinitionResultABC(CapturedReferenceResolution, SourceInstalledRetu
         position: CompactFlowPosition | None,
     ) -> AdmittedExecutionPrefixABC:
         """Require the installed original definition before a canonical source cut."""
-        prefix = resolver._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
-            prefix.require_closed()
+        prefix = resolver._admitted_prefix(context, position).closed()
         self.require_available_in(prefix)
         return prefix
 
@@ -3689,9 +3685,7 @@ class SourceExecutionABC(
         name: str,
     ) -> None:
         prefix = self.required_prefix(context, mutation.position)
-        namespace = prefix.endpoint.frame.binding_namespace(context, name)
-        if isinstance(namespace, OpenCapturedReference):
-            namespace.require_closed()
+        namespace = prefix.endpoint.frame.binding_namespace(context, name).closed()
         previous = namespace.require_slot_release(
             self.kernel, name, context, mutation.position
         )
@@ -3900,9 +3894,7 @@ class SourceExecutionABC(
     def required_prefix(
         self, context: CompactFlowContext, position: CompactFlowPosition | None
     ) -> AdmittedExecutionPrefixABC:
-        result = self.admit(context, position)
-        if isinstance(result, OpenCapturedReference):
-            result.require_closed()
+        result = self.admit(context, position).closed()
         return result
 
     def admit(
