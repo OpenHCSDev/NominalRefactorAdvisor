@@ -6,8 +6,9 @@ import ast
 from collections import defaultdict
 from collections.abc import Callable, Hashable
 from dataclasses import dataclass
-from typing import ClassVar, Generic, TypeVar
+from typing import ClassVar, Generic, Self, TypeVar
 
+from nominal_refactor_advisor.detectors._base import CollectsItself
 from nominal_refactor_advisor.detectors._candidates import ClassMethodFamilyCandidate
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import ParsedModule
@@ -29,18 +30,87 @@ from nominal_refactor_advisor.detectors._substrate_support import (
 
 
 @dataclass(frozen=True)
-class AccumulatorFoldFamilyCandidate(ClassMethodFamilyCandidate):
+class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate):
     accumulator_type_name: str
     result_method_name: str
     source_parameter_names: tuple[str, ...]
     step_method_names: tuple[str, ...]
 
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        projector = ClassMethodGroupsShapeProjector(
+            _accumulator_fold_method, lambda method: method.shape_key
+        )
+        for class_node, ordered in projector.project(module):
+            if len({method.step_method_name for method in ordered}) < 2:
+                continue
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    class_name=class_node.name,
+                    accumulator_type_name=ordered[0].accumulator_type_name,
+                    result_method_name=ordered[0].result_method_name,
+                    method_names=tuple((method.method_name for method in ordered)),
+                    line_numbers=tuple((method.line for method in ordered)),
+                    source_parameter_names=tuple(
+                        (method.source_parameter_name for method in ordered)
+                    ),
+                    step_method_names=tuple(
+                        (method.step_method_name for method in ordered)
+                    ),
+                )
+            )
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (item.file_path, item.line_numbers, item.class_name),
+        )
+
 
 @dataclass(frozen=True)
-class RegexGroupExtractorFamilyCandidate(ClassMethodFamilyCandidate):
+class RegexGroupExtractorFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate):
     pattern_attribute_names: tuple[str, ...]
     matcher_names: tuple[str, ...]
     group_index: int
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        for class_node in (
+            node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
+        ):
+            methods = tuple(
+                (
+                    extractor
+                    for statement in class_node.body
+                    if isinstance(statement, ast.FunctionDef)
+                    for extractor in (_RegexGroupExtractorMethod.from_method(statement),)
+                    if extractor is not None
+                )
+            )
+            grouped: dict[int, list[_RegexGroupExtractorMethod]] = defaultdict(list)
+            for method in methods:
+                grouped[method.group_index].append(method)
+            for group_index, grouped_methods in grouped.items():
+                if len(grouped_methods) < 2:
+                    continue
+                ordered = sorted_tuple(
+                    grouped_methods, key=lambda item: (item.line, item.method_name)
+                )
+                candidates.append(
+                    cls(
+                        file_path=module.file_path,
+                        class_name=class_node.name,
+                        method_names=tuple((method.method_name for method in ordered)),
+                        line_numbers=tuple((method.line for method in ordered)),
+                        pattern_attribute_names=tuple(
+                            (method.pattern_attribute_name for method in ordered)
+                        ),
+                        matcher_names=tuple((method.matcher_name for method in ordered)),
+                        group_index=group_index,
+                    )
+                )
+        return tuple(candidates)
 
 
 @dataclass(frozen=True)
@@ -228,38 +298,6 @@ def _accumulator_result_call(
     return call
 
 
-def _accumulator_fold_family_candidates(
-    module: ParsedModule,
-) -> tuple[AccumulatorFoldFamilyCandidate, ...]:
-    candidates: list[AccumulatorFoldFamilyCandidate] = []
-    projector = ClassMethodGroupsShapeProjector(
-        _accumulator_fold_method, lambda method: method.shape_key
-    )
-    for class_node, ordered in projector.project(module):
-        if len({method.step_method_name for method in ordered}) < 2:
-            continue
-        candidates.append(
-            AccumulatorFoldFamilyCandidate(
-                file_path=module.file_path,
-                class_name=class_node.name,
-                accumulator_type_name=ordered[0].accumulator_type_name,
-                result_method_name=ordered[0].result_method_name,
-                method_names=tuple((method.method_name for method in ordered)),
-                line_numbers=tuple((method.line for method in ordered)),
-                source_parameter_names=tuple(
-                    (method.source_parameter_name for method in ordered)
-                ),
-                step_method_names=tuple(
-                    (method.step_method_name for method in ordered)
-                ),
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line_numbers, item.class_name),
-    )
-
-
 @dataclass(frozen=True)
 class _RegexGroupExtractorMethod:
     method_name: str
@@ -317,47 +355,6 @@ class _RegexGroupExtractorMethod:
             matcher_name=matcher.attribute.attr,
             group_index=group_index,
         )
-
-
-def _regex_group_extractor_family_candidates(
-    module: ParsedModule,
-) -> tuple[RegexGroupExtractorFamilyCandidate, ...]:
-    candidates: list[RegexGroupExtractorFamilyCandidate] = []
-    for class_node in (
-        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
-    ):
-        methods = tuple(
-            (
-                extractor
-                for statement in class_node.body
-                if isinstance(statement, ast.FunctionDef)
-                for extractor in (_RegexGroupExtractorMethod.from_method(statement),)
-                if extractor is not None
-            )
-        )
-        grouped: dict[int, list[_RegexGroupExtractorMethod]] = defaultdict(list)
-        for method in methods:
-            grouped[method.group_index].append(method)
-        for group_index, grouped_methods in grouped.items():
-            if len(grouped_methods) < 2:
-                continue
-            ordered = sorted_tuple(
-                grouped_methods, key=lambda item: (item.line, item.method_name)
-            )
-            candidates.append(
-                RegexGroupExtractorFamilyCandidate(
-                    file_path=module.file_path,
-                    class_name=class_node.name,
-                    method_names=tuple((method.method_name for method in ordered)),
-                    line_numbers=tuple((method.line for method in ordered)),
-                    pattern_attribute_names=tuple(
-                        (method.pattern_attribute_name for method in ordered)
-                    ),
-                    matcher_names=tuple((method.matcher_name for method in ordered)),
-                    group_index=group_index,
-                )
-            )
-    return tuple(candidates)
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

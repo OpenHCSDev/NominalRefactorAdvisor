@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import Generic, Self, TypeVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_syntax_facets import (
@@ -85,6 +85,7 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
+    CollectsItself,
     TargetClassEvidenceAnchored,
     TargetProjectionRequired,
     _REGISTRY_PROJECTION_SURFACE_ANALYZER,
@@ -817,7 +818,7 @@ _SINGLE_TEMPLATE_CALL_METRICS = OrchestrationMetrics(
 
 
 @dataclass(frozen=True)
-class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
+class ProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
     base_names: tuple[str, ...]
@@ -833,6 +834,40 @@ class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
                     self.line_numbers, self.property_names, strict=True
                 )
             )
+        )
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        for declared in module.fact(ModuleClassStatements).statements:
+            class_node = declared.node
+            properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
+            for method in declared.methods:
+                if not method.spells("property"):
+                    continue
+                statement = method.node
+                body = statements_without_docstring(statement.body)
+                if len(body) != 1 or not isinstance(body[0], ast.Return):
+                    continue
+                base_name = _path_projection_base(body[0].value)
+                if base_name is None:
+                    continue
+                properties.append((statement, base_name))
+            if len(properties) < 3:
+                continue
+            ordered = sorted_tuple(properties, key=lambda item: item[0].lineno)
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    line=class_node.lineno,
+                    class_name=class_node.name,
+                    property_names=tuple((function.name for function, _ in ordered)),
+                    line_numbers=tuple((function.lineno for function, _ in ordered)),
+                    base_names=sorted_tuple({base_name for _, base_name in ordered}),
+                )
+            )
+        return sorted_tuple(
+            candidates, key=lambda item: (item.file_path, item.line, item.class_name)
         )
 
 
@@ -881,42 +916,6 @@ def _path_projection_base(returned: ast.AST) -> str | None:
     return SELF_ATTRIBUTE_AUTHORITY.attr_name(node)
 
 
-def _projection_property_family_candidates(
-    module: ParsedModule,
-) -> tuple[ProjectionPropertyFamilyCandidate, ...]:
-    candidates: list[ProjectionPropertyFamilyCandidate] = []
-    for declared in module.fact(ModuleClassStatements).statements:
-        class_node = declared.node
-        properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
-        for method in declared.methods:
-            if not method.spells("property"):
-                continue
-            statement = method.node
-            body = statements_without_docstring(statement.body)
-            if len(body) != 1 or not isinstance(body[0], ast.Return):
-                continue
-            base_name = _path_projection_base(body[0].value)
-            if base_name is None:
-                continue
-            properties.append((statement, base_name))
-        if len(properties) < 3:
-            continue
-        ordered = sorted_tuple(properties, key=lambda item: item[0].lineno)
-        candidates.append(
-            ProjectionPropertyFamilyCandidate(
-                file_path=module.file_path,
-                line=class_node.lineno,
-                class_name=class_node.name,
-                property_names=tuple((function.name for function, _ in ordered)),
-                line_numbers=tuple((function.lineno for function, _ in ordered)),
-                base_names=sorted_tuple({base_name for _, base_name in ordered}),
-            )
-        )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.class_name)
-    )
-
-
 declare_candidate_rule_detector(
     ProjectionPropertyFamilyCandidate,
     high_confidence_certified_spec(
@@ -946,7 +945,6 @@ declare_candidate_rule_detector(
         field_names=projection_candidate.property_names,
         source_name=", ".join(projection_candidate.base_names),
     ),
-    candidate_collector=_projection_property_family_candidates,
 )
 
 

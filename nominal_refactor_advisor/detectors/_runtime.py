@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from enum import StrEnum
-from typing import Generic, TypeAlias, TypeVar, cast
+from typing import cast, Generic, Self, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
@@ -137,6 +137,7 @@ from nominal_refactor_advisor.observation_shapes import (
     RegistrationShape,
 )
 from nominal_refactor_advisor.detectors._base import (
+    CollectsItself,
     CANDIDATE_COLLECTION_AUTHORITY,
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
@@ -2881,13 +2882,69 @@ class NumericLiteralDispatchDetector(
 
 
 @dataclass(frozen=True)
-class MirroredImportFallbackCandidate(LineWitnessCandidate):
+class MirroredImportFallbackCandidate(CollectsItself, LineWitnessCandidate):
     imported_modules: tuple[str, ...]
     imported_name_count: int
 
     @property
     def witness_name(self) -> str:
         return "mirrored import fallback"
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        for statement in statements_without_docstring(module.module.body):
+            if not isinstance(statement, ast.Try) or not statement.handlers:
+                continue
+            relative_imports = tuple(
+                (
+                    signature
+                    for body_statement in statement.body
+                    if (signature := _import_from_signature(body_statement)) is not None
+                )
+            )
+            if not relative_imports or len(relative_imports) != len(statement.body):
+                continue
+            if not all((level > 0 for _, _, level in relative_imports)):
+                continue
+            for handler in statement.handlers:
+                if not _is_import_error_handler(handler):
+                    continue
+                absolute_imports = tuple(
+                    (
+                        signature
+                        for body_statement in handler.body
+                        if (signature := _import_from_signature(body_statement)) is not None
+                    )
+                )
+                if len(absolute_imports) != len(handler.body):
+                    continue
+                normalized_relative = tuple(
+                    (module_name, names) for module_name, names, _ in relative_imports
+                )
+                normalized_absolute = tuple(
+                    (
+                        (module_name, names)
+                        for module_name, names, level in absolute_imports
+                        if level == 0
+                    )
+                )
+                if normalized_relative != normalized_absolute:
+                    continue
+                candidates.append(
+                    cls(
+                        file_path=module.file_path,
+                        line=statement.lineno,
+                        imported_modules=tuple(
+                            (module_name for module_name, _, _ in relative_imports)
+                        ),
+                        imported_name_count=sum(
+                            (len(names) for _, names, _ in relative_imports)
+                        ),
+                    )
+                )
+                break
+        return tuple(candidates)
 
 
 def _import_from_signature(
@@ -2913,68 +2970,10 @@ def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
     )
 
 
-def _mirrored_import_fallback_candidates(
-    module: ParsedModule,
-) -> tuple[MirroredImportFallbackCandidate, ...]:
-    candidates: list[MirroredImportFallbackCandidate] = []
-    for statement in statements_without_docstring(module.module.body):
-        if not isinstance(statement, ast.Try) or not statement.handlers:
-            continue
-        relative_imports = tuple(
-            (
-                signature
-                for body_statement in statement.body
-                if (signature := _import_from_signature(body_statement)) is not None
-            )
-        )
-        if not relative_imports or len(relative_imports) != len(statement.body):
-            continue
-        if not all((level > 0 for _, _, level in relative_imports)):
-            continue
-        for handler in statement.handlers:
-            if not _is_import_error_handler(handler):
-                continue
-            absolute_imports = tuple(
-                (
-                    signature
-                    for body_statement in handler.body
-                    if (signature := _import_from_signature(body_statement)) is not None
-                )
-            )
-            if len(absolute_imports) != len(handler.body):
-                continue
-            normalized_relative = tuple(
-                (module_name, names) for module_name, names, _ in relative_imports
-            )
-            normalized_absolute = tuple(
-                (
-                    (module_name, names)
-                    for module_name, names, level in absolute_imports
-                    if level == 0
-                )
-            )
-            if normalized_relative != normalized_absolute:
-                continue
-            candidates.append(
-                MirroredImportFallbackCandidate(
-                    file_path=module.file_path,
-                    line=statement.lineno,
-                    imported_modules=tuple(
-                        (module_name for module_name, _, _ in relative_imports)
-                    ),
-                    imported_name_count=sum(
-                        (len(names) for _, names, _ in relative_imports)
-                    ),
-                )
-            )
-            break
-    return tuple(candidates)
-
-
 class MirroredImportFallbackDetector(
     ModuleCollectorCandidateDetector[MirroredImportFallbackCandidate]
 ):
-    candidate_collector = staticmethod(_mirrored_import_fallback_candidates)
+    candidate_collector = MirroredImportFallbackCandidate.from_module
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
         "Mirrored import fallback should collapse to one import authority",

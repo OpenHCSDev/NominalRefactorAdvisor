@@ -2233,7 +2233,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
         candidate_type: type[CandidateItemT],
     ) -> DetectorDeclarationOptions[CandidateItemT]:
         """The declared options. A candidate type that collects itself from a module
-        (`ModuleCollectedLineWitnessCandidate`) is the collector unless one is named."""
+        (`CollectsItself`) is the collector unless one is named."""
 
         unknown_names = set(options) - cls.field_names()
         if unknown_names:
@@ -2241,7 +2241,7 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
                 f"Unknown detector declaration option(s): {', '.join(sorted(unknown_names))}"
             )
         if "candidate_collector" not in options and issubclass(
-            candidate_type, ModuleCollectedLineWitnessCandidate
+            candidate_type, CollectsItself
         ):
             return cls(
                 **options,
@@ -5037,7 +5037,17 @@ class SupportProjectionAuthority:
 SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
 
 
-class ModuleCollectedLineWitnessCandidate(LineWitnessCandidate, ABC):
+class CollectsItself(ABC):
+    """A candidate type that knows how to find its candidates in one module. A detector
+    declared over it has no collector to name."""
+
+    @classmethod
+    @abstractmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        raise NotImplementedError
+
+
+class ModuleCollectedLineWitnessCandidate(CollectsItself, LineWitnessCandidate, ABC):
     """A line witness collected from the top-level classes of the current source.
 
     A member says what one class contributes; the walk over the module's classes is here.

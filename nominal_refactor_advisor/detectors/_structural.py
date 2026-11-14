@@ -26,7 +26,7 @@ from nominal_refactor_advisor.semantic_match import (
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Self, TypeVar
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     statements_without_docstring,
@@ -43,6 +43,7 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_match import as_ast, ast_sequence, name_id
 from nominal_refactor_advisor.detectors._base import (
+    CollectsItself,
     ClassLineNumbersGroup,
     CompactClassRepositoryContext,
     CompactClassRepositoryProjectionMixin,
@@ -74,8 +75,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     CompactMethodFamilyContext,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
-    _accumulator_fold_family_candidates,
-    _regex_group_extractor_family_candidates,
     AccumulatorFoldFamilyCandidate,
     RegexGroupExtractorFamilyCandidate,
 )
@@ -525,8 +524,32 @@ declare_candidate_rule_detector(
 
 
 @dataclass(frozen=True)
-class CatalogInstallingMixinFamilyCandidate(ClassLineNumbersGroup):
+class CatalogInstallingMixinFamilyCandidate(CollectsItself, ClassLineNumbersGroup):
     catalog_attribute_names: tuple[str, ...]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        items: list[tuple[str, str, int]] = []
+        for class_node in (
+            node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
+        ):
+            for statement in class_node.body:
+                if not isinstance(statement, ast.FunctionDef):
+                    continue
+                catalog_attribute = _catalog_installing_mixin_candidate(statement)
+                if catalog_attribute is not None:
+                    items.append((class_node.name, catalog_attribute, statement.lineno))
+        if len(items) < 2:
+            return ()
+        ordered = sorted_tuple(items, key=lambda item: (item[2], item[0]))
+        return (
+            cls(
+                file_path=module.file_path,
+                class_names=tuple((item[0] for item in ordered)),
+                catalog_attribute_names=tuple((item[1] for item in ordered)),
+                line_numbers=tuple((item[2] for item in ordered)),
+            ),
+        )
 
 
 def _catalog_installing_mixin_candidate(method: ast.FunctionDef) -> str | None:
@@ -591,32 +614,6 @@ class _CatalogInstallingMixinShape:
         return Maybe.of(match).map(lambda item: item.owner.attr).unwrap_or_none()
 
 
-def _catalog_installing_mixin_family_candidates(
-    module: ParsedModule,
-) -> tuple[CatalogInstallingMixinFamilyCandidate, ...]:
-    items: list[tuple[str, str, int]] = []
-    for class_node in (
-        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
-    ):
-        for statement in class_node.body:
-            if not isinstance(statement, ast.FunctionDef):
-                continue
-            catalog_attribute = _catalog_installing_mixin_candidate(statement)
-            if catalog_attribute is not None:
-                items.append((class_node.name, catalog_attribute, statement.lineno))
-    if len(items) < 2:
-        return ()
-    ordered = sorted_tuple(items, key=lambda item: (item[2], item[0]))
-    return (
-        CatalogInstallingMixinFamilyCandidate(
-            file_path=module.file_path,
-            class_names=tuple((item[0] for item in ordered)),
-            catalog_attribute_names=tuple((item[1] for item in ordered)),
-            line_numbers=tuple((item[2] for item in ordered)),
-        ),
-    )
-
-
 declare_candidate_rule_detector(
     AccumulatorFoldFamilyCandidate,
     high_confidence_certified_spec(
@@ -649,7 +646,6 @@ declare_candidate_rule_detector(
             )
         ),
     ),
-    candidate_collector=_accumulator_fold_family_candidates,
 )
 
 
@@ -685,7 +681,6 @@ declare_candidate_rule_detector(
             )
         ),
     ),
-    candidate_collector=_catalog_installing_mixin_family_candidates,
 )
 
 
@@ -715,7 +710,6 @@ declare_candidate_rule_detector(
         mapping_name=regex_candidate.class_name,
         field_names=regex_candidate.pattern_attribute_names,
     ),
-    candidate_collector=_regex_group_extractor_family_candidates,
 )
 
 
