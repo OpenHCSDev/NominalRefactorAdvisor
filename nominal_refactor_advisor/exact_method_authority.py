@@ -27,7 +27,7 @@ from nominal_refactor_advisor.collection_algebra import (
     sorted_tuple,
 )
 from nominal_refactor_advisor.descriptor_algebra import CollectionAttributeProjection
-from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.models import EvidenceLocated, SourceLocation
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.semantic_algebra import UndirectedGraph, VertexIndexEdge
 from nominal_refactor_advisor.semantic_description_length import (
@@ -149,7 +149,7 @@ class ExactMethodOrbitComponent:
 
 
 @dataclass(frozen=True)
-class ExactMethodRoleComponent(ExactMethodOrbitComponent):
+class ExactMethodRoleComponent(ExactMethodOrbitComponent, EvidenceLocated):
     """One maximal exact-method role repeated without an existing authority."""
 
     @property
@@ -164,7 +164,7 @@ class ExactMethodRoleComponent(ExactMethodOrbitComponent):
         ).compression_certificate
 
     @cached_property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(self.file_path, line, method_symbol)
             for line, method_symbol in zip(
@@ -189,7 +189,7 @@ class ExactMirroredLeafRoleComponent:
 
 
 @dataclass(frozen=True)
-class ParallelMirroredLeafFamilyComponent:
+class ParallelMirroredLeafFamilyComponent(EvidenceLocated):
     """Exact role implementations repeated across nominal domain axes."""
 
     roots: tuple[CompactIndexedClass, ...]
@@ -222,7 +222,7 @@ class ParallelMirroredLeafFamilyComponent:
         )
 
     @cached_property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
             SourceLocation(
                 root.file_path,
@@ -241,7 +241,9 @@ class ParallelMirroredLeafFamilyComponent:
 
 
 @dataclass(frozen=True)
-class ExactLeafMethodAncestorPromotionComponent(ExactMethodOrbitComponent):
+class ExactLeafMethodAncestorPromotionComponent(
+    ExactMethodOrbitComponent, EvidenceLocated
+):
     """One complete exact-method family and its existing nominal authority."""
 
     authority: CompactIndexedClass
@@ -271,7 +273,7 @@ class ExactLeafMethodAncestorPromotionComponent(ExactMethodOrbitComponent):
         ).compression_certificate
 
     @cached_property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(
                 self.file_path,

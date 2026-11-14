@@ -1900,7 +1900,7 @@ class ManualConcreteSubclassRosterDetector(
     def _finding_for_candidate(
         self, roster_candidate: ManualConcreteSubclassRosterCandidate
     ) -> RefactorFinding:
-        evidence = [roster_candidate.evidence]
+        evidence = [roster_candidate.location]
         evidence.extend(
             (
                 SourceLocation(
@@ -1989,7 +1989,7 @@ class LatentImplementationRosterDetector(
                 f"implementations {roster_candidate.concrete_class_names}; derive it from registry key `{key_attr}`"
                 f"{projection_suffix}."
             ),
-            (roster_candidate.evidence,),
+            roster_candidate.evidence,
             metrics=RegistrationMetrics.from_class_names(
                 registration_site_count=len(roster_candidate.concrete_class_names),
                 registry_name=roster.roster_name,
@@ -2313,7 +2313,7 @@ class PredicateSelectedConcreteFamilyDetector(
         self, family_candidate: PredicateSelectedConcreteFamilyCandidate
     ) -> RefactorFinding:
         concrete_preview = ", ".join(family_candidate.concrete_class_names[:4])
-        evidence = [family_candidate.evidence]
+        evidence = [family_candidate.location]
         evidence.extend(
             (
                 SourceLocation(
@@ -2378,7 +2378,7 @@ class ParallelMirroredLeafFamilyDetector(
                 for indexed_class in mirrored_candidate.leaf_classes
             ),
         )
-        evidence = mirrored_candidate.evidence_locations
+        evidence = mirrored_candidate.evidence
         return self.build_finding(
             (
                 f"{', '.join(f'`{root_name}`' for root_name in root_names)} expose "
@@ -2443,7 +2443,7 @@ class TypeKeyedBehaviorProjectionDetector(
                 f"descendants while repeating {method_names}; the mapped type hierarchy "
                 "already supplies the behavior dispatch relation."
             ),
-            component.evidence_locations,
+            component.evidence,
             projection_evidence=component.projection_evidence,
             authority_evidence=component.authority_evidence,
         )
@@ -2496,7 +2496,7 @@ class EnumKeyedDerivedMapFacadeDetector(
                 f"{len(component.consumers)} direct consumer(s) interpret that "
                 "enum identity outside its declaration."
             ),
-            component.evidence_locations,
+            component.evidence,
             projection_evidence=component.projection_evidence,
             authority_evidence=component.authority_evidence,
         )
@@ -2534,7 +2534,7 @@ class ConcreteConfigFieldProbeDetector(
                 f"`{probe_candidate.class_name}.{probe_candidate.method_name}` probes undeclared `{probe_candidate.config_type_name}` "
                 f"fields {missing_fields} through `{reflective_builtins}` on `{probe_candidate.config_attr_name}`."
             ),
-            (probe_candidate.evidence,),
+            probe_candidate.evidence,
         )
 
 
@@ -3056,7 +3056,7 @@ class MirroredImportFallbackDetector(
                 f"{import_candidate.file_path} mirrors {import_candidate.imported_name_count} imported names "
                 f"from {module_summary} across relative and absolute ImportError branches."
             ),
-            (import_candidate.evidence,),
+            import_candidate.evidence,
             metrics=MappingMetrics(
                 mapping_site_count=2,
                 field_count=import_candidate.imported_name_count,

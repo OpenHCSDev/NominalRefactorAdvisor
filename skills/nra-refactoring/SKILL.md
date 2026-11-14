@@ -477,6 +477,21 @@ class), `ModuleNamedValues` (the names the module body binds: `values`,
 `calls`, `sequences`, `constants`). Read these; do not call
 `iter_class_definitions` or walk `module.module.body` for them.
 
+**Where a candidate is.** `evidence` is always the tuple of
+`SourceLocation`s a finding shows, on a finding and on a candidate. One
+site is a `location`. Every candidate inherits `EvidenceLocated`
+(`models.py`) and answers `evidence` itself: a `LineWitnessCandidate`
+answers `(self.location,)`, built from its `witness_name`; a candidate
+with more sites overrides `evidence` (a field, a zipped descriptor or a
+property). `declare_candidate_rule_detector` takes no `evidence`: the
+detector supplies the words and the metrics, the candidate says where it
+is. Before 2026-11-14 the tuple was spelled `evidence`,
+`evidence_locations` and `finding_evidence`, `evidence` also meant one
+location on line witnesses, and 22 of 32 declarations passed a lambda
+that forwarded one of the spellings or rebuilt the candidate's own site.
+A stored field named like an inherited class attribute needs `= field()`,
+or the dataclass takes the inherited attribute as the field's default.
+
 **Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
 target and guards against its return; `remove_import_bindings` drops
 imports a module no longer reads. Neither proves the target is

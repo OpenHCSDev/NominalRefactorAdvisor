@@ -268,7 +268,7 @@ class RepeatedLocalRegexBundleDetector(
         return self.build_finding(
             f"{candidate.file_path} repeats {len(candidate.regex_literals)} "
             f"regex pattern literals across {', '.join(candidate.function_names)}.",
-            candidate.evidence_locations,
+            candidate.evidence,
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(candidate.function_names),
                 mapping_name="repeated regex patterns",

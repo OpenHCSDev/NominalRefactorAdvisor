@@ -2,13 +2,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
+from functools import cached_property
 from operator import attrgetter
-from typing import Callable, Self, Sequence, TypeVar, cast
+from typing import Callable, Self, Sequence, TypeVar, cast, overload
 
 from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.models import (
+    EvidenceLocated,
     MappingMetrics,
     SourceLineReference,
     SourceLocation,
@@ -32,11 +34,19 @@ class SourceLocationEvidenceProperty:
     line_attribute_name: str = "line"
     symbol_attribute_name: str = "symbol"
 
+    @overload
+    def __get__(self, instance: None, owner: type[object] | None = None) -> Self: ...
+
+    @overload
+    def __get__(
+        self, instance: object, owner: type[object] | None = None
+    ) -> SourceLocation: ...
+
     def __get__(
         self,
         instance: object | None,
         owner: type[object] | None = None,
-    ) -> SourceLocation | SourceLocationEvidenceProperty:
+    ) -> SourceLocation | Self:
         del owner
         if instance is None:
             return self
@@ -47,7 +57,7 @@ class SourceLocationEvidenceProperty:
         )
 
 
-_LINE_WITNESS_NAME_EVIDENCE = SourceLocationEvidenceProperty(
+_LINE_WITNESS_NAME_LOCATION = SourceLocationEvidenceProperty(
     symbol_attribute_name="witness_name"
 )
 
@@ -55,15 +65,22 @@ _LINE_WITNESS_NAME_EVIDENCE = SourceLocationEvidenceProperty(
 @dataclass(frozen=True)
 class LineWitnessCandidate(
     SourceLineReference,
+    EvidenceLocated,
     ABC,
     ClassNameKeyed,
     metaclass=AutoRegisterMeta,
 ):
+    """A candidate that sits at one line; a member with more sites overrides `evidence`."""
+
     @property
     def witness_name(self) -> str:
         return type(self).__name__
 
-    evidence = _LINE_WITNESS_NAME_EVIDENCE
+    location = _LINE_WITNESS_NAME_LOCATION
+
+    @cached_property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (self.location,)
 
 
 @dataclass(frozen=True)
@@ -75,23 +92,17 @@ class WitnessCarrierCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ClassNameLineNumbersGroup(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
+class ClassNameLineNumbersGroup(
+    EvidenceLocated, ABC, ClassNameKeyed, metaclass=AutoRegisterMeta
+):
     class_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
 
-    def evidence_for_file(self, file_path: str) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(file_path, line, class_name)
-                for class_name, line in zip(
-                    self.class_names, self.line_numbers, strict=True
-                )
-            )
-        )
-
 
 @dataclass(frozen=True)
-class ClassMethodFamilyCandidate(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
+class ClassMethodFamilyCandidate(
+    EvidenceLocated, ABC, ClassNameKeyed, metaclass=AutoRegisterMeta
+):
     file_path: str
     class_name: str
     method_names: tuple[str, ...]
@@ -109,17 +120,12 @@ class ClassMethodFamilyCandidate(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta
         )
 
 
-class KeyedRecordInfrastructureCandidate(ABC):
+class KeyedRecordInfrastructureCandidate(EvidenceLocated, ABC):
     """Candidate that owns its keyed-record surface presentation."""
 
     @property
     @abstractmethod
     def finding_summary(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def finding_evidence(self) -> tuple[SourceLocation, ...]:
         raise NotImplementedError
 
     @property

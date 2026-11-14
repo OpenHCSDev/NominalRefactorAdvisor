@@ -104,7 +104,6 @@ declare_candidate_rule_detector(
     summary=lambda query_candidate: (
         f"Helpers {', '.join(query_candidate.function_names[:5])} repeatedly rescan `{query_candidate.source_expression}` for keys {query_candidate.query_key_names}."
     ),
-    evidence=lambda query_candidate: query_candidate.evidence,
     metrics=lambda query_candidate: MappingMetrics(
         mapping_site_count=len(query_candidate.function_names),
         field_count=max(len(query_candidate.query_key_names), 1),

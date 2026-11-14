@@ -27,7 +27,7 @@ from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.models import EvidenceLocated, SourceLocation
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class EnumKeyedQueryConsumer:
 
 
 @dataclass(frozen=True)
-class EnumKeyedDerivedMapFacadeComponent:
+class EnumKeyedDerivedMapFacadeComponent(EvidenceLocated):
     """Derived map whose key-facing query behavior is externally displaced."""
 
     file_path: str
@@ -60,7 +60,7 @@ class EnumKeyedDerivedMapFacadeComponent:
     consumers: tuple[EnumKeyedQueryConsumer, ...]
 
     @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(
                 self.file_path,

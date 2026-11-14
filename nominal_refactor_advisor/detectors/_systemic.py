@@ -68,6 +68,7 @@ from nominal_refactor_advisor.class_index import (
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
+    EvidenceLocated,
     HierarchyCandidateMetrics,
     MappingMetrics,
     OrchestrationMetrics,
@@ -772,7 +773,7 @@ class ProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     base_names: tuple[str, ...]
 
     @property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
             (
                 SourceLocation(
@@ -888,7 +889,6 @@ declare_candidate_rule_detector(
     summary=lambda projection_candidate: (
         f"`{projection_candidate.class_name}` repeats Path projection properties {', '.join(projection_candidate.property_names)} over bases {', '.join(projection_candidate.base_names)}."
     ),
-    evidence=lambda projection_candidate: projection_candidate.evidence_locations,
     metrics=lambda projection_candidate: MappingMetrics(
         mapping_site_count=len(projection_candidate.property_names),
         field_count=len(projection_candidate.base_names),
@@ -1013,7 +1013,6 @@ declare_candidate_rule_detector(
         f"{candidate.property_names} over `self.{candidate.collection_name}` "
         f"for member attributes {candidate.projected_attribute_names}."
     ),
-    evidence=lambda candidate: candidate.evidence_locations,
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.property_names),
         mapping_name=f"{candidate.class_name}.{candidate.collection_name}",
@@ -1243,7 +1242,6 @@ declare_candidate_rule_detector(
     summary=lambda shadow_candidate: (
         f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` across cases {', '.join(shadow_candidate.shared_case_names[:4])}."
     ),
-    evidence=lambda shadow_candidate: shadow_candidate.evidence,
     metrics=lambda shadow_candidate: DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
         shadow_candidate.shared_case_names, shadow_candidate.key_type_name
     ),
@@ -1328,7 +1326,7 @@ class ExternalEnumCaseRecoverySite:
         )
 
     @property
-    def evidence(self) -> SourceLocation:
+    def location(self) -> SourceLocation:
         return SourceLocation(
             self.function.file_path,
             self.function.line,
@@ -1337,7 +1335,7 @@ class ExternalEnumCaseRecoverySite:
 
 
 @dataclass(frozen=True)
-class ExternalEnumCaseRecoveryCandidate:
+class ExternalEnumCaseRecoveryCandidate(EvidenceLocated):
     """One enum whose cases are recovered outside its declaration."""
 
     enum_class: CompactIndexedClass
@@ -1360,13 +1358,13 @@ class ExternalEnumCaseRecoveryCandidate:
     def projection_evidence(self) -> SourceLocation:
         if not self.sites:
             raise ValueError("external enum recovery requires one projection site")
-        return self.sites[0].evidence
+        return self.sites[0].location
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             self.authority_evidence,
-            *(site.evidence for site in self.sites[:5]),
+            *(site.location for site in self.sites[:5]),
         )
 
 
@@ -2798,7 +2796,6 @@ declare_candidate_rule_detector(
         f"duplicate keys {candidate.injectivity_proof.duplicate_key_names}, duplicate types "
         f"{candidate.injectivity_proof.duplicate_type_names}, missing keyed types {candidate.injectivity_proof.missing_type_names}."
     ),
-    evidence=lambda candidate: (candidate.evidence,),
     metrics=lambda candidate: RegistrationMetrics(
         registration_site_count=len(candidate.registered_case_names),
         registry_name=candidate.class_name,
@@ -2830,7 +2827,6 @@ declare_candidate_rule_detector(
         f"keys {candidate.registered_case_names}, lookup {candidate.lookup_method_names}, "
         f"consumers {candidate.consumer_symbols}; evaluate AutoRegisterMeta against its registration lifecycle."
     ),
-    evidence=lambda candidate: (candidate.evidence,),
     metrics=lambda candidate: RegistrationMetrics(
         registration_site_count=len(candidate.registered_case_names),
         registry_name=candidate.class_name,
@@ -2877,9 +2873,6 @@ declare_candidate_rule_detector(
             )
         )
     ),
-    evidence=lambda candidate: (
-        SourceLocation(candidate.file_path, candidate.line, candidate.surface_name),
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.projected_names),
         mapping_name=candidate.surface_name,
@@ -2918,7 +2911,6 @@ declare_candidate_rule_detector(
         f"{candidate.surface_names} across roles {tuple(role.value for role in candidate.surface_roles)}; move the quotient into one policy authority "
         f"and materialize targets {candidate.projection_target_names} from specs."
     ),
-    evidence=lambda candidate: (candidate.evidence,),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.surface_names),
         mapping_name=f"{candidate.policy_hint}_projection_policy",
@@ -2960,7 +2952,7 @@ class KeyedRecordInfrastructureDetector(
     ) -> RefactorFinding:
         return self.build_finding(
             candidate.finding_summary,
-            candidate.finding_evidence,
+            candidate.evidence,
             metrics=candidate.finding_metrics,
         )
 
@@ -2999,7 +2991,7 @@ class ManualStructuralRecordMechanicsDetector(
         shared_methods = ", ".join(group_candidate.shared_method_names)
         transform_methods = ", ".join(group_candidate.transform_method_names[:6])
         base_names = ", ".join(group_candidate.base_names)
-        evidence = tuple(item.evidence for item in group_candidate.classes[:6])
+        evidence = group_candidate.evidence
         return self.build_finding(
             (
                 f"Dataclass records {class_names} each hand-roll `{shared_methods}` plus fieldwise transforms "
@@ -3180,9 +3172,7 @@ class RepeatedResultAssemblyPipelineDetector(
         stage_names = ", ".join(
             (stage.callee_name for stage in pipeline_candidate.shared_tail)
         )
-        evidence = tuple(
-            (function.evidence for function in pipeline_candidate.functions[:6])
-        )
+        evidence = pipeline_candidate.evidence
         return self.build_finding(
             (
                 f"Functions {function_names} share the same result-assembly tail "
@@ -3377,7 +3367,6 @@ declare_candidate_rule_detector(
         f"over `{family.enum_name}` fields {family.field_names}; requiredness "
         f"{family.requirement_modes} and coercions {family.coercion_kinds} are schema rows."
     ),
-    evidence=lambda family: family.evidence_locations,
     compression_certificate=lambda family: family.compression_certificate,
     metrics=lambda family: MappingMetrics.from_field_names(
         mapping_site_count=len(family.method_names),
@@ -3475,7 +3464,7 @@ class FindingSpecConstructionBoilerplateDetector(
                 f"with {redundant_defaults}; use the semantic-tier factory "
                 f"`{field_candidate.recommended_builder_name}`."
             ),
-            (field_candidate.evidence,),
+            field_candidate.evidence,
             metrics=MappingMetrics.from_field_names(
                 mapping_site_count=len(field_candidate.redundant_keyword_names),
                 mapping_name=field_candidate.constructor_name,
@@ -3624,19 +3613,6 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"`{candidate.class_name}` mirrors {len(candidate.field_names)} namespace fields and {len(candidate.cli_field_names)} CLI fields through `{candidate.argument_spec_name}` instead of deriving adapters from the dataclass."
     ),
-    evidence=lambda candidate: (
-        SourceLocation(candidate.file_path, candidate.line, candidate.class_name),
-        SourceLocation(
-            candidate.file_path,
-            candidate.from_namespace_line,
-            f"{candidate.class_name}.from_namespace",
-        ),
-        SourceLocation(
-            candidate.argument_spec_file_path,
-            candidate.argument_spec_line,
-            candidate.argument_spec_name,
-        ),
-    ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.field_names) + len(candidate.cli_field_names),
         mapping_name=candidate.class_name,
@@ -3663,18 +3639,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda fiber_candidate: (
         f"`{fiber_candidate.class_name}` branches on manual fiber tag `self.{fiber_candidate.tag_name}` across {fiber_candidate.case_names} while still carrying cross-fiber fields {fiber_candidate.assigned_field_names}."
-    ),
-    evidence=lambda fiber_candidate: (
-        SourceLocation(
-            fiber_candidate.file_path,
-            fiber_candidate.init_line,
-            f"{fiber_candidate.class_name}.__init__",
-        ),
-        SourceLocation(
-            fiber_candidate.file_path,
-            fiber_candidate.method_line,
-            f"{fiber_candidate.class_name}.{fiber_candidate.method_name}",
-        ),
     ),
     metrics=lambda fiber_candidate: DispatchCountMetrics.from_literal_family(
         dispatch_axis=f"self.{fiber_candidate.tag_name}",

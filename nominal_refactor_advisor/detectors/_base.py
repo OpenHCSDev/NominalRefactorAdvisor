@@ -28,6 +28,7 @@ from typing import (
     Iterable,
     ParamSpec,
     Self,
+    overload,
     Sequence,
     TYPE_CHECKING,
     TypedDict,
@@ -42,7 +43,7 @@ from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConf
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.detectors._candidates import (
     _DEFAULT_FILE_PATH_ATTRIBUTE as _DEFAULT_FILE_PATH_ATTRIBUTE,
-    _LINE_WITNESS_NAME_EVIDENCE as _LINE_WITNESS_NAME_EVIDENCE,
+    _LINE_WITNESS_NAME_LOCATION as _LINE_WITNESS_NAME_LOCATION,
     AttributeValueT as AttributeValueT,
     ClassMethodFamilyCandidate as ClassMethodFamilyCandidate,
     ClassNameLineNumbersGroup as ClassNameLineNumbersGroup,
@@ -139,6 +140,7 @@ from nominal_refactor_advisor.collection_algebra import (
 from nominal_refactor_advisor.models import (
     CertifiedFindingSpec,
     DispatchCountMetrics,
+    EvidenceLocated,
     FindingBuildContext,
     FindingBuildContextKwargs,
     FindingMetrics,
@@ -1211,11 +1213,9 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
 
 
 CandidateItemT = TypeVar("CandidateItemT")
+LocatedCandidateT = TypeVar("LocatedCandidateT", bound=EvidenceLocated)
 FindingValueT = TypeVar("FindingValueT")
 CandidateSummaryRenderer: TypeAlias = Callable[[CandidateItemT], str]
-CandidateEvidenceRenderer: TypeAlias = Callable[
-    [CandidateItemT], tuple[SourceLocation, ...]
-]
 OptionalCandidateCompressionRenderer: TypeAlias = (
     Callable[[CandidateItemT], CompressionCertificate | None] | None
 )
@@ -1260,29 +1260,30 @@ class CallableCandidateFindingRenderer(CandidateFindingRendererABC[CandidateItem
 
 
 @dataclass(frozen=True)
-class CandidateFindingRenderer(CandidateFindingRendererABC[CandidateItemT]):
+class CandidateFindingRenderer(CandidateFindingRendererABC[LocatedCandidateT]):
+    """The detector's words and metrics for a candidate; the candidate says where it is."""
+
     target_finding_type: ClassVar[type[RefactorFinding]] = RefactorFinding
-    summary: CandidateSummaryRenderer[CandidateItemT]
-    evidence: CandidateEvidenceRenderer[CandidateItemT]
-    compression_certificate: OptionalCandidateCompressionRenderer[CandidateItemT] = None
-    metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None
+    summary: CandidateSummaryRenderer[LocatedCandidateT]
+    compression_certificate: OptionalCandidateCompressionRenderer[LocatedCandidateT] = None
+    metrics: OptionalCandidateMetricsRenderer[LocatedCandidateT] = None
     projection_evidence: OptionalCandidateValueRenderer[
-        CandidateItemT,
+        LocatedCandidateT,
         SourceLocation,
     ] = None
     authority_evidence: OptionalCandidateValueRenderer[
-        CandidateItemT,
+        LocatedCandidateT,
         SourceLocation,
     ] = None
 
     def _optional_value(
         self,
-        candidate: CandidateItemT,
-        value: OptionalCandidateValueRenderer[CandidateItemT, FindingValueT],
+        candidate: LocatedCandidateT,
+        value: OptionalCandidateValueRenderer[LocatedCandidateT, FindingValueT],
     ) -> FindingValueT | None:
         return None if value is None else value(candidate)
 
-    def build_context(self, candidate: CandidateItemT) -> FindingBuildContext:
+    def build_context(self, candidate: LocatedCandidateT) -> FindingBuildContext:
         return FindingBuildContext(
             compression_certificate=self._optional_value(
                 candidate, self.compression_certificate
@@ -1299,24 +1300,13 @@ class CandidateFindingRenderer(CandidateFindingRendererABC[CandidateItemT]):
         )
 
     def build(
-        self, detector: IssueDetector, candidate: CandidateItemT
+        self, detector: IssueDetector, candidate: LocatedCandidateT
     ) -> RefactorFinding:
         return detector.build_finding(
             self.summary(candidate),
-            self.evidence(candidate),
+            candidate.evidence,
             self.build_context(candidate),
         )
-
-
-@dataclass(frozen=True)
-class SourceLocationEvidenceCarrier:
-    evidence: SourceLocation
-
-
-def single_candidate_evidence(
-    candidate: SourceLocationEvidenceCarrier,
-) -> tuple[SourceLocation, ...]:
-    return (candidate.evidence,)
 _FILE_PATHS_ATTRIBUTE = "file_paths"
 _LINE_NUMBERS_ATTRIBUTE = "line_numbers"
 _CLASS_NAMES_ATTRIBUTE = "class_names"
@@ -1325,11 +1315,19 @@ _METHOD_SYMBOLS_ATTRIBUTE = "method_symbols"
 
 @dataclass(frozen=True)
 class SourceLocationZipEvidenceProperty(SourceLocationZipDescriptorShape, ABC):
+    @overload
+    def __get__(self, instance: None, owner: type[object] | None = None) -> Self: ...
+
+    @overload
+    def __get__(
+        self, instance: object, owner: type[object] | None = None
+    ) -> tuple[SourceLocation, ...]: ...
+
     def __get__(
         self,
         instance: object | None,
         owner: type[object] | None = None,
-    ) -> tuple[SourceLocation, ...] | SourceLocationZipEvidenceProperty:
+    ) -> tuple[SourceLocation, ...] | Self:
         del owner
         if instance is None:
             return self
@@ -1375,7 +1373,7 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
         )
 
 
-_LINENO_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
+_LINENO_QUALNAME_LOCATION = SourceLocationEvidenceProperty(
     line_attribute_name="lineno", symbol_attribute_name="qualname"
 )
 
@@ -2384,24 +2382,23 @@ def declare_module_detector(
 
 
 def declare_candidate_rule_detector(
-    candidate_type: type[CandidateItemT],
+    candidate_type: type[LocatedCandidateT],
     finding_spec: FindingSpec,
     *,
-    summary: CandidateSummaryRenderer[CandidateItemT],
-    evidence: CandidateEvidenceRenderer[CandidateItemT] = single_candidate_evidence,
+    summary: CandidateSummaryRenderer[LocatedCandidateT],
     compression_certificate: OptionalCandidateCompressionRenderer[
-        CandidateItemT
+        LocatedCandidateT
     ] = None,
-    metrics: OptionalCandidateMetricsRenderer[CandidateItemT] = None,
+    metrics: OptionalCandidateMetricsRenderer[LocatedCandidateT] = None,
     projection_evidence: OptionalCandidateValueRenderer[
-        CandidateItemT,
+        LocatedCandidateT,
         SourceLocation,
     ] = None,
     authority_evidence: OptionalCandidateValueRenderer[
-        CandidateItemT,
+        LocatedCandidateT,
         SourceLocation,
     ] = None,
-    **detector_options: Unpack[DetectorDeclarationOptionKwargs[CandidateItemT]],
+    **detector_options: Unpack[DetectorDeclarationOptionKwargs[LocatedCandidateT]],
 ) -> type[IssueDetector]:
     frame = inspect.currentframe()
     helper_frame = None if frame is None else frame.f_back
@@ -2409,7 +2406,6 @@ def declare_candidate_rule_detector(
         raise RuntimeError("declare_candidate_rule_detector() requires a caller frame")
     renderer = CandidateFindingRenderer(
         summary=summary,
-        evidence=evidence,
         compression_certificate=compression_certificate,
         metrics=metrics,
         projection_evidence=projection_evidence,
@@ -2426,7 +2422,7 @@ def declare_candidate_rule_detector(
                 module_namespace.module_name,
                 helper_frame.f_code.co_filename,
                 helper_frame.f_lineno,
-                DetectorDeclarationOptions[CandidateItemT].from_kwargs(
+                DetectorDeclarationOptions[LocatedCandidateT].from_kwargs(
                     detector_options
                 ),
             ),
@@ -3415,7 +3411,7 @@ def _derived_wrapper_spec_shadow_candidates(
                     primary_constant_names=primary_constant_names,
                     extra_field_names=extra_field_names,
                     builder_names=builder_names,
-                    evidence_locations=tuple(evidence[:6]),
+                    evidence=tuple(evidence[:6]),
                 )
             )
             break
@@ -3615,7 +3611,7 @@ def _module_keyed_selection_helper_candidates(
                 lookup_function_name=lookup_shapes[0].function_name,
                 rule_table_names=tuple(rule_table_names),
                 index_table_names=tuple(indexed_table_names),
-                evidence_locations=tuple(evidence[:6]),
+                evidence=tuple(evidence[:6]),
             )
         )
     return sorted_tuple(
@@ -5608,15 +5604,17 @@ class EnumCaseFamilyMixin(ABC):
 
 @dataclass(frozen=True)
 class EvidenceLocationsWitnessCandidate(LineWitnessCandidate):
-    evidence_locations: tuple[SourceLocation, ...]
-    evidence = AliasProperty[tuple[SourceLocation, ...]]("evidence_locations")
+    """A line witness whose collector hands it every site."""
+
+    # field(): the inherited one-site answer must not become this field's default.
+    evidence: tuple[SourceLocation, ...] = field()
 
 
 @dataclass(frozen=True)
 class FunctionFamilyEvidenceSurface:
     function_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
     )
 
@@ -5633,7 +5631,7 @@ class FunctionEvidenceLocationsCandidate(
 class MethodEvidenceLocationsCandidate(LineWitnessCandidate):
     method_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
     )
 
@@ -5758,7 +5756,12 @@ class ClassLineNumbersGroup(ClassNameLineNumbersGroup):
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence_for_file(self.file_path)
+        return tuple(
+            SourceLocation(self.file_path, line, class_name)
+            for class_name, line in zip(
+                self.class_names, self.line_numbers, strict=True
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -5839,6 +5842,7 @@ class RegisteredUnionSurfaceCandidate(LineWitnessCandidate):
     owner_name: str
     accessor_name: str
     root_names: tuple[str, ...]
+    witness_name = AliasProperty[str]("owner_name")
 
 
 @dataclass(frozen=True)
@@ -5849,6 +5853,10 @@ class ConcreteTypeUnionContractCandidate(LineWitnessCandidate):
     observed_attribute_names: tuple[str, ...]
     suggested_contract_name: str
     common_base_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return f"{self.function_name}.{self.parameter_name}"
 
 
 @dataclass(frozen=True)
@@ -5954,10 +5962,6 @@ class ModuleKeyedSelectionHelperCandidate(
         )
 
     @property
-    def finding_evidence(self) -> tuple[SourceLocation, ...]:
-        return self.evidence
-
-    @property
     def finding_metrics(self) -> MappingMetrics:
         return MappingMetrics(
             mapping_site_count=len(self.rule_table_names),
@@ -5981,7 +5985,7 @@ class KeyedAxisFamilySite(AxisFamilySite):
 
 
 @dataclass(frozen=True)
-class CrossModuleAxisShadowFamilyCandidate:
+class CrossModuleAxisShadowFamilyCandidate(EvidenceLocated):
     key_type_name: str
     authoritative: AxisFamilySite
     shadow: AxisFamilySite
@@ -5990,7 +5994,7 @@ class CrossModuleAxisShadowFamilyCandidate:
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.authoritative.evidence, self.shadow.evidence)
+        return (self.authoritative.location, self.shadow.location)
 
 
 @dataclass(frozen=True)
@@ -6014,7 +6018,7 @@ class ResidualClosedAxisBranchingCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ParallelKeyedAxisFamilyCandidate:
+class ParallelKeyedAxisFamilyCandidate(EvidenceLocated):
     key_type_name: str
     left: KeyedAxisFamilySite
     right: KeyedAxisFamilySite
@@ -6024,11 +6028,11 @@ class ParallelKeyedAxisFamilyCandidate:
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.left.evidence, self.right.evidence)
+        return (self.left.location, self.right.location)
 
 
 @dataclass(frozen=True)
-class ParallelKeyedTableAndFamilyCandidate:
+class ParallelKeyedTableAndFamilyCandidate(EvidenceLocated):
     table: _KeyedTableAxisSpec
     family_name: str
     family_line: int
@@ -6063,7 +6067,7 @@ class ParallelKeyedTableAndFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class DerivedQueryIndexCandidate:
+class DerivedQueryIndexCandidate(EvidenceLocated):
     file_path: str
     line_numbers: tuple[int, ...]
     function_names: tuple[str, ...]
@@ -6161,6 +6165,7 @@ class RegistryProjectionSurfaceCandidate(LineWitnessCandidate):
     projected_names: tuple[str, ...]
     subset_policy_hint: str | None
     injectivity_proof: InjectiveTypeRegistryProof
+    witness_name = AliasProperty[str]("surface_name")
 
     @property
     def surface_name(self) -> str:
@@ -6235,13 +6240,6 @@ class RegistryProjectionPolicyAuthorityCandidate(LineWitnessCandidate):
     line_numbers: tuple[int, ...]
     missing_key_names: tuple[str, ...]
     missing_type_names: tuple[str, ...]
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
-        MultiFileZippedSourceLocationEvidenceProperty(
-            file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
-            line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
-            symbol_names_attribute_name="surface_names",
-        )
-    )
 
 
 @dataclass(frozen=True)
@@ -6294,8 +6292,8 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
         )
 
     @property
-    def finding_evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(item.evidence for item in self.classes[:6])
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(item.location for item in self.classes[:6])
 
     @property
     def finding_metrics(self) -> MappingMetrics:
@@ -6327,10 +6325,14 @@ class ManualStructuralRecordMechanicsClassCandidate(ClassLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ManualStructuralRecordMechanicsGroupCandidate:
+class ManualStructuralRecordMechanicsGroupCandidate(EvidenceLocated):
     file_path: str
     base_names: tuple[str, ...]
     classes: tuple[ManualStructuralRecordMechanicsClassCandidate, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(item.location for item in self.classes[:6])
 
     @property
     def shared_method_names(self) -> tuple[str, ...]:
@@ -6358,7 +6360,7 @@ class ConcreteTypeCaseFunctionCandidate(FunctionLineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class RepeatedConcreteTypeCaseAnalysisCandidate:
+class RepeatedConcreteTypeCaseAnalysisCandidate(EvidenceLocated):
     file_path: str
     functions: tuple[ConcreteTypeCaseFunctionCandidate, ...]
     abstract_base_names: tuple[str, ...]
@@ -6389,7 +6391,7 @@ class RepeatedConcreteTypeCaseAnalysisCandidate:
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple((function.evidence for function in self.functions[:6]))
+        return tuple(function.location for function in self.functions[:6])
 
 
 @dataclass(frozen=True)
@@ -6446,14 +6448,18 @@ class ResultAssemblyPipelineFunction:
     lineno: int
     stages: tuple[PipelineAssemblyStage, ...]
 
-    evidence = _LINENO_QUALNAME_EVIDENCE
+    location = _LINENO_QUALNAME_LOCATION
 
 
 @dataclass(frozen=True)
-class RepeatedResultAssemblyPipelineCandidate:
+class RepeatedResultAssemblyPipelineCandidate(EvidenceLocated):
     file_path: str
     shared_tail: tuple[PipelineAssemblyStage, ...]
     functions: tuple[ResultAssemblyPipelineFunction, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(function.location for function in self.functions[:6])
 
 
 @dataclass(frozen=True)
@@ -6808,7 +6814,7 @@ class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     collection_name: str
     projected_attribute_names: tuple[str, ...]
     line_count: int
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")
     )
 
@@ -6837,6 +6843,22 @@ class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
     argument_spec_file_path: str
     argument_spec_line: int
 
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            self.location,
+            SourceLocation(
+                self.file_path,
+                self.from_namespace_line,
+                f"{self.class_name}.from_namespace",
+            ),
+            SourceLocation(
+                self.argument_spec_file_path,
+                self.argument_spec_line,
+                self.argument_spec_name,
+            ),
+        )
+
 
 @dataclass(frozen=True)
 class FieldFamilyLineSurface:
@@ -6858,7 +6880,7 @@ class SchemaAccessorFamilyCandidate(
     method_names: tuple[str, ...]
     requirement_modes: tuple[str, ...]
     coercion_kinds: tuple[str, ...]
-    evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
     )
 
@@ -6900,7 +6922,7 @@ class MethodFamilyLineCompressionSurface:
 class MethodFamilyEvidenceSurface(MethodFamilyLineCompressionSurface):
     method_names: tuple[str, ...]
     method_symbols: tuple[str, ...]
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+    evidence: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
         MultiFileZippedSourceLocationEvidenceProperty(
             file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
             line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
@@ -6930,7 +6952,7 @@ class SemanticOverlapMethodCandidate(
     shared_statement_count: int
     varying_coordinate_count: int
     family_method_names: tuple[str, ...]
-    evidence_locations: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
+    evidence: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
         MultiFileZippedSourceLocationEvidenceProperty(
             file_paths_attribute_name=_FILE_PATHS_ATTRIBUTE,
             line_numbers_attribute_name=_LINE_NUMBERS_ATTRIBUTE,
@@ -6984,6 +7006,19 @@ class ManualFiberTagCandidate(WitnessCarrierCandidate):
     assigned_field_names: tuple[str, ...]
     method_line = AliasProperty[int]("line")
     case_names = AliasProperty[tuple[str, ...]]("name_family")
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(
+                self.file_path, self.init_line, f"{self.class_name}.__init__"
+            ),
+            SourceLocation(
+                self.file_path,
+                self.method_line,
+                f"{self.class_name}.{self.method_name}",
+            ),
+        )
 
 
 @dataclass(frozen=True)

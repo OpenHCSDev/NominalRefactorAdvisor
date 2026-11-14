@@ -16,18 +16,18 @@ from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjection,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
-from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.models import EvidenceLocated, SourceLocation
 
 
 @dataclass(frozen=True)
-class TypeKeyedBehaviorBinding:
+class TypeKeyedBehaviorBinding(EvidenceLocated):
     """One projection leaf bound injectively to its nominal target type."""
 
     projection_class: CompactIndexedClass
     target_class: CompactIndexedClass
 
     @cached_property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(
                 self.projection_class.file_path,
@@ -43,7 +43,7 @@ class TypeKeyedBehaviorBinding:
 
 
 @dataclass(frozen=True)
-class TypeKeyedBehaviorProjectionComponent:
+class TypeKeyedBehaviorProjectionComponent(EvidenceLocated):
     """External behavior family whose type keys duplicate a nominal hierarchy."""
 
     projection_root: CompactIndexedClass
@@ -69,14 +69,14 @@ class TypeKeyedBehaviorProjectionComponent:
             raise ValueError("target types must be unique")
 
     @cached_property
-    def evidence_locations(self) -> tuple[SourceLocation, ...]:
+    def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             self.projection_evidence,
             self.authority_evidence,
             *(
                 location
                 for binding in self.bindings
-                for location in binding.evidence_locations
+                for location in binding.evidence
             ),
         )
 

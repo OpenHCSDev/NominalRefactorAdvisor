@@ -233,7 +233,6 @@ declare_candidate_rule_detector(
         f"{candidate.statement_count} shared statement(s); no ownership placement is "
         "selected from this snapshot."
     ),
-    evidence=lambda candidate: candidate.evidence_locations,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.participant_class_names),
@@ -271,8 +270,7 @@ ExactLeafMethodAncestorPromotionDetector = declare_candidate_rule_detector(
         f"`{candidate.authority_name}`; the closed inheritance relation proves "
         "that existing class as the unique owner."
     ),
-    evidence=lambda candidate: candidate.evidence_locations,
-    authority_evidence=lambda candidate: candidate.evidence_locations[0],
+    authority_evidence=lambda candidate: candidate.evidence[0],
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.participant_class_symbols),
@@ -315,7 +313,6 @@ declare_candidate_rule_detector(
         f"strict-subset families {candidate.strict_subset_family_specs}, and partial-overlap families "
         f"{candidate.partial_overlap_family_specs}; no hierarchy placement is selected from this snapshot."
     ),
-    evidence=lambda candidate: candidate.evidence_locations,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.class_names),
@@ -360,7 +357,6 @@ declare_candidate_rule_detector(
         f"strict-subset families {candidate.strict_subset_family_specs}, and partial-overlap families "
         f"{candidate.partial_overlap_family_specs}; no hierarchy placement is selected from this snapshot."
     ),
-    evidence=lambda candidate: candidate.evidence_locations,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.method_symbols),
@@ -400,7 +396,6 @@ declare_candidate_rule_detector(
         f"{candidate.residue_declaration_count} residue declarations, and observed residue basis "
         f"{candidate.leaf_residue_names}. No hierarchy placement is selected from this snapshot."
     ),
-    evidence=lambda candidate: candidate.evidence_locations,
     compression_certificate=lambda candidate: candidate.compression_certificate,
     metrics=lambda candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(candidate.method_symbols),
@@ -476,7 +471,6 @@ declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"Classes {candidate.class_names} repeat MRO bundle {candidate.base_names} across {candidate.class_count} declarations."
     ),
-    evidence=lambda candidate: candidate.evidence,
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=candidate.class_count,
         mapping_name="mro-base-bundle",
@@ -503,13 +497,6 @@ declare_candidate_rule_detector(
     ),
     summary=lambda union_candidate: (
         f"`{union_candidate.owner_name}` manually unions `{union_candidate.accessor_name}` across roots {union_candidate.root_names}."
-    ),
-    evidence=lambda union_candidate: (
-        SourceLocation(
-            union_candidate.file_path,
-            union_candidate.line,
-            union_candidate.owner_name,
-        ),
     ),
     metrics=lambda union_candidate: RegistrationMetrics.from_class_names(
         registration_site_count=len(union_candidate.root_names),
@@ -538,13 +525,6 @@ declare_candidate_rule_detector(
         f"`{candidate.function_name}.{candidate.parameter_name}` is annotated as a concrete class-object union "
         f"{candidate.member_type_names}, but the function only uses class-level operations "
         f"{candidate.observed_attribute_names}. Type it as `type[{candidate.suggested_contract_name}]` instead."
-    ),
-    evidence=lambda candidate: (
-        SourceLocation(
-            candidate.file_path,
-            candidate.line,
-            f"{candidate.function_name}.{candidate.parameter_name}",
-        ),
     ),
     candidate_collector=_concrete_type_union_contract_candidates,
 )
@@ -664,7 +644,6 @@ declare_candidate_rule_detector(
     summary=lambda fold_candidate: (
         f"`{fold_candidate.class_name}` repeats `{fold_candidate.accumulator_type_name}` folds across methods {fold_candidate.method_names}; step hooks are {fold_candidate.step_method_names} and result hook is `{fold_candidate.result_method_name}`."
     ),
-    evidence=lambda fold_candidate: fold_candidate.evidence,
     metrics=lambda fold_candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(fold_candidate.method_names),
         statement_count=3,
@@ -701,7 +680,6 @@ declare_candidate_rule_detector(
     summary=lambda catalog_candidate: (
         f"Mixins {catalog_candidate.class_names} repeat catalog installation over attributes {catalog_candidate.catalog_attribute_names}."
     ),
-    evidence=lambda catalog_candidate: catalog_candidate.evidence,
     metrics=lambda catalog_candidate: RepeatedMethodMetrics.from_duplicate_family(
         duplicate_site_count=len(catalog_candidate.class_names),
         statement_count=2,
@@ -738,7 +716,6 @@ declare_candidate_rule_detector(
     summary=lambda regex_candidate: (
         f"`{regex_candidate.class_name}` repeats regex group-{regex_candidate.group_index} extractors {regex_candidate.method_names} over patterns {regex_candidate.pattern_attribute_names}."
     ),
-    evidence=lambda regex_candidate: regex_candidate.evidence,
     metrics=lambda regex_candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(regex_candidate.method_names),
         mapping_name=regex_candidate.class_name,

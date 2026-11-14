@@ -265,6 +265,15 @@ class SourceLocation(SourceLineReference, SemanticRecord):
 
         return f"{checkout_identity_text(self.file_path)}::{self.symbol}"
 
+class EvidenceLocated(ABC):
+    """A record that names every source location a finding about it shows."""
+
+    @property
+    @abstractmethod
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
 class SourceLocationZipDescriptorShape(SemanticRecord):
     """Shared schema for zipped source-location descriptor declarations."""
