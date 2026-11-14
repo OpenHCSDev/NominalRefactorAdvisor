@@ -5138,21 +5138,6 @@ class SubjectNameFunctionNameMixin(ABC):
 
 
 @dataclass(frozen=True)
-class FindingAssemblyPipelineCandidate(WitnessCarrierCandidate):
-    method_name: str
-    candidate_source_name: str
-    metrics_type_name: str | None
-
-
-@dataclass(frozen=True)
-class GuardedDelegatorCandidate(WitnessCarrierCandidate):
-    method_name: str
-    guard_role: str
-    delegate_name: str
-    scope_role: str
-
-
-@dataclass(frozen=True)
 class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
     property_name: str
     constructor_name: str

@@ -116,8 +116,6 @@ from nominal_refactor_advisor.detectors._base import (
     ClassFamilyWitnessCarrier,
     ClassMethodLineWitnessCandidate,
     DetectorConfig,
-    FindingAssemblyPipelineCandidate,
-    GuardedDelegatorCandidate,
     GuardedWrapperSpecPair,
     IssueDetector,
     NamedFunctionNode,
@@ -295,60 +293,6 @@ def _candidate_source_name_from_method(
     return None
 
 
-def _finding_assembly_pipeline_candidates_for_class(
-    module: ParsedModule, declared: ClassStatement
-) -> Iterable[FindingAssemblyPipelineCandidate]:
-    if not _is_detectorish_class(declared):
-        return
-    node = declared.node
-    method = next(
-        (
-            statement
-            for statement in node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and statement.name == "_findings_for_module"
-        ),
-        None,
-    )
-    if method is None:
-        return
-    build_call = _finding_build_call(method)
-    if build_call is None:
-        return
-    candidate_source_name = _candidate_source_name_from_method(method)
-    if candidate_source_name is None:
-        return
-    metrics_type_name = _build_call_keyword_helper_name(build_call, "metrics")
-    if metrics_type_name is None:
-        return
-    yield FindingAssemblyPipelineCandidate(
-        file_path=module.file_path,
-        line=method.lineno,
-        subject_name=node.name,
-        name_family=tuple(
-            item
-            for item in (
-                candidate_source_name,
-                metrics_type_name,
-            )
-            if item is not None
-        ),
-        method_name=method.name,
-        candidate_source_name=candidate_source_name,
-        metrics_type_name=metrics_type_name,
-    )
-
-
-def _finding_assembly_pipeline_candidates(
-    module: ParsedModule,
-) -> tuple[FindingAssemblyPipelineCandidate, ...]:
-    return tuple(
-        candidate
-        for declared in module.fact(ModuleClassStatements).statements
-        for candidate in _finding_assembly_pipeline_candidates_for_class(module, declared)
-    )
-
-
 def _is_observation_spec_class(declared: ClassStatement) -> bool:
     if declared.node.name.endswith("ObservationSpec"):
         return True
@@ -380,67 +324,6 @@ def _guard_role_name(node: ast.AST) -> str:
 
 def _scope_role_name(node: ast.AST) -> str:
     return ScopedAstObservation.scope_role_name_from_text(ast.unparse(node))
-
-
-def _guarded_delegator_candidates_for_class(
-    module: ParsedModule, declared: ClassStatement
-) -> Iterable[GuardedDelegatorCandidate]:
-    if not _is_observation_spec_class(declared) or declared.is_abstract:
-        return
-    node = declared.node
-    guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if statement.name not in {
-            "build_from_function",
-            "build_from_assign",
-            "build_from_observation",
-            "build_from_context",
-        }:
-            continue
-        body = statements_without_docstring(statement.body)
-        while body and isinstance(body[0], ast.Assign):
-            body = body[1:]
-        if len(body) != 2:
-            continue
-        guard, return_stmt = body
-        if not isinstance(
-            guard, ast.If
-        ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
-            continue
-        if not isinstance(return_stmt, ast.Return):
-            continue
-        guarded_returns.append(((statement, guard), return_stmt))
-    # A bare return delegates to nothing.
-    for (statement, guard), returned in StatementValues.keyed(guarded_returns).supplied:
-        delegate_name = _delegate_name_from_return(returned.value)
-        if delegate_name is None:
-            continue
-        yield GuardedDelegatorCandidate(
-            file_path=module.file_path,
-            line=statement.lineno,
-            subject_name=node.name,
-            name_family=(
-                guard.test.__class__.__name__,
-                delegate_name,
-                _scope_role_name(guard.test),
-            ),
-            method_name=statement.name,
-            guard_role=_guard_role_name(guard.test),
-            delegate_name=delegate_name,
-            scope_role=_scope_role_name(guard.test),
-        )
-
-
-def _guarded_delegator_candidates(
-    module: ParsedModule,
-) -> tuple[GuardedDelegatorCandidate, ...]:
-    return tuple(
-        candidate
-        for declared in module.fact(ModuleClassStatements).statements
-        for candidate in _guarded_delegator_candidates_for_class(module, declared)
-    )
 
 
 def _name_mentions(node: ast.AST, name: str) -> bool:
