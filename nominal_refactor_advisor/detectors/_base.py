@@ -47,7 +47,6 @@ from nominal_refactor_advisor.detectors._candidates import (
     AttributeValueT as AttributeValueT,
     ClassMethodFamilyCandidate as ClassMethodFamilyCandidate,
     ClassNameLineNumbersGroup as ClassNameLineNumbersGroup,
-    KeyedRecordInfrastructureCandidate as KeyedRecordInfrastructureCandidate,
     KeyedRegistryAxisFact as KeyedRegistryAxisFact,
     KeyedRegistryAxisSurface as KeyedRegistryAxisSurface,
     KeyedRegistryFactCandidate as KeyedRegistryFactCandidate,
@@ -1675,6 +1674,29 @@ class SubscriptedCandidateType:
             )
 
 
+class KeyedRecordInfrastructureCandidate(CollectsItselfUnderConfig, EvidenceLocated, ABC):
+    """Candidate that owns its keyed-record surface presentation. Each member finds its
+    own candidates in a module; the family's candidates are all of its members'."""
+
+    @property
+    @abstractmethod
+    def finding_summary(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def finding_metrics(self) -> MappingMetrics:
+        raise NotImplementedError
+
+    @classmethod
+    def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
+        return tuple(
+            candidate
+            for member in cls.__subclasses__()
+            for candidate in member.from_module(module, config)
+        )
+
+
 class DerivedCandidateCollectorMixin(SubscriptedCandidateType, Generic[CandidateItemT]):
     candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
     collector_scope: ClassVar[CandidateCollectorScope | None] = None
@@ -3256,112 +3278,6 @@ def _selection_lookup_raises_key_error(try_node: ast.Try) -> bool:
     )
 
 
-def _module_keyed_selection_helper_candidates(
-    module: ParsedModule,
-) -> tuple[ModuleKeyedSelectionHelperCandidate, ...]:
-    helper_shapes = tuple(
-        (
-            helper
-            for _, function in module.syntax_index.named_functions
-            if "." not in _
-            and (helper := _selection_helper_shape(function)) is not None
-        )
-    )
-    lookup_shapes = tuple(
-        (
-            lookup
-            for _, function in module.syntax_index.named_functions
-            if "." not in _
-            and (lookup := _selection_lookup_shape(function)) is not None
-        )
-    )
-    if not helper_shapes or not lookup_shapes:
-        return ()
-    named_values = module.fact(ModuleNamedValues)
-    named_sequences = named_values.sequences
-    named_calls = named_values.calls
-    candidates: list[ModuleKeyedSelectionHelperCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        if not declared.is_dataclass:
-            continue
-        field_names = declared.annotated_names
-        if len(field_names) != 2 or field_names[0] != "key":
-            continue
-        selected_field_name = field_names[1]
-        matching_helpers = tuple(
-            (
-                helper
-                for helper in helper_shapes
-                if helper.selected_field_name == selected_field_name
-            )
-        )
-        if not matching_helpers:
-            continue
-        rule_table_names: list[str] = []
-        indexed_table_names: list[str] = []
-        evidence: list[SourceLocation] = [
-            SourceLocation(module.file_path, node.lineno, node.name)
-        ]
-        for family_name, (line, elements) in sorted(named_sequences.items()):
-            if len(elements) < 2:
-                continue
-            if not all(
-                (
-                    isinstance(element, ast.Call)
-                    and ExpressionReference.decoded(
-                        element.func
-                    ).terminal_name == node.name
-                    for element in elements
-                )
-            ):
-                continue
-            keyword_maps = [
-                dict(CallKeywords.of(element.keywords).by_name)
-                for element in cast(tuple[ast.Call, ...], elements)
-            ]
-            if not all(
-                (
-                    "key" in keyword_map and selected_field_name in keyword_map
-                    for keyword_map in keyword_maps
-                )
-            ):
-                continue
-            rule_table_names.append(family_name)
-            evidence.append(SourceLocation(module.file_path, line, family_name))
-        if len(rule_table_names) < 2:
-            continue
-        helper_names = {helper.function_name for helper in matching_helpers}
-        for call_name, (line, call) in sorted(named_calls.items()):
-            if (
-                ExpressionReference.decoded(call.func).terminal_name not in helper_names
-                or not call.args
-            ):
-                continue
-            argument = call.args[0]
-            if isinstance(argument, ast.Name) and argument.id in rule_table_names:
-                indexed_table_names.append(call_name)
-                evidence.append(SourceLocation(module.file_path, line, call_name))
-        if len(indexed_table_names) < 2:
-            continue
-        candidates.append(
-            ModuleKeyedSelectionHelperCandidate(
-                file_path=module.file_path,
-                line=node.lineno,
-                rule_class_name=node.name,
-                selected_field_name=selected_field_name,
-                helper_function_name=matching_helpers[0].function_name,
-                lookup_function_name=lookup_shapes[0].function_name,
-                rule_table_names=tuple(rule_table_names),
-                index_table_names=tuple(indexed_table_names),
-                evidence=tuple(evidence[:6]),
-            )
-        )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.rule_class_name)
-    )
-
-
 @dataclass(frozen=True)
 class _KeyedFamilyAxisSpec(CompactFamilyAxis):
     """A keyed family read from the class index: the axis its registry key enumerates."""
@@ -3743,80 +3659,6 @@ def _manual_record_registration_constructor(
                 if ast.unparse(keyword.value) == key_expr
             )
         ),
-    )
-
-
-def _manual_keyed_record_table_group_candidates(
-    module: ParsedModule, config: DetectorConfig
-) -> tuple[ManualKeyedRecordTableGroupCandidate, ...]:
-    classes: list[ManualKeyedRecordTableClassCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        if not declared.is_dataclass:
-            continue
-        if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
-            declared.direct_assignments.get("_registry")
-        ):
-            continue
-        register_method = declared.method_named("register")
-        if register_method is None:
-            continue
-        registration_shape = _manual_record_registration_shape(register_method)
-        if registration_shape is None:
-            continue
-        lookup_methods = [
-            (method, shape)
-            for method in declared.methods
-            if method.spells("classmethod")
-            and method.name.startswith("for_")
-            and (shape := RegistryLookupShape.from_method(method.node)) is not None
-        ]
-        if len(lookup_methods) != 1:
-            continue
-        lookup_method, lookup_shape = lookup_methods[0]
-        classes.append(
-            ManualKeyedRecordTableClassCandidate(
-                file_path=module.file_path,
-                line=node.lineno,
-                class_name=node.name,
-                register_method_name="register",
-                lookup_method_name=lookup_method.name,
-                lookup_style=lookup_shape.style,
-                key_field_name=registration_shape.key_field_name,
-                key_expr=registration_shape.key_expr,
-                constructor_field_names=registration_shape.constructor_field_names,
-            )
-        )
-    if len(classes) < config.min_registration_sites:
-        return ()
-    grouped: dict[tuple[str, str], list[ManualKeyedRecordTableClassCandidate]] = (
-        defaultdict(list)
-    )
-    for candidate in classes:
-        grouped[candidate.register_method_name, candidate.lookup_style].append(
-            candidate
-        )
-    return tuple(
-        (
-            ManualKeyedRecordTableGroupCandidate(
-                file_path=module.file_path,
-                classes=sorted_tuple(
-                    items, key=lambda item: (item.line, item.class_name)
-                ),
-            )
-            for _, items in sorted(grouped.items())
-            if len(items) >= config.min_registration_sites
-        )
-    )
-
-
-def _keyed_record_infrastructure_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-) -> tuple[KeyedRecordInfrastructureCandidate, ...]:
-    return (
-        *_module_keyed_selection_helper_candidates(module),
-        *_manual_keyed_record_table_group_candidates(module, config),
     )
 
 
@@ -4440,6 +4282,113 @@ class ModuleKeyedSelectionHelperCandidate(
             identity_field_names=("key",),
         )
 
+    @classmethod
+    def from_module(
+        cls, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[Self, ...]:
+        del config
+        helper_shapes = tuple(
+            (
+                helper
+                for _, function in module.syntax_index.named_functions
+                if "." not in _
+                and (helper := _selection_helper_shape(function)) is not None
+            )
+        )
+        lookup_shapes = tuple(
+            (
+                lookup
+                for _, function in module.syntax_index.named_functions
+                if "." not in _
+                and (lookup := _selection_lookup_shape(function)) is not None
+            )
+        )
+        if not helper_shapes or not lookup_shapes:
+            return ()
+        named_values = module.fact(ModuleNamedValues)
+        named_sequences = named_values.sequences
+        named_calls = named_values.calls
+        candidates: list[Self] = []
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            if not declared.is_dataclass:
+                continue
+            field_names = declared.annotated_names
+            if len(field_names) != 2 or field_names[0] != "key":
+                continue
+            selected_field_name = field_names[1]
+            matching_helpers = tuple(
+                (
+                    helper
+                    for helper in helper_shapes
+                    if helper.selected_field_name == selected_field_name
+                )
+            )
+            if not matching_helpers:
+                continue
+            rule_table_names: list[str] = []
+            indexed_table_names: list[str] = []
+            evidence: list[SourceLocation] = [
+                SourceLocation(module.file_path, node.lineno, node.name)
+            ]
+            for family_name, (line, elements) in sorted(named_sequences.items()):
+                if len(elements) < 2:
+                    continue
+                if not all(
+                    (
+                        isinstance(element, ast.Call)
+                        and ExpressionReference.decoded(
+                            element.func
+                        ).terminal_name == node.name
+                        for element in elements
+                    )
+                ):
+                    continue
+                keyword_maps = [
+                    dict(CallKeywords.of(element.keywords).by_name)
+                    for element in cast(tuple[ast.Call, ...], elements)
+                ]
+                if not all(
+                    (
+                        "key" in keyword_map and selected_field_name in keyword_map
+                        for keyword_map in keyword_maps
+                    )
+                ):
+                    continue
+                rule_table_names.append(family_name)
+                evidence.append(SourceLocation(module.file_path, line, family_name))
+            if len(rule_table_names) < 2:
+                continue
+            helper_names = {helper.function_name for helper in matching_helpers}
+            for call_name, (line, call) in sorted(named_calls.items()):
+                if (
+                    ExpressionReference.decoded(call.func).terminal_name not in helper_names
+                    or not call.args
+                ):
+                    continue
+                argument = call.args[0]
+                if isinstance(argument, ast.Name) and argument.id in rule_table_names:
+                    indexed_table_names.append(call_name)
+                    evidence.append(SourceLocation(module.file_path, line, call_name))
+            if len(indexed_table_names) < 2:
+                continue
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    line=node.lineno,
+                    rule_class_name=node.name,
+                    selected_field_name=selected_field_name,
+                    helper_function_name=matching_helpers[0].function_name,
+                    lookup_function_name=lookup_shapes[0].function_name,
+                    rule_table_names=tuple(rule_table_names),
+                    index_table_names=tuple(indexed_table_names),
+                    evidence=tuple(evidence[:6]),
+                )
+            )
+        return sorted_tuple(
+            candidates, key=lambda item: (item.file_path, item.line, item.rule_class_name)
+        )
+
 
 @dataclass(frozen=True)
 class RepeatedKeyedFamilyCandidate:
@@ -4578,6 +4527,70 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             mapping_name="keyed_record_table",
             field_names=field_names,
             identity_field_names=field_names,
+        )
+
+    @classmethod
+    def from_module(
+        cls, module: ParsedModule, config: DetectorConfig
+    ) -> tuple[Self, ...]:
+        classes: list[ManualKeyedRecordTableClassCandidate] = []
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            if not declared.is_dataclass:
+                continue
+            if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
+                declared.direct_assignments.get("_registry")
+            ):
+                continue
+            register_method = declared.method_named("register")
+            if register_method is None:
+                continue
+            registration_shape = _manual_record_registration_shape(register_method)
+            if registration_shape is None:
+                continue
+            lookup_methods = [
+                (method, shape)
+                for method in declared.methods
+                if method.spells("classmethod")
+                and method.name.startswith("for_")
+                and (shape := RegistryLookupShape.from_method(method.node)) is not None
+            ]
+            if len(lookup_methods) != 1:
+                continue
+            lookup_method, lookup_shape = lookup_methods[0]
+            classes.append(
+                ManualKeyedRecordTableClassCandidate(
+                    file_path=module.file_path,
+                    line=node.lineno,
+                    class_name=node.name,
+                    register_method_name="register",
+                    lookup_method_name=lookup_method.name,
+                    lookup_style=lookup_shape.style,
+                    key_field_name=registration_shape.key_field_name,
+                    key_expr=registration_shape.key_expr,
+                    constructor_field_names=registration_shape.constructor_field_names,
+                )
+            )
+        if len(classes) < config.min_registration_sites:
+            return ()
+        grouped: dict[tuple[str, str], list[ManualKeyedRecordTableClassCandidate]] = (
+            defaultdict(list)
+        )
+        for candidate in classes:
+            grouped[candidate.register_method_name, candidate.lookup_style].append(
+                candidate
+            )
+        return tuple(
+            (
+                cls(
+                    file_path=module.file_path,
+                    classes=sorted_tuple(
+                        items, key=lambda item: (item.line, item.class_name)
+                    ),
+                )
+                for _, items in sorted(grouped.items())
+                if len(items) >= config.min_registration_sites
+            )
         )
 
 

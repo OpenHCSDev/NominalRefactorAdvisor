@@ -15,7 +15,6 @@ from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.models import (
     EvidenceLocated,
     LineWitness,
-    MappingMetrics,
     SourceLineReference,
     SourceLocation,
 )
@@ -115,20 +114,6 @@ class ClassMethodFamilyCandidate(
                 )
             )
         )
-
-
-class KeyedRecordInfrastructureCandidate(EvidenceLocated, ABC):
-    """Candidate that owns its keyed-record surface presentation."""
-
-    @property
-    @abstractmethod
-    def finding_summary(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def finding_metrics(self) -> MappingMetrics:
-        raise NotImplementedError
 
 
 @dataclass(frozen=True)

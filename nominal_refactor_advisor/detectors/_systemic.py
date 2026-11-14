@@ -25,7 +25,6 @@ from nominal_refactor_advisor.class_syntax_facets import (
 )
 from nominal_refactor_advisor.detectors._candidates import (
     CollectsItselfFromRegistryFacts,
-    KeyedRecordInfrastructureCandidate,
     KeyedRegistryAxisFact,
     LineWitnessCandidate,
     WitnessCarrierCandidate,
@@ -92,6 +91,7 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
+    KeyedRecordInfrastructureCandidate,
     CollectsItself,
     SubscriptedCandidateType,
     ModuleCollectedLineWitnessCandidate,
@@ -126,7 +126,6 @@ from nominal_refactor_advisor.detectors._base import (
     TupleIndexSemanticOpacityCandidate,
     _attribute_family_subject_expression,
     _compact_keyed_family_axis_specs_from_index,
-    _keyed_record_infrastructure_candidates,
     _KeyedFamilyAxisSpec,
     _module_union_type_aliases,
     _registry_maturity_missing_signals,
@@ -3463,7 +3462,6 @@ declare_candidate_rule_detector(
 class KeyedRecordInfrastructureDetector(
     ConfiguredModuleCollectorCandidateDetector[KeyedRecordInfrastructureCandidate]
 ):
-    candidate_collector = _keyed_record_infrastructure_candidates
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Manual keyed-record infrastructure should derive from one substrate",
