@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from metaclass_registry.testing import restored_registry
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
@@ -66,13 +67,9 @@ def test_body_only_replacement_preserves_the_existing_decorator_once(
 
 def test_nominal_policy_controls_both_payload_and_complete_decorator_geometry(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     production_registry = RefactorRecipeOperation.__registry__
-    with monkeypatch.context() as patch:
-        patch.setattr(
-            RefactorRecipeOperation, "__registry__", production_registry.copy()
-        )
+    with restored_registry(RefactorRecipeOperation):
 
         class DecoratorInclusivePolicy:
             decorator_policy = Include
