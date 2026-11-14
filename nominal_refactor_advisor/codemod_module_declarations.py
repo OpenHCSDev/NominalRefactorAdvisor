@@ -7,9 +7,8 @@ import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
-from itertools import takewhile
 from typing import ClassVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -679,6 +678,11 @@ class SourceTopLevelDeclaration(
 
     source_path: str
     node: MovableDeclaration
+    trailing: tuple[ast.stmt, ...] = ()
+    """The statements right after the declaration that move with it: the attribute
+    docstring under an assignment, and what a whole module's move carries (an
+    `assert` on the constant above it, a registration call). They run where the
+    declaration does, after it."""
 
     @classmethod
     def from_statement(
@@ -738,9 +742,10 @@ class SourceTopLevelDeclaration(
 
     @cached_property
     def source_span(self) -> SourceNodeSpan:
-        return SourceNodeSpan(
+        return ExtendedNodeSpan(
             self.node,
             decorator_policy=Include,
+            through=self.statements[-1],
         )
 
     def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
@@ -753,7 +758,7 @@ class SourceTopLevelDeclaration(
     def statements(self) -> tuple[ast.stmt, ...]:
         """The module statements this declaration consists of."""
 
-        return (self.node,)
+        return (self.node, *self.trailing)
 
 
 @dataclass(frozen=True)
@@ -787,8 +792,37 @@ class NamedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
         return SourceInsertionBoundary.TWO_BLANK_LINES
 
 
+class NameBindingSourceTopLevelDeclaration(SourceTopLevelDeclaration, ABC):
+    """A movable statement that binds one module name by assignment syntax: an
+    assignment, a type alias, a bare annotation. It introduces the name it declares
+    and stands one blank line from its neighbours. A member says which node spells
+    the name."""
+
+    @property
+    @abstractmethod
+    def name_node(self) -> ast.Name:
+        raise NotImplementedError
+
+    @property
+    def name(self) -> str:
+        return self.name_node.id
+
+    def name_span(self, source: str) -> SourceTextSpan:
+        return SourceTextSpan.from_offsets(
+            SourceTextGeometry(source).required_node_offsets(self.name_node)
+        )
+
+    @property
+    def assigned_binding_names(self) -> frozenset[str]:
+        return frozenset((self.name,))
+
+    @property
+    def destination_boundary(self) -> SourceInsertionBoundary:
+        return SourceInsertionBoundary.ONE_BLANK_LINE
+
+
 @dataclass(frozen=True)
-class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+class AssignedSourceTopLevelDeclaration(NameBindingSourceTopLevelDeclaration):
     """Movable direct-name assignment declaration."""
 
     node: ast.Assign | ast.AnnAssign
@@ -807,10 +841,7 @@ class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
         )
 
     @property
-    def name(self) -> str:
-        return SingleAssignmentAndValueNameProjection(self.node).required_name
-
-    def name_span(self, source: str) -> SourceTextSpan:
+    def name_node(self) -> ast.Name:
         target = (
             self.node.targets[0]
             if isinstance(self.node, ast.Assign)
@@ -818,30 +849,16 @@ class AssignedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
         )
         if not isinstance(target, ast.Name):
             raise ValueError("Assigned declaration does not have one direct name")
-        return SourceTextSpan.from_offsets(
-            SourceTextGeometry(source).required_node_offsets(target)
-        )
-
-    @property
-    def assigned_binding_names(self) -> frozenset[str]:
-        return frozenset((self.name,))
-
-    @property
-    def destination_boundary(self) -> SourceInsertionBoundary:
-        return SourceInsertionBoundary.ONE_BLANK_LINE
+        return target
 
     def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
         if not is_docstring_statement(following):
             return self
-        return DocumentedAssignedSourceTopLevelDeclaration(
-            source_path=self.source_path,
-            node=self.node,
-            docstring=cast(ast.Expr, following),
-        )
+        return replace(self, trailing=(following,))
 
 
 @dataclass(frozen=True)
-class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+class TypeAliasSourceTopLevelDeclaration(NameBindingSourceTopLevelDeclaration):
     """Movable ``type Name = ...`` alias (PEP 695)."""
 
     node: ast.TypeAlias
@@ -857,25 +874,12 @@ class TypeAliasSourceTopLevelDeclaration(SourceTopLevelDeclaration):
         return cls(source_path=source_path, node=statement)
 
     @property
-    def name(self) -> str:
-        return self.node.name.id
-
-    def name_span(self, source: str) -> SourceTextSpan:
-        return SourceTextSpan.from_offsets(
-            SourceTextGeometry(source).required_node_offsets(self.node.name)
-        )
-
-    @property
-    def assigned_binding_names(self) -> frozenset[str]:
-        return frozenset((self.name,))
-
-    @property
-    def destination_boundary(self) -> SourceInsertionBoundary:
-        return SourceInsertionBoundary.ONE_BLANK_LINE
+    def name_node(self) -> ast.Name:
+        return self.node.name
 
 
 @dataclass(frozen=True)
-class AnnotatedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
+class AnnotatedSourceTopLevelDeclaration(NameBindingSourceTopLevelDeclaration):
     """``name: Type`` with no value. It binds nothing until code assigns the name (a
     ``global`` rebinding in an initializer, say), but it is the module's
     declaration of the name and its type, and moves with the code that assigns it."""
@@ -897,98 +901,8 @@ class AnnotatedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
         return cls(source_path=source_path, node=statement)
 
     @property
-    def name(self) -> str:
-        return cast(ast.Name, self.node.target).id
-
-    def name_span(self, source: str) -> SourceTextSpan:
-        return SourceTextSpan.from_offsets(
-            SourceTextGeometry(source).required_node_offsets(self.node.target)
-        )
-
-    @property
-    def assigned_binding_names(self) -> frozenset[str]:
-        return frozenset((self.name,))
-
-    @property
-    def destination_boundary(self) -> SourceInsertionBoundary:
-        return SourceInsertionBoundary.ONE_BLANK_LINE
-
-
-@dataclass(frozen=True)
-class DocumentedAssignedSourceTopLevelDeclaration(AssignedSourceTopLevelDeclaration):
-    """An assignment and the attribute docstring under it, which moves with it."""
-
-    docstring: ast.Expr
-
-    @classmethod
-    def from_supported_statement(
-        cls,
-        source_path: str,
-        statement: ast.stmt,
-    ) -> SourceTopLevelDeclaration | None:
-        """A documented assignment spans two statements, so no single statement
-        decodes as one; `AssignedSourceTopLevelDeclaration.documented_by` builds it."""
-
-        return None
-
-    @cached_property
-    def source_span(self) -> SourceNodeSpan:
-        return ExtendedNodeSpan(
-            self.node,
-            decorator_policy=Include,
-            through=self.docstring,
-        )
-
-    def documented_by(self, following: ast.stmt) -> SourceTopLevelDeclaration:
-        return self
-
-    @property
-    def statements(self) -> tuple[ast.stmt, ...]:
-        return (self.node, self.docstring)
-
-
-@dataclass(frozen=True)
-class CarryingSourceTopLevelDeclaration(SourceTopLevelDeclaration):
-    """A declaration and the statements right after it that bind nothing, which a
-    whole module's move carries with it: an `assert` on the constant above it, a
-    registration call. They run where the declaration does, after it."""
-
-    declaration: SourceTopLevelDeclaration
-    carried: tuple[ast.stmt, ...]
-
-    @classmethod
-    def from_supported_statement(
-        cls,
-        source_path: str,
-        statement: ast.stmt,
-    ) -> SourceTopLevelDeclaration | None:
-        """Carrying spans several statements; `SourceTopLevelDeclarationIndex.carrying`
-        builds it."""
-
-        return None
-
-    @property
-    def name(self) -> str:
-        return self.declaration.name
-
-    def name_span(self, source: str) -> SourceTextSpan:
-        return self.declaration.name_span(source)
-
-    @property
-    def assigned_binding_names(self) -> frozenset[str]:
-        return self.declaration.assigned_binding_names
-
-    @property
-    def destination_boundary(self) -> SourceInsertionBoundary:
-        return self.declaration.destination_boundary
-
-    @cached_property
-    def source_span(self) -> SourceNodeSpan:
-        return ExtendedNodeSpan(self.node, decorator_policy=Include, through=self.carried[-1])
-
-    @property
-    def statements(self) -> tuple[ast.stmt, ...]:
-        return (*self.declaration.statements, *self.carried)
+    def name_node(self) -> ast.Name:
+        return cast(ast.Name, self.node.target)
 
 
 def is_script_guard(statement: ast.stmt) -> bool:
@@ -1128,17 +1042,23 @@ class SourceTopLevelDeclarationIndex:
         """`declaration` with the run of carried statements right after it, if any."""
 
         body = self.module.body
-        last = declaration.statements[-1]
-        after = next(index for index, statement in enumerate(body) if statement is last) + 1
-        carried = tuple(takewhile(_carried_statement, body[after:]))
-        if not carried:
+        start = self._position_after[id(declaration.statements[-1])]
+        end = start
+        while end < len(body) and _carried_statement(body[end]):
+            end += 1
+        if end == start:
             return declaration
-        return CarryingSourceTopLevelDeclaration(
-            source_path=self.source_path,
-            node=declaration.node,
-            declaration=declaration,
-            carried=carried,
-        )
+        return replace(declaration, trailing=(*declaration.trailing, *body[start:end]))
+
+    @cached_property
+    def _position_after(self) -> dict[int, int]:
+        """Where the statement after each module statement sits in the body, by the
+        statement's identity. A whole module's move asks for every declaration."""
+
+        return {
+            id(statement): position + 1
+            for position, statement in enumerate(self.module.body)
+        }
 
     def required_declarations(
         self,
