@@ -236,6 +236,11 @@ class SourceLineReference:
 
         return f"{checkout_display_path(self.file_path)}:{self.line}"
 
+    def named(self, symbol: str) -> SourceLocation:
+        """The evidence site at this line, shown as ``symbol``."""
+
+        return SourceLocation(self.file_path, self.line, symbol)
+
 
 @dataclass(frozen=True)
 class EvidenceSymbol(SemanticRecord):
@@ -275,7 +280,7 @@ class LineWitness(SourceLineReference, ABC):
 
     @property
     def location(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.witness_name)
+        return self.named(self.witness_name)
 
 
 class EvidenceLocated(ABC):

@@ -126,7 +126,7 @@ from nominal_refactor_advisor.class_mro import (
     DeclarationMroType,
     DeclaredBases,
 )
-from nominal_refactor_advisor.models import SourceLineReference
+from nominal_refactor_advisor.models import LineWitness, SourceLineReference
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.product_declarations import (
@@ -405,7 +405,7 @@ class ForeignBase:
 
 
 @dataclass(frozen=True)
-class ClassDeclaration(QualifiedDeclaration, SourceLineReference):
+class ClassDeclaration(QualifiedDeclaration, LineWitness):
     """Source-form-independent identity shared by repository class indexes."""
 
     symbol: str
@@ -429,6 +429,10 @@ class ClassDeclaration(QualifiedDeclaration, SourceLineReference):
     with something bound to `abc.abstractmethod` where the class is declared."""
 
     qualified_name = AliasProperty[str]("symbol")
+
+    @property
+    def witness_name(self) -> str:
+        return self.symbol
 
     @property
     def is_dataclass(self) -> bool:

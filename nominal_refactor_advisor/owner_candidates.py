@@ -1259,7 +1259,7 @@ def ranked(candidates: Iterable[CandidateT]) -> tuple[CandidateT, ...]:
 
 
 def _location(indexed_class: CompactIndexedClass) -> SourceLocation:
-    return SourceLocation(indexed_class.file_path, indexed_class.line, indexed_class.qualname)
+    return indexed_class.named(indexed_class.qualname)
 
 
 __all__ = (

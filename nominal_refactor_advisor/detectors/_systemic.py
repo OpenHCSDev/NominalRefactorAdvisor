@@ -1381,14 +1381,6 @@ class ExternalEnumCaseRecoverySite:
             case_names=sorted_tuple({*self.case_names, *case_names}),
         )
 
-    @property
-    def location(self) -> SourceLocation:
-        return SourceLocation(
-            self.function.file_path,
-            self.function.line,
-            self.function.qualname,
-        )
-
 
 @dataclass(frozen=True)
 class ExternalEnumCaseRecoveryCandidate(EvidenceLocated):
@@ -1404,23 +1396,19 @@ class ExternalEnumCaseRecoveryCandidate(EvidenceLocated):
 
     @property
     def authority_evidence(self) -> SourceLocation:
-        return SourceLocation(
-            self.enum_class.file_path,
-            self.enum_class.line,
-            self.enum_class.symbol,
-        )
+        return self.enum_class.location
 
     @property
     def projection_evidence(self) -> SourceLocation:
         if not self.sites:
             raise ValueError("external enum recovery requires one projection site")
-        return self.sites[0].location
+        return self.sites[0].function.location
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             self.authority_evidence,
-            *(site.location for site in self.sites[:5]),
+            *(site.function.location for site in self.sites[:5]),
         )
 
 
@@ -1819,11 +1807,7 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
                         f"registry field(s) {field_list}."
                     ),
                     (
-                        SourceLocation(
-                            indexed_class.file_path,
-                            indexed_class.line,
-                            indexed_class.simple_name,
-                        ),
+                        indexed_class.named(indexed_class.simple_name),
                     ),
                     metrics=MappingMetrics.from_field_names(
                         mapping_site_count=len(repeated_fields),
@@ -1920,11 +1904,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
                         f"through explicit class-level {axis_label} values."
                     ),
                     (
-                        SourceLocation(
-                            indexed_class.file_path,
-                            indexed_class.line,
-                            indexed_class.simple_name,
-                        ),
+                        indexed_class.named(indexed_class.simple_name),
                         *evidence_sites,
                     ),
                     metrics=MappingMetrics(
@@ -2088,11 +2068,7 @@ class NominalInstanceExplicitOrderingDetector(
                         f"through explicit {axis_label} instance values."
                     ),
                     (
-                        SourceLocation(
-                            family_root.file_path,
-                            family_root.line,
-                            family_root.simple_name,
-                        ),
+                        family_root.named(family_root.simple_name),
                         *(
                             SourceLocation(
                                 family_root.file_path,
@@ -2228,7 +2204,7 @@ class RepeatedKeyedFamilyDetector(
             sorted({root.registry_key_attr_name for root in family_candidate.roots[:8]})
         )
         evidence = tuple(
-            SourceLocation(root.file_path, root.line, root.class_name)
+            root.named(root.class_name)
             for root in family_candidate.roots[:8]
         )
         return self.build_finding(
@@ -3708,11 +3684,7 @@ class StructuralConfusabilityDetector(
         self, confusability_candidate: StructuralConfusabilityCandidate
     ) -> RefactorFinding:
         evidence = (
-            SourceLocation(
-                confusability_candidate.file_path,
-                confusability_candidate.line,
-                confusability_candidate.function_name,
-            ),
+            confusability_candidate.named(confusability_candidate.function_name),
         )
         return self.build_finding(
             f"`{confusability_candidate.function_name}` observes `{confusability_candidate.parameter_name}` only through methods {confusability_candidate.observed_method_names}, but classes {confusability_candidate.class_names} are confusable under that view.",

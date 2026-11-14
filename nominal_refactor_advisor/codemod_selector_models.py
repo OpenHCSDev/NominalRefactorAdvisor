@@ -377,4 +377,4 @@ class CallSiteDigest(SourceLineReference):
 
     @property
     def source_location(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.symbol)
+        return self.named(self.symbol)

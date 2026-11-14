@@ -5548,7 +5548,7 @@ class ResidualClosedAxisIndirectionCandidate(
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(self.file_path, self.table_line, self.table_name),
-            SourceLocation(self.file_path, self.line, self.qualname),
+            self.named(self.qualname),
         )
 
 

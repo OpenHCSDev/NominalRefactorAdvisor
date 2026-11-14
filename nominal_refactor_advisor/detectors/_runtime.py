@@ -672,7 +672,7 @@ def _formal_boundary_python_evidence_for_values(
     for value in values:
         constant = constants_by_value[value][0]
         evidence.append(
-            SourceLocation(constant.file_path, constant.line, constant.target_name)
+            constant.named(constant.target_name)
         )
     return tuple(evidence)
 
@@ -824,7 +824,7 @@ class GeneratedBoundarySemanticConstantSite(SourceLineReference):
         return self.target_name, self.value
 
     def source_location(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.line, self.target_name)
+        return self.named(self.target_name)
 
 
 class GeneratedBoundarySemanticConstantAuthority:
@@ -2542,18 +2542,10 @@ class ExactTypeGuardInheritanceRetreatCandidate:
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(self.guard.file_path, self.guard.line, self.guard.qualname),
-            SourceLocation(
-                self.base_class.file_path,
-                self.base_class.line,
-                self.base_class.simple_name,
-            ),
+            self.guard.location,
+            self.base_class.named(self.base_class.simple_name),
             *(
-                SourceLocation(
-                    descendant.file_path,
-                    descendant.line,
-                    descendant.simple_name,
-                )
+                descendant.named(descendant.simple_name)
                 for descendant in self.descendant_classes[:4]
             ),
         )

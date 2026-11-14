@@ -224,18 +224,10 @@ class ParallelMirroredLeafFamilyComponent(EvidenceLocated):
     @cached_property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
-            SourceLocation(
-                root.file_path,
-                root.line,
-                root.symbol,
-            )
+            root.location
             for root in self.roots
         ) + tuple(
-            SourceLocation(
-                indexed_class.file_path,
-                indexed_class.line,
-                indexed_class.symbol,
-            )
+            indexed_class.location
             for indexed_class in self.leaf_classes
         )
 

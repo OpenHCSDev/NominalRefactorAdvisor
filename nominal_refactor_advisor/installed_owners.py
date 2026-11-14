@@ -43,7 +43,7 @@ from nominal_refactor_advisor.cache_paths import AdvisorCacheLayout
 from nominal_refactor_advisor.class_creation_store import CreatedClassStore
 from nominal_refactor_advisor.class_index import CompactModuleClassHeader
 from nominal_refactor_advisor.declared_root import DeclaredRoot
-from nominal_refactor_advisor.models import SourceLineReference, SourceLocation
+from nominal_refactor_advisor.models import SourceLineReference
 from nominal_refactor_advisor.owner_candidates import (
     OwnerCandidate,
     OwnerCost,
@@ -408,7 +408,7 @@ class RegistrationOwners:
     def _receipts(
         self, owner: InstalledRegistrationOwner, roles: tuple[RegistrationRole, ...]
     ) -> tuple[Receipt, ...]:
-        evidence = (SourceLocation(owner.file_path, owner.line, owner.symbol),)
+        evidence = (owner.named(owner.symbol),)
         imported = owner.distribution in self.imported
         return (
             Receipt(

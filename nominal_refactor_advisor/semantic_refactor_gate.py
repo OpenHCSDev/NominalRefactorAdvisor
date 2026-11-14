@@ -298,11 +298,7 @@ class AuthorityDiscoveryRequiredFindingProjection:
         resolution: AuthorityClaimResolution,
     ) -> tuple[SourceLocation, ...]:
         proof_evidence = tuple(
-            SourceLocation(
-                edge.file_path,
-                edge.line,
-                edge.symbol,
-            )
+            edge.named(edge.symbol)
             for edge in resolution.proof_edges
             if edge.file_path
         )

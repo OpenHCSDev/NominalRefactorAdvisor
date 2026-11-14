@@ -12,7 +12,7 @@ from nominal_refactor_advisor.installed_owners import (
     RegistrationRole,
 )
 from nominal_refactor_advisor.owner_candidates import OwnerCandidate, ranked
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
@@ -33,12 +33,6 @@ class HandRolledRegistration:
     owners: tuple[InstalledOwner, ...]
     """The installed owners, ranked."""
     scope: RegistrationOwners
-
-    @property
-    def location(self) -> SourceLocation:
-        return SourceLocation(
-            self.indexed_class.file_path, self.indexed_class.line, self.indexed_class.symbol
-        )
 
 
 class HandRolledRegistrationDetector(
@@ -107,7 +101,7 @@ class HandRolledRegistrationDetector(
                 + "".join(f"; gap: {gap}" for gap in candidate.scope.gaps)
                 + "."
             ),
-            (candidate.location,),
+            (candidate.indexed_class.location,),
         )
 
 

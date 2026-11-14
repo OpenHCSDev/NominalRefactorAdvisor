@@ -829,11 +829,7 @@ class SemanticFact(SemanticFactReference):
             kind=SemanticFactKind.CLASS_MEMBER,
             name=indexed_class.simple_name,
             aliases=sorted_tuple((indexed_class.simple_name, *aliases)),
-            location=SourceLocation(
-                indexed_class.file_path,
-                indexed_class.line,
-                indexed_class.qualname,
-            ),
+            location=indexed_class.named(indexed_class.qualname),
         )
 
     @classmethod
@@ -3949,11 +3945,7 @@ class SemanticAuthorityBuilder:
                     authority_id=indexed_class.symbol,
                     kind=provider_result.kind,
                     name=indexed_class.simple_name,
-                    location=SourceLocation(
-                        indexed_class.file_path,
-                        indexed_class.line,
-                        indexed_class.qualname,
-                    ),
+                    location=indexed_class.named(indexed_class.qualname),
                     fact_ids=tuple(fact.fact_id for fact in provider_result.facts),
                 )
             )

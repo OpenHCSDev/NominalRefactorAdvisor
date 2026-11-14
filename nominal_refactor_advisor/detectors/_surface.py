@@ -335,7 +335,7 @@ class StructuralObservationProjectionDetector(
         grouped_candidates = candidate.candidates
         evidence = tuple(
             (
-                SourceLocation(item.file_path, item.line, item.class_name)
+                item.named(item.class_name)
                 for item in grouped_candidates[:6]
             )
         )

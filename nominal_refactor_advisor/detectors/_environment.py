@@ -1224,11 +1224,7 @@ class _EnvironmentBooleanDriftCandidate(SourceLocation):
     def authority_evidence(self) -> SourceLocation | None:
         if self.authority is None:
             return None
-        return SourceLocation(
-            self.authority.file_path,
-            self.authority.line,
-            self.authority.symbol,
-        )
+        return self.authority.named(self.authority.symbol)
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:

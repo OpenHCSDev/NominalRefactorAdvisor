@@ -89,11 +89,7 @@ class CarrierCollapseCandidateDetector(
         component: ClosedCarrierCollapseComponent,
     ) -> RefactorFinding:
         authority = component.authority
-        authority_location = SourceLocation(
-            authority.file_path,
-            authority.line,
-            authority.class_symbol,
-        )
+        authority_location = authority.named(authority.class_symbol)
         participant_locations = tuple(
             SourceLocation(
                 participant.context.file_path,

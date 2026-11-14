@@ -29,16 +29,8 @@ class TypeKeyedBehaviorBinding(EvidenceLocated):
     @cached_property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(
-                self.projection_class.file_path,
-                self.projection_class.line,
-                self.projection_class.symbol,
-            ),
-            SourceLocation(
-                self.target_class.file_path,
-                self.target_class.line,
-                self.target_class.symbol,
-            ),
+            self.projection_class.location,
+            self.target_class.location,
         )
 
 
@@ -82,19 +74,11 @@ class TypeKeyedBehaviorProjectionComponent(EvidenceLocated):
 
     @property
     def projection_evidence(self) -> SourceLocation:
-        return SourceLocation(
-            self.projection_root.file_path,
-            self.projection_root.line,
-            self.projection_root.symbol,
-        )
+        return self.projection_root.location
 
     @property
     def authority_evidence(self) -> SourceLocation:
-        return SourceLocation(
-            self.target_root.file_path,
-            self.target_root.line,
-            self.target_root.symbol,
-        )
+        return self.target_root.location
 
 
 @dataclass(frozen=True)
