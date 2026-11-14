@@ -6,7 +6,7 @@ import os
 import ast
 import hashlib
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from collections.abc import Iterator
 
 import pytest
@@ -32,6 +32,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 
 def pytest_configure(config: pytest.Config) -> None:
+    # Each run owns its temp root. pytest's shared numbered root keeps only the newest
+    # three runs, so concurrent runs delete each other's trees mid-test. xdist workers
+    # inherit the controller's root.
+    if config.option.basetemp is None and not hasattr(config, "workerinput"):
+        config.option.basetemp = mkdtemp(prefix="nra-pytest-")
     config.addinivalue_line(
         "markers",
         "native_proof: the test's subject is a proof that only a native creation "
