@@ -150,20 +150,12 @@ from nominal_refactor_advisor.models import (
     SourceLocation,
     SourceLocationZipDescriptorShape,
 )
-from nominal_refactor_advisor.observation_graph import (
-    ObservationGraph,
-    ObservationKind,
-    StructuralExecutionLevel,
-    StructuralObservation,
-    StructuralObservationCarrier,
-)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import (
     CapabilityTag,
     CertificationLevel,
     ConfidenceLevel,
     ObservationTag,
-    SPECULATIVE,
 )
 from nominal_refactor_advisor.ast_tools import statements_without_docstring
 from nominal_refactor_advisor.detectors._substrate_support import (
@@ -297,32 +289,6 @@ class FindingSpecFactory(Generic[FindingSpecT]):
         )
 
 
-@dataclass(frozen=True)
-class CertifiedLevelFindingSpecFactory:
-    certification: CertificationLevel
-
-    def __call__(
-        self,
-        pattern_id: PatternId,
-        title: str,
-        why: str,
-        capability_gap: str,
-        relation_context: str,
-        capability_tags: tuple[CapabilityTag, ...] = (),
-        observation_tags: tuple[ObservationTag, ...] = (),
-    ) -> FindingSpec:
-        return FindingSpec(
-            pattern_id=pattern_id,
-            title=title,
-            why=why,
-            capability_gap=capability_gap,
-            relation_context=relation_context,
-            capability_tags=capability_tags,
-            observation_tags=observation_tags,
-            certification=self.certification,
-        )
-
-
 finding_spec_template = FindingSpecFactory(FindingSpec, "finding_spec_template")
 high_confidence_spec = FindingSpecFactory(
     HighConfidenceFindingSpec, "high_confidence_spec"
@@ -331,7 +297,6 @@ certified_spec = FindingSpecFactory(CertifiedFindingSpec, "certified_spec")
 high_confidence_certified_spec = FindingSpecFactory(
     HighConfidenceCertifiedFindingSpec, "high_confidence_certified_spec"
 )
-speculative_finding_spec = CertifiedLevelFindingSpecFactory(SPECULATIVE)
 FINDING_SPEC_FACTORIES = (
     finding_spec_template,
     high_confidence_spec,
@@ -761,13 +726,6 @@ class SourceLocalIssueDetectorMixin(ABC):
         config: DetectorConfig,
     ) -> list[RefactorFinding] | None:
         raise NotImplementedError
-
-
-class PerModuleSemanticMirrorIssueDetector(
-    SemanticMirrorIssueDetector,
-    PerModuleIssueDetector,
-):
-    """Per-module detector base for semantic mirror surfaces."""
 
 
 class ContextualModuleIssueDetector(IssueDetector):
@@ -1377,10 +1335,6 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
 _LINENO_QUALNAME_LOCATION = SourceLocationEvidenceProperty(
     line_attribute_name="lineno", symbol_attribute_name="qualname"
 )
-
-
-def _contextual_global_digest(value: str) -> str:
-    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
 def _contextual_global_rows_digest(
@@ -2750,142 +2704,6 @@ class CompactGroupedShapeIssueDetector(
         return self._findings_for_shapes(projections, config)
 
 
-class FiberCollectedShapeIssueDetector(
-    GroupedShapeIssueDetector[ShapeT, GroupKeyT], ABC
-):
-    observation_kind: ObservationKind
-    execution_level: StructuralExecutionLevel = StructuralExecutionLevel.FUNCTION_BODY
-
-    def _collect_shapes(
-        self, modules: ParsedModuleSet, config: DetectorConfig
-    ) -> list[ShapeT]:
-        return self._fiber_grouped(
-            tuple(
-                shape
-                for module in modules
-                for shape in self._module_shapes(module)
-                if self._include_shape(shape, config)
-            )
-        )
-
-    def _fiber_grouped(self, shapes: tuple[ShapeT, ...]) -> list[ShapeT]:
-        """The shapes that share this detector's structural fiber with another shape,
-        fiber by fiber, each fiber's in the order of their structural identity."""
-
-        by_identity = {_carrier_identity(shape): shape for shape in shapes}
-        graph = ObservationGraph(
-            tuple(
-                shape.structural_observation
-                for shape in shapes
-                if isinstance(shape, StructuralObservationCarrier)
-            )
-        )
-        grouped: list[ShapeT] = []
-        for fiber in graph.fibers_for(self.observation_kind, self.execution_level):
-            members = sorted_tuple(
-                (
-                    by_identity[observation.structural_identity]
-                    for observation in fiber.observations
-                    if observation.structural_identity in by_identity
-                ),
-                key=_carrier_identity,
-            )
-            if len(members) >= 2:
-                grouped.extend(members)
-        return grouped
-
-    @abstractmethod
-    def _module_shapes(self, module: ParsedModule) -> tuple[ShapeT, ...]:
-        raise NotImplementedError
-
-    @abstractmethod
-    def _include_shape(self, shape: ShapeT, config: DetectorConfig) -> bool:
-        raise NotImplementedError
-
-
-class CompactFiberCollectedShapeIssueDetector(
-    CompactModuleProjectionDetectorMixin[ShapeT],
-    FiberCollectedShapeIssueDetector[ShapeT, GroupKeyT],
-):
-    """Fiber-grouped detector backed entirely by compact module projections."""
-
-    def _findings_from_compact_projections(
-        self,
-        projections: tuple[ShapeT, ...],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_shapes(
-            self._fiber_grouped(
-                tuple(shape for shape in projections if self._include_shape(shape, config))
-            ),
-            config,
-        )
-
-
-@dataclass(frozen=True)
-class ContextualGlobalShapeSignatureRow:
-    shape_type_name: str
-    structural_observation: StructuralObservation
-    group_key_digest: str
-    shape_digest: str
-
-
-@dataclass(frozen=True)
-class ContextualGlobalShapeSignature:
-    rows: tuple[ContextualGlobalShapeSignatureRow, ...]
-
-    @property
-    def token(self) -> str:
-        return _contextual_global_digest(repr(self))
-
-
-class ContextualGlobalFiberCollectedShapeIssueDetector(
-    FiberCollectedShapeIssueDetector[ShapeT, GroupKeyT],
-    ABC,
-    Generic[ShapeT, GroupKeyT],
-):
-    """Global fiber detector whose findings cache by collected shape semantics."""
-
-    @classmethod
-    def context_signature(
-        cls, modules: ParsedModuleSet, config: DetectorConfig
-    ) -> str:
-        detector = cls()
-        rows: list[ContextualGlobalShapeSignatureRow] = []
-        for module in modules:
-            for shape in detector._module_shapes(module):
-                if not detector._include_shape(shape, config):
-                    continue
-                if not isinstance(shape, StructuralObservationCarrier):
-                    continue
-                rows.append(
-                    ContextualGlobalShapeSignatureRow(
-                        shape_type_name=type(shape).__qualname__,
-                        structural_observation=shape.structural_observation,
-                        group_key_digest=_contextual_global_digest(
-                            repr(detector._group_key(shape))
-                        ),
-                        shape_digest=detector._shape_signature_digest(shape),
-                    )
-                )
-        return ContextualGlobalShapeSignature(
-            tuple(
-                sorted(
-                    rows,
-                    key=lambda row: (
-                        row.structural_observation.file_path,
-                        row.structural_observation.line,
-                        row.structural_observation.owner_symbol,
-                        row.shape_type_name,
-                    ),
-                )
-            )
-        ).token
-
-    def _shape_signature_digest(self, shape: ShapeT) -> str:
-        return _contextual_global_digest(repr(shape))
-
-
 CollectedItemT = TypeVar("CollectedItemT")
 
 
@@ -3280,9 +3098,6 @@ class _SelectionLookupShape:
 
 
 _TYPE_NAME_LITERAL = "type"
-_SUBJECT_NAME_FIELD = "subject_name"
-_NAME_FAMILY_FIELD = "name_family"
-_NAME_LITERAL = "name"
 _EVAL_PARSE_MODE = "eval"
 
 
@@ -4320,15 +4135,6 @@ def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
     return (tokens[-1],)
 
 
-_CLASS_NAME_TOKEN_PATTERN = r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
-
-
-def _carrier_identity(carrier: object) -> tuple[str, int, str]:
-    if not isinstance(carrier, StructuralObservationCarrier):
-        raise TypeError(f"Unsupported structural carrier: {type(carrier)!r}")
-    return carrier.structural_observation.structural_identity
-
-
 class SupportProjectionAuthority:
     def parameter_names(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -4543,22 +4349,6 @@ class ClassLineNumbersGroup(ClassNameLineNumbersGroup):
             SourceLocation(self.file_path, line, class_name)
             for class_name, line in zip(
                 self.class_names, self.line_numbers, strict=True
-            )
-        )
-
-
-@dataclass(frozen=True)
-class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
-    file_paths: tuple[str, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(file_path, line, class_name)
-                for file_path, line, class_name in zip(
-                    self.file_paths, self.line_numbers, self.class_names, strict=True
-                )
             )
         )
 
