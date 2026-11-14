@@ -4489,15 +4489,6 @@ class FunctionEvidenceLocationsCandidate(
 
 
 @dataclass(frozen=True)
-class MethodEvidenceLocationsCandidate(LineWitnessCandidate):
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
-    )
-
-
-@dataclass(frozen=True)
 class ClassLineWitnessCandidate(ClassNameWitnessNameMixin, LineWitnessCandidate):
     class_name: str
 
@@ -4573,11 +4564,6 @@ class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
 
 
 @dataclass(frozen=True)
-class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
-    keyword_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class PropertyHookGroup(ClassLineNumbersGroup):
     base_name: str
     property_name: str
@@ -4614,12 +4600,6 @@ class GuardedWrapperSpecPair:
 class PositionalKeywordCallSurface:
     positional_arg_count: int
     keyword_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ExportSurfaceCandidate(LineWitnessCandidate):
-    export_symbol: str
-    exported_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)

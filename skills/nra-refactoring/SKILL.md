@@ -804,7 +804,13 @@ themselves unreached, counting tests, docs, string literals and every
 sibling repository, and no coverage run of the scans or the suite
 executes the body. Classes with a registering metaclass or an
 `__init_subclass__` hook above them, dunders and visitor hooks are never
-candidates. Drop the unread imports and search again: an import nothing
+candidates by name search alone: a registry can hand a member out by key
+from data. They become candidates when that registry has no reader:
+`git grep` for `Root.__registry__`, for the generic walkers
+(`ordered_registered_types`, `direct_registered_types`, `members()`) and
+for every root those walkers are called with, and none reaches the family
+(2026-11-14: three `LineWitnessCandidate` members, whose registry only a
+test reads, erased by `erase_dead_compatibility`). Drop the unread imports and search again: an import nothing
 reads keeps its source declaration looking used.
 
 **A permitted overlap verdict is a lead, not a merge.** Before composing
