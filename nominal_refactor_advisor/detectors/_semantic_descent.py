@@ -20,7 +20,7 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
     high_confidence_certified_spec,
 )
-from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,

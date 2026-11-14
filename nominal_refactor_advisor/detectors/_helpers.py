@@ -10,7 +10,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import cached_property
 from itertools import combinations
 from typing import (
@@ -25,10 +25,6 @@ from typing import (
 from nominal_refactor_advisor.ast_field_decoders import (
     ParameterAnnotations,
     variadic_parameters,
-)
-from nominal_refactor_advisor.class_families.parsed_index import (
-    ClassFamilyIndex,
-    IndexedClass,
 )
 from nominal_refactor_advisor.class_method_facets import (
     CompactClassMethod,
@@ -87,9 +83,6 @@ from nominal_refactor_advisor.semantic_description_length import (
     ClassFamilyCompressionProfile,
     CompressionCertificate,
 )
-from nominal_refactor_advisor.semantic_identity import (
-    InheritanceIdentityAttributeProjection,
-)
 import ast
 from collections import Counter
 from typing import Iterable
@@ -103,10 +96,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
-from nominal_refactor_advisor.observation_shapes import (
-    BuilderCallShape,
-    RegistrationShape,
-)
+from nominal_refactor_advisor.observation_shapes import BuilderCallShape
 from nominal_refactor_advisor.semantic_match import (
     as_ast,
     attribute_call_match,
@@ -119,8 +109,6 @@ from nominal_refactor_advisor.semantic_match import (
     return_call,
     single_assign_target,
     single_item,
-    single_named_call_argument,
-    single_return_call,
     single_return_value,
 )
 from nominal_refactor_advisor.detectors._base import (
@@ -129,7 +117,6 @@ from nominal_refactor_advisor.detectors._base import (
     _PIPELINE_ASSIGN_STAGE,
     _PIPELINE_RETURN_STAGE,
     _self_attr_name,
-    _string_constant_expression,
     CANDIDATE_COLLECTION_AUTHORITY,
     ClassFamilyWitnessCarrier,
     ClassMethodLineWitnessCandidate,
@@ -138,17 +125,14 @@ from nominal_refactor_advisor.detectors._base import (
     ConcreteTypeUnionContractCandidate,
     DerivedQueryIndexCandidate,
     DetectorConfig,
-    DISPATCH_ALGEBRA_AUTHORITY,
     DynamicSelfFieldSelectionCandidate,
     EnumMetadataTableCandidate,
-    FieldOnlyFrozenDataclassCandidate,
     FindingAssemblyPipelineCandidate,
     FragmentedFamilyAuthorityCandidate,
     GuardedDelegatorCandidate,
     GuardedWrapperSpecPair,
     IssueDetector,
     NamedFunctionNode,
-    NominalAuthorityShape,
     OverlappingInheritanceFamiliesCandidate,
     PipelineAssemblyStage,
     PropertyAliasHookGroup,
@@ -166,13 +150,11 @@ from nominal_refactor_advisor.detectors._base import (
     StringBackedReflectiveNominalLookupCandidate,
     StructuralObservationPropertyCandidate,
     SUPPORT_PROJECTION_AUTHORITY,
-    SYNTAX_PROJECTION_AUTHORITY,
     TupleIndexSemanticOpacityCandidate,
     TypedCandidateCastBoilerplateCandidate,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
-    _IGNORED_ANCESTOR_NAMES,
     _IGNORED_BASE_NAMES,
     _is_abstract_method,
     _is_private_symbol_name,

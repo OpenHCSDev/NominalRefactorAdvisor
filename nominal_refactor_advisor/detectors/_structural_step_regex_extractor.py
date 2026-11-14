@@ -10,7 +10,7 @@ from typing import ClassVar, Generic, TypeVar
 
 from nominal_refactor_advisor.detectors._candidates import ClassMethodFamilyCandidate
 from nominal_refactor_advisor.value_expression import CompactValueExpression
-from nominal_refactor_advisor.ast_tools import ParsedModule, _walk_nodes
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.semantic_match import (
     Maybe,

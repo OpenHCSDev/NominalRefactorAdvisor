@@ -7,7 +7,6 @@ selection, wrapper surfaces, and dynamic dispatch residue.
 from __future__ import annotations
 
 import ast
-import hashlib
 import os
 import re
 import tempfile
@@ -16,7 +15,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from enum import StrEnum
-from functools import lru_cache
 from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
@@ -38,7 +36,6 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSet,
     SourceModule,
     collect_family_items,
-    walk_function_body_nodes,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.class_index import (
@@ -58,7 +55,6 @@ from nominal_refactor_advisor.exact_method_authority import (
 )
 from nominal_refactor_advisor.enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
-    EnumKeyedDerivedMapFacadeModuleProjection,
     EnumKeyedDerivedMapFacadeModuleProjectionFamily,
 )
 from nominal_refactor_advisor.codemod_foreign_adapter_source import (
@@ -146,7 +142,6 @@ from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
     CompactContextCandidateDetector,
-    CompactGroupedShapeIssueDetector,
     CompactModuleProjectionDetectorMixin,
     CompactMultiProjectionCandidateDetector,
     CompactProjectionGroups,

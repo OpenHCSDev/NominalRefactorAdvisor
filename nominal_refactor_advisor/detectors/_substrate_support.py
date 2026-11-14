@@ -20,7 +20,6 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
-    _walk_nodes,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
@@ -28,7 +27,7 @@ from nominal_refactor_advisor.class_families.parsed_index import (
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, ClassNameAlgebra
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 
 ProjectionT = TypeVar("ProjectionT")
 

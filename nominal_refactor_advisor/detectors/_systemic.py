@@ -55,9 +55,7 @@ from nominal_refactor_advisor.registry_identity import (
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 
-from typing import cast
 from nominal_refactor_advisor.ast_tools import (
-    _walk_nodes,
     CollectedFamily,
     ParsedModule,
     statements_without_docstring,

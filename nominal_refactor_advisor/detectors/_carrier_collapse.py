@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.carrier_collapse import ClosedCarrierCollapseComponent
 from nominal_refactor_advisor.carrier_expansion import DeclaredCarrierExpansionBuilder
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily

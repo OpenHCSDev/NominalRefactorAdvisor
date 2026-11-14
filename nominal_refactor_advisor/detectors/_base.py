@@ -14,14 +14,13 @@ import inspect
 from pathlib import Path
 import re
 from abc import ABC, abstractmethod
-from collections import Counter, defaultdict
+from collections import defaultdict
 from collections.abc import Hashable, Iterator, MutableMapping
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from operator import attrgetter
 from typing import (
-    Any,
     Callable,
     ClassVar,
     Concatenate,
@@ -62,56 +61,31 @@ from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
-    build_class_family_index,
 )
 from nominal_refactor_advisor.class_method_facets import (
     CompactMethodSemanticCoordinateKind,
 )
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
-from nominal_refactor_advisor.class_syntax_facets import annotation_type_names
-from nominal_refactor_advisor.constructor_algebra import (
-    ConstructorConstant,
-    ConstructorDerivedField,
-    ConstructorVariantCatalog,
-    ConstructorVariantSpec,
-)
 from nominal_refactor_advisor.descriptor_algebra import (
     AliasProperty,
     ClassAliasProperty,
-    CollectionAttributeProjection,
     ConstantProperty,
 )
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.registration_facets import (
     CompactManualSubclassRegistrationSite,
 )
-from nominal_refactor_advisor.registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 from nominal_refactor_advisor.semantic_match import (
-    AstPredicateRule,
     Maybe,
-    NamedCallAssignment,
     NamedValueBinding,
     as_ast,
-    ast_sequence,
-    attribute_call_match,
-    attribute_name,
-    call_attribute_name,
-    collection_literal,
-    constant_value,
     loaded_nominal_descendants,
     name_id,
-    named_call_assignment,
     named_value_binding,
     single_assign_target,
     single_ast,
-    single_call_arg,
-    single_call_arg_name,
-    single_compare_match,
     single_item,
-    single_named_call_argument,
     return_call,
-    return_value,
-    single_return_call,
     single_return_value,
 )
 from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
@@ -129,37 +103,20 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleFact,
     BuiltinCallName,
     BuilderCallShape,
-    ClassFunctionStackNodeVisitor,
     CollectedFamily,
-    CollectedFamilyPresenceDemand,
-    FieldObservation,
-    DynamicMethodInjectionObservation,
     ParsedModule,
     SourceModule,
-    RegistrationShape,
-    ScopedAstObservation,
-    SentinelTypeObservation,
-    LiteralDispatchObservation,
     collect_family_items,
     structural_ast_hash,
     walk_function_body_nodes,
     _walk_nodes,
     _builder_call_shape,
 )
-from nominal_refactor_advisor.observation_families import (
-    BuilderCallShapeFamily,
-    FieldObservationFamily,
-    DynamicMethodInjectionObservationFamily,
-    RegistrationShapeFamily,
-    SentinelTypeObservationFamily,
-    NumericLiteralDispatchObservationFamily,
-)
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.positional_forwarding import PositionalForwardingCall
 from nominal_refactor_advisor.class_index import (
     ClsRegistryMembership,
     CompactClassFamilyIndex,
-    CompactIndexedClass,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
     CompactRepeatedKeyedFamilyRoot,
@@ -169,7 +126,6 @@ from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingAuthority,
     RegistryLookupShape,
     RegistryLookupStyle,
-    module_import_aliases,
     build_compact_class_family_index,
     repository_settled_projections,
 )
@@ -179,37 +135,23 @@ from nominal_refactor_advisor.collection_algebra import (
     sorted_tuple,
 )
 from nominal_refactor_advisor.models import (
-    CERTIFIED,
-    STRONG_HEURISTIC,
-    BranchCountMetrics,
-    CallSiteCountMetric,
     CertifiedFindingSpec,
     DispatchCountMetrics,
     FindingBuildContext,
     FindingBuildContextKwargs,
     FindingMetrics,
     FindingObligationClass,
-    FindingSemantics,
     FindingSpec,
-    HierarchyCandidateMetrics,
     HighConfidenceCertifiedFindingSpec,
     HighConfidenceFindingSpec,
-    ImpactDelta,
     MappingMetrics,
-    OrchestrationMetrics,
-    ParameterThreadMetrics,
-    ProbeCountMetrics,
     RefactorFinding,
-    RegistrationMetrics,
     RepeatedMethodMetrics,
     RequiredRelationDeclaration,
-    ResolutionAxisMetrics,
     SemanticFieldRole,
-    SentinelSimulationMetrics,
     SourceLineReference,
     SourceLocation,
     SourceLocationZipDescriptorShape,
-    WitnessCarrierMetrics,
 )
 from nominal_refactor_advisor.observation_graph import (
     ObservationGraph,
@@ -220,8 +162,6 @@ from nominal_refactor_advisor.observation_graph import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import (
-    HIGH_CONFIDENCE,
-    MEDIUM_CONFIDENCE,
     CapabilityTag,
     CertificationLevel,
     ConfidenceLevel,
@@ -841,30 +781,6 @@ class SourceLocalIssueDetectorMixin(ABC):
         config: DetectorConfig,
     ) -> list[RefactorFinding] | None:
         raise NotImplementedError
-
-
-class SourceSignalGatedIssueDetectorMixin(SourceLocalIssueDetectorMixin, ABC):
-    """Skip an AST detector when a cheap source observation proves absence."""
-
-    @classmethod
-    @abstractmethod
-    def source_may_contain_finding(
-        cls,
-        module: SourceModule,
-        syntax_index: NativePythonSyntaxIndex,
-        config: DetectorConfig,
-    ) -> bool:
-        raise NotImplementedError
-
-    def _findings_for_source(
-        self,
-        module: SourceModule,
-        syntax_index: NativePythonSyntaxIndex,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding] | None:
-        if type(self).source_may_contain_finding(module, syntax_index, config):
-            return None
-        return []
 
 
 class PerModuleSemanticMirrorIssueDetector(
@@ -5578,14 +5494,6 @@ def _witness_carrier_family_candidates(
 _CLASS_NAME_TOKEN_PATTERN = r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
 
 
-def _string_constant_expression(expression: str) -> str | None:
-    try:
-        node = ast.parse(expression, mode=_EVAL_PARSE_MODE).body
-    except SyntaxError:
-        return None
-    return _constant_string(node)
-
-
 def _carrier_identity(carrier: object) -> tuple[str, int, str]:
     if not isinstance(carrier, StructuralObservationCarrier):
         raise TypeError(f"Unsupported structural carrier: {type(carrier)!r}")
@@ -7155,21 +7063,6 @@ class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
     from_namespace_line: int
     argument_spec_file_path: str
     argument_spec_line: int
-
-
-@dataclass(frozen=True)
-class FunctionFamilyLineSurface(FunctionFamilyEvidenceSurface):
-    line_count: int
-
-
-@dataclass(frozen=True)
-class FunctionFamilyEvidenceCompressionSurface(FunctionFamilyEvidenceSurface):
-    compression_certificate: CompressionCertificate
-
-
-@dataclass(frozen=True)
-class FunctionFamilyCompressionSurface(FunctionFamilyLineSurface):
-    compression_certificate: CompressionCertificate
 
 
 @dataclass(frozen=True)

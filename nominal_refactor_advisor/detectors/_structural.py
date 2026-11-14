@@ -31,7 +31,6 @@ from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 from nominal_refactor_advisor.ast_tools import (
-    _walk_nodes,
     ParsedModule,
     statements_without_docstring,
 )
