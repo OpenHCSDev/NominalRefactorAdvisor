@@ -129,6 +129,19 @@ stronger than a synthesized recipe that hedged its way to silence.
   three from a parent with no registry. A family that keys another way
   overrides `__key_extractor__` only. Eleven roots restated these lines
   before 2026-11-14.
+- **Moving a declaration between modules by script** (until
+  `move_symbols_to_module` stops leaving a re-export behind, 2026-11-14).
+  Edit imports only inside the import statements the syntax tree finds:
+  a regex for an indented `Name,` line also deleted the first argument
+  of a `declare_candidate_rule_detector(` call. Import what the moved
+  code reads from where it is declared, counting `case ... as x` and
+  `except ... as x` as bindings, and add each name to the statement
+  that already imports from that module. Drop only the imports the move
+  left unused (unused after minus unused before), and never in
+  `detectors/_runtime.py`. A collector that hands each class or node to
+  a second function moves with it: that function's only caller is the
+  collector, and the candidate it builds cannot leave without it
+  (`_helpers` importing the candidate back is a cycle).
 
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
