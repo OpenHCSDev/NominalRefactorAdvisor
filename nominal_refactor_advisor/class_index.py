@@ -4826,12 +4826,10 @@ class CompactModuleClassProjectionFamily(
             for parsed_module in parsed_modules
         )
 
-    @classmethod
+    @staticmethod
     def _collect_header_core(
-        cls,
         parsed_module: ParsedModule,
     ) -> list[CompactModuleClassProjection]:
-        del cls
         return [
             CompactModuleClassProjection.declared_in(
                 parsed_module, include_body_facets=False

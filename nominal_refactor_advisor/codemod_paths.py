@@ -96,13 +96,12 @@ class SourcePathCandidateSet:
 
     paths: tuple[str, ...]
 
-    @classmethod
+    @staticmethod
+    @lru_cache(maxsize=128)
     def from_paths(
-        cls,
         candidate_paths: tuple[str, ...],
     ) -> SourcePathCandidateSet:
-        del cls
-        return _source_path_candidate_set(candidate_paths)
+        return SourcePathCandidateSet(tuple(sorted(set(candidate_paths))))
 
     @cached_property
     def normalized_rows(self) -> tuple[tuple[str, str], ...]:
@@ -116,13 +115,6 @@ class SourcePathCandidateSet:
             (candidate, resolved_source_path_text(candidate))
             for candidate in self.paths
         )
-
-
-@lru_cache(maxsize=128)
-def _source_path_candidate_set(
-    candidate_paths: tuple[str, ...],
-) -> SourcePathCandidateSet:
-    return SourcePathCandidateSet(tuple(sorted(set(candidate_paths))))
 
 
 @dataclass(frozen=True)

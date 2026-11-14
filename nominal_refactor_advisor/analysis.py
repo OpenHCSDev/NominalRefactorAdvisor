@@ -746,7 +746,7 @@ class CompactGlobalProjectionAccumulator:
         """Retain validated facts loaded either from source or persistent cache."""
 
         for projection in projections:
-            if self._retains_ast(projection):
+            if self.retains_python_ast(projection):
                 detector_names = ", ".join(
                     detector_type.__name__
                     for detector_type in self.detector_types_by_family[family]
@@ -778,15 +778,6 @@ class CompactGlobalProjectionAccumulator:
         return sum(
             len(projections) for projections in self._projections_by_family.values()
         )
-
-    @classmethod
-    def _retains_ast(
-        cls,
-        value: object,
-        seen_ids: set[int] | None = None,
-    ) -> bool:
-        del cls
-        return CompactGlobalProjectionAccumulator.retains_python_ast(value, seen_ids)
 
     @staticmethod
     def retains_python_ast(
@@ -1078,7 +1069,7 @@ class CompactFamilyProjectionBatch(CompactFamilyProjectionReceipt):
 
     def __post_init__(self) -> None:
         if any(
-            CompactGlobalProjectionAccumulator._retains_ast(item) for item in self.items
+            CompactGlobalProjectionAccumulator.retains_python_ast(item) for item in self.items
         ):
             raise TypeError(f"{self.family.__name__} projection retains an AST")
 
@@ -1665,7 +1656,7 @@ class BoundedCompactProjectionManifest:
         module = source.parsed_module()
         repaired = tuple(collect_family_items(module, family))
         for projection in repaired:
-            if CompactGlobalProjectionAccumulator._retains_ast(projection):
+            if CompactGlobalProjectionAccumulator.retains_python_ast(projection):
                 raise TypeError(f"{family.__name__} repaired projection retains an AST")
         del module
         return repaired

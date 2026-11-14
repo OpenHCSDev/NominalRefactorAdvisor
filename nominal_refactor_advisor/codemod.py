@@ -421,9 +421,6 @@ from nominal_refactor_advisor.codemod_paths import (
 from nominal_refactor_advisor.codemod_paths import (
     SourcePathResolutionAuthority as SourcePathResolutionAuthority,
 )
-from nominal_refactor_advisor.codemod_paths import (
-    _source_path_candidate_set as _source_path_candidate_set,
-)
 from nominal_refactor_advisor.codemod_payload import (
     CasePayloadValueCodec,
     PayloadRecordArrayValueCodec,

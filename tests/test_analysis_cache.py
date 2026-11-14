@@ -2299,14 +2299,14 @@ def test_warm_bounded_projection_load_skips_revalidating_ast_free_cache(
         detector_types=detector_types,
     )
 
-    def unexpected_revalidation(cls, value, seen_ids=None):
-        del cls, value, seen_ids
+    def unexpected_revalidation(value, seen_ids=None):
+        del value, seen_ids
         raise AssertionError("store-validated compact cache was recursively rescanned")
 
     monkeypatch.setattr(
         analysis_module.CompactGlobalProjectionAccumulator,
-        "_retains_ast",
-        classmethod(unexpected_revalidation),
+        "retains_python_ast",
+        staticmethod(unexpected_revalidation),
     )
     second = analyze_compact_roots_with_cache(
         (package_root,),
