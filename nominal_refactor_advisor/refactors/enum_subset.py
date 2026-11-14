@@ -22,13 +22,12 @@ from nominal_refactor_advisor.refactors.carrier_fields import (
     ClassDeclarationPromotionClass,
 )
 from nominal_refactor_advisor.refactors.authority_extraction import (
+    DerivedAuthorityProjectionRecipeBuilder,
     SourceDerivedAuthorityProjectionOperation,
 )
-from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_declaration_source import ClassBodySourceAuthority
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
-    RefactorRecipe,
 )
 from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
@@ -349,10 +348,21 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
 
 @dataclass(frozen=True, kw_only=True)
 class EnumSubsetSemanticMirrorRecipeBuilder(
+    DerivedAuthorityProjectionRecipeBuilder,
     MappingSemanticMirrorRecipeBuilder,
     DerivedProjectionConcept,
 ):
     """Build a source-derived enum subset recipe."""
+
+    derive_operation = DeriveEnumSubsetOperation
+    authority_kind = SemanticAuthorityKind.ENUM
+    recipe_id_suffix = "derive-enum-subset-mapping"
+    recipe_reason = "Move enum subset projection behind the enum authority."
+    unresolved_reason = (
+        "semantic mirror finding does not resolve one enum authority and "
+        "one projection module"
+    )
+    derivable_reason = "enum subset projection has an executable authority recipe"
 
     finding: RefactorFinding
 
@@ -366,60 +376,5 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
             return None
         return targets
 
-    @cached_property
-    def candidate_operation(self) -> DeriveEnumSubsetOperation | None:
-        if self.targets is None:
-            return None
-        return DeriveEnumSubsetOperation(
-            target=SourceRewriteTarget(
-                target_id=self.targets.authority.target.target_id
-            ),
-            projection_target=SourceRewriteTarget(
-                target_id=self.targets.projection_module.target_id
-            ),
-        )
-
     def is_applicable(self) -> bool:
         return self.candidate_operation is not None
-
-    @cached_property
-    def proven_operation(self) -> DeriveEnumSubsetOperation | None:
-        operation = self.candidate_operation
-        if operation is None:
-            return None
-        try:
-            operation.required_derivation(self)
-        except ValueError:
-            return None
-        return operation
-
-    def recipe(self) -> RefactorRecipe | None:
-        operation = self.proven_operation
-        if operation is None or self.targets is None:
-            return None
-        return (
-            RefactorRecipe(
-                recipe_id=f"{self.finding.stable_id}-derive-enum-subset-mapping",
-                reason="Move enum subset projection behind the enum authority.",
-            )
-            .with_authority_claim(
-                AstTargetAuthorityClaim.from_target(
-                    self.targets.authority.target,
-                    authority_kind=SemanticAuthorityKind.ENUM,
-                )
-            )
-            .with_operation(operation)
-        )
-
-    def rejection_reason(self) -> str:
-        operation = self.candidate_operation
-        if operation is None:
-            return (
-                "semantic mirror finding does not resolve one enum authority and "
-                "one projection module"
-            )
-        try:
-            operation.required_derivation(self)
-        except ValueError as error:
-            return str(error)
-        return "enum subset projection has an executable authority recipe"

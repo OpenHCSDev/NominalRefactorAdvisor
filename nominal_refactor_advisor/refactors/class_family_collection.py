@@ -22,12 +22,11 @@ from nominal_refactor_advisor.refactors.semantic_mirror import (
 )
 from nominal_refactor_advisor.refactors.class_base import ClassAuthorityReferenceProof
 from nominal_refactor_advisor.refactors.authority_extraction import (
+    DerivedAuthorityProjectionRecipeBuilder,
     SourceDerivedAuthorityProjectionOperation,
 )
-from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
-    RefactorRecipe,
 )
 from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
@@ -508,66 +507,22 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
 
 @dataclass(frozen=True, kw_only=True)
 class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
+    DerivedAuthorityProjectionRecipeBuilder,
     RegistrationSemanticMirrorRecipeBuilder,
     ClassFamilyAuthorityConcept,
 ):
     """Build a source-derived class-family projection recipe."""
 
+    derive_operation = DeriveClassFamilyCollectionOperation
+    authority_kind = SemanticAuthorityKind.CLASS_FAMILY
+    recipe_id_suffix = "derive-class-family-collection"
+    recipe_reason = "Derive subclass collection from the class-family authority."
+    unresolved_reason = (
+        "semantic mirror finding does not resolve one class authority and "
+        "one projection module"
+    )
+    derivable_reason = "class-family collection derivation is available"
+
     @cached_property
     def targets(self) -> SemanticMirrorOperationTargets | None:
         return SemanticMirrorOperationTargets.from_finding(self, self.finding)
-
-    @cached_property
-    def candidate_operation(self) -> DeriveClassFamilyCollectionOperation | None:
-        if self.targets is None:
-            return None
-        return DeriveClassFamilyCollectionOperation(
-            target=SourceRewriteTarget(
-                target_id=self.targets.authority.target.target_id
-            ),
-            projection_target=SourceRewriteTarget(
-                target_id=self.targets.projection_module.target_id
-            ),
-        )
-
-    @cached_property
-    def proven_operation(self) -> DeriveClassFamilyCollectionOperation | None:
-        operation = self.candidate_operation
-        if operation is None:
-            return None
-        try:
-            operation.required_derivation(self)
-        except ValueError:
-            return None
-        return operation
-
-    def recipe(self) -> RefactorRecipe | None:
-        operation = self.proven_operation
-        if operation is None or self.targets is None:
-            return None
-        return (
-            RefactorRecipe(
-                recipe_id=(f"{self.finding.stable_id}-derive-class-family-collection"),
-                reason="Derive subclass collection from the class-family authority.",
-            )
-            .with_authority_claim(
-                AstTargetAuthorityClaim.from_target(
-                    self.targets.authority.target,
-                    authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
-                )
-            )
-            .with_operation(operation)
-        )
-
-    def rejection_reason(self) -> str:
-        operation = self.candidate_operation
-        if operation is None:
-            return (
-                "semantic mirror finding does not resolve one class authority and "
-                "one projection module"
-            )
-        try:
-            operation.required_derivation(self)
-        except ValueError as error:
-            return str(error)
-        return "class-family collection derivation is available"

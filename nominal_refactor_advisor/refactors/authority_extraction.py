@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import ast
-from abc import ABC
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from functools import cached_property
+from typing import ClassVar
 
 from nominal_refactor_advisor.codemod import RecipeCallReplacement
+from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_imports import ModuleImportInsertionPoint
 from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordArrayValueCodec,
@@ -18,7 +20,10 @@ from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
     SourceReprovedOperation,
 )
-from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.codemod_runtime import (
+    CodemodSourceSnapshot,
+    RefactorRecipe,
+)
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_source_edits import (
@@ -28,6 +33,10 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTargetEditor,
 )
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.refactors.semantic_mirror import (
+    SemanticMirrorOperationTargets,
+    SemanticMirrorRecipeBuilder,
+)
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
@@ -44,6 +53,12 @@ class SourceDerivedAuthorityProjectionOperation(
     projection_target: SourceRewriteTarget = codemod_payload_field(
         PayloadRecordValueCodec(SourceRewriteTarget)
     )
+
+    @abstractmethod
+    def required_derivation(self, context: CodemodSelectorContext) -> object:
+        """The derivation these edits replay; raises ValueError when it does not hold."""
+
+        raise NotImplementedError
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -180,3 +195,76 @@ class DeclareAuthorityOperation(AuthoritySourceOperation):
                 or (f"Declare authority {authority_claim.claimed_symbol!r}."),
             ),
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class DerivedAuthorityProjectionRecipeBuilder(SemanticMirrorRecipeBuilder, ABC):
+    """A builder whose recipe is one operation deriving a projection from its authority.
+
+    The member says which targets it admits and names the operation, the authority's
+    kind and its sentences.
+    """
+
+    derive_operation: ClassVar[type[SourceDerivedAuthorityProjectionOperation]]
+    authority_kind: ClassVar[SemanticAuthorityKind]
+    recipe_id_suffix: ClassVar[str]
+    recipe_reason: ClassVar[str]
+    unresolved_reason: ClassVar[str]
+    derivable_reason: ClassVar[str]
+
+    @property
+    @abstractmethod
+    def targets(self) -> SemanticMirrorOperationTargets | None:
+        raise NotImplementedError
+
+    @cached_property
+    def candidate_operation(self) -> SourceDerivedAuthorityProjectionOperation | None:
+        if self.targets is None:
+            return None
+        return type(self).derive_operation(
+            target=SourceRewriteTarget(
+                target_id=self.targets.authority.target.target_id
+            ),
+            projection_target=SourceRewriteTarget(
+                target_id=self.targets.projection_module.target_id
+            ),
+        )
+
+    @cached_property
+    def proven_operation(self) -> SourceDerivedAuthorityProjectionOperation | None:
+        operation = self.candidate_operation
+        if operation is None:
+            return None
+        try:
+            operation.required_derivation(self)
+        except ValueError:
+            return None
+        return operation
+
+    def recipe(self) -> RefactorRecipe | None:
+        operation = self.proven_operation
+        if operation is None or self.targets is None:
+            return None
+        return (
+            RefactorRecipe(
+                recipe_id=f"{self.finding.stable_id}-{type(self).recipe_id_suffix}",
+                reason=type(self).recipe_reason,
+            )
+            .with_authority_claim(
+                AstTargetAuthorityClaim.from_target(
+                    self.targets.authority.target,
+                    authority_kind=type(self).authority_kind,
+                )
+            )
+            .with_operation(operation)
+        )
+
+    def rejection_reason(self) -> str:
+        operation = self.candidate_operation
+        if operation is None:
+            return type(self).unresolved_reason
+        try:
+            operation.required_derivation(self)
+        except ValueError as error:
+            return str(error)
+        return type(self).derivable_reason
