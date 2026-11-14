@@ -376,33 +376,35 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
 
 
 @dataclass(frozen=True)
-class ModuleExpressionShape:
-    """One maximal expression computed only from imported-module attributes."""
+class SymbolSite:
+    """A place in a module's source, named by the def or class that holds it."""
 
     file_path: str
     lineno: int
     symbol: str
+
+    @property
+    def location(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.lineno, self.symbol)
+
+@dataclass(frozen=True)
+class ModuleExpressionShape(SymbolSite):
+    """One maximal expression computed only from imported-module attributes."""
+
     expression_key: str
     expression_text: str
 
 
 @dataclass(frozen=True)
-class RestatingSite:
+class RestatingSite(SymbolSite):
     """One place that writes a fact again.
 
     `group` names what one finding covers inside `symbol` (the dispatch subject,
     the receiver of a probe, the declared name); `detail` is what the site says.
     """
 
-    file_path: str
-    lineno: int
-    symbol: str
     group: str
     detail: tuple[str, ...]
-
-    @property
-    def location(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.symbol)
 
 
 @dataclass(frozen=True)
@@ -524,12 +526,9 @@ class TypeTestModule:
 
 
 @dataclass(frozen=True)
-class ForeignFamilySiteShape:
+class ForeignFamilySiteShape(SymbolSite):
     """One site whose tested classes are exactly one declared family's members."""
 
-    file_path: str
-    lineno: int
-    symbol: str
     family: str
 
 

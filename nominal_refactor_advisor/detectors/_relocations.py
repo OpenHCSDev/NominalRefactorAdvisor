@@ -72,7 +72,7 @@ class ReachingUses(Generic[UseT]):
         """Where the first counted uses stand: the finding's consumer evidence."""
 
         return tuple(
-            SourceLocation(use.file_path, use.lineno, use.symbol)
+            use.location
             for use in self.counted[:EVIDENCED_CONSUMERS]
         )
 

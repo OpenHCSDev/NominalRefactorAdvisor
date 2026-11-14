@@ -3159,7 +3159,7 @@ class ForeignFamilySiteDetector(
                     family=family,
                 ),
                 tuple(
-                    SourceLocation(site.file_path, site.lineno, site.symbol)
+                    site.location
                     for site in sorted(
                         sites, key=lambda site: (site.file_path, site.lineno)
                     )

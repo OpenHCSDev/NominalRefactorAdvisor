@@ -42,7 +42,7 @@ from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
 )
-from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.observation_shapes import RestatingSite, SymbolSite
 
 def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
     """A statement's nodes in source order, stopping at each def, lambda and class it nests."""
@@ -407,7 +407,7 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
 
 
 @dataclass(frozen=True)
-class MemberUse:
+class MemberUse(SymbolSite):
     """`x.member` used by a consumer: where, and what `x` is declared to be.
 
     `receiver` is `x` as its module declares it (`DeclaredPathProbeOwner`):
@@ -417,9 +417,6 @@ class MemberUse:
     (`ProbeOwner.resolved`); anything else says why it stays unresolved.
     """
 
-    file_path: str
-    lineno: int
-    symbol: str
     member: str
     receiver: ProbeOwner
 

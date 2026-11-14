@@ -432,3 +432,16 @@ is one declaration: `FalseDistinctionSiteFamily` (`distinction = ...`),
   looks at one method in one module.
 - Legacy-path erasure does not count a class or function referenced by
   bare name without a call.
+- `ClassOverlapVerdicts.existing_owner` (`class_overlap.py`) takes any
+  class with subclasses whose declarations *include* the block as its
+  owner, even when it declares more. For three records sharing
+  `file_path, lineno, symbol` it named one sibling the owner and told
+  the others to compose it, extra fields and all, so `create_mixin` was
+  never on offer ("no extract-mixin NewMixinOwner"). Composing an owner
+  that declares more than the block supplies members the composer does
+  not have, which is unsound ancestry (paper1 §4: ancestry may supply
+  only required pairs). Until that is fixed, author the mixin in two
+  stages: `insert_before_target` a class holding exactly the shared
+  fields, then `compose_existing_class` each record onto it; add methods
+  to the parent in a later stage. A parent with one extra member is no
+  longer contained in the records, and the compose verdict disappears.

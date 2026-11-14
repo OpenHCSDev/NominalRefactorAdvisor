@@ -190,7 +190,7 @@ class RepeatedModuleExpressionLeadDetector(
             f"{len(modules)} module(s); whether one declaration should own this "
             "value, and what each site means by it, remains OPEN.",
             tuple(
-                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+                shape.location
                 for shape in sites
             ),
         )
@@ -280,7 +280,7 @@ class ForeignTypeSwitchDetector(
         return self.build_finding(
             "\n".join(lines),
             tuple(
-                SourceLocation(shape.file_path, shape.lineno, shape.symbol)
+                shape.location
                 for shape in sites
             ),
         )
