@@ -23,9 +23,6 @@ from nominal_refactor_advisor.ast_tools import (
     SharedRegistryRootBase,
     is_docstring_statement,
 )
-from nominal_refactor_advisor.codemod_declaration_source import (
-    NamedDeclarationSourceAuthority,
-)
 from nominal_refactor_advisor.codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
 )
@@ -722,8 +719,8 @@ class SourceTopLevelDeclaration(
         raise NotImplementedError
 
     @abstractmethod
-    def name_span(self, source: str) -> SourceTextSpan:
-        """Return the exact source span that declares this binding name."""
+    def name_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
+        """Return the exact span that declares this binding name in its module's source."""
 
         raise NotImplementedError
 
@@ -784,8 +781,8 @@ class NamedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     def name(self) -> str:
         return self.node.name
 
-    def name_span(self, source: str) -> SourceTextSpan:
-        return NamedDeclarationSourceAuthority(self.node, source).name_span
+    def name_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
+        return geometry.declaration_name_span(self.node)
 
     @property
     def destination_boundary(self) -> SourceInsertionBoundary:
@@ -807,9 +804,9 @@ class NameBindingSourceTopLevelDeclaration(SourceTopLevelDeclaration, ABC):
     def name(self) -> str:
         return self.name_node.id
 
-    def name_span(self, source: str) -> SourceTextSpan:
+    def name_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         return SourceTextSpan.from_offsets(
-            SourceTextGeometry(source).required_node_offsets(self.name_node)
+            geometry.required_node_offsets(self.name_node)
         )
 
     @property

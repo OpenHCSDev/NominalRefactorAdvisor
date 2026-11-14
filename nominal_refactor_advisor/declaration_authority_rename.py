@@ -621,6 +621,7 @@ class DeclarationAuthorityModuleRenameProof:
             if self.declaration is None
             else (
                 self._declaration_replacement(
+                    geometry,
                     self.declaration,
                     new_name,
                 ),
@@ -668,10 +669,11 @@ class DeclarationAuthorityModuleRenameProof:
 
     def _declaration_replacement(
         self,
+        geometry: SourceTextGeometry,
         declaration: SourceTopLevelDeclaration,
         new_name: str,
     ) -> SourceTextSpanReplacement:
-        span = declaration.name_span(self.module.source)
+        span = declaration.name_span(geometry)
         return self._name_replacement(
             (span.start_offset, span.end_offset),
             new_name,

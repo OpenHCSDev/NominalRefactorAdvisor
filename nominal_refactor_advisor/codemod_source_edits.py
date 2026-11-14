@@ -1888,6 +1888,35 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         end = bisect_left(self.token_start_offsets, span.end_offset)
         return self.tokens[start:end]
 
+    def declaration_name_span(
+        self, node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+    ) -> SourceTextSpan:
+        """The identifier token that declares a class or function: the name right
+        after its `class` or `def` keyword."""
+
+        tokens = self.tokens
+        last_line = node.end_lineno or node.lineno
+        index = bisect_left(tokens, (node.lineno, 0), key=attrgetter("start"))
+        while index < len(tokens) and tokens[index].start[0] <= last_line:
+            keyword = tokens[index]
+            index += 1
+            if keyword.type == tokenize.NAME and keyword.string in {"class", "def"}:
+                break
+        else:
+            raise ValueError(f"Cannot resolve declaration name token for {node.name!r}")
+        name_token = tokens[index] if index < len(tokens) else None
+        if (
+            name_token is None
+            or name_token.start[0] > last_line
+            or name_token.type != tokenize.NAME
+            or name_token.string != node.name
+        ):
+            raise ValueError(f"Cannot resolve declaration name token for {node.name!r}")
+        return SourceTextSpan(
+            start_offset=self.token_position_offset(name_token.start),
+            end_offset=self.token_position_offset(name_token.end),
+        )
+
     def span_contains_comment(self, span: SourceTextSpan) -> bool:
         return any(
             token.type == tokenize.COMMENT for token in self.tokens_in_span(span)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import copy
-import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable
@@ -210,35 +209,7 @@ class NamedDeclarationSourceAuthority:
     def name_span(self) -> SourceTextSpan:
         """Return the exact identifier token that declares this source name."""
 
-        geometry = self.geometry
-        declaration_tokens = iter(
-            token
-            for token in geometry.tokens
-            if token.start[0] >= self.node.lineno
-            and token.start[0] <= (self.node.end_lineno or self.node.lineno)
-        )
-        declaration_keyword = next(
-            (
-                token
-                for token in declaration_tokens
-                if token.type == tokenize.NAME and token.string in {"class", "def"}
-            ),
-            None,
-        )
-        name_token = next(declaration_tokens, None)
-        if (
-            declaration_keyword is None
-            or name_token is None
-            or name_token.type != tokenize.NAME
-            or name_token.string != self.node.name
-        ):
-            raise ValueError(
-                f"Cannot resolve declaration name token for {self.node.name!r}"
-            )
-        return SourceTextSpan(
-            start_offset=geometry.token_position_offset(name_token.start),
-            end_offset=geometry.token_position_offset(name_token.end),
-        )
+        return self.geometry.declaration_name_span(self.node)
 
 
 @dataclass(frozen=True)
