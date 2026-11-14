@@ -11,10 +11,7 @@ from collections.abc import Sequence
 
 from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape
 from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
-from nominal_refactor_advisor.class_index import (
-    CompactModuleClassProjection,
-    CompactModuleClassProjectionFamily,
-)
+from nominal_refactor_advisor.class_index import CompactModuleClassProjection
 from nominal_refactor_advisor.refactors.finding_recipes import (
     ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer,
     ExactMethodRoleFindingRecipeSynthesizer,
@@ -48,14 +45,12 @@ from nominal_refactor_advisor.semantic_match import as_ast, ast_sequence, name_i
 from nominal_refactor_advisor.detectors._base import (
     ClassLineNumbersGroup,
     CompactClassRepositoryContext,
+    CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector,
     ConcreteTypeUnionContractCandidate,
     ConfiguredModuleCollectorCandidateDetector,
-    declare_candidate_rule_detector,
     DetectorConfig,
     DynamicSelfFieldSelectionCandidate,
-    high_confidence_certified_spec,
-    high_confidence_spec,
     ModuleCollectorCandidateDetector,
     OverlappingInheritanceFamiliesCandidate,
     PropertyAliasHookGroup,
@@ -65,6 +60,9 @@ from nominal_refactor_advisor.detectors._base import (
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
     StringBackedReflectiveNominalLookupCandidate,
+    declare_candidate_rule_detector,
+    high_confidence_certified_spec,
+    high_confidence_spec,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _concrete_type_union_contract_candidates,
@@ -148,6 +146,7 @@ MethodFamilyCandidateT = TypeVar("MethodFamilyCandidateT")
 
 
 class _CompactMethodFamilyDetectorBase(
+    CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector[
         CompactModuleClassProjection,
         CompactMethodFamilyContext,
@@ -155,11 +154,6 @@ class _CompactMethodFamilyDetectorBase(
     ],
     Generic[MethodFamilyCandidateT],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
-
     @classmethod
     def _compact_context_from_projections(
         cls,

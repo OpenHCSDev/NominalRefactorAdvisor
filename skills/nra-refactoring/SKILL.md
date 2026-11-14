@@ -103,6 +103,13 @@ stronger than a synthesized recipe that hedged its way to silence.
   every changed class for positional construction and convert to kwargs.
   Script: `ast.walk` for `ast.Call` with `node.args` and func name in
   the changed set.
+- **A mixin that must come first in the MRO goes in with `patch_target`.**
+  `add_class_base` appends. A mixin whose own parent is already further
+  down the class's MRO (it specialises a mixin the class inherits) has to
+  be listed before the bases that bring that parent in, or Python raises
+  an MRO conflict. Patch the class header's first lines instead, and give
+  a class whose body the deletion would empty a docstring in the same
+  plan. `ensure_import` re-sorts the whole import block it touches.
 - **`patch_target` replacement `""` (empty) removes the line.** But it
   leaves a blank line. The codemod pipeline handles this — parse
   validation still passes.

@@ -85,25 +85,8 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
-    _attribute_family_subject_expression,
-    _compact_keyed_family_axis_specs_from_index,
-    _cross_module_axis_shadow_family_candidates_from_specs,
-    _derived_wrapper_spec_shadow_candidates,
-    _keyed_record_infrastructure_candidates,
-    _KeyedFamilyAxisSpec,
-    _manual_fiber_tag_candidates,
-    _manual_structural_record_mechanics_group_candidates,
-    _module_union_type_aliases,
-    _parallel_keyed_axis_family_candidates_from_specs,
-    _parallel_keyed_table_and_family_candidates_from_specs,
-    _registry_maturity_missing_signals,
     _REGISTRY_PROJECTION_SURFACE_ANALYZER,
-    _residual_closed_axis_branching_candidates_from_compact_specs,
-    _residual_closed_axis_indirection_candidates,
-    _self_cast_alias_names,
-    _structural_confusability_candidates,
-    _top_level_attribute_aliases,
-    _witness_carrier_family_candidates,
+    SYNTAX_PROJECTION_AUTHORITY,
     CandidateCollectorBoilerplateCandidate,
     ClassLineWitnessCandidate,
     ClassMethodLineWitnessCandidate,
@@ -111,21 +94,18 @@ from nominal_refactor_advisor.detectors._base import (
     CompactClassIndexMultiProjectionDetector,
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
-    CompactModuleProjectionDetectorMixin,
+    CompactClassRepositoryProjectionMixin,
+    CompactMultiProjectionCandidateDetector,
     CompactProjectionCandidateDetector,
     CompactProjectionGroups,
-    CompactMultiProjectionCandidateDetector,
     ConfiguredModuleCollectorCandidateDetector,
     CrossModuleAxisShadowFamilyCandidate,
     DeclarativeDetectorClassCandidate,
-    declare_candidate_rule_detector,
     DerivedWrapperSpecShadowCandidate,
     DetectorConfig,
     DirectBuildFindingRendererCandidate,
     EnumMetadataTableCandidate,
     FindingSpecConstructionCandidate,
-    high_confidence_certified_spec,
-    high_confidence_spec,
     InjectiveTypeRegistryCandidate,
     IssueDetector,
     ManualFiberTagCandidate,
@@ -147,10 +127,30 @@ from nominal_refactor_advisor.detectors._base import (
     SourceModuleCollectorCandidateDetector,
     StaticTypedObservationDetectorCandidate,
     StructuralConfusabilityCandidate,
-    SYNTAX_PROJECTION_AUTHORITY,
     TupleIndexSemanticOpacityCandidate,
     TypedCandidateCastBoilerplateCandidate,
     WitnessCarrierFamilyCandidate,
+    _attribute_family_subject_expression,
+    _compact_keyed_family_axis_specs_from_index,
+    _cross_module_axis_shadow_family_candidates_from_specs,
+    _derived_wrapper_spec_shadow_candidates,
+    _keyed_record_infrastructure_candidates,
+    _KeyedFamilyAxisSpec,
+    _manual_fiber_tag_candidates,
+    _manual_structural_record_mechanics_group_candidates,
+    _module_union_type_aliases,
+    _parallel_keyed_axis_family_candidates_from_specs,
+    _parallel_keyed_table_and_family_candidates_from_specs,
+    _registry_maturity_missing_signals,
+    _residual_closed_axis_branching_candidates_from_compact_specs,
+    _residual_closed_axis_indirection_candidates,
+    _self_cast_alias_names,
+    _structural_confusability_candidates,
+    _top_level_attribute_aliases,
+    _witness_carrier_family_candidates,
+    declare_candidate_rule_detector,
+    high_confidence_certified_spec,
+    high_confidence_spec,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
@@ -1753,14 +1753,10 @@ class ParallelKeyedTableAndFamilyDetector(
 
 
 class InheritedAutoRegisterConfigBoilerplateDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CompactClassRepositoryProjectionMixin,
     IssueDetector,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
     detector_id = "inherited_autoregister_config_boilerplate"
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -1843,14 +1839,10 @@ _EXPLICIT_CLASS_ORDER_AXIS_NAMES = ("priority", "precedence", "rank", "order")
 
 
 class AutoRegisterExplicitPriorityOrderingDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CompactClassRepositoryProjectionMixin,
     IssueDetector,
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
     detector_id = "autoregister_explicit_priority_ordering"
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
@@ -1997,13 +1989,9 @@ def _class_order_axis_label(axis_names: tuple[str, ...]) -> str:
 
 
 class NominalInstanceExplicitOrderingDetector(
-    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection],
+    CompactClassRepositoryProjectionMixin,
     IssueDetector,
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Nominal declaration catalog uses explicit ordering instead of MRO",
@@ -2694,6 +2682,7 @@ CompactKeyedRegistryCandidateT = TypeVar("CompactKeyedRegistryCandidateT")
 
 
 class _CompactKeyedRegistryCandidateDetectorBase(
+    CompactClassRepositoryProjectionMixin,
     CompactProjectionCandidateDetector[
         CompactModuleClassProjection,
         CompactKeyedRegistryCandidateT,
@@ -2701,10 +2690,7 @@ class _CompactKeyedRegistryCandidateDetectorBase(
     Generic[CompactKeyedRegistryCandidateT],
     ABC,
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
+    """Candidate detectors over the keyed registries the class repository indexes."""
 
 
 class _CompactNonInjectiveTypeRegistryDetectorBase(

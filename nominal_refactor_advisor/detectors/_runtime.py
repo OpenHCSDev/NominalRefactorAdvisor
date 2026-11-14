@@ -135,31 +135,32 @@ from nominal_refactor_advisor.observation_shapes import (
     RegistrationShape,
 )
 from nominal_refactor_advisor.detectors._base import (
-    ModuleBuilderCallShapes,
-    _module_builder_call_shapes,
     CANDIDATE_COLLECTION_AUTHORITY,
-    certified_spec,
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
+    CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector,
     CompactModuleProjectionDetectorMixin,
     CompactMultiProjectionCandidateDetector,
+    CompactProjectionCandidateDetector,
     CompactProjectionGroups,
     ConcreteConfigFieldProbeCandidate,
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
-    finding_spec_template,
-    CompactProjectionCandidateDetector,
-    SortedCandidateItemsMixin,
-    high_confidence_spec,
     IssueDetector,
     LatentImplementationRosterCandidate,
     ManualConcreteSubclassRosterCandidate,
+    ModuleBuilderCallShapes,
     ModuleCollectorCandidateDetector,
     PerModuleIssueDetector,
     PredicateSelectedConcreteFamilyCandidate,
     SemanticMirrorIssueDetector,
+    SortedCandidateItemsMixin,
     SsotAuthorityBoundaryDetector,
+    _module_builder_call_shapes,
+    certified_spec,
+    finding_spec_template,
+    high_confidence_spec,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _concrete_config_field_probe_candidates,
@@ -1836,6 +1837,7 @@ CompactConcreteFamilyCandidateT = TypeVar("CompactConcreteFamilyCandidateT")
 
 
 class _CompactConcreteFamilyDetectorBase(
+    CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector[
         CompactModuleClassProjection,
         _CompactConcreteFamilyContext,
@@ -1843,11 +1845,6 @@ class _CompactConcreteFamilyDetectorBase(
     ],
     Generic[CompactConcreteFamilyCandidateT],
 ):
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
-
     @classmethod
     def _compact_context_from_projections(
         cls,

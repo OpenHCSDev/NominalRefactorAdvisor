@@ -2090,7 +2090,20 @@ class CompactContextCandidateDetector(
         raise NotImplementedError
 
 
+class CompactClassRepositoryProjectionMixin(
+    CompactModuleProjectionDetectorMixin[CompactModuleClassProjection]
+):
+    """A detector that reads the class projections and shares the class repository
+    built from them."""
+
+    module_projection_family = CompactModuleClassProjectionFamily
+    compact_shared_context_builder = staticmethod(
+        CompactClassRepositoryContext.from_projections
+    )
+
+
 class CompactClassRepositoryCandidateDetector(
+    CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector[
         CompactModuleClassProjection,
         CompactClassRepositoryContext,
@@ -2100,11 +2113,6 @@ class CompactClassRepositoryCandidateDetector(
     ABC,
 ):
     """Candidate detector sharing the canonical compact class repository."""
-
-    module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
-        CompactClassRepositoryContext.from_projections
-    )
 
     @classmethod
     def _compact_context_from_projections(
