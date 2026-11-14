@@ -510,7 +510,6 @@ class FormalBoundaryPythonStringConstantFamily(
 ):
     """Persist compact Python-side formal-boundary constant facts."""
 
-    item_type = FormalBoundaryPythonStringConstant
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(
         FormalBoundaryStringRegistryAuthority.source_constants
@@ -1042,7 +1041,6 @@ class GeneratedBoundarySemanticConstantSiteFamily(
 ):
     """Persist compact module facts used by the generated-boundary detector."""
 
-    item_type = GeneratedBoundarySemanticConstantSite
     report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(
         GeneratedBoundarySemanticConstantAuthority.source_sites
@@ -1465,7 +1463,6 @@ def _collect_repeated_builder_call_source_demand(
 class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]):
     """Persist normalized builder calls for repository-wide grouping."""
 
-    item_type = BuilderCallShape
     cache_payload_max_bytes = 3_000_000
     source_collector = staticmethod(_native_repeated_builder_call_shapes)
     source_demand_collector = staticmethod(_collect_repeated_builder_call_source_demand)

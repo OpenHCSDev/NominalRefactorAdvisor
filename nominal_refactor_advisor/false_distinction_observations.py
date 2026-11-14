@@ -285,7 +285,6 @@ class FalseDistinctionSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
     """One kind of false distinction, a site for each one in the module's scopes."""
 
     _registry_skip = True
-    item_type = RestatingSiteModule
     distinction: ClassVar[type[FalseDistinction]]
 
     @classmethod
@@ -957,7 +956,6 @@ class SpelledClassSiteFamily(
     """
 
     _registry_skip = True
-    item_type = SpelledClassSiteModule
     shape: ClassVar[type[TopLevelClassShape]]
 
     @classmethod

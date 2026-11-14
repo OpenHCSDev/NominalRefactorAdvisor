@@ -4582,7 +4582,6 @@ def field_declaration_settled_projections(
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
     """Persist class/import facts needed by the global inheritance graph."""
 
-    item_type = CompactModuleClassProjection
     cache_payload_max_bytes = 3_000_000
     source_demand_collector = staticmethod(
         _collect_demanded_class_projection_from_source

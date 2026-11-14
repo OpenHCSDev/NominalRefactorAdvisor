@@ -4913,7 +4913,6 @@ class CompactProductFlowModuleProjectionFamily(
 ):
     """Persist product-flow proof facts without retaining repository ASTs."""
 
-    item_type = CompactProductFlowModuleProjection
     cache_payload_max_bytes = 5_000_000
 
     @classmethod

@@ -249,7 +249,6 @@ class ModuleDeclarations:
 
 
 class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
-    item_type = ModuleDeclarations
 
     SUBCLASS_HOOK = "__init_subclass__"
 
@@ -2239,7 +2238,6 @@ class IdentityPositions:
 class IdentitySpellingFamily(RestatingSiteFamily[RestatingSiteModule]):
     """Literals in positions where a string can stand for a declared identity."""
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

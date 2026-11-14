@@ -1447,7 +1447,6 @@ def _native_environment_module_projection(
 class _EnvironmentBooleanModuleProjectionFamily(
     CollectedFamily[_EnvironmentBooleanModuleProjection]
 ):
-    item_type = _EnvironmentBooleanModuleProjection
     report_presence_predicate = staticmethod(
         lambda items, config: any(
             item.parser_sites or item.authorities or item.wrapper_facts

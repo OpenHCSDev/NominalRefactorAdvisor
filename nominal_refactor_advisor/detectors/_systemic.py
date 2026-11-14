@@ -381,7 +381,6 @@ def _compact_implicit_self_mixin_facts(
 class CompactRemainingSystemicModuleProjectionFamily(
     CollectedFamily[CompactRemainingSystemicModuleProjection]
 ):
-    item_type = CompactRemainingSystemicModuleProjection
     cache_payload_max_bytes = 1_000_000
 
     @classmethod
@@ -668,7 +667,6 @@ class _DataclassNamespaceCliModuleProjection:
 class _DataclassNamespaceCliModuleProjectionFamily(
     CollectedFamily[_DataclassNamespaceCliModuleProjection]
 ):
-    item_type = _DataclassNamespaceCliModuleProjection
     report_presence_predicate = staticmethod(
         lambda items, config: any(
             item.dataclasses or item.cli_specs

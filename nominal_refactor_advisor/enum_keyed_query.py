@@ -639,7 +639,6 @@ class EnumKeyedDerivedMapFacadeModuleProjectionFamily(
 ):
     """Persist module-local enum-keyed facade shapes for compact joins."""
 
-    item_type = EnumKeyedDerivedMapFacadeModuleProjection
 
     @classmethod
     def collect(

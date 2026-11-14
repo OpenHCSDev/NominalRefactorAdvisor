@@ -363,7 +363,6 @@ class StaticProjectionAuthority(SourceRewriteAuthority):
 class StaticProjectionCallModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
     """Uses of a static projection class whose questions an adapter family answers."""
 
-    item_type = ForeignFamilySiteModule
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:

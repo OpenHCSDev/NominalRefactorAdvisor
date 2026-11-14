@@ -329,7 +329,6 @@ class ForeignFamilyFilterAuthority(FunctionRewriteAuthority):
 class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
     """Filters testing exactly the members of a declared concrete family."""
 
-    item_type = ForeignFamilySiteModule
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:

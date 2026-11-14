@@ -388,7 +388,6 @@ class ClassShapesModule:
 class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
     """Each class's bases and the member answers family joins compare."""
 
-    item_type = ClassShapesModule
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ClassShapesModule]:
@@ -474,7 +473,6 @@ def tested_reads(test: ast.expr) -> Iterator[tuple[ast.expr, str, bool]]:
 class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
     """Branch tests that read a member, and calls that pass two or more lambdas."""
 
-    item_type = ConsumerShapesModule
 
     @staticmethod
     def receiver(node: ast.expr, resolver: ProbeOwnerResolver) -> ProbeOwner:
@@ -535,7 +533,6 @@ class MemberAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
     """Members of the module's classes that answer one way: `group` is the member."""
 
     _registry_skip = True
-    item_type = RestatingSiteModule
     answer: ClassVar[type[MemberAnswer]]
 
     @classmethod
@@ -646,7 +643,6 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     contribute zero or one item already splits present from absent.
     """
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -703,7 +699,6 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     protocol fixes its signature and the interpreter is its caller.
     """
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

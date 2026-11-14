@@ -29,6 +29,8 @@ from fnmatch import fnmatchcase
 from functools import cached_property
 from pathlib import Path
 from types import EllipsisType
+import types
+import typing
 from typing import Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
@@ -2240,6 +2242,30 @@ class CollectedFamily(
         Callable[[tuple[object, ...], object], bool] | None
     ] = None
     report_demand_context_predicate: ClassVar[Callable[[object], bool] | None] = None
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if "item_type" not in vars(cls) and not any(
+            "item_type" in vars(ancestor) for ancestor in cls.__mro__[1:]
+        ):
+            item_type = cls._subscripted_item_type()
+            if item_type is not None:
+                cls.item_type = item_type
+
+    @classmethod
+    def _subscripted_item_type(cls) -> type[ShapeItemT] | None:
+        """The item type a family names in the family base it subscripts
+        (`ShapeFamily[X]`), when no ancestor has set one: that base's parameter is
+        the item."""
+
+        for base in types.get_original_bases(cls):
+            origin = typing.get_origin(base)
+            if isinstance(origin, type) and issubclass(origin, CollectedFamily):
+                for argument in typing.get_args(base):
+                    item_type = typing.get_origin(argument) or argument
+                    if isinstance(item_type, type):
+                        return cast("type[ShapeItemT]", item_type)
+        return None
 
     @classmethod
     def modules_in(

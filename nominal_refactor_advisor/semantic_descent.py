@@ -4120,7 +4120,6 @@ class CompactSemanticModuleProjectionFamily(
 ):
     """Persist deferred semantic-descent facts without repository ASTs."""
 
-    item_type = CompactSemanticModuleProjection
     cache_payload_max_bytes = 1_000_000
 
     @classmethod

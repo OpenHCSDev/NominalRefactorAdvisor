@@ -491,7 +491,6 @@ class MethodParameterFamily(ShapeFamily[MethodParametersModule]):
     not use, and is left out.
     """
 
-    item_type = MethodParametersModule
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[MethodParametersModule]:
@@ -739,7 +738,6 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """Each public top-level function and each public method of a top-level
     class, one site per def: `group` is its name, `detail` its class."""
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

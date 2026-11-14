@@ -129,7 +129,6 @@ def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
 class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """One subject compared against several string literals inside one function."""
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -222,7 +221,6 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     what this platform build provides, which no declaration of ours can hold.
     """
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -314,7 +312,6 @@ class _KeyViewSyntax:
 class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -434,7 +431,6 @@ class ForeignAbsenceSiteModule(RestatingSiteModule):
 class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
     """`other.attr is None` and `is not None` on an object that is not the method's own."""
 
-    item_type = ForeignAbsenceSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
@@ -497,7 +493,6 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     kind, target). A facade needs two forwards to one held attribute.
     """
 
-    item_type = RestatingSiteModule
 
     MIN_FORWARDS = 2
     CLASS_SITE = "class"
@@ -737,7 +732,6 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     A name that merely contains a marker word, with no sibling, is not one.
     """
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
@@ -964,7 +958,6 @@ class ModuleReferenceFacts:
 
 
 class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
-    item_type = ModuleReferenceFacts
     DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
     ENUMERATORS = frozenset(("iter_modules", "walk_packages"))
 
@@ -1167,7 +1160,6 @@ class ReferenceIndex:
 class DeadModuleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A module's own site, so that a finding can point at the module file."""
 
-    item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:

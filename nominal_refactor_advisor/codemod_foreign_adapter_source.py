@@ -409,7 +409,6 @@ class AdapterBindChainAuthority(FunctionRewriteAuthority):
 class ForeignAdapterBindChainModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
     """Bind chains that are property reads of a declared adapter family."""
 
-    item_type = ForeignFamilySiteModule
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ForeignFamilySiteModule]:

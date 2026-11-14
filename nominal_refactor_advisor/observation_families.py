@@ -100,7 +100,6 @@ class TypedLiteralObservationFamily(ObservationFamily[LiteralDispatchObservation
     """Observation family root specialized by a literal-kind discriminator."""
 
     _registry_skip = True
-    item_type = LiteralDispatchObservation
     spec_root: ClassVar[type[AutoRegisteredModuleShapeSpec[LiteralDispatchObservation]]]
     literal_kind: ClassVar[LiteralKind]
 
@@ -878,7 +877,6 @@ class InitAssignmentFieldObservationSpec(ClassObservationSpec):
 class BuilderCallShapeFamily(
     SingleSpecCollectedFamily[BuilderCallShape], ShapeFamily[BuilderCallShape]
 ):
-    item_type = BuilderCallShape
     spec = _BUILDER_CALL_SHAPE_SPEC
 
 
@@ -886,7 +884,6 @@ class SentinelTypeObservationFamily(
     RegisteredSpecCollectedFamily[SentinelTypeObservation],
     ObservationFamily[SentinelTypeObservation],
 ):
-    item_type = SentinelTypeObservation
     spec_root = SentinelTypeObservationSpec
 
 
@@ -894,7 +891,6 @@ class DynamicMethodInjectionObservationFamily(
     RegisteredSpecCollectedFamily[DynamicMethodInjectionObservation],
     ObservationFamily[DynamicMethodInjectionObservation],
 ):
-    item_type = DynamicMethodInjectionObservation
     spec_root = DynamicMethodInjectionObservationSpec
 
 
@@ -1002,7 +998,6 @@ def _module_expression_shapes(
 
 
 class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
-    item_type = ModuleExpressionShape
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleExpressionShape]:
@@ -1279,7 +1274,6 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
 
 
 class TypeTestModuleFamily(ShapeFamily[TypeTestModule]):
-    item_type = TypeTestModule
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[TypeTestModule]:
@@ -1294,7 +1288,6 @@ class TypeTestModuleFamily(ShapeFamily[TypeTestModule]):
 class RegistrationShapeFamily(
     RegisteredSpecCollectedFamily[RegistrationShape], ShapeFamily[RegistrationShape]
 ):
-    item_type = RegistrationShape
     spec_root = RegistrationShapeSpec
     source_collector = staticmethod(_native_registration_shapes)
 
@@ -1310,7 +1303,6 @@ class FieldObservationFamily(
     RegisteredSpecCollectedFamily[FieldObservation],
     ObservationFamily[FieldObservation],
 ):
-    item_type = FieldObservation
     spec_root = FieldObservationSpec
 
 
