@@ -246,7 +246,14 @@ class LineWitnessSourceReprovedOperation(
     """Persist a target; rederive its candidate and edits on every execution."""
 
     candidate_type: ClassVar[type[ModuleCollectedLineWitnessCandidate]]
+    """The line-witness candidate the operation rewrites: the one its subscript names."""
     target_node_kind: ClassVar[AstTargetNodeKind]
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        subscripted = ModuleCollectedLineWitnessCandidate.subscripted_in(cls)
+        if "candidate_type" not in vars(cls) and subscripted is not None:
+            cls.candidate_type = subscripted
 
     def required_witness(
         self,
@@ -302,7 +309,6 @@ class DeriveCandidateCollectorOperation(
 ):
     """Replace one proved forwarding method with its collector declaration."""
 
-    candidate_type = CandidateCollectorBoilerplateCandidate
     target_node_kind = AstTargetNodeKind.METHOD
 
     def source_edits_for_witness(
@@ -489,7 +495,6 @@ class DeclareCandidateFindingRendererOperation(
 ):
     """Replace one direct finding-builder method with a typed renderer value."""
 
-    candidate_type = DirectBuildFindingRendererCandidate
     target_node_kind = AstTargetNodeKind.METHOD
     declaration_factory = CallableCandidateFindingRenderer
 
@@ -544,7 +549,6 @@ class DeclareDetectorClassOperation(
 ):
     """Replace one metadata-only detector shell with its declaration call."""
 
-    candidate_type = DeclarativeDetectorClassCandidate
     target_node_kind = AstTargetNodeKind.CLASS
     declaration_factory = staticmethod(declare_module_detector)
 
