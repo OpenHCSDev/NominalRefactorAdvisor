@@ -403,6 +403,21 @@ class NominalSourceEdit(ABC):
         return SourceRewriteContributor.merge(*(edit.contributors for edit in edits))
 
 
+class WindowCoalescedSourceEdit(NominalSourceEdit, ABC):
+    """An edit whose peers merge as source windows: what it coalesces to is those
+    windows' physical edits."""
+
+    def coalesced_with_peers(
+        self,
+        peers: tuple[NominalSourceEdit, ...],
+        context: CodemodSelectorContext,
+    ) -> tuple[NominalSourceEdit, ...]:
+        return tuple(
+            window.physical_edit
+            for window in self.resolved_peer_windows(peers, context)
+        )
+
+
 class PhysicalSourceEditConflictError(ValueError):
     """Physical source edits cannot coexist in one nominal rewrite."""
 
@@ -734,7 +749,7 @@ class SourceSpanReplacement(KeyedSourceEditCoalescence, SourceSpanEdit):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceSpanDeletion(SourceSpanEdit):
+class SourceSpanDeletion(WindowCoalescedSourceEdit, SourceSpanEdit):
     """Delete one non-empty absolute line span."""
 
     @classmethod
@@ -881,16 +896,6 @@ class SourceSpanDeletion(SourceSpanEdit):
             rationale=rationale,
         )
 
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: CodemodSelectorContext,
-    ) -> tuple[NominalSourceEdit, ...]:
-        return tuple(
-            window.physical_edit
-            for window in self.resolved_peer_windows(peers, context)
-        )
-
 
 @dataclass(frozen=True, kw_only=True)
 class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
@@ -952,11 +957,24 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceFileCreation(NominalSourceEdit):
-    """Create one source path with an explicit initial source."""
+class OperationFileChange:
+    """A change to one whole file, attributed to the operation that declares it."""
 
     operation_type: type[RefactorRecipeOperation]
     file_path: str
+    rationale: str = ""
+
+    @property
+    def operation_key(self) -> str:
+        """Derive report identity from the operation declaration."""
+
+        return self.operation_type.operation_key()
+
+
+@dataclass(frozen=True, kw_only=True)
+class SourceFileCreation(OperationFileChange, NominalSourceEdit):
+    """Create one source path with an explicit initial source."""
+
     source: str = ""
 
     @classmethod
@@ -978,12 +996,6 @@ class SourceFileCreation(NominalSourceEdit):
             source=source,
             rationale=operation.rationale_text(f"Create source file {file_path!r}."),
         )
-
-    @property
-    def operation_key(self) -> str:
-        """Derive report identity from the operation declaration."""
-
-        return self.operation_type.operation_key()
 
     @classmethod
     def distinct(cls, creations: Iterable[SourceFileCreation]) -> tuple[SourceFileCreation, ...]:
@@ -1037,28 +1049,16 @@ class SourceFileCreation(NominalSourceEdit):
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceFileDeletion:
+class SourceFileDeletion(OperationFileChange):
     """Delete one indexed source path. The deleting operation proves nothing
     still needs the file; no span edit may land in it in the same document."""
 
-    operation_type: type[RefactorRecipeOperation]
-    file_path: str
-    rationale: str = ""
-
-    @property
-    def operation_key(self) -> str:
-        return self.operation_type.operation_key()
-
 
 @dataclass(frozen=True, kw_only=True)
-class TextFileChange(ABC):
+class TextFileChange(OperationFileChange, ABC):
     """One file outside the Python source index that an operation must keep true:
     a span edit of a manifest naming a module, or one end of a data file carried
     with the module that reads it. Changes of one file fold into one rewrite."""
-
-    operation_type: type[RefactorRecipeOperation]
-    file_path: str
-    rationale: str = ""
 
     @classmethod
     @abstractmethod
@@ -1354,7 +1354,7 @@ class SourceTextSpanReplacement(
 
 
 @dataclass(frozen=True, kw_only=True)
-class SourceTextMutation(KeyedSourceEdit):
+class SourceTextMutation(WindowCoalescedSourceEdit, KeyedSourceEdit):
     """Exact edits of one source revision, lowered together after semantic planning."""
 
     revision: CodemodSourceRevision
@@ -1393,16 +1393,6 @@ class SourceTextMutation(KeyedSourceEdit):
                 ),
             )
             for group in cls.peer_groups(peers)
-        )
-
-    def coalesced_with_peers(
-        self,
-        peers: tuple[NominalSourceEdit, ...],
-        context: CodemodSelectorContext,
-    ) -> tuple[NominalSourceEdit, ...]:
-        return tuple(
-            window.physical_edit
-            for window in self.resolved_peer_windows(peers, context)
         )
 
 

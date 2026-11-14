@@ -340,39 +340,38 @@ class _MissingDefaultStringPayloadValueCodec(
         return self.missing_value
 
 
+class AnyPresentString:
+    """A string codec with no rule for a value that is present: the empty string is one."""
+
+    def validate_present_value(
+        self,
+        value: str,
+        field_name: str | None,
+    ) -> None:
+        del value, field_name
+
+
 @dataclass(frozen=True)
 class DefaultedStringPayloadValueCodec(_MissingDefaultStringPayloadValueCodec[str]):
     """Use a declared default when a non-empty string field is absent."""
 
 
 @dataclass(frozen=True)
-class EmptyDefaultStringPayloadValueCodec(_MissingDefaultStringPayloadValueCodec[str]):
+class EmptyDefaultStringPayloadValueCodec(
+    AnyPresentString, _MissingDefaultStringPayloadValueCodec[str]
+):
     """Accept empty strings and default an absent field to the empty string."""
 
     missing_value: str = ""
 
-    def validate_present_value(
-        self,
-        value: str,
-        field_name: str | None,
-    ) -> None:
-        del value, field_name
-
 
 @dataclass(frozen=True)
 class OptionalStringPayloadValueCodec(
-    _MissingDefaultStringPayloadValueCodec[str | None]
+    AnyPresentString, _MissingDefaultStringPayloadValueCodec[str | None]
 ):
     """Accept empty strings and optionally default an absent field."""
 
     missing_value: str | None = None
-
-    def validate_present_value(
-        self,
-        value: str,
-        field_name: str | None,
-    ) -> None:
-        del value, field_name
 
 
 class _StrEnumPayloadValueCodec(

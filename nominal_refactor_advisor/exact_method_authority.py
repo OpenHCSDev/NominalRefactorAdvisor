@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -284,8 +285,28 @@ class ExactLeafMethodAncestorPromotionComponent(
         )
 
 
+class ClassProjectionComponentBuilder(ABC):
+    """A component builder made from the compact class projections of a module set."""
+
+    @classmethod
+    @abstractmethod
+    def from_projections(
+        cls,
+        projections: Sequence[CompactModuleClassProjection],
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> Self:
+        raise NotImplementedError
+
+    @classmethod
+    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
+        return cls.from_projections(
+            CompactModuleClassProjectionFamily.collect_modules(modules)
+        )
+
+
 @dataclass(frozen=True)
-class ExactLeafMethodAncestorPromotionComponentBuilder:
+class ExactLeafMethodAncestorPromotionComponentBuilder(ClassProjectionComponentBuilder):
     """Recover exact promotion components from one complete class projection."""
 
     projections: Sequence[CompactModuleClassProjection]
@@ -305,12 +326,6 @@ class ExactLeafMethodAncestorPromotionComponentBuilder:
                 if class_index is None
                 else class_index
             ),
-        )
-
-    @classmethod
-    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
-        return cls.from_projections(
-            CompactModuleClassProjectionFamily.collect_modules(modules)
         )
 
     @cached_property
@@ -760,7 +775,7 @@ class ExactMethodRoleComponentBuilder:
 
 
 @dataclass(frozen=True)
-class ParallelMirroredLeafFamilyComponentBuilder:
+class ParallelMirroredLeafFamilyComponentBuilder(ClassProjectionComponentBuilder):
     """Prove exact reusable role behavior across nominal domain families."""
 
     minimum_product_role_count: ClassVar[int] = 3
@@ -782,12 +797,6 @@ class ParallelMirroredLeafFamilyComponentBuilder:
                 projections,
                 class_index=class_index,
             ),
-        )
-
-    @classmethod
-    def from_modules(cls, modules: tuple[ParsedModule, ...]) -> Self:
-        return cls.from_projections(
-            CompactModuleClassProjectionFamily.collect_modules(modules)
         )
 
     @cached_property
