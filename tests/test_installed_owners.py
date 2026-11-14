@@ -127,3 +127,62 @@ def test_a_declared_package_that_is_not_installed_is_a_gap(tmp_path: Path) -> No
     assert [owner.symbol for owner in scope.owners] == [OWNER]
     (gap,) = scope.gaps
     assert gap.startswith("`no-such-distribution-nra` is declared in owner-packages")
+
+
+def test_a_development_install_is_reread_when_its_source_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A distribution with no RECORD is read from files that change in place."""
+
+    site = tmp_path / "site"
+    package = site / "fakeowner"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("")
+    source = HAND_ROLLED.split("class Plugin")[0]
+    (package / "meta.py").write_text(source)
+    egg_info = site / "fakeowner.egg-info"
+    egg_info.mkdir()
+    (egg_info / "PKG-INFO").write_text(
+        "Metadata-Version: 2.1\nName: fakeowner\nVersion: 1.0\n"
+    )
+    (egg_info / "SOURCES.txt").write_text("fakeowner/__init__.py\nfakeowner/meta.py\n")
+    monkeypatch.syspath_prepend(str(site))
+
+    (before,) = InstalledDistributionOwners.of("fakeowner").owners
+    (package / "meta.py").write_text("\n\n" + source)
+    InstalledDistributionOwners.of.cache_clear()
+    (after,) = InstalledDistributionOwners.of("fakeowner").owners
+
+    assert (before.symbol, before.line) == ("fakeowner.meta.RegistryMeta", 1)
+    assert after.line == 3
+
+
+def test_a_registration_finding_is_named_by_what_registers_not_by_its_premise(
+    tmp_path: Path,
+) -> None:
+    """The summary quotes the pyproject's digest and the installed owners; the id does not."""
+
+    pyproject = '[tool.nominal-refactor-advisor]\nowner-packages = ["metaclass-registry"]\n'
+    root = _project(tmp_path / "repo", pyproject)
+
+    def findings() -> list[tuple[str, str]]:
+        modules = parse_python_modules(
+            root,
+            use_parse_cache=False,
+            source_policy=PythonSourcePathPolicy(include_tests=False),
+        )
+        return [
+            (finding.stable_id, finding.summary)
+            for detector in (HandRolledRegistrationDetector, ManualClassRegistrationDetector)
+            for finding in detector().detect(modules, DetectorConfig())
+        ]
+
+    before = findings()
+    (root / "pyproject.toml").write_text(
+        "# the same declaration in another version of the file\n" + pyproject
+    )
+    after = findings()
+
+    assert len(before) == 2
+    assert [summary for _, summary in before] != [summary for _, summary in after]
+    assert [stable_id for stable_id, _ in before] == [stable_id for stable_id, _ in after]

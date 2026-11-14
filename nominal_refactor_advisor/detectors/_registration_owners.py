@@ -12,7 +12,10 @@ from nominal_refactor_advisor.installed_owners import (
     RegistrationRole,
 )
 from nominal_refactor_advisor.owner_candidates import OwnerCandidate, ranked
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import (
+    InstalledOwnerRegistrationMetrics,
+    RefactorFinding,
+)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
@@ -102,6 +105,10 @@ class HandRolledRegistrationDetector(
                 + "."
             ),
             (candidate.indexed_class.location,),
+            metrics=InstalledOwnerRegistrationMetrics(
+                registration_site_count=1,
+                class_names=(candidate.indexed_class.qualname,),
+            ),
         )
 
 

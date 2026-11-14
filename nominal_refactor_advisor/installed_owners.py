@@ -21,8 +21,11 @@ visible to the interpreter running NRA, which reads each module's source and
 never imports it.
 
 **Cache.** One distribution's owners depend only on its files, so they are
-cached under the distribution's name, version and RECORD sha256, together
-with the digest of the source that judged them.
+cached under the distribution's name, version and a digest of its files,
+together with the digest of the source that judged them. An installed wheel's
+RECORD lists a hash for every file, so the RECORD is that digest. A
+development install has no RECORD and its files change in place, so its module
+files are hashed themselves.
 """
 
 from __future__ import annotations
@@ -163,15 +166,15 @@ class InstalledRegistrationOwner(SourceLineReference):
 
     distribution: str
     version: str
-    record_digest: str
+    files_digest: str
     symbol: str
     role: RegistrationRole
 
     @property
     def receipt(self) -> str:
         return (
-            f"`{self.symbol}` ({self.distribution} {self.version}, RECORD sha256 "
-            f"{self.record_digest[:12]}) {self.role.receipt_text}, read from "
+            f"`{self.symbol}` ({self.distribution} {self.version}, files sha256 "
+            f"{self.files_digest[:12]}) {self.role.receipt_text}, read from "
             f"{self.file_path}:{self.line}"
         )
 
@@ -198,7 +201,7 @@ class InstalledDistributionOwners:
 
     distribution: str
     version: str
-    record_digest: str
+    files_digest: str
     owners: tuple[InstalledRegistrationOwner, ...]
 
     JUDGE_SOURCES = ("class_creation_store.py", "installed_owners.py")
@@ -219,26 +222,38 @@ class InstalledDistributionOwners:
         return AdvisorCacheLayout().persistent_cache_home() / "installed-owners"
 
     @classmethod
+    def digest_of(cls, distribution: metadata.Distribution) -> str:
+        """A digest that changes when any file of the distribution does."""
+
+        record = distribution.read_text("RECORD")
+        if record:
+            return hashlib.sha256(record.encode()).hexdigest()
+        digest = hashlib.sha256()
+        for module_name, path in sorted(cls._modules(distribution)):
+            digest.update(module_name.encode())
+            digest.update(path.read_bytes() if path.is_file() else b"\0absent")
+        return digest.hexdigest()
+
+    @classmethod
     @cache
     def of(cls, distribution_name: str) -> InstalledDistributionOwners:
         """The distribution's owners, from the cache when its files are unchanged.
         Raises `metadata.PackageNotFoundError` when it is not installed."""
 
         distribution = metadata.distribution(distribution_name)
-        record = distribution.read_text("RECORD") or ""
         name = distribution.metadata["Name"]
         version = distribution.version
-        record_digest = hashlib.sha256(record.encode()).hexdigest()
+        files_digest = cls.digest_of(distribution)
         cache_path = cls.cache_dir() / (
-            f"{name}-{version}-{record_digest[:16]}-{cls.judge_digest()[:16]}.json"
+            f"{name}-{version}-{files_digest[:16]}-{cls.judge_digest()[:16]}.json"
         )
         if cache_path.is_file():
             return cls.decoded(json.loads(cache_path.read_text()))
         found = cls(
             name,
             version,
-            record_digest,
-            tuple(cls._owners(distribution, name, version, record_digest)),
+            files_digest,
+            tuple(cls._owners(distribution, name, version, files_digest)),
         )
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(json.dumps(asdict(found), sort_keys=True))
@@ -251,7 +266,7 @@ class InstalledDistributionOwners:
         return cls(
             str(payload["distribution"]),
             str(payload["version"]),
-            str(payload["record_digest"]),
+            str(payload["files_digest"]),
             tuple(
                 InstalledRegistrationOwner(
                     **{**owner, "role": RegistrationRole.decoded(owner["role"])}
@@ -283,7 +298,7 @@ class InstalledDistributionOwners:
         distribution: metadata.Distribution,
         name: str,
         version: str,
-        record_digest: str,
+        files_digest: str,
     ) -> Iterator[InstalledRegistrationOwner]:
         for module_name, path in sorted(cls._modules(distribution)):
             try:
@@ -302,7 +317,7 @@ class InstalledDistributionOwners:
                         line=node.lineno,
                         distribution=name,
                         version=version,
-                        record_digest=record_digest,
+                        files_digest=files_digest,
                         symbol=f"{module_name}.{node.name}",
                         role=role,
                     )

@@ -123,6 +123,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     MappingMetrics,
+    InstalledOwnerRegistrationMetrics,
     RegistrationMetrics,
 )
 from nominal_refactor_advisor.observation_families import (
@@ -1710,7 +1711,7 @@ class ManualClassRegistrationDetector(
                 SourceLocation(item.file_path, item.lineno, item.symbol)
                 for item in registrations[:6]
             ),
-            metrics=RegistrationMetrics(
+            metrics=InstalledOwnerRegistrationMetrics(
                 registration_site_count=len(registrations),
                 registry_name=registry_name,
                 class_names=sorted_tuple(class_names),

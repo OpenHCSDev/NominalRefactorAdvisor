@@ -7,18 +7,22 @@ natively, a fresh cache.  Two dumps of one tree by the same code are byte-identi
 difference between a before and an after dump is a difference in what the code finds.
 """
 import json
+import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-import nominal_refactor_advisor
-from nominal_refactor_advisor.analysis import analyze_path
-
 out = Path(sys.argv[2])
-# the analysis cache is written beside the cache directory, so both live in one parent
+# the analysis cache is written beside the cache directory, so both live in one parent;
+# the home cache (installed owners) is fresh too, so nothing outlives the run
 parent = Path(tempfile.mkdtemp(prefix="nra-cold-", dir=out.parent))
+os.environ["NRA_CACHE_HOME"] = str(parent / "home")
+
+import nominal_refactor_advisor  # noqa: E402
+from nominal_refactor_advisor.analysis import analyze_path  # noqa: E402
+
 started = time.perf_counter()
 try:
     findings = analyze_path(Path(sys.argv[1]), cache_dir=parent / "cache")

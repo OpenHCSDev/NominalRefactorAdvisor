@@ -3,7 +3,7 @@
 usage: fixture_scan.py CORPUS_DIR OUT.json [--only LIST.txt] [--workers N]
 Each fixture gets a fresh cache.  The dump maps fixture name -> sorted finding JSON rows.
 """
-import collections, json, shutil, sys, tempfile, time
+import collections, json, os, shutil, sys, tempfile, time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -37,8 +37,14 @@ def main() -> None:
         wanted = set(Path(sys.argv[sys.argv.index("--only") + 1]).read_text().split())
         names = [name for name in names if name in wanted]
     started = time.perf_counter()
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        results = dict(pool.map(scan, [str(corpus / name) for name in names], chunksize=4))
+    # a fresh home cache (installed owners) for the run, shared by its workers
+    home = Path(tempfile.mkdtemp(prefix="nra-fx-home-", dir=corpus.parent))
+    os.environ["NRA_CACHE_HOME"] = str(home)
+    try:
+        with ProcessPoolExecutor(max_workers=workers) as pool:
+            results = dict(pool.map(scan, [str(corpus / name) for name in names], chunksize=4))
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
     out.write_text(json.dumps(results, indent=0, sort_keys=True))
     detectors = collections.Counter()
     errors = 0

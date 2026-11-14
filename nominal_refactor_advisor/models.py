@@ -880,6 +880,25 @@ class RegistrationMetrics(RegistrationFindingMetrics):
         )
 
 
+@dataclass(frozen=True, kw_only=True)
+class InstalledOwnerRegistrationMetrics(RegistrationMetrics):
+    """A registration finding whose summary ranks the installed owners.
+
+    Which owners are installed, their versions, digests and paths, and the
+    pyproject that declares them all change with the environment. The finding
+    is the registry and the classes put in it by hand, wherever it is scanned.
+    """
+
+    def finding_identity(
+        self, summary: str, evidence: tuple[SourceLocation, ...]
+    ) -> tuple[str, ...]:
+        return (
+            self.registry_name or "",
+            *self.class_names,
+            *sorted(location.subject_key for location in evidence),
+        )
+
+
 @dataclass(frozen=True)
 class SentinelSimulationMetrics(FindingMetrics):
     class_count: int

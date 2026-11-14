@@ -425,7 +425,10 @@ replays summaries written for whatever root spelling filled the cache.
 A run with `PYTHONPATH` pointing at another worktree still reads the
 installed distribution from the working tree, and `installed_owners`
 then scores differently: on 2026-11-14 that changed one
-`manual_class_registration` finding of 1,925 and nothing else.
+`manual_class_registration` finding of 1,925 and nothing else. The
+tools in `tools/proof` set `NRA_CACHE_HOME` to a fresh directory, so
+the installed-owner cache in the home directory cannot leak between
+runs either.
 
 **Rule 1: a detector that needs other modules reads a compact family.**
 `DetectorTypePartition(default_detector_types_for_analysis()).compact_global_complete`
@@ -626,11 +629,19 @@ One passed and was composed:
   `SourceLineReference.where`: the file from its checkout's root
   (`checkout_display_path`), so no summary holds the directory it was
   scanned in.
-- Still path-dependent, not fixed here: `manual_class_registration` and
-  `hand_rolled_registration` write the installed owner's file and line
-  into the summary, and `repeated_literal_roster_lead` writes a scanned
-  path. A summary that holds a path or a line makes the id move with it
-  unless the finding's metrics override `finding_identity`.
+- `manual_class_registration` and `hand_rolled_registration` write the
+  installed owners, their digests and the pyproject's path into the
+  summary. Their id was the summary, so it changed with the environment.
+  `InstalledOwnerRegistrationMetrics` now names them by registry, classes
+  and evidence symbols (2026-11-14). The installed-owner cache was also
+  stale for a development install: it keyed on the RECORD, which such an
+  install does not have, so it kept serving old line numbers for NRA's own
+  classes until a judge file changed. It now hashes the module files when
+  there is no RECORD.
+- Still path-dependent: `repeated_literal_roster_lead` writes a scanned
+  path into its summary. A summary that holds a path or a line makes the
+  id move with it unless the finding's metrics override
+  `finding_identity`.
 - A relative root and an absolute root give different ids for the same
   tree (`checkout_identity_text` leaves a relative path as spelled), and
   a cache filled by one spelling can answer the other with the first
