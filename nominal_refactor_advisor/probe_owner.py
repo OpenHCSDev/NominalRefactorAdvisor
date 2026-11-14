@@ -24,9 +24,11 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.declared_receivers import (
     DeclaredReceiverTyping,
-    NamedContainer,
+    NamesClasses,
+    OneQualifiedClass,
     ReceiverPath,
     ReceiverPathBuilder,
+    SeveralQualifiedClasses,
 )
 from nominal_refactor_advisor.models import SourceLineReference
 
@@ -89,7 +91,7 @@ class ProbeOwnerContext:
     typing: DeclaredReceiverTyping
 
 
-class ProbeOwner(ABC):
+class ProbeOwner(NamesClasses):
     """The declared class whose field a foreign absence probe reads, or why none is known."""
 
     @abstractmethod
@@ -106,26 +108,18 @@ class ProbeOwner(ABC):
 
         return self
 
-    def class_symbols(self) -> tuple[str, ...]:
-        """The scanned class the receiver is known to be, if any."""
-
-        return ()
-
 
 @dataclass(frozen=True)
-class ResolvedProbeOwner(ProbeOwner, NamedContainer):
+class ResolvedProbeOwner(OneQualifiedClass, ProbeOwner):
     """The receiver's declared annotation binds to this qualified class."""
 
 
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
         return context.classes.describe_field(self.qualified_name, field_name)
 
-    def class_symbols(self) -> tuple[str, ...]:
-        return (self.qualified_name,)
-
 
 @dataclass(frozen=True)
-class TypeCheckerProbeOwner(ProbeOwner, NamedContainer):
+class TypeCheckerProbeOwner(OneQualifiedClass, ProbeOwner):
     """The type checker infers the receiver as the one scanned class of this name."""
 
     inferred: str
@@ -135,9 +129,6 @@ class TypeCheckerProbeOwner(ProbeOwner, NamedContainer):
             f"{context.classes.describe_field(self.qualified_name, field_name)} "
             f"(the type checker infers `{self.inferred}`)"
         )
-
-    def class_symbols(self) -> tuple[str, ...]:
-        return (self.qualified_name,)
 
 
 @dataclass(frozen=True)
@@ -190,19 +181,14 @@ class FailedReceiverType(ReceiverType):
 
 
 @dataclass(frozen=True)
-class DeclaredFamilyProbeOwner(ProbeOwner):
+class DeclaredFamilyProbeOwner(SeveralQualifiedClasses, ProbeOwner):
     """The receiver's declarations admit these classes, all of one family."""
-
-    qualified_names: tuple[str, ...]
 
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
         return "; ".join(
             context.classes.describe_field(name, field_name)
             for name in self.qualified_names
         )
-
-    def class_symbols(self) -> tuple[str, ...]:
-        return self.qualified_names
 
 
 @dataclass(frozen=True)

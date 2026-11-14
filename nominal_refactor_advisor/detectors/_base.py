@@ -5184,11 +5184,22 @@ SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
 
 
 class ModuleCollectedLineWitnessCandidate(LineWitnessCandidate, ABC):
-    """A line witness whose declaration owns its current-source collection."""
+    """A line witness collected from the top-level classes of the current source.
+
+    A member says what one class contributes; the walk over the module's classes is here.
+    """
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        return tuple(
+            candidate
+            for declared in module.fact(ModuleClassStatements).top_level
+            for candidate in cls.from_class(module, declared.node)
+        )
 
     @classmethod
     @abstractmethod
-    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+    def from_class(cls, module: ParsedModule, node: ast.ClassDef) -> tuple[Self, ...]:
         raise NotImplementedError
 
 
@@ -5985,17 +5996,6 @@ class CandidateCollectorBoilerplateCandidate(
     collector_descriptor_type = ConstantProperty[type[staticmethod]](staticmethod)
 
     @classmethod
-    def from_module(
-        cls,
-        module: ParsedModule,
-    ) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
-        return tuple(
-            candidate
-            for declared in module.fact(ModuleClassStatements).top_level
-            for candidate in cls.from_class(module, declared.node)
-        )
-
-    @classmethod
     def from_class(
         cls,
         module: ParsedModule,
@@ -6206,17 +6206,6 @@ class DirectBuildFindingRendererCandidate(
             if call is not None
         )
 
-    @classmethod
-    def from_module(
-        cls,
-        module: ParsedModule,
-    ) -> tuple[DirectBuildFindingRendererCandidate, ...]:
-        return tuple(
-            candidate
-            for declared in module.fact(ModuleClassStatements).top_level
-            for candidate in cls.from_class(module, declared.node)
-        )
-
 
 @dataclass(frozen=True)
 class DeclarativeDetectorClassCandidate(
@@ -6263,9 +6252,9 @@ class DeclarativeDetectorClassCandidate(
         cls,
         module: ParsedModule,
         node: ast.ClassDef,
-    ) -> DeclarativeDetectorClassCandidate | None:
+    ) -> tuple[DeclarativeDetectorClassCandidate, ...]:
         if node.end_lineno is None or len(node.bases) != 1:
-            return None
+            return ()
         base = ParameterizedBaseSource.from_node(node.bases[0])
         assignment_values = cls.assignment_values(node)
         if (
@@ -6273,34 +6262,24 @@ class DeclarativeDetectorClassCandidate(
             or not base.parameter_source.isidentifier()
             or assignment_values is None
         ):
-            return None
+            return ()
         reference = CandidateCollectorBaseReference.from_node(
             module,
             node.bases[0],
             line=node.lineno,
         )
         if reference is None or not reference.is_candidate:
-            return None
-        return cls(
-            file_path=module.file_path,
-            line=node.lineno,
-            class_name=node.name,
-            base_name=base.base_name,
-            candidate_type_name=base.parameter_source,
-            assignment_names=tuple(assignment_values),
-            line_count=node.end_lineno - node.lineno + 1,
-        )
-
-    @classmethod
-    def from_module(
-        cls,
-        module: ParsedModule,
-    ) -> tuple[DeclarativeDetectorClassCandidate, ...]:
-        return tuple(
-            candidate
-            for declared in module.fact(ModuleClassStatements).top_level
-            for candidate in (cls.from_class(module, declared.node),)
-            if candidate is not None
+            return ()
+        return (
+            cls(
+                file_path=module.file_path,
+                line=node.lineno,
+                class_name=node.name,
+                base_name=base.base_name,
+                candidate_type_name=base.parameter_source,
+                assignment_names=tuple(assignment_values),
+                line_count=node.end_lineno - node.lineno + 1,
+            ),
         )
 
 

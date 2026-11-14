@@ -624,6 +624,24 @@ or more in NRA. The repair depends on how the owners sit:
   and its one `required`). A generic parent was tried first and does not
   type-check here: the operation base returns the rewrite, and an
   invariant type parameter rejects the members' narrower overrides.
+- A member lists the supplier and restates it anyway
+  (`HelperBackedFunctionObservationSpec` listed `FunctionAcceptanceMixin`
+  first, then wrote its `accepts_function` again): delete the copy.
+  `tools/proof/same_body.py PACKAGE 3` lists every name, signature and
+  body declared in three or more classes, ancestors included, so these
+  show up; the "no declaring ancestor" filter hides them.
+- A copy can exist because the base order hides the supplier.
+  `ResolvedProbeOwner(ProbeOwner, NamedContainer)` met
+  `ProbeOwner.class_symbols` (none) before `NamedContainer`'s, so it
+  wrote the named answer a third time. Read the MRO before the body.
+- A class inherited for one field brings everything else it answers.
+  The probe owners inherited `NamedContainer` for `qualified_name` and
+  were container classes with a `joined`. The field's supplier is its
+  own class (`OneQualifiedClass`); the container and the probe owners
+  both inherit it, and neither is the other.
+- `getattr(owner, "class_symbols", tuple)()` on a value whose type
+  always has the method is a contract nobody named. `NamesClasses` is
+  the name; the three roots that each said "none" inherit it.
 
 Leave a group alone when the shared member is a JSON report property
 whose position in the output the class order decides, or when a registry

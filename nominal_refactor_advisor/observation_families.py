@@ -218,17 +218,6 @@ class FunctionAcceptanceMixin(ABC):
         return True
 
 
-class SyncFunctionOnlyMixin(FunctionAcceptanceMixin):
-    def accepts_function(
-        self,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> bool:
-        return super().accepts_function(function, observation) and isinstance(
-            function, ast.FunctionDef
-        )
-
-
 class ShapeHelperBackedSpec(Generic[FamilyItemT], ABC):
     shape_helper: ClassVar[Callable[..., ShapeEmission[FamilyItemT] | None]]
 
@@ -246,14 +235,6 @@ class HelperBackedFunctionObservationSpec(
     Generic[FamilyItemT],
     ABC,
 ):
-    def accepts_function(
-        self,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> bool:
-        del function, observation
-        return True
-
     def build_from_function(
         self,
         parsed_module: ParsedModule,
@@ -274,14 +255,6 @@ class HelperBackedScopedFunctionObservationSpec(
     Generic[FamilyItemT],
     ABC,
 ):
-    def accepts_function(
-        self,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        observation: ScopedAstObservation,
-    ) -> bool:
-        del function, observation
-        return True
-
     def build_scoped_function(
         self,
         parsed_module: ParsedModule,

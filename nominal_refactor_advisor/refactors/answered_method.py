@@ -269,7 +269,7 @@ class AnsweredMethod:
             spans = owner.type_checker_spans()
             if spans:
                 undeclared[spans[0]] = receiver
-            elif self.answers(tuple(getattr(owner, "class_symbols", tuple)()), receiver.where):
+            elif self.answers(owner.class_symbols(), receiver.where):
                 reached.append((receiver, ReceiverBinding(self.symbol)))
         if undeclared:
             owned_session = session is None

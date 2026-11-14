@@ -75,25 +75,44 @@ FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 # --- declared types ----------------------------------------------------------
 
 
-class ContainerClass(ABC):
-    """The class a declared collection is an instance of, as its declaration
-    names it: never an abstract base it only reaches by `register()`."""
+class NamesClasses(ABC):
+    """The classes a value is known to be, by qualified name: none unless a member names them."""
 
     def class_symbols(self) -> tuple[str, ...]:
         return ()
+
+
+@dataclass(frozen=True)
+class OneQualifiedClass(NamesClasses):
+    """Exactly one class, by the qualified name of the class object."""
+
+    qualified_name: str
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return (self.qualified_name,)
+
+
+@dataclass(frozen=True)
+class SeveralQualifiedClasses(NamesClasses):
+    """Each of these classes, by qualified name."""
+
+    qualified_names: tuple[str, ...]
+
+    def class_symbols(self) -> tuple[str, ...]:
+        return self.qualified_names
+
+
+class ContainerClass(NamesClasses):
+    """The class a declared collection is an instance of, as its declaration
+    names it: never an abstract base it only reaches by `register()`."""
 
     def joined(self, other: ContainerClass) -> ContainerClass:
         return self if self == other else UNNAMED_CONTAINER
 
 
 @dataclass(frozen=True)
-class NamedContainer(ContainerClass):
+class NamedContainer(OneQualifiedClass, ContainerClass):
     """The container's own class, by the qualified name of the class object."""
-
-    qualified_name: str
-
-    def class_symbols(self) -> tuple[str, ...]:
-        return (self.qualified_name,)
 
 
 @dataclass(frozen=True)
@@ -128,7 +147,7 @@ def container_named(qualified: str) -> ContainerClass:
     return container_of(vars(importlib.import_module(module)).get(name))
 
 
-class DeclaredType(ABC):
+class DeclaredType(NamesClasses):
     """What a receiver is declared to be; each operation answers the type it yields."""
 
     def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
@@ -148,10 +167,6 @@ class DeclaredType(ABC):
 
     def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return UndeclaredType(f"{self.spelled()} is not a declared sequence")
-
-    def class_symbols(self) -> tuple[str, ...]:
-        """The scanned classes a value of this type is an instance of: none unless a class."""
-        return ()
 
     def class_object(self) -> DeclaredType:
         """`type[T]` for this T: the class object, when T is one scanned class."""
@@ -267,18 +282,13 @@ class DeclaredInstance(DeclaredScannedClasses):
 
 
 @dataclass(frozen=True)
-class DeclaredForeignInstance(DeclaredType):
+class DeclaredForeignInstance(SeveralQualifiedClasses, DeclaredType):
     """An instance of a class neither the scan nor an installed stub declares,
     by its qualified name.
 
     Its members are declared nowhere NRA reads, so nothing past it is typed;
     but it is declared, so it is no class of the scan's.
     """
-
-    qualified_names: tuple[str, ...]
-
-    def class_symbols(self) -> tuple[str, ...]:
-        return self.qualified_names
 
     def spelled(self) -> str:
         return " | ".join(f"`{name}`" for name in self.qualified_names)

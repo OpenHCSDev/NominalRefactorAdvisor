@@ -318,8 +318,16 @@ class DiscriminatedPayloadRecord(CodemodPayloadRecord, ABC):
         )
 
 
+class MissingWritesNull:
+    """A payload codec that admits a missing value writes it as null."""
+
+    def serialize_missing(self) -> None:
+        return None
+
+
 @dataclass(frozen=True)
 class _MissingDefaultStringPayloadValueCodec(
+    MissingWritesNull,
     StringPayloadValueCodec[StringPayloadValueT],
     Generic[StringPayloadValueT],
 ):
@@ -330,9 +338,6 @@ class _MissingDefaultStringPayloadValueCodec(
     def value_when_missing(self, field_name: str) -> StringPayloadValueT:
         del field_name
         return self.missing_value
-
-    def serialize_missing(self) -> JsonValue:
-        return None
 
 
 @dataclass(frozen=True)
@@ -464,6 +469,7 @@ class StrEnumPayloadValueCodec(
 
 @dataclass(frozen=True)
 class OptionalStrEnumPayloadValueCodec(
+    MissingWritesNull,
     _StrEnumPayloadValueCodec[StrEnumT, StrEnumT | None],
     Generic[StrEnumT],
 ):
@@ -472,9 +478,6 @@ class OptionalStrEnumPayloadValueCodec(
     enum_type: type[StrEnumT]
 
     def value_when_missing(self) -> None:
-        return None
-
-    def serialize_missing(self) -> None:
         return None
 
 
@@ -580,14 +583,14 @@ class NonNegativeIntegerPayloadValueCodec(
 
 
 @dataclass(frozen=True)
-class IntegerPayloadValueCodec(NonNegativeIntegerPayloadValueCodec[int | None]):
+class IntegerPayloadValueCodec(
+    MissingWritesNull,
+    NonNegativeIntegerPayloadValueCodec[int | None],
+):
     """Optional non-negative integer payload semantics."""
 
     def value_when_missing(self, field_name: str) -> int | None:
         del field_name
-        return None
-
-    def serialize_missing(self) -> JsonValue:
         return None
 
 

@@ -250,8 +250,21 @@ class CompressionCertificate(SemanticDescription):
         )
 
 
+class CertifiedCompressionProfile(SemanticDescription, ABC):
+    """A description whose cost is the cost of the compression certificate it builds."""
+
+    @property
+    @abstractmethod
+    def compression_certificate(self) -> CompressionCertificate:
+        raise NotImplementedError
+
+    @property
+    def description_cost(self) -> SemanticCostVector:
+        return self.compression_certificate.description_cost
+
+
 @dataclass(frozen=True)
-class ClassFamilyCompressionProfile(SemanticDescription):
+class ClassFamilyCompressionProfile(CertifiedCompressionProfile):
     """MDL profile for pushing repeated class-family behavior into an ABC."""
 
     class_count: int
@@ -305,13 +318,9 @@ class ClassFamilyCompressionProfile(SemanticDescription):
             provenance_object_count=self.provenance_object_count,
         )
 
-    @property
-    def description_cost(self) -> SemanticCostVector:
-        return self.compression_certificate.description_cost
-
 
 @dataclass(frozen=True)
-class ExactMethodRoleCompressionProfile(SemanticDescription):
+class ExactMethodRoleCompressionProfile(CertifiedCompressionProfile):
     """MDL proof for introducing one mixin across unrelated exact method roles."""
 
     class_count: int
@@ -330,13 +339,9 @@ class ExactMethodRoleCompressionProfile(SemanticDescription):
             independent_source_count=self.class_count,
         )
 
-    @property
-    def description_cost(self) -> SemanticCostVector:
-        return self.compression_certificate.description_cost
-
 
 @dataclass(frozen=True)
-class ExistingAuthorityMethodPromotionCompressionProfile(SemanticDescription):
+class ExistingAuthorityMethodPromotionCompressionProfile(CertifiedCompressionProfile):
     """MDL proof for centralizing exact methods on an already-proved authority."""
 
     class_count: int
@@ -353,7 +358,3 @@ class ExistingAuthorityMethodPromotionCompressionProfile(SemanticDescription):
             provenance_object_count=1,
             independent_source_count=self.class_count,
         )
-
-    @property
-    def description_cost(self) -> SemanticCostVector:
-        return self.compression_certificate.description_cost

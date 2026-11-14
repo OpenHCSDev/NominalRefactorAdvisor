@@ -5359,11 +5359,11 @@ class FieldDeclarationSignature(NamedTuple):
 class _FieldDeclarationFoldOutcome(ABC):
     """What a run of statements does once the absent parameters are folded."""
 
-    @abstractmethod
     def then(
         self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
     ) -> _FieldDeclarationFoldOutcome:
-        raise NotImplementedError
+        """What the run does after this: an outcome that ends the run stays what it is."""
+        return self
 
     def returned(self) -> ast.expr | None:
         return None
@@ -5373,20 +5373,12 @@ class _FieldDeclarationFoldOutcome(ABC):
 class _FieldDeclarationReturned(_FieldDeclarationFoldOutcome):
     value: ast.expr
 
-    def then(
-        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
-    ) -> _FieldDeclarationFoldOutcome:
-        return self
-
     def returned(self) -> ast.expr | None:
         return self.value
 
 
 class _FieldDeclarationRaised(_FieldDeclarationFoldOutcome):
-    def then(
-        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
-    ) -> _FieldDeclarationFoldOutcome:
-        return self
+    """The run raised: it declares no field."""
 
 
 class _FieldDeclarationFellThrough(_FieldDeclarationFoldOutcome):
@@ -5398,11 +5390,6 @@ class _FieldDeclarationFellThrough(_FieldDeclarationFoldOutcome):
 
 class _FieldDeclarationUnfolded(_FieldDeclarationFoldOutcome):
     """A statement or test the fold cannot decide: the function stays open."""
-
-    def then(
-        self, fold: _FieldDeclarationFold, rest: Sequence[ast.stmt]
-    ) -> _FieldDeclarationFoldOutcome:
-        return self
 
 
 class _ReturnedFieldDeclaration(StatementValueQuestion[_FieldDeclarationFoldOutcome]):
