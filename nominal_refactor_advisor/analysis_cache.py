@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Iterator, MutableMapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import hashlib
+import json
 import os
 from pathlib import Path
 import pickle
@@ -16,6 +17,7 @@ from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
 from nominal_refactor_advisor.interpreter import PythonVersion
 from nominal_refactor_advisor.ast_tools import (
+    CollectedFamilyCacheContext,
     FileStat,
     ParsedModule,
     PythonSourcePathPolicy,
@@ -33,6 +35,7 @@ from nominal_refactor_advisor.cache_checkout import (
     rebase_checkout_path,
     semantic_root_labels,
 )
+from nominal_refactor_advisor.cache_paths import AdvisorCacheLayout
 from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
@@ -567,7 +570,71 @@ def detector_implementation_module_names(
         if issubclass(detector_type, CompactModuleProjectionDetectorMixin)
         else ()
     )
-    return declaration_implementation_module_names((detector_type, *families))
+    declarations = (detector_type, *families)
+    store = StoredImplementationClosure.for_declarations(declarations)
+    if store is None:
+        return declaration_implementation_module_names(declarations)
+    stored = store.current_module_names()
+    if stored is not None:
+        return stored
+    module_names = declaration_implementation_module_names(declarations)
+    store.store(module_names)
+    return module_names
+
+
+@dataclass(frozen=True)
+class StoredImplementationClosure:
+    """One declaration set's implementation closure, kept across processes.
+
+    Which modules a closure reaches is decided by the code of the modules already
+    in it, so the stored closure holds while every member's content signature
+    matches; a changed member re-derives it. Declarations defined inside a
+    function share a qualified name with other classes, so they are not stored."""
+
+    path: Path
+
+    @classmethod
+    def for_declarations(
+        cls, declarations: tuple[type[object], ...]
+    ) -> StoredImplementationClosure | None:
+        if any("<locals>" in declaration.__qualname__ for declaration in declarations):
+            return None
+        key = "\0".join(
+            f"{declaration.__module__}:{declaration.__qualname__}"
+            for declaration in declarations
+        )
+        digest = hashlib.blake2s(key.encode("utf-8"), digest_size=16).hexdigest()
+        return cls(
+            AdvisorCacheLayout().persistent_cache_base()
+            / "implementation-closure"
+            / f"{digest}.json"
+        )
+
+    def current_module_names(self) -> tuple[str, ...] | None:
+        try:
+            signatures = json.loads(self.path.read_bytes())
+            if not all(
+                ImplementationSource.from_module_name(name).source_signature
+                == signature
+                for name, signature in signatures
+            ):
+                return None
+            return tuple(name for name, _ in signatures)
+        except (OSError, ValueError, TypeError):
+            return None  # absent or unreadable: derive the closure again
+
+    def store(self, module_names: tuple[str, ...]) -> None:
+        payload = json.dumps(
+            [
+                (name, ImplementationSource.from_module_name(name).source_signature)
+                for name in module_names
+            ]
+        ).encode("utf-8")
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            CollectedFamilyCacheContext._replace_atomically(self.path, payload)
+        except OSError:
+            return
 
 
 @ScanCache.cached

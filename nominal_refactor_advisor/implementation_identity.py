@@ -23,6 +23,7 @@ class ImplementationSource:
     path: str = field(compare=False, repr=False)
 
     @classmethod
+    @ScanCache.cached
     def from_module_name(cls, module_name: str) -> Self:
         module = sys.modules.get(module_name)
         source_path = None if module is None else module.__dict__.get("__file__")
