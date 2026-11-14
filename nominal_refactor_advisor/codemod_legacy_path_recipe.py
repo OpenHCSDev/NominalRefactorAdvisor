@@ -69,6 +69,9 @@ class LegacyPathErasureFindingRecipeSynthesizer(
         operation = EraseDeadCompatibilityOperation(
             target=SourceRewriteTarget(target_id=target.target_id),
             forbidden_call_names=(target.name,),
+            forbidden_attribute_names=target.node_kind.attribute_names_reaching(
+                target.name
+            ),
             rationale="Delete the path that declares itself legacy.",
         )
         try:

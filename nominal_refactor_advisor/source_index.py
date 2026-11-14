@@ -144,6 +144,15 @@ class AstTargetNodeKind(StrEnum):
     def is_function_like(self) -> bool:
         return self.is_function or self.is_method
 
+    def attribute_names_reaching(self, name: str) -> tuple[str, ...]:
+        """The attribute names consumers reach a target of this kind through.
+
+        A method is called, read as a property or passed as a value through
+        its attribute; a module, class or function is reached by name.
+        """
+
+        return (name,) if self.is_method else ()
+
 
 @dataclass(frozen=True)
 class SourceFileDigest(DataclassJsonReport):
