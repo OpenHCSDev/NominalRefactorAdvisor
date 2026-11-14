@@ -180,7 +180,6 @@ from nominal_refactor_advisor.ast_tools import statements_without_docstring
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, overlap_coefficient
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
-    _IGNORED_ANCESTOR_NAMES,
     _is_upper_snake_identifier,
     ModuleNamedSequenceMap,
     ModuleNamedValues,
@@ -2647,18 +2646,40 @@ class FiberCollectedShapeIssueDetector(
     def _collect_shapes(
         self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> list[ShapeT]:
-        shapes = tuple(
-            (
+        return self._fiber_grouped(
+            tuple(
                 shape
                 for module in modules
                 for shape in self._module_shapes(module)
                 if self._include_shape(shape, config)
             )
         )
-        groups = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-            shapes, self.observation_kind, self.execution_level
+
+    def _fiber_grouped(self, shapes: tuple[ShapeT, ...]) -> list[ShapeT]:
+        """The shapes that share this detector's structural fiber with another shape,
+        fiber by fiber, each fiber's in the order of their structural identity."""
+
+        by_identity = {_carrier_identity(shape): shape for shape in shapes}
+        graph = ObservationGraph(
+            tuple(
+                shape.structural_observation
+                for shape in shapes
+                if isinstance(shape, StructuralObservationCarrier)
+            )
         )
-        return [shape for group in groups for shape in group]
+        grouped: list[ShapeT] = []
+        for fiber in graph.fibers_for(self.observation_kind, self.execution_level):
+            members = sorted_tuple(
+                (
+                    by_identity[observation.structural_identity]
+                    for observation in fiber.observations
+                    if observation.structural_identity in by_identity
+                ),
+                key=_carrier_identity,
+            )
+            if len(members) >= 2:
+                grouped.extend(members)
+        return grouped
 
     @abstractmethod
     def _module_shapes(self, module: ParsedModule) -> tuple[ShapeT, ...]:
@@ -2680,16 +2701,10 @@ class CompactFiberCollectedShapeIssueDetector(
         projections: tuple[ShapeT, ...],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        included_shapes = tuple(
-            shape for shape in projections if self._include_shape(shape, config)
-        )
-        grouped_shapes = SUPPORT_PROJECTION_AUTHORITY.fiber_grouped_shapes(
-            cast(tuple[object, ...], included_shapes),
-            self.observation_kind,
-            self.execution_level,
-        )
         return self._findings_for_shapes(
-            [cast(ShapeT, shape) for group in grouped_shapes for shape in group],
+            self._fiber_grouped(
+                tuple(shape for shape in projections if self._include_shape(shape, config))
+            ),
             config,
         )
 
@@ -3095,9 +3110,7 @@ class CandidateCollectionAuthority:
                 continue
             field_names = declared.annotated_names
             normalized_role_fields = (
-                SUPPORT_PROJECTION_AUTHORITY.normalized_semantic_role_fields(
-                    field_names
-                )
+                SemanticFieldRole.fields_by_role(field_names)
             )
             normalized_roles = tuple(
                 role_name for role_name, _ in normalized_role_fields
@@ -3117,9 +3130,7 @@ class CandidateCollectionAuthority:
                     line=node.lineno,
                     subject_name=node.name,
                     name_family=field_names,
-                    base_names=SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(
-                        declared
-                    ),
+                    base_names=declared.family_base_names,
                     family_tokens=family_tokens,
                     normalized_roles=normalized_roles,
                     normalized_role_fields=normalized_role_fields,
@@ -4497,7 +4508,7 @@ def _manual_structural_record_mechanics_group_candidates(
         node = declared.node
         if not declared.is_dataclass or declared.is_abstract:
             continue
-        base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(declared)
+        base_names = declared.family_base_names
         if not base_names:
             continue
         validate_method = declared.method_named("validate")
@@ -4789,7 +4800,9 @@ def _shared_abstract_nominal_authority(
         stack = [declared.node.name]
         while stack:
             current_name = stack.pop()
-            if current_name in seen or current_name in _IGNORED_ANCESTOR_NAMES:
+            if current_name in seen or not (
+                ClassSymbolResolutionAuthority.establishes_nominal_family(current_name)
+            ):
                 continue
             seen.add(current_name)
             current_class = class_lookup.get(current_name)
@@ -4974,10 +4987,6 @@ def _carrier_identity(carrier: object) -> tuple[str, int, str]:
     return carrier.structural_observation.structural_identity
 
 
-def _carrier_lookup(items: tuple[object, ...]) -> dict[tuple[str, int, str], object]:
-    return {_carrier_identity(item): item for item in items}
-
-
 class SupportProjectionAuthority:
     def parameter_names(
         self, node: ast.FunctionDef | ast.AsyncFunctionDef
@@ -5008,15 +5017,6 @@ class SupportProjectionAuthority:
             if parameter.arg not in {"self", "cls"}
         )
 
-    def shared_record_base_names(self, declared: ClassStatement) -> tuple[str, ...]:
-        return tuple(
-            (
-                name
-                for name in declared.base_terminal_names
-                if name not in _IGNORED_ANCESTOR_NAMES
-            )
-        )
-
     def simple_name_or_attr_expression(self, node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
@@ -5034,22 +5034,6 @@ class SupportProjectionAuthority:
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Name)
             and node.func.id == "dict"
-        )
-
-    def normalized_semantic_role_fields(
-        self,
-        field_names: tuple[str, ...],
-    ) -> NormalizedRoleFieldMap:
-        role_to_fields: dict[SemanticFieldRole, set[str]] = defaultdict(set)
-        for field_name in field_names:
-            for role_name in SemanticFieldRole.for_field_name(field_name):
-                role_to_fields[role_name].add(field_name)
-        return tuple(
-            (role_name, sorted_tuple(role_fields))
-            for role_name, role_fields in sorted(
-                role_to_fields.items(),
-                key=lambda item: item[0].value,
-            )
         )
 
     def aliased_field_names_for_role(
@@ -5087,44 +5071,6 @@ class SupportProjectionAuthority:
             }
         )
         return aliases if len(aliases) >= 2 else ()
-
-    def materialize_observations(
-        self,
-        observations: tuple[StructuralObservation, ...],
-        lookup: dict[tuple[str, int, str], object],
-    ) -> tuple[object, ...]:
-        return sorted_tuple(
-            (
-                lookup[item.structural_identity]
-                for item in observations
-                if item.structural_identity in lookup
-            ),
-            key=_carrier_identity,
-        )
-
-    def fiber_grouped_shapes(
-        self,
-        shapes: tuple[object, ...],
-        observation_kind: ObservationKind,
-        execution_level: StructuralExecutionLevel,
-    ) -> list[tuple[object, ...]]:
-        lookup = _carrier_lookup(shapes)
-        groups: list[tuple[object, ...]] = []
-        graph = ObservationGraph(
-            tuple(
-                (
-                    shape.structural_observation
-                    for shape in shapes
-                    if isinstance(shape, StructuralObservationCarrier)
-                )
-            )
-        )
-        for fiber in graph.fibers_for(observation_kind, execution_level):
-            grouped_items = self.materialize_observations(fiber.observations, lookup)
-            if len(grouped_items) < 2:
-                continue
-            groups.append(grouped_items)
-        return groups
 
 
 SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()

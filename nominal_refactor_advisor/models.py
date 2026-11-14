@@ -182,6 +182,20 @@ class SemanticFieldRole(StrEnum):
         return tuple(role for role in cls if role.matches_field_name(field_name))
 
     @classmethod
+    def fields_by_role(
+        cls, field_names: tuple[str, ...]
+    ) -> tuple[tuple[SemanticFieldRole, tuple[str, ...]], ...]:
+        """Each role the fields play, with the fields that play it, in role order."""
+
+        return tuple(
+            (role, tuple(sorted({name for name in field_names if role in cls.for_field_name(name)})))
+            for role in sorted(
+                {role for name in field_names for role in cls.for_field_name(name)},
+                key=lambda role: role.value,
+            )
+        )
+
+    @classmethod
     def required_carrier_coordinates(cls) -> frozenset[SemanticFieldRole]:
         return frozenset(role for role in cls if role.required_carrier_coordinate)
 

@@ -162,6 +162,17 @@ class ClassStatement(DecoratedStatement):
         return sorted_tuple(set(self.spelled_base_names))
 
     @cached_property
+    def family_base_names(self) -> tuple[str, ...]:
+        """The base names that can own a class family: the spelled ones less the
+        neutral bases (`ClassSymbolResolutionAuthority.establishes_nominal_family`)."""
+
+        return tuple(
+            name
+            for name in self.base_terminal_names
+            if ClassSymbolResolutionAuthority.establishes_nominal_family(name)
+        )
+
+    @cached_property
     def dataclass_decorator(self) -> ast.expr | None:
         """The first decorator spelled `dataclass`, bare or called, by any path.
 

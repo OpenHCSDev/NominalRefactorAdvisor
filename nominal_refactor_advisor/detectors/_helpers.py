@@ -158,7 +158,6 @@ from nominal_refactor_advisor.class_families.parsed_index import (
 from nominal_refactor_advisor.detectors._substrate_support import (
     ModuleNamedValues,
     _constant_string,
-    _IGNORED_BASE_NAMES,
     _is_private_symbol_name,
     _selector_attribute_name,
 )
@@ -840,13 +839,7 @@ def _property_alias_hook_groups(
     grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
     for declared in module.fact(ModuleClassStatements).statements:
         node = declared.node
-        base_names = tuple(
-            (
-                name
-                for name in declared.base_terminal_names
-                if name not in _IGNORED_BASE_NAMES
-            )
-        )
+        base_names = declared.family_base_names
         if not base_names:
             continue
         for method in declared.methods:
@@ -1571,9 +1564,6 @@ def _registered_union_surface_candidates(
     )
 
 
-_CONCRETE_UNION_CONTRACT_IGNORED_BASE_NAMES = frozenset(
-    {"ABC", "ABCMeta", "Generic", "Protocol", "object"}
-)
 _CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES = (
     "build",
     "create",
@@ -1688,9 +1678,11 @@ def _common_contract_base_names(
             for member_type_name in member_type_names
         )
     )
-    common_base_names = (
-        set.intersection(*base_sets) - _CONCRETE_UNION_CONTRACT_IGNORED_BASE_NAMES
-    )
+    common_base_names = {
+        name
+        for name in set.intersection(*base_sets)
+        if ClassSymbolResolutionAuthority.establishes_nominal_family(name)
+    }
     return sorted_tuple(
         (
             base_name

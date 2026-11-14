@@ -63,9 +63,6 @@ def _constant_string(node: ast.AST | None) -> str | None:
     return None
 
 
-_IGNORED_BASE_NAMES = frozenset({"ABC", "object"})
-
-_IGNORED_ANCESTOR_NAMES = frozenset({"ABC", "ABCMeta", "object"})
 
 
 def _class_ancestor_names_for(
@@ -189,8 +186,6 @@ __all__ = (
     "statements_without_docstring",
     "_selector_attribute_name",
     "CLASS_NAME_ALGEBRA",
-    "_IGNORED_BASE_NAMES",
-    "_IGNORED_ANCESTOR_NAMES",
     "_is_private_symbol_name",
     "_is_upper_snake_identifier",
     "_ModuleConstantBinding",
