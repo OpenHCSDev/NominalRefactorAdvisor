@@ -205,12 +205,18 @@ def test_helper_reuses_lazy_canonical_source_dependency_projection(monkeypatch):
     parsed, method, snapshot = _helper_method_source(
         _type_keyed_behavior_projection_source()
     )
-    assert calls == []
+    actual_module = snapshot.parsed_module_for_source_path(parsed.file_path)
+
+    def helper_projections():
+        # Building the snapshot's class index projects each class-level
+        # assignment as its own one-statement module, unless an earlier test
+        # already indexed this source. This test is about the helper module.
+        return [module for module in calls if module is actual_module.module]
+
+    assert helper_projections() == []
     for _ in range(3):
         snapshot.module_lexical_dependency_projection_for_source_path(parsed.file_path)
-    actual_module = snapshot.parsed_module_for_source_path(parsed.file_path)
-    assert len(calls) == 1
-    assert calls[0] is actual_module.module
+    assert len(helper_projections()) == 1
     projection = snapshot.module_lexical_dependency_projection_for_source_path(
         parsed.file_path
     )
@@ -220,7 +226,7 @@ def test_helper_reuses_lazy_canonical_source_dependency_projection(monkeypatch):
         )
         is projection
     )
-    assert len(calls) == 1
+    assert len(helper_projections()) == 1
     assert any(
         surface.reference is method.body[0].value.func
         for surface in projection.direct_name_surfaces

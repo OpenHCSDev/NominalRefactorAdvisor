@@ -84,7 +84,7 @@ class ClassNameKeyed:
     """
 
     __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
+    __key_extractor__ = staticmethod(class_name_registry_key)
     __skip_if_no_key__ = True
 
 

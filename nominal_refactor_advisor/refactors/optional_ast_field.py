@@ -945,7 +945,7 @@ class OptionalAstFieldDecoder(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
     name, the name a recipe payload carries.
     """
 
-    __key_extractor__ = extract_key_from_class_name
+    __key_extractor__ = staticmethod(extract_key_from_class_name)
     __registry__: ClassVar[dict[str, type[OptionalAstFieldDecoder]]]
     fields: ClassVar[Mapping[type[ast.AST], str]]
     owners: ClassVar[tuple[type | Callable[..., object], ...]]
