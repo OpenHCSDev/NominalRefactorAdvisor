@@ -733,6 +733,42 @@ a new obligation is one enum member at its owner. `missing_mixin`
 reported the two enums for their shared member names; nothing reports
 the hole itself.
 
+**A wrapper per variant is a field on the base.** "The statements right
+after a declaration that move with it" existed twice in
+`codemod_module_declarations.py`: a subclass that added a docstring to
+an assignment, and a wrapper that held any declaration and forwarded
+four answers to it. Neither was named by any consumer. One field on the
+base (`trailing`) replaces both: the span and `statements` derive from
+it, and a documented or carrying declaration is the same class with the
+field set (`dataclasses.replace`). Check before folding that nothing
+tests for the wrapper class, and dump every member's every answer over
+the corpus, old against new.
+
+**A grouping class keeps something abstract, or the family runs it.**
+Both registries here (`AutoRegisterMeta`, the audit's `Family`) take
+every class without an abstract method as a member. Hoisting a member's
+last abstract method into its grouping class turns the group into a
+member: `PerLineFinding` got its children's `identity` on 2026-10-30 and
+`nra-overlay` raised AttributeError on every run for fifteen days,
+because no test ran it. After moving a method up, list the registry's
+members and compare.
+
+**An answer every member must give but only some are asked.** The
+audit's `Finding` required `identity`, `rank` and `line` of all sixteen
+kinds; the overlay reads them only for the kinds it lists. Put the
+contract on the sub-family that is asked (`ListedFinding`) and delete
+the answers nothing reads. The certificate is the set of call sites:
+`identity()` had two, both reached only through listed kinds.
+
+**A slow instrument is a finding.** The dump that proved the declaration
+fold took five minutes. The profile put it in `tokenize`: each name span
+built a fresh geometry and tokenized the whole file. Trace the slow step
+to its owner before waiting it out. Two more things the instruments
+taught: the corpus dump runs from the main checkout (one finding reads
+the installed NRA, so a spare worktree changes its text), and `-x` with
+xdist stops the count early, so rerun without it before quoting a
+number.
+
 **A branch the dispatch already took.** A class that only one dispatcher
 builds knows what the dispatcher tested. The mapping recipe builders are
 built only by the strategy registered for `MappingMetrics`, so their

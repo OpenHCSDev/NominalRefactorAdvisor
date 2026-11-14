@@ -1,7 +1,8 @@
 """The left-rung overlay: debt that family-based detectors (NRA) cannot see.
 
-Each finding class owns its detection, its identity (for comparing against a baseline such
-as upstream), and its rendering. Findings shown in detail declare the ``Listed`` capability.
+Each finding class owns its detection. A finding shown in detail is a ``ListedFinding``: it
+also owns its identity (for comparing against a baseline such as upstream), its rank and
+its line.
 """
 from __future__ import annotations
 
@@ -13,7 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import ClassVar, Iterator, Self
+from typing import ClassVar, Iterator, Self, TypeVar, cast
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
@@ -213,10 +214,6 @@ class NewObject(Origin):
 
 # ---------------------------------------------------------------- findings
 
-class Listed:
-    """Capability: shown in detail, not only counted."""
-
-
 @dataclass(frozen=True)
 class Finding(Family, ABC, root=True):
     title: ClassVar[str]
@@ -224,6 +221,15 @@ class Finding(Family, ABC, root=True):
     @classmethod
     @abstractmethod
     def detect(cls, package: Package) -> Iterator[Self]: ...
+
+    @classmethod
+    def summary_note(cls, findings: list[Self]) -> str:
+        return ""
+
+
+class ListedFinding(Finding):
+    """A finding shown in detail, not only counted. It says which finding it is from one
+    revision to the next, how it ranks among its kind and how it reads on one line."""
 
     @abstractmethod
     def identity(self) -> tuple: ...
@@ -237,9 +243,23 @@ class Finding(Family, ABC, root=True):
     def origin(self, baseline: Baseline) -> Origin:
         return Inherited() if self.identity() in baseline.identities else Introduced()
 
-    @classmethod
-    def summary_note(cls, findings: list[Self]) -> str:
-        return ""
+
+@dataclass(frozen=True)
+class AtLine(Finding):
+    """A finding at one source line, written `path:line`."""
+
+    location: str
+
+    @staticmethod
+    def where(module: ParsedModule, line: int) -> str:
+        return f"{module.file_path}:{line}"
+
+    @property
+    def file(self) -> str:
+        """The path alone. A line number moves with every edit above it, so it tells
+        nothing about which finding this is."""
+
+        return self.location.rpartition(":")[0]
 
 
 class PerFunctionFinding(Finding):
@@ -273,7 +293,7 @@ class DecidedFinding(PerFunctionFinding):
 
 
 @dataclass(frozen=True)
-class StringDispatch(DecidedFinding, Listed):
+class StringDispatch(DecidedFinding, ListedFinding):
     title = "STRING DISPATCH: one subject compared against several literals"
     function: str
     subject: str
@@ -298,7 +318,7 @@ class StringDispatch(DecidedFinding, Listed):
 
 
 @dataclass(frozen=True)
-class IsinstanceSwitch(DecidedFinding, Listed):
+class IsinstanceSwitch(DecidedFinding, ListedFinding):
     title = "TYPE SWITCHES: several type tests on one subject"
     function: str
     subject: str
@@ -359,7 +379,7 @@ class Unmodeled(ShapeModel):
 
 
 @dataclass(frozen=True)
-class RawShape(PerFunctionFinding, Listed):
+class RawShape(PerFunctionFinding, ListedFinding):
     title = "RAW SHAPES: one subject read by several string keys"
     threshold: ClassVar[int] = 3
     external: ClassVar[re.Pattern] = re.compile(r"environ|\benv\b")
@@ -412,34 +432,26 @@ class PerNodeFinding(Finding):
 
 
 @dataclass(frozen=True)
-class ExactKeySet(PerNodeFinding):
+class ExactKeySet(AtLine, PerNodeFinding):
     title = "EXACT KEY SETS: hand-written set(x) == {...} validation"
-    location: str
 
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Compare(left=ast.Call(func=ast.Name(id="set")), comparators=[ast.Set(), *_], lineno=line):
-                yield cls(f"{module.file_path}:{line}")
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location)
+                yield cls(cls.where(module, line))
 
 
 @dataclass(frozen=True)
-class NamedAttribute(PerNodeFinding):
+class NamedAttribute(AtLine, PerNodeFinding):
     title = "ACCESS BY ATTRIBUTE NAME"
-    location: str
     name: str
 
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Call(args=[_, ast.Constant(value=str() as name), *_], lineno=line) if AttributeByName.matches(node):
-                yield cls(f"{module.file_path}:{line}", name)
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.name)
+                yield cls(cls.where(module, line), name)
 
     @classmethod
     def summary_note(cls, findings: list[Self]) -> str:
@@ -448,10 +460,9 @@ class NamedAttribute(PerNodeFinding):
 
 
 @dataclass(frozen=True)
-class LongCondition(PerNodeFinding, Listed):
+class LongCondition(AtLine, PerNodeFinding, ListedFinding):
     title = "LONG CONDITIONS: syntactic ownership leads, verify before choosing a target"
     terms_threshold: ClassVar[int] = 6
-    location: str
     terms: int
     profile: ChainProfile
     text: str
@@ -460,10 +471,10 @@ class LongCondition(PerNodeFinding, Listed):
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.BoolOp(values=values, lineno=line) if len(values) >= cls.terms_threshold:
-                yield cls(f"{module.file_path}:{line}", len(values), ChainProfile.of(node), " ".join(ast.unparse(node).split())[:90])
+                yield cls(cls.where(module, line), len(values), ChainProfile.of(node), " ".join(ast.unparse(node).split())[:90])
 
     def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.text)
+        return (self.family_name, self.file, self.text)
 
     def rank(self) -> int:
         return self.terms
@@ -478,7 +489,7 @@ class LongCondition(PerNodeFinding, Listed):
 
 
 @dataclass(frozen=True)
-class GodObject(PerNodeFinding, Listed):
+class GodObject(PerNodeFinding, ListedFinding):
     qualname: str
     size: int
     node_types: ClassVar[tuple[type[ast.AST], ...]]
@@ -532,76 +543,78 @@ class GodFunction(GodObject):
 
 
 @dataclass(frozen=True)
-class PerLineFinding(Finding):
-    pattern: ClassVar[re.Pattern]
-    location: str
+class PerLineFinding(AtLine):
     text: str
 
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.text)
+    @classmethod
+    @abstractmethod
+    def pattern(cls) -> re.Pattern:
+        """What a source line matches to be this finding."""
 
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
+        pattern = cls.pattern()
         for module in package.modules:
             for number, text in enumerate(module.source.splitlines(), 1):
-                if cls.pattern.search(text):
-                    yield cls(f"{module.file_path}:{number}", text.strip()[:100])
+                if pattern.search(text):
+                    yield cls(cls.where(module, number), text.strip()[:100])
 
 
 @dataclass(frozen=True)
 class LegacyMarker(PerLineFinding):
     title = "LEGACY MARKERS"
-    pattern = re.compile(r"legacy|compat\w*|deprecat\w*|backward|fallback|shim", re.I)
+
+    @classmethod
+    def pattern(cls) -> re.Pattern:
+        return re.compile(r"legacy|compat\w*|deprecat\w*|backward|fallback|shim", re.I)
 
 
 @dataclass(frozen=True)
 class PositionalInsert(PerLineFinding):
     title = "POSITIONAL INSERTS (column order implied)"
-    pattern = re.compile(r"INSERT(?:\s+OR\s+\w+)?\s+INTO\s+\w+\s+VALUES", re.I)
+
+    @classmethod
+    def pattern(cls) -> re.Pattern:
+        return re.compile(r"INSERT(?:\s+OR\s+\w+)?\s+INTO\s+\w+\s+VALUES", re.I)
 
 
 @dataclass(frozen=True)
 class ColumnInsert(PerLineFinding):
     title = "INSERTS WITH COLUMN LISTS"
-    pattern = re.compile(r"INSERT(?:\s+OR\s+\w+)?\s+INTO\s+\w+\s*\(", re.I)
+
+    @classmethod
+    def pattern(cls) -> re.Pattern:
+        return re.compile(r"INSERT(?:\s+OR\s+\w+)?\s+INTO\s+\w+\s*\(", re.I)
 
 
 @dataclass(frozen=True)
-class EmbeddedScript(PerNodeFinding):
+class EmbeddedScript(AtLine, PerNodeFinding):
     title = "JAVASCRIPT EMBEDDED IN STRINGS"
     javascript: ClassVar[re.Pattern] = re.compile(r"\bconst\s+\w+\s*=|\bawait import\(|\brequire\(|JSON\.stringify|process\.stdout\.write")
-    location: str
     length: int
 
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Constant(value=str() as text, lineno=line) if len(text) > 200 and cls.javascript.search(text):
-                yield cls(f"{module.file_path}:{line}", len(text))
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0])
+                yield cls(cls.where(module, line), len(text))
 
 
 @dataclass(frozen=True)
-class ChildProcessSite(PerNodeFinding):
+class ChildProcessSite(AtLine, PerNodeFinding):
     title = "CHILD PROCESS SITES (spawn and kill)"
     calls: ClassVar[re.Pattern] = re.compile(r"create_subprocess_exec|subprocess\.(Popen|run)|os\.kill|killpg")
-    location: str
     call: str
 
     @classmethod
     def from_node(cls, node: ast.AST, module: ParsedModule) -> Iterator[Self]:
         match node:
             case ast.Call(func=function, lineno=line) if cls.calls.search(ast.unparse(function)):
-                yield cls(f"{module.file_path}:{line}", ast.unparse(function))
-
-    def identity(self) -> tuple:
-        return (self.family_name, self.location.rpartition(":")[0], self.call)
+                yield cls(cls.where(module, line), ast.unparse(function))
 
 
 @dataclass(frozen=True)
-class LiteralRoster(Finding, Listed):
+class LiteralRoster(ListedFinding):
     title = "LITERAL ROSTERS: one set of string literals written in several places"
     values: tuple[str, ...]
     copies: int
@@ -625,7 +638,7 @@ class LiteralRoster(Finding, Listed):
 
 
 @dataclass(frozen=True)
-class DeadModule(Finding, Listed):
+class DeadModule(ListedFinding):
     title = "DEAD MODULES: imported by nothing in the package"
     path: str
     lines: int
@@ -651,6 +664,9 @@ class DeadModule(Finding, Listed):
 
 # ---------------------------------------------------------------- the overlay
 
+FindingT = TypeVar("FindingT", bound=Finding)
+
+
 @dataclass(frozen=True)
 class Overlay:
     package: Package
@@ -660,8 +676,16 @@ class Overlay:
     def run(cls, package: Package) -> Overlay:
         return cls(package, {kind: list(kind.detect(package)) for kind in Finding.members()})
 
+    def of(self, kind: type[FindingT]) -> list[FindingT]:
+        """The findings of one kind. `run` files each kind's own detections under it."""
+
+        return cast(list[FindingT], self.findings[kind])
+
     def baseline(self) -> Baseline:
-        return Baseline(frozenset(f.identity() for found in self.findings.values() for f in found), self.package.sizes)
+        return Baseline(
+            frozenset(f.identity() for kind in ListedFinding.members() for f in self.of(kind)),
+            self.package.sizes,
+        )
 
     def render(self, top: int, baseline: Baseline | None) -> str:
         lines = [f"WARNING: {len(self.package.unparsed)} files did not parse; re-run with the project's Python."] \
@@ -669,8 +693,8 @@ class Overlay:
         lines.append("SUMMARY")
         for kind, found in self.findings.items():
             lines.append(f"  {kind.family_name:<22}{len(found):>5}  {kind.summary_note(found)}")
-        for kind in Finding.members_with(Listed):
-            ranked = sorted(self.findings[kind], key=lambda f: -f.rank())[:top]
+        for kind in ListedFinding.members():
+            ranked = sorted(self.of(kind), key=lambda f: -f.rank())[:top]
             if ranked:
                 lines += ["", kind.title]
                 lines += [f"  {(f.origin(baseline) if baseline else Untagged()).tag()}{f.line()}" for f in ranked]
