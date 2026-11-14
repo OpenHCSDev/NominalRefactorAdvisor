@@ -37,7 +37,7 @@ def resolve(plan, direction, fallback):
     finding, = rows
     assert "READERS" in finding.summary
     assert "public ABC" in finding.why
-    assert "case-owned declarations, data and hooks" in finding.why
+    assert "per-case declarations, data and hooks" in finding.why
     assert "AutoRegisterMeta" not in finding.why
     assert "value" in finding.why and "unknown-input" in finding.why
     assert finding.certification is CertificationLevel.STRONG_HEURISTIC
@@ -61,11 +61,11 @@ def incomplete(status):
 ''')
     finding, = rows
     assert finding.metrics.plan_literal_cases == ("Status.HIT", "Status.PARTIAL")
-    assert "For behavior-bearing cases" in finding.why
+    assert "If the cases carry behavior" in finding.why
     assert "public ABC" in finding.why
     assert "value-only enum" in finding.why
-    assert "not an automatic subclass conversion" in finding.why
-    assert "shared Enum method" in finding.why
+    assert "not an automatic conversion to subclasses" in finding.why
+    assert "into an Enum method" in finding.why
     assert "required hierarchy" in finding.why
     assert finding.certification is CertificationLevel.STRONG_HEURISTIC
 
@@ -178,5 +178,5 @@ def limit(mode):
 ''')
     finding, = rows
     assert "If the sites only encode values" in finding.why
-    assert "before recommending a hierarchy" in finding.why
+    assert "before proposing a hierarchy" in finding.why
     assert finding.certification is CertificationLevel.STRONG_HEURISTIC
