@@ -159,6 +159,8 @@ from nominal_refactor_advisor.detectors._base import (
     SemanticMirrorIssueDetector,
     SortedCandidateItemsMixin,
     SsotAuthorityBoundaryDetector,
+    TargetClassEvidenceAnchored,
+    TargetProjectionRequired,
     _module_builder_call_shapes,
     certified_spec,
     finding_spec_template,
@@ -771,12 +773,11 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
 
 
 class FormalBoundaryExternalStringRegistryMirrorDetector(
-    CompactModuleProjectionDetectorMixin[FormalBoundaryPythonStringConstant],
+    TargetProjectionRequired[FormalBoundaryPythonStringConstant],
     SemanticMirrorIssueDetector,
     SemanticMirrorFindingRecipeEvaluator,
 ):
     module_projection_family = FormalBoundaryPythonStringConstantFamily
-    compact_report_context_requires_target_projection = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Formal-boundary string registries should not be mirrored across sources",
@@ -1054,12 +1055,11 @@ class GeneratedBoundarySemanticConstantSiteFamily(
 
 
 class GeneratedBoundarySemanticConstantMirrorDetector(
-    CompactModuleProjectionDetectorMixin[GeneratedBoundarySemanticConstantSite],
+    TargetProjectionRequired[GeneratedBoundarySemanticConstantSite],
     SemanticMirrorIssueDetector,
     SemanticMirrorFindingRecipeEvaluator,
 ):
     module_projection_family = GeneratedBoundarySemanticConstantSiteFamily
-    compact_report_context_requires_target_projection = True
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Generated semantic constants should not be mirrored in runtime code",
@@ -1608,6 +1608,7 @@ class ManualRegistrationGroup:
 
 
 class ManualClassRegistrationDetector(
+    TargetProjectionRequired[object],
     CompactMultiProjectionCandidateDetector[ManualRegistrationGroup],
     ManualClassRegistrationFindingRecipeSynthesizer,
 ):
@@ -1615,7 +1616,6 @@ class ManualClassRegistrationDetector(
         RegistrationShapeFamily,
         CompactModuleClassProjectionFamily,
     )
-    compact_report_context_requires_target_projection = True
     finding_spec = certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual class registration should move into class creation",
@@ -1721,47 +1721,6 @@ class ManualClassRegistrationDetector(
         )
 
 
-def _target_has_manual_subclass_roster_root(
-    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
-    config: DetectorConfig,
-) -> bool:
-    """A roster finding reports the root that owns the roster, not its leaves."""
-
-    del config
-    return any(
-        projection.manual_subclass_roster_roots
-        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
-    )
-
-
-def _target_has_latent_roster(
-    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
-    config: DetectorConfig,
-) -> bool:
-    """A latent-roster finding is anchored at the roster declaration itself."""
-
-    del config
-    return any(
-        projection.latent_rosters
-        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
-    )
-
-
-def _target_has_predicate_selected_root(
-    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
-    config: DetectorConfig,
-) -> bool:
-    """Predicate-family evidence is located on its selector root."""
-
-    del config
-    return any(
-        indexed_class.predicate_selected_methods
-        and "_registered_types" in indexed_class.direct_declared_member_names
-        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
-        for indexed_class in projection.classes
-    )
-
-
 @dataclass(frozen=True)
 class _CompactConcreteFamilyContext:
     class_index: CompactClassFamilyIndex
@@ -1852,11 +1811,15 @@ class _CompactConcreteFamilyDetectorBase(
 
 
 class ManualConcreteSubclassRosterDetector(
+    TargetClassEvidenceAnchored,
     _CompactConcreteFamilyDetectorBase[ManualConcreteSubclassRosterCandidate],
 ):
-    compact_report_context_promotion_predicate = staticmethod(
-        _target_has_manual_subclass_roster_root
-    )
+    @classmethod
+    def anchors_report(cls, projection: CompactModuleClassProjection) -> bool:
+        """A roster finding reports the root that owns the roster, not its leaves."""
+
+        return bool(projection.manual_subclass_roster_roots)
+
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual concrete-subclass roster should become a metaclass-registry base",
@@ -1924,9 +1887,15 @@ class ManualConcreteSubclassRosterDetector(
 
 
 class LatentImplementationRosterDetector(
+    TargetClassEvidenceAnchored,
     _CompactConcreteFamilyDetectorBase[LatentImplementationRosterCandidate],
 ):
-    compact_report_context_promotion_predicate = staticmethod(_target_has_latent_roster)
+    @classmethod
+    def anchors_report(cls, projection: CompactModuleClassProjection) -> bool:
+        """A latent-roster finding is anchored at the roster declaration itself."""
+
+        return bool(projection.latent_rosters)
+
     finding_spec = high_confidence_certified_spec(
         PatternId.AUTO_REGISTER_META,
         "Manual implementation enumeration should derive from the ABC registry",
@@ -2264,11 +2233,19 @@ def _compact_family_has_registration_authority(
 
 
 class PredicateSelectedConcreteFamilyDetector(
+    TargetClassEvidenceAnchored,
     _CompactConcreteFamilyDetectorBase[PredicateSelectedConcreteFamilyCandidate],
 ):
-    compact_report_context_promotion_predicate = staticmethod(
-        _target_has_predicate_selected_root
-    )
+    @classmethod
+    def anchors_report(cls, projection: CompactModuleClassProjection) -> bool:
+        """Predicate-family evidence is located on its selector root."""
+
+        return any(
+            indexed_class.predicate_selected_methods
+            and "_registered_types" in indexed_class.direct_declared_member_names
+            for indexed_class in projection.classes
+        )
+
     finding_spec = high_confidence_spec(
         PatternId.AUTO_REGISTER_META,
         "Predicate-selected concrete family should collapse into one metaclass-registry selector base",

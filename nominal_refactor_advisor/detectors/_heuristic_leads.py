@@ -32,6 +32,7 @@ from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     IssueDetector,
     PerModuleIssueDetector,
+    TargetProjectionRequired,
     finding_spec_template,
 )
 
@@ -148,12 +149,12 @@ class RepeatedLiteralRosterLeadDetector(PerModuleIssueDetector):
 
 
 class RepeatedModuleExpressionLeadDetector(
-    CompactGroupedShapeIssueDetector[ModuleExpressionShape, str]
+    TargetProjectionRequired[ModuleExpressionShape],
+    CompactGroupedShapeIssueDetector[ModuleExpressionShape, str],
 ):
     """Find one module-attribute expression written out across modules."""
 
     module_projection_family = ModuleExpressionShapeFamily
-    compact_report_context_requires_target_projection = True
     finding_spec = finding_spec_template(
         PatternId.SOURCE_BACKED_MODULE_EXPRESSION_LEAD,
         "Repeated module expression raises a value-owner question",

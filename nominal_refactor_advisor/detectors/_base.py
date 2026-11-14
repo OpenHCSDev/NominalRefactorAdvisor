@@ -885,10 +885,6 @@ CompactProjectionGroupContextBuilder: TypeAlias = Callable[
     [CompactProjectionGroups],
     object,
 ]
-CompactReportContextPromotionPredicate: TypeAlias = Callable[
-    [CompactProjectionGroups, DetectorConfig],
-    bool,
-]
 CompactDerivedContextT = TypeVar("CompactDerivedContextT")
 
 
@@ -942,10 +938,6 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         None
     )
     compact_report_class_header_core_safe: ClassVar[bool] = False
-    compact_report_context_promotion_predicate: ClassVar[
-        CompactReportContextPromotionPredicate | None
-    ] = None
-    compact_report_context_requires_target_projection: ClassVar[bool] = False
 
     @classmethod
     def compact_projection_families(
@@ -961,9 +953,6 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     ) -> bool:
         """Accept the context unless an exact witness rules it out."""
 
-        predicate = cls.compact_report_context_promotion_predicate
-        if predicate is not None:
-            return predicate(target_projections_by_family, config)
         families = cls.compact_projection_families()
         if len(families) == 1:
             family = families[0]
@@ -973,17 +962,6 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
             )
             if demand is not None and not family.report_demand_includes_context(demand):
                 return False
-        for family in getattr(cls, "compact_report_candidate_anchor_families", ()):
-            demand = family.report_demand(
-                target_projections_by_family.get(family, ()),
-                config,
-            )
-            if demand is not None and not family.report_demand_includes_context(demand):
-                return False
-        if cls.compact_report_context_requires_target_projection:
-            return any(
-                target_projections_by_family.get(family, ()) for family in families
-            )
         return True
 
     @classmethod
@@ -1055,6 +1033,52 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
+
+
+class TargetProjectionRequired(
+    CompactModuleProjectionDetectorMixin[CompactProjectionItemT]
+):
+    """A detector that reports only where the target itself holds its projections."""
+
+    @classmethod
+    def compact_report_context_can_promote(
+        cls,
+        target_projections_by_family: CompactProjectionGroups,
+        config: DetectorConfig,
+    ) -> bool:
+        return super().compact_report_context_can_promote(
+            target_projections_by_family, config
+        ) and any(
+            target_projections_by_family.get(family, ())
+            for family in cls.compact_projection_families()
+        )
+
+
+class TargetClassEvidenceAnchored(ABC):
+    """A detector whose report is anchored at a class projection of the target.
+
+    The compact context is worth building only when one of the target's own class
+    projections shows the evidence; the detector says which projections do.
+    """
+
+    @classmethod
+    @abstractmethod
+    def anchors_report(cls, projection: CompactModuleClassProjection) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    def compact_report_context_can_promote(
+        cls,
+        target_projections_by_family: CompactProjectionGroups,
+        config: DetectorConfig,
+    ) -> bool:
+        del config
+        return any(
+            cls.anchors_report(projection)
+            for projection in CompactModuleClassProjectionFamily.present_in(
+                target_projections_by_family
+            )
+        )
 
 
 class CompactMultiModuleProjectionDetectorMixin(
