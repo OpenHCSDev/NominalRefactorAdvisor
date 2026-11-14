@@ -30,7 +30,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
 )
 from nominal_refactor_advisor.models import (
-    MappingMetrics,
     RefactorFinding,
 )
 from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
@@ -236,8 +235,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return "dataclass key/value sequence projection requires mapping metrics"
         if self.parts is not None:
             return (
                 "dataclass key/value sequence projection has an executable "

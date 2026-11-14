@@ -43,7 +43,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
 )
 from nominal_refactor_advisor.models import (
-    MappingMetrics,
     RefactorFinding,
 )
 from nominal_refactor_advisor.refactor_concepts import (
@@ -433,8 +432,6 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return "dataclass constructor projection requires mapping metrics"
         if self.parts is not None:
             return "dataclass constructor projection has an executable authority recipe"
         return (

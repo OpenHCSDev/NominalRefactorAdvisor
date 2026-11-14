@@ -70,7 +70,6 @@ from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetS
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection
 from nominal_refactor_advisor.models import (
-    MappingMetrics,
     RefactorFinding,
 )
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
@@ -904,8 +903,6 @@ class DataclassAuthorityMappingRecipeBuilder(
     """Shared seed-to-authority workflow for dataclass projection recipes."""
 
     def is_applicable(self) -> bool:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return False
         seed = SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
         if seed is None:
             return False
@@ -933,8 +930,6 @@ class DataclassAuthorityMappingRecipeBuilder(
         self,
         seed: SemanticMirrorRecipeSeedLocations,
     ) -> RecipePartsT | None:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return None
         import_boundary = SemanticMirrorImportBoundary.from_seed(seed, self)
         if import_boundary is None:
             return None

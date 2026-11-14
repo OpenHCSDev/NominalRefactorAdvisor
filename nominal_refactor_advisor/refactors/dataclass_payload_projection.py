@@ -32,7 +32,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.models import (
-    MappingMetrics,
     RefactorFinding,
 )
 from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
@@ -222,8 +221,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return "dataclass payload projection requires mapping metrics"
         seed = SemanticMirrorRecipeSeedLocations.from_finding(self.finding)
         if seed is None:
             return (

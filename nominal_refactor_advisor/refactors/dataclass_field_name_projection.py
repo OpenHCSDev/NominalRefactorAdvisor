@@ -27,7 +27,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
 )
 from nominal_refactor_advisor.models import (
-    MappingMetrics,
     RefactorFinding,
 )
 from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
@@ -156,8 +155,6 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
     finding: RefactorFinding
 
     def rejection_reason(self) -> str:
-        if not isinstance(self.finding.metrics, MappingMetrics):
-            return "dataclass field-name projection requires mapping metrics"
         if self.parts is not None:
             return "dataclass field-name projection has an executable recipe"
         return (
