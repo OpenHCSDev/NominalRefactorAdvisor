@@ -2369,6 +2369,9 @@ class SourceExecutionKernel(
     effects: SourceExecutionABC
 
     def require_interval_frame(self, interval: SingleFlowPrefix) -> None:
+        framed = self.effects._framed_intervals
+        if interval in framed:
+            return
         context = interval.context
         if (
             self.effects.source.compact.flow_contexts_by_identity.get(id(context))
@@ -2382,6 +2385,7 @@ class SourceExecutionKernel(
         )
         if prefix.endpoint.frame is not interval.frame:
             raise ValueError("Interval capture requires its original activation frame")
+        framed.add(interval)
 
     def _subscription_result_value_resolution(
         self,
@@ -3220,9 +3224,14 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
     def receipt(self) -> NativeReturn:
         raise NotImplementedError
 
+    @property
     @abstractmethod
-    def follows_source(self, instruction_offset: int) -> bool:
+    def native_start_offset(self) -> int:
+        """The first native instruction offset after the source boundary."""
         raise NotImplementedError
+
+    def follows_source(self, instruction_offset: int) -> bool:
+        return instruction_offset >= self.native_start_offset
 
     @property
     def bindings(self) -> tuple[NativeBindingTransfer, ...]:
@@ -3244,9 +3253,10 @@ class PreparedNamespaceTail(PreparedNamespaceContinuationABC):
 
     completion: SourceCompletedReturnABC
 
-    def follows_source(self, instruction_offset: int) -> bool:
-        return instruction_offset > self.completion.native_completion_offset(
-            self.native_lookup_prefix
+    @cached_property
+    def native_start_offset(self) -> int:
+        return (
+            self.completion.native_completion_offset(self.native_lookup_prefix) + 1
         )
 
     @property
@@ -3288,8 +3298,9 @@ class EntryOnlyNamespaceContinuation(PreparedNamespaceContinuationABC):
         )
         return self.entry.native_value(original)
 
-    def follows_source(self, instruction_offset: int) -> bool:
-        return instruction_offset >= self.entry.capture.prologue.require_body_start()
+    @cached_property
+    def native_start_offset(self) -> int:
+        return self.entry.capture.prologue.require_body_start()
 
     @property
     def receipt(self) -> NativeReturn:
@@ -3744,6 +3755,11 @@ class SourceExecutionABC(
     ] = field(default_factory=dict, init=False, repr=False)
 
     _closed_intervals: set[SingleFlowPrefix] = field(
+        default_factory=set, init=False, repr=False
+    )
+    # Intervals whose activation frame is authenticated. An interval is immutable,
+    # so its frame proof holds once given; only a proof is remembered.
+    _framed_intervals: set[SingleFlowPrefix] = field(
         default_factory=set, init=False, repr=False
     )
 
