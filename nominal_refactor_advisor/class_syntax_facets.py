@@ -727,9 +727,7 @@ def _compact_class_syntax_facets(
         | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
         for _qualname, function in syntax_index.named_functions
     }
-    module_binds_type = "type" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-        parsed_module.module.body
-    )
+    module_binds_type = "type" in parsed_module.bound_names
     active_function_ids_by_scope = tuple(
         tuple(
             id(syntax_index.depth_first_nodes[function_index])

@@ -264,22 +264,6 @@ def is_name(node: ast.AST | None, names: Iterable[str]) -> bool:
     return isinstance(node, ast.Name) and node.id in set(names)
 
 
-def module_bound_names(module: ast.Module) -> frozenset[str]:
-    """Names one module binds at top level: definitions, imports and assignments."""
-
-    names: set[str] = set()
-    for statement in module.body:
-        if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
-            names.add(statement.name)
-        elif isinstance(statement, ast.Import | ast.ImportFrom):
-            names.update(ImportBoundNameProjection(statement).names())
-        elif isinstance(statement, ast.If):
-            names.update(module_bound_names(ast.Module(statement.body, [])))
-        else:
-            names.update(names_bound(statement))
-    return frozenset(names)
-
-
 def literal_constant(value: object) -> bool:
     return value is None or isinstance(value, bool | int | float | str)
 
@@ -967,7 +951,7 @@ class CasesFamily(Cases, Descent):
         local = self.imported_root(model)
         if local is not None:
             return local
-        if model.declared.name in module_bound_names(model.enum.module.module):
+        if model.declared.name in model.enum.module.bound_names:
             raise handback(
                 model.enum.module,
                 model.enum.node,
@@ -1340,7 +1324,7 @@ class CasesFamily(Cases, Descent):
 
     @staticmethod
     def require_free_class_names(model: CaseModel) -> None:
-        bound = module_bound_names(model.enum.module.module)
+        bound = model.enum.module.bound_names
         for member in model.members:
             if member.class_name in bound:
                 raise handback(
@@ -1829,7 +1813,7 @@ class CasesFamily(Cases, Descent):
             for annotation in annotations_of(annotated)
             for node in type_positions(annotation)
         }
-        bound = module_bound_names(module.module)
+        bound = module.bound_names
         local_names = set(names.enum)
         if module is model.enum.module:
             local_names.add(model.root)
@@ -2775,7 +2759,7 @@ class Site:
         """``annotation``, if every name in it is bound where the family lives."""
 
         bound = (
-            module_bound_names(model.enum.module.module)
+            model.enum.module.bound_names
             | {model.root}
             | set(dir(builtins))
         )
@@ -2927,7 +2911,7 @@ class Block(Site):
                             f"branch reads local {node.id!r} of undeclared type",
                         )
                     arguments.setdefault(node.id, node.id)
-        family_bound = module_bound_names(model.enum.module.module) | set(dir(builtins))
+        family_bound = model.enum.module.bound_names | set(dir(builtins))
         free = (
             names_read(*statements)
             - names_bound(*statements)

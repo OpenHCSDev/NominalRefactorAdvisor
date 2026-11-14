@@ -802,6 +802,13 @@ class ParsedModule(SourceFileIdentity):
     family_cache_dir: Path | None = None
 
     @cached_property
+    def bound_names(self) -> frozenset[str]:
+        """The names this module's own scope binds, read without entering a function,
+        a class or a comprehension."""
+
+        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.module.body)
+
+    @cached_property
     def native_compilation(self) -> NativePythonCompilation:
         """Share lazy compiler evidence over this module's original source context."""
         return NativePythonCompilation(self.source, self.file_path)

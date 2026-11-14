@@ -327,9 +327,7 @@ class FreshNames:
                 read
                 | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
                 | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
-                | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                    parsed_module.module.body
-                )
+                | parsed_module.bound_names
             )
         )
 

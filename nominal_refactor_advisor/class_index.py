@@ -4954,9 +4954,7 @@ def _compact_class_references(
     """
 
     syntax_index = parsed_module.syntax_index
-    module_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-        parsed_module.module.body
-    )
+    module_bound_names = parsed_module.bound_names
     import_aliases = module_import_aliases(parsed_module)
     locals_by_function_index = {
         function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
