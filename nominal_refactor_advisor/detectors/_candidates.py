@@ -8,6 +8,7 @@ from typing import Callable, Self, Sequence, TypeVar, cast, overload
 
 from metaclass_registry import AutoRegisterMeta
 
+from nominal_refactor_advisor.class_index import CompactModuleClassProjection
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.models import (
     EvidenceLocated,
@@ -160,7 +161,21 @@ class KeyedRegistryAxisFact(KeyedRegistryAxisSurface, SourceLineReference):
         )
 
 
-class KeyedRegistryFactCandidate(ABC):
+class CollectsItselfFromRegistryFacts(ABC):
+    """A candidate type that finds its candidates in the keyed-registry facts the class
+    repository indexes. A registry detector over it has no candidate method to write."""
+
+    @classmethod
+    @abstractmethod
+    def from_registry_facts(
+        cls,
+        projections: Sequence[CompactModuleClassProjection],
+        facts: Sequence[KeyedRegistryAxisFact],
+    ) -> tuple[Self, ...]:
+        raise NotImplementedError
+
+
+class KeyedRegistryFactCandidate(CollectsItselfFromRegistryFacts):
     """Nominal refinement of keyed-registry facts selected by one invariant."""
 
     @classmethod
@@ -169,7 +184,12 @@ class KeyedRegistryFactCandidate(ABC):
         raise NotImplementedError
 
     @classmethod
-    def from_facts(cls, facts: Sequence[KeyedRegistryAxisFact]) -> tuple[Self, ...]:
+    def from_registry_facts(
+        cls,
+        projections: Sequence[CompactModuleClassProjection],
+        facts: Sequence[KeyedRegistryAxisFact],
+    ) -> tuple[Self, ...]:
+        del projections
         field_names = tuple(item.name for item in fields(cls))
         return tuple(
             cls(**{name: getattr(fact, name) for name in field_names})

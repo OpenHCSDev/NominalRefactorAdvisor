@@ -4723,15 +4723,6 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
 def test_compact_registry_projection_candidates_preserve_projection_semantics(
     tmp_path: Path,
 ) -> None:
-    assert not hasattr(
-        base_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
-        "surface_candidates",
-    )
-    assert not hasattr(
-        base_detectors._REGISTRY_PROJECTION_SURFACE_ANALYZER,
-        "policy_authority_candidates",
-    )
-
     package_root = tmp_path / "pkg"
     package_root.mkdir()
     (package_root / "core.py").write_text(
@@ -4793,12 +4784,12 @@ def test_compact_registry_projection_candidates_preserve_projection_semantics(
     facts = systemic_detectors._compact_keyed_registry_axis_facts(projections, config)
 
     candidates = (
-        systemic_detectors._compact_registry_projection_surface_candidates_from_facts(
+        systemic_detectors.RegistryProjectionSurfaceCandidate.from_registry_facts(
             projections,
             facts,
         )
     )
-    policies = systemic_detectors._compact_registry_projection_policy_authority_candidates_from_facts(
+    policies = systemic_detectors.RegistryProjectionPolicyAuthorityCandidate.from_registry_facts(
         projections,
         facts,
     )

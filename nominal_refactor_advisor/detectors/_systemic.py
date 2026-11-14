@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Generic, Self, TypeVar, ClassVar
+from typing import cast, ClassVar, Generic, Self, TypeVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_syntax_facets import (
@@ -21,8 +21,10 @@ from nominal_refactor_advisor.class_syntax_facets import (
     CompactSortedKeyCall,
 )
 from nominal_refactor_advisor.detectors._candidates import (
+    CollectsItselfFromRegistryFacts,
     KeyedRecordInfrastructureCandidate,
     KeyedRegistryAxisFact,
+    LineWitnessCandidate,
 )
 from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
@@ -86,10 +88,10 @@ from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
     CollectsItself,
+    SubscriptedCandidateType,
     ModuleCollectedLineWitnessCandidate,
     TargetClassEvidenceAnchored,
     TargetProjectionRequired,
-    _REGISTRY_PROJECTION_SURFACE_ANALYZER,
     SYNTAX_PROJECTION_AUTHORITY,
     CandidateCollectorBoilerplateCandidate,
     ClassLineWitnessCandidate,
@@ -116,8 +118,6 @@ from nominal_refactor_advisor.detectors._base import (
     NonInjectiveTypeRegistryCandidate,
     ParallelKeyedAxisFamilyCandidate,
     ParallelKeyedTableAndFamilyCandidate,
-    RegistryProjectionPolicyAuthorityCandidate,
-    RegistryProjectionSurfaceCandidate,
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
     RepeatedKeyedFamilyCandidate,
@@ -157,6 +157,8 @@ from nominal_refactor_advisor.detectors._base import (
     ResultAssemblyPipelineFunction,
     _PIPELINE_RETURN_STAGE,
     CollectsItselfFromCompactContext,
+    RegistryProjectionMaterialization,
+    RegistryProjectionRole,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
@@ -184,6 +186,7 @@ from nominal_refactor_advisor.detectors._finding_spec_defaults import (
     FindingSpecConstructionCandidateCollector,
 )
 from itertools import combinations
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
 
 @dataclass(frozen=True)
@@ -2343,6 +2346,186 @@ def _compact_registry_projection_reference_name(
     return f"{canonical_head}{value[len(alias_head) :]}"
 
 
+@dataclass(frozen=True)
+class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWitnessCandidate):
+    registry_class_name: str
+    key_type_name: str
+    surface_evidence: RegistryProjectionSurfaceEvidence
+    surface_kind: RegistryProjectionSurfaceKind
+    projection_role: RegistryProjectionRole
+    projected_names: tuple[str, ...]
+    subset_policy_hint: str | None
+    injectivity_proof: InjectiveTypeRegistryProof
+    witness_name = AliasProperty[str]("surface_name")
+
+    @property
+    def surface_name(self) -> str:
+        return self.surface_evidence.surface_name
+
+    @property
+    def shared_key_names(self) -> tuple[str, ...]:
+        return self.surface_evidence.shared_key_names
+
+    @property
+    def shared_type_names(self) -> tuple[str, ...]:
+        return self.surface_evidence.shared_type_names
+
+    @property
+    def projection_coverage_ratio(self) -> float:
+        denominator, numerator = self.surface_kind.coverage_coordinates(
+            self.injectivity_proof,
+            self.surface_evidence,
+        )
+        return numerator / denominator
+
+    @property
+    def missing_key_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            frozenset(self.injectivity_proof.key_names)
+            - frozenset(self.shared_key_names)
+        )
+
+    @property
+    def missing_type_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            frozenset(self.injectivity_proof.registered_type_names)
+            - frozenset(self.shared_type_names)
+        )
+
+    @property
+    def projection_policy_name(self) -> str:
+        return self.subset_policy_hint or "full"
+
+    @property
+    def projection_target_name(self) -> str:
+        return f"{self.projection_role.value}:{self.surface_kind.value}"
+
+    @property
+    def materialization_rule(self) -> RegistryProjectionMaterialization:
+        return self.surface_kind.materialization_for(self.projection_role)
+
+    @property
+    def decompression_key(self) -> str:
+        return "|".join(
+            (
+                self.registry_class_name,
+                self.key_type_name,
+                self.projection_policy_name,
+                self.projection_target_name,
+                self.materialization_rule.value,
+            )
+        )
+
+    @classmethod
+    def from_registry_facts(
+        cls,
+        projections: Sequence[CompactModuleClassProjection],
+        facts: tuple[KeyedRegistryAxisFact, ...],
+    ) -> tuple[Self, ...]:
+        projections_by_path = {
+            projection.file_path: projection for projection in projections
+        }
+        candidates: list[Self] = []
+        for fact in facts:
+            if not fact.is_mature_injective:
+                continue
+            registry_projection = projections_by_path.get(fact.file_path)
+            if registry_projection is None:
+                continue
+            for projection in projections:
+                if projection.file_path == fact.file_path:
+                    import_aliases: dict[str, str] = {}
+                else:
+                    import_aliases = _compact_registry_projection_import_aliases(
+                        projection,
+                        registry_projection=registry_projection,
+                        fact=fact,
+                    )
+                    if not (
+                        fact.key_type_name in import_aliases.values()
+                        or fact.class_name in import_aliases.values()
+                        or frozenset(import_aliases.values())
+                        & frozenset(fact.require_proof().registered_type_names)
+                    ):
+                        continue
+                for surface in projection.named_projection_surfaces:
+                    candidate = _compact_registry_projection_surface_candidate(
+                        surface,
+                        fact=fact,
+                        import_aliases=import_aliases,
+                    )
+                    if candidate is not None:
+                        candidates.append(candidate)
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (
+                item.file_path,
+                item.line,
+                item.registry_class_name,
+                item.surface_name,
+            ),
+        )
+
+    policy_hint_terms: ClassVar[frozenset[str]] = frozenset(
+        {
+            "allow",
+            "allowed",
+            "deploy",
+            "enabled",
+            "experimental",
+            "persisted",
+            "public",
+            "smoke",
+            "stable",
+            "supported",
+        }
+    )
+    """Words in a surface's name that say it projects a policy-chosen subset."""
+
+    @classmethod
+    def policy_hint_for(cls, surface_name: str) -> str | None:
+        lowered_name = surface_name.lower()
+        return next(
+            (
+                term
+                for term in sorted(cls.policy_hint_terms)
+                if term in lowered_name
+            ),
+            None,
+        )
+
+    @classmethod
+    def for_surface(
+        cls,
+        *,
+        file_path: str,
+        fact: KeyedRegistryAxisFact,
+        evidence: RegistryProjectionSurfaceEvidence,
+        line: int,
+        surface_kind: RegistryProjectionSurfaceKind,
+        projected_names: tuple[str, ...],
+    ) -> Self | None:
+        projection_role = RegistryProjectionRole.for_surface(
+            evidence,
+            file_path=file_path,
+            default=surface_kind.default_role,
+        )
+        if projection_role is None:
+            return None
+        return cls(
+            file_path=file_path,
+            line=line,
+            registry_class_name=fact.class_name,
+            key_type_name=fact.key_type_name,
+            surface_evidence=evidence,
+            surface_kind=surface_kind,
+            projection_role=projection_role,
+            projected_names=projected_names,
+            subset_policy_hint=cls.policy_hint_for(evidence.surface_name),
+            injectivity_proof=fact.require_proof(),
+        )
+
+
 def _compact_registry_projection_surface_candidate(
     surface: CompactNamedProjectionSurface,
     *,
@@ -2371,7 +2554,7 @@ def _compact_registry_projection_surface_candidate(
         surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
         if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 2:
             return None
-        return _REGISTRY_PROJECTION_SURFACE_ANALYZER.candidate(
+        return RegistryProjectionSurfaceCandidate.for_surface(
             file_path=surface.file_path,
             fact=fact,
             evidence=evidence,
@@ -2414,75 +2597,13 @@ def _compact_registry_projection_surface_candidate(
     surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
     if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 3:
         return None
-    return _REGISTRY_PROJECTION_SURFACE_ANALYZER.candidate(
+    return RegistryProjectionSurfaceCandidate.for_surface(
         file_path=surface.file_path,
         fact=fact,
         evidence=evidence,
         line=surface.line,
         surface_kind=surface_kind,
         projected_names=(*key_names, *value_names),
-    )
-
-
-def _compact_registry_projection_surface_candidates_from_facts(
-    projections: Sequence[CompactModuleClassProjection],
-    facts: tuple[KeyedRegistryAxisFact, ...],
-) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
-    projections_by_path = {
-        projection.file_path: projection for projection in projections
-    }
-    candidates: list[RegistryProjectionSurfaceCandidate] = []
-    for fact in facts:
-        if not fact.is_mature_injective:
-            continue
-        registry_projection = projections_by_path.get(fact.file_path)
-        if registry_projection is None:
-            continue
-        for projection in projections:
-            if projection.file_path == fact.file_path:
-                import_aliases: dict[str, str] = {}
-            else:
-                import_aliases = _compact_registry_projection_import_aliases(
-                    projection,
-                    registry_projection=registry_projection,
-                    fact=fact,
-                )
-                if not (
-                    fact.key_type_name in import_aliases.values()
-                    or fact.class_name in import_aliases.values()
-                    or frozenset(import_aliases.values())
-                    & frozenset(fact.require_proof().registered_type_names)
-                ):
-                    continue
-            for surface in projection.named_projection_surfaces:
-                candidate = _compact_registry_projection_surface_candidate(
-                    surface,
-                    fact=fact,
-                    import_aliases=import_aliases,
-                )
-                if candidate is not None:
-                    candidates.append(candidate)
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.file_path,
-            item.line,
-            item.registry_class_name,
-            item.surface_name,
-        ),
-    )
-
-
-def _compact_registry_projection_policy_authority_candidates_from_facts(
-    projections: Sequence[CompactModuleClassProjection],
-    facts: tuple[KeyedRegistryAxisFact, ...],
-) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
-    return (
-        _REGISTRY_PROJECTION_SURFACE_ANALYZER.policy_authority_candidates_from_surfaces(
-            _compact_registry_projection_surface_candidates_from_facts(
-                projections, facts
-            )
-        )
     )
 
 
@@ -2510,6 +2631,7 @@ CompactKeyedRegistryCandidateT = TypeVar("CompactKeyedRegistryCandidateT")
 
 
 class _CompactKeyedRegistryCandidateDetectorBase(
+    SubscriptedCandidateType,
     CompactClassRepositoryProjectionMixin,
     CompactProjectionCandidateDetector[
         CompactModuleClassProjection,
@@ -2524,13 +2646,29 @@ class _CompactKeyedRegistryCandidateDetectorBase(
     detector says what candidates those facts hold.
     """
 
-    @abstractmethod
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._require_candidate_source(
+            cls._candidates_from_registry_facts,
+            _CompactKeyedRegistryCandidateDetectorBase._candidates_from_registry_facts,
+            CollectsItselfFromRegistryFacts,
+        )
+
     def _candidates_from_registry_facts(
         self,
         projections: Sequence[CompactModuleClassProjection],
         facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> Sequence[CompactKeyedRegistryCandidateT]:
-        raise NotImplementedError
+        """The subscripted candidate type's own candidates in the registry facts."""
+
+        candidate_type = type(self)._subscripted_candidate_type(
+            CollectsItselfFromRegistryFacts
+        )
+        assert candidate_type is not None
+        return cast(
+            Sequence[CompactKeyedRegistryCandidateT],
+            candidate_type.from_registry_facts(projections, facts),
+        )
 
     def _candidates_from_compact_projections(
         self,
@@ -2557,40 +2695,122 @@ class _CompactNonInjectiveTypeRegistryDetectorBase(
     KeyedRegistryAxisRootAnchored,
     _CompactKeyedRegistryCandidateDetectorBase[NonInjectiveTypeRegistryCandidate],
 ):
-    def _candidates_from_registry_facts(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        facts: tuple[KeyedRegistryAxisFact, ...],
-    ) -> Sequence[NonInjectiveTypeRegistryCandidate]:
-        del projections
-        return NonInjectiveTypeRegistryCandidate.from_facts(facts)
+    """Registry-axis detectors over type registries whose keys are not proved injective."""
 
 
 class _CompactInjectiveTypeRegistryDetectorBase(
     KeyedRegistryAxisRootAnchored,
     _CompactKeyedRegistryCandidateDetectorBase[InjectiveTypeRegistryCandidate],
 ):
-    def _candidates_from_registry_facts(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        facts: tuple[KeyedRegistryAxisFact, ...],
-    ) -> Sequence[InjectiveTypeRegistryCandidate]:
-        del projections
-        return InjectiveTypeRegistryCandidate.from_facts(facts)
+    """Registry-axis detectors over type registries whose keys are proved injective."""
 
 
 class _CompactRegistryProjectionSurfaceDetectorBase(
     NamedRegistryProjectionSurfaceAnchored,
     _CompactKeyedRegistryCandidateDetectorBase[RegistryProjectionSurfaceCandidate],
 ):
-    def _candidates_from_registry_facts(
-        self,
+    """Registry detectors whose candidates are registry projection surface findings."""
+
+
+@dataclass(frozen=True)
+class RegistryProjectionPolicyAuthorityCandidate(CollectsItselfFromRegistryFacts, LineWitnessCandidate):
+    registry_class_name: str
+    key_type_name: str
+    policy_hint: str
+    surface_names: tuple[str, ...]
+    surface_roles: tuple[RegistryProjectionRole, ...]
+    projection_target_names: tuple[str, ...]
+    materialization_rules: tuple[RegistryProjectionMaterialization, ...]
+    decompression_keys: tuple[str, ...]
+    file_paths: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    missing_key_names: tuple[str, ...]
+    missing_type_names: tuple[str, ...]
+
+    @classmethod
+    def from_registry_facts(
+        cls,
         projections: Sequence[CompactModuleClassProjection],
         facts: tuple[KeyedRegistryAxisFact, ...],
-    ) -> Sequence[RegistryProjectionSurfaceCandidate]:
-        return _compact_registry_projection_surface_candidates_from_facts(
-            projections, facts
+    ) -> tuple[Self, ...]:
+        return (
+            cls.from_surfaces(
+                RegistryProjectionSurfaceCandidate.from_registry_facts(
+                    projections, facts
+                )
+            )
         )
+
+    @classmethod
+    def from_surfaces(
+        cls,
+        surface_candidates: Sequence[RegistryProjectionSurfaceCandidate],
+    ) -> tuple[Self, ...]:
+        grouped: dict[
+            tuple[str, str, str], list[RegistryProjectionSurfaceCandidate]
+        ] = defaultdict(list)
+        for candidate in surface_candidates:
+            if (
+                candidate.projection_coverage_ratio >= 1.0
+                or candidate.subset_policy_hint is None
+            ):
+                continue
+            grouped[
+                candidate.registry_class_name,
+                candidate.key_type_name,
+                candidate.subset_policy_hint,
+            ].append(candidate)
+        candidates: list[Self] = []
+        for (
+            registry_class_name,
+            key_type_name,
+            policy_hint,
+        ), surfaces in sorted(grouped.items()):
+            if len(surfaces) < 2:
+                continue
+            ordered = sorted_tuple(
+                surfaces,
+                key=lambda item: (item.file_path, item.line, item.surface_name),
+            )
+            candidates.append(
+                cls(
+                    file_path=ordered[0].file_path,
+                    line=ordered[0].line,
+                    registry_class_name=registry_class_name,
+                    key_type_name=key_type_name,
+                    policy_hint=policy_hint,
+                    surface_names=tuple((surface.surface_name for surface in ordered)),
+                    surface_roles=sorted_tuple(
+                        {surface.projection_role for surface in ordered}
+                    ),
+                    projection_target_names=tuple(
+                        (surface.projection_target_name for surface in ordered)
+                    ),
+                    materialization_rules=tuple(
+                        (surface.materialization_rule for surface in ordered)
+                    ),
+                    decompression_keys=tuple(
+                        (surface.decompression_key for surface in ordered)
+                    ),
+                    file_paths=tuple((surface.file_path for surface in ordered)),
+                    line_numbers=tuple((surface.line for surface in ordered)),
+                    missing_key_names=sorted_tuple(
+                        {
+                            key_name
+                            for surface in ordered
+                            for key_name in surface.missing_key_names
+                        }
+                    ),
+                    missing_type_names=sorted_tuple(
+                        {
+                            type_name
+                            for surface in ordered
+                            for type_name in surface.missing_type_names
+                        }
+                    ),
+                )
+            )
+        return tuple(candidates)
 
 
 class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
@@ -2599,15 +2819,7 @@ class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
         RegistryProjectionPolicyAuthorityCandidate
     ],
 ):
-    def _candidates_from_registry_facts(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        facts: tuple[KeyedRegistryAxisFact, ...],
-    ) -> Sequence[RegistryProjectionPolicyAuthorityCandidate]:
-        return _compact_registry_projection_policy_authority_candidates_from_facts(
-            projections, facts
-        )
-
+    """Registry detectors whose candidates are registry projection policy authority findings."""
 
 declare_candidate_rule_detector(
     NonInjectiveTypeRegistryCandidate,

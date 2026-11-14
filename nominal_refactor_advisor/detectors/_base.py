@@ -1717,6 +1717,28 @@ class SubscriptedCandidateType:
             None,
         )
 
+    @classmethod
+    def _require_candidate_source(
+        cls,
+        found: Callable[..., object],
+        derived: Callable[..., object],
+        contract: type,
+    ) -> None:
+        """Refuse a concrete detector whose candidate method is still the base's
+        derived one (`found is derived`) while it subscripts no candidate type
+        answering the contract: it would have no way to find candidates."""
+
+        if (
+            _has_finding_spec_contract(cls)
+            and found is derived
+            and cls._subscripted_candidate_type(contract) is None
+        ):
+            raise TypeError(
+                f"{cls.__name__} must say how it finds candidates: subscript a "
+                f"candidate type answering {contract.__name__}, or override "
+                f"{derived.__name__}"
+            )
+
 
 class DerivedCandidateCollectorMixin(SubscriptedCandidateType, Generic[CandidateItemT]):
     candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
@@ -2171,17 +2193,11 @@ class CompactContextCandidateDetector(
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
-        if (
-            _has_finding_spec_contract(cls)
-            and cls._candidates_from_compact_context
-            is CompactContextCandidateDetector._candidates_from_compact_context
-            and cls._subscripted_candidate_type(CollectsItselfFromCompactContext) is None
-        ):
-            raise TypeError(
-                f"{cls.__name__} must say how it finds candidates: subscript a candidate "
-                "type that collects itself from the compact context, or override "
-                "_candidates_from_compact_context"
-            )
+        cls._require_candidate_source(
+            cls._candidates_from_compact_context,
+            CompactContextCandidateDetector._candidates_from_compact_context,
+            CollectsItselfFromCompactContext,
+        )
 
     def _candidates_from_compact_context(
         self,
@@ -4030,22 +4046,6 @@ def _registry_maturity_missing_signals(
     return tuple(missing)
 
 
-_REGISTRY_PROJECTION_POLICY_HINT_TERMS = frozenset(
-    {
-        "allow",
-        "allowed",
-        "deploy",
-        "enabled",
-        "experimental",
-        "persisted",
-        "public",
-        "smoke",
-        "stable",
-        "supported",
-    }
-)
-
-
 class RegistryProjectionMaterialization(StrEnum):
     MODULE_ALL_TUPLE = "module_all_tuple"
     MAPPING_LITERAL = "mapping_literal"
@@ -4263,122 +4263,6 @@ class RegistryProjectionSurfaceKind(FieldedStrEnum):
             max(len(self._proof_names(proof)), 1),
             len(self._shared_names(evidence)),
         )
-
-
-class _RegistryProjectionSurfaceAnalyzer:
-    def subset_policy_hint(self, surface_name: str) -> str | None:
-        lowered_name = surface_name.lower()
-        return next(
-            (
-                term
-                for term in sorted(_REGISTRY_PROJECTION_POLICY_HINT_TERMS)
-                if term in lowered_name
-            ),
-            None,
-        )
-
-    def candidate(
-        self,
-        *,
-        file_path: str,
-        fact: KeyedRegistryAxisFact,
-        evidence: RegistryProjectionSurfaceEvidence,
-        line: int,
-        surface_kind: RegistryProjectionSurfaceKind,
-        projected_names: tuple[str, ...],
-    ) -> RegistryProjectionSurfaceCandidate | None:
-        projection_role = RegistryProjectionRole.for_surface(
-            evidence,
-            file_path=file_path,
-            default=surface_kind.default_role,
-        )
-        if projection_role is None:
-            return None
-        return RegistryProjectionSurfaceCandidate(
-            file_path=file_path,
-            line=line,
-            registry_class_name=fact.class_name,
-            key_type_name=fact.key_type_name,
-            surface_evidence=evidence,
-            surface_kind=surface_kind,
-            projection_role=projection_role,
-            projected_names=projected_names,
-            subset_policy_hint=self.subset_policy_hint(evidence.surface_name),
-            injectivity_proof=fact.require_proof(),
-        )
-
-    def policy_authority_candidates_from_surfaces(
-        self,
-        surface_candidates: Sequence[RegistryProjectionSurfaceCandidate],
-    ) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
-        grouped: dict[
-            tuple[str, str, str], list[RegistryProjectionSurfaceCandidate]
-        ] = defaultdict(list)
-        for candidate in surface_candidates:
-            if (
-                candidate.projection_coverage_ratio >= 1.0
-                or candidate.subset_policy_hint is None
-            ):
-                continue
-            grouped[
-                candidate.registry_class_name,
-                candidate.key_type_name,
-                candidate.subset_policy_hint,
-            ].append(candidate)
-        candidates: list[RegistryProjectionPolicyAuthorityCandidate] = []
-        for (
-            registry_class_name,
-            key_type_name,
-            policy_hint,
-        ), surfaces in sorted(grouped.items()):
-            if len(surfaces) < 2:
-                continue
-            ordered = sorted_tuple(
-                surfaces,
-                key=lambda item: (item.file_path, item.line, item.surface_name),
-            )
-            candidates.append(
-                RegistryProjectionPolicyAuthorityCandidate(
-                    file_path=ordered[0].file_path,
-                    line=ordered[0].line,
-                    registry_class_name=registry_class_name,
-                    key_type_name=key_type_name,
-                    policy_hint=policy_hint,
-                    surface_names=tuple((surface.surface_name for surface in ordered)),
-                    surface_roles=sorted_tuple(
-                        {surface.projection_role for surface in ordered}
-                    ),
-                    projection_target_names=tuple(
-                        (surface.projection_target_name for surface in ordered)
-                    ),
-                    materialization_rules=tuple(
-                        (surface.materialization_rule for surface in ordered)
-                    ),
-                    decompression_keys=tuple(
-                        (surface.decompression_key for surface in ordered)
-                    ),
-                    file_paths=tuple((surface.file_path for surface in ordered)),
-                    line_numbers=tuple((surface.line for surface in ordered)),
-                    missing_key_names=sorted_tuple(
-                        {
-                            key_name
-                            for surface in ordered
-                            for key_name in surface.missing_key_names
-                        }
-                    ),
-                    missing_type_names=sorted_tuple(
-                        {
-                            type_name
-                            for surface in ordered
-                            for type_name in surface.missing_type_names
-                        }
-                    ),
-                )
-            )
-        return tuple(candidates)
-
-
-_REGISTRY_PROJECTION_SURFACE_ANALYZER = _RegistryProjectionSurfaceAnalyzer()
 
 
 def _manual_record_registration_shape(
@@ -5594,93 +5478,6 @@ class NonInjectiveTypeRegistryCandidate(
         del cls
         proof = fact.injectivity_proof
         return proof is not None and not proof.is_injective
-
-
-@dataclass(frozen=True)
-class RegistryProjectionSurfaceCandidate(LineWitnessCandidate):
-    registry_class_name: str
-    key_type_name: str
-    surface_evidence: RegistryProjectionSurfaceEvidence
-    surface_kind: RegistryProjectionSurfaceKind
-    projection_role: RegistryProjectionRole
-    projected_names: tuple[str, ...]
-    subset_policy_hint: str | None
-    injectivity_proof: InjectiveTypeRegistryProof
-    witness_name = AliasProperty[str]("surface_name")
-
-    @property
-    def surface_name(self) -> str:
-        return self.surface_evidence.surface_name
-
-    @property
-    def shared_key_names(self) -> tuple[str, ...]:
-        return self.surface_evidence.shared_key_names
-
-    @property
-    def shared_type_names(self) -> tuple[str, ...]:
-        return self.surface_evidence.shared_type_names
-
-    @property
-    def projection_coverage_ratio(self) -> float:
-        denominator, numerator = self.surface_kind.coverage_coordinates(
-            self.injectivity_proof,
-            self.surface_evidence,
-        )
-        return numerator / denominator
-
-    @property
-    def missing_key_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            frozenset(self.injectivity_proof.key_names)
-            - frozenset(self.shared_key_names)
-        )
-
-    @property
-    def missing_type_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            frozenset(self.injectivity_proof.registered_type_names)
-            - frozenset(self.shared_type_names)
-        )
-
-    @property
-    def projection_policy_name(self) -> str:
-        return self.subset_policy_hint or "full"
-
-    @property
-    def projection_target_name(self) -> str:
-        return f"{self.projection_role.value}:{self.surface_kind.value}"
-
-    @property
-    def materialization_rule(self) -> RegistryProjectionMaterialization:
-        return self.surface_kind.materialization_for(self.projection_role)
-
-    @property
-    def decompression_key(self) -> str:
-        return "|".join(
-            (
-                self.registry_class_name,
-                self.key_type_name,
-                self.projection_policy_name,
-                self.projection_target_name,
-                self.materialization_rule.value,
-            )
-        )
-
-
-@dataclass(frozen=True)
-class RegistryProjectionPolicyAuthorityCandidate(LineWitnessCandidate):
-    registry_class_name: str
-    key_type_name: str
-    policy_hint: str
-    surface_names: tuple[str, ...]
-    surface_roles: tuple[RegistryProjectionRole, ...]
-    projection_target_names: tuple[str, ...]
-    materialization_rules: tuple[RegistryProjectionMaterialization, ...]
-    decompression_keys: tuple[str, ...]
-    file_paths: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    missing_key_names: tuple[str, ...]
-    missing_type_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
