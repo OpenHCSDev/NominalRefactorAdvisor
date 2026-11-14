@@ -79,17 +79,23 @@ from nominal_refactor_advisor.observation_shapes import (
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.restated_fact_observations import (
     DeadModuleSiteFamily,
+    ExactKeySetSite,
     ExactKeySetSiteFamily,
+    FacadeForwardSite,
+    FacadeSite,
     ForwardingFacadeSiteFamily,
     ForeignAbsenceSite,
     ForeignAbsenceSiteFamily,
+    LegacyMarkerSite,
     LegacyMarkerSiteFamily,
     ModuleReferenceFacts,
     ModuleReferenceFamily,
+    NamedAttributeSite,
     NamedAttributeSiteFamily,
     ReferenceIndex,
     RestatingSiteFamily,
     RestatingSiteModule,
+    StringDispatchSite,
     StringDispatchSiteFamily,
     UnreachedModules,
 )
@@ -391,16 +397,16 @@ class StringKindDispatchDetector(
         (ObservationTag.STRING_DISPATCH,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
-        arms = sorted({literal for site in sites for literal in site.detail})
+    def describe(self, sites: Sequence[StringDispatchSite], context: None) -> str:
+        arms = sorted({literal for site in sites for literal in site.literals})
         return (
             f"`{sites[0].group}` is compared with {len(arms)} strings "
             f"({_listed(repr(arm) for arm in arms)}) at {len(sites)} comparison(s) in "
             f"{sites[0].symbol}."
         )
 
-    def metrics(self, sites: Sequence[RestatingSite], context: None) -> FindingMetrics:
-        arms = tuple(sorted({literal for site in sites for literal in site.detail}))
+    def metrics(self, sites: Sequence[StringDispatchSite], context: None) -> FindingMetrics:
+        arms = tuple(sorted({literal for site in sites for literal in site.literals}))
         return DispatchCountMetrics.from_literal_family(sites[0].group, arms)
 
 
@@ -422,8 +428,8 @@ class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
-        spelled = [f"{site.detail[0]}(.., {site.detail[1]!r})" for site in sites]
+    def describe(self, sites: Sequence[NamedAttributeSite], context: None) -> str:
+        spelled = [f"{site.access}(.., {site.attribute!r})" for site in sites]
         return (
             f"`{sites[0].group}` is reached by attribute name {len(sites)} time(s) in "
             f"{sites[0].symbol}: {_listed(spelled)}."
@@ -490,20 +496,19 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
             FieldObservationFamily.modules_in(projections_by_family)
         )
 
-    def describe(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
+    def describe(self, sites: Sequence[ExactKeySetSite], context: DeclaredRecords) -> str:
         # One finding covers one mapping checked against one key set; a symbol
         # that writes the same check twice has two sites that say the same.
         site = sites[0]
-        mapping, *keys = site.detail
         return (
-            f"The keys of `{mapping}` are checked against the literal "
-            f"{{{_listed(repr(key) for key in keys)}}} in {site.symbol}."
+            f"The keys of `{site.mapping}` are checked against the literal "
+            f"{{{_listed(repr(key) for key in site.keys)}}} in {site.symbol}."
         )
 
     def declared(
-        self, sites: Sequence[RestatingSite], context: DeclaredRecords
+        self, sites: Sequence[ExactKeySetSite], context: DeclaredRecords
     ) -> tuple[SourceLocation, ...]:
-        return context.owners_by_fields.get(frozenset(sites[0].detail[1:]), ())
+        return context.owners_by_fields.get(frozenset(sites[0].keys), ())
 
     def owner(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
         declared = self.declared(sites, context)
@@ -628,10 +633,10 @@ class ForeignAbsenceProbeDetector(
     def describe(
         self, sites: Sequence[ForeignAbsenceSite], context: ProbeOwnerContext
     ) -> str:
-        probes = sorted({f"{site.detail[0]} {site.detail[1]}" for site in sites})
+        probes = sorted({f"{site.attribute} {site.test}" for site in sites})
         located = "; ".join(
-            f"{site.location.where} `{site.group}.{site.detail[0]} "
-            f"{site.detail[1]}`, {site.owner.describe(site.detail[0], context)}"
+            f"{site.location.where} `{site.group}.{site.attribute} "
+            f"{site.test}`, {site.owner.describe(site.attribute, context)}"
             for site in sites
         )
         return (
@@ -670,9 +675,9 @@ class LegacyPathMarkerDetector(
         site = sites[0]
         return context.consumers_of(site.group, (site.file_path, site.lineno))
 
-    def describe(self, sites: Sequence[RestatingSite], context: ReferenceIndex) -> str:
+    def describe(self, sites: Sequence[LegacyMarkerSite], context: ReferenceIndex) -> str:
         site = sites[0]
-        kind, why = site.detail
+        kind, why = site.kind, site.why
         consumers = self.consumers(sites, context)
         where = _listed(SourceLineReference(path, line).where for path, line in consumers)
         still = (
@@ -734,34 +739,32 @@ class ForwardingFacadeDetector(
     )
 
     @staticmethod
-    def forwards(sites: Sequence[RestatingSite]) -> list[RestatingSite]:
-        return [
-            site
-            for site in sites
-            if site.detail[0] != ForwardingFacadeSiteFamily.CLASS_SITE
-        ]
+    def forwards(sites: Sequence[FacadeSite]) -> list[FacadeForwardSite]:
+        return [forward for site in sites for forward in site.forwarded()]
 
-    def restates(self, site: RestatingSite, context: CompactClassFamilyIndex) -> bool:
+    def restates(self, site: FacadeSite, context: CompactClassFamilyIndex) -> bool:
         """A member that overrides what an ancestor declares is the family's dispatch,
         not a forward: a receiver typed as the ancestor reaches it through the MRO."""
 
-        if site.detail[0] == ForwardingFacadeSiteFamily.CLASS_SITE:
-            return True
-        return not self._overrides_inherited(context, site.file_path, site.symbol, site.detail[0])
+        return not site.overrides_inherited(
+            lambda member: self._overrides_inherited(
+                context, site.file_path, site.symbol, member
+            )
+        )
 
-    def admits(self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex) -> bool:
+    def admits(self, sites: Sequence[FacadeSite], context: CompactClassFamilyIndex) -> bool:
         return len(self.forwards(sites)) >= ForwardingFacadeSiteFamily.MIN_FORWARDS
 
-    def describe(self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex) -> str:
+    def describe(self, sites: Sequence[FacadeSite], context: CompactClassFamilyIndex) -> str:
         facade = sites[0]
-        held_class = facade.detail[1]
+        held_class = facade.held_class_text()
         resolved = (
             f"of class `{held_class}`"
             if held_class
             else "of a class neither annotated nor constructed in the facade"
         )
         forwarded = [
-            f"{site.detail[0]} -> {site.detail[2]}" for site in self.forwards(sites)
+            f"{site.member} -> {site.target}" for site in self.forwards(sites)
         ]
         return (
             f"`{facade.symbol}` holds `self.{facade.group}` ({resolved}) and forwards "
@@ -771,14 +774,12 @@ class ForwardingFacadeDetector(
     def evidence(
         self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
     ) -> tuple[SourceLocation, ...]:
-        facade, *members = sites
+        facade = sites[0]
         return (
             facade.location,
             *(
-                SourceLocation(
-                    site.file_path, site.lineno, f"{site.symbol}.{site.detail[0]}"
-                )
-                for site in members
+                SourceLocation(site.file_path, site.lineno, f"{site.symbol}.{site.member}")
+                for site in self.forwards(sites)
             ),
         )
 

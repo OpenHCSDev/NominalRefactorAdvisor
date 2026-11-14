@@ -12,11 +12,11 @@ import re
 import tomllib
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.lexical_bindings import (
@@ -76,15 +76,130 @@ class RestatingSiteFamily(ShapeFamily[RestatingSiteModuleT], ABC):
         node: ast.expr | ast.stmt | ast.arg | ast.alias,
         symbol: str,
         group: str,
-        detail: tuple[str, ...],
-    ) -> RestatingSite:
-        return RestatingSite(
+        site_type: type[TypedRestatingSiteT],
+        **fields: Any,
+    ) -> TypedRestatingSiteT:
+        return site_type(
             file_path=parsed_module.file_path,
             lineno=node.lineno,
             symbol=symbol,
             group=group,
-            detail=detail,
+            **fields,
         )
+
+
+@dataclass(frozen=True)
+class TypedRestatingSite(RestatingSite, ABC):
+    """A restating site whose family names what it says in typed fields; `detail`,
+    the shared rendering every restated-fact detector orders and prints, is derived
+    from them and written by no one."""
+
+    detail: tuple[str, ...] = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "detail", self.spelled())
+
+    @abstractmethod
+    def spelled(self) -> tuple[str, ...]:
+        raise NotImplementedError
+
+
+TypedRestatingSiteT = TypeVar("TypedRestatingSiteT", bound=TypedRestatingSite)
+
+
+@dataclass(frozen=True)
+class StringDispatchSite(TypedRestatingSite):
+    """One comparison of a subject with string literals."""
+
+    literals: tuple[str, ...]
+
+    def spelled(self) -> tuple[str, ...]:
+        return self.literals
+
+
+@dataclass(frozen=True)
+class NamedAttributeSite(TypedRestatingSite):
+    """One getattr/hasattr/setattr/delattr naming an attribute."""
+
+    access: str
+    attribute: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.access, self.attribute)
+
+
+@dataclass(frozen=True)
+class ExactKeySetSite(TypedRestatingSite):
+    """One mapping's keys checked against a literal key set."""
+
+    mapping: str
+    keys: tuple[str, ...]
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.mapping, *self.keys)
+
+
+@dataclass(frozen=True)
+class LegacyMarkerSite(TypedRestatingSite):
+    """One declaration marked as the old path, and why it is one."""
+
+    kind: str
+    why: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.kind, self.why)
+
+
+@dataclass(frozen=True)
+class FacadeSite(TypedRestatingSite, ABC):
+    """A site of one forwarding facade: the class itself or one forwarding member."""
+
+    def forwarded(self) -> tuple[FacadeForwardSite, ...]:
+        """The forwarding members this site is; the class site is none."""
+
+        return ()
+
+    def overrides_inherited(self, overrides: Callable[[str], bool]) -> bool:
+        """Whether this site is the family's dispatch rather than a forward."""
+
+        del overrides
+        return False
+
+    def held_class_text(self) -> str:
+        """The class text of the held attribute, answered by the facade's class site."""
+
+        raise TypeError(f"{type(self).__name__} is a forwarding member, not the facade")
+
+
+@dataclass(frozen=True)
+class FacadeClassSite(FacadeSite):
+    """The facade class, with the class text of the attribute it forwards to."""
+
+    held_class: str
+
+    def held_class_text(self) -> str:
+        return self.held_class
+
+    def spelled(self) -> tuple[str, ...]:
+        return ("class", self.held_class)
+
+
+@dataclass(frozen=True)
+class FacadeForwardSite(FacadeSite):
+    """One member that only forwards to the held attribute."""
+
+    member: str
+    kind: str
+    target: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.member, self.kind, self.target)
+
+    def forwarded(self) -> tuple[FacadeForwardSite, ...]:
+        return (self,)
+
+    def overrides_inherited(self, overrides: Callable[[str], bool]) -> bool:
+        return overrides(self.member)
 
 
 def _string_constants(elements: list[ast.expr]) -> tuple[str, ...] | None:
@@ -132,7 +247,12 @@ class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 continue
             for node, (symbol, literals) in nodes.items():
                 yield cls.site(
-                    parsed_module, node, symbol, subject, tuple(sorted(literals))
+                    parsed_module,
+                    node,
+                    symbol,
+                    subject,
+                    StringDispatchSite,
+                    literals=tuple(sorted(literals)),
                 )
 
     @classmethod
@@ -219,7 +339,9 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 call,
                 index.lexical_symbol(node_index),
                 ast.unparse(receiver),
-                (access.description, spelled),
+                NamedAttributeSite,
+                access=access.description,
+                attribute=spelled,
             )
 
     @staticmethod
@@ -332,7 +454,9 @@ class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     node,
                     scope.symbol,
                     " ".join((ast.unparse(mapping), *keys)),
-                    (ast.unparse(mapping), *keys),
+                    ExactKeySetSite,
+                    mapping=ast.unparse(mapping),
+                    keys=tuple(keys),
                 )
 
     @staticmethod
@@ -415,10 +539,15 @@ class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
 
 @dataclass(frozen=True)
-class ForeignAbsenceSite(RestatingSite):
+class ForeignAbsenceSite(TypedRestatingSite):
     """A foreign absence probe with the class its receiver is declared as."""
 
+    attribute: str
+    test: str
     owner: ProbeOwner
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.attribute, self.test)
 
 
 @dataclass(frozen=True)
@@ -454,10 +583,8 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
                 lineno=node.lineno,
                 symbol=index.lexical_symbol(node_index),
                 group=ast.unparse(receiver),
-                detail=(
-                    attribute,
-                    "is None" if isinstance(operator, ast.Is) else "is not None",
-                ),
+                attribute=attribute,
+                test="is None" if isinstance(operator, ast.Is) else "is not None",
                 owner=resolver.owner(receiver),
             )
 
@@ -488,17 +615,16 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
 class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A class whose members only forward to an object it holds in an attribute.
 
-    The first site of a facade is the class itself (detail: held class, or "" when
-    unresolved); every further site is one forwarding member (detail: member name,
-    kind, target). A facade needs two forwards to one held attribute.
+    The first site of a facade is the class itself (FacadeClassSite, its held
+    class text, "" when unresolved); every further site is one forwarding member
+    (FacadeForwardSite). A facade needs two forwards to one held attribute.
     """
 
 
     MIN_FORWARDS = 2
-    CLASS_SITE = "class"
 
     @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[FacadeSite]:
         index = parsed_module.syntax_index
         for node_index, node in index.indexed_nodes_of_type(ast.ClassDef):
             held = cls.held_attributes(node)
@@ -521,7 +647,8 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     node,
                     symbol,
                     attribute,
-                    (cls.CLASS_SITE, held[attribute]),
+                    FacadeClassSite,
+                    held_class=held[attribute],
                 )
                 for member, kind, target in members:
                     yield cls.site(
@@ -529,7 +656,10 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         member,
                         symbol,
                         attribute,
-                        (member.name, kind, target),
+                        FacadeForwardSite,
+                        member=member.name,
+                        kind=kind,
+                        target=target,
                     )
 
     @classmethod
@@ -766,7 +896,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         argument_node,
                         index.scope_of(node_index).declared(argument),
                         argument,
-                        ("parameter", "beside its replacement"),
+                        LegacyMarkerSite,
+                        kind="parameter",
+                        why="beside its replacement",
                     )
         for node_index, assigned in StatementValues.keyed(
             (*index.indexed_nodes_of_type(ast.Assign),
@@ -784,7 +916,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         node,
                         index.scope_of(node_index).declared(target),
                         target,
-                        ("alias", f"of {replacement}"),
+                        LegacyMarkerSite,
+                        kind="alias",
+                        why=f"of {replacement}",
                     )
         for node_index, node in index.indexed_nodes_of_type(ast.alias):
             # An alias renames the old path; a plain import of a marked name is its consumer.
@@ -797,7 +931,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         node,
                         index.scope_of(node_index).declared(bound),
                         bound,
-                        ("import alias", f"of {node.name}"),
+                        LegacyMarkerSite,
+                        kind="import alias",
+                        why=f"of {node.name}",
                     )
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             warned = cls.warned_legacy_class(call)
@@ -808,7 +944,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     call,
                     scope.symbol,
                     scope.name,
-                    ("warning", warned),
+                    LegacyMarkerSite,
+                        kind="warning",
+                        why=warned,
                 )
 
     @classmethod
@@ -834,7 +972,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             node,
             index.scope_of(node_index).declared(node.name),
             node.name,
-            (type(node).__name__, why),
+            LegacyMarkerSite,
+                        kind=type(node).__name__,
+                        why=why,
         )
 
     @staticmethod
