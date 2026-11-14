@@ -494,8 +494,12 @@ shared with a family (`_base.py:4277`). One passed and was composed:
   declaration ignores is one finding listing each of them, and a class
   whose ancestry the scan cannot close is left out because an unseen
   base may fix the signature.
-- Legacy-path erasure does not count a class or function referenced by
-  bare name without a call.
+- `erase_dead_compatibility` used to forbid only a later call (and, for
+  a method, an attribute read) of the erased name. Erasing a function or
+  class now also forbids importing that name anywhere and reading it as
+  a bare name in the file that declared it: a callback, a base class, a
+  dict value. The checks go by spelling, so a common name can be refused
+  for an unrelated use; rename first, or read the refusal.
 - `ClassOverlapVerdicts.existing_owner` (`class_overlap.py`) takes any
   class with subclasses whose declarations *include* the block as its
   owner, even when it declares more. For three records sharing

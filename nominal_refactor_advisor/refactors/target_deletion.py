@@ -11,8 +11,11 @@ from typing import ClassVar
 from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
 from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardRule,
+    ArchitectureGuardTargetScope,
     ForbiddenAttributeArchitectureGuardConstraint,
     ForbiddenCallArchitectureGuardConstraint,
+    ForbiddenImportArchitectureGuardConstraint,
+    ForbiddenReferenceArchitectureGuardConstraint,
 )
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_payload import (
@@ -252,6 +255,7 @@ class EraseDeadCompatibilityOperation(TargetDeletionOperationABC):
             self.rationale
             or "Erase the dead compatibility path and reject residual uses."
         )
+        bare_names = target.node_kind.bare_names_reaching(target.name)
         return (
             ArchitectureGuardRule(
                 rule_id=f"{target.qualname}-no-residual-compatibility-uses",
@@ -262,10 +266,23 @@ class EraseDeadCompatibilityOperation(TargetDeletionOperationABC):
                             self.forbidden_attribute_names
                         ),
                         ForbiddenCallArchitectureGuardConstraint(call_names),
+                        ForbiddenImportArchitectureGuardConstraint(bare_names),
                     )
                     if constraint.names
                 ),
                 reason=reason,
+            ),
+            *(
+                ArchitectureGuardRule(
+                    rule_id=f"{target.qualname}-no-residual-references-beside-it",
+                    constraints=(
+                        ForbiddenReferenceArchitectureGuardConstraint(names),
+                    ),
+                    scopes=(ArchitectureGuardTargetScope(file_path=target.file_path),),
+                    reason=reason,
+                )
+                for names in (bare_names,)
+                if names
             ),
         )
 

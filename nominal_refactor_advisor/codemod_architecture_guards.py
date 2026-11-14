@@ -168,6 +168,42 @@ class ForbiddenAttributeArchitectureGuardConstraint(
 
 
 @dataclass(frozen=True)
+class ForbiddenReferenceArchitectureGuardConstraint(
+    ForbiddenNameArchitectureGuardConstraint,
+):
+    """Forbid reading a bare name declared here: called, passed, inherited or tested."""
+
+    constraint_key_value: ClassVar[str] = "forbidden_references"
+
+    def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
+        return tuple(
+            self.match(node, node.id, f"Forbidden reference {node.id!r}")
+            for node in ast.walk(module)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in self.names
+        )
+
+
+@dataclass(frozen=True)
+class ForbiddenImportArchitectureGuardConstraint(
+    ForbiddenNameArchitectureGuardConstraint,
+):
+    """Forbid importing a name declared here from any module."""
+
+    constraint_key_value: ClassVar[str] = "forbidden_imports"
+
+    def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
+        return tuple(
+            self.match(node, alias.name, f"Forbidden import {alias.name!r}")
+            for node in ast.walk(module)
+            if isinstance(node, ast.ImportFrom)
+            for alias in node.names
+            if alias.name in self.names
+        )
+
+
+@dataclass(frozen=True)
 class ArchitectureGuardDispatchSubject:
     """Parsed semantic dispatch axis supplied at the JSON boundary as source."""
 

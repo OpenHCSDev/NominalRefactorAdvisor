@@ -153,6 +153,15 @@ class AstTargetNodeKind(StrEnum):
 
         return (name,) if self.is_method else ()
 
+    def bare_names_reaching(self, name: str) -> tuple[str, ...]:
+        """The bare names consumers reach a target of this kind through.
+
+        A function or class is read by its name where it is declared and
+        imported by that name elsewhere; a method never is.
+        """
+
+        return () if self.is_method else (name,)
+
 
 @dataclass(frozen=True)
 class SourceFileDigest(DataclassJsonReport):

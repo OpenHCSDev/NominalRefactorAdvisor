@@ -19902,8 +19902,55 @@ def test_erase_dead_compatibility_operation_rejects_remaining_callers(
 
     assert "target_shape" not in json_report_object(recipe)
     assert simulation.is_clean is False
-    assert simulation.architecture_guard_report.violation_count == 1
-    assert "legacy_helper" in simulation.architecture_guard_report.violations[0].detail
+    violations = simulation.architecture_guard_report.violations
+    assert sorted(violation.detail.split(":")[0] for violation in violations) == [
+        "Forbidden call 'legacy_helper'",
+        "Forbidden import 'legacy_helper'",
+    ]
+
+
+def test_erase_dead_compatibility_operation_rejects_a_bare_reference_beside_it(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/legacy.py"
+    _write_module(
+        tmp_path,
+        "pkg/legacy.py",
+        "\ndef legacy_helper(value):\n    return value\n\n\n"
+        "HANDLERS = {'legacy': legacy_helper}\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/unrelated.py",
+        "\ndef caller(legacy_helper):\n    return legacy_helper\n",
+    )
+    modules = parse_python_modules(tmp_path)
+    source_index = build_source_index(modules, ())
+    source_by_path = {
+        module.path.as_posix(): module.path.read_text() for module in modules
+    }
+    document = CodemodPlanDocument(
+        recipes=(
+            RefactorRecipe("erase-dead-compatibility").with_operation(
+                EraseDeadCompatibilityOperation(
+                    target=SourceRewriteTarget(
+                        file_path=module_path.as_posix(),
+                        qualname="legacy_helper",
+                    )
+                )
+            ),
+        )
+    )
+
+    simulation = document.simulate(
+        _indexed_snapshot(source_index, source_by_path),
+        backend=CodemodBackend.AST_SPAN,
+    )
+
+    assert simulation.is_clean is False
+    (violation,) = simulation.architecture_guard_report.violations
+    assert violation.detail.startswith("Forbidden reference 'legacy_helper'")
+    assert violation.location.file_path == module_path.as_posix()
 
 
 def test_target_deletion_leaves_own_distinct_registered_operations() -> None:
