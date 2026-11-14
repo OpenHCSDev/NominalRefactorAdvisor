@@ -3361,25 +3361,6 @@ class ModuleCollectedLineWitnessCandidate(CollectsItself, LineWitnessCandidate, 
         raise NotImplementedError
 
 
-class WitnessNameAliasMixin(ABC):
-    """Supplies ``witness_name`` to a line witness; the witness's own family registers it."""
-
-    @property
-    @abstractmethod
-    def witness_name(self) -> str:
-        raise NotImplementedError
-
-
-class ClassNameWitnessNameMixin(WitnessNameAliasMixin):
-    class_name: str
-    witness_name = AliasProperty[str]("class_name")
-
-
-class QualnameWitnessNameMixin(WitnessNameAliasMixin):
-    qualname: str
-    witness_name = AliasProperty[str]("qualname")
-
-
 @dataclass(frozen=True)
 class EnumCaseFamilyMixin(ABC):
     enum_name: str
@@ -3412,8 +3393,9 @@ class FunctionEvidenceLocationsCandidate(
 
 
 @dataclass(frozen=True)
-class ClassLineWitnessCandidate(ClassNameWitnessNameMixin, LineWitnessCandidate):
+class ClassLineWitnessCandidate(LineWitnessCandidate):
     class_name: str
+    witness_name = AliasProperty[str]("class_name")
 
 
 @dataclass(frozen=True)
@@ -3511,8 +3493,9 @@ class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidate):
+class QualnameLineWitnessCandidate(LineWitnessCandidate):
     qualname: str
+    witness_name = AliasProperty[str]("qualname")
 
 
 @dataclass(frozen=True)

@@ -12,7 +12,6 @@ from nominal_refactor_advisor.detectors._base import (
     ClassLineWitnessCandidate,
     LineWitnessCandidate,
     QualnameLineWitnessCandidate,
-    WitnessNameAliasMixin,
 )
 from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthority
 
@@ -57,15 +56,13 @@ def test_every_registered_class_holds_exactly_one_key_of_its_family():
         assert len(set(members)) == len(members), root
 
 
-def test_witness_name_mixins_supply_a_name_and_register_nothing():
-    assert not isinstance(WitnessNameAliasMixin, AutoRegisterMeta)
+def test_name_witnesses_each_hold_one_registry_key():
     registry = LineWitnessCandidate.__registry__
     keys = {
         witness: [key for key, member in registry.items() if member is witness]
         for witness in (ClassLineWitnessCandidate, QualnameLineWitnessCandidate)
     }
     for witness, witness_keys in keys.items():
-        assert issubclass(witness, WitnessNameAliasMixin)
         assert len(witness_keys) == 1, witness
     assert keys[ClassLineWitnessCandidate] != keys[QualnameLineWitnessCandidate]
 
