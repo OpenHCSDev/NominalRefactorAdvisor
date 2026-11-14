@@ -110,20 +110,20 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
                 )
             )
             .combine(
-                lambda statements: _accumulator_initializer(statements.assign),
+                lambda statements: AccumulatorFoldFamilyCandidate._accumulator_initializer(statements.assign),
                 lambda statements, accumulator: (
                     _AccumulatorFoldContext(
                         statements=statements,
                         accumulator_name=accumulator[0],
                         accumulator_type_name=accumulator[1],
-                        step_call=_accumulator_step_call(statements.loop, accumulator[0]),
+                        step_call=AccumulatorFoldFamilyCandidate._accumulator_step_call(statements.loop, accumulator[0]),
                     )
-                    if _accumulator_step_call(statements.loop, accumulator[0]) is not None
+                    if AccumulatorFoldFamilyCandidate._accumulator_step_call(statements.loop, accumulator[0]) is not None
                     else None
                 ),
             )
             .combine(
-                lambda context: _accumulator_result_call(
+                lambda context: AccumulatorFoldFamilyCandidate._accumulator_result_call(
                     context.statements.returned,
                     context.accumulator_name,
                 ),
@@ -137,6 +137,51 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
             )
             .unwrap_or_none()
         )
+
+    @staticmethod
+    def _accumulator_initializer(statement: ast.stmt) -> tuple[str, str] | None:
+        if not isinstance(statement, ast.Assign):
+            return None
+        target = as_ast(single_assign_target(statement), ast.Name)
+        call = as_ast(statement.value, ast.Call)
+        if target is None or call is None or call.args or call.keywords:
+            return None
+        return target.id, ast.unparse(call.func)
+
+    @staticmethod
+    def _accumulator_result_call(
+        returned: ast.Return, accumulator_name: str
+    ) -> ast.Call | None:
+        call = as_ast(returned.value, ast.Call)
+        if not (
+            call is not None
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and (call.func.value.id == accumulator_name)
+            and (not call.args)
+            and (not call.keywords)
+        ):
+            return None
+        return call
+
+    @staticmethod
+    def _accumulator_step_call(loop: ast.For, accumulator_name: str) -> ast.Call | None:
+        target = as_ast(loop.target, ast.Name)
+        expression = as_ast(single_item(loop.body), ast.Expr)
+        call = as_ast(expression.value if expression is not None else None, ast.Call)
+        arg = single_item(call.args) if call is not None else None
+        if not (
+            target is not None
+            and call is not None
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and (call.func.value.id == accumulator_name)
+            and (not call.keywords)
+            and isinstance(arg, ast.Name)
+            and (arg.id == target.id)
+        ):
+            return None
+        return call
 
 
 @dataclass(frozen=True)
@@ -251,51 +296,6 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
                     )
                 )
         return tuple(groups)
-
-
-def _accumulator_initializer(statement: ast.stmt) -> tuple[str, str] | None:
-    if not isinstance(statement, ast.Assign):
-        return None
-    target = as_ast(single_assign_target(statement), ast.Name)
-    call = as_ast(statement.value, ast.Call)
-    if target is None or call is None or call.args or call.keywords:
-        return None
-    return target.id, ast.unparse(call.func)
-
-
-def _accumulator_step_call(loop: ast.For, accumulator_name: str) -> ast.Call | None:
-    target = as_ast(loop.target, ast.Name)
-    expression = as_ast(single_item(loop.body), ast.Expr)
-    call = as_ast(expression.value if expression is not None else None, ast.Call)
-    arg = single_item(call.args) if call is not None else None
-    if not (
-        target is not None
-        and call is not None
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and (call.func.value.id == accumulator_name)
-        and (not call.keywords)
-        and isinstance(arg, ast.Name)
-        and (arg.id == target.id)
-    ):
-        return None
-    return call
-
-
-def _accumulator_result_call(
-    returned: ast.Return, accumulator_name: str
-) -> ast.Call | None:
-    call = as_ast(returned.value, ast.Call)
-    if not (
-        call is not None
-        and isinstance(call.func, ast.Attribute)
-        and isinstance(call.func.value, ast.Name)
-        and (call.func.value.id == accumulator_name)
-        and (not call.args)
-        and (not call.keywords)
-    ):
-        return None
-    return call
 
 
 @dataclass(frozen=True)

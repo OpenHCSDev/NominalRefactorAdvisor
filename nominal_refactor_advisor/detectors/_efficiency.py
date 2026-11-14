@@ -188,20 +188,6 @@ class CallbackThreadingDetector(PerModuleIssueDetector):
 # ---------------------------------------------------------------------------
 
 
-def _for_target_names(target: ast.expr) -> set[str]:
-    """All simple names bound by a for-loop target, including unpacking."""
-    names: set[str] = set()
-    match target:
-        case ast.Name(id=name):
-            names.add(name)
-        case ast.Tuple(elts=elements) | ast.List(elts=elements):
-            for elt in elements:
-                names.update(_for_target_names(elt))
-        case ast.Starred(value=inner):
-            names.update(_for_target_names(inner))
-    return names
-
-
 def _unparse_short(node: ast.expr) -> str:
     """Short readable form for evidence labels."""
     match node:
@@ -212,18 +198,6 @@ def _unparse_short(node: ast.expr) -> str:
         case ast.Call(func=func):
             return f"{_unparse_short(func)}(...)"
     return "?"
-
-
-def _element_attr_args(
-    call: ast.Call, target_names: set[str],
-) -> list[tuple[str, str]]:
-    """Return (target_name, attr) pairs for call arguments that are target.attr."""
-    hits: list[tuple[str, str]] = []
-    for arg in (*call.args, *(kw.value for kw in call.keywords)):
-        match arg:
-            case ast.Attribute(value=ast.Name(id=var), attr=attr) if var in target_names:
-                hits.append((var, attr))
-    return hits
 
 
 @dataclass(frozen=True)
@@ -251,19 +225,6 @@ class _LinearScan:
     sequence_label: str
     attribute: str
     enclosing_function: str
-
-
-def _equality_attribute_filter(condition: ast.expr, var_name: str) -> str | None:
-    """If condition is `var.ATTR == expr` or `expr == var.ATTR`, return ATTR."""
-    match condition:
-        case ast.Compare(
-            left=left,
-            ops=[ast.Eq()],
-            comparators=[right],
-        ):
-            attr = _attr_of_var(left, var_name) or _attr_of_var(right, var_name)
-            return attr
-    return None
 
 
 def _attr_of_var(node: ast.expr, var_name: str) -> str | None:
@@ -570,12 +531,25 @@ class LinearScanByNameDetector(PerModuleIssueDetector):
                 return None
 
         condition = gen.ifs[0]
-        attr_name = _equality_attribute_filter(condition, var_name)
+        attr_name = LinearScanByNameDetector._equality_attribute_filter(condition, var_name)
         if attr_name is None:
             return None
 
         seq_label = _unparse_short(gen.iter)
         return (seq_label, attr_name)
+
+    @staticmethod
+    def _equality_attribute_filter(condition: ast.expr, var_name: str) -> str | None:
+        """If condition is `var.ATTR == expr` or `expr == var.ATTR`, return ATTR."""
+        match condition:
+            case ast.Compare(
+                left=left,
+                ops=[ast.Eq()],
+                comparators=[right],
+            ):
+                attr = _attr_of_var(left, var_name) or _attr_of_var(right, var_name)
+                return attr
+        return None
 
 
 class LoopRelookupDetector(PerModuleIssueDetector):
@@ -677,7 +651,7 @@ class LoopRelookupDetector(PerModuleIssueDetector):
            (the "same source" signal)
         """
 
-        target_names = _for_target_names(for_node.target)
+        target_names = LoopRelookupDetector._for_target_names(for_node.target)
         if not target_names:
             return []
 
@@ -689,7 +663,7 @@ class LoopRelookupDetector(PerModuleIssueDetector):
         relookups: list[_LoopRelookup] = []
 
         for node in nodes_of(ast.Call, for_node):
-            hits = _element_attr_args(node, target_names)
+            hits = LoopRelookupDetector._element_attr_args(node, target_names)
             if not hits:
                 continue
 
@@ -717,6 +691,32 @@ class LoopRelookupDetector(PerModuleIssueDetector):
                 ))
 
         return relookups
+
+    @staticmethod
+    def _element_attr_args(
+        call: ast.Call, target_names: set[str],
+    ) -> list[tuple[str, str]]:
+        """Return (target_name, attr) pairs for call arguments that are target.attr."""
+        hits: list[tuple[str, str]] = []
+        for arg in (*call.args, *(kw.value for kw in call.keywords)):
+            match arg:
+                case ast.Attribute(value=ast.Name(id=var), attr=attr) if var in target_names:
+                    hits.append((var, attr))
+        return hits
+
+    @staticmethod
+    def _for_target_names(target: ast.expr) -> set[str]:
+        """All simple names bound by a for-loop target, including unpacking."""
+        names: set[str] = set()
+        match target:
+            case ast.Name(id=name):
+                names.add(name)
+            case ast.Tuple(elts=elements) | ast.List(elts=elements):
+                for elt in elements:
+                    names.update(LoopRelookupDetector._for_target_names(elt))
+            case ast.Starred(value=inner):
+                names.update(LoopRelookupDetector._for_target_names(inner))
+        return names
 
 
 # ---------------------------------------------------------------------------

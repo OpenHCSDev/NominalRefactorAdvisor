@@ -31,34 +31,6 @@ from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, A
 from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
 from typing import ClassVar
 
-def _collect_returns(
-    stmts: list[ast.stmt], into: list[ast.Return]
-) -> None:
-    """Walk statements collecting returns, stopping at nested function boundaries."""
-    for stmt in stmts:
-        if isinstance(stmt, ast.Return):
-            into.append(stmt)
-        elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            pass
-        elif isinstance(stmt, (ast.If, ast.With, ast.AsyncWith)):
-            _collect_returns(stmt.body, into)
-            if hasattr(stmt, "orelse"):
-                _collect_returns(stmt.orelse, into)
-        elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
-            _collect_returns(stmt.body, into)
-            _collect_returns(stmt.orelse, into)
-        elif isinstance(stmt, (ast.Try, ast.TryStar)):
-            _collect_returns(stmt.body, into)
-            for handler in stmt.handlers:
-                if handler.body:
-                    _collect_returns(handler.body, into)
-            _collect_returns(stmt.orelse, into)
-            _collect_returns(stmt.finalbody, into)
-        elif isinstance(stmt, ast.Match):
-            for case in stmt.cases:
-                _collect_returns(case.body, into)
-
-
 @dataclass(frozen=True, kw_only=True)
 class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
     """Rewrite ``Class.method`` from returning zero-or-one tuples to returning
@@ -355,7 +327,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
     def _find_returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
         """Every return statement directly in this function (not nested functions)."""
         returns: list[ast.Return] = []
-        _collect_returns(function.body, returns)
+        FlattenTupleReturnOperation._collect_returns(function.body, returns)
         return returns
 
     @staticmethod
@@ -370,5 +342,33 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
             if len(value.elts) == 1:
                 return "value"
         return None
+
+    @staticmethod
+    def _collect_returns(
+        stmts: list[ast.stmt], into: list[ast.Return]
+    ) -> None:
+        """Walk statements collecting returns, stopping at nested function boundaries."""
+        for stmt in stmts:
+            if isinstance(stmt, ast.Return):
+                into.append(stmt)
+            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                pass
+            elif isinstance(stmt, (ast.If, ast.With, ast.AsyncWith)):
+                FlattenTupleReturnOperation._collect_returns(stmt.body, into)
+                if hasattr(stmt, "orelse"):
+                    FlattenTupleReturnOperation._collect_returns(stmt.orelse, into)
+            elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                FlattenTupleReturnOperation._collect_returns(stmt.body, into)
+                FlattenTupleReturnOperation._collect_returns(stmt.orelse, into)
+            elif isinstance(stmt, (ast.Try, ast.TryStar)):
+                FlattenTupleReturnOperation._collect_returns(stmt.body, into)
+                for handler in stmt.handlers:
+                    if handler.body:
+                        FlattenTupleReturnOperation._collect_returns(handler.body, into)
+                FlattenTupleReturnOperation._collect_returns(stmt.orelse, into)
+                FlattenTupleReturnOperation._collect_returns(stmt.finalbody, into)
+            elif isinstance(stmt, ast.Match):
+                for case in stmt.cases:
+                    FlattenTupleReturnOperation._collect_returns(case.body, into)
 
 

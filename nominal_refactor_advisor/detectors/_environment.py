@@ -51,15 +51,10 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
 )
 
-_ENVIRONMENT_KEY_PARAMETER_TOKENS = frozenset(
-    ("env", "environment", "flag", "key", "name", "variable")
-)
 _DECLARED_AUTHORITY_TOKENS = frozenset(
     ("authority", "contract", "declared", "decision", "policy", "resolver")
 )
-_DECLARED_AUTHORITY_CALL_TOKENS = frozenset(("declared", "decision"))
 _ENVIRONMENT_BOOLEAN_TOKENS = frozenset(("boolean", "decision", "enabled", "flag"))
-_INSTANCE_PARAMETER_NAMES = frozenset(("cls", "self"))
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -598,20 +593,6 @@ class EnvironmentReadSyntaxAuthority:
         return None if syntax is None else syntax.materialize(resolver)
 
 
-def _none_checked_names(node: ast.AST) -> tuple[str, ...]:
-    if not isinstance(node, ast.Compare) or len(node.ops) != 1:
-        return ()
-    if not isinstance(node.ops[0], ast.Is):
-        return ()
-    operands = (node.left, node.comparators[0])
-    if not any(
-        CompactValueExpression.project(operand).value_is_none_literal
-        for operand in operands
-    ):
-        return ()
-    return tuple(operand.id for operand in operands if isinstance(operand, ast.Name))
-
-
 @dataclass(frozen=True)
 class _MissingOverride:
     literal: str | None = None
@@ -917,13 +898,6 @@ class EnvironmentSemanticNameAuthority:
         )
 
 
-def _annotation_is_bool(node: ast.AST | None) -> bool:
-    return (
-        node is not None
-        and ExpressionReference.decoded(node).terminal_name == "bool"
-    )
-
-
 @dataclass(frozen=True)
 class _DeclaredEnvironmentFlagAuthority(SourceLocation):
     selectors: tuple[str, ...]
@@ -993,6 +967,11 @@ def _wrapper_candidate(
 
 @dataclass(frozen=True)
 class _EnvironmentBooleanModuleProjection:
+    _INSTANCE_PARAMETER_NAMES = frozenset(("cls", "self"))
+    _ENVIRONMENT_KEY_PARAMETER_TOKENS = frozenset(
+        ("env", "environment", "flag", "key", "name", "variable")
+    )
+    _DECLARED_AUTHORITY_CALL_TOKENS = frozenset(("declared", "decision"))
     parser_sites: tuple[_EnvironmentBooleanParserSite, ...]
     authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...]
     wrapper_facts: tuple[_FixedKeyAuthorityWrapperFact, ...]
@@ -1113,7 +1092,7 @@ class _EnvironmentBooleanModuleProjection:
                     keyword.value
                     for keyword in CallKeywords.of(call.keywords).named
                     if EnvironmentSemanticNameAuthority.tokens(keyword.name)
-                    & _ENVIRONMENT_KEY_PARAMETER_TOKENS
+                    & _EnvironmentBooleanModuleProjection._ENVIRONMENT_KEY_PARAMETER_TOKENS
                 ),
                 None,
             )
@@ -1121,7 +1100,7 @@ class _EnvironmentBooleanModuleProjection:
                 key_expression = call.args[0]
             if key_expression is None:
                 continue
-            dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
+            dynamic_parameters = scope.parameter_names - _EnvironmentBooleanModuleProjection._INSTANCE_PARAMETER_NAMES
             if _EnvironmentBooleanModuleProjection._expression_uses_parameters(key_expression, dynamic_parameters):
                 continue
             environment_key = _LiteralResolver.for_scope(scope).string(key_expression)
@@ -1169,7 +1148,7 @@ class _EnvironmentBooleanModuleProjection:
         for node in scope.nodes:
             if not isinstance(node, ast.If):
                 continue
-            checked_names = _none_checked_names(node.test)
+            checked_names = _EnvironmentBooleanModuleProjection._none_checked_names(node.test)
             for checked_name in checked_names:
                 for statement in node.body:
                     if isinstance(statement, (ast.Assign, ast.AnnAssign)):
@@ -1215,46 +1194,46 @@ class _EnvironmentBooleanModuleProjection:
             return False
         if not semantic_tokens & _DECLARED_AUTHORITY_TOKENS:
             return False
-        dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
+        dynamic_parameters = scope.parameter_names - _EnvironmentBooleanModuleProjection._INSTANCE_PARAMETER_NAMES
         if not any(
             EnvironmentSemanticNameAuthority.tokens(parameter_name)
-            & _ENVIRONMENT_KEY_PARAMETER_TOKENS
+            & _EnvironmentBooleanModuleProjection._ENVIRONMENT_KEY_PARAMETER_TOKENS
             for parameter_name in dynamic_parameters
         ):
             return False
-        if not _annotation_is_bool(scope.node.returns) and not (
+        if not _EnvironmentBooleanModuleProjection._annotation_is_bool(scope.node.returns) and not (
             semantic_tokens & frozenset(("decision", "enabled"))
         ):
             return False
         nodes = scope.nodes
         return any(isinstance(node, ast.Raise) for node in nodes) or any(
             not EnvironmentSemanticNameAuthority.tokens(ast.unparse(call.func)).isdisjoint(
-                _DECLARED_AUTHORITY_CALL_TOKENS
+                _EnvironmentBooleanModuleProjection._DECLARED_AUTHORITY_CALL_TOKENS
             )
             for call in nodes
             if isinstance(call, ast.Call)
         )
 
+    @staticmethod
+    def _annotation_is_bool(node: ast.AST | None) -> bool:
+        return (
+            node is not None
+            and ExpressionReference.decoded(node).terminal_name == "bool"
+        )
 
-def _native_environment_function_may_declare_authority(name: str) -> bool:
-    tokens = EnvironmentSemanticNameAuthority.tokens(name)
-    return (
-        "environment" in tokens
-        and bool(tokens & _ENVIRONMENT_BOOLEAN_TOKENS)
-        and bool(tokens & _DECLARED_AUTHORITY_TOKENS)
-    )
-
-
-def _native_environment_import_aliases(
-    syntax_index: NativePythonSyntaxIndex,
-) -> tuple[_EnvironmentImportAliases, list[ast.stmt]]:
-    imports = [
-        syntax_index.statement_for(node)
-        for node in syntax_index.tree.root_node.named_children
-        if node.type in {"import_from_statement", "import_statement"}
-    ]
-    module = ast.Module(body=imports, type_ignores=[])
-    return _EnvironmentImportAliases.from_module(module), imports
+    @staticmethod
+    def _none_checked_names(node: ast.AST) -> tuple[str, ...]:
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            return ()
+        if not isinstance(node.ops[0], ast.Is):
+            return ()
+        operands = (node.left, node.comparators[0])
+        if not any(
+            CompactValueExpression.project(operand).value_is_none_literal
+            for operand in operands
+        ):
+            return ()
+        return tuple(operand.id for operand in operands if isinstance(operand, ast.Name))
 
 
 class _EnvironmentBooleanModuleProjectionFamily(
@@ -1278,7 +1257,7 @@ class _EnvironmentBooleanModuleProjectionFamily(
         if not syntax_index.is_complete:
             return None
         try:
-            aliases, imports = _native_environment_import_aliases(syntax_index)
+            aliases, imports = _EnvironmentBooleanModuleProjectionFamily._native_environment_import_aliases(syntax_index)
             module_assignments = [
                 syntax_index.statement_for(node)
                 for node in syntax_index.top_level_assignment_statements()
@@ -1352,7 +1331,7 @@ class _EnvironmentBooleanModuleProjectionFamily(
                         for name in imported_read_names
                     )
                 )
-                may_declare_authority = _native_environment_function_may_declare_authority(
+                may_declare_authority = _EnvironmentBooleanModuleProjectionFamily._native_environment_function_may_declare_authority(
                     function_symbol
                 )
                 may_be_wrapper = class_node is not None and class_method_count <= 2
@@ -1390,6 +1369,27 @@ class _EnvironmentBooleanModuleProjectionFamily(
         scopes = _function_scopes(parsed_module)
         aliases = _EnvironmentImportAliases.from_module(parsed_module.module)
         return [_EnvironmentBooleanModuleProjection.from_scopes(scopes, aliases)]
+
+    @staticmethod
+    def _native_environment_function_may_declare_authority(name: str) -> bool:
+        tokens = EnvironmentSemanticNameAuthority.tokens(name)
+        return (
+            "environment" in tokens
+            and bool(tokens & _ENVIRONMENT_BOOLEAN_TOKENS)
+            and bool(tokens & _DECLARED_AUTHORITY_TOKENS)
+        )
+
+    @staticmethod
+    def _native_environment_import_aliases(
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> tuple[_EnvironmentImportAliases, list[ast.stmt]]:
+        imports = [
+            syntax_index.statement_for(node)
+            for node in syntax_index.tree.root_node.named_children
+            if node.type in {"import_from_statement", "import_statement"}
+        ]
+        module = ast.Module(body=imports, type_ignores=[])
+        return _EnvironmentImportAliases.from_module(module), imports
 
 
 class EnvironmentBooleanAuthorityDriftDetector(

@@ -386,29 +386,6 @@ class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
         )
 
 
-_NATIVE_REGISTRATION_QUERY = """
-(class_definition name: (identifier) @class_name)
-(assignment
-    left: (subscript) @target
-    right: (identifier) @assigned_class) @assignment
-((call
-    function: (attribute attribute: (identifier) @method)
-    arguments: (argument_list . (identifier) @called_class)) @call
-    (#any-of? @method "register" "add" "register_class" "register_type"))
-((decorated_definition
-    (decorator (call function: (identifier) @decorator_method))
-    definition: (class_definition)) @decorated
-    (#any-of? @decorator_method
-        "register" "add" "register_class" "register_type" "auto_register"))
-((decorated_definition
-    (decorator
-        (call function: (attribute attribute: (identifier) @decorator_method)))
-    definition: (class_definition)) @decorated
-    (#any-of? @decorator_method
-        "register" "add" "register_class" "register_type" "auto_register"))
-"""
-
-
 class StringLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
     literal_kind = LiteralKind.STRING
 
@@ -777,20 +754,6 @@ class InlineStringLiteralDispatchObservationFamily(TypedLiteralObservationFamily
     literal_kind = spec_root.literal_kind
 
 
-def _is_constant_index(index: ast.AST) -> bool:
-    match index:
-        case ast.Constant():
-            return True
-        case ast.Slice(lower=lower, upper=upper, step=step):
-            return all(
-                bound is None or isinstance(bound, ast.Constant)
-                for bound in (lower, upper, step)
-            )
-        case ast.Tuple(elts=elements):
-            return all(isinstance(item, ast.Constant) for item in elements)
-    return False
-
-
 class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
 
     @classmethod
@@ -859,7 +822,7 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
             case ast.Attribute(value=value, ctx=ast.Load()):
                 return ModuleExpressionShapeFamily._reads_only_modules(value, module_names)
             case ast.Subscript(value=value, slice=index, ctx=ast.Load()):
-                return ModuleExpressionShapeFamily._reads_only_modules(value, module_names) and _is_constant_index(
+                return ModuleExpressionShapeFamily._reads_only_modules(value, module_names) and ModuleExpressionShapeFamily._is_constant_index(
                     index
                 )
             case ast.Tuple(elts=elements, ctx=ast.Load()):
@@ -869,6 +832,20 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
                     ModuleExpressionShapeFamily._reads_only_modules(item, module_names)
                     for item in (left, *comparators)
                 )
+        return False
+
+    @staticmethod
+    def _is_constant_index(index: ast.AST) -> bool:
+        match index:
+            case ast.Constant():
+                return True
+            case ast.Slice(lower=lower, upper=upper, step=step):
+                return all(
+                    bound is None or isinstance(bound, ast.Constant)
+                    for bound in (lower, upper, step)
+                )
+            case ast.Tuple(elts=elements):
+                return all(isinstance(item, ast.Constant) for item in elements)
         return False
 
 
@@ -1156,6 +1133,27 @@ class TypeTestModuleFamily(ShapeFamily[TypeTestModule]):
 class RegistrationShapeFamily(
     RegisteredSpecCollectedFamily[RegistrationShape], ShapeFamily[RegistrationShape]
 ):
+    _NATIVE_REGISTRATION_QUERY = """
+    (class_definition name: (identifier) @class_name)
+    (assignment
+        left: (subscript) @target
+        right: (identifier) @assigned_class) @assignment
+    ((call
+        function: (attribute attribute: (identifier) @method)
+        arguments: (argument_list . (identifier) @called_class)) @call
+        (#any-of? @method "register" "add" "register_class" "register_type"))
+    ((decorated_definition
+        (decorator (call function: (identifier) @decorator_method))
+        definition: (class_definition)) @decorated
+        (#any-of? @decorator_method
+            "register" "add" "register_class" "register_type" "auto_register"))
+    ((decorated_definition
+        (decorator
+            (call function: (attribute attribute: (identifier) @decorator_method)))
+        definition: (class_definition)) @decorated
+        (#any-of? @decorator_method
+            "register" "add" "register_class" "register_type" "auto_register"))
+    """
     spec_root = RegistrationShapeSpec
 
     @staticmethod
@@ -1167,7 +1165,7 @@ class RegistrationShapeFamily(
 
         if not syntax_index.is_complete:
             return None
-        captures = syntax_index.captures(_NATIVE_REGISTRATION_QUERY)
+        captures = syntax_index.captures(RegistrationShapeFamily._NATIVE_REGISTRATION_QUERY)
         try:
             class_names = {
                 syntax_index.source_for(node).decode("utf-8")

@@ -1852,7 +1852,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
             for qualname, node in indexed_class_nodes
             for module_binding_snapshot in (binding_snapshots[node.lineno],)
             for binding_facets in (
-                _compact_class_binding_facets(
+                CompactModuleClassHeader._compact_class_binding_facets(
                     node,
                     module_binding_snapshot,
                     parsed_module.module_name,
@@ -1910,7 +1910,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 continue
             if module_binding_snapshot.decorated_by(
                 statement, (OVERLOAD_DECORATOR,)
-            ) or _redefines_property(statement, property_names):
+            ) or CompactModuleClassHeader._redefines_property(statement, property_names):
                 continue
             reads_as_property = module_binding_snapshot.decorated_by(
                 statement, PROPERTY_DECORATORS
@@ -1933,7 +1933,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
         return tuple(
             method.name
             for method in FunctionDefinition.within(node.body)
-            if _is_classmethod(method) and _method_references_cls_registry(method)
+            if _is_classmethod(method) and CompactModuleClassHeader._method_references_cls_registry(method)
         )
 
     @staticmethod
@@ -1942,7 +1942,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
             method.name
             for method in FunctionDefinition.within(node.body)
             if _is_classmethod(method)
-            and _method_references_cls_registry(method)
+            and CompactModuleClassHeader._method_references_cls_registry(method)
             and any(token in method.name for token in ("class", "type", "reverse"))
         )
 
@@ -1957,13 +1957,81 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     ) -> CompactStarResolvedFacets:
         return CompactStarResolvedFacets(
             root_names=_class_reference_root_names(node),
-            facets=_compact_class_binding_facets(
+            facets=CompactModuleClassHeader._compact_class_binding_facets(
                 node,
                 star_snapshot,
                 module_name,
                 qualname,
                 include_body_facets=include_body_facets,
             ),
+        )
+
+    @staticmethod
+    def _compact_class_binding_facets(
+        node: ast.ClassDef,
+        module_binding_snapshot: ModuleNominalBindingSnapshot,
+        module_name: str,
+        qualname: str,
+        *,
+        include_body_facets: bool,
+    ) -> CompactClassBindingFacets:
+        try:
+            enum_declaration = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
+                node,
+                identity=f"{module_name}.{qualname}",
+                qualified_reference=lambda reference, shadowed_names: (
+                    _class_scope_qualified_import_name(
+                        module_binding_snapshot,
+                        {},
+                        reference,
+                        shadowed_names,
+                    )
+                ),
+            )
+        except ValueError:
+            enum_declaration = NoEnumDeclaration()
+        base_references = _compact_base_references(node, module_binding_snapshot)
+        return CompactClassBindingFacets(
+            base_references=base_references,
+            base_references_are_complete=len(base_references) == len(node.bases),
+            class_decorators_are_promotion_safe=all(
+                ClassMethodPromotionSafeDecorator.for_qualified_name(
+                    _class_scope_qualified_import_name(
+                        module_binding_snapshot,
+                        {},
+                        decorator.func if isinstance(decorator, ast.Call) else decorator,
+                        frozenset(),
+                    )
+                )
+                is not None
+                for decorator in node.decorator_list
+            ),
+            dataclass_declaration=(
+                _dataclass_declaration(module_binding_snapshot, qualname, node)
+                if include_body_facets
+                else NoDataclassDeclaration()
+            ),
+            enum_declaration=enum_declaration if include_body_facets else NoEnumDeclaration(),
+        )
+
+    @staticmethod
+    def _method_references_cls_registry(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        return RegistryLookupShape.references_registry(method)
+
+    @staticmethod
+    def _redefines_property(
+        statement: ast.FunctionDef | ast.AsyncFunctionDef, property_names: Collection[str]
+    ) -> bool:
+        """`@name.setter` or `@name.deleter` on a property the class body declared above."""
+
+        return any(
+            isinstance(decorator, ast.Attribute)
+            and isinstance(decorator.value, ast.Name)
+            and decorator.value.id in property_names
+            and decorator.attr in PROPERTY_REDEFINITION_ATTRIBUTES
+            for decorator in statement.decorator_list
         )
 
 ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
@@ -4512,45 +4580,6 @@ def _native_sparse_class_header(
     return class_node
 
 
-def _native_class_header_module(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> ParsedModule | None:
-    if not syntax_index.is_complete:
-        return None
-    public_export_name = PYTHON_PUBLIC_EXPORT_ASSIGNMENT.encode("utf-8")
-    has_public_export_syntax = any(
-        syntax_index.source_for(node) == public_export_name
-        for node in syntax_index.captures("(identifier) @identifier").get(
-            "identifier",
-            (),
-        )
-    )
-    has_star_import = any(
-        isinstance(statement := syntax_index.statement_for(node), ast.ImportFrom)
-        and any(alias.name == "*" for alias in statement.names)
-        for node in syntax_index.captures("(import_from_statement) @statement").get(
-            "statement", ()
-        )
-    )
-    if has_public_export_syntax or has_star_import:
-        return source_module.parse()
-    body: list[ast.stmt] = []
-    for child in syntax_index.tree.root_node.named_children:
-        class_node = _native_definition_child(child, "class_definition")
-        if class_node is not None:
-            body.append(_native_sparse_class_header(syntax_index, class_node))
-        elif child.type in {
-            "future_import_statement",
-            "import_statement",
-            "import_from_statement",
-        }:
-            body.append(copy.deepcopy(syntax_index.statement_for(child)))
-    return source_module.parsed_module(
-        ast.Module(body=body, type_ignores=[]),
-    )
-
-
 def _compact_base_references(
     node: ast.ClassDef,
     module_binding_snapshot: ModuleNominalBindingSnapshot,
@@ -4558,54 +4587,6 @@ def _compact_base_references(
     return tuple(
         module_binding_snapshot.reference_for(parts)
         for _base, parts in _referenced_bases(node)
-    )
-
-
-def _compact_class_binding_facets(
-    node: ast.ClassDef,
-    module_binding_snapshot: ModuleNominalBindingSnapshot,
-    module_name: str,
-    qualname: str,
-    *,
-    include_body_facets: bool,
-) -> CompactClassBindingFacets:
-    try:
-        enum_declaration = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
-            node,
-            identity=f"{module_name}.{qualname}",
-            qualified_reference=lambda reference, shadowed_names: (
-                _class_scope_qualified_import_name(
-                    module_binding_snapshot,
-                    {},
-                    reference,
-                    shadowed_names,
-                )
-            ),
-        )
-    except ValueError:
-        enum_declaration = NoEnumDeclaration()
-    base_references = _compact_base_references(node, module_binding_snapshot)
-    return CompactClassBindingFacets(
-        base_references=base_references,
-        base_references_are_complete=len(base_references) == len(node.bases),
-        class_decorators_are_promotion_safe=all(
-            ClassMethodPromotionSafeDecorator.for_qualified_name(
-                _class_scope_qualified_import_name(
-                    module_binding_snapshot,
-                    {},
-                    decorator.func if isinstance(decorator, ast.Call) else decorator,
-                    frozenset(),
-                )
-            )
-            is not None
-            for decorator in node.decorator_list
-        ),
-        dataclass_declaration=(
-            _dataclass_declaration(module_binding_snapshot, qualname, node)
-            if include_body_facets
-            else NoDataclassDeclaration()
-        ),
-        enum_declaration=enum_declaration if include_body_facets else NoEnumDeclaration(),
     )
 
 
@@ -4677,7 +4658,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             raise TypeError("class projection demand has the wrong authority type")
         if not demand.header_core_only:
             return None
-        parsed_module = _native_class_header_module(source_module, syntax_index)
+        parsed_module = CompactModuleClassProjectionFamily._native_class_header_module(source_module, syntax_index)
         if parsed_module is None:
             return None
         return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
@@ -5093,11 +5074,44 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             default=(),
         )
 
-
-def _method_references_cls_registry(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return RegistryLookupShape.references_registry(method)
+    @staticmethod
+    def _native_class_header_module(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> ParsedModule | None:
+        if not syntax_index.is_complete:
+            return None
+        public_export_name = PYTHON_PUBLIC_EXPORT_ASSIGNMENT.encode("utf-8")
+        has_public_export_syntax = any(
+            syntax_index.source_for(node) == public_export_name
+            for node in syntax_index.captures("(identifier) @identifier").get(
+                "identifier",
+                (),
+            )
+        )
+        has_star_import = any(
+            isinstance(statement := syntax_index.statement_for(node), ast.ImportFrom)
+            and any(alias.name == "*" for alias in statement.names)
+            for node in syntax_index.captures("(import_from_statement) @statement").get(
+                "statement", ()
+            )
+        )
+        if has_public_export_syntax or has_star_import:
+            return source_module.parse()
+        body: list[ast.stmt] = []
+        for child in syntax_index.tree.root_node.named_children:
+            class_node = _native_definition_child(child, "class_definition")
+            if class_node is not None:
+                body.append(_native_sparse_class_header(syntax_index, class_node))
+            elif child.type in {
+                "future_import_statement",
+                "import_statement",
+                "import_from_statement",
+            }:
+                body.append(copy.deepcopy(syntax_index.statement_for(child)))
+        return source_module.parsed_module(
+            ast.Module(body=body, type_ignores=[]),
+        )
 
 
 def _is_abstract_class(
@@ -5967,20 +5981,6 @@ TYPE_VARIABLE_CONSTRUCTORS = frozenset(
     for module in ("typing", "typing_extensions")
     for name in ("TypeVar", "ParamSpec", "TypeVarTuple")
 )
-
-
-def _redefines_property(
-    statement: ast.FunctionDef | ast.AsyncFunctionDef, property_names: Collection[str]
-) -> bool:
-    """`@name.setter` or `@name.deleter` on a property the class body declared above."""
-
-    return any(
-        isinstance(decorator, ast.Attribute)
-        and isinstance(decorator.value, ast.Name)
-        and decorator.value.id in property_names
-        and decorator.attr in PROPERTY_REDEFINITION_ATTRIBUTES
-        for decorator in statement.decorator_list
-    )
 
 
 def native_identity(value: Callable[..., object]) -> str:

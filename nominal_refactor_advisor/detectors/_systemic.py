@@ -270,22 +270,6 @@ class CompactRemainingSystemicModuleProjection(CompactModuleIdentity):
     implicit_self_mixins: tuple[CompactImplicitSelfMixinFact, ...]
 
 
-def _self_cast_type_name(node: ast.AST) -> str | None:
-    if not (
-        isinstance(node, ast.Call)
-        and ExpressionReference.decoded(node.func).terminal_name == "cast"
-        and (len(node.args) == 2)
-        and (not node.keywords)
-        and isinstance(node.args[1], ast.Name)
-        and (node.args[1].id == "self")
-    ):
-        return None
-    type_name = ast.unparse(node.args[0])
-    if not type_name:
-        return None
-    return type_name
-
-
 class CompactRemainingSystemicModuleProjectionFamily(
     CollectedFamily[CompactRemainingSystemicModuleProjection]
 ):
@@ -448,7 +432,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
                 or (not isinstance(statement.targets[0], ast.Name))
             ):
                 continue
-            cast_type_name = _self_cast_type_name(statement.value)
+            cast_type_name = CompactRemainingSystemicModuleProjectionFamily._self_cast_type_name(statement.value)
             if cast_type_name is None:
                 continue
             aliases.add(statement.targets[0].id)
@@ -475,20 +459,21 @@ class CompactRemainingSystemicModuleProjectionFamily(
             aliases[statement.targets[0].id] = value_expression
         return aliases
 
-
-def _compact_class_for_detector_name(
-    class_index: CompactClassFamilyIndex,
-    *,
-    module_name: str,
-    class_name: str,
-) -> CompactIndexedClass | None:
-    local_class = class_index.class_for(f"{module_name}.{class_name}")
-    if local_class is not None:
-        return local_class
-    symbols = class_index.symbols_by_simple_name.get(class_name, ())
-    if len(symbols) != 1:
-        return None
-    return class_index.class_for(symbols[0])
+    @staticmethod
+    def _self_cast_type_name(node: ast.AST) -> str | None:
+        if not (
+            isinstance(node, ast.Call)
+            and ExpressionReference.decoded(node.func).terminal_name == "cast"
+            and (len(node.args) == 2)
+            and (not node.keywords)
+            and isinstance(node.args[1], ast.Name)
+            and (node.args[1].id == "self")
+        ):
+            return None
+        type_name = ast.unparse(node.args[0])
+        if not type_name:
+            return None
+        return type_name
 
 
 @dataclass(frozen=True)
@@ -4026,7 +4011,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
             indexed_class
             for class_name in class_names
             if (
-                indexed_class := _compact_class_for_detector_name(
+                indexed_class := RepeatedConcreteTypeCaseAnalysisDetector._compact_class_for_detector_name(
                     class_index,
                     module_name=projection.module_name,
                     class_name=class_name,
@@ -4059,7 +4044,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                     for type_names in fact.type_names_by_check
                     for type_name in type_names
                     if (
-                        indexed_class := _compact_class_for_detector_name(
+                        indexed_class := RepeatedConcreteTypeCaseAnalysisDetector._compact_class_for_detector_name(
                             class_index,
                             module_name=fact.module_name,
                             class_name=type_name,
@@ -4087,6 +4072,21 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
             candidates,
             key=lambda item: (item.fact.file_path, item.fact.subject_role, item.fact.line),
         )
+
+    @staticmethod
+    def _compact_class_for_detector_name(
+        class_index: CompactClassFamilyIndex,
+        *,
+        module_name: str,
+        class_name: str,
+    ) -> CompactIndexedClass | None:
+        local_class = class_index.class_for(f"{module_name}.{class_name}")
+        if local_class is not None:
+            return local_class
+        symbols = class_index.symbols_by_simple_name.get(class_name, ())
+        if len(symbols) != 1:
+            return None
+        return class_index.class_for(symbols[0])
 
 
 class ImplicitSelfContractMixinDetector(

@@ -453,22 +453,6 @@ class FormalBoundaryStringRegistryAuthority:
         )
 
 
-_FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS = frozenset(
-    {
-        "artifact",
-        "bundle",
-        "formal",
-        "kernel",
-        "lean",
-        "manifest",
-        "policy",
-        "profile",
-        "schema",
-        "theorem",
-    }
-)
-
-
 @dataclass(frozen=True)
 class FormalBoundaryExternalStringSite(FormalBoundaryStringRegistryConstant):
     path: Path
@@ -525,6 +509,20 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 
 
 class FormalBoundaryExternalStringRegistryMirrorAuthority:
+    _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS = frozenset(
+        {
+            "artifact",
+            "bundle",
+            "formal",
+            "kernel",
+            "lean",
+            "manifest",
+            "policy",
+            "profile",
+            "schema",
+            "theorem",
+        }
+    )
     _FORMAL_BOUNDARY_EXTERNAL_MAX_FILES = 256
     _FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES = 32 * 1024 * 1024
     _FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES = frozenset(
@@ -736,7 +734,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
             for part in path.with_suffix("").parts
             for token in SemanticIdentifierTokenProjection.project(part)
         )
-        return bool(path_tokens & _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
+        return bool(path_tokens & FormalBoundaryExternalStringRegistryMirrorAuthority._FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
 
     @staticmethod
     def _formal_boundary_external_string_sites(
@@ -1109,19 +1107,8 @@ class RuntimeNamespaceBridgeKind(StrEnum):
     GUARDED_GLOBALS_DEFINITION = "guarded globals definition"
 
 
-_RUNTIME_BRIDGE_NAMESPACE_NAME = "runtime_bridge_namespace"
-
-
-def _call_symbol(node: ast.AST) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        owner = _call_symbol(node.value)
-        return f"{owner}.{node.attr}" if owner else node.attr
-    return ""
-
-
 class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
+    _RUNTIME_BRIDGE_NAMESPACE_NAME = "runtime_bridge_namespace"
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Runtime namespace bridges should be replaced with explicit authorities",
@@ -1151,7 +1138,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         class Visitor(ast.NodeVisitor):
             def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
                 for alias in node.names:
-                    if alias.name == _RUNTIME_BRIDGE_NAMESPACE_NAME:
+                    if alias.name == RuntimeNamespaceBridgeDetector._RUNTIME_BRIDGE_NAMESPACE_NAME:
                         sites.append(
                             RuntimeNamespaceBridgeSite(
                                 line=int(node.lineno),
@@ -1245,7 +1232,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
     def _runtime_namespace_bridge_source_may_match(source: str) -> bool:
         """Return whether source contains a symbol required by every bridge witness."""
 
-        return BuiltinCallName.GLOBALS in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
+        return BuiltinCallName.GLOBALS in source or RuntimeNamespaceBridgeDetector._RUNTIME_BRIDGE_NAMESPACE_NAME in source
 
     @staticmethod
     def _is_globals_call(node: ast.AST) -> bool:
@@ -1253,9 +1240,18 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
 
     @staticmethod
     def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
-        return isinstance(node, ast.Call) and _call_symbol(node.func).endswith(
-            _RUNTIME_BRIDGE_NAMESPACE_NAME
+        return isinstance(node, ast.Call) and RuntimeNamespaceBridgeDetector._call_symbol(node.func).endswith(
+            RuntimeNamespaceBridgeDetector._RUNTIME_BRIDGE_NAMESPACE_NAME
         )
+
+    @staticmethod
+    def _call_symbol(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            owner = RuntimeNamespaceBridgeDetector._call_symbol(node.value)
+            return f"{owner}.{node.attr}" if owner else node.attr
+        return ""
 
 
 def _native_call_terminal_name(
