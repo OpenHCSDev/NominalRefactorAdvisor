@@ -66,6 +66,10 @@ target-version = ["py312"]
 pythonpath = ["."]
 testpaths = ["tests"]
 addopts = ["-n", "auto", "--maxprocesses=8", "--dist=worksteal"]
+# A test's tmp_path is deleted when its run ends. Kept directories from earlier runs
+# were deleted at the end of the next one: a one-second test spent 87% of its
+# run removing 240 MB of other runs' trees.
+tmp_path_retention_policy = "none"
 
 [tool.nominal-refactor-advisor.family-root]
 root = "nominal_refactor_advisor.case_root:Case"

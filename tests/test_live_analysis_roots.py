@@ -2,8 +2,6 @@
 
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
@@ -15,6 +13,7 @@ from nominal_refactor_advisor.cache_checkout import (
     checkout_relative_path,
 )
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from tests.advisor_cli import run_advisor
 
 
 def _sources(root: Path) -> None:
@@ -55,9 +54,6 @@ def test_live_scope_binds_relative_roots_once(
 def test_relative_multi_root_cli_can_reuse_its_cache(tmp_path: Path) -> None:
     _sources(tmp_path)
     command = [
-        sys.executable,
-        "-m",
-        "nominal_refactor_advisor",
         "first/source.py",
         "--context-root",
         "first",
@@ -70,7 +66,7 @@ def test_relative_multi_root_cli_can_reuse_its_cache(tmp_path: Path) -> None:
         "summary",
     ]
     for cache_status in ("miss", "hit"):
-        result = subprocess.run(command, cwd=tmp_path, capture_output=True, text=True)
+        result = run_advisor(*command, cwd=tmp_path)
         assert result.returncode == 0, result.stdout + result.stderr
         payload = json.loads(result.stdout)
         assert payload["findings"] == []

@@ -20021,9 +20021,6 @@ def test_module_cli_json_summary_uses_analysis_cache_before_parse(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
     command = [
-        sys.executable,
-        "-m",
-        "nominal_refactor_advisor",
         str(tmp_path),
         "--json",
         "--json-payload",
@@ -20032,20 +20029,8 @@ def test_module_cli_json_summary_uses_analysis_cache_before_parse(
         cache_dir.as_posix(),
     ]
 
-    first_result = subprocess.run(
-        command,
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    second_result = subprocess.run(
-        command,
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    first_result = run_advisor(*command, cwd=Path(__file__).resolve().parents[1])
+    second_result = run_advisor(*command, cwd=Path(__file__).resolve().parents[1])
 
     assert first_result.returncode == 0, first_result.stderr
     assert second_result.returncode == 0, second_result.stderr
@@ -24508,9 +24493,6 @@ def test_module_cli_loop_execution_plan_survives_summary_cache_hit(
         "class Alpha:\n    KIND = 'shared'\n\nclass Beta:\n    KIND = 'shared'\n",
     )
     command = [
-        sys.executable,
-        "-m",
-        "nominal_refactor_advisor",
         "--json",
         "--json-payload",
         "loop",
@@ -24521,20 +24503,8 @@ def test_module_cli_loop_execution_plan_survives_summary_cache_hit(
         (tmp_path / "pkg").as_posix(),
     ]
 
-    first_result = subprocess.run(
-        command,
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    second_result = subprocess.run(
-        command,
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    first_result = run_advisor(*command, cwd=repo_root)
+    second_result = run_advisor(*command, cwd=repo_root)
     payload = json.loads(second_result.stdout)
 
     assert first_result.returncode == 0, first_result.stderr
@@ -24556,9 +24526,6 @@ def test_module_cli_loop_summary_cache_hit_retains_scan_contract(
         "class Alpha:\n    KIND = 'shared'\n\nclass Beta:\n    KIND = 'shared'\n",
     )
     command = [
-        sys.executable,
-        "-m",
-        "nominal_refactor_advisor",
         "--json",
         "--json-payload",
         "loop",
@@ -24568,20 +24535,8 @@ def test_module_cli_loop_summary_cache_hit_retains_scan_contract(
         (tmp_path / "pkg").as_posix(),
     ]
 
-    first_result = subprocess.run(
-        command,
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    second_result = subprocess.run(
-        command,
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    first_result = run_advisor(*command, cwd=repo_root)
+    second_result = run_advisor(*command, cwd=repo_root)
     payload = json.loads(second_result.stdout)
     scan_status = cast(dict[str, object], payload["scan_status"])
 
