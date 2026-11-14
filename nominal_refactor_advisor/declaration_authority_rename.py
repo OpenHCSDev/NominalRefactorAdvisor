@@ -456,7 +456,7 @@ class DeclarationAuthorityModuleRenameProof:
             binding_closure=binding_closure,
             binding_authority=binding_authority,
             lexical_dependencies=lexical_dependencies,
-            annotation_mode=ModuleAnnotationEvaluationMode.from_module(module.module),
+            annotation_mode=module.annotation_mode,
         )
         reference_proof.require_complete_eager_annotations()
         direct_references = tuple(

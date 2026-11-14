@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from operator import attrgetter
 from typing import (
     Callable,
@@ -20,6 +20,13 @@ class AliasProperty(Generic[ValueT]):
     """Descriptor for properties that are pure aliases of another attribute."""
 
     source_name: str
+    _project: Callable[[object], ValueT] = field(
+        init=False, repr=False, compare=False
+    )
+
+    def __post_init__(self) -> None:
+        # The dotted path is parsed once, not on every read.
+        object.__setattr__(self, "_project", attrgetter(self.source_name))
 
     @overload
     def __get__(
@@ -39,8 +46,7 @@ class AliasProperty(Generic[ValueT]):
         del owner
         if instance is None:
             return self
-        project: Callable[[object], ValueT] = attrgetter(self.source_name)
-        return project(instance)
+        return self._project(instance)
 
 
 @dataclass(frozen=True)

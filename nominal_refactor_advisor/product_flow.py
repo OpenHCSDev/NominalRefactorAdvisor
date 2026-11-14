@@ -4783,9 +4783,9 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
         declarations.visit(parsed_module.module)
         return declarations
 
-    @cached_property
-    def annotation_mode(self) -> type[ModuleAnnotationEvaluationMode]:
-        return ModuleAnnotationEvaluationMode.from_module(self.parsed_module.module)
+    annotation_mode = AliasProperty[type[ModuleAnnotationEvaluationMode]](
+        "parsed_module.annotation_mode"
+    )
 
     def _function_collector(
         self, context: _FunctionContext

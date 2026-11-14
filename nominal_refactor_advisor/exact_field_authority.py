@@ -260,9 +260,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             )
             source_segments = SourceLineSegmentAuthority(parsed_module.source)
             comment_lines = SourceCommentLineIndex.from_source(parsed_module.source)
-            annotation_mode = ModuleAnnotationEvaluationMode.from_module(
-                parsed_module.module
-            )
+            annotation_mode = parsed_module.annotation_mode
             for indexed_class in indexed_classes:
                 try:
                     participant = self._participant(

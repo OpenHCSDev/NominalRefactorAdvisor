@@ -20,6 +20,7 @@ from nominal_refactor_advisor.codemod_module_declarations import (
 )
 from nominal_refactor_advisor.codemod_module_move_reports import ModuleMoveObstacle
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.declaration_dependencies import (
     ModuleBindingResolutionPhase,
     ModuleLexicalDependencyProjection,
@@ -35,9 +36,9 @@ class DeclarationModuleBindingEnvironment:
     module: ParsedModule
     scope: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
-    @cached_property
-    def annotation_mode(self) -> type[ModuleAnnotationEvaluationMode]:
-        return ModuleAnnotationEvaluationMode.from_module(self.module.module)
+    annotation_mode = AliasProperty[type[ModuleAnnotationEvaluationMode]](
+        "module.annotation_mode"
+    )
 
     @cached_property
     def declaration_index(self) -> SourceTopLevelDeclarationIndex:

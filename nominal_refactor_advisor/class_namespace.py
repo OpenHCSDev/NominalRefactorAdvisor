@@ -546,7 +546,7 @@ class SourceExecutionEffectEvidence:
         module: ParsedModule,
     ) -> tuple[tuple[SourceEffectSite, ClassNamespaceEffect], ...]:
         """Project current-definition effects; retain deferred sites in the inventory."""
-        annotation_mode = ModuleAnnotationEvaluationMode.from_module(module.module)
+        annotation_mode = module.annotation_mode
         return tuple(
             (site, effect)
             for site in self.sites_by_owner.get(owner, ())

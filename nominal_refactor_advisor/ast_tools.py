@@ -826,6 +826,12 @@ class ParsedModule(SourceFileIdentity):
         return ModuleSyntaxIndex.build(self.module)
 
     @cached_property
+    def annotation_mode(self) -> type[ModuleAnnotationEvaluationMode]:
+        """When this module's annotations execute, read once from its imports."""
+
+        return ModuleAnnotationEvaluationMode.from_module(self.module)
+
+    @cached_property
     def _facts(self) -> dict[type[ParsedModuleFact], ParsedModuleFact]:
         return {}
 
