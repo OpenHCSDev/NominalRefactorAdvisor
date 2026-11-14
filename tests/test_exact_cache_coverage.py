@@ -3,11 +3,10 @@
 from dataclasses import replace
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
+from tests.advisor_cli import run_advisor
 from nominal_refactor_advisor.analysis import (
     AnalysisCacheIdentityAuthority,
     HeldNothingForRequest,
@@ -192,9 +191,6 @@ def test_cli_full_scan_rejects_subset_aggregate(
         analysis_cache_dir=analysis_cache,
     )
     command = [
-        sys.executable,
-        "-m",
-        "nominal_refactor_advisor",
         str(source_root),
         "--json",
         "--json-payload",
@@ -209,13 +205,7 @@ def test_cli_full_scan_rejects_subset_aggregate(
     ]
     payloads = []
     for _ in range(2):
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            cwd=Path(__file__).resolve().parents[1],
-        )
+        result = run_advisor(*command, cwd=Path(__file__).resolve().parents[1])
         assert result.returncode == 0, result.stdout + result.stderr
         payloads.append(json.loads(result.stdout))
     cold, warm = payloads
