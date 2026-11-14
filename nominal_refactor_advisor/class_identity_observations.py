@@ -1057,21 +1057,33 @@ class ResolvedIdentity:
         return replace(site, group=self.identity)
 
 
-class TypeSpelling(IdentitySpelling):
+class SpellsClassName:
+    """A position whose literal is a class's name."""
+
+    @classmethod
+    def resolve(
+        cls, site: RestatingSite, identities: DeclaredIdentities
+    ) -> ResolvedIdentity | None:
+        return identities.class_named(site.detail[-1])
+
+
+class RewrittenAsDetailedReference:
+    """A position whose site can be rewritten as the reference its detail names."""
+
+    @classmethod
+    def rewrite(
+        cls, detail: Sequence[str], identities: DeclaredIdentities, file_path: str
+    ) -> ReferenceRewrite:
+        return ReferenceRewrite(detail[1])
+
+
+class TypeSpelling(SpellsClassName, RewrittenAsDetailedReference, IdentitySpelling):
     """A class name inside a quoted annotation, base, TypeVar bound or cast type."""
 
     tag = "type"
 
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        return ReferenceRewrite(detail[1])
 
-    @classmethod
-    def resolve(cls, site, identities):
-        return identities.class_named(site.detail[-1])
-
-
-class LazyAnnotationSpelling(IdentitySpelling):
+class LazyAnnotationSpelling(RewrittenAsDetailedReference, IdentitySpelling):
     """A class name quoted in an annotation that only an eager interpreter needs quoted.
 
     The name is not bound when the annotation would run eagerly (a later class,
@@ -1080,10 +1092,6 @@ class LazyAnnotationSpelling(IdentitySpelling):
     """
 
     tag = "annotation"
-
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        return ReferenceRewrite(detail[1])
 
     @classmethod
     def resolve(cls, site, identities):
@@ -1098,7 +1106,7 @@ TypeSpelling.rewrite_kind = TypeSpelling
 LazyAnnotationSpelling.rewrite_kind = TypeSpelling
 
 
-class WordSpelling(IdentitySpelling):
+class WordSpelling(SpellsClassName, IdentitySpelling):
     """A multi-word string passed or returned: a class's name there.
 
     A one-word class name (Read, Open) is also an ordinary word, so only a
@@ -1112,10 +1120,6 @@ class WordSpelling(IdentitySpelling):
     @classmethod
     def rewrite(cls, detail, identities, file_path):
         return ClassNameSpelling.rewrite(detail, identities, file_path)
-
-    @classmethod
-    def resolve(cls, site, identities):
-        return identities.class_named(site.detail[-1])
 
 
 class ComparedWordSpelling(IdentitySpelling):
@@ -1138,7 +1142,7 @@ class ComparedWordSpelling(IdentitySpelling):
         return identities.class_named(literal) or identities.member_named(literal)
 
 
-class ClassNameSpelling(IdentitySpelling):
+class ClassNameSpelling(SpellsClassName, IdentitySpelling):
     """A string compared with a `__name__` or `__qualname__`: a class name, one word or more.
 
     Every value position that can hold a class name (this one, a passed or
@@ -1167,10 +1171,6 @@ class ClassNameSpelling(IdentitySpelling):
         ):
             return ReferenceRewrite.ANY_INTERPRETER
         return ReferenceRewrite.NONE
-
-    @classmethod
-    def resolve(cls, site, identities):
-        return identities.class_named(site.detail[-1])
 
 
 @dataclass(frozen=True)
@@ -1228,14 +1228,10 @@ class FlattenedSpelling(IdentitySpelling):
         return found.read_off(read.text, identities.reads_any_member(read, found))
 
 
-class ModuleSpelling(IdentitySpelling):
+class ModuleSpelling(RewrittenAsDetailedReference, IdentitySpelling):
     """A dotted module name given to an importer, `sys.modules`, or an interpreter's `-m`."""
 
     tag = "module"
-
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        return ReferenceRewrite(detail[1])
 
     @classmethod
     def resolve(cls, site, identities):
