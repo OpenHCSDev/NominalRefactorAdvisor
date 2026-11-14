@@ -179,7 +179,14 @@ stronger than a synthesized recipe that hedged its way to silence.
   (2026-11-14, fold 94). Imports and mypy both passed it; only running
   the code found it. Also rewrite only names no other class binds, so
   `self.x` cannot reach a different override, and drop a `del cls` that
-  silenced the unused argument once the method reads it.
+  silenced the unused argument once the method reads it. The same holds
+  when turning a method's `self` into `cls`: rename the parameter and the
+  Name nodes through the syntax tree (never string text, where `"self"`
+  may be data), and stop at any nested function that binds its own
+  `self`. Fold 106 renamed into a nested `ast.NodeVisitor` and the dump
+  died on `cls.visit` (2026-11-14). A classmethod that opens with `del
+  cls` is honest when it overrides a family's classmethod; when it
+  overrides nothing it is a static method in disguise.
 - **The one reader is not always the owner.** A function read by one class
   in another module belongs on that class only if it reads nothing
   private: a move that has to import the source module's `_helpers`
