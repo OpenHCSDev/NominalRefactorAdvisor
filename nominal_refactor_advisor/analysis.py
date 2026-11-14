@@ -64,6 +64,7 @@ from nominal_refactor_advisor.ast_tools import (
     PythonSourceSemanticHash,
     PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
+    ScanContext,
     SourceModule,
     collected_family_demand_cache_signature,
     collected_family_items_content_signature,
@@ -85,7 +86,6 @@ from nominal_refactor_advisor.cache_checkout import (
     lexical_absolute_path,
 )
 from nominal_refactor_advisor.class_index import (
-    CompactClassFamilyIndex,
     CompactClassProjectionDemand,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -835,13 +835,8 @@ def _compact_findings_by_detector(
             type[CompactModuleProjectionDetectorMixin], detector_type
         )
         families = compact_detector_type.compact_projection_families()
-        context_builder = compact_detector_type.compact_shared_context_builder
+        context_builder = compact_detector_type.compact_shared_context
         if len(families) != 1:
-            if context_builder is not None:
-                raise TypeError(
-                    f"{detector_type.__name__} cannot use a single-family "
-                    "shared context builder for a multi-family compact join"
-                )
             grouped_projections = {
                 family: projections_by_family.get(family, ()) for family in families
             }
@@ -882,25 +877,18 @@ def _compact_findings_by_detector(
             continue
         family = families[0]
         projections = projections_by_family.get(family, ())
-        context: object | None = None
-        if context_builder is not None:
-            context_key = CompactProjectionContextCacheKey(
-                family,
-                context_builder,
-            )
-            if context_key not in active_shared_contexts:
-                active_shared_contexts[context_key] = context_builder(
-                    projections,
-                    config,
-                )
-            context = active_shared_contexts[context_key]
-            if isinstance(context, CompactClassRepositoryContext):
+        context_key = CompactProjectionContextCacheKey(family, context_builder)
+        if context_key not in active_shared_contexts:
+            active_shared_contexts[context_key] = context_builder(projections, config)
+            built = active_shared_contexts[context_key]
+            for group_builder, group_context in (
+                () if built is None else cast(ScanContext, built).shared_group_contexts()
+            ):
                 active_shared_contexts.setdefault(
-                    CompactProjectionGroupContextCacheKey(
-                        CompactClassFamilyIndex.from_projection_groups
-                    ),
-                    context.class_index,
+                    CompactProjectionGroupContextCacheKey(group_builder),
+                    group_context,
                 )
+        context = active_shared_contexts[context_key]
         detector_findings = detector._findings_from_compact_context(
             projections,
             context,

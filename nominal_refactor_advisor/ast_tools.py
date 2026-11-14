@@ -2191,6 +2191,12 @@ class ScanContext:
             raise TypeError(f"the scan built no {cls.__name__} for this detector")
         return context
 
+    def shared_group_contexts(self) -> tuple[tuple[Callable[..., object], object], ...]:
+        """Multi-family contexts this context already holds, keyed by the group
+        context method that would build each; a context holding none keeps this."""
+
+        return ()
+
 
 class CollectedFamily(
     SharedRegistryRootBase,

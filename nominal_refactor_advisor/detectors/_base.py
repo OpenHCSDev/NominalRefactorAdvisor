@@ -851,6 +851,9 @@ class CompactClassRepositoryContext(ScanContext):
             self._derived[key] = builder()
         return cast(CompactDerivedContextT, self._derived[key])
 
+    def shared_group_contexts(self) -> tuple[tuple[Callable[..., object], object], ...]:
+        return ((CompactClassFamilyIndex.from_projection_groups, self.class_index),)
+
     def release_derived(self) -> None:
         """Release single-family indexes after their detector group completes."""
 
@@ -861,10 +864,18 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
     module_projection_family: ClassVar[type[CollectedFamily]]
-    compact_shared_context_builder: ClassVar[CompactProjectionContextBuilder | None] = (
-        None
-    )
     compact_report_class_header_core_safe: ClassVar[bool] = False
+
+    @staticmethod
+    def compact_shared_context(
+        projections: Sequence[object],
+        config: DetectorConfig,
+    ) -> ScanContext | None:
+        """The context every member sharing this family reuses; a member that
+        needs none keeps this answer."""
+
+        del projections, config
+        return None
 
     @classmethod
     def compact_projection_families(
@@ -1015,6 +1026,16 @@ class CompactMultiModuleProjectionDetectorMixin(
     """Global detector joining two or more reusable compact fact families."""
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if cls.compact_shared_context is not (
+            CompactModuleProjectionDetectorMixin.compact_shared_context
+        ):
+            raise TypeError(
+                f"{cls.__name__} cannot use a single-family shared context "
+                "for a multi-family compact join"
+            )
 
     @classmethod
     def compact_projection_families(
@@ -2147,7 +2168,7 @@ class CompactClassRepositoryProjectionMixin(
     built from them."""
 
     module_projection_family = CompactModuleClassProjectionFamily
-    compact_shared_context_builder = staticmethod(
+    compact_shared_context = staticmethod(
         CompactClassRepositoryContext.from_projections
     )
 

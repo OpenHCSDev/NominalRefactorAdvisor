@@ -5518,7 +5518,7 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
         runtime_detectors.ExactTypeGuardInheritanceRetreatDetector,
     )
     assert {
-        detector_type.compact_shared_context_builder for detector_type in detector_types
+        detector_type.compact_shared_context for detector_type in detector_types
     } == {base_detectors.CompactClassRepositoryContext.from_projections}
 
     repository_calls = 0
@@ -5547,7 +5547,7 @@ def test_concrete_family_detectors_share_one_compact_graph_context(
     for detector_type in detector_types:
         monkeypatch.setattr(
             detector_type,
-            "compact_shared_context_builder",
+            "compact_shared_context",
             staticmethod(counting_repository_builder),
         )
     monkeypatch.setattr(
