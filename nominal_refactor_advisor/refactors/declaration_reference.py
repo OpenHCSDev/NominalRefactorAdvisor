@@ -41,7 +41,7 @@ from nominal_refactor_advisor.models import (
 )
 from nominal_refactor_advisor.quoted_reference import (
     DeclaredInterpreter,
-    ModuleReferenceScope,
+    ParsedModuleReferenceScope,
     QuotedTypeName,
     SpelledModules,
 )
@@ -302,7 +302,7 @@ class UnquoteResolvedTypeNamesOperation(DeclarationReferenceOperation):
                 quoted.node,
                 self.reference_source(quoted, parents.get(quoted.node)),
             )
-            for quoted in ModuleReferenceScope(parsed.module).unquotable(
+            for quoted in parsed.fact(ParsedModuleReferenceScope).unquotable(
                 DeclaredInterpreter.of(Path(path))
             )
         )
@@ -348,12 +348,10 @@ class ReferenceImportedModuleOperation(DeclarationReferenceOperation):
     )
 
     def rewrites(self, context, parsed, path):
-        scope = ModuleReferenceScope(
-            parsed.module, package=IdentityPositions.package_of(parsed)
-        )
+        scope = parsed.fact(ParsedModuleReferenceScope)
         return tuple(
             SpanRewrite(spelled.replaced, reference)
-            for spelled in SpelledModules(parsed.module)
+            for spelled in SpelledModules(scope.nodes)
             if spelled.replaced is not None
             and (reference := scope.module_reference(spelled)) is not None
         )

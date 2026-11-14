@@ -49,6 +49,7 @@ from nominal_refactor_advisor.annotation_semantics import TypeQualifier
 from nominal_refactor_advisor.quoted_reference import (
     DeclaredInterpreter,
     ModuleReferenceScope,
+    ParsedModuleReferenceScope,
     ReferenceRewrite,
     SpelledModules,
 )
@@ -285,7 +286,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                 from_imports=tuple(cls.from_imports(parsed_module)),
                 bound_after=tuple(
                     sorted(
-                        ModuleReferenceScope(parsed_module.module).bound_after.items()
+                        parsed_module.fact(ParsedModuleReferenceScope).bound_after.items()
                     )
                 ),
                 rebound=tuple(
@@ -587,7 +588,7 @@ class QualifiedNames(ParsedModuleFact):
         return cls(
             parsed_module.module_name,
             module_import_aliases(parsed_module),
-            frozenset(ModuleReferenceScope(parsed_module.module).bound_after),
+            frozenset(parsed_module.fact(ParsedModuleReferenceScope).bound_after),
         )
 
     def qualified(self, expression: ast.expr) -> str:
@@ -1855,13 +1856,7 @@ class IdentityPositions:
             id(node): node_index
             for node_index, node in enumerate(self.index.depth_first_nodes)
         }
-        self.references = ModuleReferenceScope(
-            parsed_module.module, package=self.package_of(parsed_module)
-        )
-
-    @staticmethod
-    def package_of(parsed_module: ParsedModule) -> str:
-        return parsed_module.module_path_identity.package_name
+        self.references = parsed_module.fact(ParsedModuleReferenceScope)
 
     @staticmethod
     def site(
@@ -2227,7 +2222,7 @@ class IdentityPositions:
     # Module positions ---------------------------------------------------------
 
     def module_sites(self) -> Iterator[PendingSpelling]:
-        for spelled in SpelledModules(self.parsed_module.module):
+        for spelled in SpelledModules(self.references.nodes):
             yield self.site(
                 spelled.literal,
                 ModuleSpelling,

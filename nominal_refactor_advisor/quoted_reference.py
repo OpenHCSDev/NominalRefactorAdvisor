@@ -14,7 +14,7 @@ import ast
 import builtins
 import re
 import tomllib
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
@@ -22,6 +22,7 @@ from itertools import pairwise
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_projection import nodes_of
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias,
     ImportBoundNameProjection,
@@ -117,6 +118,12 @@ class ModuleReferenceScope:
     def __init__(self, module: ast.Module, package: str = "") -> None:
         self.module = module
         self.package = package
+
+    @cached_property
+    def nodes(self) -> tuple[ast.AST, ...]:
+        """Every node of the module, walked once for every query that reads them all."""
+
+        return tuple(ast.walk(self.module))
 
     @cached_property
     def lazy_annotations(self) -> bool:
@@ -264,14 +271,14 @@ class ModuleReferenceScope:
             for statement in self.module.body
         ) and not any(
             bound == self.OWN_PACKAGE
-            for node in ast.walk(self.module)
+            for node in self.nodes
             for bound in self.bound_names(node)
         )
 
     def type_expressions(self) -> Iterator[tuple[ast.expr, bool]]:
         """Each type position, and whether it is an annotation."""
 
-        for node in ast.walk(self.module):
+        for node in self.nodes:
             match node:
                 case ast.FunctionDef(
                     args=arguments, returns=returns
@@ -359,7 +366,7 @@ class ModuleReferenceScope:
 
         reachable: dict[str, str] = {}
         bindings: dict[str, int] = {}
-        for node in ast.walk(self.module):
+        for node in self.nodes:
             for bound in self.bound_names(node):
                 bindings[bound] = bindings.get(bound, 0) + 1
         for statement in self.module.body:
@@ -401,6 +408,25 @@ class ModuleReferenceScope:
                 yield name
 
 
+class ParsedModuleReferenceScope(ModuleReferenceScope, ParsedModuleFact):
+    """One parsed module's reference scope, derived once per parse: its nodes are
+    the parse's own index, and its package is the module's."""
+
+    def __init__(self, parsed_module: ParsedModule) -> None:
+        super().__init__(
+            parsed_module.module, parsed_module.module_path_identity.package_name
+        )
+        self.parsed_module = parsed_module
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ParsedModuleReferenceScope:
+        return cls(parsed_module)
+
+    @cached_property
+    def nodes(self) -> tuple[ast.AST, ...]:
+        return self.parsed_module.syntax_index.breadth_first_nodes
+
+
 @dataclass(frozen=True)
 class SpelledModule:
     """A module's dotted name given where a string selects a module.
@@ -433,11 +459,11 @@ class SpelledModules:
     RUN_MODULE = "-m"
     NAME_OF_MODULE = ".__name__"
 
-    def __init__(self, module: ast.Module) -> None:
-        self.module = module
+    def __init__(self, nodes: Iterable[ast.AST]) -> None:
+        self.nodes = nodes
 
     def __iter__(self) -> Iterator[SpelledModule]:
-        for node in ast.walk(self.module):
+        for node in self.nodes:
             for spelled in self.at(node):
                 if isinstance(spelled.literal.value, str) and self.DOTTED.fullmatch(
                     spelled.literal.value
