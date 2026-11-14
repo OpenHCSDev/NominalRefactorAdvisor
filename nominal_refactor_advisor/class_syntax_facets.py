@@ -201,10 +201,14 @@ class CompactReceiverFieldBranchRead:
 
 
 @dataclass(frozen=True)
-class CompactQualifiedSourceLocation(CompactSourceLocation):
+class CompactQualifiedSourceLocation(CompactSourceLocation, LineWitness):
     """Qualified source position shared by compact structural observations."""
 
     qualname: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.qualname
 
 
 @dataclass(frozen=True)

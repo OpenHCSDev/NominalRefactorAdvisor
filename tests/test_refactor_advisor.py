@@ -27164,6 +27164,51 @@ def test_detects_implicit_self_contract_mixins(tmp_path: Path) -> None:
     assert "AlphaPreparation" in finding.summary
 
 
+def test_implicit_self_contract_mixin_shows_each_consumer_where_it_is_declared(
+    tmp_path: Path,
+) -> None:
+    _write_module(
+        tmp_path,
+        "pkg/mixin.py",
+        "from typing import Any, cast\n\n\n"
+        "class PayloadPreparationMixin:\n"
+        "    def prepare(self):\n"
+        "        request = cast(Any, self)\n"
+        "        return (request.payload, request.cache)\n",
+    )
+    # The consumers' modules sort a_late, b_early; their names sort the other way.
+    _write_module(
+        tmp_path,
+        "pkg/a_late.py",
+        "from pkg.mixin import PayloadPreparationMixin\n\n\n\n\n\n"
+        "class ZetaPreparation(PayloadPreparationMixin):\n"
+        "    payload: object\n"
+        "    cache: object\n",
+    )
+    _write_module(
+        tmp_path,
+        "pkg/b_early.py",
+        "from pkg.mixin import PayloadPreparationMixin\n\n\n"
+        "class AlphaPreparation(PayloadPreparationMixin):\n"
+        "    payload: object\n"
+        "    cache: object\n",
+    )
+    finding = next(
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "implicit_self_contract_mixin"
+    )
+    consumers = {
+        location.symbol: (Path(location.file_path).name, location.line)
+        for location in finding.evidence
+        if location.symbol.endswith("Preparation")
+    }
+    assert consumers == {
+        "AlphaPreparation": ("b_early.py", 4),
+        "ZetaPreparation": ("a_late.py", 7),
+    }
+
+
 def test_preserves_empty_multiple_inheritance_product_families(
     tmp_path: Path,
 ) -> None:

@@ -566,9 +566,11 @@ classes use one name for two facts and stay apart (paper1 §2: identical
 fields today do not justify merging declarations). Two permitted
 verdicts on `detectors/_base.py` failed that read on 2026-11-14:
 `DataclassNamespaceCliMirrorCandidate.field_names` holds only the
-mirrored fields (`_systemic.py:759`), and
-`ResidualClosedAxisBranchingCandidate.case_names` holds only the cases
-shared with a family (`_base.py:4277`). One passed and was composed:
+mirrored fields, and `ResidualClosedAxisBranchingCandidate.case_names`
+holds only the cases shared with a family. Neither candidate is its
+fact, so neither inherits it: each holds the fact as a field
+(`config_class`, `branch`) and keeps its own narrower value beside it.
+One passed and was composed:
 `ManualKeyedRecordTableClassCandidate` copied all three fields from its
 `ManualRecordRegistrationShape`.
 

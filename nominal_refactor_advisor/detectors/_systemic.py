@@ -69,6 +69,7 @@ from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     EvidenceLocated,
+    LineWitness,
     HierarchyCandidateMetrics,
     MappingMetrics,
     OrchestrationMetrics,
@@ -113,11 +114,9 @@ from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     CompactProjectionCandidateDetector,
     CompactProjectionGroups,
-    ConcreteTypeCaseFunctionCandidate,
     CompactMultiProjectionCandidateDetector,
     ConfiguredModuleCollectorCandidateDetector,
     CrossModuleAxisShadowFamilyCandidate,
-    DataclassNamespaceCliMirrorCandidate,
     DeclarativeDetectorClassCandidate,
     declare_candidate_rule_detector,
     DerivedWrapperSpecShadowCandidate,
@@ -127,7 +126,6 @@ from nominal_refactor_advisor.detectors._base import (
     FindingSpecConstructionCandidate,
     high_confidence_certified_spec,
     high_confidence_spec,
-    ImplicitSelfContractMixinCandidate,
     InjectiveTypeRegistryCandidate,
     IssueDetector,
     ManualFiberTagCandidate,
@@ -140,7 +138,6 @@ from nominal_refactor_advisor.detectors._base import (
     RegistryProjectionSurfaceCandidate,
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
-    RepeatedConcreteTypeCaseAnalysisCandidate,
     RepeatedKeyedFamilyCandidate,
     RepeatedResultAssemblyPipelineCandidate,
     ResidualClosedAxisBranchingCandidate,
@@ -181,13 +178,45 @@ from nominal_refactor_advisor.detectors._finding_spec_defaults import (
 
 
 @dataclass(frozen=True)
-class CompactConcreteTypeCaseFunctionFact(CompactModuleIdentity):
-    line: int
+class CompactConcreteTypeCaseFunctionFact(CompactModuleIdentity, LineWitness):
+    """One function's `isinstance` checks of one subject, with the type names as written."""
+
     function_name: str
     subject_expression: str
     subject_role: str
     type_names_by_check: tuple[tuple[str, ...], ...]
     union_aliases: tuple[tuple[str, tuple[str, ...]], ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.function_name
+
+
+@dataclass(frozen=True)
+class ConcreteTypeCaseFunctionCandidate:
+    """One function's case analysis with its type names resolved against the class index."""
+
+    fact: CompactConcreteTypeCaseFunctionFact
+    concrete_class_names: tuple[str, ...]
+    union_alias_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RepeatedConcreteTypeCaseAnalysisCandidate(EvidenceLocated):
+    """Functions of one module that each recover the same subject's concrete class."""
+
+    functions: tuple[ConcreteTypeCaseFunctionCandidate, ...]
+    concrete_class_names: tuple[str, ...]
+    union_alias_names: tuple[str, ...]
+    abstract_base_names: tuple[str, ...]
+
+    @property
+    def subject_role(self) -> str:
+        return self.functions[0].fact.subject_role
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(function.fact.location for function in self.functions[:6])
 
 
 @dataclass(frozen=True)
@@ -197,6 +226,27 @@ class CompactImplicitSelfMixinFact(SourceLineReference):
     method_lines: tuple[int, ...]
     cast_type_names: tuple[str, ...]
     accessed_attribute_names: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ImplicitSelfContractMixinCandidate(EvidenceLocated):
+    """A mixin whose methods cast `self` to reach attributes its concrete subclasses own."""
+
+    fact: CompactImplicitSelfMixinFact
+    mixin_name: str
+    consumers: tuple[SourceLocation, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        fact = self.fact
+        return (
+            SourceLocation(fact.file_path, fact.line, self.mixin_name),
+            *(
+                SourceLocation(fact.file_path, line, f"{self.mixin_name}.{name}")
+                for name, line in zip(fact.method_names, fact.method_lines, strict=True)
+            ),
+            *self.consumers,
+        )[:6]
 
 
 @dataclass(frozen=True)
@@ -349,31 +399,20 @@ def _compact_concrete_type_function_candidates(
 ) -> tuple[ConcreteTypeCaseFunctionCandidate, ...]:
     candidates: list[ConcreteTypeCaseFunctionCandidate] = []
     for fact in projection.concrete_type_functions:
-        resolved_checks: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
-        for type_names in fact.type_names_by_check:
-            concrete_names: list[str] = []
-            abstract_names: list[str] = []
-            for type_name in type_names:
-                indexed_class = _compact_class_for_detector_name(
-                    class_index,
-                    module_name=fact.module_name,
-                    class_name=type_name,
-                )
-                if indexed_class is None:
-                    continue
-                display_name = _compact_class_display_name(indexed_class, class_index)
-                if indexed_class.is_abstract:
-                    abstract_names.append(display_name)
-                else:
-                    concrete_names.append(display_name)
-            concrete = sorted_tuple(set(concrete_names))
-            if concrete:
-                resolved_checks.append((concrete, sorted_tuple(set(abstract_names))))
         concrete_class_names = sorted_tuple(
             {
-                name
-                for concrete_names, _abstract_names in resolved_checks
-                for name in concrete_names
+                _compact_class_display_name(indexed_class, class_index)
+                for type_names in fact.type_names_by_check
+                for type_name in type_names
+                if (
+                    indexed_class := _compact_class_for_detector_name(
+                        class_index,
+                        module_name=fact.module_name,
+                        class_name=type_name,
+                    )
+                )
+                is not None
+                and not indexed_class.is_abstract
             }
         )
         if len(concrete_class_names) < 2:
@@ -385,26 +424,14 @@ def _compact_concrete_type_function_candidates(
         )
         candidates.append(
             ConcreteTypeCaseFunctionCandidate(
-                file_path=fact.file_path,
-                line=fact.line,
-                function_name=fact.function_name,
-                subject_expression=fact.subject_expression,
-                subject_role=fact.subject_role,
+                fact=fact,
                 concrete_class_names=concrete_class_names,
-                abstract_class_names=sorted_tuple(
-                    {
-                        name
-                        for _concrete_names, abstract_names in resolved_checks
-                        for name in abstract_names
-                    }
-                ),
                 union_alias_names=union_alias_names,
-                case_site_count=len(resolved_checks),
             )
         )
     return sorted_tuple(
         candidates,
-        key=lambda item: (item.file_path, item.subject_role, item.line),
+        key=lambda item: (item.fact.file_path, item.fact.subject_role, item.fact.line),
     )
 
 
@@ -455,7 +482,7 @@ def _compact_repeated_concrete_type_case_candidates(
         for function_candidate in _compact_concrete_type_function_candidates(
             projection, class_index
         ):
-            grouped[function_candidate.subject_role].append(function_candidate)
+            grouped[function_candidate.fact.subject_role].append(function_candidate)
         for subject_role, functions in sorted(grouped.items()):
             if len(functions) < min_function_count:
                 continue
@@ -491,10 +518,12 @@ def _compact_repeated_concrete_type_case_candidates(
                 continue
             candidates.append(
                 RepeatedConcreteTypeCaseAnalysisCandidate(
-                    file_path=projection.file_path,
                     functions=sorted_tuple(
-                        functions, key=lambda item: (item.line, item.function_name)
+                        functions,
+                        key=lambda item: (item.fact.line, item.fact.function_name),
                     ),
+                    concrete_class_names=concrete_class_names,
+                    union_alias_names=union_alias_names,
                     abstract_base_names=abstract_base_names,
                 )
             )
@@ -537,35 +566,74 @@ def _compact_implicit_self_contract_mixin_candidates(
             continue
         candidates.append(
             ImplicitSelfContractMixinCandidate(
-                file_path=fact.file_path,
-                line=fact.line,
+                fact=fact,
                 mixin_name=_compact_class_display_name(indexed_class, class_index),
-                method_names=fact.method_names,
-                method_lines=fact.method_lines,
-                cast_type_names=fact.cast_type_names,
-                consumer_class_names=sorted_tuple(
-                    _compact_class_display_name(consumer, class_index)
-                    for consumer in consumers
+                consumers=sorted_tuple(
+                    (
+                        SourceLocation(
+                            consumer.file_path,
+                            consumer.line,
+                            _compact_class_display_name(consumer, class_index),
+                        )
+                        for consumer in consumers
+                    ),
+                    key=lambda consumer: consumer.symbol,
                 ),
-                consumer_lines=tuple(consumer.line for consumer in consumers),
-                accessed_attribute_names=fact.accessed_attribute_names,
             )
         )
     return tuple(candidates)
 
 
 @dataclass(frozen=True)
-class _DataclassNamespaceProjection(SourceLineReference):
+class _DataclassNamespaceProjection(LineWitness):
+    """A dataclass and the fields its `from_namespace` constructor reads back by name."""
+
     class_name: str
     field_names: tuple[str, ...]
     namespace_field_names: tuple[str, ...]
     from_namespace_line: int
 
+    @property
+    def witness_name(self) -> str:
+        return self.class_name
+
+    @property
+    def from_namespace_location(self) -> SourceLocation:
+        return SourceLocation(
+            self.file_path, self.from_namespace_line, f"{self.class_name}.from_namespace"
+        )
+
 
 @dataclass(frozen=True)
-class _CliArgumentSpecProjection(SourceLineReference):
+class _CliArgumentSpecProjection(LineWitness):
+    """A table of CLI argument specs and the fields its flags name."""
+
     name: str
     field_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return self.name
+
+
+@dataclass(frozen=True)
+class DataclassNamespaceCliMirrorCandidate(EvidenceLocated):
+    """A dataclass whose fields a `from_namespace` constructor and a CLI argument table
+    both list again.  ``field_names`` are the ones the constructor reads, and
+    ``cli_field_names`` the ones of those the table lists."""
+
+    config_class: _DataclassNamespaceProjection
+    argument_spec: _CliArgumentSpecProjection
+    field_names: tuple[str, ...]
+    cli_field_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            self.config_class.location,
+            self.config_class.from_namespace_location,
+            self.argument_spec.location,
+        )
 
 
 @dataclass(frozen=True)
@@ -738,15 +806,10 @@ def _dataclass_namespace_cli_mirror_candidates_from_projections(
                     continue
                 candidates.append(
                     DataclassNamespaceCliMirrorCandidate(
-                        file_path=dataclass_projection.file_path,
-                        line=dataclass_projection.line,
-                        class_name=dataclass_projection.class_name,
-                        argument_spec_name=cli_spec.name,
+                        config_class=dataclass_projection,
+                        argument_spec=cli_spec,
                         field_names=mirrored_fields,
                         cli_field_names=mirrored_cli_fields,
-                        from_namespace_line=dataclass_projection.from_namespace_line,
-                        argument_spec_file_path=cli_spec.file_path,
-                        argument_spec_line=cli_spec.line,
                     )
                 )
     return tuple(candidates)
@@ -1292,7 +1355,7 @@ class ResidualClosedAxisBranchingDetector(
         )
         return self.build_finding(
             (
-                f"`{residual_candidate.qualname}` branches {residual_candidate.branch_site_count} time(s) on axis "
+                f"`{residual_candidate.function.qualname}` branches {residual_candidate.branch.branch_site_count} time(s) on axis "
                 f"`{residual_candidate.key_type_name}` across cases {', '.join(residual_candidate.case_names)}, "
                 f"even though authoritative family `{authoritative_family_names}` already owns that axis."
             ),
@@ -3037,7 +3100,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         self, case_candidate: RepeatedConcreteTypeCaseAnalysisCandidate
     ) -> RefactorFinding:
         function_names = ", ".join(
-            (function.function_name for function in case_candidate.functions[:6])
+            (function.fact.function_name for function in case_candidate.functions[:6])
         )
         class_names = ", ".join(case_candidate.concrete_class_names[:6])
         alias_summary = (
@@ -3117,18 +3180,21 @@ class ImplicitSelfContractMixinDetector(
     def _finding_for_candidate(
         self, mixin_candidate: ImplicitSelfContractMixinCandidate
     ) -> RefactorFinding:
-        methods = ", ".join(mixin_candidate.method_names)
-        consumers = ", ".join(mixin_candidate.consumer_class_names[:6])
-        accessed_attributes = ", ".join(mixin_candidate.accessed_attribute_names[:6])
-        cast_types = ", ".join(mixin_candidate.cast_type_names[:6])
+        fact = mixin_candidate.fact
+        methods = ", ".join(fact.method_names)
+        consumers = ", ".join(
+            consumer.symbol for consumer in mixin_candidate.consumers[:6]
+        )
+        accessed_attributes = ", ".join(fact.accessed_attribute_names[:6])
+        cast_types = ", ".join(fact.cast_type_names[:6])
         return self.build_finding(
             (
                 f"`{mixin_candidate.mixin_name}` uses `cast(..., self)` ({cast_types}) in `{methods}` to reach consumer-owned attributes ({accessed_attributes}) across subclasses {consumers}."
             ),
             mixin_candidate.evidence,
             metrics=HierarchyCandidateMetrics(
-                duplicate_group_count=len(mixin_candidate.method_names),
-                class_count=len(mixin_candidate.consumer_class_names) + 1,
+                duplicate_group_count=len(fact.method_names),
+                class_count=len(mixin_candidate.consumers) + 1,
             ),
         )
 
@@ -3598,13 +3664,13 @@ declare_candidate_rule_detector(
         ),
     ),
     summary=lambda candidate: (
-        f"`{candidate.class_name}` mirrors {len(candidate.field_names)} namespace fields and {len(candidate.cli_field_names)} CLI fields through `{candidate.argument_spec_name}` instead of deriving adapters from the dataclass."
+        f"`{candidate.config_class.class_name}` mirrors {len(candidate.field_names)} namespace fields and {len(candidate.cli_field_names)} CLI fields through `{candidate.argument_spec.name}` instead of deriving adapters from the dataclass."
     ),
     metrics=lambda candidate: MappingMetrics.from_field_names(
         mapping_site_count=len(candidate.field_names) + len(candidate.cli_field_names),
-        mapping_name=candidate.class_name,
+        mapping_name=candidate.config_class.class_name,
         field_names=candidate.field_names,
-        source_name=candidate.argument_spec_name,
+        source_name=candidate.argument_spec.name,
     ),
     detector_base=CompactDataclassNamespaceCliMirrorCandidateBase,
 )

@@ -76,6 +76,7 @@ from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.class_syntax_facets import (
     ClosedAxis,
     CompactClosedAxisBranchFact,
+    CompactClosedAxisBranchFunction,
     CompactFamilyAxis,
     CompactKeyedTableAxis,
 )
@@ -3875,11 +3876,9 @@ def _residual_closed_axis_branching_candidates_from_compact_specs(
                 candidates.append(
                     ResidualClosedAxisBranchingCandidate(
                         key_type_name=axis.key_type_name,
-                        file_path=function.file_path,
-                        line=function.line,
-                        qualname=function.qualname,
-                        branch_site_count=axis.branch_site_count,
                         case_names=shared_case_names,
+                        function=function,
+                        branch=axis,
                         authoritative_families=sorted_tuple(
                             specs,
                             key=lambda spec: (
@@ -3892,7 +3891,12 @@ def _residual_closed_axis_branching_candidates_from_compact_specs(
                 )
     return sorted_tuple(
         candidates,
-        key=lambda item: (item.key_type_name, item.file_path, item.line, item.qualname),
+        key=lambda item: (
+            item.key_type_name,
+            item.function.file_path,
+            item.function.line,
+            item.function.qualname,
+        ),
     )
 
 
@@ -5601,18 +5605,22 @@ class CrossModuleAxisShadowFamilyCandidate(ClosedAxis, EvidenceLocated):
 
 
 @dataclass(frozen=True)
-class ResidualClosedAxisBranchingCandidate(
-    QualnameLineWitnessCandidate, CompactClosedAxisBranchFact
-):
-    """A function's branches on a closed axis that keyed families elsewhere own;
-    its cases are the ones those families name."""
+class ResidualClosedAxisBranchingCandidate(ClosedAxis, EvidenceLocated):
+    """A closed axis keyed families own that one function elsewhere still branches on;
+    its cases are the ones the function and those families both name."""
 
+    function: CompactClosedAxisBranchFunction
+    branch: CompactClosedAxisBranchFact
     authoritative_families: tuple[_KeyedFamilyAxisSpec, ...]
+
+    @property
+    def dispatch_site_count(self) -> int:
+        return self.branch.branch_site_count
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            self.location,
+            self.function.location,
             *(family.location for family in self.authoritative_families),
         )[:6]
 
@@ -5926,79 +5934,6 @@ class ManualStructuralRecordMechanicsGroupCandidate(EvidenceLocated):
                 for method_name in candidate.transform_method_names
             }
         )
-
-
-@dataclass(frozen=True)
-class ConcreteTypeCaseFunctionCandidate(FunctionLineWitnessCandidate):
-    subject_expression: str
-    subject_role: str
-    concrete_class_names: tuple[str, ...]
-    abstract_class_names: tuple[str, ...]
-    union_alias_names: tuple[str, ...]
-    case_site_count: int
-
-
-@dataclass(frozen=True)
-class RepeatedConcreteTypeCaseAnalysisCandidate(EvidenceLocated):
-    file_path: str
-    functions: tuple[ConcreteTypeCaseFunctionCandidate, ...]
-    abstract_base_names: tuple[str, ...]
-
-    @property
-    def subject_role(self) -> str:
-        return self.functions[0].subject_role
-
-    @property
-    def concrete_class_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            {
-                class_name
-                for function in self.functions
-                for class_name in function.concrete_class_names
-            }
-        )
-
-    @property
-    def union_alias_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            {
-                alias_name
-                for function in self.functions
-                for alias_name in function.union_alias_names
-            }
-        )
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(function.location for function in self.functions[:6])
-
-
-@dataclass(frozen=True)
-class ImplicitSelfContractMixinCandidate(LineWitnessCandidate):
-    mixin_name: str
-    method_names: tuple[str, ...]
-    method_lines: tuple[int, ...]
-    cast_type_names: tuple[str, ...]
-    consumer_class_names: tuple[str, ...]
-    consumer_lines: tuple[int, ...]
-    accessed_attribute_names: tuple[str, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        evidence = [
-            SourceLocation(self.file_path, self.line, self.mixin_name),
-            *(
-                SourceLocation(self.file_path, line, f"{self.mixin_name}.{name}")
-                for name, line in zip(self.method_names, self.method_lines, strict=True)
-            ),
-            *(
-                SourceLocation(self.file_path, line, class_name)
-                for class_name, line in zip(
-                    self.consumer_class_names, self.consumer_lines, strict=True
-                )
-            ),
-        ]
-        return tuple(evidence[:6])
 
 
 @dataclass(frozen=True)
@@ -6408,32 +6343,6 @@ class TupleIndexSemanticOpacityCandidate(FunctionLineWitnessCandidate):
     index_expressions: tuple[str, ...]
     nested_index_count: int
     carrier_call_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class DataclassNamespaceCliMirrorCandidate(ClassLineWitnessCandidate):
-    argument_spec_name: str
-    field_names: tuple[str, ...]
-    cli_field_names: tuple[str, ...]
-    from_namespace_line: int
-    argument_spec_file_path: str
-    argument_spec_line: int
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            self.location,
-            SourceLocation(
-                self.file_path,
-                self.from_namespace_line,
-                f"{self.class_name}.from_namespace",
-            ),
-            SourceLocation(
-                self.argument_spec_file_path,
-                self.argument_spec_line,
-                self.argument_spec_name,
-            ),
-        )
 
 
 @dataclass(frozen=True)

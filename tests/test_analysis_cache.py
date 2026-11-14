@@ -4477,7 +4477,7 @@ def test_compact_dataclass_cli_projection_preserves_semantics_without_ast_shadow
         )
     )
     assert len(candidates) == 1
-    assert candidates[0].class_name == "RunConfig"
+    assert candidates[0].config_class.class_name == "RunConfig"
     assert candidates[0].field_names == ("alpha", "beta", "gamma", "delta")
     assert candidates[0].cli_field_names == ("alpha", "beta", "gamma", "delta")
     assert (
