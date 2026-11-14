@@ -697,7 +697,7 @@ class PerModuleIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
-class SourceLocalIssueDetectorMixin(ABC):
+class SourceLocalIssueDetectorMixin(IssueDetector, ABC):
     """Exact source-only producer under an existing local detector authority.
 
     Returning ``None`` requests the ordinary Python-AST implementation for the
@@ -714,8 +714,6 @@ class SourceLocalIssueDetectorMixin(ABC):
         findings = self._findings_for_source(module, syntax_index, config)
         if findings is None:
             return None
-        if not isinstance(self, IssueDetector):
-            raise TypeError("source-local detector mixin requires IssueDetector")
         return self._normalize_findings(findings, config)
 
     @abstractmethod
