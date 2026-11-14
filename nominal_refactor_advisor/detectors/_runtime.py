@@ -1952,15 +1952,6 @@ class LatentImplementationRosterDetector(
         )
 
 
-def _compact_class_display_name(
-    indexed_class: CompactIndexedClass,
-    class_index: CompactClassFamilyIndex,
-) -> str:
-    if len(class_index.symbols_by_simple_name.get(indexed_class.simple_name, ())) <= 1:
-        return indexed_class.simple_name
-    return indexed_class.symbol
-
-
 def _compact_concrete_descendants(
     class_index: CompactClassFamilyIndex,
     indexed_class: CompactIndexedClass,
@@ -2024,11 +2015,11 @@ def _compact_manual_concrete_subclass_roster_candidates(
                 ManualConcreteSubclassRosterCandidate(
                     file_path=indexed_class.file_path,
                     line=root.init_subclass_line,
-                    class_name=_compact_class_display_name(indexed_class, class_index),
+                    class_name=class_index.display_name(indexed_class),
                     registration_site=compact_site,
                     consumer_locations=consumers,
                     concrete_class_names=sorted_tuple(
-                        _compact_class_display_name(descendant, class_index)
+                        class_index.display_name(descendant)
                         for descendant in registered_descendants
                     ),
                 )
@@ -2077,7 +2068,7 @@ def _compact_latent_implementation_roster_candidates(
         if len(descendants) < max(2, config.min_registration_sites):
             continue
         concrete_class_names = sorted_tuple(
-            _compact_class_display_name(descendant, class_index)
+            class_index.display_name(descendant)
             for descendant in descendants
         )
         concrete_simple_names = sorted_tuple(
@@ -2119,7 +2110,7 @@ def _compact_latent_implementation_roster_candidates(
                 LatentImplementationRosterCandidate(
                     file_path=roster.file_path,
                     line=roster.line,
-                    class_name=_compact_class_display_name(indexed_class, class_index),
+                    class_name=class_index.display_name(indexed_class),
                     roster=roster,
                     match=match,
                     concrete_class_names=concrete_class_names,
@@ -2144,7 +2135,7 @@ def _compact_predicate_selected_concrete_family_candidates(
         if len(descendants) < config.min_registration_sites:
             continue
         concrete_class_names = sorted_tuple(
-            _compact_class_display_name(descendant, class_index)
+            class_index.display_name(descendant)
             for descendant in descendants
         )
         for (
@@ -2157,7 +2148,7 @@ def _compact_predicate_selected_concrete_family_candidates(
                 PredicateSelectedConcreteFamilyCandidate(
                     file_path=indexed_class.file_path,
                     line=line,
-                    class_name=_compact_class_display_name(indexed_class, class_index),
+                    class_name=class_index.display_name(indexed_class),
                     selector_method_name=selector_method_name,
                     predicate_method_name=predicate_method_name,
                     context_param_name=context_param_name,

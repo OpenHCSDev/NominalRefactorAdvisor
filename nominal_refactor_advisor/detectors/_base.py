@@ -3635,12 +3635,7 @@ def _compact_keyed_family_axis_specs_from_index(
         )
         if len(case_names) < 2:
             continue
-        simple_name = indexed_class.simple_name
-        family_name = (
-            simple_name
-            if len(class_index.symbols_by_simple_name.get(simple_name, ())) <= 1
-            else indexed_class.symbol
-        )
+        family_name = class_index.display_name(indexed_class)
         specs.append(
             _KeyedFamilyAxisSpec(
                 file_path=indexed_class.file_path,

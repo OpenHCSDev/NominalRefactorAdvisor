@@ -386,15 +386,6 @@ def _compact_class_for_detector_name(
     return class_index.class_for(symbols[0])
 
 
-def _compact_class_display_name(
-    indexed_class: CompactIndexedClass,
-    class_index: CompactClassFamilyIndex,
-) -> str:
-    if len(class_index.symbols_by_simple_name.get(indexed_class.simple_name, ())) <= 1:
-        return indexed_class.simple_name
-    return indexed_class.symbol
-
-
 def _compact_concrete_type_function_candidates(
     projection: CompactRemainingSystemicModuleProjection,
     class_index: CompactClassFamilyIndex,
@@ -403,7 +394,7 @@ def _compact_concrete_type_function_candidates(
     for fact in projection.concrete_type_functions:
         concrete_class_names = sorted_tuple(
             {
-                _compact_class_display_name(indexed_class, class_index)
+                class_index.display_name(indexed_class)
                 for type_names in fact.type_names_by_check
                 for type_name in type_names
                 if (
@@ -460,7 +451,7 @@ def _compact_common_abstract_base_names(
     for indexed_class in indexed_classes[1:]:
         common_symbols &= set(class_index.ancestor_symbols(indexed_class.symbol))
     return sorted_tuple(
-        _compact_class_display_name(indexed_class, class_index)
+        class_index.display_name(indexed_class)
         for symbol in sorted(common_symbols)
         if (indexed_class := class_index.class_for(symbol)) is not None
         and indexed_class.is_abstract
@@ -569,13 +560,13 @@ def _compact_implicit_self_contract_mixin_candidates(
         candidates.append(
             ImplicitSelfContractMixinCandidate(
                 fact=fact,
-                mixin_name=_compact_class_display_name(indexed_class, class_index),
+                mixin_name=class_index.display_name(indexed_class),
                 consumers=sorted_tuple(
                     (
                         SourceLocation(
                             consumer.file_path,
                             consumer.line,
-                            _compact_class_display_name(consumer, class_index),
+                            class_index.display_name(consumer),
                         )
                         for consumer in consumers
                     ),
@@ -2123,15 +2114,6 @@ class RepeatedKeyedFamilyDetector(
         )
 
 
-def _compact_registry_class_display_name(
-    indexed_class: CompactIndexedClass,
-    class_index: CompactClassFamilyIndex,
-) -> str:
-    if len(class_index.symbols_by_simple_name.get(indexed_class.simple_name, ())) <= 1:
-        return indexed_class.simple_name
-    return indexed_class.symbol
-
-
 def _compact_registry_reference_edges(
     encoded_edges: str,
 ) -> Iterator[tuple[int, int, int]]:
@@ -2206,7 +2188,7 @@ def _compact_keyed_registry_axis_facts(
         (family_name, method_name)
         for indexed_class in registry_classes
         for family_name in (
-            _compact_registry_class_display_name(indexed_class, class_index),
+            class_index.display_name(indexed_class),
         )
         for method_name in indexed_class.keyed_registry_lookup_method_names
     )
@@ -2225,7 +2207,7 @@ def _compact_keyed_registry_axis_facts(
         )
         if key_type_name is None or registry_key_attr_name is None:
             continue
-        family_name = _compact_registry_class_display_name(indexed_class, class_index)
+        family_name = class_index.display_name(indexed_class)
         lookup_method_names = indexed_class.keyed_registry_lookup_method_names
         consumer_symbols = _compact_registry_consumer_symbols(
             consumer_index,
@@ -2255,10 +2237,7 @@ def _compact_keyed_registry_axis_facts(
         key_entries = []
         unresolved_type_names = set()
         for descendant in concrete_descendants:
-            descendant_name = _compact_registry_class_display_name(
-                descendant,
-                class_index,
-            )
+            descendant_name = class_index.display_name(descendant)
             try:
                 member = class_index.direct_or_absent_value_declaration(
                     descendant.symbol, registry_key_attr_name
@@ -2281,7 +2260,7 @@ def _compact_keyed_registry_axis_facts(
             key_axis_name=key_type_name,
             key_entries=key_entries,
             registered_type_names=tuple(
-                _compact_registry_class_display_name(descendant, class_index)
+                class_index.display_name(descendant)
                 for descendant in concrete_descendants
             ),
             unresolved_type_names=unresolved_type_names,
@@ -2489,16 +2468,6 @@ def _compact_registry_projection_surface_candidates_from_facts(
     )
 
 
-def _compact_registry_projection_surface_candidates(
-    projections: Sequence[CompactModuleClassProjection],
-    config: DetectorConfig,
-) -> tuple[RegistryProjectionSurfaceCandidate, ...]:
-    return _compact_registry_projection_surface_candidates_from_facts(
-        projections,
-        _compact_keyed_registry_axis_facts(projections, config),
-    )
-
-
 def _compact_registry_projection_policy_authority_candidates_from_facts(
     projections: Sequence[CompactModuleClassProjection],
     facts: tuple[KeyedRegistryAxisFact, ...],
@@ -2509,16 +2478,6 @@ def _compact_registry_projection_policy_authority_candidates_from_facts(
                 projections, facts
             )
         )
-    )
-
-
-def _compact_registry_projection_policy_authority_candidates(
-    projections: Sequence[CompactModuleClassProjection],
-    config: DetectorConfig,
-) -> tuple[RegistryProjectionPolicyAuthorityCandidate, ...]:
-    return _compact_registry_projection_policy_authority_candidates_from_facts(
-        projections,
-        _compact_keyed_registry_axis_facts(projections, config),
     )
 
 
@@ -2554,84 +2513,78 @@ class _CompactKeyedRegistryCandidateDetectorBase(
     Generic[CompactKeyedRegistryCandidateT],
     ABC,
 ):
-    """Candidate detectors over the keyed registries the class repository indexes."""
+    """Candidate detectors over the keyed registries the class repository indexes.
+
+    The registries' facts come from the projections or from the shared context; a
+    detector says what candidates those facts hold.
+    """
+
+    @abstractmethod
+    def _candidates_from_registry_facts(
+        self,
+        projections: Sequence[CompactModuleClassProjection],
+        facts: tuple[KeyedRegistryAxisFact, ...],
+    ) -> Sequence[CompactKeyedRegistryCandidateT]:
+        raise NotImplementedError
+
+    def _candidates_from_compact_projections(
+        self,
+        projections: Sequence[CompactModuleClassProjection],
+        config: DetectorConfig,
+    ) -> Sequence[CompactKeyedRegistryCandidateT]:
+        return self._candidates_from_registry_facts(
+            projections, _compact_keyed_registry_axis_facts(projections, config)
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: Sequence[CompactModuleClassProjection],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        facts = _compact_keyed_registry_axis_facts_from_context(context)
+        return self._findings_for_candidates(
+            self._candidates_from_registry_facts(projections, facts), config
+        )
 
 
 class _CompactNonInjectiveTypeRegistryDetectorBase(
     KeyedRegistryAxisRootAnchored,
     _CompactKeyedRegistryCandidateDetectorBase[NonInjectiveTypeRegistryCandidate],
 ):
-    def _candidates_from_compact_projections(
+    def _candidates_from_registry_facts(
         self,
         projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
+        facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> Sequence[NonInjectiveTypeRegistryCandidate]:
-        return NonInjectiveTypeRegistryCandidate.from_facts(
-            _compact_keyed_registry_axis_facts(projections, config)
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
         del projections
-        facts = _compact_keyed_registry_axis_facts_from_context(context)
-        return self._findings_for_candidates(
-            NonInjectiveTypeRegistryCandidate.from_facts(facts), config
-        )
+        return NonInjectiveTypeRegistryCandidate.from_facts(facts)
 
 
 class _CompactInjectiveTypeRegistryDetectorBase(
     KeyedRegistryAxisRootAnchored,
     _CompactKeyedRegistryCandidateDetectorBase[InjectiveTypeRegistryCandidate],
 ):
-    def _candidates_from_compact_projections(
+    def _candidates_from_registry_facts(
         self,
         projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
+        facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> Sequence[InjectiveTypeRegistryCandidate]:
-        return InjectiveTypeRegistryCandidate.from_facts(
-            _compact_keyed_registry_axis_facts(projections, config)
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
         del projections
-        facts = _compact_keyed_registry_axis_facts_from_context(context)
-        return self._findings_for_candidates(
-            InjectiveTypeRegistryCandidate.from_facts(facts), config
-        )
+        return InjectiveTypeRegistryCandidate.from_facts(facts)
 
 
 class _CompactRegistryProjectionSurfaceDetectorBase(
     NamedRegistryProjectionSurfaceAnchored,
     _CompactKeyedRegistryCandidateDetectorBase[RegistryProjectionSurfaceCandidate],
 ):
-    def _candidates_from_compact_projections(
+    def _candidates_from_registry_facts(
         self,
         projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
+        facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> Sequence[RegistryProjectionSurfaceCandidate]:
-        return _compact_registry_projection_surface_candidates(projections, config)
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        facts = _compact_keyed_registry_axis_facts_from_context(context)
-        return self._findings_for_candidates(
-            _compact_registry_projection_surface_candidates_from_facts(
-                projections, facts
-            ),
-            config,
+        return _compact_registry_projection_surface_candidates_from_facts(
+            projections, facts
         )
 
 
@@ -2641,27 +2594,13 @@ class _CompactRegistryProjectionPolicyAuthorityDetectorBase(
         RegistryProjectionPolicyAuthorityCandidate
     ],
 ):
-    def _candidates_from_compact_projections(
+    def _candidates_from_registry_facts(
         self,
         projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
+        facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> Sequence[RegistryProjectionPolicyAuthorityCandidate]:
-        return _compact_registry_projection_policy_authority_candidates(
-            projections, config
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        facts = _compact_keyed_registry_axis_facts_from_context(context)
-        return self._findings_for_candidates(
-            _compact_registry_projection_policy_authority_candidates_from_facts(
-                projections, facts
-            ),
-            config,
+        return _compact_registry_projection_policy_authority_candidates_from_facts(
+            projections, facts
         )
 
 
