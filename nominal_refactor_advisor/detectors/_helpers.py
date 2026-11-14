@@ -13,7 +13,6 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from typing import (
-    Callable,
     ClassVar,
     Generic,
     TypeAlias,
@@ -148,9 +147,6 @@ DerivedQuerySignature: TypeAlias = tuple[str | None, str, str, str]
 DerivedQuerySpecsBySignature: TypeAlias = dict[
     DerivedQuerySignature, MutableNamedStringSequenceSpecs
 ]
-
-_APPEND_METHOD_NAME = "append"
-
 
 MethodFamilyCandidateItemT = TypeVar("MethodFamilyCandidateItemT", covariant=True)
 
@@ -805,16 +801,6 @@ def _receiver_self_attr_name(node: ast.AST, aliases: dict[str, str]) -> str | No
     if isinstance(node, ast.Name):
         return aliases.get(node.id)
     return None
-
-
-_DECLARATIVE_FAMILY_DEFINITION_BASE_NAMES = frozenset(
-    {
-        "SingleShapeFamilyDefinition",
-        "RegisteredShapeFamilyDefinition",
-        "RegisteredObservationFamilyDefinition",
-        "TypedLiteralObservationFamilyDefinition",
-    }
-)
 
 
 _ABC_BASE_NAME = "ABC"
@@ -2366,14 +2352,6 @@ def _finding_spec_build_boilerplate_candidates(
 
 def _source_segment(module: ParsedModule, node: ast.expr) -> str:
     return module.source_segments.segment_for_node(node) or ast.unparse(node)
-
-
-ClassShapeT = TypeVar("ClassShapeT")
-BuiltCandidateT = TypeVar("BuiltCandidateT")
-ClassShapeProjector = Callable[[ast.ClassDef], ClassShapeT | None]
-ClassShapeCandidateFactory = Callable[
-    [ParsedModule, ast.ClassDef, ClassShapeT], BuiltCandidateT
-]
 
 
 class HelperSyntaxProjectionAuthority:
