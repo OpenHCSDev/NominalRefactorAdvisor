@@ -149,7 +149,8 @@ from nominal_refactor_advisor.detectors._base import (
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
     finding_spec_template,
-    FlattenedModuleCollectorCandidateDetector,
+    CompactProjectionCandidateDetector,
+    SortedCandidateItemsMixin,
     high_confidence_spec,
     IssueDetector,
     LatentImplementationRosterCandidate,
@@ -1499,8 +1500,8 @@ class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]
 
 
 class RepeatedBuilderCallDetector(
-    CompactModuleProjectionDetectorMixin[BuilderCallShape],
-    FlattenedModuleCollectorCandidateDetector[BuilderCallShape],
+    SortedCandidateItemsMixin[BuilderCallShape],
+    CompactProjectionCandidateDetector[BuilderCallShape, BuilderCallShape],
     SsotAuthorityBoundaryDetector,
     RepeatedBuilderCallFindingRecipeSynthesizer,
 ):
@@ -1524,20 +1525,17 @@ class RepeatedBuilderCallDetector(
         ),
     )
 
-    candidate_collector = _module_builder_call_shapes
     candidate_sort_key = staticmethod(
         lambda item: (item.file_path, item.lineno, item.symbol)
     )
 
-    def _findings_from_compact_projections(
+    def _candidates_from_compact_projections(
         self,
         projections: Sequence[BuilderCallShape],
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        return self._findings_for_candidates(
-            type(self)._sorted_candidate_items(projections),
-            config,
-        )
+    ) -> Sequence[BuilderCallShape]:
+        del config
+        return type(self)._sorted_candidate_items(tuple(projections))
 
     def _findings_for_candidates(
         self,
