@@ -86,7 +86,7 @@ from nominal_refactor_advisor.detectors._base import (
     _PIPELINE_ASSIGN_STAGE,
     _PIPELINE_RETURN_STAGE,
     _self_attr_name,
-    CANDIDATE_COLLECTION_AUTHORITY,
+    CandidateCollectionAuthority,
     ClassFamilyWitnessCarrier,
     ClassMethodLineWitnessCandidate,
     DetectorConfig,
@@ -1258,7 +1258,7 @@ def _finding_spec_build_boilerplate_class_candidates(
 def _finding_spec_build_boilerplate_candidates(
     module: ParsedModule,
 ) -> tuple[ClassMethodLineWitnessCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
+    return CandidateCollectionAuthority.ast_node_candidates(
         module,
         ast.ClassDef,
         _finding_spec_build_boilerplate_class_candidates,
@@ -1346,7 +1346,7 @@ class TupleIndexSemanticOpacityCandidateCollector:
         cls,
         module: ParsedModule,
     ) -> tuple[TupleIndexSemanticOpacityCandidate, ...]:
-        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+        return CandidateCollectionAuthority.named_function_candidates(
             module,
             cls.for_function,
             sort_key=lambda candidate: (

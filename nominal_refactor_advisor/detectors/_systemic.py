@@ -142,7 +142,7 @@ from nominal_refactor_advisor.detectors._base import (
     RegistryProjectionRole,
     KeyedFamilyAxisSpecsByKey,
     ResidualClosedAxisBranchingIdentity,
-    CANDIDATE_COLLECTION_AUTHORITY,
+    CandidateCollectionAuthority,
     EnumProjectionTableCandidate,
     EvidenceLocationsWitnessCandidate,
     NameFamilyClassNamesMixin,
@@ -1024,7 +1024,7 @@ class ResidualClosedAxisIndirectionCandidate(CollectsItself,
         if not tables:
             return ()
         table_by_name = {table.table_name: table for table in tables}
-        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+        return CandidateCollectionAuthority.named_function_candidates(
             module,
             cls._for_function,
             table_by_name,
@@ -5440,7 +5440,7 @@ class StructuralConfusabilityCandidate(CollectsItself,
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         statements = module.fact(ModuleClassStatements)
-        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+        return CandidateCollectionAuthority.named_function_candidates(
             module,
             cls._for_function,
             statements.top_level,
@@ -5567,7 +5567,7 @@ class WitnessCarrierFamilyCandidate(CollectsItself, ClassLineNumbersGroup):
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
-        classes = CANDIDATE_COLLECTION_AUTHORITY.witness_carrier_class_candidates(module)
+        classes = CandidateCollectionAuthority.witness_carrier_class_candidates(module)
         if len(classes) < 2:
             return ()
         grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)

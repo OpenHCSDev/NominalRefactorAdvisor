@@ -26,7 +26,7 @@ from nominal_refactor_advisor.observation_shapes import (
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
-    CANDIDATE_COLLECTION_AUTHORITY,
+    CandidateCollectionAuthority,
     CompactGroupedShapeIssueDetector,
     DetectorConfig,
     CompactModuleProjectionDetectorMixin,
@@ -167,7 +167,7 @@ class RepeatedModuleExpressionLeadDetector(
         return [
             shape
             for module in modules
-            for shape in CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+            for shape in CandidateCollectionAuthority.typed_family_items(
                 module, ModuleExpressionShapeFamily, ModuleExpressionShape
             )
         ]

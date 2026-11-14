@@ -2806,8 +2806,9 @@ class CandidateCollectionAuthority:
         }
     )
 
+    @classmethod
     def typed_family_items(
-        self,
+        cls,
         module: ParsedModule,
         family: type[CollectedFamily],
         item_type: type[CollectedItemT],
@@ -2821,8 +2822,9 @@ class CandidateCollectionAuthority:
             )
         return cast(tuple[CollectedItemT, ...], items)
 
+    @classmethod
     def named_function_candidates(
-        self,
+        cls,
         module: ParsedModule,
         projector: NamedFunctionProjector,
         *projector_args: NamedFunctionProjectorP.args,
@@ -2838,8 +2840,9 @@ class CandidateCollectionAuthority:
         )
         return CandidateStream(projected, sort_key).materialized()
 
+    @classmethod
     def ast_node_candidates(
-        self,
+        cls,
         module: ParsedModule,
         node_type: type[AstNodeT],
         projector: Callable[
@@ -2859,8 +2862,9 @@ class CandidateCollectionAuthority:
         )
         return tuple(projected)
 
+    @classmethod
     def witness_carrier_class_candidates(
-        self, module: ParsedModule
+        cls, module: ParsedModule
     ) -> tuple[WitnessCarrierClassCandidate, ...]:
         candidates: list[WitnessCarrierClassCandidate] = []
         for declared in module.fact(ModuleClassStatements).top_level:
@@ -2876,7 +2880,7 @@ class CandidateCollectionAuthority:
             normalized_roles = tuple(
                 role_name for role_name, _ in normalized_role_fields
             )
-            family_tokens = self._carrier_family_tokens(node.name)
+            family_tokens = cls._carrier_family_tokens(node.name)
             if not family_tokens:
                 continue
             if len(normalized_roles) < 3:
@@ -2915,7 +2919,6 @@ class CandidateCollectionAuthority:
         return (tokens[-1],)
 
 
-CANDIDATE_COLLECTION_AUTHORITY = CandidateCollectionAuthority()
 
 
 class SyntaxProjectionAuthority:

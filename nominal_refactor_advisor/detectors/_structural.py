@@ -61,7 +61,7 @@ from nominal_refactor_advisor.detectors._base import (
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
-    CANDIDATE_COLLECTION_AUTHORITY,
+    CandidateCollectionAuthority,
     SelfReflectiveBuiltinCandidate,
     ClassLineWitnessCandidate,
     CollectsItselfUnderConfig,
@@ -93,7 +93,7 @@ class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCand
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
-        return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
+        return CandidateCollectionAuthority.ast_node_candidates(
             module,
             ast.ClassDef,
             cls._for_class,
@@ -829,7 +829,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
             for class_name, declared in classes_by_name.items()
         }
         ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
-        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+        return CandidateCollectionAuthority.named_function_candidates(
             module,
             cls._for_function,
             classes_by_name,
@@ -1277,7 +1277,7 @@ class DynamicSelfFieldSelectionCandidate(CollectsItself, SelfReflectiveBuiltinCa
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
-        return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
+        return CandidateCollectionAuthority.ast_node_candidates(
             module,
             ast.ClassDef,
             cls._for_class,

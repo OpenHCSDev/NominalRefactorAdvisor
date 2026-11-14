@@ -143,7 +143,7 @@ from nominal_refactor_advisor.observation_shapes import (
 )
 from nominal_refactor_advisor.detectors._base import (
     CollectsItself,
-    CANDIDATE_COLLECTION_AUTHORITY,
+    CandidateCollectionAuthority,
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
     CompactClassRepositoryProjectionMixin,
@@ -223,7 +223,7 @@ class LiteralDispatchFindingFactory:
         relation_case_label: str,
     ) -> list[RefactorFinding]:
         observations: tuple[LiteralDispatchObservation, ...] = (
-            CANDIDATE_COLLECTION_AUTHORITY.typed_family_items(
+            CandidateCollectionAuthority.typed_family_items(
                 module,
                 observation_family,
                 LiteralDispatchObservation,
