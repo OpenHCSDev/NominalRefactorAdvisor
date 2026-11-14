@@ -44,8 +44,10 @@ class PythonEnumBaseKind(FieldedStrEnum):
             ) from error
 
 
+@dataclass(frozen=True)
 class PythonEnumMemberValueABC(ABC):
-    """One closed source value used by standard Enum class construction."""
+    """One closed source value used by standard Enum class construction: a value
+    record, equal and spelled by its content, so a cache form of it is too."""
 
     @abstractmethod
     def native_value(

@@ -1196,6 +1196,12 @@ class PresentationToken:
     written: str
     qualifier: str | None = None
 
+    def ordering(self) -> tuple[str, str, str, str, str]:
+        """Every field, in declaration order: two tokens that normalize alike
+        (`Tuple`, `tuple`) still have one order, never the order of a set."""
+
+        return (self.value, self.kind, self.role, self.written, self.qualifier or "")
+
 
 @dataclass(frozen=True, order=True)
 class PresentationAuthorityConstruction:
@@ -5189,15 +5195,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 label=label,
                 owner_symbol=self.qualname,
                 location=SourceLocation(self.parsed_module.file_path, line, label),
-                tokens=sorted_tuple(
-                    frozenset(tokens),
-                    key=lambda item: (
-                        item.value,
-                        item.kind,
-                        item.role,
-                        item.qualifier or "",
-                    ),
-                ),
+                tokens=sorted_tuple(frozenset(tokens), key=PresentationToken.ordering),
                 source_text="",
                 owner_constructions=sorted_tuple(
                     frozenset(projection_constructions),
