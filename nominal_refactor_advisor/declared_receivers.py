@@ -528,9 +528,6 @@ class DeclaredNone(DeclaredType):
     ) -> DeclaredType:
         return other
 
-    def join_none(self, other: DeclaredNone) -> DeclaredType:
-        return self
-
     def join_foreign(self, other: DeclaredForeignInstance) -> DeclaredType:
         return other
 
@@ -583,9 +580,6 @@ class UndeclaredType(DeclaredType):
     def join_class_object(
         self, other: DeclaredClassObject, typing: DeclaredReceiverTyping
     ) -> DeclaredType:
-        return self
-
-    def join_none(self, other: DeclaredNone) -> DeclaredType:
         return self
 
     def join_undeclared(self, other: UndeclaredType) -> DeclaredType:

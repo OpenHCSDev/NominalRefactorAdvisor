@@ -233,13 +233,6 @@ class DirectClassBaseReplacementOperationABC(
         PayloadRecordValueCodec(SourceRewriteTarget)
     )
 
-    @abstractmethod
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[NominalSourceEdit, ...]:
-        raise NotImplementedError
-
     def direct_class_base_source_edits(
         self,
         snapshot: CodemodSourceSnapshot,

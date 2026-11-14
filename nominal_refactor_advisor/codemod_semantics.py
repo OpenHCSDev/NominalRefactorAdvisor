@@ -112,10 +112,6 @@ class CurrentSnapshotFindingRecipePlanningHorizon(
     wire_value = "current_snapshot"
 
     @property
-    def requires_trajectory_proof(self) -> bool:
-        return True
-
-    @property
     def application_block_reason(self) -> str:
         return "application requires a proof across reachable refactor trajectories"
 

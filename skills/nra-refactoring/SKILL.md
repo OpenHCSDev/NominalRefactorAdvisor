@@ -793,6 +793,36 @@ not from the top of the list:
 - `ast.walk` is called 154 times (256 before): loops that `match` on
   several node types, tuples of types, and walks inside the audit gate.
 
+Later on 2026-11-14, by the measures in `tools/proof` on the working
+tree (each is a plain script over the syntax trees, seconds to run):
+
+- `same_body.py PACKAGE 3` (one name, signature and body in three or
+  more classes): 21 groups, 69 declarations in the morning; 13 and 45
+  now. With two owners: 86 groups, 191 declarations, mostly two-line
+  answers.
+- `same_shape.py PACKAGE 3 8` (the same procedure with other names):
+  26 shapes, 148 functions, 1,819 lines; now 21, 95 and 1,039. The
+  largest left are thirteen unrelated eleven-line methods that only
+  look alike, and the dataclass projection builders (see "Copies that
+  differ only in a class they name").
+- `redundant_overrides.py PACKAGE` (an override equal to what it would
+  inherit): six, now none.
+- `enum_dump.py OUT.json` is the per-member proof for any change to an
+  enum.
+- Type tests on NRA's own classes: 243 on 131 classes, 53 of them in
+  `source_execution.py`. Read before folding: they are premise guards
+  (`if not isinstance(read.use, CompactValueUse): raise`), one per proof
+  step, not a dispatch chain. The repair is a typed premise at the
+  caller, which is kernel design, not a fold.
+- The scan's inputs (`roots`, `report_roots`, `config`) are three
+  fields in five classes across `analysis.py`, `cli.py` and
+  `codemod_workflow.py`, handed from one to the next. One owner would
+  end the threading; it sits in the analysis cache's area.
+- `RefactorRecipe` and `CodemodPlanDocument` flatten what their
+  children declare in seven methods of the same five lines. A family
+  of "what an operation declares" would replace them and changes every
+  operation's override.
+
 **Known wrong, not yet fixed:**
 - `phantom_family` used to report every public name defined in two
   modules. It now groups each method by the topmost classes that declare
