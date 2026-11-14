@@ -61,7 +61,7 @@ class IdenticalArmsDetector(
 
     def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
         branches = _listed(
-            f"line {site.lineno} on {' / '.join(f'`{test}`' for test in site.detail)}"
+            f"line {site.lineno} on {' / '.join(f'`{test}`' for test in site.named)}"
             for site in sites
         )
         return f"`{sites[0].symbol}` branches with identical arms: {branches}."
@@ -90,7 +90,7 @@ class UndistinguishedTypeTestDetector(
 
     def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
         groups = _listed(
-            f"line {site.lineno} on {', '.join(f'`{name}`' for name in site.detail)}"
+            f"line {site.lineno} on {', '.join(f'`{name}`' for name in site.named)}"
             for site in sites
         )
         return f"`{sites[0].symbol}` tests classes whose arms run the same code: {groups}."

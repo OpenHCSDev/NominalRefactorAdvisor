@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from operator import attrgetter
 
@@ -36,6 +37,7 @@ from nominal_refactor_advisor.relocation_observations import (
 from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
+    TypedRestatingSite,
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._relocations import MemberFamilies
@@ -724,9 +726,45 @@ class LoopRelookupDetector(PerModuleIssueDetector):
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class PublicDefinitionSite(TypedRestatingSite, ABC):
+    """One public def: `group` is its name."""
+
+    @abstractmethod
+    def owner(self, module_name: str, families: MemberFamilies) -> str | None:
+        """The declaration owning this name, or None when it is left uncounted."""
+
+
+@dataclass(frozen=True)
+class PublicMethodSite(PublicDefinitionSite):
+    """A public method of a top-level class."""
+
+    declaring_class: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.declaring_class,)
+
+    def owner(self, module_name: str, families: MemberFamilies) -> str | None:
+        symbol = f"{module_name}.{self.declaring_class}"
+        if not families.declares_all_ancestors(symbol):
+            return None
+        return families.family(symbol, self.group) or symbol
+
+
+@dataclass(frozen=True)
+class PublicFunctionSite(PublicDefinitionSite):
+    """A public top-level function: it owns its own name."""
+
+    def spelled(self) -> tuple[str, ...]:
+        return ()
+
+    def owner(self, module_name: str, families: MemberFamilies) -> str | None:
+        return f"{module_name}.{self.group}"
+
+
 class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """Each public top-level function and each public method of a top-level
-    class, one site per def: `group` is its name, `detail` its class."""
+    class, one site per def."""
 
 
     @classmethod
@@ -739,11 +777,14 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         method.node,
                         f"{declared.name}.{method.name}",
                         method.name,
-                        (declared.name,),
+                        PublicMethodSite,
+                        declaring_class=declared.name,
                     )
         for function in FunctionDefinition.within(parsed_module.module.body):
             if not function.name.startswith("_"):
-                yield cls.site(parsed_module, function, function.name, function.name, ())
+                yield cls.site(
+                    parsed_module, function, function.name, function.name, PublicFunctionSite
+                )
 
 
 class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDetector):
@@ -797,21 +838,16 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
     ) -> list[RefactorFinding]:
         del config
         families = MemberFamilies.require(context)
-        owners_by_name: dict[str, dict[str, list[RestatingSite]]] = defaultdict(
+        owners_by_name: dict[str, dict[str, list[PublicDefinitionSite]]] = defaultdict(
             lambda: defaultdict(list)
         )
         for module in PublicDefinitionSiteFamily.modules_in(projections_by_family):
             for site in module.sites:
                 if site.group in self._SKIP_COMMON_NAMES:
                     continue
-                match site.detail:
-                    case (class_name,):
-                        symbol = f"{module.module_name}.{class_name}"
-                        if not families.declares_all_ancestors(symbol):
-                            continue
-                        owner = families.family(symbol, site.group) or symbol
-                    case _:
-                        owner = f"{module.module_name}.{site.group}"
+                owner = site.owner(module.module_name, families)
+                if owner is None:
+                    continue
                 owners_by_name[site.group][owner].append(site)
         return [
             self._finding_for_name(name, owners)

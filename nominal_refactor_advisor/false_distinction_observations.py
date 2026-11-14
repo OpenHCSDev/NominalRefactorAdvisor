@@ -59,6 +59,7 @@ from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
+    TypedRestatingSite,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -246,6 +247,16 @@ class FalseDistinction(ABC):
         return found[0]
 
 
+@dataclass(frozen=True)
+class FalseDistinctionSite(TypedRestatingSite):
+    """One branch whose arms do not differ, with the tests it names."""
+
+    named: tuple[str, ...]
+
+    def spelled(self) -> tuple[str, ...]:
+        return self.named
+
+
 class FalseDistinctionSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
     """One kind of false distinction, a site for each one in the module's scopes."""
 
@@ -261,7 +272,8 @@ class FalseDistinctionSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
                     found.anchor,
                     symbol,
                     f"line {found.line}",
-                    tuple(ast.unparse(test) for test in found.named),
+                    FalseDistinctionSite,
+                    named=tuple(ast.unparse(test) for test in found.named),
                 )
 
 
