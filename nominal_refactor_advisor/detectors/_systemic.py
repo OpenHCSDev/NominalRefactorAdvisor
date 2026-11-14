@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast, ClassVar, Generic, Self, TypeVar
 
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import ExpressionReference, CallKeywords
 from nominal_refactor_advisor.class_syntax_facets import (
     CompactClosedAxisBranchFunction,
     CompactNamedProjectionSurface,
@@ -28,12 +28,13 @@ from nominal_refactor_advisor.detectors._candidates import (
     KeyedRecordInfrastructureCandidate,
     KeyedRegistryAxisFact,
     LineWitnessCandidate,
+    WitnessCarrierCandidate,
 )
 from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
-from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape
+from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
 from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
@@ -108,7 +109,6 @@ from nominal_refactor_advisor.detectors._base import (
     CompactProjectionGroups,
     ConfiguredModuleCollectorCandidateDetector,
     DeclarativeDetectorClassCandidate,
-    DerivedWrapperSpecShadowCandidate,
     DetectorConfig,
     DirectBuildFindingRendererCandidate,
     FindingSpecConstructionCandidate,
@@ -121,25 +121,20 @@ from nominal_refactor_advisor.detectors._base import (
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
     RepeatedKeyedFamilyCandidate,
-    ResidualClosedAxisIndirectionCandidate,
     SchemaAccessorFamilyCandidate,
     SemanticMirrorIssueDetector,
     SourceModuleCollectorCandidateDetector,
     StaticTypedObservationDetectorCandidate,
-    StructuralConfusabilityCandidate,
     TupleIndexSemanticOpacityCandidate,
     WitnessCarrierFamilyCandidate,
     _attribute_family_subject_expression,
     _compact_keyed_family_axis_specs_from_index,
-    _derived_wrapper_spec_shadow_candidates,
     _keyed_record_infrastructure_candidates,
     _KeyedFamilyAxisSpec,
     _manual_structural_record_mechanics_group_candidates,
     _module_union_type_aliases,
     _registry_maturity_missing_signals,
-    _residual_closed_axis_indirection_candidates,
     _self_cast_alias_names,
-    _structural_confusability_candidates,
     _top_level_attribute_aliases,
     _witness_carrier_family_candidates,
     declare_candidate_rule_detector,
@@ -156,6 +151,19 @@ from nominal_refactor_advisor.detectors._base import (
     RegistryProjectionRole,
     KeyedFamilyAxisSpecsByKey,
     ResidualClosedAxisBranchingIdentity,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    EnumProjectionTableCandidate,
+    EvidenceLocationsWitnessCandidate,
+    NameFamilyClassNamesMixin,
+    NamedFunctionNode,
+    SUPPORT_PROJECTION_AUTHORITY,
+    SubjectNameFunctionNameMixin,
+    _comprehension_builder_names,
+    _enum_projection_tables,
+    _named_family_for_constants,
+    _residual_enum_branch_cases,
+    _shared_abstract_nominal_authority,
+    _subscript_axis_expr_for_table,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
@@ -175,9 +183,12 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
     ModuleIndexedClasses,
     UnindexedClassStatement,
+    ClassStatement,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     _camel_case,
+    ModuleNamedValues,
+    _is_upper_snake_identifier,
 )
 from nominal_refactor_advisor.detectors._finding_spec_defaults import (
     FindingSpecConstructionCandidateCollector,
@@ -1087,10 +1098,87 @@ declare_candidate_rule_detector(
 )
 
 
+@dataclass(frozen=True)
+class ResidualClosedAxisIndirectionCandidate(CollectsItself, 
+    DispatchAxisExpression, LineWitnessCandidate
+):
+    qualname: str
+    table_name: str
+    table_line: int
+    enum_name: str
+    table_case_names: tuple[str, ...]
+    residual_case_names: tuple[str, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return (
+            SourceLocation(self.file_path, self.table_line, self.table_name),
+            self.named(self.qualname),
+        )
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        tables = _enum_projection_tables(module)
+        if not tables:
+            return ()
+        table_by_name = {table.table_name: table for table in tables}
+        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+            module,
+            cls._for_function,
+            table_by_name,
+            sort_key=lambda item: (
+                item.file_path,
+                item.line,
+                item.qualname,
+                item.table_name,
+            ),
+        )
+
+    @classmethod
+    def _for_function(
+        cls,
+        module: ParsedModule,
+        qualname: str,
+        function: NamedFunctionNode,
+        table_by_name: dict[str, EnumProjectionTableCandidate],
+    ) -> Iterable[Self]:
+        axis_expressions_by_table: dict[str, set[str]] = defaultdict(set)
+        for node in ast.walk(function):
+            for table_name in table_by_name:
+                dispatch_axis_expression = _subscript_axis_expr_for_table(node, table_name)
+                if dispatch_axis_expression is not None:
+                    axis_expressions_by_table[table_name].add(dispatch_axis_expression)
+        for table_name, axis_expressions in axis_expressions_by_table.items():
+            table = table_by_name[table_name]
+            for dispatch_axis_expression in sorted(axis_expressions):
+                residual_cases = _residual_enum_branch_cases(
+                    function,
+                    enum_name=table.enum_name,
+                    dispatch_axis_expression=dispatch_axis_expression,
+                )
+                shared_cases = tuple(
+                    case_name
+                    for case_name in table.case_names
+                    if case_name in set(residual_cases)
+                )
+                if not shared_cases:
+                    continue
+                yield cls(
+                    file_path=module.file_path,
+                    qualname=qualname,
+                    line=function.lineno,
+                    table_name=table.table_name,
+                    table_line=table.line,
+                    enum_name=table.enum_name,
+                    dispatch_axis_expression=dispatch_axis_expression,
+                    table_case_names=table.case_names,
+                    residual_case_names=shared_cases,
+                )
+
+
 class ResidualClosedAxisIndirectionDetector(
     ModuleCollectorCandidateDetector[ResidualClosedAxisIndirectionCandidate]
 ):
-    candidate_collector = staticmethod(_residual_closed_axis_indirection_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_STRATEGY_FAMILY,
         "Enum-keyed table plus leftover branches suggest scattered case ownership",
@@ -1128,10 +1216,115 @@ class ResidualClosedAxisIndirectionDetector(
         )
 
 
+@dataclass(frozen=True)
+class DerivedWrapperSpecShadowCandidate(CollectsItself, EvidenceLocationsWitnessCandidate):
+    derived_family_name: str
+    derived_constructor_name: str
+    primary_family_name: str | None
+    primary_constructor_name: str
+    link_field_name: str
+    primary_constant_names: tuple[str, ...]
+    extra_field_names: tuple[str, ...]
+    builder_names: tuple[str, ...]
+    witness_name = AliasProperty[str]("derived_family_name")
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        named_values = module.fact(ModuleNamedValues)
+        constant_bindings = named_values.constants
+        named_sequences = named_values.sequences
+        candidates: list[Self] = []
+        for family_name, (family_line, elements) in sorted(named_sequences.items()):
+            if len(elements) < 2 or not all(
+                (isinstance(element, ast.Call) for element in elements)
+            ):
+                continue
+            entry_calls = cast(tuple[ast.Call, ...], elements)
+            constructor_names = {
+                ExpressionReference.decoded(element.func).terminal_name
+                for element in entry_calls
+            }
+            if len(constructor_names) != 1 or None in constructor_names:
+                continue
+            keyword_maps: list[dict[str, ast.AST]] = []
+            for element in entry_calls:
+                keyword_map = dict(CallKeywords.of(element.keywords).by_name)
+                if not keyword_map:
+                    keyword_maps = []
+                    break
+                keyword_maps.append(keyword_map)
+            if not keyword_maps:
+                continue
+            common_keyword_names = set(keyword_maps[0])
+            for keyword_map in keyword_maps[1:]:
+                common_keyword_names &= set(keyword_map)
+            if not common_keyword_names:
+                continue
+            builder_names = _comprehension_builder_names(module, family_name)
+            if not builder_names:
+                continue
+            for link_field_name in sorted(common_keyword_names):
+                referenced_constant_names: list[str] = []
+                for keyword_map in keyword_maps:
+                    referenced = keyword_map[link_field_name]
+                    if not isinstance(
+                        referenced, ast.Name
+                    ) or not _is_upper_snake_identifier(referenced.id):
+                        referenced_constant_names = []
+                        break
+                    referenced_constant_names.append(referenced.id)
+                if len(set(referenced_constant_names)) < 2:
+                    continue
+                primary_constructor_names = {
+                    binding.constructor_name
+                    for constant_name in referenced_constant_names
+                    if (binding := constant_bindings.get(constant_name)) is not None
+                    and binding.constructor_name is not None
+                }
+                if len(primary_constructor_names) != 1:
+                    continue
+                primary_constant_names = tuple(dict.fromkeys(referenced_constant_names))
+                primary_family_name = _named_family_for_constants(
+                    named_sequences, primary_constant_names
+                )
+                extra_field_names = sorted_tuple(
+                    (name for name in common_keyword_names if name != link_field_name)
+                )
+                evidence: list[SourceLocation] = [
+                    SourceLocation(module.file_path, family_line, family_name)
+                ]
+                evidence.extend(
+                    (
+                        SourceLocation(module.file_path, constant_bindings[name].line, name)
+                        for name in primary_constant_names[:3]
+                        if name in constant_bindings
+                    )
+                )
+                candidates.append(
+                    cls(
+                        file_path=module.file_path,
+                        line=family_line,
+                        derived_family_name=family_name,
+                        derived_constructor_name=next(iter(constructor_names)),
+                        primary_family_name=primary_family_name,
+                        primary_constructor_name=next(iter(primary_constructor_names)),
+                        link_field_name=link_field_name,
+                        primary_constant_names=primary_constant_names,
+                        extra_field_names=extra_field_names,
+                        builder_names=builder_names,
+                        evidence=tuple(evidence[:6]),
+                    )
+                )
+                break
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.derived_family_name),
+        )
+
+
 class DerivedWrapperSpecShadowDetector(
     ModuleCollectorCandidateDetector[DerivedWrapperSpecShadowCandidate]
 ):
-    candidate_collector = staticmethod(_derived_wrapper_spec_shadow_candidates)
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Generated wrapper spec family should fold into the main spec family",
@@ -4124,10 +4317,75 @@ declare_candidate_rule_detector(
 )
 
 
+@dataclass(frozen=True)
+class StructuralConfusabilityCandidate(CollectsItself, 
+    WitnessCarrierCandidate, NameFamilyClassNamesMixin, SubjectNameFunctionNameMixin
+):
+    parameter_name: str
+    observed_method_names: tuple[str, ...]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        statements = module.fact(ModuleClassStatements)
+        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+            module,
+            cls._for_function,
+            statements.top_level,
+            statements.top_level_by_name,
+        )
+
+    @classmethod
+    def _for_function(
+        cls,
+        module: ParsedModule,
+        qualname: str,
+        function: NamedFunctionNode,
+        classes: Sequence[ClassStatement],
+        class_lookup: dict[str, ClassStatement],
+    ) -> Iterable[Self]:
+        annotated_parameter_names = SUPPORT_PROJECTION_AUTHORITY.annotated_parameter_names(
+            function
+        )
+        for parameter_name in SUPPORT_PROJECTION_AUTHORITY.parameter_names(function):
+            if parameter_name in annotated_parameter_names:
+                continue
+            observed_method_names = sorted_tuple(
+                {
+                    subnode.func.attr
+                    for subnode in ast.walk(function)
+                    if isinstance(subnode, ast.Call)
+                    and isinstance(subnode.func, ast.Attribute)
+                    and isinstance(subnode.func.value, ast.Name)
+                    and (subnode.func.value.id == parameter_name)
+                }
+            )
+            if len(observed_method_names) < 2:
+                continue
+            confusable_classes = tuple(
+                declared
+                for declared in classes
+                if set(observed_method_names)
+                <= declared.first_methods_by_name.keys()
+            )
+            if len(confusable_classes) < 2:
+                continue
+            if _shared_abstract_nominal_authority(
+                confusable_classes, class_lookup=class_lookup
+            ):
+                continue
+            yield cls(
+                file_path=module.file_path,
+                line=function.lineno,
+                subject_name=qualname,
+                name_family=tuple((declared.node.name for declared in confusable_classes)),
+                parameter_name=parameter_name,
+                observed_method_names=observed_method_names,
+            )
+
+
 class StructuralConfusabilityDetector(
     ModuleCollectorCandidateDetector[StructuralConfusabilityCandidate]
 ):
-    candidate_collector = staticmethod(_structural_confusability_candidates)
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_INTERFACE_WITNESS,
         "Consumer sees a look-alike duck-typed family",
