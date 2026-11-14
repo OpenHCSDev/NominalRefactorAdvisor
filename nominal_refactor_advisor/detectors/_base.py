@@ -5196,16 +5196,6 @@ class PredicateSelectedConcreteFamilyCandidate(ClassLineWitnessCandidate):
     concrete_class_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class FragmentedFamilyAuthorityCandidate:
-    file_path: str
-    mapping_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    key_family_name: str
-    shared_keys: tuple[str, ...]
-    total_keys: tuple[str, ...]
-
-
 class NameFamilyClassNamesMixin(ABC):
     name_family: tuple[str, ...]
     class_names = AliasProperty[tuple[str, ...]]("name_family")
@@ -5521,19 +5511,6 @@ class ParallelKeyedTableAndFamilyCandidate(ClosedAxis, EvidenceLocated):
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (self.table.location, self.family.location)
-
-
-@dataclass(frozen=True)
-class DerivedQueryIndexCandidate(EvidenceLocated):
-    file_path: str
-    line_numbers: tuple[int, ...]
-    function_names: tuple[str, ...]
-    source_expression: str
-    query_key_names: tuple[str, ...]
-    return_expressions: tuple[str, ...]
-    exception_names: tuple[str, ...]
-
-    evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
 
 
 @dataclass(frozen=True)

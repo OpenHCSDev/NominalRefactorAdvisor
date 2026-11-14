@@ -84,7 +84,6 @@ from nominal_refactor_advisor.semantic_description_length import (
     CompressionCertificate,
 )
 import ast
-from collections import Counter
 from typing import Iterable
 from nominal_refactor_advisor.ast_tools import (
     _walk_nodes,
@@ -122,12 +121,10 @@ from nominal_refactor_advisor.detectors._base import (
     ConcreteCandidateDetectorShape,
     ConcreteConfigFieldProbeCandidate,
     ConcreteTypeUnionContractCandidate,
-    DerivedQueryIndexCandidate,
     DetectorConfig,
     DynamicSelfFieldSelectionCandidate,
     EnumMetadataTableCandidate,
     FindingAssemblyPipelineCandidate,
-    FragmentedFamilyAuthorityCandidate,
     GuardedDelegatorCandidate,
     GuardedWrapperSpecPair,
     IssueDetector,
@@ -246,60 +243,6 @@ def _enum_key_family(node: ast.AST) -> tuple[str, str] | None:
     if not isinstance(node.value, ast.Name):
         return None
     return (node.value.id, node.attr)
-
-
-def _fragmented_family_authority_candidates(
-    module: ParsedModule,
-) -> tuple[FragmentedFamilyAuthorityCandidate, ...]:
-    family_maps: NamedStringSequenceSpecsByName = defaultdict(list)
-    for binding in module.fact(ModuleNamedValues).bindings:
-        if not isinstance(binding.value, ast.Dict):
-            continue
-        key_pairs = tuple(
-            (
-                key_pair
-                for key_pair in (
-                    _enum_key_family(key)
-                    for key in binding.value.keys
-                    if key is not None
-                )
-                if key_pair is not None
-            )
-        )
-        if len(key_pairs) < 2 or len(key_pairs) != len(binding.value.keys):
-            continue
-        family_names = {family_name for family_name, _ in key_pairs}
-        if len(family_names) != 1:
-            continue
-        family_name = next(iter(family_names))
-        key_names = sorted_tuple((member_name for _, member_name in key_pairs))
-        family_maps[family_name].append((binding.name, binding.line, key_names))
-
-    candidates: list[FragmentedFamilyAuthorityCandidate] = []
-    for family_name, entries in family_maps.items():
-        if len(entries) < 2:
-            continue
-        key_counter: Counter[str] = Counter(
-            (key_name for _, _, key_names in entries for key_name in set(key_names))
-        )
-        shared_keys = sorted_tuple(
-            (key for key, count in key_counter.items() if count >= 2)
-        )
-        if len(shared_keys) < 3:
-            continue
-        total_keys = sorted_tuple(key_counter)
-        ordered_entries = sorted(entries, key=lambda item: item[1])
-        candidates.append(
-            FragmentedFamilyAuthorityCandidate(
-                file_path=module.file_path,
-                mapping_names=tuple((item[0] for item in ordered_entries)),
-                line_numbers=tuple((item[1] for item in ordered_entries)),
-                key_family_name=family_name,
-                shared_keys=shared_keys,
-                total_keys=total_keys,
-            )
-        )
-    return tuple(candidates)
 
 
 def _is_detectorish_class(declared: ClassStatement) -> bool:
@@ -668,59 +611,6 @@ def _linear_query_source_owner(
         return None
     owner_name, separator, _method_name = qualname.rpartition(".")
     return owner_name if separator else qualname
-
-
-def _derived_query_index_candidates(
-    module: ParsedModule,
-) -> tuple[DerivedQueryIndexCandidate, ...]:
-    grouped: DerivedQuerySpecsBySignature = defaultdict(list)
-    for qualname, function in module.syntax_index.named_functions:
-        signature = _linear_query_signature(function)
-        if signature is None:
-            continue
-        source_expression, query_key_names, return_expression, exception_name = (
-            signature
-        )
-        grouped[
-            (
-                _linear_query_source_owner(qualname, source_expression),
-                source_expression,
-                return_expression,
-                exception_name,
-            )
-        ].append((qualname, function.lineno, query_key_names))
-    candidates: list[DerivedQueryIndexCandidate] = []
-    for (
-        _source_owner,
-        source_expression,
-        return_expression,
-        exception_name,
-    ), entries in grouped.items():
-        if len(entries) < 2:
-            continue
-        ordered = sorted_tuple(entries, key=lambda item: (item[1], item[0]))
-        query_key_names = sorted_tuple(
-            {
-                key_name
-                for _, _, entry_query_key_names in ordered
-                for key_name in entry_query_key_names
-            }
-        )
-        candidates.append(
-            DerivedQueryIndexCandidate(
-                file_path=module.file_path,
-                line_numbers=tuple((item[1] for item in ordered)),
-                function_names=tuple((item[0] for item in ordered)),
-                source_expression=source_expression,
-                query_key_names=query_key_names,
-                return_expressions=tuple((return_expression for _ in ordered)),
-                exception_names=(exception_name,),
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.source_expression, item.function_names),
-    )
 
 
 def _structural_observation_property_candidates_for_class(

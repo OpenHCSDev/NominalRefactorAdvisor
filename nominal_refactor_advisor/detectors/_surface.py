@@ -7,9 +7,9 @@ surface.
 from __future__ import annotations
 
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
-from collections import defaultdict
+from collections import defaultdict, Counter
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, Self
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
@@ -18,36 +18,102 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     RepeatedMethodMetrics,
     SourceLocation,
+    EvidenceLocated,
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.detectors._base import (
     CandidateFindingDetector,
     declare_candidate_rule_detector,
-    DerivedQueryIndexCandidate,
     DetectorConfig,
-    FragmentedFamilyAuthorityCandidate,
     high_confidence_spec,
     IssueDetector,
     ModuleCollectorCandidateDetector,
     PerModuleIssueDetector,
     StructuralObservationPropertyCandidate,
+    CollectsItself,
+    ZippedSourceLocationEvidenceProperty,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _finding_assembly_pipeline_candidates,
-    _fragmented_family_authority_candidates,
     _guarded_delegator_candidates,
     _projection_builder_groups,
     _structural_observation_property_candidates,
+    DerivedQuerySpecsBySignature,
+    NamedStringSequenceSpecsByName,
+    _enum_key_family,
+    _linear_query_signature,
+    _linear_query_source_owner,
 )
-from nominal_refactor_advisor.detectors._helpers import (
-    _derived_query_index_candidates,
-)
+from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
+import ast
+
+
+@dataclass(frozen=True)
+class FragmentedFamilyAuthorityCandidate(CollectsItself):
+    file_path: str
+    mapping_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    key_family_name: str
+    shared_keys: tuple[str, ...]
+    total_keys: tuple[str, ...]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        family_maps: NamedStringSequenceSpecsByName = defaultdict(list)
+        for binding in module.fact(ModuleNamedValues).bindings:
+            if not isinstance(binding.value, ast.Dict):
+                continue
+            key_pairs = tuple(
+                (
+                    key_pair
+                    for key_pair in (
+                        _enum_key_family(key)
+                        for key in binding.value.keys
+                        if key is not None
+                    )
+                    if key_pair is not None
+                )
+            )
+            if len(key_pairs) < 2 or len(key_pairs) != len(binding.value.keys):
+                continue
+            family_names = {family_name for family_name, _ in key_pairs}
+            if len(family_names) != 1:
+                continue
+            family_name = next(iter(family_names))
+            key_names = sorted_tuple((member_name for _, member_name in key_pairs))
+            family_maps[family_name].append((binding.name, binding.line, key_names))
+
+        candidates: list[Self] = []
+        for family_name, entries in family_maps.items():
+            if len(entries) < 2:
+                continue
+            key_counter: Counter[str] = Counter(
+                (key_name for _, _, key_names in entries for key_name in set(key_names))
+            )
+            shared_keys = sorted_tuple(
+                (key for key, count in key_counter.items() if count >= 2)
+            )
+            if len(shared_keys) < 3:
+                continue
+            total_keys = sorted_tuple(key_counter)
+            ordered_entries = sorted(entries, key=lambda item: item[1])
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    mapping_names=tuple((item[0] for item in ordered_entries)),
+                    line_numbers=tuple((item[1] for item in ordered_entries)),
+                    key_family_name=family_name,
+                    shared_keys=shared_keys,
+                    total_keys=total_keys,
+                )
+            )
+        return tuple(candidates)
 
 
 class FragmentedFamilyAuthorityDetector(
     ModuleCollectorCandidateDetector[FragmentedFamilyAuthorityCandidate]
 ):
-    candidate_collector = staticmethod(_fragmented_family_authority_candidates)
+    candidate_collector = FragmentedFamilyAuthorityCandidate.from_module
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Parallel key-family tables should become one authoritative record",
@@ -87,6 +153,70 @@ class FragmentedFamilyAuthorityDetector(
         )
 
 
+@dataclass(frozen=True)
+class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
+    file_path: str
+    line_numbers: tuple[int, ...]
+    function_names: tuple[str, ...]
+    source_expression: str
+    query_key_names: tuple[str, ...]
+    return_expressions: tuple[str, ...]
+    exception_names: tuple[str, ...]
+
+    evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        grouped: DerivedQuerySpecsBySignature = defaultdict(list)
+        for qualname, function in module.syntax_index.named_functions:
+            signature = _linear_query_signature(function)
+            if signature is None:
+                continue
+            source_expression, query_key_names, return_expression, exception_name = (
+                signature
+            )
+            grouped[
+                (
+                    _linear_query_source_owner(qualname, source_expression),
+                    source_expression,
+                    return_expression,
+                    exception_name,
+                )
+            ].append((qualname, function.lineno, query_key_names))
+        candidates: list[Self] = []
+        for (
+            _source_owner,
+            source_expression,
+            return_expression,
+            exception_name,
+        ), entries in grouped.items():
+            if len(entries) < 2:
+                continue
+            ordered = sorted_tuple(entries, key=lambda item: (item[1], item[0]))
+            query_key_names = sorted_tuple(
+                {
+                    key_name
+                    for _, _, entry_query_key_names in ordered
+                    for key_name in entry_query_key_names
+                }
+            )
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    line_numbers=tuple((item[1] for item in ordered)),
+                    function_names=tuple((item[0] for item in ordered)),
+                    source_expression=source_expression,
+                    query_key_names=query_key_names,
+                    return_expressions=tuple((return_expression for _ in ordered)),
+                    exception_names=(exception_name,),
+                )
+            )
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (item.file_path, item.source_expression, item.function_names),
+        )
+
+
 declare_candidate_rule_detector(
     DerivedQueryIndexCandidate,
     high_confidence_spec(
@@ -113,7 +243,6 @@ declare_candidate_rule_detector(
         identity_field_names=query_candidate.query_key_names,
     ),
     detector_name="DerivedQueryIndexSurfaceDetector",
-    candidate_collector=_derived_query_index_candidates,
 )
 
 
