@@ -3,7 +3,17 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
+
+
+def overlap_coefficient(left: Collection[str], right: Collection[str]) -> float:
+    """How much of the smaller of two collections of names the other shares: the
+    distinct names they share over the smaller one's size, 0.0 when either is empty."""
+
+    if not left or not right:
+        return 0.0
+    return len(set(left) & set(right)) / float(min(len(left), len(right)))
 
 
 @dataclass(frozen=True)
@@ -14,6 +24,11 @@ class ClassNameAlgebra:
 
     def token_set(self, name: str) -> frozenset[str]:
         return frozenset(self.ordered_tokens(name))
+
+    def token_overlap(self, left_name: str, right_name: str) -> float:
+        """How much of the shorter name's word set the other name shares."""
+
+        return overlap_coefficient(self.token_set(left_name), self.token_set(right_name))
 
     def ordered_tokens(self, name: str) -> tuple[str, ...]:
         return tuple(

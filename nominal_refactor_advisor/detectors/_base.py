@@ -177,7 +177,7 @@ from nominal_refactor_advisor.taxonomy import (
     SPECULATIVE,
 )
 from nominal_refactor_advisor.ast_tools import statements_without_docstring
-from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, overlap_coefficient
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
@@ -3192,18 +3192,6 @@ class DispatchAlgebraAuthority:
             return None
         return (value, trimmed[0].lineno)
 
-    def case_overlap_ratio(
-        self,
-        left_case_names: tuple[str, ...],
-        right_case_names: tuple[str, ...],
-    ) -> float:
-        if not left_case_names or not right_case_names:
-            return 0.0
-        shared_case_count = len(set(left_case_names) & set(right_case_names))
-        return shared_case_count / float(
-            min(len(left_case_names), len(right_case_names))
-        )
-
 
 DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
 
@@ -3650,19 +3638,6 @@ def _compact_keyed_family_axis_specs_from_index(
     return tuple(specs)
 
 
-def _parallel_keyed_family_name_overlap(
-    left_family_name: str,
-    right_family_name: str,
-) -> float:
-    left_tokens = CLASS_NAME_ALGEBRA.token_set(left_family_name)
-    right_tokens = CLASS_NAME_ALGEBRA.token_set(right_family_name)
-    if not left_tokens or not right_tokens:
-        return 0.0
-    return len(left_tokens & right_tokens) / float(
-        min(len(left_tokens), len(right_tokens))
-    )
-
-
 def _parallel_keyed_table_and_family_candidates_from_specs(
     family_specs: Sequence[_KeyedFamilyAxisSpec],
     table_specs: Sequence[CompactKeyedTableAxis],
@@ -3682,18 +3657,18 @@ def _parallel_keyed_table_and_family_candidates_from_specs(
             )
             if len(shared_case_names) < 2:
                 continue
-            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
+            case_overlap_score = overlap_coefficient(
                 table_spec.case_names, family_spec.case_names
             )
             if case_overlap_score < 0.8:
                 continue
-            table_overlap = SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
+            table_overlap = CLASS_NAME_ALGEBRA.token_overlap(
                 table_spec.table_name, family_spec.family_name
             )
             value_overlap = (
                 0.0
                 if table_spec.value_shape_name is None
-                else SUPPORT_PROJECTION_AUTHORITY.identifier_name_overlap(
+                else CLASS_NAME_ALGEBRA.token_overlap(
                     table_spec.value_shape_name, family_spec.family_name
                 )
             )
@@ -3748,10 +3723,10 @@ def _parallel_keyed_axis_family_candidates_from_specs(
                 left_spec.family_label is not None
                 and left_spec.family_label == right_spec.family_label
             )
-            case_overlap_score = DISPATCH_ALGEBRA_AUTHORITY.case_overlap_ratio(
+            case_overlap_score = overlap_coefficient(
                 left_spec.case_names, right_spec.case_names
             )
-            name_overlap_ratio = _parallel_keyed_family_name_overlap(
+            name_overlap_ratio = CLASS_NAME_ALGEBRA.token_overlap(
                 left_spec.family_name, right_spec.family_name
             )
             if not family_label_match and (
@@ -5052,15 +5027,6 @@ class SupportProjectionAuthority:
             return f"{parent}.{node.attr}"
         return None
 
-    def identifier_name_overlap(self, left_name: str, right_name: str) -> float:
-        left_tokens = CLASS_NAME_ALGEBRA.token_set(left_name)
-        right_tokens = CLASS_NAME_ALGEBRA.token_set(right_name)
-        if not left_tokens or not right_tokens:
-            return 0.0
-        return len(left_tokens & right_tokens) / float(
-            min(len(left_tokens), len(right_tokens))
-        )
-
     def is_empty_dict_expr(self, node: ast.AST | None) -> bool:
         if isinstance(node, ast.Dict):
             return not node.keys and (not node.values)
@@ -5070,19 +5036,13 @@ class SupportProjectionAuthority:
             and node.func.id == "dict"
         )
 
-    def normalize_semantic_field_roles(
-        self,
-        field_name: str,
-    ) -> tuple[SemanticFieldRole, ...]:
-        return SemanticFieldRole.for_field_name(field_name)
-
     def normalized_semantic_role_fields(
         self,
         field_names: tuple[str, ...],
     ) -> NormalizedRoleFieldMap:
         role_to_fields: dict[SemanticFieldRole, set[str]] = defaultdict(set)
         for field_name in field_names:
-            for role_name in self.normalize_semantic_field_roles(field_name):
+            for role_name in SemanticFieldRole.for_field_name(field_name):
                 role_to_fields[role_name].add(field_name)
         return tuple(
             (role_name, sorted_tuple(role_fields))
