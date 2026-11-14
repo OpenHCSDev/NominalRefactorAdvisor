@@ -3569,6 +3569,48 @@ class ModuleSyntaxIndex:
 
         return self.scopes[self.scope_ids[node_index]].symbol
 
+    @cached_property
+    def evaluating_scope_ids(self) -> array:
+        """Each node's scope by the code that evaluates it.
+
+        A definition's header (decorators, bases, parameters, annotations)
+        is evaluated where the definition stands, so it belongs to that
+        scope; its body belongs to the definition. A lambda is not a
+        scope: its body belongs to the code around it.
+        """
+
+        nodes = self.depth_first_nodes
+        scope_ids = self.scope_ids
+        evaluating = array("I")
+        for node_index, parent_index in enumerate(self.parent_indices):
+            if parent_index < 0:
+                evaluating.append(0)
+            elif scope_ids[node_index] == scope_ids[parent_index]:
+                evaluating.append(evaluating[parent_index])
+            elif isinstance(nodes[node_index], ast.stmt):
+                evaluating.append(scope_ids[node_index])
+            else:
+                evaluating.append(scope_ids[parent_index])
+        return evaluating
+
+    def evaluating_symbol(self, node_index: int) -> str:
+        """Dotted owners of the code that evaluates one indexed node, or `<module>`."""
+
+        return self.scopes[self.evaluating_scope_ids[node_index]].symbol
+
+    def declarations(
+        self, node_type: type[SyntaxNodeT] | tuple[type[SyntaxNodeT], ...]
+    ) -> tuple[tuple[str, SyntaxNodeT], ...]:
+        """Every class or def of one type under its dotted name, in source order."""
+
+        nodes = self.depth_first_nodes
+        return tuple(
+            (scope.symbol, cast(SyntaxNodeT, node))
+            for scope in self.scopes[1:]
+            for node in (nodes[scope.owner_node_index],)
+            if isinstance(node, node_type)
+        )
+
     @classmethod
     def build(cls, module: ast.Module) -> ModuleSyntaxIndex:
         nodes: list[ast.AST] = []

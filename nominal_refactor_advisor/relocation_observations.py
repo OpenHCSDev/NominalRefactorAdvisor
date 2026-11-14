@@ -13,14 +13,17 @@ from __future__ import annotations
 
 import ast
 import builtins
+from abc import ABC, abstractmethod
+from collections import defaultdict
 from collections.abc import Iterator
-from dataclasses import dataclass
-from typing import cast
+from dataclasses import dataclass, field
+from functools import cached_property
+from typing import ClassVar, Self
 
 from nominal_refactor_advisor.annotation_semantics import TypeWrapper
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_projection import ExpressionReference
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import (
     ABSTRACT_METHOD_DECORATOR,
     PROPERTY_DECORATORS,
@@ -41,73 +44,66 @@ from nominal_refactor_advisor.restated_fact_observations import (
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 
-def statements_of(scope: ast.AST) -> list[ast.stmt]:
-    """The statement list of a module, class or def."""
+def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
+    """A statement's nodes in source order, stopping at each def, lambda and class it nests."""
 
-    match scope:
-        case ast.Module(body=body) | ast.ClassDef(body=body):
-            return body
-        case ast.FunctionDef(body=body) | ast.AsyncFunctionDef(body=body):
-            return body
-    return []
+    _scope_boundaries = (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)
+    stack = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if not isinstance(current, _scope_boundaries):
+            stack.extend(reversed(tuple(ast.iter_child_nodes(current))))
 
 
 @dataclass(frozen=True)
 class ScopedDefinition:
-    """A def statement with its dotted name and immediate lexical scope."""
+    """A def under its dotted name, with its own body read once."""
 
     qualname: str
     node: ast.FunctionDef | ast.AsyncFunctionDef
-    owner: ast.AST
+
+    @cached_property
+    def nodes(self) -> tuple[ast.AST, ...]:
+        """The nodes of the body, not of the functions, lambdas or classes it nests."""
+
+        return tuple(
+            node for statement in self.node.body for node in scope_nodes(statement)
+        )
+
+    @cached_property
+    def absence_tuple_arities(self) -> frozenset[int]:
+        """The arities the def returns when every return is `()` or `(x,)`
+        (absence spelled as a collection); empty when any return is something else."""
+
+        arities: set[int] = set()
+        for child in self.nodes:
+            match child:
+                case ast.Return(value=ast.Tuple(elts=elements)) if len(
+                    elements
+                ) <= 1 and not any(isinstance(element, ast.Starred) for element in elements):
+                    arities.add(len(elements))
+                case ast.Return():
+                    return frozenset()
+        return frozenset(arities)
 
 
-def scoped_definitions(parsed_module: ParsedModule) -> Iterator[ScopedDefinition]:
-    """Every def in the module, named by its enclosing classes and functions."""
+@dataclass(frozen=True)
+class ModuleDefinitions(ParsedModuleFact):
+    """Every def of one parse, in source order."""
 
-    children = parsed_module.syntax_index.named_scope_children
-    for prefix, scope in walk_scopes(parsed_module):
-        for nested in FunctionDefinition.within(children[scope]):
-            yield ScopedDefinition(
-                f"{prefix}{nested.name}",
-                cast(ast.FunctionDef | ast.AsyncFunctionDef, nested),
-                scope,
+    definitions: tuple[ScopedDefinition, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(
+            tuple(
+                ScopedDefinition(qualname, node)
+                for qualname, node in parsed_module.syntax_index.declarations(
+                    FunctionDefinition.members
+                )
             )
-
-
-def walk_scopes(parsed_module: ParsedModule) -> Iterator[tuple[str, ast.AST]]:
-    """The module, every class and every def, each with the prefix of its members."""
-
-    children = parsed_module.syntax_index.named_scope_children
-    stack: list[tuple[str, ast.AST]] = [("", parsed_module.module)]
-    while stack:
-        prefix, scope = stack.pop()
-        yield prefix, scope
-        for nested in children[scope]:
-            stack.append((f"{prefix}{nested.name}.", nested))
-
-
-def scoped_classes(parsed_module: ParsedModule) -> Iterator[tuple[str, ast.ClassDef]]:
-    """Every original class with its dotted name, retaining the scope walk's order."""
-
-    children = parsed_module.syntax_index.named_scope_children
-    for prefix, scope in walk_scopes(parsed_module):
-        for nested in children[scope]:
-            if isinstance(nested, ast.ClassDef):
-                yield f"{prefix}{nested.name}", nested
-
-
-def bound_classes(
-    parsed_module: ParsedModule,
-) -> Iterator[tuple[str, ast.ClassDef, ModuleNominalBindingSnapshot]]:
-    """Every class in the module with its dotted name and the module bindings its
-    body's decorators resolve through, taken in one pass."""
-
-    classes = tuple(scoped_classes(parsed_module))
-    snapshots = ModuleNominalBindingAuthority(parsed_module).snapshots_before(
-        node.lineno for _qualname, node in classes
-    )
-    for qualname, node in classes:
-        yield qualname, node, snapshots[node.lineno]
+        )
 
 
 def statements_after_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
@@ -176,67 +172,58 @@ def is_frozen_record(
     )
 
 
-def function_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
-    """The nodes of one function body, not of the functions or classes it nests."""
-
-    for statement in node.body:
-        yield from scope_nodes(statement)
-
-
-def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
-    _scope_boundaries = (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        yield current
-        if not isinstance(current, _scope_boundaries):
-            stack.extend(reversed(tuple(ast.iter_child_nodes(current))))
-
-
 # ---- the class shapes every family join reads
 
 
 @dataclass(frozen=True)
-class ConstantAnswer:
+class MemberAnswer(ABC):
+    """A member declaration read by how it answers."""
+
+    member: str
+    lineno: int
+
+    @property
+    @abstractmethod
+    def detail(self) -> tuple[str, ...]:
+        """What the answer is, as a report of the member spells it."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ConstantAnswer(MemberAnswer):
     """A member whose declaration answers with one constant."""
 
-    member: str
     value: str
-    lineno: int
+
+    @property
+    def detail(self) -> tuple[str, ...]:
+        return (self.value,)
 
 
 @dataclass(frozen=True)
-class FoldDeclaration:
+class FoldDeclaration(MemberAnswer):
     """A method that returns a call of exactly one of its callable parameters."""
 
-    member: str
     called_parameter: str
-    lineno: int
 
-
-def absence_tuple_arities(node: ast.FunctionDef | ast.AsyncFunctionDef) -> frozenset[int]:
-    """The arities a function returns when every return is `()` or `(x,)`
-    (absence spelled as a collection); empty when any return is something else."""
-
-    arities: set[int] = set()
-    for child in function_nodes(node):
-        match child:
-            case ast.Return(value=ast.Tuple(elts=elements)) if len(
-                elements
-            ) <= 1 and not any(isinstance(element, ast.Starred) for element in elements):
-                arities.add(len(elements))
-            case ast.Return():
-                return frozenset()
-    return frozenset(arities)
+    @property
+    def detail(self) -> tuple[str, ...]:
+        return (self.called_parameter,)
 
 
 @dataclass(frozen=True)
-class TupleArity:
-    """A member whose every return is `()` or a one-element tuple, and which."""
+class OwnStateAnswer(MemberAnswer):
+    """A `-> bool` property or zero-argument method of a frozen record whose
+    answer is a state of the record: its one return probes an own field for
+    absence or a kind, and calls nothing but pure builtins."""
 
-    member: str
-    arities: frozenset[int]
-    lineno: int
+    accessed: str
+    probe: str
+
+    @property
+    def detail(self) -> tuple[str, ...]:
+        return (self.accessed, self.probe)
 
 
 @dataclass
@@ -249,23 +236,37 @@ class ClassBodyReading:
     answer nothing; every other declaration is computed.
     """
 
+    qualname: str
+    node: ast.ClassDef
     bindings: ModuleNominalBindingSnapshot
-    answers: list[ConstantAnswer]
-    computed: set[str]
-    declared: set[str]
-    folds: list[FoldDeclaration]
-    arities: list[TupleArity]
+    answers: dict[type[MemberAnswer], list[MemberAnswer]] = field(
+        default_factory=lambda: defaultdict(list)
+    )
+    computed: set[str] = field(default_factory=set)
+    declared: set[str] = field(default_factory=set)
 
     @classmethod
     def of(
-        cls, node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
+        cls, qualname: str, node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
     ) -> ClassBodyReading:
-        reading = cls(bindings, [], set(), set(), [], [])
+        reading = cls(qualname, node, bindings)
         for statement in node.body:
             reading.read(statement)
         return reading
 
+    @cached_property
+    def frozen(self) -> bool:
+        return is_frozen_record(self.node, self.bindings)
+
+    def answer(self, answer: MemberAnswer) -> None:
+        self.answers[type(answer)].append(answer)
+
     def read(self, statement: ast.stmt) -> None:
+        match statement:
+            case ast.FunctionDef(name=name, returns=ast.Name(id="bool")) if (
+                takes_only_receiver(statement) and self.frozen
+            ):
+                self.read_own_state(name, statement)
         match statement:
             case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.Assign(
                 targets=[ast.Name(id=name)]
@@ -277,13 +278,13 @@ class ClassBodyReading:
             case ast.Assign(
                 targets=[ast.Name(id=name)], value=ast.Constant(value=bool() as value)
             ) if not name.startswith("__"):
-                self.answers.append(ConstantAnswer(name, repr(value), statement.lineno))
+                self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
             case ast.AnnAssign(
                 target=ast.Name(id=name),
                 annotation=annotation,
                 value=ast.Constant(value=bool() | str() as value),
             ) if not name.startswith("__") and "ClassVar" in ast.unparse(annotation):
-                self.answers.append(ConstantAnswer(name, repr(value), statement.lineno))
+                self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
             case ast.AnnAssign(target=ast.Name(id=name), value=ast.expr()) | ast.Assign(
                 targets=[ast.Name(id=name)]
             ):
@@ -292,9 +293,6 @@ class ClassBodyReading:
     def read_definition(
         self, name: str, statement: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> None:
-        arities = absence_tuple_arities(statement)
-        if arities:
-            self.arities.append(TupleArity(name, arities, statement.lineno))
         if declares_abstract(statement, self.bindings):
             return
         parameters = [
@@ -309,13 +307,55 @@ class ClassBodyReading:
             case [ast.Return(value=ast.Constant(value=bool() | str() as value))] if (
                 not name.startswith("__") and takes_only_receiver(statement)
             ):
-                self.answers.append(ConstantAnswer(name, repr(value), statement.lineno))
+                self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
                 return
             case [ast.Return(value=ast.Call(func=ast.Name(id=called)))] if (
                 called in parameters and len(parameters) >= 2
             ):
-                self.folds.append(FoldDeclaration(name, called, statement.lineno))
+                self.answer(FoldDeclaration(name, statement.lineno, called))
         self.computed.add(name)
+
+    def read_own_state(self, name: str, statement: ast.FunctionDef) -> None:
+        match statements_after_docstring(statement.body):
+            case [ast.Return(value=ast.expr() as expression)] if calls_only_pure_builtins(
+                expression, self.bindings
+            ):
+                probes = list(own_state_probes(expression))
+            case _:
+                return
+        match probes:
+            case [first, *_]:
+                self.answer(
+                    OwnStateAnswer(
+                        name,
+                        statement.lineno,
+                        "property"
+                        if self.bindings.decorated_by(statement, PROPERTY_DECORATORS)
+                        else "method",
+                        first,
+                    )
+                )
+
+
+@dataclass(frozen=True)
+class ModuleClassReadings(ParsedModuleFact):
+    """Every class of one parse, in source order, its body read once under the
+    module bindings its decorators resolve through, taken in one pass."""
+
+    classes: tuple[ClassBodyReading, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        classes = parsed_module.syntax_index.declarations(ast.ClassDef)
+        snapshots = ModuleNominalBindingAuthority(parsed_module).snapshots_before(
+            node.lineno for _qualname, node in classes
+        )
+        return cls(
+            tuple(
+                ClassBodyReading.of(qualname, node, snapshots[node.lineno])
+                for qualname, node in classes
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -331,16 +371,9 @@ class ClassShape:
     computed: frozenset[str]
 
     @classmethod
-    def of(
-        cls,
-        parsed_module: ParsedModule,
-        qualname: str,
-        node: ast.ClassDef,
-        bindings: ModuleNominalBindingSnapshot,
-    ) -> ClassShape:
-        reading = ClassBodyReading.of(node, bindings)
+    def of(cls, module_name: str, reading: ClassBodyReading) -> ClassShape:
         return cls(
-            symbol=f"{parsed_module.module_name}.{qualname}",
+            symbol=f"{module_name}.{reading.qualname}",
             declared=frozenset(reading.declared),
             computed=frozenset(reading.computed),
         )
@@ -363,8 +396,8 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
             ClassShapesModule(
                 parsed_module.module_name,
                 tuple(
-                    ClassShape.of(parsed_module, qualname, node, bindings)
-                    for qualname, node, bindings in bound_classes(parsed_module)
+                    ClassShape.of(parsed_module.module_name, reading)
+                    for reading in parsed_module.fact(ModuleClassReadings).classes
                 ),
             )
         ]
@@ -441,24 +474,6 @@ def tested_reads(test: ast.expr) -> Iterator[tuple[ast.expr, str, bool]]:
             yield test, member, True
 
 
-def enclosing_symbols(parsed_module: ParsedModule) -> dict[int, str]:
-    """The dotted name of the def or class enclosing each node."""
-
-    children = parsed_module.syntax_index.named_scope_children
-    symbols: dict[int, str] = {}
-    for prefix, scope in walk_scopes(parsed_module):
-        symbol = prefix.rstrip(".") or "<module>"
-        for statement in statements_of(scope):
-            for node in scope_nodes(statement):
-                symbols[id(node)] = symbol
-        for nested in children[scope]:
-            for child in ast.iter_child_nodes(nested):
-                if not isinstance(child, ast.stmt):
-                    for node in ast.walk(child):
-                        symbols.setdefault(id(node), symbol)
-    return symbols
-
-
 class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
     """Branch tests that read a member, and calls that pass two or more lambdas."""
 
@@ -477,19 +492,18 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
-        symbols = enclosing_symbols(parsed_module)
+        index = parsed_module.syntax_index
         resolver = ProbeOwnerResolver.of(parsed_module)
         reads = []
         calls = []
-        for node in parsed_module.syntax_index.depth_first_nodes:
-            symbol = symbols.get(id(node), "<module>")
+        for node_index, node in enumerate(index.depth_first_nodes):
             for test in branch_tests(node):
                 for read, member, called in tested_reads(test):
                     reads.append(
                         BranchRead(
                             parsed_module.file_path,
                             read.lineno,
-                            symbol,
+                            index.evaluating_symbol(node_index),
                             member,
                             cls.receiver(read, resolver),
                             called,
@@ -506,7 +520,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                             LambdaCall(
                                 parsed_module.file_path,
                                 node.lineno,
-                                symbol,
+                                index.evaluating_symbol(node_index),
                                 member,
                                 cls.receiver(node, resolver),
                                 lambdas,
@@ -520,22 +534,42 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 # ---- site families, one per relocation detector
 
 
-class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
-    """A member declaration that answers with one constant: `group` is the member."""
+class MemberAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
+    """Members of the module's classes that answer one way: `group` is the member."""
 
+    _registry_skip = True
     item_type = RestatingSiteModule
+    answer: ClassVar[type[MemberAnswer]]
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node, bindings in bound_classes(parsed_module):
-            for answer in ClassBodyReading.of(node, bindings).answers:
+        for reading in parsed_module.fact(ModuleClassReadings).classes:
+            for answer in reading.answers.get(cls.answer, ()):
                 yield RestatingSite(
                     parsed_module.file_path,
                     answer.lineno,
-                    f"{qualname}.{answer.member}",
+                    f"{reading.qualname}.{answer.member}",
                     answer.member,
-                    (f"{parsed_module.module_name}.{qualname}", answer.value),
+                    (f"{parsed_module.module_name}.{reading.qualname}", *answer.detail),
                 )
+
+
+class ConstantAnswerSiteFamily(MemberAnswerSiteFamily):
+    """A member declaration that answers with one constant."""
+
+    answer = ConstantAnswer
+
+
+class OwnStateBoolSiteFamily(MemberAnswerSiteFamily):
+    """A frozen record's `-> bool` member whose answer is a state of the record."""
+
+    answer = OwnStateAnswer
+
+
+class LambdaFoldSiteFamily(MemberAnswerSiteFamily):
+    """A method returning a call of exactly one of its callable parameters."""
+
+    answer = FoldDeclaration
 
 
 def reads_through_self(expression: ast.expr) -> bool:
@@ -608,75 +642,6 @@ def calls_only_pure_builtins(
     return True
 
 
-class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
-    """A `-> bool` property or zero-argument method of a frozen record whose
-    answer is a state of the record: its one return probes an own field for
-    absence or a kind, and calls nothing but pure builtins."""
-
-    item_type = RestatingSiteModule
-
-    @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node, bindings in bound_classes(parsed_module):
-            if not is_frozen_record(node, bindings):
-                continue
-            for statement in node.body:
-                match statement:
-                    case ast.FunctionDef(
-                        name=name,
-                        returns=ast.Name(id="bool"),
-                        body=body,
-                    ) if takes_only_receiver(statement):
-                        pass
-                    case _:
-                        continue
-                match statements_after_docstring(body):
-                    case [ast.Return(value=ast.expr() as expression)] if calls_only_pure_builtins(
-                        expression, bindings
-                    ):
-                        probes = list(own_state_probes(expression))
-                    case _:
-                        continue
-                match probes:
-                    case [first, *_]:
-                        accessed = (
-                            "property"
-                            if bindings.decorated_by(
-                                statement, PROPERTY_DECORATORS
-                            )
-                            else "method"
-                        )
-                        yield RestatingSite(
-                            parsed_module.file_path,
-                            statement.lineno,
-                            f"{qualname}.{name}",
-                            name,
-                            (
-                                f"{parsed_module.module_name}.{qualname}",
-                                accessed,
-                                first,
-                            ),
-                        )
-
-
-class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
-    """A method returning a call of exactly one of its callable parameters."""
-
-    item_type = RestatingSiteModule
-
-    @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node, bindings in bound_classes(parsed_module):
-            for fold in ClassBodyReading.of(node, bindings).folds:
-                yield RestatingSite(
-                    parsed_module.file_path,
-                    fold.lineno,
-                    f"{qualname}.{fold.member}",
-                    fold.member,
-                    (f"{parsed_module.module_name}.{qualname}", fold.called_parameter),
-                )
-
-
 class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A function whose every return is `()` or a one-element tuple, with both.
 
@@ -688,8 +653,8 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for definition in scoped_definitions(parsed_module):
-            if absence_tuple_arities(definition.node) != {0, 1}:
+        for definition in parsed_module.fact(ModuleDefinitions).definitions:
+            if definition.absence_tuple_arities != {0, 1}:
                 continue
             yield RestatingSite(
                 parsed_module.file_path,
@@ -745,7 +710,7 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for definition in scoped_definitions(parsed_module):
+        for definition in parsed_module.fact(ModuleDefinitions).definitions:
             name = definition.node.name
             if name.startswith("__") and name.endswith("__"):
                 continue
@@ -761,7 +726,7 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     settles = False
             deciding = {
                 id(node.test)
-                for node in function_nodes(definition.node)
+                for node in definition.nodes
                 if isinstance(node, ast.IfExp)
                 and any(
                     isinstance(arm, ast.Name) and arm.id in optional
@@ -769,12 +734,12 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 )
             } | {
                 id(node.value.test)
-                for node in function_nodes(definition.node)
+                for node in definition.nodes
                 if settles
                 and isinstance(node, ast.Return)
                 and isinstance(node.value, ast.IfExp)
             }
-            for node in function_nodes(definition.node):
+            for node in definition.nodes:
                 match node:
                     case ast.Compare(
                         left=ast.Name(id=name),

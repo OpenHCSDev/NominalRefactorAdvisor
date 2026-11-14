@@ -1,4 +1,4 @@
-"""Declaration enumeration reuses the index without changing scope or header answers."""
+"""The syntax index answers every declaration and who evaluates each node, without rewalking."""
 
 import ast
 from pathlib import Path
@@ -7,12 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ModuleSyntaxIndex, ParsedModule, parse_python_modules
-from nominal_refactor_advisor.relocation_observations import (
-    enclosing_symbols,
-    scoped_classes,
-    scoped_definitions,
-    walk_scopes,
-)
+from nominal_refactor_advisor.relocation_observations import ModuleClassReadings, ModuleDefinitions
 
 
 @pytest.fixture
@@ -28,7 +23,7 @@ def scoped_module(tmp_path: Path) -> ParsedModule:
         "        def nested(): return mark\n"
         "if condition:\n"
         "    class Conditional: pass\n"
-        "async def final(arg=mark): return mark\n"
+        "async def final(arg=mark): return (lambda: mark)\n"
         "class Twin: pass\n"
         "class Twin: pass\n",
         encoding="utf-8",
@@ -37,56 +32,50 @@ def scoped_module(tmp_path: Path) -> ParsedModule:
     return module
 
 
-def test_scope_enumeration_preserves_every_declaration_and_legacy_order_without_rewalking(
+def test_declarations_name_every_class_and_def_in_source_order_without_rewalking(
     scoped_module: ParsedModule,
 ) -> None:
     index = scoped_module.syntax_index
     original_classes = index.indexed_nodes_of_type(ast.ClassDef)
     with patch("ast.iter_child_nodes", wraps=ast.iter_child_nodes) as child_walks:
-        classes = tuple(scoped_classes(scoped_module))
-        definitions = tuple(scoped_definitions(scoped_module))
-        scopes = tuple(walk_scopes(scoped_module))
+        classes = index.declarations(ast.ClassDef)
+        definitions = index.declarations((ast.FunctionDef, ast.AsyncFunctionDef))
 
     assert [(name, node.lineno) for name, node in classes] == [
-        ("Outer", 2), ("Conditional", 10), ("Twin", 12), ("Twin", 13),
-        ("Outer.method.Inner", 6),
+        ("Outer", 2), ("Outer.method.Inner", 6), ("Conditional", 10), ("Twin", 12),
+        ("Twin", 13),
     ]
     assert {id(node) for _name, node in classes} == {
         id(node) for _index, node in original_classes
     }
-    owners = {
-        node.lineno: node
-        for node in index.depth_first_nodes
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    assert [(item.qualname, id(item.owner)) for item in definitions] == [
-        ("final", id(scoped_module.module)), ("Outer.method", id(owners[2])),
-        ("Outer.method.nested", id(owners[4])), ("Outer.method.Inner.local", id(owners[6])),
-    ]
-    assert [prefix for prefix, _scope in scopes] == [
-        "", "Twin.", "Twin.", "final.", "Conditional.", "Outer.",
-        "Outer.method.", "Outer.method.nested.", "Outer.method.Inner.",
-        "Outer.method.Inner.local.",
+    assert [(name, node.lineno) for name, node in definitions] == [
+        ("Outer.method", 4), ("Outer.method.Inner.local", 7), ("Outer.method.nested", 8),
+        ("final", 11),
     ]
     # The parse's existing index already visited every node and recorded lexical owners.
     assert child_walks.call_count == 0
 
 
-def test_cold_scope_consumers_build_the_shared_index_once(scoped_module: ParsedModule) -> None:
+def test_cold_declaration_facts_build_the_shared_index_once(scoped_module: ParsedModule) -> None:
     with patch.object(ModuleSyntaxIndex, "build", wraps=ModuleSyntaxIndex.build) as builds:
-        tuple(scoped_classes(scoped_module))
-        tuple(scoped_definitions(scoped_module))
-        tuple(walk_scopes(scoped_module))
+        classes = scoped_module.fact(ModuleClassReadings).classes
+        definitions = scoped_module.fact(ModuleDefinitions).definitions
     assert builds.call_count == 1
+    assert [reading.qualname for reading in classes] == [
+        "Outer", "Outer.method.Inner", "Conditional", "Twin", "Twin",
+    ]
+    assert [definition.qualname for definition in definitions] == [
+        "Outer.method", "Outer.method.Inner.local", "Outer.method.nested", "final",
+    ]
 
 
-def test_definition_headers_keep_their_enclosing_owner_not_the_definition_body(
+def test_definition_headers_are_evaluated_by_their_enclosing_owner_not_the_definition_body(
     scoped_module: ParsedModule,
 ) -> None:
-    symbols = enclosing_symbols(scoped_module)
+    index = scoped_module.syntax_index
     mark_owners = {
-        (node.lineno, node.col_offset): symbols[id(node)]
-        for _index, node in scoped_module.syntax_index.indexed_nodes_of_type(ast.Name)
+        (node.lineno, node.col_offset): index.evaluating_symbol(node_index)
+        for node_index, node in index.indexed_nodes_of_type(ast.Name)
         if node.id == "mark"
     }
     assert mark_owners == {
@@ -99,5 +88,6 @@ def test_definition_headers_keep_their_enclosing_owner_not_the_definition_body(
         (7, 40): "Outer.method.Inner.local",
         (8, 29): "Outer.method.nested",
         (11, 20): "<module>",
-        (11, 34): "final",
+        # A lambda is not a scope: the def around it evaluates its body.
+        (11, 43): "final",
     }
