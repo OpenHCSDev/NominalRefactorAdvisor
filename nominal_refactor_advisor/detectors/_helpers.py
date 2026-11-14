@@ -3040,9 +3040,8 @@ def _typed_candidate_cast_boilerplate_candidates(
     module: ParsedModule,
 ) -> tuple[TypedCandidateCastBoilerplateCandidate, ...]:
     candidates: list[TypedCandidateCastBoilerplateCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
         detector_shape = ConcreteCandidateDetectorShape.from_class(module, node)
         if detector_shape is None:
             continue
@@ -3249,9 +3248,8 @@ def _enum_metadata_table_candidates(
 ) -> tuple[EnumMetadataTableCandidate, ...]:
     table_cases = _enum_metadata_table_cases(module)
     candidates: list[EnumMetadataTableCandidate] = []
-    for statement in module.module.body:
-        if not isinstance(statement, ast.ClassDef):
-            continue
+    for declared in module.fact(ModuleClassStatements).top_level:
+        statement = declared.node
         property_tables: dict[str, list[str]] = defaultdict(list)
         for item in statement.body:
             if isinstance(item, ast.FunctionDef):

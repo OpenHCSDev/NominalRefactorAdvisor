@@ -4850,9 +4850,8 @@ def _manual_fiber_tag_candidates(
     module: ParsedModule,
 ) -> tuple[ManualFiberTagCandidate, ...]:
     candidates: list[ManualFiberTagCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
         methods = {
             item.name: item
             for item in node.body
@@ -6183,9 +6182,8 @@ class CandidateCollectorBoilerplateCandidate(
     ) -> tuple[CandidateCollectorBoilerplateCandidate, ...]:
         return tuple(
             candidate
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef)
-            for candidate in cls.from_class(module, node)
+            for declared in module.fact(ModuleClassStatements).top_level
+            for candidate in cls.from_class(module, declared.node)
         )
 
     @classmethod
@@ -6406,9 +6404,8 @@ class DirectBuildFindingRendererCandidate(
     ) -> tuple[DirectBuildFindingRendererCandidate, ...]:
         return tuple(
             candidate
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef)
-            for candidate in cls.from_class(module, node)
+            for declared in module.fact(ModuleClassStatements).top_level
+            for candidate in cls.from_class(module, declared.node)
         )
 
 
@@ -6492,9 +6489,8 @@ class DeclarativeDetectorClassCandidate(
     ) -> tuple[DeclarativeDetectorClassCandidate, ...]:
         return tuple(
             candidate
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef)
-            for candidate in (cls.from_class(module, node),)
+            for declared in module.fact(ModuleClassStatements).top_level
+            for candidate in (cls.from_class(module, declared.node),)
             if candidate is not None
         )
 

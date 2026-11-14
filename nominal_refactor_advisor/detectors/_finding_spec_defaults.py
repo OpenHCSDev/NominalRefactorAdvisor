@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
 from nominal_refactor_advisor.detectors._base import (
     FindingSpecConstructionCandidate,
     FindingSpecFactory,
@@ -167,8 +168,9 @@ class FindingSpecConstructionCandidateCollector:
     ) -> tuple[FindingSpecConstructionCandidate, ...]:
         return tuple(
             candidate
-            for node in module.module.body
-            if isinstance(node, ast.ClassDef)
+            for node in (
+                declared.node for declared in module.fact(ModuleClassStatements).top_level
+            )
             for _target, assigned in StatementValues.keyed(
                 (target, statement)
                 for statement in node.body
