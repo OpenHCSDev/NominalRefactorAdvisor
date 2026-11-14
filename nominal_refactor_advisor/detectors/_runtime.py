@@ -1771,8 +1771,6 @@ def _compact_concrete_family_context(
 def _compact_concrete_family_context_from_repository(
     context: object | None,
 ) -> _CompactConcreteFamilyContext:
-    if isinstance(context, _CompactConcreteFamilyContext):
-        return context
     repository = CompactClassRepositoryContext.require(context)
     return repository.cached(
         _compact_concrete_family_context,

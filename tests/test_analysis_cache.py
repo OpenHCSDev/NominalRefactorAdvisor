@@ -5920,8 +5920,11 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
             modules
         )
     )
-    context = helper_detectors.CompactMethodFamilyContext.from_projections(
-        projections
+    repository = base_detectors.CompactClassRepositoryContext.from_projections(
+        projections, config
+    )
+    context = structural_detectors.SemanticOverlapMethodDetector._compact_context_from_shared(
+        repository
     )
     detector_candidate_pairs = (
         (
@@ -5952,7 +5955,7 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         assert detector_type.required_candidate_type() is candidate_type
         assert detector._candidate_items(list(modules), config) == compact_candidates
         assert detector._findings_from_compact_context(
-            projections, context, config
+            projections, repository, config
         ) == detector._findings_for_candidates(compact_candidates, config)
     with pytest.raises(TypeError, match="declares 0 candidate families"):
         context.candidates_for(object)

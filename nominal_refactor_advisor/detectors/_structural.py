@@ -225,8 +225,6 @@ class _CompactMethodFamilyDetectorBase(
         cls,
         context: object | None,
     ) -> CompactMethodFamilyContext:
-        if isinstance(context, CompactMethodFamilyContext):
-            return context
         repository = CompactClassRepositoryContext.require(context)
         return repository.cached(
             CompactMethodFamilyContext,
