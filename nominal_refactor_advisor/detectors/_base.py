@@ -301,10 +301,6 @@ FINDING_SPEC_FACTORIES = (
 )
 
 
-def finding_spec_factory_by_constructor_name() -> dict[str, FindingSpecFactory]:
-    return {factory.constructor_name: factory for factory in FINDING_SPEC_FACTORIES}
-
-
 def detector_config_option(default: object, help_text: str) -> object:
     return field(default=default, metadata={"cli_help": help_text})
 
@@ -3241,17 +3237,6 @@ class RegistryProjectionSurfaceKind(FieldedStrEnum):
             max(len(self._proof_names(proof)), 1),
             len(self._shared_names(evidence)),
         )
-
-
-def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return _flatten_union_member_type_names(
-            node.left
-        ) + _flatten_union_member_type_names(node.right)
-    type_name = ExpressionReference.decoded(node).terminal_name
-    if type_name in {None, "None", "NoneType"}:
-        return ()
-    return (type_name,)
 
 
 def _self_attr_name(target: ast.AST) -> str | None:

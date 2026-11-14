@@ -156,16 +156,12 @@ from nominal_refactor_advisor.detectors._base import (
     witness_carrier_class_candidates,
     DISPATCH_ALGEBRA_AUTHORITY,
     SelfCastAliasPartition,
-    _flatten_union_member_type_names,
     StaticModulePatternDetector,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
-    _dataclass_config_field_names,
     _finding_spec_build_boilerplate_candidates,
-    _from_namespace_keyword_names,
     TupleIndexSemanticOpacityCandidateCollector,
-    _node_mentions_name,
     _SCHEMA_ACCESSOR_SELF_NAME,
     _pipeline_stage_source,
 )
@@ -414,7 +410,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
             ):
                 continue
             member_names = sorted_tuple(
-                set(_flatten_union_member_type_names(statement.value))
+                set(CompactRemainingSystemicModuleProjectionFamily._flatten_union_member_type_names(statement.value))
             )
             if len(member_names) < 2:
                 continue
@@ -476,6 +472,17 @@ class CompactRemainingSystemicModuleProjectionFamily(
         if not type_name:
             return None
         return type_name
+
+    @staticmethod
+    def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return CompactRemainingSystemicModuleProjectionFamily._flatten_union_member_type_names(
+                node.left
+            ) + CompactRemainingSystemicModuleProjectionFamily._flatten_union_member_type_names(node.right)
+        type_name = ExpressionReference.decoded(node).terminal_name
+        if type_name in {None, "None", "NoneType"}:
+            return ()
+        return (type_name,)
 
 
 @dataclass(frozen=True)
@@ -556,10 +563,10 @@ class _DataclassNamespaceCliModuleProjectionFamily(
         dataclasses: list[_DataclassNamespaceProjection] = []
         for declared in parsed_module.fact(ModuleClassStatements).top_level:
             node = declared.node
-            field_names = _dataclass_config_field_names(declared)
+            field_names = _DataclassNamespaceCliModuleProjectionFamily._dataclass_config_field_names(declared)
             if not field_names:
                 continue
-            namespace_assignment = _from_namespace_keyword_names(node)
+            namespace_assignment = _DataclassNamespaceCliModuleProjectionFamily._from_namespace_keyword_names(node)
             if namespace_assignment is None:
                 continue
             from_namespace_line, namespace_field_names = namespace_assignment
@@ -616,12 +623,12 @@ class _DataclassNamespaceCliModuleProjectionFamily(
                 ):
                     continue
                 parsed_class = syntax_index.class_for(class_node)
-                field_names = _dataclass_config_field_names(
+                field_names = _DataclassNamespaceCliModuleProjectionFamily._dataclass_config_field_names(
                     UnindexedClassStatement(parsed_class)
                 )
                 if not field_names:
                     continue
-                namespace_assignment = _from_namespace_keyword_names(parsed_class)
+                namespace_assignment = _DataclassNamespaceCliModuleProjectionFamily._from_namespace_keyword_names(parsed_class)
                 if namespace_assignment is None:
                     continue
                 from_namespace_line, namespace_field_names = namespace_assignment
@@ -662,6 +669,27 @@ class _DataclassNamespaceCliModuleProjectionFamily(
             ]
         except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
             return None
+
+    @staticmethod
+    def _dataclass_config_field_names(declared: ClassStatement) -> tuple[str, ...]:
+        return declared.annotated_names if declared.is_dataclass else ()
+
+    @staticmethod
+    def _from_namespace_keyword_names(
+        node: ast.ClassDef,
+    ) -> tuple[int, tuple[str, ...]] | None:
+        for statement in node.body:
+            if (
+                not isinstance(statement, ast.FunctionDef)
+                or statement.name != "from_namespace"
+            ):
+                continue
+            for call in ast.walk(statement):
+                if isinstance(call, ast.Call) and name_id(call.func) == "cls":
+                    keyword_names = CallKeywords.of(call.keywords).names
+                    if keyword_names:
+                        return (statement.lineno, keyword_names)
+        return None
 
 
 def _dataclass_namespace_cli_mirror_candidates_from_projections(
@@ -4981,17 +5009,17 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
             if (
                 BuiltinCallName.is_isinstance_name(call_name)
                 and node.args
-                and _node_mentions_name(node.args[0], local_name)
+                and SchemaAccessorFamilyCandidate._node_mentions_name(node.args[0], local_name)
             ):
                 kinds.add("runtime_type_guard")
             elif call_name in SchemaAccessorFamilyCandidate._SCHEMA_ACCESSOR_COPY_CALL_NAMES and any(
-                _node_mentions_name(argument, local_name) for argument in node.args
+                SchemaAccessorFamilyCandidate._node_mentions_name(argument, local_name) for argument in node.args
             ):
                 kinds.add(f"{call_name}_coercion")
             elif (
                 isinstance(node.func, ast.Attribute)
                 and node.func.attr.startswith("from_")
-                and any(_node_mentions_name(argument, local_name) for argument in node.args)
+                and any(SchemaAccessorFamilyCandidate._node_mentions_name(argument, local_name) for argument in node.args)
             ):
                 kinds.add(node.func.attr)
         return tuple(sorted(kinds))
@@ -5001,7 +5029,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
         function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
     ) -> bool:
         return any(
-            _node_mentions_name(returned, local_name)
+            SchemaAccessorFamilyCandidate._node_mentions_name(returned, local_name)
             for returned in StatementValues.of(nodes_of(ast.Return, function)).values
         )
 
@@ -5021,9 +5049,16 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
     @staticmethod
     def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
         operands = (node.left, *node.comparators)
-        return _node_mentions_name(node, local_name) and any(
+        return SchemaAccessorFamilyCandidate._node_mentions_name(node, local_name) and any(
             CompactValueExpression.project(operand).value_is_none_literal
             for operand in operands
+        )
+
+    @staticmethod
+    def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
+        return any(
+            isinstance(item, ast.Name) and item.id == local_name
+            for item in ast.walk(node)
         )
 
 

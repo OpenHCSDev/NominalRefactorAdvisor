@@ -23,10 +23,12 @@ from typing import Self
 
 from nominal_refactor_advisor.amortization import (
     InheritanceAmortization,
+    InheritedMethodOwner,
+    InheritedMethods,
     IntrospectionAmortization,
     IntrospectionSource,
+    MethodCall,
     NoTrace,
-    inheritance_amortization,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
@@ -53,6 +55,7 @@ from nominal_refactor_advisor.type_checker_session import (
     SourceTexts,
     TypeCheckerSession,
 )
+from nominal_refactor_advisor.probe_owner import ScannedClasses
 
 
 class CensusFamilyKind(StrEnum):
@@ -697,9 +700,58 @@ class MemberAwarenessCensusBuilder:
 
     def inherited(self) -> InheritanceAmortization:
         with TypeCheckerSession.session(SourceTexts(self.corpus.modules)) as session:
-            return inheritance_amortization(
+            return MemberAwarenessCensusBuilder.inheritance_amortization(
                 self.corpus.modules, self.corpus.class_index, session
             )
+
+    @staticmethod
+    def inheritance_amortization(
+        modules: Iterable[ParsedModule],
+        index: CompactClassFamilyIndex,
+        session: TypeCheckerSession,
+    ) -> InheritanceAmortization:
+        """Count the inherited pairs that calls with resolved receivers reach across ``modules``."""
+
+        modules = tuple(modules)
+        calls = tuple(chain.from_iterable(MethodCall.in_module(module) for module in modules))
+        answers = session.receiver_types(call.span for call in calls)
+        classes = ScannedClasses(index.classes_by_symbol)
+        methods = InheritedMethods(index)
+        pairs: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
+        consumers: defaultdict[str, set[str]] = defaultdict(set)
+        typed = reaching = 0
+        for call in calls:
+            symbols = answers[call.span].owner(classes).class_symbols()
+            typed += bool(symbols)
+            reached = False
+            for member in chain.from_iterable(methods.reached(symbol) for symbol in symbols):
+                owner = methods.owner_of(member, call.method)
+                if owner is not None:
+                    pairs[owner].add((member, call.method))
+                    consumers[owner].add(call.consumer)
+                    reached = True
+            reaching += reached
+        return InheritanceAmortization(
+            scanned_line_count=sum(len(module.source.splitlines()) for module in modules),
+            type_checker=session.status,
+            attribute_calls=len(calls),
+            receiver_typed_calls=typed,
+            calls_reaching_inherited=reaching,
+            owners=tuple(
+                sorted(
+                    (
+                        InheritedMethodOwner(
+                            owner=owner,
+                            derived_pairs=len(found),
+                            members=len({member for member, _ in found}),
+                            consumers=len(consumers[owner]),
+                        )
+                        for owner, found in pairs.items()
+                    ),
+                    key=lambda item: (-item.derived_pairs, item.owner),
+                )
+            ),
+        )
 
 
 def build_member_awareness_census(

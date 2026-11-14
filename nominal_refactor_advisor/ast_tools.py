@@ -1321,33 +1321,6 @@ def dataclass_field_names(value_type: type) -> tuple[str, ...] | None:
         return names
 
 
-def retains_python_ast(
-    value: object,
-    seen_ids: set[int] | None = None,
-) -> bool:
-    """Return whether a compact value transitively retains parsed syntax."""
-
-    if isinstance(value, (ast.AST, ParsedModule)):
-        return True
-    if isinstance(value, (str, bytes, int, float, complex, bool, type(None))):
-        return False
-    seen = set() if seen_ids is None else seen_ids
-    value_id = id(value)
-    if value_id in seen:
-        return False
-    seen.add(value_id)
-    names = None if isinstance(value, type) else dataclass_field_names(type(value))
-    if names is not None:
-        return any(retains_python_ast(getattr(value, name), seen) for name in names)
-    if isinstance(value, dict):
-        return any(
-            retains_python_ast(item, seen) for pair in value.items() for item in pair
-        )
-    if isinstance(value, (tuple, list, set, frozenset)):
-        return any(retains_python_ast(item, seen) for item in value)
-    return False
-
-
 class BuiltinCallName(StrEnum):
     """Built-in call names that detector and AST helpers treat semantically."""
 
@@ -3498,30 +3471,6 @@ def parse_python_module_roots(
     return ParsedModuleSet(tuple(modules))
 
 
-def python_module_path_identities_for_roots(
-    roots: tuple[Path, ...],
-    *,
-    source_policy: PythonSourcePathPolicy | None = None,
-) -> tuple[PythonModulePathIdentity, ...]:
-    """Return de-duplicated module path identities without parsing source."""
-
-    identities: list[PythonModulePathIdentity] = []
-    seen_paths: set[Path] = set()
-    for root in roots:
-        parser = PythonModuleRootParser.for_root(
-            root,
-            use_parse_cache=False,
-            source_policy=source_policy,
-        )
-        for identity in parser.source_path_identities():
-            normalized_path = identity.path.resolve()
-            if normalized_path in seen_paths:
-                continue
-            seen_paths.add(normalized_path)
-            identities.append(identity)
-    return tuple(identities)
-
-
 AstConstantValue: TypeAlias = (
     str | int | float | complex | bool | bytes | None | EllipsisType
 )
@@ -3883,23 +3832,6 @@ def _attribute_call_family_name(node: ast.Call, family: AstNameFamily) -> str | 
     return family.matching_name(node.func)
 
 
-def _iter_class_decorator_family_calls(
-    parsed_module: ParsedModule, family: AstNameFamily
-) -> tuple[tuple[ast.ClassDef, ast.Call, str], ...]:
-    observations: list[tuple[ast.ClassDef, ast.Call, str]] = []
-    for node in parsed_module.syntax_index.breadth_first_nodes:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for decorator in node.decorator_list:
-            if not isinstance(decorator, ast.Call):
-                continue
-            matched_name = family.matching_name(decorator.func)
-            if matched_name is None:
-                continue
-            observations.append((node, decorator, matched_name))
-    return sorted_tuple(observations, key=lambda item: item[0].lineno)
-
-
 def collect_scoped_observations(
     parsed_module: ParsedModule, node_types: tuple[type[ast.AST], ...]
 ) -> tuple[ScopedAstObservation, ...]:
@@ -3973,15 +3905,6 @@ class ClassObservationProjection:
 
 
 CLASS_OBSERVATION_PROJECTION = ClassObservationProjection()
-
-
-def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
-    return AstNameFamily.from_names(
-        {
-            node.name
-            for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.ClassDef)
-        }
-    )
 
 
 def _class_body_field_observation(

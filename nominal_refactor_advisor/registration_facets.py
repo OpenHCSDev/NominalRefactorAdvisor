@@ -19,10 +19,6 @@ from nominal_refactor_advisor.class_syntax_facets import (
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.registry_identity import (
-    REGISTRY_ATTRIBUTE_NAME,
-    REGISTRY_KEY_ATTRIBUTE_NAME,
-)
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
@@ -437,88 +433,6 @@ def _compact_uses_named_registry(
     )
 
 
-def _compact_manual_selector_axes(
-    parsed_module: ParsedModule,
-) -> tuple[CompactManualSelectorAxis, ...]:
-    dict_literals: dict[str, ast.Dict] = {}
-    for statement in parsed_module.module.body:
-        name: str | None = None
-        value: ast.AST | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            if isinstance(statement.targets[0], ast.Name):
-                name = statement.targets[0].id
-                value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            name = statement.target.id
-            value = statement.value
-        if name is not None and isinstance(value, ast.Dict):
-            dict_literals[name] = value
-    case_names_by_mapping = {
-        name: tuple(ast.unparse(key) for key in mapping.keys if key is not None)
-        for name, mapping in dict_literals.items()
-    }
-    known_mapping_names = frozenset(
-        name
-        for name, case_names in case_names_by_mapping.items()
-        if len(case_names) >= 2
-    )
-    axes: list[CompactManualSelectorAxis] = []
-    for node in parsed_module.syntax_index.breadth_first_nodes:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        for method in FunctionDefinition.within(node.body):
-            if not method.name.startswith("for_") or not any(
-                _terminal_reference_name(decorator) == "classmethod"
-                for decorator in method.decorator_list
-            ):
-                continue
-            parameter_names = {
-                item.arg
-                for item in (
-                    *method.args.posonlyargs,
-                    *method.args.args,
-                    *method.args.kwonlyargs,
-                )
-                if item.arg not in {"self", "cls"}
-            }
-            if not parameter_names:
-                continue
-            mapping_name: str | None = None
-            for subnode in ast.walk(method):
-                if not (
-                    isinstance(subnode, ast.Subscript)
-                    and isinstance(subnode.value, ast.Name)
-                    and subnode.value.id in known_mapping_names
-                    and ast.unparse(subnode.slice) in parameter_names
-                ):
-                    continue
-                mapping_name = subnode.value.id
-                break
-            if mapping_name is None:
-                continue
-            case_names = case_names_by_mapping[mapping_name]
-            key_type_names = {
-                case_name.split(".", 1)[0]
-                for case_name in case_names
-                if "." in case_name
-            }
-            if len(key_type_names) != 1:
-                continue
-            axes.append(
-                CompactManualSelectorAxis(
-                    file_path=parsed_module.file_path,
-                    line=method.lineno,
-                    family_name=node.name,
-                    selector_method_name=method.name,
-                    key_type_name=next(iter(key_type_names)),
-                    case_names=case_names,
-                )
-            )
-    return tuple(axes)
-
-
 def _direct_class_assignments(node: ast.ClassDef) -> dict[str, ast.AST | None]:
     assignments: dict[str, ast.AST | None] = {}
     for statement in node.body:
@@ -778,19 +692,3 @@ def _autoregister_registry_key_attr_name(
         return stable_key_name
     return _registry_family_key_attr_name(assignments.get("__registry_family__"))
 
-
-def _is_registration_authority(node: ast.ClassDef) -> bool:
-    """Whether the class declares the registry protocol itself: a registry and its key attribute.
-
-    A registry family is an authority too: a registering metaclass creates
-    it, or it or an ancestor has an `__init_subclass__` that stores the
-    subclass. The index adds that from what the class does
-    (`RegisteringMetaclassAuthority.is_registry_family`,
-    `with_registering_metaclass`). A class's name is no evidence either way.
-    """
-
-    assignments = _direct_class_assignments(node)
-    return (
-        REGISTRY_ATTRIBUTE_NAME in assignments
-        and REGISTRY_KEY_ATTRIBUTE_NAME in assignments
-    )

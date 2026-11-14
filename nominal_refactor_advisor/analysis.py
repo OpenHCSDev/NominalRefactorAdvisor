@@ -55,24 +55,24 @@ from nominal_refactor_advisor.type_checker_session import (
 )
 from nominal_refactor_advisor.source_geometry import read_source_text
 from nominal_refactor_advisor.ast_tools import (
+    collect_family_items,
+    collected_family_demand_cache_signature,
+    collected_family_items_content_signature,
     CollectedFamily,
     CollectedFamilyCacheContext,
     CollectedFamilyContentSignatureIndex,
     CollectedFamilyPresenceDemand,
-    ParsedModule,
-    PythonModuleRootParser,
-    PythonSourceSemanticHash,
-    PythonSourcePathDiscovery,
-    PythonSourcePathPolicy,
-    ScanContext,
-    SourceModule,
-    collected_family_demand_cache_signature,
-    collected_family_items_content_signature,
-    collect_family_items,
+    dataclass_field_names,
     parse_python_module_roots,
     parse_python_modules,
-    retains_python_ast,
+    ParsedModule,
+    PythonModuleRootParser,
+    PythonSourcePathDiscovery,
+    PythonSourcePathPolicy,
+    PythonSourceSemanticHash,
+    ScanContext,
     semantic_python_source_hash,
+    SourceModule,
     suspend_cyclic_gc,
 )
 from nominal_refactor_advisor.cache_paths import (
@@ -129,6 +129,7 @@ from nominal_refactor_advisor.source_identity import (
     resolved_source_path_text,
     source_path_text,
 )
+import ast
 
 
 @dataclass(frozen=True)
@@ -785,7 +786,34 @@ class CompactGlobalProjectionAccumulator:
         seen_ids: set[int] | None = None,
     ) -> bool:
         del cls
-        return retains_python_ast(value, seen_ids)
+        return CompactGlobalProjectionAccumulator.retains_python_ast(value, seen_ids)
+
+    @staticmethod
+    def retains_python_ast(
+        value: object,
+        seen_ids: set[int] | None = None,
+    ) -> bool:
+        """Return whether a compact value transitively retains parsed syntax."""
+
+        if isinstance(value, (ast.AST, ParsedModule)):
+            return True
+        if isinstance(value, (str, bytes, int, float, complex, bool, type(None))):
+            return False
+        seen = set() if seen_ids is None else seen_ids
+        value_id = id(value)
+        if value_id in seen:
+            return False
+        seen.add(value_id)
+        names = None if isinstance(value, type) else dataclass_field_names(type(value))
+        if names is not None:
+            return any(CompactGlobalProjectionAccumulator.retains_python_ast(getattr(value, name), seen) for name in names)
+        if isinstance(value, dict):
+            return any(
+                CompactGlobalProjectionAccumulator.retains_python_ast(item, seen) for pair in value.items() for item in pair
+            )
+        if isinstance(value, (tuple, list, set, frozenset)):
+            return any(CompactGlobalProjectionAccumulator.retains_python_ast(item, seen) for item in value)
+        return False
 
 
 @dataclass(frozen=True)

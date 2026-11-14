@@ -35,10 +35,7 @@ from nominal_refactor_advisor.annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
-from nominal_refactor_advisor.ast_projection import (
-    CallKeywords,
-    StatementValue,
-)
+from nominal_refactor_advisor.ast_projection import StatementValue
 from nominal_refactor_advisor.ast_tools import (
     SourceModule,
     walk_function_body_nodes,
@@ -99,9 +96,6 @@ from nominal_refactor_advisor.detectors._base import (
     SemanticOverlapMethodFamilyCandidate,
     SemanticOverlapResidueAxisCandidate,
     TupleIndexSemanticOpacityCandidate,
-)
-from nominal_refactor_advisor.class_families.parsed_index import (
-    ClassStatement,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     ModuleNamedValues,
@@ -180,30 +174,6 @@ class MethodProjection:
         return aliases
 
 
-def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
-    if isinstance(expr, ast.Name) and expr.id in parameter_names:
-        return expr.id
-    if isinstance(expr, ast.IfExp):
-        body_name = _param_backed_name(expr.body, parameter_names)
-        orelse_name = _param_backed_name(expr.orelse, parameter_names)
-        if body_name is not None and orelse_name is None:
-            return body_name
-        if orelse_name is not None and body_name is None:
-            return orelse_name
-        if body_name == orelse_name:
-            return body_name
-    if isinstance(expr, ast.BoolOp):
-        names = {
-            name
-            for value in expr.values
-            for name in (_param_backed_name(value, parameter_names),)
-            if name is not None
-        }
-        if len(names) == 1:
-            return next(iter(names))
-    return None
-
-
 @dataclass(frozen=True)
 class _RegisteredUnionSurfaceSource:
     owner_name: str
@@ -225,23 +195,6 @@ class _RegisteredUnionSurfaceSource:
         return (
             None if target_name is None else cls(target_name, node.value, node.lineno)
         )
-
-
-def _annotation_union_members(node: ast.AST) -> tuple[ast.AST, ...]:
-    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return (
-            *_annotation_union_members(node.left),
-            *_annotation_union_members(node.right),
-        )
-    if isinstance(node, ast.Subscript):
-        root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
-        if root_name != "Union":
-            return (node,)
-        if isinstance(node.slice, ast.Tuple):
-            return tuple(node.slice.elts)
-        if isinstance(node.slice, ast.List):
-            return tuple(node.slice.elts)
-    return (node,)
 
 
 _MethodFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
@@ -1477,27 +1430,6 @@ class TupleIndexSemanticOpacityCandidateCollector:
         return root_name, tuple(reversed(indexes))
 
 
-def _dataclass_config_field_names(declared: ClassStatement) -> tuple[str, ...]:
-    return declared.annotated_names if declared.is_dataclass else ()
-
-
-def _from_namespace_keyword_names(
-    node: ast.ClassDef,
-) -> tuple[int, tuple[str, ...]] | None:
-    for statement in node.body:
-        if (
-            not isinstance(statement, ast.FunctionDef)
-            or statement.name != "from_namespace"
-        ):
-            continue
-        for call in ast.walk(statement):
-            if isinstance(call, ast.Call) and name_id(call.func) == "cls":
-                keyword_names = CallKeywords.of(call.keywords).names
-                if keyword_names:
-                    return (statement.lineno, keyword_names)
-    return None
-
-
 def _argument_spec_field_name(node: ast.AST) -> str | None:
     return (
         Maybe.of(as_ast(node, ast.Call))
@@ -1559,13 +1491,6 @@ def _assignment_target_arity(target: ast.AST) -> int | None:
 
 
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
-
-
-def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
-    return any(
-        isinstance(item, ast.Name) and item.id == local_name
-        for item in ast.walk(node)
-    )
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

@@ -326,12 +326,6 @@ def default_analysis_cache_dir() -> Path:
     return advisor_cache_layout.analysis_cache_dir()
 
 
-def default_semantic_descent_cache_dir() -> Path:
-    """Return the shared semantic-descent graph cache directory."""
-
-    return advisor_cache_layout.semantic_descent_cache_dir()
-
-
 def analysis_cache_sibling(parse_cache_dir: Path) -> Path:
     """Return the finding cache directory paired with one AST cache directory."""
 

@@ -12,10 +12,10 @@ from typing import Callable, ClassVar, Generic, TypeVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_index import (
+    ModuleImportBindings,
     ModuleNominalBindingAuthority,
-    NominalReferences,
     ModuleNominalBindingSnapshot,
-    module_import_names,
+    NominalReferences,
 )
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
@@ -53,8 +53,6 @@ from nominal_refactor_advisor.ast_tools import (
     _init_field_observations,
     _inline_literal_dispatch_observations_for_kind,
     _iter_attribute_family_calls,
-    _iter_class_decorator_family_calls,
-    _known_class_family,
     _literal_dispatch_observations_for_kind,
     _registration_key_fingerprint,
     _sentinel_type_observation,
@@ -82,6 +80,7 @@ from nominal_refactor_advisor.ast_tools import (
     SourceCollectedFamily,
     SourceModule,
 )
+from nominal_refactor_advisor.collection_algebra import sorted_tuple
 
 FamilyItemT = TypeVar("FamilyItemT")
 
@@ -407,7 +406,7 @@ class RegistrationShapeSpec(AutoRegisteredModuleShapeSpec[RegistrationShape], AB
 class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC, metaclass=AutoRegisterMeta):
     def collect(self, parsed_module: ParsedModule) -> list[RegistrationShape]:
         return self.collect_with_known_class_family(
-            parsed_module, _known_class_family(parsed_module)
+            parsed_module, KnownClassFamilyShapeSpec._known_class_family(parsed_module)
         )
 
     @abstractmethod
@@ -415,6 +414,15 @@ class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC, metaclass=AutoRegist
         self, parsed_module: ParsedModule, known_class_family: AstNameFamily
     ) -> list[RegistrationShape]:
         raise NotImplementedError
+
+    @staticmethod
+    def _known_class_family(parsed_module: ParsedModule) -> AstNameFamily:
+        return AstNameFamily.from_names(
+            {
+                node.name
+                for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.ClassDef)
+            }
+        )
 
 
 class AssignmentRegistrationShapeSpec(KnownClassFamilyShapeSpec):
@@ -477,7 +485,7 @@ class CallRegistrationShapeSpec(KnownClassFamilyShapeSpec):
 class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
     def collect(self, parsed_module: ParsedModule) -> list[RegistrationShape]:
         shapes: list[RegistrationShape] = []
-        for node, decorator, _matched_name in _iter_class_decorator_family_calls(
+        for node, decorator, _matched_name in DecoratorRegistrationShapeSpec._iter_class_decorator_family_calls(
             parsed_module, REGISTRATION_DECORATOR_FAMILY
         ):
             if not decorator.args:
@@ -500,6 +508,23 @@ class DecoratorRegistrationShapeSpec(RegistrationShapeSpec):
                 )
             )
         return shapes
+
+    @staticmethod
+    def _iter_class_decorator_family_calls(
+        parsed_module: ParsedModule, family: AstNameFamily
+    ) -> tuple[tuple[ast.ClassDef, ast.Call, str], ...]:
+        observations: list[tuple[ast.ClassDef, ast.Call, str]] = []
+        for node in parsed_module.syntax_index.breadth_first_nodes:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for decorator in node.decorator_list:
+                if not isinstance(decorator, ast.Call):
+                    continue
+                matched_name = family.matching_name(decorator.func)
+                if matched_name is None:
+                    continue
+                observations.append((node, decorator, matched_name))
+        return sorted_tuple(observations, key=lambda item: item[0].lineno)
 
 
 @dataclass(frozen=True)
@@ -773,7 +798,7 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
         type argument (`tuple[ast.expr, ...]`) are not values.
         """
 
-        module_names = module_import_names(parsed_module)
+        module_names = ModuleExpressionShapeFamily.module_import_names(parsed_module)
         if not module_names:
             return []
         index = parsed_module.syntax_index
@@ -849,6 +874,16 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
             case ast.Tuple(elts=elements):
                 return all(isinstance(item, ast.Constant) for item in elements)
         return False
+
+    @staticmethod
+    def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
+        """Names the module's final bindings resolve to an imported module."""
+
+        return frozenset(
+            local_name
+            for local_name, binding in parsed_module.fact(ModuleImportBindings).bindings.items()
+            if binding.kind.binds_module
+        )
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,6 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValues,
     single_name_targets,
     names_read,
-    nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -45,9 +44,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
-    _referenced_bases,
     _terminal_reference_name,
-    ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import AssignmentStatement
@@ -226,44 +223,6 @@ class CompactExactTypeGuard(CompactQualifiedSourceLocation):
     matches_exact_type_when_true: bool
     expression: str
 
-def _compact_base_argument_sources(node: ast.ClassDef) -> tuple[tuple[str, ...], ...]:
-    """The subscript arguments of each referenced base, aligned with its base references."""
-
-    sources: list[tuple[str, ...]] = []
-    for base, _parts in _referenced_bases(node):
-        match base:
-            case ast.Subscript(slice=ast.Tuple(elts=arguments)):
-                sources.append(tuple(ast.unparse(argument) for argument in arguments))
-            case ast.Subscript(slice=argument):
-                sources.append((ast.unparse(argument),))
-            case _:
-                sources.append(())
-    return tuple(sources)
-
-
-def _compact_base_key_type_names(node: ast.ClassDef) -> tuple[str | None, ...]:
-    """The key type each referenced base's subscript names first (`Family[Key]`), aligned with its base references."""
-
-    return tuple(
-        next(iter(annotation_type_names(base.slice)), None)
-        if isinstance(base, ast.Subscript)
-        else None
-        for base, _parts in _referenced_bases(node)
-    )
-
-
-def _class_nominal_reference_root_names(
-    parsed_module: ParsedModule,
-) -> frozenset[str]:
-    """Return module bindings queried while projecting class declarations."""
-
-    return frozenset(
-        name
-        for _qualname, class_node in parsed_module.fact(ModuleClassDefinitions).definitions
-        for name in _class_reference_root_names(class_node)
-    )
-
-
 def _class_reference_root_names(class_node: ast.ClassDef) -> frozenset[str]:
     """The module bindings one class declaration reads while it is projected."""
 
@@ -387,57 +346,6 @@ def annotation_type_names(node: ast.AST | None) -> tuple[str, ...]:
                 return annotation_type_names(node.slice.elts[0])
             return annotation_type_names(node.slice)
     return ()
-
-
-def _compact_keyed_table_axes(
-    parsed_module: ParsedModule,
-) -> tuple[CompactKeyedTableAxis, ...]:
-    axes: list[CompactKeyedTableAxis] = []
-    for statement in parsed_module.module.body:
-        table_name: str | None = None
-        value: ast.AST | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name):
-                table_name = target.id
-                value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            table_name = statement.target.id
-            value = statement.value
-        if table_name is None or not isinstance(value, ast.Dict):
-            continue
-        if len(value.keys) < 2 or any(key is None for key in value.keys):
-            continue
-        case_names = tuple(ast.unparse(key) for key in value.keys if key is not None)
-        key_type_names = {
-            case_name.split(".", 1)[0] for case_name in case_names if "." in case_name
-        }
-        if len(key_type_names) != 1:
-            continue
-        value_shape_name: str | None = None
-        value_constructor_names = {
-            ast.unparse(item.func)
-            for item in value.values
-            if isinstance(item, ast.Call)
-        }
-        if (
-            all(isinstance(item, ast.Call) for item in value.values)
-            and len(value_constructor_names) == 1
-        ):
-            value_shape_name = next(iter(value_constructor_names))
-        axes.append(
-            CompactKeyedTableAxis(
-                file_path=parsed_module.file_path,
-                line=statement.lineno,
-                table_name=table_name,
-                key_type_name=next(iter(key_type_names)),
-                case_names=sorted_tuple(case_names),
-                value_shape_name=value_shape_name,
-            )
-        )
-    return tuple(axes)
 
 
 def _exact_type_predicate(
@@ -920,55 +828,3 @@ def _compact_class_member_declarations(
         )
     return tuple(declarations)
 
-
-def _compact_sorted_key_calls(
-    parsed_module: ParsedModule,
-) -> tuple[CompactSortedKeyCall, ...]:
-    calls: list[CompactSortedKeyCall] = []
-    for node in parsed_module.syntax_index.breadth_first_nodes:
-        if not (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "sorted"
-        ):
-            continue
-        registry_owner_names = sorted_tuple(
-            {
-                child.value.id
-                for argument in node.args
-                for child in nodes_of(ast.Attribute, argument)
-                if child.attr == "__registry__"
-                and isinstance(child.value, ast.Name)
-            }
-        )
-        key_attribute_names: set[str] = set()
-        for keyword in node.keywords:
-            if keyword.arg != "key":
-                continue
-            key_attribute_names.update(
-                child.attr
-                for child in nodes_of(ast.Attribute, keyword.value)
-            )
-            for child in ast.walk(keyword.value):
-                if not (
-                    isinstance(child, ast.Call)
-                    and isinstance(child.func, ast.Name)
-                    and child.func.id == "attrgetter"
-                ):
-                    continue
-                key_attribute_names.update(
-                    argument.value
-                    for argument in child.args
-                    if isinstance(argument, ast.Constant)
-                    and isinstance(argument.value, str)
-                )
-        if key_attribute_names:
-            calls.append(
-                CompactSortedKeyCall(
-                    file_path=parsed_module.file_path,
-                    line=node.lineno,
-                    registry_owner_names=registry_owner_names,
-                    key_attribute_names=sorted_tuple(key_attribute_names),
-                )
-            )
-    return tuple(calls)

@@ -175,7 +175,6 @@ from nominal_refactor_advisor.detectors._base import (
 )
 from nominal_refactor_advisor.detectors._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
-    _param_backed_name,
     HELPER_SUPPORT_PROJECTION_AUTHORITY,
     MutableNamedStringSequenceSpecs,
     NamedStringSequenceSpecs,
@@ -2581,7 +2580,7 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
             attr_name = None if target is None else _self_attr_name(target)
             if attr_name is None or value is None:
                 continue
-            param_name = _param_backed_name(value, parameter_names)
+            param_name = ConcreteConfigFieldProbeCandidate._param_backed_name(value, parameter_names)
             if param_name is None:
                 continue
             type_names = parameter_type_names.get(param_name, ())
@@ -2596,6 +2595,30 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
             return _self_attr_name(node)
         if isinstance(node, ast.Name):
             return aliases.get(node.id)
+        return None
+
+    @staticmethod
+    def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
+        if isinstance(expr, ast.Name) and expr.id in parameter_names:
+            return expr.id
+        if isinstance(expr, ast.IfExp):
+            body_name = ConcreteConfigFieldProbeCandidate._param_backed_name(expr.body, parameter_names)
+            orelse_name = ConcreteConfigFieldProbeCandidate._param_backed_name(expr.orelse, parameter_names)
+            if body_name is not None and orelse_name is None:
+                return body_name
+            if orelse_name is not None and body_name is None:
+                return orelse_name
+            if body_name == orelse_name:
+                return body_name
+        if isinstance(expr, ast.BoolOp):
+            names = {
+                name
+                for value in expr.values
+                for name in (ConcreteConfigFieldProbeCandidate._param_backed_name(value, parameter_names),)
+                if name is not None
+            }
+            if len(names) == 1:
+                return next(iter(names))
         return None
 
 

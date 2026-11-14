@@ -65,8 +65,8 @@ from nominal_refactor_advisor.ast_tools import (
     OwnScopeNodeVisitor,
     ParsedModule,
     ParsedModuleSet,
+    PythonModuleRootParser,
     PythonSourcePathPolicy,
-    python_module_path_identities_for_roots,
 )
 from nominal_refactor_advisor.cache_checkout import (
     CacheCheckoutPathError,
@@ -75,7 +75,6 @@ from nominal_refactor_advisor.cache_checkout import (
     presentation_root_texts,
     rebase_checkout_path,
 )
-from nominal_refactor_advisor.cache_paths import default_semantic_descent_cache_dir
 from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.class_index import (
     NotStandardDataclass,
@@ -133,6 +132,7 @@ from nominal_refactor_advisor.semantic_identity import (
     SemanticRoleIdentityToken,
 )
 from nominal_refactor_advisor.source_identity import resolved_source_path_text
+from nominal_refactor_advisor.cache_paths import advisor_cache_layout
 
 SemanticClassFamilyIndex: TypeAlias = ClassFamilyIndex | CompactClassFamilyIndex
 IndexedClassDeclarationT = TypeVar(
@@ -609,7 +609,7 @@ class SemanticDescentGraphCacheIdentity:
         source_policy: PythonSourcePathPolicy | None = None,
     ) -> SemanticDescentGraphCacheIdentity:
         return cls.from_path_identities(
-            python_module_path_identities_for_roots(
+            SemanticDescentGraphCacheIdentity.python_module_path_identities_for_roots(
                 roots,
                 source_policy=source_policy,
             ),
@@ -649,6 +649,30 @@ class SemanticDescentGraphCacheIdentity:
             repr(self).encode("utf-8"),
             digest_size=self.schema.digest_size,
         ).hexdigest()
+
+    @staticmethod
+    def python_module_path_identities_for_roots(
+        roots: tuple[Path, ...],
+        *,
+        source_policy: PythonSourcePathPolicy | None = None,
+    ) -> tuple[PythonModulePathIdentity, ...]:
+        """Return de-duplicated module path identities without parsing source."""
+
+        identities: list[PythonModulePathIdentity] = []
+        seen_paths: set[Path] = set()
+        for root in roots:
+            parser = PythonModuleRootParser.for_root(
+                root,
+                use_parse_cache=False,
+                source_policy=source_policy,
+            )
+            for identity in parser.source_path_identities():
+                normalized_path = identity.path.resolve()
+                if normalized_path in seen_paths:
+                    continue
+                seen_paths.add(normalized_path)
+                identities.append(identity)
+        return tuple(identities)
 
 
 @dataclass(frozen=True)
@@ -3818,7 +3842,13 @@ class SemanticDescentGraphCacheDirAuthority:
     def cache_dir(self) -> Path | None:
         if not self.modules:
             return None
-        return default_semantic_descent_cache_dir()
+        return SemanticDescentGraphCacheDirAuthority.default_semantic_descent_cache_dir()
+
+    @staticmethod
+    def default_semantic_descent_cache_dir() -> Path:
+        """Return the shared semantic-descent graph cache directory."""
+
+        return advisor_cache_layout.semantic_descent_cache_dir()
 
 
 @dataclass(frozen=True)

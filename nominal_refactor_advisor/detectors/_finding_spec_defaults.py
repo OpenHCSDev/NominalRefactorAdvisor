@@ -15,7 +15,6 @@ from nominal_refactor_advisor.detectors._base import (
     FindingSpecSemanticField,
     FindingSpecSemanticValue,
     FINDING_SPEC_FACTORIES,
-    finding_spec_factory_by_constructor_name,
 )
 from nominal_refactor_advisor.ast_projection import StatementValues, single_name_targets
 
@@ -150,7 +149,7 @@ class FindingSpecCallSemantics:
     def finding_spec_factory_for_constructor_name(
         constructor_name: str,
     ) -> FindingSpecFactory | None:
-        return finding_spec_factory_by_constructor_name().get(constructor_name)
+        return FindingSpecCallSemantics.finding_spec_factory_by_constructor_name().get(constructor_name)
 
     @staticmethod
     def finding_spec_factory_for_defaults(
@@ -160,6 +159,10 @@ class FindingSpecCallSemantics:
             if factory.semantic_defaults == defaults:
                 return factory
         return None
+
+    @staticmethod
+    def finding_spec_factory_by_constructor_name() -> dict[str, FindingSpecFactory]:
+        return {factory.constructor_name: factory for factory in FINDING_SPEC_FACTORIES}
 
 
 class FindingSpecConstructionCandidateCollector:

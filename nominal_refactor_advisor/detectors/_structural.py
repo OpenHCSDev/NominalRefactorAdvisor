@@ -72,7 +72,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     BaseBundleClassGroups,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
     _RegisteredUnionSurfaceSource,
-    _annotation_union_members,
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
@@ -897,7 +896,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
     ) -> tuple[str, ...]:
         if annotation is None:
             return ()
-        union_members = _annotation_union_members(annotation)
+        union_members = ConcreteTypeUnionContractCandidate._annotation_union_members(annotation)
         member_names = tuple(
             (
                 member_name
@@ -1041,6 +1040,23 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
                 break
             suffix_tokens.append(column[0])
         return (*prefix_tokens, *tuple(reversed(suffix_tokens)))
+
+    @staticmethod
+    def _annotation_union_members(node: ast.AST) -> tuple[ast.AST, ...]:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+            return (
+                *ConcreteTypeUnionContractCandidate._annotation_union_members(node.left),
+                *ConcreteTypeUnionContractCandidate._annotation_union_members(node.right),
+            )
+        if isinstance(node, ast.Subscript):
+            root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
+            if root_name != "Union":
+                return (node,)
+            if isinstance(node.slice, ast.Tuple):
+                return tuple(node.slice.elts)
+            if isinstance(node.slice, ast.List):
+                return tuple(node.slice.elts)
+        return (node,)
 
 
 declare_candidate_rule_detector(

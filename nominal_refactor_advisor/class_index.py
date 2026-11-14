@@ -56,6 +56,7 @@ from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
     name_nodes,
     names_read,
+    nodes_of,
 )
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
@@ -99,6 +100,11 @@ from nominal_refactor_advisor.class_symbols import (
     ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.class_syntax_facets import (
+    _class_reference_root_names,
+    _compact_class_member_declarations,
+    _compact_named_projection_surfaces,
+    _trim_leading_docstring,
+    annotation_type_names,
     CompactClassMemberDeclaration,
     CompactClassSyntaxFacets,
     CompactKeyedTableAxis,
@@ -107,15 +113,6 @@ from nominal_refactor_advisor.class_syntax_facets import (
     CompactSourceLocation,
     ModuleClassSyntaxFacets,
     ModuleClassSyntaxFacetsWithoutAutoregister,
-    _class_nominal_reference_root_names,
-    _class_reference_root_names,
-    _compact_base_argument_sources,
-    _compact_base_key_type_names,
-    _compact_class_member_declarations,
-    _compact_keyed_table_axes,
-    _compact_named_projection_surfaces,
-    _compact_sorted_key_calls,
-    _trim_leading_docstring,
 )
 from nominal_refactor_advisor.collection_algebra import (
     IdentityHandleMultiplicityProjection,
@@ -151,11 +148,9 @@ from nominal_refactor_advisor.registration_facets import (
     FamilyWalkRoot,
     NoWalkRoot,
     _autoregister_registry_key_attr_name,
-    _compact_manual_selector_axes,
     _compact_manual_subclass_roster_roots,
     _compact_predicate_selected_methods,
     _direct_class_assignments,
-    _is_registration_authority,
     _string_constant,
     registry_config_walk_root,
 )
@@ -196,6 +191,10 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from nominal_refactor_advisor.semantic_algebra import DirectedGraph
 from nominal_refactor_advisor.source_geometry import (
     ClassHeaderSourceSpan as ClassHeaderSourceSpan,
+)
+from nominal_refactor_advisor.registry_identity import (
+    REGISTRY_ATTRIBUTE_NAME,
+    REGISTRY_KEY_ATTRIBUTE_NAME,
 )
 
 
@@ -1716,7 +1715,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 ModuleNominalBindingAuthority(parsed_module),
                 tuple(node.lineno for _qualname, node in indexed_class_nodes),
                 include_final=False,
-                star_import_excluded_names=_class_nominal_reference_root_names(parsed_module),
+                star_import_excluded_names=CompactModuleClassHeader._class_nominal_reference_root_names(parsed_module),
             )
             if module_star_import_origins(parsed_module)
             else None
@@ -1784,8 +1783,8 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                     node,
                     parsed_module.source_segments.lines,
                 ).is_reconstructible,
-                base_key_type_names=_compact_base_key_type_names(node),
-                base_argument_sources=_compact_base_argument_sources(node),
+                base_key_type_names=CompactModuleClassHeader._compact_base_key_type_names(node),
+                base_argument_sources=CompactModuleClassHeader._compact_base_argument_sources(node),
                 type_parameter_names=TYPE_PARAMETERS.names(node),
                 is_final=binding_snapshots[node.lineno].decorated_by(node, (FINAL_DECORATOR,)),
                 end_line=node.end_lineno,
@@ -1807,7 +1806,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 dataclass_declaration=binding_facets.dataclass_declaration,
                 enum_declaration=binding_facets.enum_declaration,
                 registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot, parsed_module),
-                is_registration_authority=_is_registration_authority(node),
+                is_registration_authority=CompactModuleClassHeader._is_registration_authority(node),
                 autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
                     parsed_module,
                     node,
@@ -2033,6 +2032,61 @@ class CompactModuleClassHeader(CompactModuleIdentity):
             and decorator.value.id in property_names
             and decorator.attr in PROPERTY_REDEFINITION_ATTRIBUTES
             for decorator in statement.decorator_list
+        )
+
+    @staticmethod
+    def _class_nominal_reference_root_names(
+        parsed_module: ParsedModule,
+    ) -> frozenset[str]:
+        """Return module bindings queried while projecting class declarations."""
+
+        return frozenset(
+            name
+            for _qualname, class_node in parsed_module.fact(ModuleClassDefinitions).definitions
+            for name in _class_reference_root_names(class_node)
+        )
+
+    @staticmethod
+    def _compact_base_argument_sources(node: ast.ClassDef) -> tuple[tuple[str, ...], ...]:
+        """The subscript arguments of each referenced base, aligned with its base references."""
+
+        sources: list[tuple[str, ...]] = []
+        for base, _parts in _referenced_bases(node):
+            match base:
+                case ast.Subscript(slice=ast.Tuple(elts=arguments)):
+                    sources.append(tuple(ast.unparse(argument) for argument in arguments))
+                case ast.Subscript(slice=argument):
+                    sources.append((ast.unparse(argument),))
+                case _:
+                    sources.append(())
+        return tuple(sources)
+
+    @staticmethod
+    def _compact_base_key_type_names(node: ast.ClassDef) -> tuple[str | None, ...]:
+        """The key type each referenced base's subscript names first (`Family[Key]`), aligned with its base references."""
+
+        return tuple(
+            next(iter(annotation_type_names(base.slice)), None)
+            if isinstance(base, ast.Subscript)
+            else None
+            for base, _parts in _referenced_bases(node)
+        )
+
+    @staticmethod
+    def _is_registration_authority(node: ast.ClassDef) -> bool:
+        """Whether the class declares the registry protocol itself: a registry and its key attribute.
+
+        A registry family is an authority too: a registering metaclass creates
+        it, or it or an ancestor has an `__init_subclass__` that stores the
+        subclass. The index adds that from what the class does
+        (`RegisteringMetaclassAuthority.is_registry_family`,
+        `with_registering_metaclass`). A class's name is no evidence either way.
+        """
+
+        assignments = _direct_class_assignments(node)
+        return (
+            REGISTRY_ATTRIBUTE_NAME in assignments
+            and REGISTRY_KEY_ATTRIBUTE_NAME in assignments
         )
 
 ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
@@ -4498,16 +4552,6 @@ def module_import_aliases(parsed_module: ParsedModule) -> dict[str, str]:
     }
 
 
-def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
-    """Names the module's final bindings resolve to an imported module."""
-
-    return frozenset(
-        local_name
-        for local_name, binding in parsed_module.fact(ModuleImportBindings).bindings.items()
-        if binding.kind.binds_module
-    )
-
-
 def module_star_import_origins(
     parsed_module: ParsedModule,
 ) -> tuple[CompactModuleStarImportOrigin, ...]:
@@ -4819,10 +4863,10 @@ class CompactModuleClassProjectionFamily(
                     declaration.name: getattr(declarations, declaration.name)
                     for declaration in fields(CompactModuleClassHeader)
                 },
-                sorted_key_calls=_compact_sorted_key_calls(parsed_module),
-                keyed_table_axes=_compact_keyed_table_axes(parsed_module),
+                sorted_key_calls=CompactModuleClassProjectionFamily._compact_sorted_key_calls(parsed_module),
+                keyed_table_axes=CompactModuleClassProjectionFamily._compact_keyed_table_axes(parsed_module),
                 closed_axis_branch_functions=syntax_facets.closed_axis_branch_functions,
-                manual_selector_axes=_compact_manual_selector_axes(parsed_module),
+                manual_selector_axes=CompactModuleClassProjectionFamily._compact_manual_selector_axes(parsed_module),
                 top_level_definitions=tuple(
                     (node.name, node.lineno)
                     for node in parsed_module.module.body
@@ -5115,6 +5159,192 @@ class CompactModuleClassProjectionFamily(
         return source_module.parsed_module(
             ast.Module(body=body, type_ignores=[]),
         )
+
+    @staticmethod
+    def _compact_keyed_table_axes(
+        parsed_module: ParsedModule,
+    ) -> tuple[CompactKeyedTableAxis, ...]:
+        axes: list[CompactKeyedTableAxis] = []
+        for statement in parsed_module.module.body:
+            table_name: str | None = None
+            value: ast.AST | None = None
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                if isinstance(target, ast.Name):
+                    table_name = target.id
+                    value = statement.value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
+                table_name = statement.target.id
+                value = statement.value
+            if table_name is None or not isinstance(value, ast.Dict):
+                continue
+            if len(value.keys) < 2 or any(key is None for key in value.keys):
+                continue
+            case_names = tuple(ast.unparse(key) for key in value.keys if key is not None)
+            key_type_names = {
+                case_name.split(".", 1)[0] for case_name in case_names if "." in case_name
+            }
+            if len(key_type_names) != 1:
+                continue
+            value_shape_name: str | None = None
+            value_constructor_names = {
+                ast.unparse(item.func)
+                for item in value.values
+                if isinstance(item, ast.Call)
+            }
+            if (
+                all(isinstance(item, ast.Call) for item in value.values)
+                and len(value_constructor_names) == 1
+            ):
+                value_shape_name = next(iter(value_constructor_names))
+            axes.append(
+                CompactKeyedTableAxis(
+                    file_path=parsed_module.file_path,
+                    line=statement.lineno,
+                    table_name=table_name,
+                    key_type_name=next(iter(key_type_names)),
+                    case_names=sorted_tuple(case_names),
+                    value_shape_name=value_shape_name,
+                )
+            )
+        return tuple(axes)
+
+    @staticmethod
+    def _compact_sorted_key_calls(
+        parsed_module: ParsedModule,
+    ) -> tuple[CompactSortedKeyCall, ...]:
+        calls: list[CompactSortedKeyCall] = []
+        for node in parsed_module.syntax_index.breadth_first_nodes:
+            if not (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "sorted"
+            ):
+                continue
+            registry_owner_names = sorted_tuple(
+                {
+                    child.value.id
+                    for argument in node.args
+                    for child in nodes_of(ast.Attribute, argument)
+                    if child.attr == "__registry__"
+                    and isinstance(child.value, ast.Name)
+                }
+            )
+            key_attribute_names: set[str] = set()
+            for keyword in node.keywords:
+                if keyword.arg != "key":
+                    continue
+                key_attribute_names.update(
+                    child.attr
+                    for child in nodes_of(ast.Attribute, keyword.value)
+                )
+                for child in ast.walk(keyword.value):
+                    if not (
+                        isinstance(child, ast.Call)
+                        and isinstance(child.func, ast.Name)
+                        and child.func.id == "attrgetter"
+                    ):
+                        continue
+                    key_attribute_names.update(
+                        argument.value
+                        for argument in child.args
+                        if isinstance(argument, ast.Constant)
+                        and isinstance(argument.value, str)
+                    )
+            if key_attribute_names:
+                calls.append(
+                    CompactSortedKeyCall(
+                        file_path=parsed_module.file_path,
+                        line=node.lineno,
+                        registry_owner_names=registry_owner_names,
+                        key_attribute_names=sorted_tuple(key_attribute_names),
+                    )
+                )
+        return tuple(calls)
+
+    @staticmethod
+    def _compact_manual_selector_axes(
+        parsed_module: ParsedModule,
+    ) -> tuple[CompactManualSelectorAxis, ...]:
+        dict_literals: dict[str, ast.Dict] = {}
+        for statement in parsed_module.module.body:
+            name: str | None = None
+            value: ast.AST | None = None
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                if isinstance(statement.targets[0], ast.Name):
+                    name = statement.targets[0].id
+                    value = statement.value
+            elif isinstance(statement, ast.AnnAssign) and isinstance(
+                statement.target, ast.Name
+            ):
+                name = statement.target.id
+                value = statement.value
+            if name is not None and isinstance(value, ast.Dict):
+                dict_literals[name] = value
+        case_names_by_mapping = {
+            name: tuple(ast.unparse(key) for key in mapping.keys if key is not None)
+            for name, mapping in dict_literals.items()
+        }
+        known_mapping_names = frozenset(
+            name
+            for name, case_names in case_names_by_mapping.items()
+            if len(case_names) >= 2
+        )
+        axes: list[CompactManualSelectorAxis] = []
+        for node in parsed_module.syntax_index.breadth_first_nodes:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for method in FunctionDefinition.within(node.body):
+                if not method.name.startswith("for_") or not any(
+                    _terminal_reference_name(decorator) == "classmethod"
+                    for decorator in method.decorator_list
+                ):
+                    continue
+                parameter_names = {
+                    item.arg
+                    for item in (
+                        *method.args.posonlyargs,
+                        *method.args.args,
+                        *method.args.kwonlyargs,
+                    )
+                    if item.arg not in {"self", "cls"}
+                }
+                if not parameter_names:
+                    continue
+                mapping_name: str | None = None
+                for subnode in ast.walk(method):
+                    if not (
+                        isinstance(subnode, ast.Subscript)
+                        and isinstance(subnode.value, ast.Name)
+                        and subnode.value.id in known_mapping_names
+                        and ast.unparse(subnode.slice) in parameter_names
+                    ):
+                        continue
+                    mapping_name = subnode.value.id
+                    break
+                if mapping_name is None:
+                    continue
+                case_names = case_names_by_mapping[mapping_name]
+                key_type_names = {
+                    case_name.split(".", 1)[0]
+                    for case_name in case_names
+                    if "." in case_name
+                }
+                if len(key_type_names) != 1:
+                    continue
+                axes.append(
+                    CompactManualSelectorAxis(
+                        file_path=parsed_module.file_path,
+                        line=method.lineno,
+                        family_name=node.name,
+                        selector_method_name=method.name,
+                        key_type_name=next(iter(key_type_names)),
+                        case_names=case_names,
+                    )
+                )
+        return tuple(axes)
 
 
 def _is_abstract_class(
