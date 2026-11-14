@@ -97,10 +97,7 @@ from nominal_refactor_advisor.python_module_identity import (
     PythonModulePathIdentity as PythonModulePathIdentity,
     python_module_name_is_importable as python_module_name_is_importable,
 )
-from nominal_refactor_advisor.registry_identity import (
-    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-    class_name_registry_key,
-)
+from nominal_refactor_advisor.registry_identity import ClassNameKeyed
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.source_geometry import (
     SourceLineSegmentAuthority,
@@ -2873,12 +2870,12 @@ class SingleSpecCollectedFamily(CollectedFamily[ShapeItemT], Generic[ShapeItemT]
 
 
 class ScopedShapeSpec(
-    ModuleShapeSpec[ShapeItemT], Generic[ShapeItemT], ABC, metaclass=AutoRegisterMeta
+    ModuleShapeSpec[ShapeItemT],
+    Generic[ShapeItemT],
+    ABC,
+    ClassNameKeyed,
+    metaclass=AutoRegisterMeta,
 ):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
     @property
     @abstractmethod
     def node_types(self) -> tuple[type[ast.AST], ...]:

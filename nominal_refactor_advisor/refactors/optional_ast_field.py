@@ -74,7 +74,7 @@ from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.refactor_concepts import OptionalAstFieldDecoderConcept
-from nominal_refactor_advisor.registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
+from nominal_refactor_advisor.registry_identity import ClassNameKeyed
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -936,7 +936,7 @@ class PairedProbeSite(SingleNodeProbeSite):
         )
 
 
-class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
+class OptionalAstFieldDecoder(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
     """One registered decoder: the ast fields it owns and the shapes sites take.
 
     ``fields`` maps each ast class to its optional field. ``owners`` are the
@@ -945,7 +945,6 @@ class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     name, the name a recipe payload carries.
     """
 
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = extract_key_from_class_name
     __registry__: ClassVar[dict[str, type[OptionalAstFieldDecoder]]]
     fields: ClassVar[Mapping[type[ast.AST], str]]

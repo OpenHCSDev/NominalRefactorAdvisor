@@ -1378,12 +1378,6 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
 _LINENO_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
     line_attribute_name="lineno", symbol_attribute_name="qualname"
 )
-_LINE_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
-    symbol_attribute_name="qualname"
-)
-_LINE_FAMILY_NAME_EVIDENCE = SourceLocationEvidenceProperty(
-    symbol_attribute_name="family_name"
-)
 
 
 def _contextual_global_digest(value: str) -> str:

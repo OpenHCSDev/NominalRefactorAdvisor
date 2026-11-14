@@ -39,7 +39,7 @@ from nominal_refactor_advisor.json_reports import (
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.registry_identity import (
-    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
+    ClassNameKeyed,
     suffix_trimmed_class_name_registry_key,
 )
 from nominal_refactor_advisor.source_index import (
@@ -53,14 +53,13 @@ from nominal_refactor_advisor.source_index import (
 class CodemodTargetSelector(
     DiscriminatedPayloadRecord,
     ABC,
+    ClassNameKeyed,
     metaclass=AutoRegisterMeta,
 ):
     """Semantic selector that resolves to source-index target ids."""
 
     __registry__: ClassVar[dict[str, type[CodemodTargetSelector]]] = {}
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
     __key_extractor__ = staticmethod(suffix_trimmed_class_name_registry_key)
-    __skip_if_no_key__ = True
     registry_key_suffix: ClassVar[str] = "Selector"
     registry_key: ClassVar[str]
     discriminator_field_name: ClassVar[str] = "selector"

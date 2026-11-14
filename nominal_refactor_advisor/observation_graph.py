@@ -20,10 +20,7 @@ from nominal_refactor_advisor.export_tools import (
     derive_public_exports,
 )
 from nominal_refactor_advisor.models import SourceLineReference
-from nominal_refactor_advisor.registry_identity import (
-    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-    class_name_registry_key,
-)
+from nominal_refactor_advisor.registry_identity import ClassNameKeyed
 from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.json_reports import SemanticRecord
@@ -92,12 +89,8 @@ class StructuralObservationCarrier(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class ObservationGroup(SemanticRecord, metaclass=AutoRegisterMeta):
+class ObservationGroup(SemanticRecord, ClassNameKeyed, metaclass=AutoRegisterMeta):
     """Common carrier for grouped observations under one structural axis."""
-
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
 
     observation_kind: ObservationKind
     execution_level: StructuralExecutionLevel

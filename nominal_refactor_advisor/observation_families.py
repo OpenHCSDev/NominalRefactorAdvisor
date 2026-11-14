@@ -27,10 +27,6 @@ from nominal_refactor_advisor.export_tools import (
     PublicExportPolicy,
     derive_public_exports,
 )
-from nominal_refactor_advisor.registry_identity import (
-    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-    class_name_registry_key,
-)
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 
 from nominal_refactor_advisor.observation_shapes import (
@@ -591,9 +587,6 @@ class RegistrationShapeSpec(AutoRegisteredModuleShapeSpec[RegistrationShape], AB
 
 
 class KnownClassFamilyShapeSpec(RegistrationShapeSpec, ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-
     def collect(self, parsed_module: ParsedModule) -> list[RegistrationShape]:
         return self.collect_with_known_class_family(
             parsed_module, _known_class_family(parsed_module)
@@ -852,9 +845,6 @@ class FieldObservationSpec(AutoRegisteredModuleShapeSpec[FieldObservation], ABC)
 
 
 class ClassObservationSpec(FieldObservationSpec, ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-
     def collect(self, parsed_module: ParsedModule) -> list[FieldObservation]:
         observations: list[FieldObservation] = []
         for class_observation in CLASS_OBSERVATION_PROJECTION.project(parsed_module):

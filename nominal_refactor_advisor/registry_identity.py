@@ -75,6 +75,19 @@ def suffix_trimmed_class_name_registry_key(name: str, cls: type[object]) -> str:
     return class_name_registry_key(name.removesuffix(cls.registry_key_suffix), cls)
 
 
+class ClassNameKeyed:
+    """A registry family whose members are keyed by their own class name.
+
+    The family root inherits this beside ``metaclass=AutoRegisterMeta`` and owns
+    its registry. A family that derives its key another way overrides
+    ``__key_extractor__``.
+    """
+
+    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
+    __key_extractor__ = class_name_registry_key
+    __skip_if_no_key__ = True
+
+
 if TYPE_CHECKING:
     from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 

@@ -107,6 +107,22 @@ stronger than a synthesized recipe that hedged its way to silence.
   leaves a blank line. The codemod pipeline handles this — parse
   validation still passes.
 
+- **`compose_existing_class` refuses a plain parent under a metaclass
+  or dataclass child** ("differ in metaclass", "differ in dataclass
+  declaration"). A parent that only holds class-level assignments is
+  still a valid base. Stage it by hand: `insert_after_target` the
+  parent, `add_class_base` + `ensure_import` on each child, then a
+  proved deletion (`delete_inherited_auto_register_configuration` for
+  registry lines, `delete_class_assignments` otherwise).
+- **A registry family keyed by class name inherits `ClassNameKeyed`**
+  (`registry_identity.py`). It declares `__registry_key__`,
+  `__key_extractor__` and `__skip_if_no_key__` once. The root still
+  says `metaclass=AutoRegisterMeta` and gets its own registry, because
+  metaclass-registry creates one for the first class that inherits the
+  three from a parent with no registry. A family that keys another way
+  overrides `__key_extractor__` only. Eleven roots restated these lines
+  before 2026-11-14.
+
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
 - **Fill the plan, simulate once, apply once.** Compose with
@@ -394,6 +410,15 @@ Cold CLI scan of NRA's own package (347 files, fresh `--cache-dir`,
 
 A warm scan is under a second. These are single runs; differences under
 a few seconds are noise.
+
+**Taking a before/after dump.** Take both dumps from a fresh
+`cache_dir`, with the same absolute root, and run the old code natively
+(dump before editing) instead of from a second worktree. A cache hit
+replays summaries written for whatever root spelling filled the cache.
+A run with `PYTHONPATH` pointing at another worktree still reads the
+installed distribution from the working tree, and `installed_owners`
+then scores differently: on 2026-11-14 that changed one
+`manual_class_registration` finding of 1,925 and nothing else.
 
 **Rule 1: a detector that needs other modules reads a compact family.**
 `DetectorTypePartition(default_detector_types_for_analysis()).compact_global_complete`

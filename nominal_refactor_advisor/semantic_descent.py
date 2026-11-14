@@ -120,7 +120,7 @@ from nominal_refactor_advisor.python_module_identity import PythonModulePathIden
 from nominal_refactor_advisor.record_checks import DeclaredTypeCheckModule
 from nominal_refactor_advisor.registry_identity import (
     AutoRegisterClassAuthority,
-    class_name_registry_key,
+    ClassNameKeyed,
 )
 from nominal_refactor_advisor.semantic_identity import (
     SemanticIdentifierTokenProjection,
@@ -6566,12 +6566,8 @@ def _class_reference_normalized_tokens(
     return frozenset(tokens)
 
 
-class PresentationTokenNodeProjector(ABC, metaclass=AutoRegisterMeta):
+class PresentationTokenNodeProjector(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
     """Registered projection rule for one AST node family."""
-
-    __registry_key__ = "projector_id"
-    __key_extractor__ = staticmethod(class_name_registry_key)
-    __skip_if_no_key__ = True
 
     node_type: ClassVar[type[ast.AST] | tuple[type[ast.AST], ...]]
 

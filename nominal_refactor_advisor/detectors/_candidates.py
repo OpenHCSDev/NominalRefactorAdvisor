@@ -13,10 +13,7 @@ from nominal_refactor_advisor.models import (
     SourceLineReference,
     SourceLocation,
 )
-from nominal_refactor_advisor.registry_identity import (
-    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-    class_name_registry_key,
-)
+from nominal_refactor_advisor.registry_identity import ClassNameKeyed
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 
 AttributeValueT = TypeVar("AttributeValueT")
@@ -56,11 +53,12 @@ _LINE_WITNESS_NAME_EVIDENCE = SourceLocationEvidenceProperty(
 
 
 @dataclass(frozen=True)
-class LineWitnessCandidate(SourceLineReference, ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
+class LineWitnessCandidate(
+    SourceLineReference,
+    ABC,
+    ClassNameKeyed,
+    metaclass=AutoRegisterMeta,
+):
     @property
     def witness_name(self) -> str:
         return type(self).__name__
@@ -77,11 +75,7 @@ class WitnessCarrierCandidate(LineWitnessCandidate):
 
 
 @dataclass(frozen=True)
-class ClassNameLineNumbersGroup(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
+class ClassNameLineNumbersGroup(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
     class_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
 
@@ -97,11 +91,7 @@ class ClassNameLineNumbersGroup(ABC, metaclass=AutoRegisterMeta):
 
 
 @dataclass(frozen=True)
-class ClassMethodFamilyCandidate(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
+class ClassMethodFamilyCandidate(ABC, ClassNameKeyed, metaclass=AutoRegisterMeta):
     file_path: str
     class_name: str
     method_names: tuple[str, ...]
