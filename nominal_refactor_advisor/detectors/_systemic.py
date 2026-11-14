@@ -1107,7 +1107,6 @@ class ResidualClosedAxisIndirectionDetector(
     ) -> RefactorFinding:
         residual_cases = ", ".join(axis_candidate.residual_case_names)
         table_cases = ", ".join(axis_candidate.table_case_names)
-        value_summary = ", ".join(axis_candidate.table_value_summaries[:4])
         return self.build_finding(
             (
                 f"`{axis_candidate.qualname}` indexes `{axis_candidate.table_name}` by "

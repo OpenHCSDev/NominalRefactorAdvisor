@@ -2792,19 +2792,13 @@ def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
     return None
 
 
-def _enum_projection_table_value_summary(value: ast.AST) -> str | None:
+def _is_enum_projection_table_value(value: ast.AST) -> bool:
+    """Whether a table value projects its case: a name, an attribute, or a lambda
+    returning a name, an attribute or a subscript."""
+
     if isinstance(value, ast.Lambda):
-        if isinstance(value.body, ast.Attribute):
-            return f"lambda ...: .{value.body.attr}"
-        if isinstance(value.body, ast.Subscript):
-            return "lambda ...: [...]"
-        if isinstance(value.body, ast.Name):
-            return f"lambda ...: {value.body.id}"
-    if isinstance(value, ast.Attribute):
-        return f".{value.attr}"
-    if isinstance(value, ast.Name):
-        return value.id
-    return None
+        return isinstance(value.body, ast.Attribute | ast.Subscript | ast.Name)
+    return isinstance(value, ast.Attribute | ast.Name)
 
 
 def _enum_projection_tables(
@@ -2831,18 +2825,15 @@ def _enum_projection_tables(
         if dict_value is None or len(dict_value.keys) < 2:
             continue
         key_pairs: list[tuple[str, str]] = []
-        value_summaries: list[str] = []
         for key, item_value in zip(dict_value.keys, dict_value.values, strict=False):
             if key is None or item_value is None:
                 break
             key_chain = ExpressionReference.decoded(key).attribute_chain
             if key_chain is None or len(key_chain) != 2:
                 break
-            summary = _enum_projection_table_value_summary(item_value)
-            if summary is None:
+            if not _is_enum_projection_table_value(item_value):
                 break
             key_pairs.append((key_chain[0], key_chain[1]))
-            value_summaries.append(summary)
         else:
             enum_names = {enum_name for enum_name, _ in key_pairs}
             if len(enum_names) != 1:
@@ -2860,7 +2851,6 @@ def _enum_projection_tables(
                     line=statement.lineno,
                     enum_name=enum_name,
                     case_names=case_names,
-                    value_summaries=tuple(value_summaries),
                 )
             )
     return sorted_tuple(
@@ -2934,7 +2924,6 @@ def _residual_closed_axis_indirection_candidates_for_function(
                 dispatch_axis_expression=dispatch_axis_expression,
                 table_case_names=table.case_names,
                 residual_case_names=shared_cases,
-                table_value_summaries=table.value_summaries,
             )
 
 
@@ -5528,7 +5517,6 @@ class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidat
 @dataclass(frozen=True)
 class EnumProjectionTableCandidate(EnumCaseFamilyMixin, LineWitnessCandidate):
     table_name: str
-    value_summaries: tuple[str, ...]
     witness_name = AliasProperty[str]("table_name")
 
 
@@ -5542,7 +5530,6 @@ class ResidualClosedAxisIndirectionCandidate(
     enum_name: str
     table_case_names: tuple[str, ...]
     residual_case_names: tuple[str, ...]
-    table_value_summaries: tuple[str, ...]
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
