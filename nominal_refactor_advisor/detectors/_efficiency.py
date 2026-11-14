@@ -377,7 +377,7 @@ class UnusedMethodParameterDetector(
         CompactModuleClassProjectionFamily,
         ClassShapeFamily,
     )
-    compact_shared_group_context_builder = staticmethod(
+    compact_projection_group_context = staticmethod(
         MemberFamilies.from_projection_groups
     )
     finding_spec = high_confidence_spec(
@@ -768,7 +768,7 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
         CompactModuleClassProjectionFamily,
         ClassShapeFamily,
     )
-    compact_shared_group_context_builder = staticmethod(
+    compact_projection_group_context = staticmethod(
         MemberFamilies.from_projection_groups
     )
     finding_spec = high_confidence_spec(

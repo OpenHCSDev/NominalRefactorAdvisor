@@ -4995,7 +4995,7 @@ def test_multi_family_systemic_detectors_share_one_compact_class_graph(
     for detector_type in detector_types:
         monkeypatch.setattr(
             detector_type,
-            "compact_shared_group_context_builder",
+            "compact_projection_group_context",
             staticmethod(counting_builder),
         )
 

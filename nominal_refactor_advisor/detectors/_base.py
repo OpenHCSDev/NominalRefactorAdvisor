@@ -1015,9 +1015,6 @@ class CompactMultiModuleProjectionDetectorMixin(
     """Global detector joining two or more reusable compact fact families."""
 
     module_projection_families: ClassVar[tuple[type[CollectedFamily], ...]]
-    compact_shared_group_context_builder: ClassVar[
-        staticmethod[[CompactProjectionGroups], object] | None
-    ] = None
 
     @classmethod
     def compact_projection_families(
@@ -1046,13 +1043,15 @@ class CompactMultiModuleProjectionDetectorMixin(
         del projections, config
         raise TypeError(f"{type(self).__name__} requires grouped compact projections")
 
-    @classmethod
+    @staticmethod
     def compact_projection_group_context(
-        cls,
         projections_by_family: CompactProjectionGroups,
     ) -> object | None:
-        builder = cls.compact_shared_group_context_builder
-        return None if builder is None else builder(projections_by_family)
+        """The context every member's join shares; a member that needs none
+        keeps this answer."""
+
+        del projections_by_family
+        return None
 
     def _findings_from_compact_projection_groups(
         self,
@@ -1094,7 +1093,7 @@ class CompactClassIndexMultiProjectionDetector(
 ):
     """Multi-family detector whose join is anchored by one compact class graph."""
 
-    compact_shared_group_context_builder = staticmethod(
+    compact_projection_group_context = staticmethod(
         CompactClassFamilyIndex.from_projection_groups
     )
 

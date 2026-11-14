@@ -247,7 +247,7 @@ class RelocationDetector(
     """A relocation joined with the scan's class families and branch consumers."""
 
     @staticmethod
-    def compact_shared_group_context_builder(projections_by_family: CompactProjectionGroups) -> RelocationIndex:
+    def compact_projection_group_context(projections_by_family: CompactProjectionGroups) -> RelocationIndex:
         reads: dict[str, list[BranchRead]] = defaultdict(list)
         calls: dict[str, list[LambdaCall]] = defaultdict(list)
         for module in ConsumerShapeFamily.modules_in(projections_by_family):

@@ -64,7 +64,7 @@ class RestatedIdentityDetector(
     )
 
     @staticmethod
-    def compact_shared_group_context_builder(
+    def compact_projection_group_context(
         projections_by_family: CompactProjectionGroups,
     ) -> DeclaredIdentities:
         return DeclaredIdentities.from_modules(

@@ -52,7 +52,7 @@ class CarrierCollapseCandidateDetector(
         CompactProductFlowModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
-    compact_shared_group_context_builder = staticmethod(
+    compact_projection_group_context = staticmethod(
         CompactProductFlowRepository.from_projection_groups
     )
 

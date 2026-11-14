@@ -106,7 +106,7 @@ class NameOnlySubclassDetector(
         EmptySubclassSiteFamily,
         CompactModuleClassProjectionFamily,
     )
-    compact_shared_group_context_builder = staticmethod(
+    compact_projection_group_context = staticmethod(
         EmptySubclassIndex.from_projection_groups
     )
     restated = RestatedFact(
@@ -148,7 +148,7 @@ class UndistinguishedEnumMembersDetector(
     """Plain-Enum members that every spelling names together."""
 
     module_projection_families = (EnumUseSiteFamily, CompactModuleClassProjectionFamily)
-    compact_shared_group_context_builder = staticmethod(
+    compact_projection_group_context = staticmethod(
         EnumMemberIndex.from_projection_groups
     )
     restated = RestatedFact(

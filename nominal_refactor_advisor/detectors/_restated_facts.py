@@ -288,7 +288,7 @@ class JoinedRestatedFactDetector(
     """A restated-fact detector that joins its sites with a second family.
 
     The first of `module_projection_families` carries the sites;
-    `compact_shared_group_context_builder` builds what the other families add,
+    `compact_projection_group_context` builds what the other families add,
     once per scan.
     """
 
@@ -322,7 +322,7 @@ class OwnTypeTestDetector(
     )
 
     @staticmethod
-    def compact_shared_group_context_builder(
+    def compact_projection_group_context(
         projections_by_family: CompactProjectionGroups,
     ) -> DeclaredClassScope:
         """The scan's module names and the symbol of every class in one of its own
@@ -483,7 +483,7 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
     )
 
     @staticmethod
-    def compact_shared_group_context_builder(
+    def compact_projection_group_context(
         projections_by_family: CompactProjectionGroups,
     ) -> DeclaredRecords:
         return DeclaredRecords.from_observations(
@@ -584,7 +584,7 @@ class ForeignAbsenceProbeDetector(
     )
 
     @staticmethod
-    def compact_shared_group_context_builder(
+    def compact_projection_group_context(
         projections_by_family: CompactProjectionGroups,
     ) -> ProbeOwnerContext:
         """The compact roots path holds projections, not parsed text: it types the files it read."""
@@ -662,7 +662,7 @@ class LegacyPathMarkerDetector(
         (ObservationTag.PARTIAL_VIEW,),
     )
 
-    compact_shared_group_context_builder = staticmethod(_reference_index)
+    compact_projection_group_context = staticmethod(_reference_index)
 
     def consumers(
         self, sites: Sequence[RestatingSite], context: ReferenceIndex
@@ -717,7 +717,7 @@ class ForwardingFacadeDetector(
         ForwardingFacadeSiteFamily,
         CompactModuleClassProjectionFamily,
     )
-    compact_shared_group_context_builder = staticmethod(_class_family_index)
+    compact_projection_group_context = staticmethod(_class_family_index)
     restated = RestatedFact(
         fact="The forwarding members restate the held class's attribute and method set, so they silently go stale when the held class changes.",
         owner="The owner is the held class: consumers read it directly, or the facade is-a held class and inherits it.",
@@ -823,7 +823,7 @@ class DeadModuleDetector(
     )
 
     @staticmethod
-    def compact_shared_group_context_builder(
+    def compact_projection_group_context(
         projections_by_family: CompactProjectionGroups,
     ) -> UnreachedModules:
         return UnreachedModules.from_facts(_reference_facts(projections_by_family))

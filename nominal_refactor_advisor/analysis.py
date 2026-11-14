@@ -851,17 +851,15 @@ def _compact_findings_by_detector(
             )
             group_context_builder = type(
                 multi_detector
-            ).compact_shared_group_context_builder
-            group_context: object | None = None
-            if group_context_builder is not None:
-                group_context_key = CompactProjectionGroupContextCacheKey(
-                    group_context_builder
+            ).compact_projection_group_context
+            group_context_key = CompactProjectionGroupContextCacheKey(
+                group_context_builder
+            )
+            if group_context_key not in active_shared_contexts:
+                active_shared_contexts[group_context_key] = group_context_builder(
+                    grouped_projections,
                 )
-                if group_context_key not in active_shared_contexts:
-                    active_shared_contexts[group_context_key] = group_context_builder(
-                        grouped_projections,
-                    )
-                group_context = active_shared_contexts[group_context_key]
+            group_context = active_shared_contexts[group_context_key]
             if finding_consumer is not None and not retain_findings:
                 finding_stream = multi_detector._stream_findings_from_compact_projection_groups_context(
                     grouped_projections,
