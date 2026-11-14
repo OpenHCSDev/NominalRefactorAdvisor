@@ -180,6 +180,15 @@ stronger than a synthesized recipe that hedged its way to silence.
   the code found it. Also rewrite only names no other class binds, so
   `self.x` cannot reach a different override, and drop a `del cls` that
   silenced the unused argument once the method reads it.
+- **The one reader is not always the owner.** A function read by one class
+  in another module belongs on that class only if it reads nothing
+  private: a move that has to import the source module's `_helpers`
+  widens the coupling it claims to remove (fold 101's first pass moved 38
+  and dragged 40 private imports across modules; it was discarded). Such a
+  declaration belongs to its own module's family, usually as a method of
+  the type it builds (`build_economics_proof_report` became
+  `EconomicsProofReport.from_root`). The command line reads the domain and
+  never owns it.
 
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
