@@ -76,14 +76,7 @@ from nominal_refactor_advisor.descriptor_algebra import (
 )
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.class_syntax_facets import (
-    ClosedAxis,
-    CompactClosedAxisBranchFact,
-    CompactClosedAxisBranchFunction,
     CompactFamilyAxis,
-    CompactKeyedTableAxis,
-)
-from nominal_refactor_advisor.registration_facets import (
-    CompactManualSelectorAxis,
 )
 from nominal_refactor_advisor.semantic_match import (
     Maybe,
@@ -174,7 +167,6 @@ from nominal_refactor_advisor.taxonomy import (
     SPECULATIVE,
 )
 from nominal_refactor_advisor.ast_tools import statements_without_docstring
-from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, overlap_coefficient
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _is_upper_snake_identifier,
@@ -3772,241 +3764,11 @@ def _compact_keyed_family_axis_specs_from_index(
     return tuple(specs)
 
 
-def _parallel_keyed_table_and_family_candidates_from_specs(
-    family_specs: Sequence[_KeyedFamilyAxisSpec],
-    table_specs: Sequence[CompactKeyedTableAxis],
-) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
-    family_specs_by_file: KeyedFamilyAxisSpecsByKey = {}
-    for family_spec in family_specs:
-        family_specs_by_file.setdefault(family_spec.file_path, []).append(family_spec)
-    candidates: list[ParallelKeyedTableAndFamilyCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
-    for table_spec in table_specs:
-        local_family_specs = family_specs_by_file.get(table_spec.file_path, ())
-        for family_spec in local_family_specs:
-            if table_spec.key_type_name != family_spec.key_type_name:
-                continue
-            shared_case_names = sorted_tuple(
-                set(table_spec.case_names) & set(family_spec.case_names)
-            )
-            if len(shared_case_names) < 2:
-                continue
-            case_overlap_score = overlap_coefficient(
-                table_spec.case_names, family_spec.case_names
-            )
-            if case_overlap_score < 0.8:
-                continue
-            table_overlap = CLASS_NAME_ALGEBRA.token_overlap(
-                table_spec.table_name, family_spec.family_name
-            )
-            value_overlap = (
-                0.0
-                if table_spec.value_shape_name is None
-                else CLASS_NAME_ALGEBRA.token_overlap(
-                    table_spec.value_shape_name, family_spec.family_name
-                )
-            )
-            if max(table_overlap, value_overlap) < 0.5:
-                continue
-            key = (
-                table_spec.file_path,
-                table_spec.table_name,
-                family_spec.family_name,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                ParallelKeyedTableAndFamilyCandidate(
-                    key_type_name=table_spec.key_type_name,
-                    case_names=shared_case_names,
-                    table=table_spec,
-                    family=family_spec,
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.table.file_path,
-            item.key_type_name,
-            item.table.table_name,
-            item.family.family_name,
-        ),
-    )
-
-
-def _parallel_keyed_axis_family_candidates_from_specs(
-    specs: Sequence[_KeyedFamilyAxisSpec],
-) -> tuple[ParallelKeyedAxisFamilyCandidate, ...]:
-    candidates: list[ParallelKeyedAxisFamilyCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
-    for index, left_spec in enumerate(specs):
-        for right_spec in specs[index + 1 :]:
-            if left_spec.file_path == right_spec.file_path:
-                continue
-            if left_spec.key_type_name != right_spec.key_type_name:
-                continue
-            if left_spec.registry_key_attr_name != right_spec.registry_key_attr_name:
-                continue
-            shared_case_names = sorted_tuple(
-                set(left_spec.case_names) & set(right_spec.case_names)
-            )
-            if len(shared_case_names) < 2:
-                continue
-            family_label_match = (
-                left_spec.family_label is not None
-                and left_spec.family_label == right_spec.family_label
-            )
-            case_overlap_score = overlap_coefficient(
-                left_spec.case_names, right_spec.case_names
-            )
-            name_overlap_ratio = CLASS_NAME_ALGEBRA.token_overlap(
-                left_spec.family_name, right_spec.family_name
-            )
-            if not family_label_match and (
-                case_overlap_score < 0.8 or name_overlap_ratio < 0.6
-            ):
-                continue
-            key = sorted_tuple((left_spec.family_name, right_spec.family_name)) + (
-                left_spec.key_type_name,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                ParallelKeyedAxisFamilyCandidate(
-                    key_type_name=left_spec.key_type_name,
-                    case_names=shared_case_names,
-                    left=left_spec,
-                    right=right_spec,
-                    case_overlap_ratio=case_overlap_score,
-                    name_overlap_ratio=name_overlap_ratio,
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.key_type_name,
-            item.left.file_path,
-            item.left.family_name,
-            item.right.file_path,
-            item.right.family_name,
-        ),
-    )
-
-
-def _cross_module_axis_shadow_family_candidates_from_specs(
-    authoritative_specs: Sequence[_KeyedFamilyAxisSpec],
-    shadow_specs: Sequence[CompactManualSelectorAxis],
-) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
-    candidates: list[CrossModuleAxisShadowFamilyCandidate] = []
-    seen: set[tuple[str, str, str]] = set()
-    for authoritative_spec in authoritative_specs:
-        for shadow_spec in shadow_specs:
-            if authoritative_spec.file_path == shadow_spec.file_path:
-                continue
-            if authoritative_spec.key_type_name != shadow_spec.key_type_name:
-                continue
-            shared_case_names = sorted_tuple(
-                set(authoritative_spec.case_names) & set(shadow_spec.case_names)
-            )
-            if len(shared_case_names) < 2:
-                continue
-            key = (
-                authoritative_spec.family_name,
-                shadow_spec.family_name,
-                authoritative_spec.key_type_name,
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            candidates.append(
-                CrossModuleAxisShadowFamilyCandidate(
-                    key_type_name=authoritative_spec.key_type_name,
-                    case_names=shared_case_names,
-                    authoritative=authoritative_spec,
-                    shadow=shadow_spec,
-                )
-            )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.key_type_name,
-            item.authoritative.file_path,
-            item.shadow.file_path,
-        ),
-    )
-
-
 @dataclass(frozen=True)
 class ResidualClosedAxisBranchingIdentity:
     file_path: str
     qualname: str
     key_type_name: str
-
-
-def _residual_closed_axis_branching_candidates_from_compact_specs(
-    projections: Sequence[CompactModuleClassProjection],
-    keyed_family_specs: tuple[_KeyedFamilyAxisSpec, ...],
-) -> tuple[ResidualClosedAxisBranchingCandidate, ...]:
-    authoritative_specs_by_key: KeyedFamilyAxisSpecsByKey = defaultdict(list)
-    for spec in keyed_family_specs:
-        authoritative_specs_by_key[spec.key_type_name].append(spec)
-    if not authoritative_specs_by_key:
-        return ()
-    candidates: list[ResidualClosedAxisBranchingCandidate] = []
-    seen: set[ResidualClosedAxisBranchingIdentity] = set()
-    for projection in projections:
-        for function in projection.closed_axis_branch_functions:
-            if "/tests/" in function.file_path:
-                continue
-            for axis in function.axes:
-                specs = authoritative_specs_by_key.get(axis.key_type_name, ())
-                if not specs or any(
-                    spec.file_path == function.file_path for spec in specs
-                ):
-                    continue
-                authoritative_case_names = {
-                    case_name for spec in specs for case_name in spec.case_names
-                }
-                shared_case_names = sorted_tuple(
-                    set(axis.case_names) & authoritative_case_names
-                )
-                if not shared_case_names:
-                    continue
-                identity = ResidualClosedAxisBranchingIdentity(
-                    file_path=function.file_path,
-                    qualname=function.qualname,
-                    key_type_name=axis.key_type_name,
-                )
-                if identity in seen:
-                    continue
-                seen.add(identity)
-                candidates.append(
-                    ResidualClosedAxisBranchingCandidate(
-                        key_type_name=axis.key_type_name,
-                        case_names=shared_case_names,
-                        function=function,
-                        branch=axis,
-                        authoritative_families=sorted_tuple(
-                            specs,
-                            key=lambda spec: (
-                                spec.family_name,
-                                spec.file_path,
-                                spec.line,
-                            ),
-                        ),
-                    )
-                )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (
-            item.key_type_name,
-            item.function.file_path,
-            item.function.line,
-            item.function.qualname,
-        ),
-    )
 
 
 def _registry_maturity_missing_signals(
@@ -5306,68 +5068,6 @@ class ModuleKeyedSelectionHelperCandidate(
             source_name=self.helper_function_name,
             identity_field_names=("key",),
         )
-
-
-@dataclass(frozen=True)
-class CrossModuleAxisShadowFamilyCandidate(ClosedAxis, EvidenceLocated):
-    """A closed axis one family owns and a selector in another module enumerates again;
-    its cases are the ones both name."""
-
-    authoritative: _KeyedFamilyAxisSpec
-    shadow: CompactManualSelectorAxis
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.authoritative.location, self.shadow.location)
-
-
-@dataclass(frozen=True)
-class ResidualClosedAxisBranchingCandidate(ClosedAxis, EvidenceLocated):
-    """A closed axis keyed families own that one function elsewhere still branches on;
-    its cases are the ones the function and those families both name."""
-
-    function: CompactClosedAxisBranchFunction
-    branch: CompactClosedAxisBranchFact
-    authoritative_families: tuple[_KeyedFamilyAxisSpec, ...]
-
-    @property
-    def dispatch_site_count(self) -> int:
-        return self.branch.branch_site_count
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            self.function.location,
-            *(family.location for family in self.authoritative_families),
-        )[:6]
-
-
-@dataclass(frozen=True)
-class ParallelKeyedAxisFamilyCandidate(ClosedAxis, EvidenceLocated):
-    """A closed axis two keyed families in different modules both own;
-    its cases are the ones both name."""
-
-    left: _KeyedFamilyAxisSpec
-    right: _KeyedFamilyAxisSpec
-    case_overlap_ratio: float
-    name_overlap_ratio: float
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.left.location, self.right.location)
-
-
-@dataclass(frozen=True)
-class ParallelKeyedTableAndFamilyCandidate(ClosedAxis, EvidenceLocated):
-    """A closed axis one module spells as a keyed table and as a keyed family;
-    its cases are the ones both name."""
-
-    table: CompactKeyedTableAxis
-    family: _KeyedFamilyAxisSpec
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return (self.table.location, self.family.location)
 
 
 @dataclass(frozen=True)

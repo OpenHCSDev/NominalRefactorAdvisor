@@ -4376,27 +4376,27 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     detectors_and_candidates = (
         (
             systemic_detectors.ParallelKeyedAxisFamilyDetector(),
-            base_detectors._parallel_keyed_axis_family_candidates_from_specs(
+            systemic_detectors.ParallelKeyedAxisFamilyCandidate._from_specs(
                 family_specs
             ),
         ),
         (
             systemic_detectors.ParallelKeyedTableAndFamilyDetector(),
-            base_detectors._parallel_keyed_table_and_family_candidates_from_specs(
+            systemic_detectors.ParallelKeyedTableAndFamilyCandidate._from_specs(
                 family_specs,
                 table_specs,
             ),
         ),
         (
             systemic_detectors.ResidualClosedAxisBranchingDetector(),
-            base_detectors._residual_closed_axis_branching_candidates_from_compact_specs(
+            systemic_detectors.ResidualClosedAxisBranchingCandidate._from_compact_specs(
                 projections,
                 family_specs,
             ),
         ),
         (
             systemic_detectors.CrossModuleAxisShadowFamilyDetector(),
-            base_detectors._cross_module_axis_shadow_family_candidates_from_specs(
+            systemic_detectors.CrossModuleAxisShadowFamilyCandidate._from_specs(
                 family_specs,
                 manual_selector_specs,
             ),
