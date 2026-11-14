@@ -579,15 +579,6 @@ def return_call(statement: ast.stmt) -> ast.Call | None:
     return as_ast(return_value(statement), ast.Call)
 
 
-def single_return_call(body: Sequence[ast.stmt]) -> ast.Call | None:
-    return as_ast(single_return_value(body), ast.Call)
-
-
-def single_call_arg(node: ast.AST) -> ast.AST | None:
-    call = as_ast(node, ast.Call)
-    return None if call is None else single_item(call.args)
-
-
 def call_argument_match(
     call: ast.Call,
     *,
