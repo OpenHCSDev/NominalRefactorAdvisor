@@ -1197,7 +1197,7 @@ class PresentationToken:
     qualifier: str | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True)
 class PresentationAuthorityConstruction:
     """Nominal construction observed in the owner that contains a projection."""
 
@@ -4896,7 +4896,6 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                             frozenset(
                                 (*projection.owner_constructions, *owner_constructions)
                             ),
-                            key=lambda item: (item.type_name, item.field_tokens),
                         ),
                     )
             if direct_class_frames:
@@ -5202,11 +5201,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 source_text="",
                 owner_constructions=sorted_tuple(
                     frozenset(projection_constructions),
-                    key=lambda item: (item.type_name, item.field_tokens),
                 ),
                 projection_constructions=sorted_tuple(
                     frozenset(projection_constructions),
-                    key=lambda item: (item.type_name, item.field_tokens),
                 ),
                 key_value_pairs=key_value_pairs,
                 class_symbols=class_symbols,
@@ -6797,7 +6794,6 @@ class PresentationAuthorityConstructionCollector:
             )
         return sorted_tuple(
             frozenset(constructions),
-            key=lambda item: (item.type_name, item.field_tokens),
         )
 
     @classmethod

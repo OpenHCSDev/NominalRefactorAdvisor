@@ -31,7 +31,7 @@ from pathlib import Path
 from types import EllipsisType
 import types
 import typing
-from typing import Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
+from typing import Any, Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -2537,9 +2537,16 @@ class StableCacheValue:
 
     @cached_property
     def signature(self) -> str:
-        return hashlib.blake2s(
-            pickle.dumps(self.form, protocol=pickle.HIGHEST_PROTOCOL), digest_size=16
-        ).hexdigest()
+        """The form's content hash. A form is built of tuples, strings, numbers,
+        bytes and None, whose repr spells only content; a pickle would also spell
+        which equal strings happen to be one object, so a form rebuilt from the
+        cache would hash apart from the one it was stored as."""
+
+        return hashlib.blake2s(repr(self.form).encode("utf-8"), digest_size=16).hexdigest()
+
+
+_NORMAL_FORMERS: dict[type, Callable[[_StableCacheWalk, Any], object]] = {}
+"""Each type's normal-form branch, chosen once per process."""
 
 
 class _StableCacheWalk:
@@ -2560,47 +2567,73 @@ class _StableCacheWalk:
 
     def normal_form(self, value: object) -> object:
         value_type = type(value)
+        try:
+            former = _NORMAL_FORMERS[value_type]
+        except KeyError:
+            former = _NORMAL_FORMERS[value_type] = _StableCacheWalk.former_for(value_type)
+        return former(self, value)
+
+    @staticmethod
+    def former_for(value_type: type) -> Callable[[_StableCacheWalk, Any], object]:
+        """How every value of `value_type` takes its normal form. Each branch
+        decides on the type alone, so it is chosen once per type, not per value."""
+
+        module, qualname = value_type.__module__, value_type.__qualname__
         if value_type is str:
-            return self.text(value)
-        if value is None or value_type in (int, bool, float, bytes):
-            return value
+            return _StableCacheWalk.text
+        if value_type is type(None) or value_type in (int, bool, float, bytes):
+            return lambda walk, value: value
         if value_type is tuple:
-            return "tuple", tuple(self.normal_form(item) for item in value)
-        if isinstance(value, (ast.AST, ParsedModule)):
-            self.retains_syntax = True
-            return "repr", value_type.__module__, value_type.__qualname__, repr(value)
-        names = None if isinstance(value, type) else dataclass_field_names(value_type)
+            return lambda walk, value: ("tuple", tuple(walk.normal_form(item) for item in value))
+        if issubclass(value_type, (ast.AST, ParsedModule)):
+
+            def syntax(walk: _StableCacheWalk, value: object) -> object:
+                walk.retains_syntax = True
+                return "repr", module, qualname, repr(value)
+
+            return syntax
+        names = None if issubclass(value_type, type) else dataclass_field_names(value_type)
         if names is not None:
-            return (
+            return lambda walk, value: (
                 "dataclass",
-                value_type.__module__,
-                value_type.__qualname__,
-                tuple((name, self.normal_form(getattr(value, name))) for name in names),
+                module,
+                qualname,
+                tuple((name, walk.normal_form(getattr(value, name))) for name in names),
             )
-        if isinstance(value, dict):
-            pairs = tuple(
-                (self.normal_form(key), self.normal_form(item))
-                for key, item in value.items()
+        if issubclass(value_type, dict):
+            return lambda walk, value: (
+                "dict",
+                tuple(
+                    sorted(
+                        (
+                            (walk.normal_form(key), walk.normal_form(item))
+                            for key, item in value.items()
+                        ),
+                        key=repr,
+                    )
+                ),
             )
-            return "dict", tuple(sorted(pairs, key=repr))
-        if isinstance(value, (set, frozenset)):
-            items = tuple(self.normal_form(item) for item in value)
-            return value_type.__name__, tuple(sorted(items, key=repr))
-        if isinstance(value, tuple):
-            return "tuple", tuple(self.normal_form(item) for item in value)
-        if isinstance(value, list):
-            return "list", tuple(self.normal_form(item) for item in value)
-        if isinstance(value, Path):
-            return "path", self.text(str(value))
-        if isinstance(value, Enum):
-            return "enum", value_type.__module__, value_type.__qualname__, value.value
-        if isinstance(value, str):
+        if issubclass(value_type, (set, frozenset)):
+            name = value_type.__name__
+            return lambda walk, value: (
+                name,
+                tuple(sorted((walk.normal_form(item) for item in value), key=repr)),
+            )
+        if issubclass(value_type, tuple):
+            return lambda walk, value: ("tuple", tuple(walk.normal_form(item) for item in value))
+        if issubclass(value_type, list):
+            return lambda walk, value: ("list", tuple(walk.normal_form(item) for item in value))
+        if issubclass(value_type, Path):
+            return lambda walk, value: ("path", walk.text(str(value)))
+        if issubclass(value_type, Enum):
+            return lambda walk, value: ("enum", module, qualname, value.value)
+        if issubclass(value_type, str):
             # A str subclass is relocated like a str and keeps its type, so the
             # fast path and this one agree on everything but the type tag.
-            return "str", value_type.__module__, value_type.__qualname__, self.text(value)
-        if isinstance(value, (bytes, int, float, bool)):
-            return value
-        return "repr", value_type.__module__, value_type.__qualname__, repr(value)
+            return lambda walk, value: ("str", module, qualname, walk.text(value))
+        if issubclass(value_type, (bytes, int, float, bool)):
+            return lambda walk, value: value
+        return lambda walk, value: ("repr", module, qualname, repr(value))
 
 
 def collected_family_demand_cache_signature(demand: object) -> str:
