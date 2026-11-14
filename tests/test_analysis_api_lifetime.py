@@ -10,6 +10,7 @@ from nominal_refactor_advisor.analysis_cache import AnalysisEngineSignature
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.worker_pool import PoolWorkerState
 
 
 @pytest.mark.parametrize("api", ("analyze_path", "analyze_paths", "analyze_modules_with_cache"))
@@ -71,18 +72,17 @@ def test_failed_path_analysis_releases_invocation(tmp_path):
     assert ScanCache._active.get() is None
 
 
-@pytest.mark.parametrize("initialize,state_type", (
-    (analysis.initialize_detector_analysis_worker, analysis.DetectorAnalysisWorkerState),
-    (analysis.initialize_per_module_detector_shard_worker, analysis.PerModuleDetectorShardWorkerState),
+@pytest.mark.parametrize("state_type", (
+    analysis.DetectorAnalysisWorkerState,
+    analysis.PerModuleDetectorShardWorkerState,
 ))
-def test_worker_initialisation_replaces_inherited_invocation(initialize, state_type, monkeypatch):
-    monkeypatch.setattr(analysis, "detector_analysis_worker_state", None)
-    monkeypatch.setattr(analysis, "per_module_detector_shard_worker_state", None)
+def test_worker_initialisation_replaces_inherited_invocation(state_type, monkeypatch):
+    monkeypatch.setattr(PoolWorkerState, "installed", None)
     original = ScanCache._active.get()
     try:
         with ScanCache.scope():
             inherited = ScanCache._active.get()
-            initialize(state_type((), DetectorConfig()))
+            state_type((), DetectorConfig()).install()
             assert ScanCache._active.get() is not inherited
             assert ScanCache._active.get() is not None
     finally:

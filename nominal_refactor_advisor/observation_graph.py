@@ -11,7 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import cached_property
-from typing import TYPE_CHECKING, TypeAlias
+from typing import TypeAlias
 
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.descriptor_algebra import CollectionAttributeProjection
@@ -26,8 +26,6 @@ from metaclass_registry import AutoRegisterMeta
 from nominal_refactor_advisor.json_reports import SemanticRecord
 
 
-if TYPE_CHECKING:
-    from nominal_refactor_advisor.ast_tools import ParsedModule
 
 
 class ObservationKind(StrEnum):
@@ -353,13 +351,6 @@ class ObservationGraph:
                 item.fiber_keys,
             ),
         )
-
-
-def collect_structural_observations(
-    parsed_module: ParsedModule,
-) -> tuple[StructuralObservation, ...]:
-    """Collect and sort structural observations for one parsed module."""
-    return parsed_module.structural_observations
 
 
 _PUBLIC_EXPORT_POLICY = PublicExportPolicy(

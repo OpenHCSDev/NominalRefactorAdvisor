@@ -10,17 +10,12 @@ from collections.abc import (
     Iterator,
     Sequence,
 )
-from concurrent.futures import ProcessPoolExecutor
-from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
 import gc
 import hashlib
-import multiprocessing
-import os
 from pathlib import Path
-import sys
 from time import perf_counter
 from abc import ABC, abstractmethod
 from typing import ClassVar, Generic, TypeVar, cast
@@ -48,6 +43,10 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.collection_algebra import DeferredBatchSequence
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.worker_pool import (
+    WorkerPlan,
+    PoolWorkerState,
+)
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.type_checker_session import (
     TypeCheckerTiming,
@@ -293,101 +292,6 @@ class AnalysisContextRootResolver:
         return tuple(deduped)
 
 
-WorkItemT = TypeVar("WorkItemT")
-WorkResultT = TypeVar("WorkResultT")
-
-
-@dataclass(frozen=True)
-class DetectorAnalysisWorkerPlan:
-    """Resolve detector-analysis process parallelism for one scan."""
-
-    requested_worker_count: int
-    work_item_count: int
-    minimum_auto_work_items: int = 4
-    max_auto_worker_count: int = 16
-
-    def map(
-        self,
-        function: Callable[[WorkItemT], WorkResultT],
-        items: Iterable[WorkItemT],
-    ) -> list[WorkResultT]:
-        """Run independent preparation tasks under this plan's worker budget."""
-        if not self.uses_process_pool:
-            return [function(item) for item in items]
-        with self.pool(ScanCache.initialize_worker) as executor:
-            return list(executor.map(function, items, chunksize=1))
-
-    @contextmanager
-    def pool(
-        self, initializer: Callable[..., None], initargs: tuple[object, ...] = ()
-    ) -> Iterator[ProcessPoolExecutor]:
-        """The plan's worker pool. Workers fork from this process and share its parsed
-        tree copy-on-write; the cyclic collector would walk every tracked object in
-        each of them and dirty those pages, so the tree is frozen out of its reach
-        while the pool runs."""
-
-        gc.freeze()
-        try:
-            with ProcessPoolExecutor(
-                max_workers=self.effective_worker_count,
-                mp_context=_analysis_process_pool_mp_context(),
-                initializer=initializer,
-                initargs=initargs,
-            ) as executor:
-                yield executor
-        finally:
-            gc.unfreeze()
-
-    @property
-    def effective_worker_count(self) -> int:
-        if self.requested_worker_count == 0:
-            if self.work_item_count < self.minimum_auto_work_items:
-                return 1
-            cpu_count = os.cpu_count()
-            if cpu_count is None:
-                cpu_count = 1
-            return max(
-                1,
-                min(
-                    self.max_auto_worker_count,
-                    cpu_count,
-                    self.work_item_count,
-                    self.memory_worker_ceiling,
-                ),
-            )
-        return max(1, min(self.requested_worker_count, self.work_item_count))
-
-    @cached_property
-    def memory_worker_ceiling(self) -> int:
-        """How many workers the free memory holds when each, at worst, ends up
-        holding its own copy of everything this process holds now (its resident
-        size): `MemAvailable` over that, read once so every answer this plan gives
-        agrees. It is a floor on the true cost: on NRA's own source each worker held
-        about 1.2 times the parent's resident size. Without `/proc` there is no
-        ceiling."""
-
-        try:
-            meminfo = Path("/proc/meminfo").read_text(encoding="ascii")
-            statm = Path("/proc/self/statm").read_text(encoding="ascii")
-        except OSError:
-            return self.max_auto_worker_count
-        available_kib = next(
-            int(line.split()[1]) for line in meminfo.splitlines() if line.startswith("MemAvailable:")
-        )
-        resident_kib = int(statm.split()[1]) * os.sysconf("SC_PAGE_SIZE") // 1024
-        return available_kib // max(1, resident_kib)
-
-    @property
-    def uses_process_pool(self) -> bool:
-        return self.effective_worker_count > 1
-
-    @property
-    def process_map_chunksize(self) -> int:
-        if not self.uses_process_pool:
-            return 1
-        return max(1, self.work_item_count // (self.effective_worker_count * 2))
-
-
 @dataclass(frozen=True)
 class DetectorWorkerContext:
     """Immutable parsed source and configuration shared by detector workers."""
@@ -397,54 +301,27 @@ class DetectorWorkerContext:
 
 
 @dataclass(frozen=True)
-class DetectorAnalysisWorkerState(DetectorWorkerContext):
+class DetectorAnalysisWorkerState(
+    DetectorWorkerContext, PoolWorkerState[type[IssueDetector], list[RefactorFinding]]
+):
     """Process-local parsed source and config for detector worker tasks."""
 
-    def detect_with(self, detector_type: type[IssueDetector]) -> list[RefactorFinding]:
-        return detector_type().detect(self.modules, self.config)
-
-
-detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
-
-
-def _analysis_process_pool_mp_context() -> multiprocessing.context.BaseContext | None:
-    """Use copy-on-write workers for AST-heavy analysis pools on Linux.
-
-    Python 3.14 defaults process pools to forkserver, making every cold worker
-    import the full detector registry again and deserialize its own copy of the
-    parsed repository.  Analysis pools receive immutable state and are created
-    only after earlier parser pools have closed, so Linux fork preserves the
-    existing isolation while sharing both the imported detector authority and
-    the read-only AST graph.  Other platforms retain their supported default
-    start method.
-    """
-
-    return (
-        multiprocessing.get_context("fork")
-        if sys.platform.startswith("linux")
-        else None
-    )
-
-
-def initialize_detector_analysis_worker(
-    state: DetectorAnalysisWorkerState,
-) -> None:
-    """Install parsed source once per process-pool worker."""
-
-    ScanCache.initialize_worker()
-    global detector_analysis_worker_state
-    detector_analysis_worker_state = state
+    def run(self, item: type[IssueDetector]) -> list[RefactorFinding]:
+        return item().detect(self.modules, self.config)
 
 
 @dataclass(frozen=True)
-class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
+class PerModuleDetectorShardWorkerState(
+    DetectorWorkerContext,
+    PoolWorkerState[tuple[int, tuple[type[IssueDetector], ...]], list[RefactorFinding]],
+):
     """Process-local parsed source for per-module detector shard tasks."""
 
-    def detect_task(
+    def run(
         self,
-        task: tuple[int, tuple[type[IssueDetector], ...]],
+        item: tuple[int, tuple[type[IssueDetector], ...]],
     ) -> list[RefactorFinding]:
-        module_index, detector_types = task
+        module_index, detector_types = item
         return analyze_detector_types(
             ParsedModuleSet((self.modules[module_index],)),
             self.config,
@@ -453,26 +330,13 @@ class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
         )
 
 
-per_module_detector_shard_worker_state: PerModuleDetectorShardWorkerState | None = None
-
-
-def initialize_per_module_detector_shard_worker(
-    state: PerModuleDetectorShardWorkerState,
-) -> None:
-    """Install parsed source once per per-module shard worker."""
-
-    ScanCache.initialize_worker()
-    global per_module_detector_shard_worker_state
-    per_module_detector_shard_worker_state = state
-
-
 @dataclass(frozen=True)
 class DetectorTypeShardRunner:
     """Run detector-type shards through one process-pool authority."""
 
     worker_state: DetectorAnalysisWorkerState
     detector_types: tuple[type[IssueDetector], ...]
-    worker_plan: DetectorAnalysisWorkerPlan
+    worker_plan: WorkerPlan
 
     @classmethod
     def from_modules(
@@ -487,7 +351,7 @@ class DetectorTypeShardRunner:
         return cls(
             worker_state=DetectorAnalysisWorkerState(modules, config),
             detector_types=detector_types,
-            worker_plan=DetectorAnalysisWorkerPlan(
+            worker_plan=WorkerPlan(
                 requested_worker_count=analysis_workers,
                 work_item_count=len(detector_types),
                 minimum_auto_work_items=minimum_auto_work_items,
@@ -495,26 +359,7 @@ class DetectorTypeShardRunner:
         )
 
     def findings_by_detector(self) -> list[list[RefactorFinding]]:
-        if not self.detector_types:
-            return []
-        if self.worker_plan.uses_process_pool:
-            with self.worker_plan.pool(
-                initialize_detector_analysis_worker, (self.worker_state,)
-            ) as executor:
-                return list(
-                    executor.map(
-                        self.detect_with_active_worker_state,
-                        self.detector_types,
-                        chunksize=self.worker_plan.process_map_chunksize,
-                    )
-                )
-        return [
-            detector_type().detect(
-                self.worker_state.modules,
-                self.worker_state.config,
-            )
-            for detector_type in self.detector_types
-        ]
+        return self.worker_plan.map_state(self.worker_state, self.detector_types)
 
     def sorted_findings(self) -> list[RefactorFinding]:
         return SortedFindingsAuthority.sort(
@@ -524,17 +369,6 @@ class DetectorTypeShardRunner:
                 for finding in detector_findings
             )
         )
-
-    @staticmethod
-    def detect_with_active_worker_state(
-        detector_type: type[IssueDetector],
-    ) -> list[RefactorFinding]:
-        """Run one detector inside a process-pool worker."""
-
-        state = detector_analysis_worker_state
-        if state is None:
-            raise RuntimeError("detector analysis worker state has not been initialized")
-        return state.detect_with(detector_type)
 
 
 def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
@@ -1270,24 +1104,27 @@ def build_compact_projection_shard(
 
 
 @dataclass(frozen=True)
-class CompactGroupWorkerState:
-    """What a forked group worker inherits: the manifest that loads each family
-    from the cache, the config, and the family groups to join."""
+class CompactGroupWorkerState(
+    PoolWorkerState[
+        int,
+        tuple[
+            tuple[tuple[type[IssueDetector], list[RefactorFinding]], ...],
+            dict[tuple[type[CollectedFamily], str], int],
+            TypeCheckerTiming,
+        ],
+    ]
+):
+    """What a group worker holds: the manifest that loads each family from the
+    cache, the config, and the family groups to join."""
 
     manifest: BoundedCompactProjectionManifest
     config: DetectorConfig
     groups: tuple[
         tuple[tuple[type[CollectedFamily], ...], tuple[type[IssueDetector], ...]], ...
     ]
-    active: ClassVar[CompactGroupWorkerState | None] = None
-
-    @classmethod
-    def install(cls, state: CompactGroupWorkerState | None) -> None:
-        cls.active = state
-
-    @staticmethod
-    def analyze_group(
-        index: int,
+    def run(
+        self,
+        item: int,
     ) -> tuple[
         tuple[tuple[type[IssueDetector], list[RefactorFinding]], ...],
         dict[tuple[type[CollectedFamily], str], int],
@@ -1297,11 +1134,8 @@ class CompactGroupWorkerState:
         the projection counts its families loaded, and its type-checker time:
         the worker's ledger is its own, so the parent records what it spent."""
 
-        state = CompactGroupWorkerState.active
-        if state is None:
-            raise RuntimeError("compact group worker started without its state")
-        families, detector_types = state.groups[index]
-        manifest = state.manifest
+        families, detector_types = self.groups[item]
+        manifest = self.manifest
         projections_by_family = {
             family: manifest.deferred_projections_for_family(
                 family, derive_content_identity=False
@@ -1313,7 +1147,7 @@ class CompactGroupWorkerState:
             _compact_findings_by_detector(
                 tuple(detector_types),
                 projections_by_family,
-                state.config,
+                self.config,
                 shared_contexts={},
                 finding_consumer=lambda detector_type, detector_findings: (
                     collected.append((detector_type, list(detector_findings)))
@@ -1713,7 +1547,7 @@ class BoundedCompactProjectionManifest:
             if retain_findings:
                 findings[detector_type] = list(detector_findings)
 
-        group_plan = DetectorAnalysisWorkerPlan(
+        group_plan = WorkerPlan(
             requested_worker_count=worker_count,
             work_item_count=len(detector_types_by_families),
             minimum_auto_work_items=2,
@@ -1738,13 +1572,9 @@ class BoundedCompactProjectionManifest:
                     )
                 )
             )
-            CompactGroupWorkerState.install(CompactGroupWorkerState(self, config, groups))
-            try:
-                group_results = group_plan.map(
-                    CompactGroupWorkerState.analyze_group, range(len(groups))
-                )
-            finally:
-                CompactGroupWorkerState.install(None)
+            group_results = group_plan.map_state(
+                CompactGroupWorkerState(self, config, groups), range(len(groups))
+            )
             for group_findings, materialized_counts, timing in group_results:
                 self._materialized_source_counts.update(materialized_counts)
                 TypeCheckerTimingLedger.active().record(timing)
@@ -2352,7 +2182,7 @@ def analyze_compact_roots_with_cache(
         and per_module_detector_types
     ):
         pending_signatures = source_signature_cache.pending_semantic_hashes(local_source_paths)
-        signature_plan = DetectorAnalysisWorkerPlan(
+        signature_plan = WorkerPlan(
             requested_worker_count=parse_workers,
             work_item_count=len(pending_signatures),
             minimum_auto_work_items=2,
@@ -2509,7 +2339,7 @@ def analyze_compact_roots_with_cache(
 
     build_results: list[CompactProjectionBuildResult] = []
     build_started = perf_counter()
-    worker_plan = DetectorAnalysisWorkerPlan(
+    worker_plan = WorkerPlan(
         requested_worker_count=parse_workers,
         work_item_count=len(build_requests),
         minimum_auto_work_items=2,
@@ -3753,7 +3583,7 @@ class IncrementalAnalysisCacheResolver:
     ) -> list[list[RefactorFinding]]:
         if not missing_modules:
             return []
-        worker_plan = DetectorAnalysisWorkerPlan(
+        worker_plan = WorkerPlan(
             requested_worker_count=self._analysis_workers,
             work_item_count=len(missing_modules),
         )
@@ -3762,17 +3592,7 @@ class IncrementalAnalysisCacheResolver:
                 modules=ParsedModuleSet.of(missing_modules),
                 config=self._config,
             )
-            tasks = tuple(enumerate(detector_types_by_module))
-            with worker_plan.pool(
-                initialize_per_module_detector_shard_worker, (state,)
-            ) as executor:
-                return list(
-                    executor.map(
-                        self.detect_per_module_shard_with_active_state,
-                        tasks,
-                        chunksize=worker_plan.process_map_chunksize,
-                    )
-                )
+            return worker_plan.map_state(state, tuple(enumerate(detector_types_by_module)))
         findings_by_module: list[list[RefactorFinding]] = []
         # This resolver still owns the complete original source context.
         # Its global consumers reuse these same syntax and declaration facts;
@@ -4034,17 +3854,6 @@ class IncrementalAnalysisCacheResolver:
             tuple(self._modules),
             self._cache_identity.presentation_roots,
         ).cache_token
-
-    @staticmethod
-    def detect_per_module_shard_with_active_state(
-        task: tuple[int, tuple[type[IssueDetector], ...]],
-    ) -> list[RefactorFinding]:
-        """Run per-module detector classes for one parsed module in a worker."""
-
-        state = per_module_detector_shard_worker_state
-        if state is None:
-            raise RuntimeError("per-module shard worker state has not been initialized")
-        return state.detect_task(task)
 
 
 @ScanCache.scope()

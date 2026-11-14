@@ -226,7 +226,7 @@ and consolidated-signature tests pass. The corrected cold scan completed in
 
 ### Worker budget and intermediate validation
 
-`DetectorAnalysisWorkerPlan` now caps an explicit process budget by available
+`WorkerPlan` now caps an explicit process budget by available
 work items. A single-file rebuild no longer launches 16 workers for one job.
 Automatic-worker policy is unchanged. The DSL record is
 `bounded-worker-plan-apply.txt`; a regression test forbids pool creation during

@@ -25,7 +25,7 @@ from nominal_refactor_advisor.analysis import analyze_path  # noqa: E402
 
 started = time.perf_counter()
 try:
-    findings = analyze_path(Path(sys.argv[1]), cache_dir=parent / "cache")
+    findings = analyze_path(Path(sys.argv[1]), cache_dir=parent / "cache", analysis_workers=0)
 finally:
     shutil.rmtree(parent, ignore_errors=True)
 rows = sorted(

@@ -54,20 +54,22 @@ from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
     NO_HELD_GRAPH,
     CachedPathAnalysisRequest,
-    DetectorAnalysisWorkerPlan,
     FastCacheReusePolicy,
     FastCachedPathAnalysisAuthority,
     PartialCacheReuse,
     SemanticDescentGraphCacheContext,
     SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
-    _analysis_process_pool_mp_context,
     analyze_modules,
     analyze_modules_with_cache,
     analyze_paths,
     default_detector_types_for_analysis,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.worker_pool import (
+    WorkerPlan,
+    _analysis_process_pool_mp_context,
+)
 from nominal_refactor_advisor.ast_tools import (
     AstNameFamily,
     BuiltinCallName,
@@ -321,7 +323,6 @@ from nominal_refactor_advisor.observation_graph import (
     ObservationKind,
     StructuralObservation,
     StructuralExecutionLevel,
-    collect_structural_observations,
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.planner import (
@@ -14200,17 +14201,17 @@ def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
 
 
 def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> None:
-    plan = DetectorAnalysisWorkerPlan(
+    plan = WorkerPlan(
         requested_worker_count=0,
         work_item_count=8,
         max_auto_worker_count=4,
     )
-    single_file_plan = DetectorAnalysisWorkerPlan(
+    single_file_plan = WorkerPlan(
         requested_worker_count=0,
         work_item_count=8,
         max_auto_worker_count=4,
     )
-    small_work_plan = DetectorAnalysisWorkerPlan(
+    small_work_plan = WorkerPlan(
         requested_worker_count=0,
         work_item_count=1,
         max_auto_worker_count=4,
@@ -14235,7 +14236,7 @@ def test_detector_analysis_worker_plan_uses_process_pool_for_package_scans() -> 
     ),
 )
 def test_explicit_worker_budget_is_bounded_by_available_jobs(requested, jobs, expected):
-    plan = DetectorAnalysisWorkerPlan(
+    plan = WorkerPlan(
         requested_worker_count=requested,
         work_item_count=jobs,
     )
@@ -25881,7 +25882,6 @@ def resolve(obj):
     projected_observations = modules[0].structural_observations
     graph = modules.observation_graph
 
-    assert collect_structural_observations(modules[0]) is projected_observations
     kinds = {item.observation_kind for item in graph.observations}
     assert ObservationKind.BUILDER_CALL in kinds
     assert ObservationKind.SENTINEL_TYPE in kinds

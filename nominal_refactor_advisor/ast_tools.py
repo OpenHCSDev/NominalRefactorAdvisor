@@ -78,7 +78,6 @@ from nominal_refactor_advisor.observation_graph import (
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
-    collect_structural_observations,
 )
 from nominal_refactor_advisor.observation_shapes import (
     BuilderCallShape,
@@ -809,7 +808,7 @@ class ParsedModule(SourceFileIdentity):
         return sorted_tuple(
             (
                 item.structural_observation
-                for family in CollectedFamily.all_registered_families()
+                for family in CollectedFamily.observation_families()
                 for item in collect_family_items(self, family)
                 if isinstance(item, StructuralObservationCarrier)
             ),
@@ -999,7 +998,7 @@ class ParsedModuleSet(Sequence[ParsedModule]):
             tuple(
                 observation
                 for module in self.modules
-                for observation in collect_structural_observations(module)
+                for observation in module.structural_observations
             )
         )
 
@@ -2235,6 +2234,27 @@ class CollectedFamily(
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
         return RegisteredTypeLineage.ordered_registered_types(cls)
+
+    @classmethod
+    @ScanCache.cached
+    def observation_families(cls) -> CollectedFamilyTypes:
+        """The families whose items can carry a structural observation: their
+        declared item type is a carrier, or is a base of one. Every other family
+        collects nothing an observation graph reads."""
+
+        carriers: list[type[object]] = []
+        pending: list[type[object]] = [StructuralObservationCarrier]
+        while pending:
+            for subclass in pending.pop().__subclasses__():
+                if subclass not in carriers:
+                    carriers.append(subclass)
+                    pending.append(subclass)
+        return tuple(
+            family
+            for family in cls.all_registered_families()
+            if issubclass(family.item_type, StructuralObservationCarrier)
+            or any(issubclass(carrier, family.item_type) for carrier in carriers)
+        )
 
     @classmethod
     @ScanCache.cached

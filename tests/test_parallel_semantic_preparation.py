@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
+from nominal_refactor_advisor.worker_pool import WorkerPlan
 from nominal_refactor_advisor.analysis_cache import (
     AnalysisFindingCache,
     CachedSourceFileSignature,
@@ -25,7 +25,7 @@ def test_workers_preserve_signatures_and_parent_owns_publication(tmp_path, worke
     assert owner is not None
     owner.source_file_signatures(paths)
     pending = owner.pending_semantic_hashes(paths)
-    plan = DetectorAnalysisWorkerPlan(workers, len(pending))
+    plan = WorkerPlan(workers, len(pending))
     computed = plan.map(CachedSourceFileSignature.with_semantic_hash, pending)
 
     assert all(entry.semantic_hash is None for entry in owner.entries_by_path.values())
@@ -107,8 +107,8 @@ def test_single_preparation_task_does_not_start_idle_workers(tmp_path, monkeypat
     def forbidden(*args, **kwargs):
         raise AssertionError("One task must execute in the current process")
 
-    monkeypatch.setattr("nominal_refactor_advisor.analysis.ProcessPoolExecutor", forbidden)
-    result = DetectorAnalysisWorkerPlan(16, len(pending)).map(
+    monkeypatch.setattr("nominal_refactor_advisor.worker_pool.ProcessPoolExecutor", forbidden)
+    result = WorkerPlan(16, len(pending)).map(
         CachedSourceFileSignature.with_semantic_hash, pending,
     )
     assert len(result) == 1

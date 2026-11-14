@@ -35,7 +35,7 @@ Observation Graph
 -----------------
 
 .. automodule:: nominal_refactor_advisor.observation_graph
-   :members: ObservationKind, StructuralExecutionLevel, StructuralObservation, StructuralObservationCarrier, ObservationFiber, NominalWitnessGroup, ObservationCohort, ObservationGraph, collect_structural_observations, build_observation_graph
+   :members: ObservationKind, StructuralExecutionLevel, StructuralObservation, StructuralObservationCarrier, ObservationFiber, NominalWitnessGroup, ObservationCohort, ObservationGraph
 
 
 Observation Shapes

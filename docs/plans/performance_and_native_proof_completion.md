@@ -207,7 +207,7 @@ work and validates completed records before publishing them. Workers receive
 immutable records, not independently writable cache copies. A changed source
 or mismatched publication authority is rejected.
 
-`DetectorAnalysisWorkerPlan.map` owns the shared process execution for semantic
+`WorkerPlan.map` owns the shared process execution for semantic
 preparation and projection construction. Worker counts remain bounded by actual
 pending tasks; one changed source does not start idle workers. Exact cache hits
 return before preparation, and cached lexical identities are not recomputed.

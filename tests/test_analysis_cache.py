@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import ast
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import importlib.util
@@ -3798,7 +3798,7 @@ def test_single_file_rebuild_does_not_start_idle_projection_workers(tmp_path):
         analysis_cache_dir=analysis_cache_dir,
     )
     edited_path.write_text("def value(): return 3\n")
-    with assert_no_calls(analysis_module.ProcessPoolExecutor.__init__):
+    with assert_no_calls(ProcessPoolExecutor.__init__):
         incremental = analyze_compact_roots_with_cache(
             (package_root,),
             cache_dir=cache_dir,
