@@ -190,7 +190,7 @@ def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
         current = stack.pop()
         yield current
         if not isinstance(current, _scope_boundaries):
-            stack.extend(ast.iter_child_nodes(current))
+            stack.extend(reversed(tuple(ast.iter_child_nodes(current))))
 
 
 # ---- the class shapes every family join reads

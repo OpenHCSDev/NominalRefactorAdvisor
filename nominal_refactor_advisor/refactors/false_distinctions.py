@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import (
     ClassVar,
-    TypeVar,
     cast,
 )
 
@@ -43,7 +42,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceSpanDeletion,
     SourceTextGeometry,
-    SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
 from nominal_refactor_advisor.declaration_authority_rename import (
@@ -61,6 +59,7 @@ from nominal_refactor_advisor.false_distinction_observations import (
     EnumMemberUse,
     EnumMembers,
     EnumUseKind,
+    FalseDistinction,
     IdenticalArms,
     MemberGroup,
     NameUse,
@@ -76,22 +75,16 @@ from nominal_refactor_advisor.refactor_concepts import FalseDistinctionErasureCo
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
 from nominal_refactor_advisor.stored_records import StoredRecords
 
-FoundT = TypeVar("FoundT")
-
-
 @dataclass(frozen=True, kw_only=True)
 class ScopeBranchOperation(SourceReprovedOperation, ABC):
-    """Rewrite the branch at `line` of the scope the target names."""
+    """Collapse the one false distinction at `line` of the scope the target names.
 
+    A ValueError when current source no longer holds exactly one, or when a
+    test the collapse deletes could have an effect.
+    """
+
+    distinction: ClassVar[type[FalseDistinction]]
     line: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
-
-    @abstractmethod
-    def replacements(
-        self, scope: Scope, geometry: SourceTextGeometry, fit: RewrittenLineFit
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        """The edits for the one branch at `line`; a ValueError when it is gone or unsafe."""
-
-        raise NotImplementedError
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
@@ -103,31 +96,19 @@ class ScopeBranchOperation(SourceReprovedOperation, ABC):
         )
         return geometry.physical_edits(
             file_path=target.file_path,
-            replacements=self.replacements(
-                Scope(cast(ScopeNode, node).body), geometry, fit
-            ),
+            replacements=self.distinction.at_line(
+                Scope(cast(ScopeNode, node).body), self.line
+            ).collapse(geometry, fit),
             rationale=self.rationale
             or f"Delete the distinction at line {self.line} that the code treats identically.",
         )
-
-    def only(self, found: list[FoundT], what: str) -> FoundT:
-        """The one `what` at `line`; current source must still hold exactly one."""
-
-        if len(found) != 1:
-            raise ValueError(f"{len(found)} {what} at line {self.line} of the target scope")
-        return found[0]
 
 
 @dataclass(frozen=True, kw_only=True)
 class CollapseIdenticalArmsOperation(ScopeBranchOperation):
     """Replace the branch at `line`, whose arms are all the same code, with that code."""
 
-    def replacements(
-        self, scope: Scope, geometry: SourceTextGeometry, fit: RewrittenLineFit
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        del fit
-        found = [arms for arms in IdenticalArms.in_scope(scope) if arms.node.lineno == self.line]
-        return (self.only(found, "branch(es) with identical arms").collapse(geometry),)
+    distinction = IdenticalArms
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -135,17 +116,7 @@ class MergeTypeTestArmsOperation(ScopeBranchOperation):
     """Merge `isinstance` rungs at `line` that run the same code into one test,
     or delete trailing rungs that run the `else` body."""
 
-    def replacements(
-        self, scope: Scope, geometry: SourceTextGeometry, fit: RewrittenLineFit
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        found = [
-            arms
-            for arms in UndistinguishedTypeArms.in_scope(scope)
-            if arms.line == self.line
-        ]
-        return self.only(found, "undistinguished type test group(s)").collapse(
-            geometry, fit
-        )
+    distinction = UndistinguishedTypeArms
 
 
 class ScopeBranchFindingRecipeSynthesizer(

@@ -24,13 +24,14 @@ from itertools import groupby
 from operator import attrgetter
 from pathlib import Path
 from types import EllipsisType
-from typing import Any, cast
+from typing import Any, ClassVar, Self, cast
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
+    ParsedModuleFact,
     ParsedModuleSet,
     ParsedModuleSetFact,
     PythonModuleRootParser,
@@ -179,35 +180,77 @@ class Scope:
                 if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
                     yield value
 
-    @classmethod
-    def of_module(cls, module: ast.Module) -> Iterator[Scope]:
-        """The module's own scope and every definition's, each once."""
-
-        yield cls(module.body)
-        for node in ast.walk(module):
-            match node:
-                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
-                    yield cls(node.body)
 
 
 @dataclass(frozen=True)
-class IdenticalArms(ABC):
-    """A branch every arm of which runs the same code, so its tests decide nothing."""
+class ModuleScopes(ParsedModuleFact):
+    """Every scope of one parse, the module's first, under its owner's dotted name."""
 
-    node: ast.stmt | ast.expr
+    scopes: tuple[tuple[str, Scope], ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        index = parsed_module.syntax_index
+        return cls(
+            tuple(
+                (
+                    scope.symbol,
+                    Scope(cast(ScopeNode, index.depth_first_nodes[scope.owner_node_index]).body),
+                )
+                for scope in index.scopes
+            )
+        )
+
+
+class FalseDistinction(ABC):
+    """Code in one scope that tells cases apart and then treats them the same.
+
+    A member finds itself in a scope, names the node it is reported at and the
+    expressions its tests evaluate, and collapses itself, refusing when a test
+    the collapse deletes could have an effect.
+    """
+
+    described: ClassVar[str]
+    counted: ClassVar[str]
+
+    @classmethod
+    @abstractmethod
+    def in_scope(cls, scope: Scope) -> Iterator[FalseDistinction]:
+        """Every one in the scope's own code, nested definitions left to their own scope."""
+
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def anchor(self) -> ast.stmt | ast.expr:
+        """The node the distinction is reported at."""
+
+        raise NotImplementedError
 
     @property
     @abstractmethod
     def tests(self) -> tuple[ast.expr, ...]:
-        """Every expression the branch evaluates only to choose an arm."""
+        """Every expression evaluated only to tell the cases apart."""
 
         raise NotImplementedError
 
     @abstractmethod
-    def collapsed(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
-        """The branch's source replaced by its one arm."""
+    def collapsed(
+        self, geometry: SourceTextGeometry, fit: RewrittenLineFit
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """The source edits that leave the one treatment and delete the tests."""
 
         raise NotImplementedError
+
+    @property
+    def named(self) -> tuple[ast.expr, ...]:
+        """The tests a report of the distinction names."""
+
+        return self.tests
+
+    @property
+    def line(self) -> int:
+        return self.anchor.lineno
 
     def refusals(self) -> Iterator[str]:
         """Why deleting the tests could change behaviour, one reason per test."""
@@ -216,13 +259,70 @@ class IdenticalArms(ABC):
             if not evaluates_without_effect(test):
                 yield f"evaluating `{ast.unparse(test)}` can have an effect"
 
-    def collapse(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
+    def collapse(
+        self, geometry: SourceTextGeometry, fit: RewrittenLineFit
+    ) -> tuple[SourceTextSpanReplacement, ...]:
         """The collapse, or a ValueError naming why it would change behaviour."""
 
         refusals = tuple(self.refusals())
         if refusals:
-            raise ValueError(f"Branch at line {self.node.lineno}: {'; '.join(refusals)}")
-        return self.collapsed(geometry)
+            raise ValueError(f"{self.described} at line {self.line}: {'; '.join(refusals)}")
+        return self.collapsed(geometry, fit)
+
+    @classmethod
+    def at_line(cls, scope: Scope, line: int) -> FalseDistinction:
+        """The one at `line` of the scope; current source must still hold exactly one."""
+
+        found = [distinction for distinction in cls.in_scope(scope) if distinction.line == line]
+        if len(found) != 1:
+            raise ValueError(f"{len(found)} {cls.counted} at line {line} of the target scope")
+        return found[0]
+
+
+class FalseDistinctionSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
+    """One kind of false distinction, a site for each one in the module's scopes."""
+
+    _registry_skip = True
+    item_type = RestatingSiteModule
+    distinction: ClassVar[type[FalseDistinction]]
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        for symbol, scope in parsed_module.fact(ModuleScopes).scopes:
+            for found in cls.distinction.in_scope(scope):
+                yield cls.site(
+                    parsed_module,
+                    found.anchor,
+                    symbol,
+                    f"line {found.line}",
+                    tuple(ast.unparse(test) for test in found.named),
+                )
+
+
+@dataclass(frozen=True)
+class IdenticalArms(FalseDistinction, ABC):
+    """A branch every arm of which runs the same code, so its tests decide nothing."""
+
+    described = "Branch"
+    counted = "branch(es) with identical arms"
+
+    node: ast.stmt | ast.expr
+
+    @property
+    def anchor(self) -> ast.stmt | ast.expr:
+        return self.node
+
+    @abstractmethod
+    def replacement(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
+        """The branch's source replaced by its one arm."""
+
+        raise NotImplementedError
+
+    def collapsed(
+        self, geometry: SourceTextGeometry, fit: RewrittenLineFit
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        del fit
+        return (self.replacement(geometry),)
 
     @classmethod
     def in_scope(cls, scope: Scope) -> Iterator[IdenticalArms]:
@@ -251,7 +351,7 @@ class StatementArms(IdenticalArms, ABC):
     def kept(self) -> StatementList:
         raise NotImplementedError
 
-    def collapsed(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
+    def replacement(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
         node, kept = self.node, self.kept
         start, end = geometry.line_span_offsets(node.lineno, node.end_lineno or node.lineno)
         indentation = geometry.lines[node.lineno - 1][: node.col_offset]
@@ -375,7 +475,7 @@ class ConditionalExpressionArms(IdenticalArms):
     def tests(self) -> tuple[ast.expr, ...]:
         return (self.node.test,)
 
-    def collapsed(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
+    def replacement(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
         start, end = geometry.required_node_offsets(self.node)
         kept_start, kept_end = geometry.required_node_offsets(self.node.body)
         if geometry.span_contains_comment(SourceTextSpan(start, end)):
@@ -402,7 +502,7 @@ class FallThroughArms(IdenticalArms):
     def tests(self) -> tuple[ast.expr, ...]:
         return (self.node.test,)
 
-    def collapsed(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
+    def replacement(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
         node = self.node
         start, end = geometry.line_span_offsets(node.lineno, node.end_lineno or node.lineno)
         if geometry.lines[node.lineno - 1][: node.col_offset].strip():
@@ -426,31 +526,10 @@ class FallThroughArms(IdenticalArms):
                     yield cls(statement)
 
 
-class IdenticalArmsSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class IdenticalArmsSiteFamily(FalseDistinctionSiteFamily):
     """Branches whose every arm is the same code, one site per branch."""
 
-    item_type = RestatingSiteModule
-
-    @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = parsed_module.syntax_index
-        node_indices = {
-            id(node): node_index
-            for node_type in (ast.If, ast.IfExp, ast.Match)
-            for node_index, node in index.indexed_nodes_of_type(node_type)
-        }
-        for arms in (
-            arms
-            for scope in Scope.of_module(parsed_module.module)
-            for arms in IdenticalArms.in_scope(scope)
-        ):
-            yield cls.site(
-                parsed_module,
-                arms.node,
-                index.lexical_symbol(node_indices[id(arms.node)]),
-                f"line {arms.node.lineno}",
-                tuple(ast.unparse(test) for test in arms.tests),
-            )
+    distinction = IdenticalArms
 
 
 @dataclass(frozen=True)
@@ -479,8 +558,11 @@ class TypeTestRung:
 
 
 @dataclass(frozen=True)
-class UndistinguishedTypeArms(ABC):
+class UndistinguishedTypeArms(FalseDistinction, ABC):
     """Rungs of one `isinstance` ladder whose outcomes the code treats identically."""
+
+    described = "Type tests"
+    counted = "undistinguished type test group(s)"
 
     rungs: tuple[TypeTestRung, ...]
 
@@ -491,37 +573,21 @@ class UndistinguishedTypeArms(ABC):
 
         raise NotImplementedError
 
-    @abstractmethod
-    def collapsed(
-        self, geometry: SourceTextGeometry, fit: RewrittenLineFit
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        raise NotImplementedError
-
     @property
     def subject(self) -> ast.expr:
         return self.rungs[0].subject
 
     @property
-    def line(self) -> int:
-        return self.merged[0].branch.lineno
+    def anchor(self) -> ast.If:
+        return self.merged[0].branch
 
-    def refusals(self) -> Iterator[str]:
-        for expression in (
-            self.subject,
-            *(tested for rung in self.merged for tested in rung.classes),
-        ):
-            if not evaluates_without_effect(expression):
-                yield f"evaluating `{ast.unparse(expression)}` can have an effect"
+    @property
+    def named(self) -> tuple[ast.expr, ...]:
+        return tuple(tested for rung in self.merged for tested in rung.classes)
 
-    def collapse(
-        self, geometry: SourceTextGeometry, fit: RewrittenLineFit
-    ) -> tuple[SourceTextSpanReplacement, ...]:
-        """The merge, or a ValueError naming why it would change behaviour."""
-
-        refusals = tuple(self.refusals())
-        if refusals:
-            raise ValueError(f"Type tests at line {self.line}: {'; '.join(refusals)}")
-        return self.collapsed(geometry, fit)
+    @property
+    def tests(self) -> tuple[ast.expr, ...]:
+        return (self.subject, *self.named)
 
     @staticmethod
     def deleted(
@@ -632,31 +698,10 @@ class TypeArmsLikeElse(UndistinguishedTypeArms):
         return tuple(self.deleted(geometry, rung) for rung in self.merged)
 
 
-class UndistinguishedTypeArmsSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class UndistinguishedTypeArmsSiteFamily(FalseDistinctionSiteFamily):
     """`isinstance` ladders with rungs that run the same code, one site per group."""
 
-    item_type = RestatingSiteModule
-
-    @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        index = parsed_module.syntax_index
-        node_indices = {
-            id(node): node_index
-            for node_index, node in index.indexed_nodes_of_type(ast.If)
-        }
-        for arms in (
-            arms
-            for scope in Scope.of_module(parsed_module.module)
-            for arms in UndistinguishedTypeArms.in_scope(scope)
-        ):
-            branch = arms.merged[0].branch
-            yield cls.site(
-                parsed_module,
-                branch,
-                index.lexical_symbol(node_indices[id(branch)]),
-                f"line {branch.lineno}",
-                tuple(ast.unparse(tested) for rung in arms.merged for tested in rung.classes),
-            )
+    distinction = UndistinguishedTypeArms
 
 
 class ExceptionMatcherCall(StrEnum):

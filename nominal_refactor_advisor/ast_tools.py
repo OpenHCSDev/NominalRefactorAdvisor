@@ -3428,6 +3428,12 @@ class LexicalSyntaxScope:
     function_node_indices: tuple[int, ...] = ()
     executable_function_index: int = -1
 
+    @cached_property
+    def symbol(self) -> str:
+        """Dotted class and function owners of this scope's code, or `<module>`."""
+
+        return ".".join(self.names) or "<module>"
+
 
 @dataclass(frozen=True)
 class ModuleSyntaxIndex:
@@ -3561,16 +3567,7 @@ class ModuleSyntaxIndex:
     def lexical_symbol(self, node_index: int) -> str:
         """Dotted class and function owners of one indexed node, or `<module>`."""
 
-        return (
-            ".".join(
-                ancestor.name
-                for ancestor in self.ancestor_nodes(node_index)
-                if isinstance(
-                    ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-                )
-            )
-            or "<module>"
-        )
+        return self.scopes[self.scope_ids[node_index]].symbol
 
     @classmethod
     def build(cls, module: ast.Module) -> ModuleSyntaxIndex:
