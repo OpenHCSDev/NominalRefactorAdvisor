@@ -492,6 +492,21 @@ that forwarded one of the spellings or rebuilt the candidate's own site.
 A stored field named like an inherited class attribute needs `= field()`,
 or the dataclass takes the inherited attribute as the field's default.
 
+**One source of candidates per detector.** A global candidate detector
+answers two things from its candidates: its findings and its cache
+signature (`CrossModuleCandidateDetector.context_signature`). Both must
+read the same candidates. A detector that joins several compact
+families inherits `CompactMultiProjectionCandidateDetector` and writes
+only `_candidates_from_compact_projection_groups_context`; one family,
+`CompactProjectionCandidateDetector`. Two detectors used to put a
+compact mixin in front of a collector base instead: findings came from
+the compact join while the signature still ran a syntax-tree collector,
+a second implementation of the same search (281 lines with its helpers,
+erased 2026-11-14). To check, list for every registered detector which
+class supplies `_collect_findings`, `context_signature` and
+`_candidate_items`; a compact owner for the first with a collector
+owner for the last is that split.
+
 **Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
 target and guards against its return; `remove_import_bindings` drops
 imports a module no longer reads. Neither proves the target is

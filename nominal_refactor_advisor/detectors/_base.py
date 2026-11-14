@@ -60,10 +60,8 @@ from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
-    ClassFamilyIndex,
     ClassStatement,
     FunctionStatement,
-    IndexedClass,
     ModuleClassStatements,
 )
 from nominal_refactor_advisor.class_method_facets import (
@@ -104,7 +102,6 @@ if TYPE_CHECKING:
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.ast_tools import (
     ParsedModuleFact,
-    BuiltinCallName,
     BuilderCallShape,
     CollectedFamily,
     ParsedModule,
@@ -3159,21 +3156,6 @@ class SyntaxProjectionAuthority:
                 assigned[attr_name] = value_name
         return assigned
 
-    def indexed_class_for_simple_name(
-        self,
-        module: ParsedModule,
-        class_index: ClassFamilyIndex,
-        class_name: str,
-    ) -> IndexedClass | None:
-        module_local_symbol = f"{module.module_name}.{class_name}"
-        indexed_class = class_index.class_for(module_local_symbol)
-        if indexed_class is not None:
-            return indexed_class
-        symbols = class_index.symbols_by_simple_name.get(class_name, ())
-        if len(symbols) != 1:
-            return None
-        return class_index.class_for(symbols[0])
-
 SYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()
 
 
@@ -4774,224 +4756,6 @@ def _module_union_type_aliases(
     return aliases
 
 
-def _resolved_isinstance_type_names(
-    node: ast.AST,
-    *,
-    module: ParsedModule,
-    class_index: ClassFamilyIndex,
-) -> ResolvedTypeNamePartition:
-    if isinstance(node, ast.Tuple):
-        items = node.elts
-    else:
-        items = (node,)
-    concrete_names: list[str] = []
-    abstract_names: list[str] = []
-    for item in items:
-        type_name = ExpressionReference.decoded(item).terminal_name
-        if type_name in {None, "None", "NoneType"}:
-            continue
-        indexed_class = SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
-            module, class_index, type_name
-        )
-        if indexed_class is None:
-            continue
-        display_name = class_index.display_name(indexed_class)
-        if indexed_class.is_abstract:
-            abstract_names.append(display_name)
-        else:
-            concrete_names.append(display_name)
-    return (sorted_tuple(set(concrete_names)), sorted_tuple(set(abstract_names)))
-
-
-def _indexed_ancestor_symbols(
-    class_index: ClassFamilyIndex,
-    symbol: str,
-) -> tuple[str, ...]:
-    ancestors: list[str] = []
-    seen: set[str] = set()
-    queue = list(
-        class_index.class_for(symbol).resolved_base_symbols
-        if class_index.class_for(symbol) is not None
-        else ()
-    )
-    while queue:
-        current = queue.pop(0)
-        if current in seen:
-            continue
-        seen.add(current)
-        ancestors.append(current)
-        indexed_class = class_index.class_for(current)
-        if indexed_class is None:
-            continue
-        queue.extend(indexed_class.resolved_base_symbols)
-    return tuple(ancestors)
-
-
-def _common_abstract_base_names(
-    module: ParsedModule,
-    class_index: ClassFamilyIndex,
-    class_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    indexed_classes = tuple(
-        (
-            indexed_class
-            for class_name in class_names
-            if (
-                indexed_class := SYNTAX_PROJECTION_AUTHORITY.indexed_class_for_simple_name(
-                    module, class_index, class_name
-                )
-            )
-            is not None
-        )
-    )
-    if len(indexed_classes) < 2:
-        return ()
-    common_symbols = set(
-        _indexed_ancestor_symbols(class_index, indexed_classes[0].symbol)
-    )
-    for indexed_class in indexed_classes[1:]:
-        common_symbols &= set(
-            _indexed_ancestor_symbols(class_index, indexed_class.symbol)
-        )
-    abstract_bases = sorted_tuple(
-        (
-            indexed_class
-            for symbol in common_symbols
-            if (indexed_class := class_index.class_for(symbol)) is not None
-            and indexed_class.is_abstract
-        ),
-        key=lambda item: item.symbol,
-    )
-    return class_index.display_names(abstract_bases)
-
-
-def _concrete_type_case_function_candidates_for_function(
-    module: ParsedModule,
-    qualname: str,
-    function: NamedFunctionNode,
-    union_aliases: dict[str, tuple[str, ...]],
-    class_index: ClassFamilyIndex,
-) -> Iterable[ConcreteTypeCaseFunctionCandidate]:
-    alias_sources = _top_level_attribute_aliases(function)
-    grouped_checks: dict[str, list[ResolvedTypeNamePartition]] = defaultdict(list)
-    for subnode in module.syntax_index.function_walks[function]:
-        isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
-        if isinstance_arguments is None:
-            continue
-        subject, type_argument = isinstance_arguments
-        subject_expression = _attribute_family_subject_expression(
-            subject, alias_sources=alias_sources
-        )
-        if subject_expression is None:
-            continue
-        concrete_names, abstract_names = _resolved_isinstance_type_names(
-            type_argument, module=module, class_index=class_index
-        )
-        if not concrete_names:
-            continue
-        grouped_checks[subject_expression].append((concrete_names, abstract_names))
-    for subject_expression, checks in sorted(grouped_checks.items()):
-        concrete_class_names = sorted_tuple(
-            {name for concrete_names, _ in checks for name in concrete_names}
-        )
-        if len(concrete_class_names) < 2:
-            continue
-        subject_role = subject_expression.rsplit(".", 1)[-1]
-        union_alias_names = sorted_tuple(
-            alias_name
-            for alias_name, member_names in union_aliases.items()
-            if set(concrete_class_names) <= set(member_names)
-        )
-        yield ConcreteTypeCaseFunctionCandidate(
-            file_path=module.file_path,
-            line=function.lineno,
-            function_name=qualname,
-            subject_expression=subject_expression,
-            subject_role=subject_role,
-            concrete_class_names=concrete_class_names,
-            abstract_class_names=sorted_tuple(
-                {name for _, abstract_names in checks for name in abstract_names}
-            ),
-            union_alias_names=union_alias_names,
-            case_site_count=len(checks),
-        )
-
-
-def _concrete_type_case_function_candidates(
-    module: ParsedModule,
-    *,
-    class_index: ClassFamilyIndex,
-) -> tuple[ConcreteTypeCaseFunctionCandidate, ...]:
-    union_aliases = _module_union_type_aliases(module)
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _concrete_type_case_function_candidates_for_function,
-        union_aliases,
-        class_index,
-        sort_key=lambda item: (item.file_path, item.subject_role, item.line),
-    )
-
-
-def _repeated_concrete_type_case_analysis_candidates(
-    modules: ParsedModuleSet,
-    config: DetectorConfig,
-) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
-    class_index = modules.fact(ClassFamilyIndex)
-    min_function_count = max(3, config.min_registration_sites)
-    min_class_count = max(2, config.min_reflective_selector_values)
-    candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
-    for module in modules:
-        grouped: dict[str, list[ConcreteTypeCaseFunctionCandidate]] = defaultdict(list)
-        for function_candidate in _concrete_type_case_function_candidates(
-            module, class_index=class_index
-        ):
-            grouped[function_candidate.subject_role].append(function_candidate)
-        for subject_role, functions in sorted(grouped.items()):
-            if len(functions) < min_function_count:
-                continue
-            concrete_class_names = sorted_tuple(
-                {
-                    class_name
-                    for function in functions
-                    for class_name in function.concrete_class_names
-                }
-            )
-            if len(concrete_class_names) < min_class_count:
-                continue
-            abstract_base_names = _common_abstract_base_names(
-                module, class_index, concrete_class_names
-            )
-            union_alias_names = sorted_tuple(
-                {
-                    alias_name
-                    for function in functions
-                    for alias_name in function.union_alias_names
-                }
-            )
-            shared_suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(
-                concrete_class_names
-            )
-            shared_prefix = CLASS_NAME_ALGEBRA.longest_common_prefix(
-                concrete_class_names
-            )
-            if (
-                not abstract_base_names
-                and (not union_alias_names)
-                and (max(len(shared_suffix), len(shared_prefix)) < 6)
-            ):
-                continue
-            candidates.append(
-                RepeatedConcreteTypeCaseAnalysisCandidate(
-                    file_path=module.file_path,
-                    functions=sorted_tuple(
-                        functions, key=lambda item: (item.line, item.function_name)
-                    ),
-                    abstract_base_names=abstract_base_names,
-                )
-            )
-    return tuple(candidates)
-
-
 def _self_cast_type_name(node: ast.AST) -> str | None:
     if not (
         isinstance(node, ast.Call)
@@ -5026,69 +4790,6 @@ def _self_cast_alias_names(
         aliases.add(statement.targets[0].id)
         cast_type_names.add(cast_type_name)
     return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
-
-
-def _implicit_self_contract_mixin_candidates(
-    modules: ParsedModuleSet,
-    config: DetectorConfig,
-) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
-    class_index = modules.fact(ClassFamilyIndex)
-    min_consumer_count = max(2, config.min_registration_sites)
-    candidates: list[ImplicitSelfContractMixinCandidate] = []
-    for indexed_class in sorted(
-        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-    ):
-        if not indexed_class.simple_name.endswith("Mixin"):
-            continue
-        if indexed_class.is_abstract:
-            continue
-        consumer_classes = tuple(
-            (
-                descendant
-                for descendant in class_index.descendant_classes(
-                    indexed_class.symbol
-                )
-                if not descendant.is_abstract
-            )
-        )
-        if len(consumer_classes) < min_consumer_count:
-            continue
-        method_names: list[str] = []
-        method_lines: list[int] = []
-        cast_type_names: set[str] = set()
-        accessed_attr_names: set[str] = set()
-        for method in indexed_class.methods:
-            if method.spells("abstractmethod"):
-                continue
-            alias_names, method_cast_type_names = _self_cast_alias_names(method.node)
-            if not alias_names:
-                continue
-            method_names.append(method.name)
-            method_lines.append(method.node.lineno)
-            cast_type_names.update(method_cast_type_names)
-            accessed_attr_names.update(
-                SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
-                    method.node, root_names=set(alias_names)
-                )
-            )
-        if not method_names:
-            continue
-        candidates.append(
-            ImplicitSelfContractMixinCandidate(
-                file_path=indexed_class.file_path,
-                line=indexed_class.line,
-                mixin_name=class_index.display_name(indexed_class),
-                method_names=tuple(method_names),
-                method_lines=tuple(method_lines),
-                cast_type_names=sorted_tuple(cast_type_names),
-                consumer_class_names=class_index.display_names(consumer_classes),
-                consumer_lines=tuple(
-                    (consumer_class.line for consumer_class in consumer_classes)
-                ),
-                accessed_attribute_names=sorted_tuple(accessed_attr_names),
-            )
-        )
-    return tuple(candidates)
 
 
 def _self_attr_name(target: ast.AST) -> str | None:

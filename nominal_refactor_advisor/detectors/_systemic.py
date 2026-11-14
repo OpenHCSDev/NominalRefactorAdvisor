@@ -90,7 +90,6 @@ from nominal_refactor_advisor.detectors._base import (
     _compact_manual_selector_axis_specs,
     _cross_module_axis_shadow_family_candidates_from_specs,
     _derived_wrapper_spec_shadow_candidates,
-    _implicit_self_contract_mixin_candidates,
     _keyed_record_infrastructure_candidates,
     _KeyedFamilyAxisSpec,
     _manual_fiber_tag_candidates,
@@ -100,7 +99,6 @@ from nominal_refactor_advisor.detectors._base import (
     _parallel_keyed_table_and_family_candidates_from_specs,
     _registry_maturity_missing_signals,
     _REGISTRY_PROJECTION_SURFACE_ANALYZER,
-    _repeated_concrete_type_case_analysis_candidates,
     _residual_closed_axis_branching_candidates_from_compact_specs,
     _residual_closed_axis_indirection_candidates,
     _self_cast_alias_names,
@@ -118,7 +116,7 @@ from nominal_refactor_advisor.detectors._base import (
     CompactProjectionCandidateDetector,
     CompactProjectionGroups,
     ConcreteTypeCaseFunctionCandidate,
-    ConfiguredCrossModuleCollectorCandidateDetector,
+    CompactMultiProjectionCandidateDetector,
     ConfiguredModuleCollectorCandidateDetector,
     CrossModuleAxisShadowFamilyCandidate,
     DataclassNamespaceCliMirrorCandidate,
@@ -3003,11 +3001,10 @@ class ManualStructuralRecordMechanicsDetector(
 
 class RepeatedConcreteTypeCaseAnalysisDetector(
     CompactClassIndexMultiProjectionDetector,
-    ConfiguredCrossModuleCollectorCandidateDetector[
+    CompactMultiProjectionCandidateDetector[
         RepeatedConcreteTypeCaseAnalysisCandidate
     ],
 ):
-    candidate_collector = _repeated_concrete_type_case_analysis_candidates
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -3030,19 +3027,18 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         ),
     )
 
-    def _findings_from_compact_projection_groups_context(
+    def _candidates_from_compact_projection_groups_context(
         self,
         projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _compact_repeated_concrete_type_case_candidates(
+    ) -> Sequence[RepeatedConcreteTypeCaseAnalysisCandidate]:
+        return _compact_repeated_concrete_type_case_candidates(
             CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
             CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
             class_index=CompactClassFamilyIndex.require(context),
         )
-        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, case_candidate: RepeatedConcreteTypeCaseAnalysisCandidate
@@ -3088,9 +3084,8 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
 
 class ImplicitSelfContractMixinDetector(
     CompactClassIndexMultiProjectionDetector,
-    ConfiguredCrossModuleCollectorCandidateDetector[ImplicitSelfContractMixinCandidate],
+    CompactMultiProjectionCandidateDetector[ImplicitSelfContractMixinCandidate],
 ):
-    candidate_collector = _implicit_self_contract_mixin_candidates
     module_projection_families = (
         CompactRemainingSystemicModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
@@ -3113,19 +3108,18 @@ class ImplicitSelfContractMixinDetector(
         ),
     )
 
-    def _findings_from_compact_projection_groups_context(
+    def _candidates_from_compact_projection_groups_context(
         self,
         projections_by_family: CompactProjectionGroups,
         context: object | None,
         config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        candidates = _compact_implicit_self_contract_mixin_candidates(
+    ) -> Sequence[ImplicitSelfContractMixinCandidate]:
+        return _compact_implicit_self_contract_mixin_candidates(
             CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
             CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
             class_index=CompactClassFamilyIndex.require(context),
         )
-        return self._findings_for_candidates(candidates, config)
 
     def _finding_for_candidate(
         self, mixin_candidate: ImplicitSelfContractMixinCandidate
