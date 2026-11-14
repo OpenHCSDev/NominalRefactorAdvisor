@@ -28,9 +28,6 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.detectors import _systemic
 from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
-from nominal_refactor_advisor.detectors._base import (
-    _compact_keyed_family_axis_specs_from_index,
-)
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.value_expression import UnassignedValueExpression, CompactValueExpression
 
@@ -232,7 +229,7 @@ def test_key_axis_labels_derive_from_original_values_not_display_text():
         ),
     )
     index = build_compact_class_family_index((changed,))
-    (spec,) = _compact_keyed_family_axis_specs_from_index(index)
+    (spec,) = _systemic._compact_keyed_family_axis_specs_from_index(index)
     assert spec.registry_key_attr_name == "mode"
     assert spec.family_label == "Runner family"
 

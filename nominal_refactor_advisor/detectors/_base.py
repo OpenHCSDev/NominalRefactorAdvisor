@@ -60,7 +60,6 @@ from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
-    ClassStatement,
     FunctionStatement,
     ModuleClassStatements,
 )
@@ -159,7 +158,6 @@ from nominal_refactor_advisor.taxonomy import (
 from nominal_refactor_advisor.ast_tools import statements_without_docstring
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
-    ModuleNamedSequenceMap,
     ModuleNamedValues,
 )
 
@@ -2775,92 +2773,6 @@ def _is_enum_projection_table_value(value: ast.AST) -> bool:
     return isinstance(value, ast.Attribute | ast.Name)
 
 
-def _enum_projection_tables(
-    module: ParsedModule,
-) -> tuple[EnumProjectionTableCandidate, ...]:
-    enum_members = _enum_member_names_by_class(module)
-    tables: list[EnumProjectionTableCandidate] = []
-    for statement in statements_without_docstring(module.module.body):
-        target_name: str | None = None
-        value: ast.AST | None = None
-        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-            target = statement.targets[0]
-            if isinstance(target, ast.Name):
-                target_name = target.id
-                value = statement.value
-        elif isinstance(statement, ast.AnnAssign) and isinstance(
-            statement.target, ast.Name
-        ):
-            target_name = statement.target.id
-            value = statement.value
-        if target_name is None:
-            continue
-        dict_value = _dict_expr_from_table_value(value)
-        if dict_value is None or len(dict_value.keys) < 2:
-            continue
-        key_pairs: list[tuple[str, str]] = []
-        for key, item_value in zip(dict_value.keys, dict_value.values, strict=False):
-            if key is None or item_value is None:
-                break
-            key_chain = ExpressionReference.decoded(key).attribute_chain
-            if key_chain is None or len(key_chain) != 2:
-                break
-            if not _is_enum_projection_table_value(item_value):
-                break
-            key_pairs.append((key_chain[0], key_chain[1]))
-        else:
-            enum_names = {enum_name for enum_name, _ in key_pairs}
-            if len(enum_names) != 1:
-                continue
-            enum_name = next(iter(enum_names))
-            if enum_name not in enum_members:
-                continue
-            case_names = tuple(member_name for _, member_name in key_pairs)
-            if len(set(case_names)) < 2:
-                continue
-            tables.append(
-                EnumProjectionTableCandidate(
-                    file_path=module.file_path,
-                    table_name=target_name,
-                    line=statement.lineno,
-                    enum_name=enum_name,
-                    case_names=case_names,
-                )
-            )
-    return sorted_tuple(
-        tables, key=lambda item: (item.file_path, item.line, item.table_name)
-    )
-
-
-def _subscript_axis_expr_for_table(node: ast.AST, table_name: str) -> str | None:
-    if not isinstance(node, ast.Subscript):
-        return None
-    if not isinstance(node.value, ast.Name) or node.value.id != table_name:
-        return None
-    return ast.unparse(node.slice)
-
-
-def _residual_enum_branch_cases(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    *,
-    enum_name: str,
-    dispatch_axis_expression: str,
-) -> tuple[str, ...]:
-    case_names: set[str] = set()
-    for node in ast.walk(function):
-        if not isinstance(node, ast.Compare):
-            continue
-        left_expr = ast.unparse(node.left)
-        comparators = tuple(ast.unparse(comparator) for comparator in node.comparators)
-        operands = (left_expr, *comparators)
-        if dispatch_axis_expression not in operands:
-            continue
-        for operand in operands:
-            if operand.startswith(f"{enum_name}."):
-                case_names.add(operand.split(".", 1)[1])
-    return sorted_tuple(case_names)
-
-
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
 NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
 NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -3130,62 +3042,6 @@ def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -
     )
 
 
-def _comprehension_builder_names(
-    module: ParsedModule,
-    family_name: str,
-) -> tuple[str, ...]:
-    builder_names: set[str] = set()
-    for subnode in module.syntax_index.breadth_first_nodes:
-        if not isinstance(
-            subnode, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-        ):
-            continue
-        if len(subnode.generators) != 1:
-            continue
-        generator = subnode.generators[0]
-        if generator.ifs or not isinstance(generator.iter, ast.Name):
-            continue
-        if generator.iter.id != family_name or not isinstance(
-            generator.target, ast.Name
-        ):
-            continue
-        iteration_variable_name = generator.target.id
-        candidate_calls: list[ast.Call] = []
-        if isinstance(subnode, ast.DictComp):
-            candidate_nodes = (subnode.key, subnode.value)
-        else:
-            candidate_nodes = (subnode.elt,)
-        for candidate_node in candidate_nodes:
-            if candidate_node is None:
-                continue
-            for nested in ast.walk(candidate_node):
-                if isinstance(nested, ast.Call) and _call_uses_iteration_variable(
-                    nested, iteration_variable_name
-                ):
-                    candidate_calls.append(nested)
-        for call in candidate_calls:
-            call_name = ExpressionReference.decoded(call.func).terminal_name
-            if call_name is not None:
-                builder_names.add(call_name)
-    return sorted_tuple(builder_names)
-
-
-def _named_family_for_constants(
-    named_sequences: ModuleNamedSequenceMap,
-    constant_names: tuple[str, ...],
-) -> str | None:
-    constant_set = set(constant_names)
-    for family_name, (_, elements) in sorted(named_sequences.items()):
-        element_names = tuple(
-            (element.id for element in elements if isinstance(element, ast.Name))
-        )
-        if len(element_names) != len(elements):
-            continue
-        if constant_set <= set(element_names):
-            return family_name
-    return None
-
-
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
@@ -3289,76 +3145,11 @@ class _KeyedFamilyAxisSpec(CompactFamilyAxis):
 KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
 
 
-def _compact_keyed_family_axis_specs_from_index(
-    class_index: CompactClassFamilyIndex,
-) -> tuple[_KeyedFamilyAxisSpec, ...]:
-    specs: list[_KeyedFamilyAxisSpec] = []
-    for indexed_class in sorted(
-        class_index.classes_by_symbol.values(), key=lambda item: item.symbol
-    ):
-        key_type_name = indexed_class.keyed_family_key_type_name
-        if key_type_name is None:
-            continue
-        registry_key_attr_name = indexed_class.constant_string_assignment(
-            "registry_key_attr"
-        )
-        if registry_key_attr_name is None:
-            continue
-        case_names = sorted_tuple(
-            {
-                assignment
-                for descendant_symbol in class_index.descendant_symbols(
-                    indexed_class.symbol
-                )
-                if (descendant := class_index.class_for(descendant_symbol)) is not None
-                if (
-                    assignment := descendant.assignments_by_name.get(
-                        registry_key_attr_name
-                    )
-                )
-                is not None
-            }
-        )
-        if len(case_names) < 2:
-            continue
-        family_name = class_index.display_name(indexed_class)
-        specs.append(
-            _KeyedFamilyAxisSpec(
-                file_path=indexed_class.file_path,
-                line=indexed_class.line,
-                family_name=family_name,
-                key_type_name=key_type_name,
-                family_label=indexed_class.constant_string_assignment("family_label"),
-                registry_key_attr_name=registry_key_attr_name,
-                case_names=case_names,
-            )
-        )
-    return tuple(specs)
-
-
 @dataclass(frozen=True)
 class ResidualClosedAxisBranchingIdentity:
     file_path: str
     qualname: str
     key_type_name: str
-
-
-def _registry_maturity_missing_signals(
-    *,
-    registered_case_count: int,
-    lookup_method_names: tuple[str, ...],
-    consumer_count: int,
-    min_case_count: int,
-    min_consumer_count: int,
-) -> tuple[str, ...]:
-    missing: list[str] = []
-    if registered_case_count < min_case_count:
-        missing.append("registered_case_axis")
-    if not lookup_method_names:
-        missing.append("lookup_lifecycle")
-    if consumer_count < min_consumer_count:
-        missing.append("consumer_fanout")
-    return tuple(missing)
 
 
 class RegistryProjectionMaterialization(StrEnum):
@@ -3662,23 +3453,6 @@ def _manual_record_registration_constructor(
     )
 
 
-def _returns_tuple_of_self_attributes(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(method.body)
-    if returned is None:
-        return False
-    return_value, _ = returned
-    return isinstance(return_value, ast.Tuple) and all(
-        (
-            isinstance(item, ast.Attribute)
-            and isinstance(item.value, ast.Name)
-            and (item.value.id == "self")
-            for item in return_value.elts
-        )
-    )
-
-
 def _returns_constructor_call(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
@@ -3694,99 +3468,6 @@ def _returns_constructor_call(
     return call_name in accepted_names
 
 
-def _validation_guard_count(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> int:
-    count = 0
-    for node in ast.walk(method):
-        if isinstance(node, ast.Attribute) and node.attr in {"ndim", "shape"}:
-            count += 1
-        if isinstance(node, ast.Compare) and any(
-            (
-                isinstance(operator, (ast.Lt, ast.LtE, ast.NotEq))
-                for operator in node.ops
-            )
-        ):
-            count += 1
-    return count
-
-
-def _same_type_constructor_method_names(
-    declared: ClassStatement,
-    *,
-    include_classmethods: bool,
-    include_instance_methods: bool,
-) -> tuple[str, ...]:
-    class_name = declared.node.name
-    accepted_instance_names = (class_name,)
-    accepted_class_names = ("cls", class_name)
-    names: list[str] = []
-    for method in declared.methods:
-        if method.spells("classmethod"):
-            if include_classmethods and _returns_constructor_call(
-                method.node, accepted_names=accepted_class_names
-            ):
-                names.append(method.name)
-            continue
-        if include_instance_methods and _returns_constructor_call(
-            method.node, accepted_names=accepted_instance_names
-        ):
-            names.append(method.name)
-    return sorted_tuple(set(names))
-
-
-def _shared_record_mechanics_method_names(
-    candidates: Sequence[ManualStructuralRecordMechanicsClassCandidate],
-) -> tuple[str, ...]:
-    shared_projection_method_names = set.intersection(
-        *(set(candidate.projection_method_names) for candidate in candidates)
-    )
-    shared_roundtrip_method_names = set.intersection(
-        *(set(candidate.roundtrip_method_names) for candidate in candidates)
-    )
-    return sorted_tuple(
-        {"validate"} | shared_projection_method_names | shared_roundtrip_method_names
-    )
-
-
-def _top_level_attribute_aliases(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for statement in statements_without_docstring(list(function.body)):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        value_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
-            statement.value
-        )
-        if value_expression is None or "." not in value_expression:
-            continue
-        aliases[statement.targets[0].id] = value_expression
-    return aliases
-
-
-def _attribute_family_subject_expression(
-    node: ast.AST,
-    *,
-    alias_sources: dict[str, str],
-) -> str | None:
-    if isinstance(node, ast.Name):
-        aliased = alias_sources.get(node.id)
-        if aliased is None or "." not in aliased:
-            return None
-        return aliased
-    subject_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
-        node
-    )
-    if subject_expression is None or "." not in subject_expression:
-        return None
-    return subject_expression
-
-
 def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _flatten_union_member_type_names(
@@ -3796,26 +3477,6 @@ def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
     if type_name in {None, "None", "NoneType"}:
         return ()
     return (type_name,)
-
-
-def _module_union_type_aliases(
-    module: ParsedModule,
-) -> dict[str, tuple[str, ...]]:
-    aliases: dict[str, tuple[str, ...]] = {}
-    for statement in module.module.body:
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        member_names = sorted_tuple(
-            set(_flatten_union_member_type_names(statement.value))
-        )
-        if len(member_names) < 2:
-            continue
-        aliases[statement.targets[0].id] = member_names
-    return aliases
 
 
 def _self_cast_type_name(node: ast.AST) -> str | None:
@@ -3832,26 +3493,6 @@ def _self_cast_type_name(node: ast.AST) -> str | None:
     if not type_name:
         return None
     return type_name
-
-
-def _self_cast_alias_names(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> SelfCastAliasPartition:
-    aliases: set[str] = set()
-    cast_type_names: set[str] = set()
-    for statement in ast.walk(method):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        cast_type_name = _self_cast_type_name(statement.value)
-        if cast_type_name is None:
-            continue
-        aliases.add(statement.targets[0].id)
-        cast_type_names.add(cast_type_name)
-    return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
 
 
 def _self_attr_name(target: ast.AST) -> str | None:
@@ -3906,42 +3547,6 @@ def _string_dispatch_cases_from_body(
 
 
 _TAG_PARAM_NAMES = frozenset({"kind", "mode", _TYPE_NAME_LITERAL, "tag", "backend"})
-
-
-def _shared_abstract_nominal_authority(
-    classes: tuple[ClassStatement, ...],
-    *,
-    class_lookup: dict[str, ClassStatement],
-) -> bool:
-    def abstract_lineage_names(declared: ClassStatement) -> set[str]:
-        lineage: set[str] = set()
-        seen: set[str] = set()
-        stack = [declared.node.name]
-        while stack:
-            current_name = stack.pop()
-            if current_name in seen or not (
-                ClassSymbolResolutionAuthority.establishes_nominal_family(current_name)
-            ):
-                continue
-            seen.add(current_name)
-            current_class = class_lookup.get(current_name)
-            if current_class is None:
-                continue
-            if current_class.is_abstract:
-                lineage.add(current_name)
-            stack.extend(
-                (
-                    base_name
-                    for base_name in current_class.base_terminal_names
-                    if base_name not in seen
-                )
-            )
-        return lineage
-
-    lineage_sets = [abstract_lineage_names(declared) for declared in classes]
-    if not lineage_sets or any((not lineage for lineage in lineage_sets)):
-        return False
-    return bool(set.intersection(*lineage_sets))
 
 
 _GENERIC_FAMILY_CLASS_TOKENS = frozenset(
