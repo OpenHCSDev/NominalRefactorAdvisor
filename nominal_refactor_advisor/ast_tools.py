@@ -3701,10 +3701,6 @@ class ModuleSyntaxIndex:
         )
 
 
-def _walk_nodes(node: ast.AST) -> tuple[ast.AST, ...]:
-    return tuple(ast.walk(node))
-
-
 def walk_function_body_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
     """Walk a function body without entering nested definition bodies."""
 
@@ -4282,7 +4278,7 @@ def _sentinel_type_usage_observations(
         for _node_index, node in syntax_index.indexed_nodes_of_type(node_type):
             names = {
                 subnode.id
-                for subnode in _walk_nodes(node)
+                for subnode in ast.walk(node)
                 if isinstance(subnode, ast.Name)
             }
             for name in sorted(names & sentinel_names):

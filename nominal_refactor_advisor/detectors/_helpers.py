@@ -83,7 +83,6 @@ from nominal_refactor_advisor.semantic_description_length import (
 import ast
 from typing import Iterable
 from nominal_refactor_advisor.ast_tools import (
-    _walk_nodes,
     is_docstring_statement,
     ParsedModule,
     ScopedAstObservation,
@@ -141,6 +140,7 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _is_private_symbol_name,
 )
+from nominal_refactor_advisor.ast_projection import nodes_of
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
@@ -237,7 +237,7 @@ def _is_detectorish_class(declared: ClassStatement) -> bool:
 def _finding_build_call(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> ast.Call | None:
-    for node in _walk_nodes(method):
+    for node in ast.walk(method):
         if not isinstance(node, ast.Call):
             continue
         if not isinstance(node.func, ast.Attribute) or node.func.attr != "build":
@@ -330,7 +330,7 @@ def _name_mentions(node: ast.AST, name: str) -> bool:
     return any(
         (
             isinstance(current, ast.Name) and current.id == name
-            for current in _walk_nodes(node)
+            for current in ast.walk(node)
         )
     )
 
@@ -346,7 +346,7 @@ def _raised_exception_name(
         referenced_names = sorted_tuple(
             {
                 current.id
-                for current in _walk_nodes(exc)
+                for current in ast.walk(exc)
                 if isinstance(current, ast.Name)
             }
         )
@@ -405,9 +405,7 @@ def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
 
 
 def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
-    return_exprs = StatementValues.of(
-        current for current in _walk_nodes(loop) if isinstance(current, ast.Return)
-    ).values
+    return_exprs = StatementValues.of(nodes_of(ast.Return, loop)).values
     if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
         return None
     return return_exprs[0]
@@ -456,7 +454,7 @@ def _linear_query_key_names(
             or any(
                 (
                     isinstance(current, ast.If) and _name_mentions(current.test, name)
-                    for current in _walk_nodes(loop)
+                    for current in ast.walk(loop)
                 )
             )
         )
@@ -525,7 +523,7 @@ class MethodProjection:
         self, method: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> dict[str, str]:
         aliases: dict[str, str] = {}
-        for subnode in _walk_nodes(method):
+        for subnode in ast.walk(method):
             binding = named_value_binding(subnode)
             if binding is None or binding.value is None:
                 continue
@@ -824,7 +822,7 @@ def _class_init_concrete_param_backed_attrs(
     }
     parameter_names = set(parameter_type_names)
     attr_type_names: dict[str, str] = {}
-    for subnode in _walk_nodes(init_method):
+    for subnode in ast.walk(init_method):
         target: ast.AST | None = None
         value: ast.AST | None = None
         if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
@@ -2217,12 +2215,12 @@ def _typed_observation_collection_call(
     if any(
         (
             isinstance(child, _STATIC_OBSERVATION_CONTROL_FLOW_NODES)
-            for child in _walk_nodes(method)
+            for child in ast.walk(method)
         )
     ):
         return None
     collection_calls: list[tuple[str, str]] = []
-    for child in _walk_nodes(method):
+    for child in ast.walk(method):
         if not isinstance(child, ast.Call):
             continue
         if name_id(child.func) != "_collect_typed_family_items":
@@ -2257,9 +2255,7 @@ def _static_minimum_evidence_count(declared: ClassStatement) -> int | None:
     minimum_method = declared.method_named("_minimum_evidence")
     if minimum_method is None:
         return 1
-    returns = tuple(
-        child for child in _walk_nodes(minimum_method.node) if isinstance(child, ast.Return)
-    )
+    returns = tuple(nodes_of(ast.Return, minimum_method.node))
     returned = single_item(returns)
     if returned is None:
         return None
@@ -2275,7 +2271,7 @@ def _static_summary_expression(
         .map(
             lambda summary_method: tuple(
                 child
-                for child in _walk_nodes(summary_method.node)
+                for child in ast.walk(summary_method.node)
                 if isinstance(child, ast.Return)
             )
         )
@@ -2308,7 +2304,7 @@ def _static_typed_observation_detector_candidates(
             continue
         if not any(
             _source_location_from_line_symbol_call(child)
-            for child in _walk_nodes(evidence_method)
+            for child in ast.walk(evidence_method)
         ):
             continue
         minimum_evidence = _static_minimum_evidence_count(declared)
@@ -2348,7 +2344,7 @@ def _parameter_name_is_reused(
         (
             isinstance(node, ast.Name) and node.id == parameter_name
             for statement in statements
-            for node in _walk_nodes(statement)
+            for node in ast.walk(statement)
         )
     )
 
@@ -2442,7 +2438,7 @@ def _finding_spec_build_boilerplate_class_candidates(
             )
             for statement in node.body
             if isinstance(statement, ast.FunctionDef)
-            for child in _walk_nodes(statement)
+            for child in ast.walk(statement)
             if _self_finding_spec_build_call(child) is not None
         )
     )
@@ -2667,7 +2663,7 @@ def _from_namespace_keyword_names(
             or statement.name != "from_namespace"
         ):
             continue
-        for call in _walk_nodes(statement):
+        for call in ast.walk(statement):
             if isinstance(call, ast.Call) and name_id(call.func) == "cls":
                 keyword_names = CallKeywords.of(call.keywords).names
                 if keyword_names:
@@ -2821,7 +2817,7 @@ def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
 def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
     return any(
         isinstance(item, ast.Name) and item.id == local_name
-        for item in _walk_nodes(node)
+        for item in ast.walk(node)
     )
 
 
@@ -2837,7 +2833,7 @@ def _schema_accessor_coercion_kinds(
     function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
 ) -> tuple[str, ...]:
     kinds: set[str] = set()
-    for node in _walk_nodes(function):
+    for node in ast.walk(function):
         if isinstance(node, ast.Compare) and _compare_mentions_none(node, local_name):
             kinds.add("none_guard")
         if not isinstance(node, ast.Call):
@@ -2867,9 +2863,7 @@ def _schema_accessor_returns_local(
 ) -> bool:
     return any(
         _node_mentions_name(returned, local_name)
-        for returned in StatementValues.of(
-            node for node in _walk_nodes(function) if isinstance(node, ast.Return)
-        ).values
+        for returned in StatementValues.of(nodes_of(ast.Return, function)).values
     )
 
 

@@ -33,7 +33,6 @@ from nominal_refactor_advisor.ast_tools import (
     AttributeAccessCall,
     BuiltinCall,
     Getattr,
-    _walk_nodes,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
@@ -115,7 +114,7 @@ class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCand
         for statement in node.body:
             if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            for subnode in _walk_nodes(statement):
+            for subnode in ast.walk(statement):
                 if not isinstance(subnode, ast.Call):
                     continue
                 match BuiltinCall.decoded(subnode):
@@ -1042,7 +1041,7 @@ class StringBackedReflectiveNominalLookupCandidate(CollectsItselfUnderConfig, Cl
             if len(descendants) < config.min_reflective_selector_values:
                 continue
             for method in declared.methods:
-                for subnode in _walk_nodes(method.node):
+                for subnode in ast.walk(method.node):
                     lookup_shape = _reflective_lookup_shape(subnode)
                     if lookup_shape is None:
                         continue

@@ -38,7 +38,6 @@ from nominal_refactor_advisor.ast_tools import (
     SourceModule,
     collect_family_items,
     AttributeLookup,
-    _walk_nodes,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.class_index import (
@@ -2499,7 +2498,7 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
                 grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
                 grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
                 grouped_lines: dict[tuple[str, str], int] = {}
-                for subnode in _walk_nodes(method.node):
+                for subnode in ast.walk(method.node):
                     if not isinstance(subnode, ast.Call):
                         continue
                     lookup = BuiltinCall.decoded(subnode)

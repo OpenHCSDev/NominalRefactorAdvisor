@@ -117,7 +117,6 @@ from nominal_refactor_advisor.ast_tools import (
     collect_family_items,
     structural_ast_hash,
     walk_function_body_nodes,
-    _walk_nodes,
     _builder_call_shape,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
@@ -3020,7 +3019,7 @@ def _residual_enum_branch_cases(
     dispatch_axis_expression: str,
 ) -> tuple[str, ...]:
     case_names: set[str] = set()
-    for node in _walk_nodes(function):
+    for node in ast.walk(function):
         if not isinstance(node, ast.Compare):
             continue
         left_expr = ast.unparse(node.left)
@@ -3041,7 +3040,7 @@ def _residual_closed_axis_indirection_candidates_for_function(
     table_by_name: dict[str, EnumProjectionTableCandidate],
 ) -> Iterable[ResidualClosedAxisIndirectionCandidate]:
     axis_expressions_by_table: dict[str, set[str]] = defaultdict(set)
-    for node in _walk_nodes(function):
+    for node in ast.walk(function):
         for table_name in table_by_name:
             dispatch_axis_expression = _subscript_axis_expr_for_table(node, table_name)
             if dispatch_axis_expression is not None:
@@ -3276,7 +3275,7 @@ class SyntaxProjectionAuthority:
         return sorted_tuple(
             {
                 subnode.attr
-                for subnode in _walk_nodes(node)
+                for subnode in ast.walk(node)
                 if isinstance(subnode, ast.Attribute)
                 and isinstance(subnode.value, ast.Name)
                 and (subnode.value.id in root_names)
@@ -3290,7 +3289,7 @@ class SyntaxProjectionAuthority:
             item.arg for item in tuple(node.args.posonlyargs) + tuple(node.args.args)
         }
         assigned: dict[str, str] = {}
-        for subnode in _walk_nodes(node):
+        for subnode in ast.walk(node):
             assignment = as_ast(subnode, ast.Assign)
             if assignment is None:
                 continue
@@ -3361,7 +3360,7 @@ def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -
     return any(
         (
             isinstance(subnode, ast.Name) and subnode.id == iteration_variable_name
-            for subnode in _walk_nodes(node)
+            for subnode in ast.walk(node)
         )
     )
 
@@ -3394,7 +3393,7 @@ def _comprehension_builder_names(
         for candidate_node in candidate_nodes:
             if candidate_node is None:
                 continue
-            for nested in _walk_nodes(candidate_node):
+            for nested in ast.walk(candidate_node):
                 if isinstance(nested, ast.Call) and _call_uses_iteration_variable(
                     nested, iteration_variable_name
                 ):
@@ -4439,7 +4438,7 @@ def _validation_guard_count(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> int:
     count = 0
-    for node in _walk_nodes(method):
+    for node in ast.walk(method):
         if isinstance(node, ast.Attribute) and node.attr in {"ndim", "shape"}:
             count += 1
         if isinstance(node, ast.Compare) and any(
@@ -4657,7 +4656,7 @@ def _self_cast_alias_names(
 ) -> SelfCastAliasPartition:
     aliases: set[str] = set()
     cast_type_names: set[str] = set()
-    for statement in _walk_nodes(method):
+    for statement in ast.walk(method):
         if (
             not isinstance(statement, ast.Assign)
             or len(statement.targets) != 1
@@ -4683,7 +4682,7 @@ def _assigned_self_attrs(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[str, ...]:
     assigned: list[str] = []
-    for subnode in _walk_nodes(node):
+    for subnode in ast.walk(node):
         if isinstance(subnode, ast.Assign):
             for target in subnode.targets:
                 attr_name = _self_attr_name(target)
@@ -4778,7 +4777,7 @@ def _structural_confusability_candidates_for_function(
         observed_method_names = sorted_tuple(
             {
                 subnode.func.attr
-                for subnode in _walk_nodes(function)
+                for subnode in ast.walk(function)
                 if isinstance(subnode, ast.Call)
                 and isinstance(subnode.func, ast.Attribute)
                 and isinstance(subnode.func.value, ast.Name)
