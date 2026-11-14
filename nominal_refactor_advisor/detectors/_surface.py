@@ -9,7 +9,7 @@ from __future__ import annotations
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from collections import defaultdict, Counter
 from dataclasses import dataclass
-from typing import Sequence, Self, Iterable
+from typing import Sequence, Self, Iterable, ClassVar
 from nominal_refactor_advisor.ast_tools import ParsedModule, statements_without_docstring
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
@@ -29,13 +29,11 @@ from nominal_refactor_advisor.detectors._base import (
     IssueDetector,
     ModuleCollectorCandidateDetector,
     PerModuleIssueDetector,
-    StructuralObservationPropertyCandidate,
     CollectsItself,
     ZippedSourceLocationEvidenceProperty,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _projection_builder_groups,
-    _structural_observation_property_candidates,
     DerivedQuerySpecsBySignature,
     NamedStringSequenceSpecsByName,
     _enum_key_family,
@@ -54,8 +52,9 @@ from nominal_refactor_advisor.detectors._helpers import (
 from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
 import ast
 from nominal_refactor_advisor.class_families.parsed_index import ClassStatement, ModuleClassStatements
-from nominal_refactor_advisor.ast_projection import StatementValues
+from nominal_refactor_advisor.ast_projection import StatementValues, CallKeywords, ExpressionReference
 from nominal_refactor_advisor.detectors._candidates import WitnessCarrierCandidate
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 
 
 @dataclass(frozen=True)
@@ -545,6 +544,57 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
 
 
 @dataclass(frozen=True)
+class StructuralObservationPropertyCandidate(CollectsItself, WitnessCarrierCandidate):
+    property_name: str
+    constructor_name: str
+    keyword_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
+        "name_family"
+    )
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        return tuple(
+            candidate
+            for declared in module.fact(ModuleClassStatements).statements
+            for candidate in cls._for_class(
+                module, declared
+            )
+        )
+
+    @classmethod
+    def _for_class(
+        cls,
+        module: ParsedModule,
+        declared: ClassStatement,
+    ) -> Iterable[Self]:
+        node = declared.node
+        for method in declared.methods:
+            if not method.spells("property"):
+                continue
+            statement = method.node
+            body = statements_without_docstring(statement.body)
+            if len(body) != 1 or not isinstance(body[0], ast.Return):
+                continue
+            returned = body[0].value
+            if not isinstance(returned, ast.Call):
+                continue
+            constructor_name = ExpressionReference.decoded(returned.func).terminal_name
+            if constructor_name is None:
+                continue
+            keyword_names = sorted_tuple(CallKeywords.of(returned.keywords).names)
+            if len(keyword_names) < 6:
+                continue
+            yield cls(
+                file_path=module.file_path,
+                line=statement.lineno,
+                subject_name=node.name,
+                name_family=keyword_names,
+                property_name=statement.name,
+                constructor_name=constructor_name,
+            )
+
+
+@dataclass(frozen=True)
 class StructuralObservationProjectionGroup:
     property_name: str
     constructor_name: str
@@ -578,7 +628,7 @@ class StructuralObservationProjectionDetector(
                 list[StructuralObservationPropertyCandidate],
             )
         ] = defaultdict(list)
-        for candidate in _structural_observation_property_candidates(module):
+        for candidate in StructuralObservationPropertyCandidate.from_module(module):
             grouped[
                 candidate.property_name,
                 candidate.constructor_name,

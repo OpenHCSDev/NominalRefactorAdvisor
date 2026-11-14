@@ -4094,83 +4094,6 @@ def _shared_record_mechanics_method_names(
     )
 
 
-def _manual_structural_record_mechanics_group_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-) -> tuple[ManualStructuralRecordMechanicsGroupCandidate, ...]:
-    threshold = max(3, config.min_registration_sites)
-    classes: list[ManualStructuralRecordMechanicsClassCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        if not declared.is_dataclass or declared.is_abstract:
-            continue
-        base_names = declared.family_base_names
-        if not base_names:
-            continue
-        validate_method = declared.method_named("validate")
-        if validate_method is None or _validation_guard_count(validate_method.node) < 3:
-            continue
-        projection_method_names = sorted_tuple(
-            (
-                method.name
-                for method in declared.methods
-                if _returns_tuple_of_self_attributes(method.node)
-            )
-        )
-        if not projection_method_names:
-            continue
-        roundtrip_method_names = _same_type_constructor_method_names(
-            declared, include_classmethods=True, include_instance_methods=False
-        )
-        if not roundtrip_method_names:
-            continue
-        transform_method_names = tuple(
-            (
-                method_name
-                for method_name in _same_type_constructor_method_names(
-                    declared, include_classmethods=False, include_instance_methods=True
-                )
-                if method_name != "validate"
-            )
-        )
-        if not transform_method_names:
-            continue
-        classes.append(
-            ManualStructuralRecordMechanicsClassCandidate(
-                file_path=module.file_path,
-                line=node.lineno,
-                class_name=node.name,
-                base_names=base_names,
-                validation_method_name=validate_method.name,
-                projection_method_names=projection_method_names,
-                roundtrip_method_names=roundtrip_method_names,
-                transform_method_names=transform_method_names,
-            )
-        )
-    if len(classes) < threshold:
-        return ()
-    grouped: dict[
-        tuple[str, ...], list[ManualStructuralRecordMechanicsClassCandidate]
-    ] = defaultdict(list)
-    for candidate in classes:
-        grouped[candidate.base_names].append(candidate)
-    return tuple(
-        (
-            ManualStructuralRecordMechanicsGroupCandidate(
-                file_path=module.file_path,
-                base_names=base_names,
-                classes=sorted_tuple(
-                    items, key=lambda item: (item.line, item.class_name)
-                ),
-            )
-            for base_names, items in sorted(grouped.items())
-            if len(items) >= threshold
-            if set.intersection(*(set(item.projection_method_names) for item in items))
-            if set.intersection(*(set(item.roundtrip_method_names) for item in items))
-        )
-    )
-
-
 def _top_level_attribute_aliases(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, str]:
@@ -4397,69 +4320,6 @@ def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
     return (tokens[-1],)
 
 
-def _witness_carrier_family_candidates(
-    module: ParsedModule,
-) -> tuple[WitnessCarrierFamilyCandidate, ...]:
-    classes = witness_carrier_class_candidates(module)
-    if len(classes) < 2:
-        return ()
-    grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
-    for candidate in classes:
-        for token in candidate.family_tokens:
-            grouped[token].append(candidate)
-    seen_class_names: set[tuple[str, ...]] = set()
-    findings: list[WitnessCarrierFamilyCandidate] = []
-    for token, items in sorted(grouped.items()):
-        if len(items) < 3:
-            continue
-        ordered_items = sorted_tuple(
-            items, key=lambda item: (item.line, item.class_name)
-        )
-        class_names = tuple(item.class_name for item in ordered_items)
-        if class_names in seen_class_names:
-            continue
-        shared_role_names = cast(
-            tuple[str, ...],
-            sorted_tuple(
-                set.intersection(
-                    *(set(candidate.normalized_roles) for candidate in ordered_items)
-                )
-            ),
-        )
-        if len(shared_role_names) < 3:
-            continue
-        if set.intersection(
-            *(set(candidate.base_names) for candidate in ordered_items)
-        ):
-            continue
-        role_field_names = tuple(
-            (
-                (role, aliased_field_names)
-                for role in SemanticFieldRole.mixin_roles()
-                for aliased_field_names in (
-                    SUPPORT_PROJECTION_AUTHORITY.aliased_field_names_for_role(
-                        role,
-                        ordered_items,
-                    ),
-                )
-                if aliased_field_names
-            )
-        )
-        if not role_field_names:
-            continue
-        seen_class_names.add(class_names)
-        findings.append(
-            WitnessCarrierFamilyCandidate(
-                file_path=module.file_path,
-                class_names=class_names,
-                line_numbers=tuple((candidate.line for candidate in ordered_items)),
-                shared_role_names=shared_role_names,
-                role_field_names=role_field_names,
-            )
-        )
-    return tuple(findings)
-
-
 _CLASS_NAME_TOKEN_PATTERN = r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
 
 
@@ -4680,15 +4540,6 @@ class NameFamilyClassNamesMixin(ABC):
 class SubjectNameFunctionNameMixin(ABC):
     subject_name: str
     function_name = AliasProperty[str]("subject_name")
-
-
-@dataclass(frozen=True)
-class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
-    property_name: str
-    constructor_name: str
-    keyword_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "name_family"
-    )
 
 
 @dataclass(frozen=True)
@@ -4977,31 +4828,6 @@ class ManualStructuralRecordMechanicsClassCandidate(ClassLineWitnessCandidate):
             *self.projection_method_names,
             *self.roundtrip_method_names,
             *self.transform_method_names,
-        )
-
-
-@dataclass(frozen=True)
-class ManualStructuralRecordMechanicsGroupCandidate(EvidenceLocated):
-    file_path: str
-    base_names: tuple[str, ...]
-    classes: tuple[ManualStructuralRecordMechanicsClassCandidate, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(item.location for item in self.classes[:6])
-
-    @property
-    def shared_method_names(self) -> tuple[str, ...]:
-        return _shared_record_mechanics_method_names(self.classes)
-
-    @property
-    def transform_method_names(self) -> tuple[str, ...]:
-        return sorted_tuple(
-            {
-                method_name
-                for candidate in self.classes
-                for method_name in candidate.transform_method_names
-            }
         )
 
 
@@ -5328,15 +5154,6 @@ class DeclarativeDetectorClassCandidate(
 
 
 @dataclass(frozen=True)
-class StaticTypedObservationDetectorCandidate(ClassLineWitnessCandidate):
-    observation_family_name: str
-    observation_type_name: str
-    minimum_evidence_count: int
-    summary_expression: str
-    line_count: int
-
-
-@dataclass(frozen=True)
 class TupleIndexSemanticOpacityCandidate(FunctionLineWitnessCandidate):
     function_name: str
     index_expressions: tuple[str, ...]
@@ -5354,19 +5171,6 @@ class FieldFamilyLineSurface:
 class FieldFamilyCompressionSurface(FieldFamilyLineSurface):
     line_numbers: tuple[int, ...]
     compression_certificate: CompressionCertificate
-
-
-@dataclass(frozen=True)
-class SchemaAccessorFamilyCandidate(
-    FieldFamilyCompressionSurface, ClassLineWitnessCandidate
-):
-    enum_name: str
-    method_names: tuple[str, ...]
-    requirement_modes: tuple[str, ...]
-    coercion_kinds: tuple[str, ...]
-    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
-    )
 
 
 @dataclass(frozen=True)
@@ -5568,12 +5372,6 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     normalized_roles: tuple[SemanticFieldRole, ...]
     normalized_role_fields: NormalizedRoleFieldMap
     field_names = AliasProperty[tuple[str, ...]]("name_family")
-
-
-@dataclass(frozen=True)
-class WitnessCarrierFamilyCandidate(ClassLineNumbersGroup):
-    shared_role_names: tuple[SemanticFieldRole, ...]
-    role_field_names: tuple[tuple[SemanticFieldRole, tuple[str, ...]], ...]
 
 
 __all__ = tuple(name for name in globals() if not name.startswith("__"))

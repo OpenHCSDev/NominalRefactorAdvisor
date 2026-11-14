@@ -85,6 +85,7 @@ from nominal_refactor_advisor.models import (
     SourceLineReference,
     SourceLocation,
     WitnessCarrierMetrics,
+    SemanticFieldRole,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, overlap_coefficient
 from nominal_refactor_advisor.patterns import PatternId
@@ -115,28 +116,22 @@ from nominal_refactor_advisor.detectors._base import (
     InjectiveTypeRegistryCandidate,
     IssueDetector,
     ManualFiberTagCandidate,
-    ManualStructuralRecordMechanicsGroupCandidate,
     ModuleCollectorCandidateDetector,
     NonInjectiveTypeRegistryCandidate,
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
     RepeatedKeyedFamilyCandidate,
-    SchemaAccessorFamilyCandidate,
     SemanticMirrorIssueDetector,
     SourceModuleCollectorCandidateDetector,
-    StaticTypedObservationDetectorCandidate,
     TupleIndexSemanticOpacityCandidate,
-    WitnessCarrierFamilyCandidate,
     _attribute_family_subject_expression,
     _compact_keyed_family_axis_specs_from_index,
     _keyed_record_infrastructure_candidates,
     _KeyedFamilyAxisSpec,
-    _manual_structural_record_mechanics_group_candidates,
     _module_union_type_aliases,
     _registry_maturity_missing_signals,
     _self_cast_alias_names,
     _top_level_attribute_aliases,
-    _witness_carrier_family_candidates,
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
@@ -164,20 +159,36 @@ from nominal_refactor_advisor.detectors._base import (
     _residual_enum_branch_cases,
     _shared_abstract_nominal_authority,
     _subscript_axis_expr_for_table,
+    ClassLineNumbersGroup,
+    FieldFamilyCompressionSurface,
+    ManualStructuralRecordMechanicsClassCandidate,
+    WitnessCarrierClassCandidate,
+    _returns_tuple_of_self_attributes,
+    _same_type_constructor_method_names,
+    _shared_record_mechanics_method_names,
+    _validation_guard_count,
+    witness_carrier_class_candidates,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
     _dataclass_config_field_names,
     _finding_spec_build_boilerplate_candidates,
     _from_namespace_keyword_names,
-    _schema_accessor_family_candidates,
-    _static_typed_observation_detector_candidates,
     TupleIndexSemanticOpacityCandidateCollector,
     _enum_metadata_property_table,
     _enum_metadata_table_cases,
     _typed_candidate_cast_assignment,
     _result_assembly_pipeline_functions,
     _shared_pipeline_tail,
+    _SCHEMA_ACCESSOR_MIN_METHODS,
+    _STATIC_OBSERVATION_DETECTOR_BASE_NAMES,
+    _schema_accessor_axis_system,
+    _schema_accessor_family_certificate,
+    _schema_accessor_method_row,
+    _source_location_from_line_symbol_call,
+    _static_minimum_evidence_count,
+    _static_summary_expression,
+    _typed_observation_collection_call,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
@@ -3483,12 +3494,110 @@ class KeyedRecordInfrastructureDetector(
         )
 
 
+@dataclass(frozen=True)
+class ManualStructuralRecordMechanicsGroupCandidate(CollectsItselfUnderConfig, EvidenceLocated):
+    file_path: str
+    base_names: tuple[str, ...]
+    classes: tuple[ManualStructuralRecordMechanicsClassCandidate, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(item.location for item in self.classes[:6])
+
+    @property
+    def shared_method_names(self) -> tuple[str, ...]:
+        return _shared_record_mechanics_method_names(self.classes)
+
+    @property
+    def transform_method_names(self) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                method_name
+                for candidate in self.classes
+                for method_name in candidate.transform_method_names
+            }
+        )
+
+    @classmethod
+    def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
+        threshold = max(3, config.min_registration_sites)
+        classes: list[ManualStructuralRecordMechanicsClassCandidate] = []
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            if not declared.is_dataclass or declared.is_abstract:
+                continue
+            base_names = declared.family_base_names
+            if not base_names:
+                continue
+            validate_method = declared.method_named("validate")
+            if validate_method is None or _validation_guard_count(validate_method.node) < 3:
+                continue
+            projection_method_names = sorted_tuple(
+                (
+                    method.name
+                    for method in declared.methods
+                    if _returns_tuple_of_self_attributes(method.node)
+                )
+            )
+            if not projection_method_names:
+                continue
+            roundtrip_method_names = _same_type_constructor_method_names(
+                declared, include_classmethods=True, include_instance_methods=False
+            )
+            if not roundtrip_method_names:
+                continue
+            transform_method_names = tuple(
+                (
+                    method_name
+                    for method_name in _same_type_constructor_method_names(
+                        declared, include_classmethods=False, include_instance_methods=True
+                    )
+                    if method_name != "validate"
+                )
+            )
+            if not transform_method_names:
+                continue
+            classes.append(
+                ManualStructuralRecordMechanicsClassCandidate(
+                    file_path=module.file_path,
+                    line=node.lineno,
+                    class_name=node.name,
+                    base_names=base_names,
+                    validation_method_name=validate_method.name,
+                    projection_method_names=projection_method_names,
+                    roundtrip_method_names=roundtrip_method_names,
+                    transform_method_names=transform_method_names,
+                )
+            )
+        if len(classes) < threshold:
+            return ()
+        grouped: dict[
+            tuple[str, ...], list[ManualStructuralRecordMechanicsClassCandidate]
+        ] = defaultdict(list)
+        for candidate in classes:
+            grouped[candidate.base_names].append(candidate)
+        return tuple(
+            (
+                cls(
+                    file_path=module.file_path,
+                    base_names=base_names,
+                    classes=sorted_tuple(
+                        items, key=lambda item: (item.line, item.class_name)
+                    ),
+                )
+                for base_names, items in sorted(grouped.items())
+                if len(items) >= threshold
+                if set.intersection(*(set(item.projection_method_names) for item in items))
+                if set.intersection(*(set(item.roundtrip_method_names) for item in items))
+            )
+        )
+
+
 class ManualStructuralRecordMechanicsDetector(
     ConfiguredModuleCollectorCandidateDetector[
         ManualStructuralRecordMechanicsGroupCandidate
     ]
 ):
-    candidate_collector = _manual_structural_record_mechanics_group_candidates
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Repeated structural record mechanics should derive from field metadata",
@@ -3944,6 +4053,58 @@ DeclarativeDetectorClassDetector = declare_candidate_rule_detector(
 )
 
 
+@dataclass(frozen=True)
+class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCandidate):
+    observation_family_name: str
+    observation_type_name: str
+    minimum_evidence_count: int
+    summary_expression: str
+    line_count: int
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            if node.end_lineno is None:
+                continue
+            if not (
+                _STATIC_OBSERVATION_DETECTOR_BASE_NAMES
+                & set(declared.base_terminal_names)
+            ):
+                continue
+            evidence_statement = declared.method_named("_module_evidence")
+            if evidence_statement is None:
+                continue
+            evidence_method = evidence_statement.node
+            collection = _typed_observation_collection_call(evidence_method)
+            if collection is None:
+                continue
+            if not any(
+                _source_location_from_line_symbol_call(child)
+                for child in ast.walk(evidence_method)
+            ):
+                continue
+            minimum_evidence = _static_minimum_evidence_count(declared)
+            summary_expression = _static_summary_expression(module, declared)
+            if minimum_evidence is None or summary_expression is None:
+                continue
+            family_name, observation_type_name = collection
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    line=node.lineno,
+                    class_name=node.name,
+                    observation_family_name=family_name,
+                    observation_type_name=observation_type_name,
+                    minimum_evidence_count=minimum_evidence,
+                    summary_expression=summary_expression,
+                    line_count=node.end_lineno - node.lineno + 1,
+                )
+            )
+        return tuple(candidates)
+
+
 declare_candidate_rule_detector(
     StaticTypedObservationDetectorCandidate,
     high_confidence_spec(
@@ -3977,8 +4138,82 @@ declare_candidate_rule_detector(
         ),
         source_name=candidate.observation_family_name,
     ),
-    candidate_collector=_static_typed_observation_detector_candidates,
 )
+
+
+@dataclass(frozen=True)
+class SchemaAccessorFamilyCandidate(CollectsItself, 
+    FieldFamilyCompressionSurface, ClassLineWitnessCandidate
+):
+    enum_name: str
+    method_names: tuple[str, ...]
+    requirement_modes: tuple[str, ...]
+    coercion_kinds: tuple[str, ...]
+    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
+    )
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        for declared in module.fact(ModuleClassStatements).statements:
+            class_node = declared.node
+            grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
+                defaultdict(list)
+            )
+            for method in declared.methods:
+                row = _schema_accessor_method_row(method.node)
+                if row is not None:
+                    grouped_rows[row[1]].append(row)
+            for enum_name, rows in grouped_rows.items():
+                if len(rows) < _SCHEMA_ACCESSOR_MIN_METHODS:
+                    continue
+                ordered_rows = tuple(sorted(rows, key=lambda item: (item[5], item[0])))
+                field_names = tuple((row[2] for row in ordered_rows))
+                if len(frozenset(field_names)) < _SCHEMA_ACCESSOR_MIN_METHODS:
+                    continue
+                axis_system = _schema_accessor_axis_system(ordered_rows)
+                if not axis_system.determines(("field",), "method"):
+                    continue
+                line_count = sum((row[6] for row in ordered_rows))
+                coercion_kinds = tuple((row[4] for row in ordered_rows))
+                field_axes = tuple(
+                    (f"{enum_name}.{field_name}" for field_name in field_names)
+                )
+                certificate = _schema_accessor_family_certificate(
+                    method_count=len(ordered_rows),
+                    line_count=line_count,
+                    field_axes=field_axes,
+                    coercion_kind_count=len(frozenset(coercion_kinds)),
+                )
+                if not certificate.pays_rent:
+                    continue
+                candidates.append(
+                    cls(
+                        file_path=module.file_path,
+                        line=class_node.lineno,
+                        class_name=class_node.name,
+                        enum_name=enum_name,
+                        method_names=tuple((row[0] for row in ordered_rows)),
+                        field_names=field_names,
+                        requirement_modes=tuple((row[3] for row in ordered_rows)),
+                        coercion_kinds=coercion_kinds,
+                        line_numbers=tuple((row[5] for row in ordered_rows)),
+                        line_count=line_count,
+                        compression_certificate=certificate,
+                    )
+                )
+        return tuple(
+            sorted(
+                candidates,
+                key=lambda item: (
+                    item.file_path,
+                    item.line,
+                    item.class_name,
+                    item.enum_name,
+                ),
+            )
+        )
 
 
 declare_candidate_rule_detector(
@@ -4012,7 +4247,6 @@ declare_candidate_rule_detector(
         field_names=family.field_names,
         source_name=family.enum_name,
     ),
-    candidate_collector=_schema_accessor_family_candidates,
 )
 
 
@@ -4411,10 +4645,76 @@ class StructuralConfusabilityDetector(
         )
 
 
+@dataclass(frozen=True)
+class WitnessCarrierFamilyCandidate(CollectsItself, ClassLineNumbersGroup):
+    shared_role_names: tuple[SemanticFieldRole, ...]
+    role_field_names: tuple[tuple[SemanticFieldRole, tuple[str, ...]], ...]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        classes = witness_carrier_class_candidates(module)
+        if len(classes) < 2:
+            return ()
+        grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)
+        for candidate in classes:
+            for token in candidate.family_tokens:
+                grouped[token].append(candidate)
+        seen_class_names: set[tuple[str, ...]] = set()
+        findings: list[Self] = []
+        for token, items in sorted(grouped.items()):
+            if len(items) < 3:
+                continue
+            ordered_items = sorted_tuple(
+                items, key=lambda item: (item.line, item.class_name)
+            )
+            class_names = tuple(item.class_name for item in ordered_items)
+            if class_names in seen_class_names:
+                continue
+            shared_role_names = cast(
+                tuple[str, ...],
+                sorted_tuple(
+                    set.intersection(
+                        *(set(candidate.normalized_roles) for candidate in ordered_items)
+                    )
+                ),
+            )
+            if len(shared_role_names) < 3:
+                continue
+            if set.intersection(
+                *(set(candidate.base_names) for candidate in ordered_items)
+            ):
+                continue
+            role_field_names = tuple(
+                (
+                    (role, aliased_field_names)
+                    for role in SemanticFieldRole.mixin_roles()
+                    for aliased_field_names in (
+                        SUPPORT_PROJECTION_AUTHORITY.aliased_field_names_for_role(
+                            role,
+                            ordered_items,
+                        ),
+                    )
+                    if aliased_field_names
+                )
+            )
+            if not role_field_names:
+                continue
+            seen_class_names.add(class_names)
+            findings.append(
+                cls(
+                    file_path=module.file_path,
+                    class_names=class_names,
+                    line_numbers=tuple((candidate.line for candidate in ordered_items)),
+                    shared_role_names=shared_role_names,
+                    role_field_names=role_field_names,
+                )
+            )
+        return tuple(findings)
+
+
 class SemanticWitnessFamilyDetector(
     ModuleCollectorCandidateDetector[WitnessCarrierFamilyCandidate]
 ):
-    candidate_collector = _witness_carrier_family_candidates
     finding_spec = high_confidence_spec(
         PatternId.NOMINAL_WITNESS_CARRIER,
         "Renamed carrier roles need one inheritance spine",

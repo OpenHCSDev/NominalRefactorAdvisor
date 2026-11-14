@@ -122,13 +122,10 @@ from nominal_refactor_advisor.detectors._base import (
     PipelineAssemblyStage,
     PropertyAliasHookGroup,
     ResultAssemblyPipelineFunction,
-    SchemaAccessorFamilyCandidate,
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
     SemanticOverlapResidueAxisCandidate,
     StaticModulePatternDetector,
-    StaticTypedObservationDetectorCandidate,
-    StructuralObservationPropertyCandidate,
     TupleIndexSemanticOpacityCandidate,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
@@ -474,48 +471,6 @@ def _linear_query_source_owner(
         return None
     owner_name, separator, _method_name = qualname.rpartition(".")
     return owner_name if separator else qualname
-
-
-def _structural_observation_property_candidates_for_class(
-    module: ParsedModule, declared: ClassStatement
-) -> Iterable[StructuralObservationPropertyCandidate]:
-    node = declared.node
-    for method in declared.methods:
-        if not method.spells("property"):
-            continue
-        statement = method.node
-        body = statements_without_docstring(statement.body)
-        if len(body) != 1 or not isinstance(body[0], ast.Return):
-            continue
-        returned = body[0].value
-        if not isinstance(returned, ast.Call):
-            continue
-        constructor_name = ExpressionReference.decoded(returned.func).terminal_name
-        if constructor_name is None:
-            continue
-        keyword_names = sorted_tuple(CallKeywords.of(returned.keywords).names)
-        if len(keyword_names) < 6:
-            continue
-        yield StructuralObservationPropertyCandidate(
-            file_path=module.file_path,
-            line=statement.lineno,
-            subject_name=node.name,
-            name_family=keyword_names,
-            property_name=statement.name,
-            constructor_name=constructor_name,
-        )
-
-
-def _structural_observation_property_candidates(
-    module: ParsedModule,
-) -> tuple[StructuralObservationPropertyCandidate, ...]:
-    return tuple(
-        candidate
-        for declared in module.fact(ModuleClassStatements).statements
-        for candidate in _structural_observation_property_candidates_for_class(
-            module, declared
-        )
-    )
 
 
 class MethodProjection:
@@ -2282,51 +2237,6 @@ def _static_summary_expression(
     )
 
 
-def _static_typed_observation_detector_candidates(
-    module: ParsedModule,
-) -> tuple[StaticTypedObservationDetectorCandidate, ...]:
-    candidates: list[StaticTypedObservationDetectorCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        if node.end_lineno is None:
-            continue
-        if not (
-            _STATIC_OBSERVATION_DETECTOR_BASE_NAMES
-            & set(declared.base_terminal_names)
-        ):
-            continue
-        evidence_statement = declared.method_named("_module_evidence")
-        if evidence_statement is None:
-            continue
-        evidence_method = evidence_statement.node
-        collection = _typed_observation_collection_call(evidence_method)
-        if collection is None:
-            continue
-        if not any(
-            _source_location_from_line_symbol_call(child)
-            for child in ast.walk(evidence_method)
-        ):
-            continue
-        minimum_evidence = _static_minimum_evidence_count(declared)
-        summary_expression = _static_summary_expression(module, declared)
-        if minimum_evidence is None or summary_expression is None:
-            continue
-        family_name, observation_type_name = collection
-        candidates.append(
-            StaticTypedObservationDetectorCandidate(
-                file_path=module.file_path,
-                line=node.lineno,
-                class_name=node.name,
-                observation_family_name=family_name,
-                observation_type_name=observation_type_name,
-                minimum_evidence_count=minimum_evidence,
-                summary_expression=summary_expression,
-                line_count=node.end_lineno - node.lineno + 1,
-            )
-        )
-    return tuple(candidates)
-
-
 def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
     positional = (*method.args.posonlyargs, *method.args.args)
     payload_names = tuple(
@@ -2946,70 +2856,6 @@ def _schema_accessor_family_certificate(
         ),
         semantic_axes=field_axes,
         residual_object_count=coercion_kind_count,
-    )
-
-
-def _schema_accessor_family_candidates(
-    module: ParsedModule,
-) -> tuple[SchemaAccessorFamilyCandidate, ...]:
-    candidates: list[SchemaAccessorFamilyCandidate] = []
-    for declared in module.fact(ModuleClassStatements).statements:
-        class_node = declared.node
-        grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
-            defaultdict(list)
-        )
-        for method in declared.methods:
-            row = _schema_accessor_method_row(method.node)
-            if row is not None:
-                grouped_rows[row[1]].append(row)
-        for enum_name, rows in grouped_rows.items():
-            if len(rows) < _SCHEMA_ACCESSOR_MIN_METHODS:
-                continue
-            ordered_rows = tuple(sorted(rows, key=lambda item: (item[5], item[0])))
-            field_names = tuple((row[2] for row in ordered_rows))
-            if len(frozenset(field_names)) < _SCHEMA_ACCESSOR_MIN_METHODS:
-                continue
-            axis_system = _schema_accessor_axis_system(ordered_rows)
-            if not axis_system.determines(("field",), "method"):
-                continue
-            line_count = sum((row[6] for row in ordered_rows))
-            coercion_kinds = tuple((row[4] for row in ordered_rows))
-            field_axes = tuple(
-                (f"{enum_name}.{field_name}" for field_name in field_names)
-            )
-            certificate = _schema_accessor_family_certificate(
-                method_count=len(ordered_rows),
-                line_count=line_count,
-                field_axes=field_axes,
-                coercion_kind_count=len(frozenset(coercion_kinds)),
-            )
-            if not certificate.pays_rent:
-                continue
-            candidates.append(
-                SchemaAccessorFamilyCandidate(
-                    file_path=module.file_path,
-                    line=class_node.lineno,
-                    class_name=class_node.name,
-                    enum_name=enum_name,
-                    method_names=tuple((row[0] for row in ordered_rows)),
-                    field_names=field_names,
-                    requirement_modes=tuple((row[3] for row in ordered_rows)),
-                    coercion_kinds=coercion_kinds,
-                    line_numbers=tuple((row[5] for row in ordered_rows)),
-                    line_count=line_count,
-                    compression_certificate=certificate,
-                )
-            )
-    return tuple(
-        sorted(
-            candidates,
-            key=lambda item: (
-                item.file_path,
-                item.line,
-                item.class_name,
-                item.enum_name,
-            ),
-        )
     )
 
 
