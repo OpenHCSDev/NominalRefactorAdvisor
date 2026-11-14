@@ -5470,7 +5470,7 @@ def test_compact_roster_candidates_preserve_semantics(
     manual_candidate = manual_candidates[0]
     assert manual_candidate.class_name == "RoutedRequest"
     assert manual_candidate.registry_name == "_registered_types"
-    assert manual_candidate.guard_summary == (
+    assert manual_candidate.registration_site.guard_summary == (
         "cls.__dict__.get('route_name') is not None"
     )
     assert manual_candidate.registration_site.selector_attr_name == "route_name"

@@ -1823,10 +1823,6 @@ class ManualConcreteSubclassRosterCandidate(CollectsItselfFromCompactContext[_Co
         return self.registration_site.registry_name
 
     @property
-    def guard_summary(self) -> str | None:
-        return self.registration_site.guard_summary
-
-    @property
     def consumer_names(self) -> tuple[str, ...]:
         return tuple((location.symbol for location in self.consumer_locations))
 
@@ -1944,8 +1940,8 @@ class ManualConcreteSubclassRosterDetector(
             )
         )
         guard_summary = (
-            f" guarded by `{roster_candidate.guard_summary}`"
-            if roster_candidate.guard_summary
+            f" guarded by `{roster_candidate.registration_site.guard_summary}`"
+            if roster_candidate.registration_site.guard_summary
             else ""
         )
         concrete_preview = ", ".join(roster_candidate.concrete_class_names[:3])

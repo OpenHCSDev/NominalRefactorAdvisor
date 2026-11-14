@@ -129,6 +129,13 @@ stronger than a synthesized recipe that hedged its way to silence.
   three from a parent with no registry. A family that keys another way
   overrides `__key_extractor__` only. Eleven roots restated these lines
   before 2026-11-14.
+- **`inline_forwarder` can miss a property read in the tests.** On
+  2026-11-14 it inlined `ManualConcreteSubclassRosterCandidate.guard_summary`
+  (two reads in the package rewritten) and left
+  `tests/test_analysis_cache.py` reading `manual_candidate.guard_summary`
+  on a receiver it did not type, while the same run refused another
+  forwarder for an untyped receiver in the package. After an inline,
+  `git grep` the deleted name over `tests/` and migrate what is left.
 - **A slot that repeats the base's subscript is the subscript said
   twice.** `class F(ShapeFamily[X]): item_type = X`, `class D(ModuleCollector
   CandidateDetector[C]): candidate_collector = C.from_module`. The base
