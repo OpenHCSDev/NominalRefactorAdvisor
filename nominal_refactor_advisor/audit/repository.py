@@ -216,11 +216,13 @@ class Change(Family, ABC, root=True):
     @abstractmethod
     def from_paths(cls, paths: list[str]) -> Change: ...
 
-    @abstractmethod
-    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome: ...
+    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
+        """The file as the base has it: measured at its path, unless the change says otherwise."""
+        return census.measure(base, self.path)
 
-    @abstractmethod
-    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome: ...
+    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
+        """The file as the revision has it: measured at its path, unless the change says otherwise."""
+        return census.measure(rev, self.path)
 
     def touched(self) -> tuple[str, ...]:
         """The paths whose content the change alters."""
@@ -261,9 +263,6 @@ class Added(Change, name="A"):
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
         return _absent(self.path)
 
-    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
-        return census.measure(rev, self.path)
-
     def added(self) -> tuple[str, ...]:
         return (self.path,)
 
@@ -286,12 +285,6 @@ class Modified(Change, name="M"):
     def from_paths(cls, paths: list[str]) -> Modified:
         return cls(paths[-1])
 
-    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
-        return census.measure(base, self.path)
-
-    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
-        return census.measure(rev, self.path)
-
 
 @dataclass(frozen=True)
 class TypeChanged(Modified, name="T"):
@@ -311,9 +304,6 @@ class Renamed(Change, name="R"):
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
         return census.measure(base, self.old)
 
-    def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
-        return census.measure(rev, self.path)
-
     def touched(self) -> tuple[str, ...]:
         return (self.old, self.path)
 
@@ -328,9 +318,6 @@ class Deleted(Change, name="D"):
     @classmethod
     def from_paths(cls, paths: list[str]) -> Deleted:
         return cls(paths[-1])
-
-    def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
-        return census.measure(base, self.path)
 
     def after(self, census: MeasuredRevisions, rev: str) -> ParseOutcome:
         return _absent(self.path)

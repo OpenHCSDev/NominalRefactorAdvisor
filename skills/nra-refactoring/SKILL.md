@@ -600,6 +600,43 @@ could not see that the value was evidence afterwards (13 errors went
 away with them). A function that hands the open reference back to its
 caller still tests for it; that is a different move.
 
+**The same body in unrelated classes is a missing parent.** Group every
+method by name, signature and body, and keep the groups whose owners
+share no declaring ancestor: on 2026-11-14 that found 16 groups of three
+or more in NRA. The repair depends on how the owners sit:
+
+- All owners are the members of one family and one differs: the base
+  answers and the odd one overrides (`audit.repository.Change.before` /
+  `after`: an added file has no before, a deleted file no after).
+- The owners are a strict subset: a parent between them and the root
+  (`SourceRewriteOperationABC`, `CanonicalJsonRecord`).
+- Two groups cross (`TypeSpelling` is in both): one mixin per group, and
+  the class in both inherits both (`SpellsClassName`,
+  `RewrittenAsDetailedReference`). Check how the family lists its
+  members first. `IdentitySpelling.positions()` reads direct subclasses,
+  so a mixin that is not itself a member keeps the roster; a parent
+  between would have dropped three positions.
+- The duck the copies call (`_source_rewrite(...).source_edits()`) gets
+  its own ABC in the same change (`SourceRewriteABC`).
+
+Leave a group alone when the shared member is a JSON report property
+whose position in the output the class order decides, or when a registry
+walks the lineage and a new class in it would change dispatch
+(`SourceTopLevelDeclaration.from_statement`). The three
+`...AuthorityViolation` enums (`class_index.py`, `carrier_expansion.py`,
+`parameter_conveyor.py`) repeat one constructor, `explanation` and
+`is_violated_by`, and stay three: an Enum class cannot be generic, so a
+shared base could not keep each enum's predicate typed by its own proof,
+and the type checker would stop checking the lambdas.
+
+**A branch the dispatch already took.** A class that only one dispatcher
+builds knows what the dispatcher tested. The mapping recipe builders are
+built only by the strategy registered for `MappingMetrics`, so their
+six `isinstance(self.finding.metrics, MappingMetrics)` tests were dead,
+four of them guarding a rejection text nothing could reach. Trace the
+construction sites before deleting: one site, one caller, one registry
+key is the certificate.
+
 **Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
 target and guards against its return; `remove_import_bindings` drops
 imports a module no longer reads. Neither proves the target is
@@ -626,6 +663,47 @@ fact, so neither inherits it: each holds the fact as a field
 One passed and was composed:
 `ManualKeyedRecordTableClassCandidate` copied all three fields from its
 `ManualRecordRegistrationShape`.
+
+**NRA on its own package, 2026-11-14: where the rest is.** 1,794
+findings from 35 detectors (`tools/proof/stable_ids.py` on the working
+tree). What the counts mean, so the next sweep starts from the map and
+not from the top of the list:
+
+- `phantom_family` 596: mostly one verb in unrelated classes (`of` in
+  60, `resolve` in 29, `build` in 12) with different signatures. Group by
+  name *and* signature and 91 remain with three or more owners; group by
+  body too and 16 remain, the real missing parents. Six of those were
+  folded on 2026-11-14 (see "The same body in unrelated classes").
+  Left, among others: three JSON report terminals in
+  `codemod_workflow.py` (key order), three top-level declarations in
+  `codemod_module_declarations.py` (registry lineage), `result` in
+  `native_call.py`, `_member` across the source entries.
+- `own_type_test` 282: 128 are in the native-execution kernel
+  (`source_execution.py` 57, `captured_reference.py` 32,
+  `native_compilation.py` 22, `product_flow.py` 17). After `closed()`,
+  22 tests of `OpenCapturedReference` remain and all of them hand the
+  open reference back to the caller as a value. The rest decode the
+  flow-event union (`operation.event` is a mutation, a value use, a
+  result) with a proof error per site.
+- `callback_threading` 39: the largest is `rationale`, a parameter in 64
+  signatures passed at 207 call sites of the source-edit constructors.
+  The operation owns it (`operation.rationale_text(default)`); stamping
+  it once where an operation's edits are collected is a redesign of that
+  API, not a fold.
+- `forwarding_facade` 22: the goal search
+  (`--codemod-refactor-goal forwarder_inline`) finds the 22 targets in
+  2.5 s and then explores for more than ten minutes at depth 0 on four
+  cores; give it an idle machine.
+- `unused_method_parameter` 64: nearly all are resolver or visitor
+  callbacks whose signature the dispatch fixes.
+- Unreached and left for Tristan: `models.BranchCountMetrics` (only a
+  test constructs it) and `models.ResolutionAxisMetrics` (nothing does);
+  `CountedDispatchMetrics` registers its members by `count_field_name`
+  and nothing reads that registry.
+- Two owners of "a parsed file": `ParsedModule` and the audit gate's
+  `audit.lexical.ModuleScope`, which parses and walks on its own.
+- `ast.walk` is called 154 times (256 before): loops that `match` on
+  several node types, tuples of types, and walks inside the audit gate.
 
 **Known wrong, not yet fixed:**
 - `phantom_family` used to report every public name defined in two
