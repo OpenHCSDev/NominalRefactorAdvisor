@@ -129,6 +129,14 @@ stronger than a synthesized recipe that hedged its way to silence.
   three from a parent with no registry. A family that keys another way
   overrides `__key_extractor__` only. Eleven roots restated these lines
   before 2026-11-14.
+- **A test reaches a branch through `monkeypatch` too.** Before deleting
+  a branch only tests take, grep the tests for the call sites and for
+  `monkeypatch.setattr(` on every slot that feeds the branch (a builder,
+  a factory, a ClassVar). On 2026-11-14 fold 86 removed "the shared
+  context is already the derived one" after a call-site grep, and
+  `test_method_family_detectors_share_one_compact_context`, which had
+  replaced `compact_shared_context_builder` to return the derived
+  context, failed in the next run.
 - **Pass `--include-tests` to every proving apply.** A scan covers
   production source only by default, and naming `tests` as a path does
   not change that (`PythonSourcePathPolicy.allows_file_path`): the test
