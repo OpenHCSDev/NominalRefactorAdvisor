@@ -21,6 +21,7 @@ from nominal_refactor_advisor.refactors.declaration_reference import (
 from nominal_refactor_advisor.models import (
     CarriedReferenceRewrites,
     CoveredReferenceRewrites,
+    DeclarationReferenceMetrics,
     RefactorFinding,
     SourceLocation,
 )
@@ -95,10 +96,7 @@ class RestatedIdentityDetector(
 
     def owner(self, sites: Sequence[RestatingSite], context: DeclaredIdentities) -> str:
         declared = context.declarations_of(sites)
-        where = _listed(
-            f"`{location.symbol}` ({location.file_path}:{location.line})"
-            for location in declared
-        )
+        where = _listed(f"`{location.symbol}` ({location.where})" for location in declared)
         return f"{self.restated.owner} Declared at {where}."
 
     def evidence(
@@ -106,16 +104,17 @@ class RestatedIdentityDetector(
     ) -> tuple[SourceLocation, ...]:
         return (*super().evidence(sites, context), *context.declarations_of(sites))
 
-    def finding_context(
+    def metrics(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
-    ) -> dict[str, object]:
+    ) -> DeclarationReferenceMetrics:
+        restater = RestatingSite.restater_of(sites)
         carried = context.carried_rewrites(sites)
         if carried:
-            return {"metrics": CarriedReferenceRewrites(carried)}
+            return CarriedReferenceRewrites(carried, restater=restater)
         covering = context.covering_rewrites(sites)
         if covering:
-            return {"metrics": CoveredReferenceRewrites(covering)}
-        return {}
+            return CoveredReferenceRewrites(covering, restater=restater)
+        return DeclarationReferenceMetrics(restater=restater)
 
 
 __all__ = ("RestatedIdentityDetector",)

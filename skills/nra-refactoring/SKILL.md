@@ -525,6 +525,29 @@ shared with a family (`_base.py:4277`). One passed and was composed:
   a bare name in the file that declared it: a callback, a base class, a
   dict value. The checks go by spelling, so a common name can be refused
   for an unrelated use; rename first, or read the refusal.
+- A restated-fact finding's `stable_id` used to hash its summary, and
+  those summaries list sites as `path:line` or `line N`. So the id
+  changed when a line moved and when the checkout sat in another
+  directory: 737 of 1,925 findings on NRA's own package, against the
+  id's own contract (#97, `tests/test_finding_identity.py`). All 18
+  detectors of the family now carry `RestaterMetrics`: the id is the
+  restater (`RestatingSite.restater_of`: symbol in its checkout-relative
+  file, group, what the sites say). `ForwardingFacadeMetrics` and
+  `DeclarationReferenceMetrics` inherit it; `string_kind_dispatch` keeps
+  its dispatch metrics, whose summary has no line. Their prose still
+  names each site as `file:line`, now spelled by
+  `SourceLineReference.where`: the file from its checkout's root
+  (`checkout_display_path`), so no summary holds the directory it was
+  scanned in.
+- Still path-dependent, not fixed here: `manual_class_registration` and
+  `hand_rolled_registration` write the installed owner's file and line
+  into the summary, and `repeated_literal_roster_lead` writes a scanned
+  path. A summary that holds a path or a line makes the id move with it
+  unless the finding's metrics override `finding_identity`.
+- A relative root and an absolute root give different ids for the same
+  tree (`checkout_identity_text` leaves a relative path as spelled), and
+  a cache filled by one spelling can answer the other with the first
+  spelling's paths. Scan with an absolute root.
 - `ClassOverlapVerdicts.existing_owner` (`class_overlap.py`) takes any
   class with subclasses whose declarations *include* the block as its
   owner, even when it declares more. For three records sharing

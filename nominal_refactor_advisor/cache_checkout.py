@@ -216,8 +216,13 @@ class CheckoutRelocation:
         resolved = str(self.root.resolve())
         return (lexical,) if lexical == resolved else (lexical, resolved)
 
+    def path_within(self, path: Path | str) -> str:
+        """The path from the checkout's root, as every worktree spells it."""
+
+        return lexical_absolute_path(path).relative_to(self.root).as_posix()
+
     def relative_text(self, path: Path | str) -> str:
-        return f"checkout:{lexical_absolute_path(path).relative_to(self.root).as_posix()}"
+        return f"checkout:{self.path_within(path)}"
 
     def relative_id(self, value: object) -> tuple[object, ...] | None:
         if type(value) is str:
@@ -285,6 +290,16 @@ def checkout_identity_text(path: Path | str) -> str:
         return str(path)
     checkout = CheckoutRelocation.containing(path)
     return str(path) if checkout is None else checkout.relative_text(path)
+
+
+def checkout_display_path(path: Path | str) -> str:
+    """A path as prose names it: from its checkout's root, else as spelled. A
+    summary that spells a checkout's directory is bound to that checkout."""
+
+    if not Path(path).is_absolute():
+        return str(path)
+    checkout = CheckoutRelocation.containing(path)
+    return str(path) if checkout is None else checkout.path_within(path)
 
 
 @ScanCache.cached

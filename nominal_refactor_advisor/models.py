@@ -40,7 +40,10 @@ from nominal_refactor_advisor.json_reports import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
-from nominal_refactor_advisor.cache_checkout import checkout_identity_text
+from nominal_refactor_advisor.cache_checkout import (
+    checkout_display_path,
+    checkout_identity_text,
+)
 from nominal_refactor_advisor.source_identity import source_path_text
 
 if TYPE_CHECKING:
@@ -226,6 +229,12 @@ class SourceLineReference:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "file_path", source_path_text(self.file_path))
+
+    @property
+    def where(self) -> str:
+        """`file:line` as a summary names it: the file as it sits in its checkout."""
+
+        return f"{checkout_display_path(self.file_path)}:{self.line}"
 
 
 @dataclass(frozen=True)
@@ -456,8 +465,26 @@ class EmptyFindingMetrics(FindingMetrics):
     pass
 
 
+@dataclass(frozen=True, kw_only=True)
+class RestaterMetrics(FindingMetrics):
+    """Which restater a finding is about: the sites inside one symbol that share a group.
+
+    `restater` is that symbol, in its file as the file sits in its checkout,
+    the group, and what the sites say (`RestatingSite.restater_of`). It is the
+    finding's identity. The summary lists the sites by line, and lines move;
+    the restater stays until it says something else.
+    """
+
+    restater: tuple[str, ...]
+
+    def finding_identity(
+        self, summary: str, evidence: tuple[SourceLocation, ...]
+    ) -> tuple[str, ...]:
+        return self.restater
+
+
 @dataclass(frozen=True)
-class DeclarationReferenceMetrics(FindingMetrics):
+class DeclarationReferenceMetrics(RestaterMetrics):
     """How a restated-identity finding stands toward the scan-wide reference rewrites.
 
     Each rewrite kind is carried by one finding (`CarriedReferenceRewrites`);
@@ -529,7 +556,7 @@ class PackageDestinationMetrics(FindingMetrics):
 
 
 @dataclass(frozen=True)
-class ForwardingFacadeMetrics(FindingMetrics):
+class ForwardingFacadeMetrics(RestaterMetrics):
     """Forwarding members of one facade; every one is deletable once consumers go direct."""
 
     forwarded_member_count: int

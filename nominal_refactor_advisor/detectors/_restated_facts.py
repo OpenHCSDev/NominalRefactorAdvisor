@@ -54,10 +54,14 @@ from nominal_refactor_advisor.refactors.optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
     RouteOptionalAstFieldProbesOperation,
 )
+from nominal_refactor_advisor.cache_checkout import checkout_display_path
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
+    FindingMetrics,
     ForwardingFacadeMetrics,
     RefactorFinding,
+    RestaterMetrics,
+    SourceLineReference,
     SourceLocation,
 )
 from nominal_refactor_advisor.observation_families import (
@@ -189,10 +193,16 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
     ) -> tuple[SourceLocation, ...]:
         return tuple(site.location for site in sites)
 
+    def metrics(self, sites: Sequence[SiteT], context: ContextT) -> FindingMetrics:
+        """The finding's typed facts. By default only which restater it is,
+        which is what makes it the same finding in the next scan."""
+
+        return RestaterMetrics(restater=RestatingSite.restater_of(sites))
+
     def finding_context(
         self, sites: Sequence[SiteT], context: ContextT
     ) -> dict[str, object]:
-        """Typed extras a recipe reads from the finding (empty unless a recipe needs them)."""
+        """Evidence roles a recipe reads from the finding (empty unless a recipe needs them)."""
 
         return {}
 
@@ -217,6 +227,7 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
                 self.build_finding(
                     summary,
                     self.evidence(ordered, context),
+                    metrics=self.metrics(ordered, context),
                     **self.finding_context(ordered, context),
                 )
             )
@@ -362,13 +373,9 @@ class StringKindDispatchDetector(
             f"{sites[0].symbol}."
         )
 
-    def finding_context(
-        self, sites: Sequence[RestatingSite], context: None
-    ) -> dict[str, object]:
+    def metrics(self, sites: Sequence[RestatingSite], context: None) -> FindingMetrics:
         arms = tuple(sorted({literal for site in sites for literal in site.detail}))
-        return {
-            "metrics": DispatchCountMetrics.from_literal_family(sites[0].group, arms)
-        }
+        return DispatchCountMetrics.from_literal_family(sites[0].group, arms)
 
 
 class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
@@ -483,10 +490,7 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
         declared = self.declared(sites, context)
         if not declared:
             return self.restated.owner
-        names = _listed(
-            f"`{location.symbol}` ({location.file_path}:{location.line})"
-            for location in declared
-        )
+        names = _listed(f"`{location.symbol}` ({location.where})" for location in declared)
         return f"{names} already declares exactly these fields."
 
     def evidence(
@@ -609,7 +613,7 @@ class ForeignAbsenceProbeDetector(
     ) -> str:
         probes = sorted({f"{site.detail[0]} {site.detail[1]}" for site in sites})
         located = "; ".join(
-            f"{site.file_path}:{site.lineno} `{site.group}.{site.detail[0]} "
+            f"{site.location.where} `{site.group}.{site.detail[0]} "
             f"{site.detail[1]}`, {site.owner.describe(site.detail[0], context)}"
             for site in sites
         )
@@ -653,7 +657,7 @@ class LegacyPathMarkerDetector(
         site = sites[0]
         kind, why = site.detail
         consumers = self.consumers(sites, context)
-        where = _listed(f"{path}:{line}" for path, line in consumers)
+        where = _listed(SourceLineReference(path, line).where for path, line in consumers)
         still = (
             f"{len(consumers)} module(s) still use the identifier `{site.group}`: {where}."
             if consumers
@@ -761,10 +765,12 @@ class ForwardingFacadeDetector(
             ),
         )
 
-    def finding_context(
+    def metrics(
         self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
-    ) -> dict[str, object]:
-        return {"metrics": ForwardingFacadeMetrics(len(self.forwards(sites)))}
+    ) -> FindingMetrics:
+        return ForwardingFacadeMetrics(
+            len(self.forwards(sites)), restater=RestatingSite.restater_of(sites)
+        )
 
 
 def _overrides_inherited(
@@ -808,7 +814,7 @@ class DeadModuleDetector(
         self, sites: Sequence[RestatingSite], context: UnreachedModules
     ) -> str:
         return (
-            f"`{sites[0].group}` ({sites[0].file_path}) is imported by no scanned "
+            f"`{sites[0].group}` ({checkout_display_path(sites[0].file_path)}) is imported by no scanned "
             "module, named by no string, listed by no module loader, declared by no "
             "entry point, and has no main guard."
         )

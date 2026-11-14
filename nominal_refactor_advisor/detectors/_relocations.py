@@ -83,10 +83,10 @@ class ReachingUses(Generic[UseT]):
 
         if not self.counted:
             return f"no scanned {what}."
-        located = _listed(f"{use.file_path}:{use.lineno}" for use in self.counted)
+        located = _listed(use.location.where for use in self.counted)
         shown = (
             " Not counted, their receiver resolves to no closed class: "
-            + _listed(f"{use.file_path}:{use.lineno}" for use in self.uncounted)
+            + _listed(use.location.where for use in self.uncounted)
             + "."
             if self.uncounted
             else ""

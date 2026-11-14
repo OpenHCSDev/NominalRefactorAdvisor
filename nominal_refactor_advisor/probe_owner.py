@@ -51,12 +51,10 @@ class ReceiverSpan(SourceLineReference):
 
     @property
     def location(self) -> str:
-        """`file:line:column:end_line:end_column`, one-based columns, end inclusive."""
+        """`file:line:column:end_line:end_column`, the file as it sits in its
+        checkout, one-based columns, end inclusive."""
 
-        return (
-            f"{self.file_path}:{self.line}:{self.column + 1}:"
-            f"{self.end_line}:{self.end_column}"
-        )
+        return f"{self.where}:{self.column + 1}:{self.end_line}:{self.end_column}"
 
 
 @dataclass(frozen=True)
@@ -69,7 +67,10 @@ class ScannedClasses:
         if qualified_name not in self.by_symbol:
             return f"owner `{qualified_name}` is not a scanned class"
         owner = self.by_symbol[qualified_name]
-        where = f"`{qualified_name}` ({owner.file_path}:{owner.line})"
+        where = (
+            f"`{qualified_name}` "
+            f"({SourceLineReference(owner.file_path, owner.line).where})"
+        )
         for member in owner.direct_member_declarations:
             if member.name == field_name:
                 return (

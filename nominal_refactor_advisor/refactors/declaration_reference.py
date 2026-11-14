@@ -508,12 +508,15 @@ class DeclarationReferenceFindingRecipeSynthesizer(
 
     @staticmethod
     def reference_metrics(finding: RefactorFinding) -> DeclarationReferenceMetrics:
-        """How the finding stands toward the scan's reference rewrites; a finding the detector gave no such record carries and is covered by none."""
+        """How the finding stands toward the scan's reference rewrites."""
 
         metrics = finding.metrics
-        if isinstance(metrics, DeclarationReferenceMetrics):
-            return metrics
-        return DeclarationReferenceMetrics()
+        if not isinstance(metrics, DeclarationReferenceMetrics):
+            raise TypeError(
+                f"finding {finding.stable_id} from {finding.detector_id!r} carries "
+                f"{type(metrics).__name__}, not how it stands toward reference rewrites"
+            )
+        return metrics
 
     def carried(
         self, finding: RefactorFinding
