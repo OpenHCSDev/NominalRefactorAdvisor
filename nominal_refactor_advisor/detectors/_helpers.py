@@ -153,15 +153,16 @@ from nominal_refactor_advisor.detectors._base import (
     TupleIndexSemanticOpacityCandidate,
     TypedCandidateCastBoilerplateCandidate,
 )
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ClassStatement,
+    ModuleClassStatements,
+)
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_BASE_NAMES,
-    _is_abstract_method,
     _is_private_symbol_name,
-    _module_class_defs_by_name,
     _selector_attribute_name,
     CLASS_INDEX_PROJECTION,
-    CLASS_NODE_AUTHORITY,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     _class_ancestor_name_map,
@@ -217,10 +218,12 @@ class HelperSupportProjectionAuthority:
 HELPER_SUPPORT_PROJECTION_AUTHORITY = HelperSupportProjectionAuthority()
 
 
-def _class_direct_constant_string_assignments(node: ast.ClassDef) -> dict[str, str]:
+def _class_direct_constant_string_assignments(
+    declared: ClassStatement,
+) -> dict[str, str]:
     return {
         name: string_value
-        for name, value in CLASS_NODE_AUTHORITY.direct_assignments(node).items()
+        for name, value in declared.direct_assignments.items()
         if (string_value := _constant_string(value)) is not None
     }
 
@@ -302,12 +305,12 @@ def _fragmented_family_authority_candidates(
     return tuple(candidates)
 
 
-def _is_detectorish_class(node: ast.ClassDef) -> bool:
-    if node.name.endswith("Detector"):
+def _is_detectorish_class(declared: ClassStatement) -> bool:
+    if declared.node.name.endswith("Detector"):
         return True
     return bool(
         IssueDetector.detector_family_base_names()
-        & set(CLASS_NODE_AUTHORITY.declared_base_names(node))
+        & set(declared.base_terminal_names)
     )
 
 
@@ -371,10 +374,11 @@ def _candidate_source_name_from_method(
 
 
 def _finding_assembly_pipeline_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
+    module: ParsedModule, declared: ClassStatement
 ) -> Iterable[FindingAssemblyPipelineCandidate]:
-    if not _is_detectorish_class(node):
+    if not _is_detectorish_class(declared):
         return
+    node = declared.node
     method = next(
         (
             statement
@@ -416,15 +420,15 @@ def _finding_assembly_pipeline_candidates_for_class(
 def _finding_assembly_pipeline_candidates(
     module: ParsedModule,
 ) -> tuple[FindingAssemblyPipelineCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        ast.ClassDef,
-        _finding_assembly_pipeline_candidates_for_class,
+    return tuple(
+        candidate
+        for declared in module.fact(ModuleClassStatements).statements
+        for candidate in _finding_assembly_pipeline_candidates_for_class(module, declared)
     )
 
 
-def _is_observation_spec_class(node: ast.ClassDef) -> bool:
-    if node.name.endswith("ObservationSpec"):
+def _is_observation_spec_class(declared: ClassStatement) -> bool:
+    if declared.node.name.endswith("ObservationSpec"):
         return True
     return bool(
         {
@@ -433,7 +437,7 @@ def _is_observation_spec_class(node: ast.ClassDef) -> bool:
             "AssignObservationSpec",
             "ContextForwardingShapeSpec",
         }
-        & set(CLASS_NODE_AUTHORITY.declared_base_names(node))
+        & set(declared.base_terminal_names)
     )
 
 
@@ -457,10 +461,11 @@ def _scope_role_name(node: ast.AST) -> str:
 
 
 def _guarded_delegator_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
+    module: ParsedModule, declared: ClassStatement
 ) -> Iterable[GuardedDelegatorCandidate]:
-    if not _is_observation_spec_class(node) or CLASS_NODE_AUTHORITY.is_abstract(node):
+    if not _is_observation_spec_class(declared) or declared.spells_abstract:
         return
+    node = declared.node
     guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
     for statement in node.body:
         if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -509,10 +514,10 @@ def _guarded_delegator_candidates_for_class(
 def _guarded_delegator_candidates(
     module: ParsedModule,
 ) -> tuple[GuardedDelegatorCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        ast.ClassDef,
-        _guarded_delegator_candidates_for_class,
+    return tuple(
+        candidate
+        for declared in module.fact(ModuleClassStatements).statements
+        for candidate in _guarded_delegator_candidates_for_class(module, declared)
     )
 
 
@@ -836,13 +841,12 @@ def _property_alias_hook_groups(
     module: ParsedModule,
 ) -> tuple[PropertyAliasHookGroup, ...]:
     grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
-    for node in module.syntax_index.breadth_first_nodes:
-        if not isinstance(node, ast.ClassDef):
-            continue
+    for declared in module.fact(ModuleClassStatements).statements:
+        node = declared.node
         base_names = tuple(
             (
                 name
-                for name in CLASS_NODE_AUTHORITY.declared_base_names(node)
+                for name in declared.base_terminal_names
                 if name not in _IGNORED_BASE_NAMES
             )
         )
@@ -1141,21 +1145,21 @@ def _reflective_lookup_shape(
 def _string_backed_reflective_nominal_lookup_candidates(
     module: ParsedModule, config: DetectorConfig
 ) -> tuple[StringBackedReflectiveNominalLookupCandidate, ...]:
-    class_defs_by_name = _module_class_defs_by_name(module)
+    classes_by_name = module.fact(ModuleClassStatements).by_name
     class_string_assignments = {
-        class_name: _class_direct_constant_string_assignments(node)
-        for class_name, node in class_defs_by_name.items()
+        class_name: _class_direct_constant_string_assignments(declared)
+        for class_name, declared in classes_by_name.items()
     }
     candidate_map: dict[
         tuple[str, str, str, str, str], StringBackedReflectiveNominalLookupCandidate
     ] = {}
-    for class_name, node in sorted(class_defs_by_name.items()):
+    for class_name, declared in sorted(classes_by_name.items()):
         descendants = CLASS_INDEX_PROJECTION.descendant_names(
-            class_defs_by_name, class_name
+            classes_by_name, class_name
         )
         if len(descendants) < config.min_reflective_selector_values:
             continue
-        for method in CLASS_NODE_AUTHORITY.methods(node):
+        for method in declared.methods:
             for subnode in _walk_nodes(method):
                 lookup_shape = _reflective_lookup_shape(subnode)
                 if lookup_shape is None:
@@ -1231,8 +1235,10 @@ def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
     return None
 
 
-def _class_init_concrete_param_backed_attrs(node: ast.ClassDef) -> dict[str, str]:
-    init_method = CLASS_NODE_AUTHORITY.method_named(node, "__init__")
+def _class_init_concrete_param_backed_attrs(
+    declared: ClassStatement,
+) -> dict[str, str]:
+    init_method = declared.method_named("__init__")
     if init_method is None:
         return {}
     parameter_type_names = {
@@ -1280,22 +1286,22 @@ def _receiver_self_attr_name(node: ast.AST, aliases: dict[str, str]) -> str | No
 def _concrete_config_field_probe_candidates(
     module: ParsedModule, config: DetectorConfig
 ) -> tuple[ConcreteConfigFieldProbeCandidate, ...]:
-    class_defs_by_name = _module_class_defs_by_name(module)
+    classes_by_name = module.fact(ModuleClassStatements).by_name
     config_field_names = {
         class_name: {
             field_name
             for field_name, _ in HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(
-                node
+                declared.node
             )
         }
-        for class_name, node in class_defs_by_name.items()
+        for class_name, declared in classes_by_name.items()
     }
     candidates: list[ConcreteConfigFieldProbeCandidate] = []
-    for class_name, node in sorted(class_defs_by_name.items()):
-        concrete_config_attrs = _class_init_concrete_param_backed_attrs(node)
+    for class_name, declared in sorted(classes_by_name.items()):
+        concrete_config_attrs = _class_init_concrete_param_backed_attrs(declared)
         if not concrete_config_attrs:
             continue
-        for method in CLASS_NODE_AUTHORITY.methods(node):
+        for method in declared.methods:
             aliases = METHOD_PROJECTION.aliases_to_self_attrs(method)
             grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
             grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
@@ -1317,10 +1323,10 @@ def _concrete_config_field_probe_candidates(
                 config_type_name = concrete_config_attrs.get(config_attr_name)
                 if config_type_name is None:
                     continue
-                config_node = class_defs_by_name.get(config_type_name)
+                config_class = classes_by_name.get(config_type_name)
                 if (
-                    config_node is None
-                    or CLASS_NODE_AUTHORITY.method_named(config_node, "__getattr__")
+                    config_class is None
+                    or config_class.method_named("__getattr__")
                     is not None
                 ):
                     continue
@@ -1542,7 +1548,7 @@ class _RegisteredUnionSurfaceSource:
 def _registered_union_surface_candidates_for_node(
     module: ParsedModule,
     node: ast.AST,
-    class_defs_by_name: dict[str, ast.ClassDef],
+    classes_by_name: dict[str, ClassStatement],
 ) -> Iterable[RegisteredUnionSurfaceCandidate]:
     source = _RegisteredUnionSurfaceSource.from_node(node)
     if source is None:
@@ -1553,14 +1559,14 @@ def _registered_union_surface_candidates_for_node(
     accessor_name, root_names = registered_surface
     if len(root_names) < 2:
         return
-    root_nodes = [class_defs_by_name.get(root_name) for root_name in root_names]
+    root_nodes = [classes_by_name.get(root_name) for root_name in root_names]
     if any((root_node is None for root_node in root_nodes)):
         return
     if any(
         (
             (
-                method := CLASS_NODE_AUTHORITY.method_named(
-                    cast(ast.ClassDef, root_node), accessor_name
+                method := cast(ClassStatement, root_node).method_named(
+                    accessor_name
                 )
             )
             is None
@@ -1581,9 +1587,7 @@ def _registered_union_surface_candidates_for_node(
 def _registered_union_surface_candidates(
     module: ParsedModule,
 ) -> tuple[RegisteredUnionSurfaceCandidate, ...]:
-    class_defs_by_name = {
-        node.name: node for node in module.module.body if isinstance(node, ast.ClassDef)
-    }
+    classes_by_name = module.fact(ModuleClassStatements).top_level_by_name
     source_nodes: tuple[ast.AST, ...] = (
         *(function for _, function in module.syntax_index.named_functions),
         *module.syntax_index.instances_of(ast.Assign),
@@ -1592,7 +1596,7 @@ def _registered_union_surface_candidates(
         candidate
         for node in source_nodes
         for candidate in _registered_union_surface_candidates_for_node(
-            module, node, class_defs_by_name
+            module, node, classes_by_name
         )
     )
 
@@ -1675,34 +1679,33 @@ def _parameter_class_call_attribute_names(
 
 
 def _class_def_declared_and_ancestor_names(
-    class_defs_by_name: dict[str, ast.ClassDef],
+    classes_by_name: dict[str, ClassStatement],
     ancestor_names_by_class: dict[str, tuple[str, ...]],
     class_name: str,
 ) -> set[str]:
-    node = class_defs_by_name[class_name]
-    return set(CLASS_NODE_AUTHORITY.declared_base_names(node)) | set(
+    return set(classes_by_name[class_name].base_terminal_names) | set(
         ancestor_names_by_class[class_name]
     )
 
 
 def _base_defines_contract_attributes(
-    class_defs_by_name: dict[str, ast.ClassDef],
+    classes_by_name: dict[str, ClassStatement],
     base_name: str,
     observed_attribute_names: tuple[str, ...],
 ) -> bool:
-    base_node = class_defs_by_name.get(base_name)
-    if base_node is None:
+    base_class = classes_by_name.get(base_name)
+    if base_class is None:
         return False
     return all(
         (
-            CLASS_NODE_AUTHORITY.method_named(base_node, attribute_name) is not None
+            base_class.method_named(attribute_name) is not None
             for attribute_name in observed_attribute_names
         )
     )
 
 
 def _common_contract_base_names(
-    class_defs_by_name: dict[str, ast.ClassDef],
+    classes_by_name: dict[str, ClassStatement],
     ancestor_names_by_class: dict[str, tuple[str, ...]],
     member_type_names: tuple[str, ...],
     observed_attribute_names: tuple[str, ...],
@@ -1710,7 +1713,7 @@ def _common_contract_base_names(
     base_sets = tuple(
         (
             _class_def_declared_and_ancestor_names(
-                class_defs_by_name, ancestor_names_by_class, member_type_name
+                classes_by_name, ancestor_names_by_class, member_type_name
             )
             for member_type_name in member_type_names
         )
@@ -1723,7 +1726,7 @@ def _common_contract_base_names(
             base_name
             for base_name in common_base_names
             if _base_defines_contract_attributes(
-                class_defs_by_name, base_name, observed_attribute_names
+                classes_by_name, base_name, observed_attribute_names
             )
         )
     )
@@ -1779,7 +1782,7 @@ def _concrete_type_union_contract_candidates_for_function(
     module: ParsedModule,
     function_name: str,
     function: ast.FunctionDef | ast.AsyncFunctionDef,
-    class_defs_by_name: dict[str, ast.ClassDef],
+    classes_by_name: dict[str, ClassStatement],
     ancestor_names_by_class: dict[str, tuple[str, ...]],
 ) -> Iterable[ConcreteTypeUnionContractCandidate]:
     arguments = (
@@ -1794,7 +1797,7 @@ def _concrete_type_union_contract_candidates_for_function(
             argument.annotation
         )
         if len(member_type_names) < 2 or any(
-            member_type_name not in class_defs_by_name
+            member_type_name not in classes_by_name
             for member_type_name in member_type_names
         ):
             continue
@@ -1804,7 +1807,7 @@ def _concrete_type_union_contract_candidates_for_function(
         if not observed_attribute_names:
             continue
         common_base_names = _common_contract_base_names(
-            class_defs_by_name,
+            classes_by_name,
             ancestor_names_by_class,
             member_type_names,
             observed_attribute_names,
@@ -1830,16 +1833,16 @@ def _concrete_type_union_contract_candidates_for_function(
 def _concrete_type_union_contract_candidates(
     module: ParsedModule,
 ) -> tuple[ConcreteTypeUnionContractCandidate, ...]:
-    class_defs_by_name = _module_class_defs_by_name(module)
+    classes_by_name = module.fact(ModuleClassStatements).by_name
     base_lookup = {
-        class_name: set(CLASS_NODE_AUTHORITY.declared_base_names(node))
-        for class_name, node in class_defs_by_name.items()
+        class_name: set(declared.base_terminal_names)
+        for class_name, declared in classes_by_name.items()
     }
     ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
     return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
         module,
         _concrete_type_union_contract_candidates_for_function,
-        class_defs_by_name,
+        classes_by_name,
         ancestor_names_by_class,
         sort_key=lambda item: (item.file_path, item.line, item.function_name),
     )
@@ -2931,8 +2934,8 @@ def _source_location_from_line_symbol_call(
     )
 
 
-def _static_minimum_evidence_count(node: ast.ClassDef) -> int | None:
-    minimum_method = CLASS_NODE_AUTHORITY.method_named(node, "_minimum_evidence")
+def _static_minimum_evidence_count(declared: ClassStatement) -> int | None:
+    minimum_method = declared.method_named("_minimum_evidence")
     if minimum_method is None:
         return 1
     returns = tuple(
@@ -2945,9 +2948,11 @@ def _static_minimum_evidence_count(node: ast.ClassDef) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-def _static_summary_expression(module: ParsedModule, node: ast.ClassDef) -> str | None:
+def _static_summary_expression(
+    module: ParsedModule, declared: ClassStatement
+) -> str | None:
     return (
-        Maybe.of(CLASS_NODE_AUTHORITY.method_named(node, "_summary"))
+        Maybe.of(declared.method_named("_summary"))
         .map(
             lambda summary_method: tuple(
                 child
@@ -2966,15 +2971,16 @@ def _static_typed_observation_detector_candidates(
     module: ParsedModule,
 ) -> tuple[StaticTypedObservationDetectorCandidate, ...]:
     candidates: list[StaticTypedObservationDetectorCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef) or node.end_lineno is None:
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
+        if node.end_lineno is None:
             continue
         if not (
             _STATIC_OBSERVATION_DETECTOR_BASE_NAMES
-            & set(CLASS_NODE_AUTHORITY.declared_base_names(node))
+            & set(declared.base_terminal_names)
         ):
             continue
-        evidence_method = CLASS_NODE_AUTHORITY.method_named(node, "_module_evidence")
+        evidence_method = declared.method_named("_module_evidence")
         if evidence_method is None:
             continue
         collection = _typed_observation_collection_call(evidence_method)
@@ -2985,8 +2991,8 @@ def _static_typed_observation_detector_candidates(
             for child in _walk_nodes(evidence_method)
         ):
             continue
-        minimum_evidence = _static_minimum_evidence_count(node)
-        summary_expression = _static_summary_expression(module, node)
+        minimum_evidence = _static_minimum_evidence_count(declared)
+        summary_expression = _static_summary_expression(module, declared)
         if minimum_evidence is None or summary_expression is None:
             continue
         family_name, observation_type_name = collection
@@ -3180,15 +3186,6 @@ ClassShapeCandidateFactory = Callable[
 
 
 class HelperSyntaxProjectionAuthority:
-    def abstract_method_names(self, node: ast.ClassDef) -> tuple[str, ...]:
-        return sorted_tuple(
-            (
-                method.name
-                for method in CLASS_NODE_AUTHORITY.methods(node)
-                if _is_abstract_method(method)
-            )
-        )
-
     def annotation_root_name(self, node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
@@ -3796,11 +3793,12 @@ def _schema_accessor_family_candidates(
     module: ParsedModule,
 ) -> tuple[SchemaAccessorFamilyCandidate, ...]:
     candidates: list[SchemaAccessorFamilyCandidate] = []
-    for class_node in module.syntax_index.instances_of(ast.ClassDef):
+    for declared in module.fact(ModuleClassStatements).statements:
+        class_node = declared.node
         grouped_rows: dict[str, list[tuple[str, str, str, str, str, int, int]]] = (
             defaultdict(list)
         )
-        for method in CLASS_NODE_AUTHORITY.methods(class_node):
+        for method in declared.methods:
             row = _schema_accessor_method_row(method)
             if row is not None:
                 grouped_rows[row[1]].append(row)

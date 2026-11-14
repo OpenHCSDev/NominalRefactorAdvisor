@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Iterable
 
+from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleFact,
@@ -44,11 +45,89 @@ from nominal_refactor_advisor.collection_algebra import (
     sorted_tuple,
 )
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.native_declarations import ClassNamespaceDeclaration
 
 
+class ClassStatement:
+    """What one class statement's own source says, each answer read once.
+
+    `IndexedClass` is a statement the family index names. A class written inside
+    a function is a `LocalClassStatement`: the index does not name it, and its
+    source answers the same questions.
+    """
+
+    node: ast.ClassDef
+
+    @cached_property
+    def methods(self) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
+        """The functions the body defines directly, in source order."""
+
+        return tuple(FunctionDefinition.within(self.node.body))
+
+    @cached_property
+    def first_methods_by_name(
+        self,
+    ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+        found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+        for method in self.methods:
+            found.setdefault(method.name, method)
+        return found
+
+    def method_named(
+        self, name: str
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """The body's first direct definition of `name`."""
+
+        return self.first_methods_by_name.get(name)
+
+    @cached_property
+    def direct_assignments(self) -> dict[str, ast.AST | None]:
+        """Each name the body assigns directly, with the value it gets last.
+
+        A bare annotation assigns nothing and maps to None.
+        """
+
+        assignments: dict[str, ast.AST | None] = {}
+        for statement in self.node.body:
+            match statement:
+                case ast.Assign(targets=[ast.Name(id=name)], value=value):
+                    assignments[name] = value
+                case ast.AnnAssign(target=ast.Name(id=name), value=value):
+                    assignments[name] = value
+        return assignments
+
+    @cached_property
+    def base_terminal_names(self) -> tuple[str, ...]:
+        """The last name of each spelled base, sorted, each once."""
+
+        return sorted_tuple(
+            {
+                name
+                for base in self.node.bases
+                if (name := ExpressionReference.decoded(base).terminal_name)
+                is not None
+            }
+        )
+
+    @cached_property
+    def spells_abstract(self) -> bool:
+        """Whether a base is spelled `ABC` or `ABCMeta`, or a direct method is
+        decorated with something spelled `abstractmethod`.
+
+        This reads names, not bindings. `ClassDeclaration.is_abstract` on the
+        compact index is the binding-checked answer for the same question.
+        """
+
+        return bool({"ABC", "ABCMeta"} & set(self.base_terminal_names)) or any(
+            ExpressionReference.decoded(decorator).terminal_name == "abstractmethod"
+            for method in self.methods
+            for decorator in method.decorator_list
+        )
+
+
 @dataclass(frozen=True)
-class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
+class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration, ClassStatement):
     node: ast.ClassDef
 
     member_binding_names = AliasProperty[frozenset[str]](
@@ -274,6 +353,55 @@ class ModuleIndexedClasses(ParsedModuleFact):
                 for qualname, node in indexed_class_nodes
             )
         )
+
+
+@dataclass(frozen=True)
+class LocalClassStatement(ClassStatement):
+    """A class statement the family index does not name: one inside a function."""
+
+    node: ast.ClassDef
+
+
+@dataclass(frozen=True)
+class ModuleClassStatements(ParsedModuleFact):
+    """Every class statement of one module, one record each for the whole parse."""
+
+    statements: tuple[ClassStatement, ...]
+    """All of them, in `ast.walk` order."""
+    top_level: tuple[ClassStatement, ...]
+    """The ones the module body holds directly, in source order."""
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleClassStatements:
+        indexed: dict[ast.ClassDef, ClassStatement] = {
+            record.node: record
+            for record in parsed_module.fact(ModuleIndexedClasses).records
+        }
+        statements = tuple(
+            indexed.get(node) or LocalClassStatement(node)
+            for node in parsed_module.syntax_index.instances_of(ast.ClassDef)
+        )
+        by_node = {statement.node: statement for statement in statements}
+        return cls(
+            statements,
+            tuple(
+                by_node[node]
+                for node in parsed_module.module.body
+                if isinstance(node, ast.ClassDef)
+            ),
+        )
+
+    @cached_property
+    def by_name(self) -> dict[str, ClassStatement]:
+        """Each class name with the last statement declaring it in `ast.walk` order."""
+
+        return {statement.node.name: statement for statement in self.statements}
+
+    @cached_property
+    def top_level_by_name(self) -> dict[str, ClassStatement]:
+        """Each module-level class name with the last statement declaring it."""
+
+        return {statement.node.name: statement for statement in self.top_level}
 
 
 def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:

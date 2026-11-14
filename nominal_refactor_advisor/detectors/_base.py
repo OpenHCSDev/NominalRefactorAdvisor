@@ -60,7 +60,9 @@ from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
+    ClassStatement,
     IndexedClass,
+    ModuleClassStatements,
 )
 from nominal_refactor_advisor.class_method_facets import (
     CompactMethodSemanticCoordinateKind,
@@ -174,9 +176,9 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _is_abstract_method,
+    _dataclass_decorator_projection,
     _is_dataclass_class,
     CLASS_INDEX_PROJECTION,
-    CLASS_NODE_AUTHORITY,
 )
 
 _PIPELINE_ASSIGN_STAGE = "assign"
@@ -2760,12 +2762,9 @@ CollectedItemT = TypeVar("CollectedItemT")
 
 def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
     enum_members: dict[str, tuple[str, ...]] = {}
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(
-            CLASS_NODE_AUTHORITY.declared_base_names(node)
-        ):
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
+        if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(declared.base_terminal_names):
             continue
         bindings: list[tuple[str, bool]] = []
         for statement in node.body:
@@ -3098,12 +3097,11 @@ class CandidateCollectionAuthority:
         self, module: ParsedModule
     ) -> tuple[WitnessCarrierClassCandidate, ...]:
         candidates: list[WitnessCarrierClassCandidate] = []
-        for node in module.module.body:
-            if not isinstance(node, ast.ClassDef):
-                continue
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
             if not _is_frozen_dataclass(node):
                 continue
-            if CLASS_NODE_AUTHORITY.is_abstract(node):
+            if declared.spells_abstract:
                 continue
             field_names = _annassign_field_names(node)
             normalized_role_fields = (
@@ -3130,7 +3128,7 @@ class CandidateCollectionAuthority:
                     subject_name=node.name,
                     name_family=field_names,
                     base_names=SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(
-                        node
+                        declared
                     ),
                     family_tokens=family_tokens,
                     normalized_roles=normalized_roles,
@@ -3211,10 +3209,6 @@ class SyntaxProjectionAuthority:
                 if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
             )
         )
-
-    def is_dataclass_decorator(self, node: ast.AST) -> bool:
-        return CLASS_NODE_AUTHORITY.is_dataclass_decorator(node)
-
 
 SYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()
 
@@ -4540,18 +4534,15 @@ def _manual_keyed_record_table_group_candidates(
     module: ParsedModule, config: DetectorConfig
 ) -> tuple[ManualKeyedRecordTableGroupCandidate, ...]:
     classes: list[ManualKeyedRecordTableClassCandidate] = []
-    for node in (
-        class_node
-        for class_node in module.module.body
-        if isinstance(class_node, ast.ClassDef)
-    ):
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
         if not _is_dataclass_class(node):
             continue
         if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
-            CLASS_NODE_AUTHORITY.direct_assignments(node).get("_registry")
+            declared.direct_assignments.get("_registry")
         ):
             continue
-        register_method = CLASS_NODE_AUTHORITY.method_named(node, "register")
+        register_method = declared.method_named("register")
         if register_method is None:
             continue
         registration_shape = _manual_record_registration_shape(register_method)
@@ -4559,7 +4550,7 @@ def _manual_keyed_record_table_group_candidates(
             continue
         lookup_methods = [
             (method, shape)
-            for method in CLASS_NODE_AUTHORITY.methods(node)
+            for method in declared.methods
             if _is_classmethod(method)
             and method.name.startswith("for_")
             and (shape := RegistryLookupShape.from_method(method)) is not None
@@ -4663,15 +4654,16 @@ def _validation_guard_count(
 
 
 def _same_type_constructor_method_names(
-    node: ast.ClassDef,
+    declared: ClassStatement,
     *,
     include_classmethods: bool,
     include_instance_methods: bool,
 ) -> tuple[str, ...]:
-    accepted_instance_names = (node.name,)
-    accepted_class_names = ("cls", node.name)
+    class_name = declared.node.name
+    accepted_instance_names = (class_name,)
+    accepted_class_names = ("cls", class_name)
     names: list[str] = []
-    for method in CLASS_NODE_AUTHORITY.methods(node):
+    for method in declared.methods:
         if _is_classmethod(method):
             if include_classmethods and _returns_constructor_call(
                 method, accepted_names=accepted_class_names
@@ -4705,30 +4697,27 @@ def _manual_structural_record_mechanics_group_candidates(
 ) -> tuple[ManualStructuralRecordMechanicsGroupCandidate, ...]:
     threshold = max(3, config.min_registration_sites)
     classes: list[ManualStructuralRecordMechanicsClassCandidate] = []
-    for node in (
-        class_node
-        for class_node in module.module.body
-        if isinstance(class_node, ast.ClassDef)
-    ):
-        if not _is_dataclass_class(node) or CLASS_NODE_AUTHORITY.is_abstract(node):
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
+        if not _is_dataclass_class(node) or declared.spells_abstract:
             continue
-        base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(node)
+        base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(declared)
         if not base_names:
             continue
-        validate_method = CLASS_NODE_AUTHORITY.method_named(node, "validate")
+        validate_method = declared.method_named("validate")
         if validate_method is None or _validation_guard_count(validate_method) < 3:
             continue
         projection_method_names = sorted_tuple(
             (
                 method.name
-                for method in CLASS_NODE_AUTHORITY.methods(node)
+                for method in declared.methods
                 if _returns_tuple_of_self_attributes(method)
             )
         )
         if not projection_method_names:
             continue
         roundtrip_method_names = _same_type_constructor_method_names(
-            node, include_classmethods=True, include_instance_methods=False
+            declared, include_classmethods=True, include_instance_methods=False
         )
         if not roundtrip_method_names:
             continue
@@ -4736,7 +4725,7 @@ def _manual_structural_record_mechanics_group_candidates(
             (
                 method_name
                 for method_name in _same_type_constructor_method_names(
-                    node, include_classmethods=False, include_instance_methods=True
+                    declared, include_classmethods=False, include_instance_methods=True
                 )
                 if method_name != "validate"
             )
@@ -4870,7 +4859,7 @@ def _resolved_isinstance_type_names(
         if indexed_class is None:
             continue
         display_name = CLASS_INDEX_PROJECTION.display_name(indexed_class, class_index)
-        if CLASS_NODE_AUTHORITY.is_abstract(indexed_class.node):
+        if indexed_class.spells_abstract:
             abstract_names.append(display_name)
         else:
             concrete_names.append(display_name)
@@ -4932,7 +4921,7 @@ def _common_abstract_base_names(
             indexed_class
             for symbol in common_symbols
             if (indexed_class := class_index.class_for(symbol)) is not None
-            and CLASS_NODE_AUTHORITY.is_abstract(indexed_class.node)
+            and indexed_class.spells_abstract
         ),
         key=lambda item: item.symbol,
     )
@@ -5114,7 +5103,7 @@ def _implicit_self_contract_mixin_candidates(
     ):
         if not indexed_class.simple_name.endswith("Mixin"):
             continue
-        if CLASS_NODE_AUTHORITY.is_abstract(indexed_class.node):
+        if indexed_class.spells_abstract:
             continue
         consumer_classes = tuple(
             (
@@ -5122,7 +5111,7 @@ def _implicit_self_contract_mixin_candidates(
                 for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
                     class_index, indexed_class.symbol
                 )
-                if not CLASS_NODE_AUTHORITY.is_abstract(descendant.node)
+                if not descendant.spells_abstract
             )
         )
         if len(consumer_classes) < min_consumer_count:
@@ -5131,7 +5120,7 @@ def _implicit_self_contract_mixin_candidates(
         method_lines: list[int] = []
         cast_type_names: set[str] = set()
         accessed_attr_names: set[str] = set()
-        for method in CLASS_NODE_AUTHORITY.methods(indexed_class.node):
+        for method in indexed_class.methods:
             if _is_abstract_method(method):
                 continue
             alias_names, method_cast_type_names = _self_cast_alias_names(method)
@@ -5280,36 +5269,34 @@ def _manual_fiber_tag_candidates(
 
 
 def _shared_abstract_nominal_authority(
-    classes: tuple[ast.ClassDef, ...],
+    classes: tuple[ClassStatement, ...],
     *,
-    class_lookup: dict[str, ast.ClassDef],
+    class_lookup: dict[str, ClassStatement],
 ) -> bool:
-    def abstract_lineage_names(node: ast.ClassDef) -> set[str]:
+    def abstract_lineage_names(declared: ClassStatement) -> set[str]:
         lineage: set[str] = set()
         seen: set[str] = set()
-        stack = [node.name]
+        stack = [declared.node.name]
         while stack:
             current_name = stack.pop()
             if current_name in seen or current_name in _IGNORED_ANCESTOR_NAMES:
                 continue
             seen.add(current_name)
-            current_node = class_lookup.get(current_name)
-            if current_node is None:
+            current_class = class_lookup.get(current_name)
+            if current_class is None:
                 continue
-            if CLASS_NODE_AUTHORITY.is_abstract(current_node):
+            if current_class.spells_abstract:
                 lineage.add(current_name)
             stack.extend(
                 (
                     base_name
-                    for base_name in CLASS_NODE_AUTHORITY.declared_base_names(
-                        current_node
-                    )
+                    for base_name in current_class.base_terminal_names
                     if base_name not in seen
                 )
             )
         return lineage
 
-    lineage_sets = [abstract_lineage_names(node) for node in classes]
+    lineage_sets = [abstract_lineage_names(declared) for declared in classes]
     if not lineage_sets or any((not lineage for lineage in lineage_sets)):
         return False
     return bool(set.intersection(*lineage_sets))
@@ -5319,8 +5306,8 @@ def _structural_confusability_candidates_for_function(
     module: ParsedModule,
     qualname: str,
     function: NamedFunctionNode,
-    class_nodes: Sequence[ast.ClassDef],
-    class_lookup: dict[str, ast.ClassDef],
+    classes: Sequence[ClassStatement],
+    class_lookup: dict[str, ClassStatement],
 ) -> Iterable[StructuralConfusabilityCandidate]:
     annotated_parameter_names = SUPPORT_PROJECTION_AUTHORITY.annotated_parameter_names(
         function
@@ -5341,10 +5328,10 @@ def _structural_confusability_candidates_for_function(
         if len(observed_method_names) < 2:
             continue
         confusable_classes = tuple(
-            node
-            for node in class_nodes
+            declared
+            for declared in classes
             if set(observed_method_names)
-            <= SYNTAX_PROJECTION_AUTHORITY.method_names(node)
+            <= SYNTAX_PROJECTION_AUTHORITY.method_names(declared.node)
         )
         if len(confusable_classes) < 2:
             continue
@@ -5356,7 +5343,7 @@ def _structural_confusability_candidates_for_function(
             file_path=module.file_path,
             line=function.lineno,
             subject_name=qualname,
-            name_family=tuple((node.name for node in confusable_classes)),
+            name_family=tuple((declared.node.name for declared in confusable_classes)),
             parameter_name=parameter_name,
             observed_method_names=observed_method_names,
         )
@@ -5365,15 +5352,12 @@ def _structural_confusability_candidates_for_function(
 def _structural_confusability_candidates(
     module: ParsedModule,
 ) -> tuple[StructuralConfusabilityCandidate, ...]:
-    class_nodes = [
-        node for node in module.module.body if isinstance(node, ast.ClassDef)
-    ]
-    class_lookup = {node.name: node for node in class_nodes}
+    statements = module.fact(ModuleClassStatements)
     return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
         module,
         _structural_confusability_candidates_for_function,
-        class_nodes,
-        class_lookup,
+        statements.top_level,
+        statements.top_level_by_name,
     )
 
 
@@ -5381,14 +5365,14 @@ def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
     for decorator in node.decorator_list:
         if isinstance(
             decorator, ast.Call
-        ) and SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator.func):
+        ) and _dataclass_decorator_projection(decorator.func):
             for keyword in decorator.keywords:
                 if keyword.arg == "frozen":
                     return isinstance(keyword.value, ast.Constant) and bool(
                         keyword.value.value
                     )
             return False
-        if SYNTAX_PROJECTION_AUTHORITY.is_dataclass_decorator(decorator):
+        if _dataclass_decorator_projection(decorator):
             return False
     return False
 
@@ -5534,11 +5518,11 @@ class SupportProjectionAuthority:
             if parameter.arg not in {"self", "cls"}
         )
 
-    def shared_record_base_names(self, node: ast.ClassDef) -> tuple[str, ...]:
+    def shared_record_base_names(self, declared: ClassStatement) -> tuple[str, ...]:
         return tuple(
             (
                 name
-                for name in CLASS_NODE_AUTHORITY.declared_base_names(node)
+                for name in declared.base_terminal_names
                 if name not in _IGNORED_ANCESTOR_NAMES
             )
         )

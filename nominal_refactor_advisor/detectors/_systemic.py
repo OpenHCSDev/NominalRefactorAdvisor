@@ -171,10 +171,13 @@ from nominal_refactor_advisor.detectors._helpers import (
     _typed_candidate_cast_boilerplate_candidates,
     TupleIndexSemanticOpacityCandidateCollector,
 )
+from nominal_refactor_advisor.class_families.parsed_index import (
+    ModuleClassStatements,
+    ModuleIndexedClasses,
+)
 from nominal_refactor_advisor.detectors._substrate_support import (
     _camel_case,
     _is_abstract_method,
-    CLASS_NODE_AUTHORITY,
 )
 from nominal_refactor_advisor.detectors._finding_spec_defaults import (
     FindingSpecConstructionCandidateCollector,
@@ -256,31 +259,19 @@ def _compact_concrete_type_case_function_facts(
     )
 
 
-def _iter_qualified_classes(
-    statements: Sequence[ast.stmt], parent: str | None = None
-) -> Iterator[tuple[str, ast.ClassDef]]:
-    for statement in statements:
-        if not isinstance(statement, ast.ClassDef):
-            continue
-        qualname = statement.name if parent is None else f"{parent}.{statement.name}"
-        yield qualname, statement
-        yield from _iter_qualified_classes(statement.body, qualname)
-
-
 def _compact_implicit_self_mixin_facts(
     module: ParsedModule,
 ) -> tuple[CompactImplicitSelfMixinFact, ...]:
     facts: list[CompactImplicitSelfMixinFact] = []
-    for qualname, class_node in _iter_qualified_classes(module.module.body):
-        if not class_node.name.endswith("Mixin") or CLASS_NODE_AUTHORITY.is_abstract(
-            class_node
-        ):
+    for indexed_class in module.fact(ModuleIndexedClasses).records:
+        qualname, class_node = indexed_class.qualname, indexed_class.node
+        if not class_node.name.endswith("Mixin") or indexed_class.spells_abstract:
             continue
         method_names: list[str] = []
         method_lines: list[int] = []
         cast_type_names: set[str] = set()
         accessed_attribute_names: set[str] = set()
-        for method in CLASS_NODE_AUTHORITY.methods(class_node):
+        for method in indexed_class.methods:
             if _is_abstract_method(method):
                 continue
             alias_names, method_cast_types = _self_cast_alias_names(method)
@@ -970,11 +961,10 @@ def _collection_projection_property_family_candidates(
     module: ParsedModule,
 ) -> tuple[CollectionProjectionPropertyFamilyCandidate, ...]:
     candidates: list[CollectionProjectionPropertyFamilyCandidate] = []
-    for class_node in (
-        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
-    ):
+    for declared in module.fact(ModuleClassStatements).statements:
+        class_node = declared.node
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
-        for statement in CLASS_NODE_AUTHORITY.methods(class_node):
+        for statement in declared.methods:
             if not _is_property_method(statement):
                 continue
             body = statements_without_docstring(statement.body)

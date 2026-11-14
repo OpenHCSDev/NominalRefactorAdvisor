@@ -17,16 +17,15 @@ from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
     TypeQuery,
-    ParsedModule,
     is_docstring_statement,
     statements_without_docstring,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
+    ClassStatement,
     IndexedClass,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 
 ProjectionT = TypeVar("ProjectionT")
@@ -80,67 +79,6 @@ def _constant_string(node: ast.AST | None) -> str | None:
     return None
 
 
-@dataclass(frozen=True)
-class ClassNodeAuthority:
-    def is_dataclass_decorator(self, node: ast.AST) -> bool:
-        return _dataclass_decorator_projection(node)
-
-    def declared_base_names(self, node: ast.ClassDef) -> tuple[str, ...]:
-        return sorted_tuple(
-            {
-                base_name
-                for base_name in (
-                    ExpressionReference.decoded(base).terminal_name for base in node.bases
-                )
-                if base_name is not None
-            }
-        )
-
-    def direct_assignments(self, node: ast.ClassDef) -> dict[str, ast.AST | None]:
-        assignments: dict[str, ast.AST | None] = {}
-        for statement in node.body:
-            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-                target = statement.targets[0]
-                if isinstance(target, ast.Name):
-                    assignments[target.id] = statement.value
-            elif isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                assignments[statement.target.id] = statement.value
-        return assignments
-
-    def methods(
-        self,
-        node: ast.ClassDef,
-    ) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
-        return tuple(
-            (
-                statement
-                for statement in FunctionDefinition.within(node.body)
-            )
-        )
-
-    def method_named(
-        self, node: ast.ClassDef, method_name: str
-    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
-        for statement in self.methods(node):
-            if statement.name == method_name:
-                return statement
-        return None
-
-    def is_abstract(self, node: ast.ClassDef) -> bool:
-        if {"ABC", "ABCMeta"} & set(self.declared_base_names(node)):
-            return True
-        for statement in self.methods(node):
-            for decorator in statement.decorator_list:
-                if ExpressionReference.decoded(decorator).terminal_name == "abstractmethod":
-                    return True
-        return False
-
-
-CLASS_NODE_AUTHORITY = ClassNodeAuthority()
-
-
 def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
@@ -153,7 +91,7 @@ def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
 def _is_dataclass_class(node: ast.ClassDef) -> bool:
     return any(
         (
-            CLASS_NODE_AUTHORITY.is_dataclass_decorator(decorator)
+            _dataclass_decorator_projection(decorator)
             for decorator in node.decorator_list
         )
     )
@@ -189,22 +127,14 @@ def _class_ancestor_name_map(
     }
 
 
-def _module_class_defs_by_name(module: ParsedModule) -> dict[str, ast.ClassDef]:
-    return {
-        node.name: node
-        for node in module.syntax_index.breadth_first_nodes
-        if isinstance(node, ast.ClassDef)
-    }
-
-
 @dataclass(frozen=True)
 class ClassIndexProjection:
     def descendant_names(
-        self, class_defs_by_name: dict[str, ast.ClassDef], base_name: str
+        self, classes_by_name: dict[str, ClassStatement], base_name: str
     ) -> tuple[str, ...]:
         children_by_base: dict[str, set[str]] = defaultdict(set)
-        for class_name, node in class_defs_by_name.items():
-            for declared_base_name in CLASS_NODE_AUTHORITY.declared_base_names(node):
+        for class_name, declared in classes_by_name.items():
+            for declared_base_name in declared.base_terminal_names:
                 children_by_base[declared_base_name].add(class_name)
         descendants: list[str] = []
         queue = sorted(children_by_base.get(base_name, ()))
@@ -271,14 +201,13 @@ __all__ = (
     "_constant_string",
     "is_docstring_statement",
     "statements_without_docstring",
-    "CLASS_NODE_AUTHORITY",
+    "_dataclass_decorator_projection",
     "_is_abstract_method",
     "_is_dataclass_class",
     "_selector_attribute_name",
     "CLASS_NAME_ALGEBRA",
     "_IGNORED_BASE_NAMES",
     "_IGNORED_ANCESTOR_NAMES",
-    "_module_class_defs_by_name",
     "CLASS_INDEX_PROJECTION",
     "_is_private_symbol_name",
 )
