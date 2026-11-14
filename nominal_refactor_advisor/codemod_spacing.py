@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
+
 
 class SourceInsertionLayer(StrEnum):
     """Where an insertion's lines stand among the others at its line: a module's
@@ -17,22 +19,14 @@ class SourceInsertionLayer(StrEnum):
         return tuple(type(self)).index(self)
 
 
-class SourceInsertionBoundary(StrEnum):
+class SourceInsertionBoundary(FieldedStrEnum):
     """Typed leading separation owned by the inserted declaration."""
 
     PRESERVE = ("preserve", None)
     ONE_BLANK_LINE = ("one_blank_line", 1)
     TWO_BLANK_LINES = ("two_blank_lines", 2)
 
-    def __new__(
-        cls,
-        value: str,
-        blank_line_count: int | None,
-    ) -> "SourceInsertionBoundary":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._blank_line_count = blank_line_count
-        return member
+    _blank_line_count: int | None
 
     @property
     def required_blank_line_count(self) -> int:

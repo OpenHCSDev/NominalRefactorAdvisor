@@ -5,9 +5,8 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cached_property
-from typing import Callable, ClassVar, Self, TypeAlias
+from typing import Callable, ClassVar, TypeAlias
 
 from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseAuthorityProof,
@@ -18,6 +17,7 @@ from nominal_refactor_advisor.carrier_collapse import (
     ClosedCarrierCollapseComponent,
 )
 from nominal_refactor_advisor.class_index import CompactProductAuthority
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.product_flow import CompactFlowPosition
 from nominal_refactor_advisor.product_flow_authority import (
     CompactFunctionCallIdentity,
@@ -127,7 +127,7 @@ CarrierExpansionAuthorityPredicate: TypeAlias = Callable[
 ]
 
 
-class DeclaredCarrierExpansionAuthorityViolation(StrEnum):
+class DeclaredCarrierExpansionAuthorityViolation(FieldedStrEnum):
     """One failed proof obligation for collapsing a carrier expansion graph."""
 
     UNPROVEN_CARRIER_PRODUCT = (
@@ -217,21 +217,8 @@ class DeclaredCarrierExpansionAuthorityViolation(StrEnum):
         lambda proof: proof.batch_compression_delta <= 0,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        explanation: str,
-        predicate: CarrierExpansionAuthorityPredicate,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._explanation = explanation
-        member._predicate = predicate
-        return member
-
-    @property
-    def explanation(self) -> str:
-        return self._explanation
+    explanation: str
+    _predicate: CarrierExpansionAuthorityPredicate
 
     def is_violated_by(self, proof: DeclaredCarrierExpansionAuthorityProof) -> bool:
         return self._predicate(proof)

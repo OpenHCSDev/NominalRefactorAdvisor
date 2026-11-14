@@ -37,7 +37,6 @@ import sys
 import tomllib
 from collections.abc import Iterable, Iterator
 from dataclasses import asdict, dataclass
-from enum import StrEnum
 from functools import cache
 from importlib import metadata
 from pathlib import Path
@@ -46,6 +45,7 @@ from nominal_refactor_advisor.cache_paths import AdvisorCacheLayout
 from nominal_refactor_advisor.class_creation_store import CreatedClassStore
 from nominal_refactor_advisor.class_index import CompactModuleClassHeader
 from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import SourceLineReference
 from nominal_refactor_advisor.owner_candidates import (
     OwnerCandidate,
@@ -57,18 +57,11 @@ from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
 from nominal_refactor_advisor.receipts import Receipt
 
 
-class RegistrationRole(StrEnum):
+class RegistrationRole(FieldedStrEnum):
     """How an owner registers the classes of its family, with how it is said."""
 
     receipt_text: str
     finding_text: str
-
-    def __new__(cls, value: str, receipt_text: str, finding_text: str) -> RegistrationRole:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.receipt_text = receipt_text
-        member.finding_text = finding_text
-        return member
 
     METACLASS = (
         "metaclass",

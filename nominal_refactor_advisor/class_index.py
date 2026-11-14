@@ -127,6 +127,7 @@ from nominal_refactor_advisor.class_mro import (
     DeclarationMroType,
     DeclaredBases,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import LineWitness, SourceLineReference
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
@@ -1908,7 +1909,7 @@ class CompactModuleClassProjection(
         return values
 
 
-class ClassMethodPromotionSafeDecorator(StrEnum):
+class ClassMethodPromotionSafeDecorator(FieldedStrEnum):
     """Class decorators proven not to depend on direct method ownership."""
 
     DATACLASS = ("dataclass", frozenset(("dataclasses",)), True)
@@ -1916,18 +1917,6 @@ class ClassMethodPromotionSafeDecorator(StrEnum):
 
     import_module_names: frozenset[str]
     preserves_product_schema: bool
-
-    def __new__(
-        cls,
-        value: str,
-        import_module_names: frozenset[str],
-        preserves_product_schema: bool,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.import_module_names = import_module_names
-        member.preserves_product_schema = preserves_product_schema
-        return member
 
     @classmethod
     def for_qualified_name(cls, qualified_name: str | None) -> Self | None:
@@ -2882,7 +2871,7 @@ class ClassCohort(ABC):
         raise NotImplementedError
 
 
-class ClosedLeafMethodAuthorityViolation(StrEnum):
+class ClosedLeafMethodAuthorityViolation(FieldedStrEnum):
     """One failed proof obligation for promoting leaf methods to an ancestor."""
 
     TOO_FEW_PARTICIPANTS = (
@@ -2953,21 +2942,8 @@ class ClosedLeafMethodAuthorityViolation(StrEnum):
         ),
     )
 
-    def __new__(
-        cls,
-        value: str,
-        explanation: str,
-        predicate: ClosedLeafMethodAuthorityPredicate,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._explanation = explanation
-        member._predicate = predicate
-        return member
-
-    @property
-    def explanation(self) -> str:
-        return self._explanation
+    explanation: str
+    _predicate: ClosedLeafMethodAuthorityPredicate
 
     def is_violated_by(self, proof: ClosedLeafMethodAuthorityProof) -> bool:
         return self._predicate(proof)
@@ -3035,7 +3011,7 @@ def declared_nominal_base_count(declaration: ClassDeclaration) -> int:
     )
 
 
-class CompactNominalBindingKind(StrEnum):
+class CompactNominalBindingKind(FieldedStrEnum):
     """Kinds of exact module bindings and their exported-alias behavior."""
 
     MODULE_IMPORT = "module_import", True, True
@@ -3046,29 +3022,14 @@ class CompactNominalBindingKind(StrEnum):
     projects_as_import_alias: bool
     binds_module: bool
 
-    def __new__(
-        cls, value: str, projects_as_import_alias: bool, binds_module: bool
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.projects_as_import_alias = projects_as_import_alias
-        member.binds_module = binds_module
-        return member
 
-
-class ModuleNominalBindingSnapshotPolicy(StrEnum):
+class ModuleNominalBindingSnapshotPolicy(FieldedStrEnum):
     """Typed ambiguity policy for exact proof versus named-import projection."""
 
     EXACT = "exact", True
     NAMED_IMPORT_PROJECTION = "named_import_projection", False
 
     invalidates_on_star_import: bool
-
-    def __new__(cls, value: str, invalidates_on_star_import: bool) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.invalidates_on_star_import = invalidates_on_star_import
-        return member
 
 
 @dataclass(frozen=True)
@@ -3493,7 +3454,7 @@ class ModuleNominalBindingWitness:
     root_name: str
 
 
-class ClassBodyDeclarationKind(StrEnum):
+class ClassBodyDeclarationKind(FieldedStrEnum):
     """What one direct class-body statement declares, the receipt two classes
     sharing it earn, and whether it is a field.
 
@@ -3502,15 +3463,6 @@ class ClassBodyDeclarationKind(StrEnum):
 
     shared_receipt: OverlapReceiptKind
     is_field: bool
-
-    def __new__(
-        cls, value: str, shared_receipt: OverlapReceiptKind, is_field: bool
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.shared_receipt = shared_receipt
-        member.is_field = is_field
-        return member
 
     FIELD = "field", OverlapReceiptKind.SHARED_FIELD, True
     DEFAULTED_FIELD = "defaulted_field", OverlapReceiptKind.SHARED_VALUE, True

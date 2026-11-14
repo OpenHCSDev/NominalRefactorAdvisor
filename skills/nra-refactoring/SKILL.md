@@ -646,12 +646,40 @@ or more in NRA. The repair depends on how the owners sit:
 Leave a group alone when the shared member is a JSON report property
 whose position in the output the class order decides, or when a registry
 walks the lineage and a new class in it would change dispatch
-(`SourceTopLevelDeclaration.from_statement`). The three
-`...AuthorityViolation` enums (`class_index.py`, `carrier_expansion.py`,
-`parameter_conveyor.py`) repeat one constructor, `explanation` and
-`is_violated_by`, and stay three: an Enum class cannot be generic, so a
-shared base could not keep each enum's predicate typed by its own proof,
-and the type checker would stop checking the lambdas.
+(`SourceTopLevelDeclaration.from_statement`).
+
+**The same procedure with other names is a template.**
+`tools/proof/same_shape.py PACKAGE 3 8` blanks every name, attribute and
+constant and groups the functions that are then identical. On
+2026-11-14 its largest group was 48 enum constructors: each string enum
+with extra fields wrote `member = str.__new__(cls, value)`,
+`member._value_ = value`, one assignment per field, `return member`.
+`FieldedStrEnum` (`fielded_enum.py`) writes it once and stores a member's
+extra values under the names the class body annotates, in order. An
+enum with fields is now its members and its annotations:
+
+    class CodemodPreflightStatus(FieldedStrEnum):
+        PASSED = ("passed", True)
+        FAILED = ("failed", False)
+
+        is_passed: bool
+
+- The parent did not need to be generic. An earlier note here said the
+  three `...AuthorityViolation` enums had to stay apart because an Enum
+  class cannot be generic; each enum's own annotation types its
+  predicate, and the base takes `*fields: object`. mypy never checked a
+  member's tuple against `__new__`, so nothing was lost, and 157
+  "has no attribute `_x`" errors went, because the checker could not see
+  what `member._x = x` set but can see an annotation.
+- A private attribute that existed only so a property could return it
+  becomes the field under the property's name; the property goes.
+- A name annotated in an enum body with a value is a member. Defaults
+  cannot be declared that way, so the eight constructors that give
+  trailing values defaults keep their `__new__`.
+- The proof for a fold like this is per member:
+  `tools/proof/enum_dump.py OUT.json` writes every enum member with
+  every value it carries (functions by their code); run it before and
+  after and the two files must be equal. 849 members were.
 
 **A branch the dispatch already took.** A class that only one dispatcher
 builds knows what the dispatcher tested. The mapping recipe builders are

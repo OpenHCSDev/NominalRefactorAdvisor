@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
+
 
 class CertificationLevel(StrEnum):
     """How strongly the advisor believes a finding follows from the evidence."""
@@ -38,29 +40,16 @@ class ConfidenceLevel(StrEnum):
         )
 
 
-class LabeledStrEnum(StrEnum):
+class LabeledStrEnum(FieldedStrEnum):
     """String enum whose members carry their display label."""
 
     label: str
-
-    def __new__(cls, value: str, label: str) -> LabeledStrEnum:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.label = label
-        return member
 
 
 class CapabilityTag(LabeledStrEnum):
     """Capabilities recovered or prescribed by the canonical pattern library."""
 
     distinction: str
-
-    def __new__(cls, value: str, label: str, distinction: str) -> CapabilityTag:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.label = label
-        member.distinction = distinction
-        return member
 
     AUTHORITATIVE_DISPATCH = (
         "authoritative_dispatch",

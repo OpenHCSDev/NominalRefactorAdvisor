@@ -5,10 +5,9 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict, deque
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cached_property
 from collections.abc import Mapping
-from typing import Callable, Self, TypeAlias
+from typing import Callable, TypeAlias
 
 from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseAuthorityProof,
@@ -22,6 +21,7 @@ from nominal_refactor_advisor.carrier_expansion import (
     ForwardedCarrierExpansion,
     ResolvedFieldBindingCall,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
@@ -130,7 +130,7 @@ ParameterConveyorAuthorityPredicate: TypeAlias = Callable[
 ]
 
 
-class ClosedParameterConveyorAuthorityViolation(StrEnum):
+class ClosedParameterConveyorAuthorityViolation(FieldedStrEnum):
     """One failed proof obligation for an atomic parameter-conveyor rewrite."""
 
     NO_UNIQUE_NOMINAL_AUTHORITY = (
@@ -237,21 +237,8 @@ class ClosedParameterConveyorAuthorityViolation(StrEnum):
         lambda proof: proof.batch_compression_delta <= 0,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        explanation: str,
-        predicate: ParameterConveyorAuthorityPredicate,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._explanation = explanation
-        member._predicate = predicate
-        return member
-
-    @property
-    def explanation(self) -> str:
-        return self._explanation
+    explanation: str
+    _predicate: ParameterConveyorAuthorityPredicate
 
     def is_violated_by(self, proof: ClosedParameterConveyorAuthorityProof) -> bool:
         return self._predicate(proof)

@@ -45,6 +45,7 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassReferenceResolver,
 )
 from nominal_refactor_advisor.class_symbols import ModuleClassDefinitions
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.interpreter import PythonVersion
 from nominal_refactor_advisor.assignment_projection import (
@@ -156,7 +157,7 @@ IndexedClassDeclarationT = TypeVar(
 )
 
 
-class SemanticAuthorityKind(StrEnum):
+class SemanticAuthorityKind(FieldedStrEnum):
     """Nominal owner categories that can anchor semantic facts."""
 
     CLASS_FAMILY = (
@@ -197,37 +198,10 @@ class SemanticAuthorityKind(StrEnum):
         "replace the detector-observed mirror with a graph-certified derivation path",
     )
 
-    def __new__(
-        cls,
-        value: str,
-        is_class_family_like: bool,
-        reporting_capability_gap: str,
-        mirrored_fact_label: str,
-        missing_derivation_instruction: str,
-    ) -> SemanticAuthorityKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_class_family_like = is_class_family_like
-        member._reporting_capability_gap = reporting_capability_gap
-        member._mirrored_fact_label = mirrored_fact_label
-        member._missing_derivation_instruction = missing_derivation_instruction
-        return member
-
-    @property
-    def is_class_family_like(self) -> bool:
-        return self._is_class_family_like
-
-    @property
-    def reporting_capability_gap(self) -> str:
-        return self._reporting_capability_gap
-
-    @property
-    def mirrored_fact_label(self) -> str:
-        return self._mirrored_fact_label
-
-    @property
-    def missing_derivation_instruction(self) -> str:
-        return self._missing_derivation_instruction
+    is_class_family_like: bool
+    reporting_capability_gap: str
+    mirrored_fact_label: str
+    missing_derivation_instruction: str
 
 
 class SemanticFactKind(StrEnum):
@@ -302,26 +276,14 @@ class Declared(AuthorityClaimStatus):
     requires_discovery = False
 
 
-class AuthorityClaimProvenance(StrEnum):
+class AuthorityClaimProvenance(FieldedStrEnum):
     """Whether a graph authority can prove a source-level authority claim."""
 
-    def __new__(
-        cls,
-        value: str,
-        proves_claim: bool,
-    ) -> AuthorityClaimProvenance:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._proves_claim = proves_claim
-        return member
+    proves_claim: bool
 
     SOURCE_DECLARATION = ("source_declaration", True)
     DETECTOR_SOURCE_EVIDENCE = ("detector_source_evidence", True)
     INFERRED_FROM_PROJECTION = ("inferred_from_projection", False)
-
-    @property
-    def proves_claim(self) -> bool:
-        return self._proves_claim
 
 
 class AuthorityProofEdgeKind(StrEnum):
@@ -348,7 +310,7 @@ class PresentationProjectionPolicy(Flag):
     BRANCH_LIKE = auto()
 
 
-class PresentationProjectionKind(StrEnum):
+class PresentationProjectionKind(FieldedStrEnum):
     """Raw presentation shapes that may mirror a semantic authority."""
 
     CALL_LITERAL = (
@@ -388,17 +350,8 @@ class PresentationProjectionKind(StrEnum):
         PresentationProjectionPolicy.BRANCH_LIKE,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        surface_label: str,
-        policy: PresentationProjectionPolicy,
-    ) -> PresentationProjectionKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._surface_label = surface_label
-        member._policy = policy
-        return member
+    surface_label: str
+    _policy: PresentationProjectionPolicy
 
     @property
     def class_family_call_policy_applies(self) -> bool:
@@ -431,10 +384,6 @@ class PresentationProjectionKind(StrEnum):
             and has_key_value_pairs
         )
 
-    @property
-    def surface_label(self) -> str:
-        return self._surface_label
-
 
 class PresentationProjectionSiteKind(StrEnum):
     """Lexical role of a projection site within its nominal owner."""
@@ -450,32 +399,15 @@ class PresentationProjectionSiteKind(StrEnum):
         return f"{owner_symbol}:{self.value}"
 
 
-class PresentationTokenKind(StrEnum):
+class PresentationTokenKind(FieldedStrEnum):
     """Source syntax category for one normalized presentation token."""
 
     STRING_LITERAL = ("string_literal", True, False)
     NAME_REFERENCE = ("name_reference", False, False)
     QUALIFIED_ATTRIBUTE = ("qualified_attribute", False, True)
 
-    def __new__(
-        cls,
-        value: str,
-        is_string_literal: bool,
-        is_qualified_attribute: bool,
-    ) -> PresentationTokenKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_string_literal = is_string_literal
-        member._is_qualified_attribute = is_qualified_attribute
-        return member
-
-    @property
-    def is_string_literal(self) -> bool:
-        return self._is_string_literal
-
-    @property
-    def is_qualified_attribute(self) -> bool:
-        return self._is_qualified_attribute
+    is_string_literal: bool
+    is_qualified_attribute: bool
 
 
 class PresentationTokenRole(StrEnum):

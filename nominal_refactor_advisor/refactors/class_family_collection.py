@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cached_property
 from typing import cast
 
@@ -16,6 +15,7 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     IndexedClass,
     ModuleClassReferenceResolver,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.refactors.semantic_mirror import (
     RegistrationSemanticMirrorRecipeBuilder,
     SemanticMirrorOperationTargets,
@@ -45,20 +45,11 @@ from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 from nominal_refactor_advisor.semantic_match import single_item
 
 
-class ClassFamilyCollectionFactory(StrEnum):
+class ClassFamilyCollectionFactory(FieldedStrEnum):
     """Collection syntax and ordering semantics for one derived family view."""
 
-    def __new__(
-        cls,
-        value: str,
-        literal_node_type: type[ast.Tuple | ast.List | ast.Set] | None,
-        preserves_order: bool,
-    ) -> ClassFamilyCollectionFactory:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._literal_node_type = literal_node_type
-        member._preserves_order = preserves_order
-        return member
+    _literal_node_type: type[ast.Tuple | ast.List | ast.Set] | None
+    _preserves_order: bool
 
     TUPLE = (BuiltinCallName.TUPLE.value, ast.Tuple, True)
     LIST = (BuiltinCallName.LIST.value, ast.List, True)
@@ -158,27 +149,11 @@ def _class_name_family_symbols(
     return cast(tuple[str, ...], symbols)
 
 
-class ClassFamilyCollectionElementProjection(StrEnum):
+class ClassFamilyCollectionElementProjection(FieldedStrEnum):
     """How one collection projection references a class-family member."""
 
-    def __new__(
-        cls,
-        value: str,
-        symbol_projector: Callable[
-            [
-                tuple[ast.expr, ...],
-                ModuleClassReferenceResolver,
-                tuple[str, ...],
-            ],
-            tuple[str, ...] | None,
-        ],
-        value_source_builder: Callable[[str, str], str],
-    ) -> ClassFamilyCollectionElementProjection:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._symbol_projector = symbol_projector
-        member._value_source_builder = value_source_builder
-        return member
+    _symbol_projector: Callable[[tuple[ast.expr, ...], ModuleClassReferenceResolver, tuple[str, ...]], tuple[str, ...] | None]
+    _value_source_builder: Callable[[str, str], str]
 
     CLASS_OBJECT = (
         "class_object",
@@ -209,22 +184,12 @@ class ClassFamilyCollectionElementProjection(StrEnum):
         return self._value_source_builder(factory.value, member_source)
 
 
-class ClassFamilyCollectionMembershipProjection(StrEnum):
+class ClassFamilyCollectionMembershipProjection(FieldedStrEnum):
     """Runtime member query selected from the nominal authority declaration."""
 
-    def __new__(
-        cls,
-        value: str,
-        authority_matcher: Callable[[bool, bool, bool], bool],
-        member_symbol_projector: Callable[[ClassFamilyIndex, str], tuple[str, ...]],
-        value_source_builder: Callable[[str], str],
-    ) -> ClassFamilyCollectionMembershipProjection:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._authority_matcher = authority_matcher
-        member._member_symbol_projector = member_symbol_projector
-        member._value_source_builder = value_source_builder
-        return member
+    _authority_matcher: Callable[[bool, bool, bool], bool]
+    _member_symbol_projector: Callable[[ClassFamilyIndex, str], tuple[str, ...]]
+    _value_source_builder: Callable[[str], str]
 
     AUTOREGISTER_REGISTRY = (
         "autoregister_registry",

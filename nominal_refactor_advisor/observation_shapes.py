@@ -26,6 +26,7 @@ from nominal_refactor_advisor.export_tools import (
     PublicExportPolicy,
     derive_public_exports,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.observation_graph import (
     ObservationKind,
@@ -39,20 +40,10 @@ if TYPE_CHECKING:
     from nominal_refactor_advisor.ast_tools import ParsedModule
 
 
-class LiteralKind(StrEnum):
+class LiteralKind(FieldedStrEnum):
     """Literal kinds used by literal-dispatch observations."""
 
     literal_type: type[str] | type[int]
-
-    def __new__(
-        cls,
-        value: str,
-        literal_type: type[str] | type[int],
-    ) -> LiteralKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.literal_type = literal_type
-        return member
 
     STRING = ("string", str)
     NUMERIC = ("numeric", int)

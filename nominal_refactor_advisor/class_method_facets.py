@@ -15,7 +15,6 @@ from enum import StrEnum
 from functools import cached_property
 from typing import (
     Callable,
-    Self,
     TypeAlias,
 )
 
@@ -28,6 +27,7 @@ from nominal_refactor_advisor.class_symbols import (
 )
 from nominal_refactor_advisor.class_syntax_facets import _trim_leading_docstring
 from nominal_refactor_advisor.declaration_dependencies import ClassScopeDependency
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
@@ -55,7 +55,7 @@ class MethodFamilyResidueRole(StrEnum):
 MethodFamilyResidueNameBuilder: TypeAlias = Callable[[str, int], str]
 
 
-class CompactMethodSemanticCoordinateKind(StrEnum):
+class CompactMethodSemanticCoordinateKind(FieldedStrEnum):
     """Closed coordinate grammar with declaration-owned residue semantics."""
 
     CONSTANT = (
@@ -86,18 +86,6 @@ class CompactMethodSemanticCoordinateKind(StrEnum):
 
     residue_role: MethodFamilyResidueRole
     _residue_name_builder: MethodFamilyResidueNameBuilder
-
-    def __new__(
-        cls,
-        value: str,
-        residue_role: MethodFamilyResidueRole,
-        residue_name_builder: MethodFamilyResidueNameBuilder,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.residue_role = residue_role
-        member._residue_name_builder = residue_name_builder
-        return member
 
     def residue_name(self, method_name: str, index: int) -> str:
         return self._residue_name_builder(method_name, index)
@@ -284,7 +272,7 @@ def _has_attached_leading_comment(inspection: MethodPromotionInspection) -> bool
     return preceding_indent == method_indent and preceding_line.lstrip().startswith("#")
 
 
-class MethodPromotionHazard(StrEnum):
+class MethodPromotionHazard(FieldedStrEnum):
     """One promotion hazard carrying its own syntax recognition behavior."""
 
     CUSTOM_METHOD_DECORATOR = (
@@ -306,16 +294,6 @@ class MethodPromotionHazard(StrEnum):
     )
 
     predicate: MethodPromotionHazardPredicate
-
-    def __new__(
-        cls,
-        value: str,
-        predicate: MethodPromotionHazardPredicate,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.predicate = predicate
-        return member
 
     def is_present(self, inspection: MethodPromotionInspection) -> bool:
         return self.predicate(inspection)

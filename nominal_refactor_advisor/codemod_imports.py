@@ -11,7 +11,6 @@ from dataclasses import (
     dataclass,
     replace,
 )
-from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -35,6 +34,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing, SourceInsertionLayer
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias as ImportAlias,
     ImportBoundNameProjection,
@@ -1170,7 +1170,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         )
 
 
-class ImportSourceGroup(StrEnum):
+class ImportSourceGroup(FieldedStrEnum):
     """Canonical Python import group derived from an import declaration."""
 
     FUTURE = ("future", 0, lambda reference, first_party: False)
@@ -1196,23 +1196,9 @@ class ImportSourceGroup(StrEnum):
     )
     RELATIVE = ("relative", 4, lambda reference, first_party: reference.is_relative)
 
-    def __new__(
-        cls,
-        value: str,
-        canonical_rank: int,
-        reference_matcher: Callable[[ImportFromModuleName, frozenset[str]], bool],
-    ) -> ImportSourceGroup:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._canonical_rank = canonical_rank
-        member._reference_matcher = reference_matcher
-        return member
-
-    @property
-    def canonical_rank(self) -> int:
-        """Return deterministic import-block source order, not dispatch priority."""
-
-        return self._canonical_rank
+    canonical_rank: int
+    """Return deterministic import-block source order, not dispatch priority."""
+    _reference_matcher: Callable[[ImportFromModuleName, frozenset[str]], bool]
 
     @classmethod
     def from_declaration(

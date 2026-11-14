@@ -7,6 +7,7 @@ from collections.abc import (
 from enum import StrEnum
 from typing import ClassVar
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
 
 
@@ -16,27 +17,14 @@ class RewriteOperation(StrEnum):
     REPLACE_TARGET = "replace_target"
 
 
-class CodemodSourceDependencyScope(StrEnum):
+class CodemodSourceDependencyScope(FieldedStrEnum):
     """Source coverage required to prove one operation's physical edits."""
 
     EXPLICIT_TARGETS = ("explicit_targets", True)
     REPOSITORY = ("repository", False)
 
-    def __new__(
-        cls,
-        value: str,
-        permits_fast_snapshot: bool,
-    ) -> "CodemodSourceDependencyScope":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._permits_fast_snapshot = permits_fast_snapshot
-        return member
-
-    @property
-    def permits_fast_snapshot(self) -> bool:
-        """Return whether explicit targets are a complete proof source."""
-
-        return self._permits_fast_snapshot
+    permits_fast_snapshot: bool
+    """Return whether explicit targets are a complete proof source."""
 
     @classmethod
     def compose(
@@ -55,20 +43,12 @@ def _validate_ast_span_source(source: str, file_path: str) -> None:
     NativePythonCompilation(source, file_path).compile()
 
 
-class CodemodBackend(StrEnum):
+class CodemodBackend(FieldedStrEnum):
     """Source backend carrying its simulated-source validation behavior."""
 
     AST_SPAN = ("ast_span", _validate_ast_span_source)
 
-    def __new__(
-        cls,
-        value: str,
-        source_validator: Callable[[str, str], None],
-    ) -> "CodemodBackend":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._source_validator = source_validator
-        return member
+    _source_validator: Callable[[str, str], None]
 
     def validate_source(self, source: str, file_path: str) -> None:
         """Check syntax and Python compilation rules without executing source."""
@@ -163,7 +143,7 @@ FindingRecipePlanningHorizon.CURRENT_SNAPSHOT = (
 FindingRecipePlanningHorizon.UNPROVED = FindingRecipePlanningHorizon()
 
 
-class FindingRecipeSynthesisStatus(StrEnum):
+class FindingRecipeSynthesisStatus(FieldedStrEnum):
     """Recipe-synthesis outcome for one advisor finding."""
 
     EXECUTABLE_CANDIDATE = (
@@ -207,21 +187,8 @@ class FindingRecipeSynthesisStatus(StrEnum):
         FindingRecipeSynthesisDisposition.UNCOUNTED,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        default_reason: str,
-        disposition: FindingRecipeSynthesisDisposition,
-    ) -> "FindingRecipeSynthesisStatus":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._default_reason = default_reason
-        member._disposition = disposition
-        return member
-
-    @property
-    def default_reason(self) -> str:
-        return self._default_reason
+    default_reason: str
+    _disposition: FindingRecipeSynthesisDisposition
 
     @property
     def candidate(self) -> bool:
@@ -236,27 +203,14 @@ class FindingRecipeSynthesisStatus(StrEnum):
         return self._disposition is FindingRecipeSynthesisDisposition.UNSUPPORTED
 
 
-class CodemodPreflightStatus(StrEnum):
+class CodemodPreflightStatus(FieldedStrEnum):
     """Machine-readable codemod preflight outcome."""
 
     PASSED = ("passed", True)
     FAILED = ("failed", False)
 
-    def __new__(
-        cls,
-        value: str,
-        is_passed: bool,
-    ) -> "CodemodPreflightStatus":
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_passed = is_passed
-        return member
-
-    @property
-    def is_passed(self) -> bool:
-        """Whether the checked codemod contract is satisfied."""
-
-        return self._is_passed
+    is_passed: bool
+    """Whether the checked codemod contract is satisfied."""
 
     @property
     def is_failed(self) -> bool:

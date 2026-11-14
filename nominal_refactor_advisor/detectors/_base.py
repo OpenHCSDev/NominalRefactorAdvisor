@@ -55,6 +55,7 @@ from nominal_refactor_advisor.detectors._candidates import (
     WitnessCarrierCandidate as WitnessCarrierCandidate,
     _attribute_projection as _attribute_projection,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
@@ -214,21 +215,12 @@ FindingSpecT = TypeVar("FindingSpecT", bound=FindingSpec)
 FindingSpecSemanticValue: TypeAlias = ConfidenceLevel | CertificationLevel
 
 
-class FindingSpecSemanticField(StrEnum):
+class FindingSpecSemanticField(FieldedStrEnum):
     CONFIDENCE = ("confidence", ConfidenceLevel, "_CONFIDENCE")
     CERTIFICATION = ("certification", CertificationLevel, "")
 
-    def __new__(
-        cls,
-        value: str,
-        semantic_value_type: type[ConfidenceLevel] | type[CertificationLevel],
-        import_name_suffix: str,
-    ) -> FindingSpecSemanticField:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._semantic_value_type = semantic_value_type
-        member._import_name_suffix = import_name_suffix
-        return member
+    _semantic_value_type: type[ConfidenceLevel] | type[CertificationLevel]
+    _import_name_suffix: str
 
     @classmethod
     def from_keyword_name(cls, keyword_name: str | None) -> Self | None:
@@ -440,7 +432,7 @@ class DetectorConfig:
         return cls(**config_values)
 
 
-class DetectorCacheGranularity(StrEnum):
+class DetectorCacheGranularity(FieldedStrEnum):
     """Detector-output cache granularity supported by a detector contract."""
 
     GLOBAL = "global", True
@@ -448,15 +440,7 @@ class DetectorCacheGranularity(StrEnum):
     CONTEXTUAL_MODULE = "contextual_module", True
     CONTEXTUAL_GLOBAL = "contextual_global", True
 
-    def __new__(cls, value: str, retains_repository_context: bool) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._retains_repository_context = retains_repository_context
-        return member
-
-    @property
-    def retains_repository_context(self) -> bool:
-        return self._retains_repository_context
+    retains_repository_context: bool
 
     def select_detector_types(
         self,
@@ -4061,24 +4045,12 @@ class RegistryProjectionRole(StrEnum):
         return default
 
 
-class RegistryProjectionSurfaceKind(StrEnum):
-    def __new__(
-        cls,
-        value: str,
-        claims_surface: Callable[[RegistryProjectionSurfaceEvidence], bool],
-        proof_names: Callable[[InjectiveTypeRegistryProof], tuple[str, ...]],
-        shared_names: Callable[[RegistryProjectionSurfaceEvidence], tuple[str, ...]],
-        default_role: RegistryProjectionRole,
-        fixed_materialization: RegistryProjectionMaterialization | None,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._claims_surface = claims_surface
-        member._proof_names = proof_names
-        member._shared_names = shared_names
-        member._default_role = default_role
-        member._fixed_materialization = fixed_materialization
-        return member
+class RegistryProjectionSurfaceKind(FieldedStrEnum):
+    _claims_surface: Callable[[RegistryProjectionSurfaceEvidence], bool]
+    _proof_names: Callable[[InjectiveTypeRegistryProof], tuple[str, ...]]
+    _shared_names: Callable[[RegistryProjectionSurfaceEvidence], tuple[str, ...]]
+    default_role: RegistryProjectionRole
+    _fixed_materialization: RegistryProjectionMaterialization | None
 
     EXPORT_ROSTER = (
         "export_roster",
@@ -4144,10 +4116,6 @@ class RegistryProjectionSurfaceKind(StrEnum):
         return single_item(
             tuple(surface_kind for surface_kind in cls if surface_kind.claims(evidence))
         )
-
-    @property
-    def default_role(self) -> RegistryProjectionRole:
-        return self._default_role
 
     def materialization_for(
         self,

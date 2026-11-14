@@ -6,7 +6,6 @@ import ast
 import hashlib
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
 from typing import Generic, TypeAlias, TypeVar
@@ -21,6 +20,7 @@ from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_field,
@@ -103,7 +103,7 @@ class StableIdAuthority:
 STABLE_ID_AUTHORITY = StableIdAuthority()
 
 
-class AstTargetNodeKind(StrEnum):
+class AstTargetNodeKind(FieldedStrEnum):
     """Source-index AST target kinds."""
 
     MODULE = "module", (ast.Module,)
@@ -112,14 +112,6 @@ class AstTargetNodeKind(StrEnum):
     METHOD = "method", (ast.FunctionDef, ast.AsyncFunctionDef)
 
     node_types: tuple[type[ast.AST], ...]
-
-    def __new__(
-        cls, value: str, node_types: tuple[type[ast.AST], ...],
-    ) -> AstTargetNodeKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.node_types = node_types
-        return member
 
     def accepts(self, node: ast.AST) -> bool:
         return isinstance(node, self.node_types)

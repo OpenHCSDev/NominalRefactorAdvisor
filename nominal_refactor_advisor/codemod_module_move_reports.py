@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass
-from enum import StrEnum
 
 from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
 from nominal_refactor_advisor.codemod_import_bindings import (
@@ -20,6 +19,7 @@ from nominal_refactor_advisor.codemod_import_scopes import (
 from nominal_refactor_advisor.codemod_module_declarations import (
     SourceTopLevelSymbolMoveSelection,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     json_report_field,
@@ -110,7 +110,7 @@ class ModuleMoveSourceLocalDependencyResolution:
     ) -> ModuleMoveSourceLocalDependencyResolution:
         return cls(unresolved_names=names)
 
-class ModuleMoveObstacleKind(StrEnum):
+class ModuleMoveObstacleKind(FieldedStrEnum):
     """Typed module-move proof failures with declaration-owned presentation."""
 
     SOURCE_LOCAL_DEPENDENCY = (
@@ -146,15 +146,7 @@ class ModuleMoveObstacleKind(StrEnum):
         "destination statements read a moved symbol, when the module runs, above where it must land",
     )
 
-    def __new__(
-        cls,
-        value: str,
-        message_label: str,
-    ) -> ModuleMoveObstacleKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._message_label = message_label
-        return member
+    _message_label: str
 
     def message(self, details: tuple[str, ...]) -> str:
         return f"{self._message_label}={details!r}"

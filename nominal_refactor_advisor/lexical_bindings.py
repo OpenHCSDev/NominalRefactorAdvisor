@@ -11,7 +11,6 @@ from abc import (
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from enum import StrEnum
 from functools import cached_property
 from typing import (
     ClassVar,
@@ -27,10 +26,11 @@ from nominal_refactor_advisor.ast_field_decoders import (
     capture_names,
     declared_annotations,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
 
-class CompactParameterKind(StrEnum):
+class CompactParameterKind(FieldedStrEnum):
     """Python parameter kinds with their binding behavior on each member."""
 
     POSITIONAL_ONLY = "positional_only", True, False, False
@@ -39,31 +39,9 @@ class CompactParameterKind(StrEnum):
     KEYWORD_ONLY = "keyword_only", False, True, False
     VAR_KEYWORD = "var_keyword", False, True, True
 
-    def __new__(
-        cls,
-        value: str,
-        accepts_positional: bool,
-        accepts_keyword: bool,
-        variadic: bool,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._accepts_positional = accepts_positional
-        member._accepts_keyword = accepts_keyword
-        member._variadic = variadic
-        return member
-
-    @property
-    def accepts_positional(self) -> bool:
-        return self._accepts_positional
-
-    @property
-    def accepts_keyword(self) -> bool:
-        return self._accepts_keyword
-
-    @property
-    def variadic(self) -> bool:
-        return self._variadic
+    accepts_positional: bool
+    accepts_keyword: bool
+    variadic: bool
 
 
 @dataclass(frozen=True)

@@ -16,7 +16,6 @@ from dataclasses import (
     dataclass,
     replace,
 )
-from enum import StrEnum
 from typing import (
     Generic,
     Self,
@@ -41,6 +40,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
 from nominal_refactor_advisor.class_method_facets import ClassMethodReceiverRequirements
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
 from nominal_refactor_advisor.refactors.function_projection_targets import (
     ResolvedFunctionProjectionTarget,
@@ -138,21 +138,13 @@ def _repeated_builder_root_name_source(
     return next(iter(roots)) if len(roots) == 1 else None
 
 
-class RepeatedBuilderParameterProjection(StrEnum):
+class RepeatedBuilderParameterProjection(FieldedStrEnum):
     """How a generated builder parameter is recovered from a matched call."""
 
     VALUE = ("value", _repeated_builder_value_source)
     ROOT_NAME = ("root_name", _repeated_builder_root_name_source)
 
-    def __new__(
-        cls,
-        value: str,
-        source_projection: Callable[[SourceTextGeometry, ast.expr], str | None],
-    ) -> RepeatedBuilderParameterProjection:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._source_projection = source_projection
-        return member
+    _source_projection: Callable[[SourceTextGeometry, ast.expr], str | None]
 
     def source_from(
         self,

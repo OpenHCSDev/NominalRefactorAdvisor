@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_projection import CallKeyword, StatementValue
@@ -65,21 +66,13 @@ class SemanticInspectionIdentityKind(StrEnum):
         return STABLE_ID_AUTHORITY.build(self, parts)
 
 
-class ImportSummaryKind(StrEnum):
+class ImportSummaryKind(FieldedStrEnum):
     """Import declaration forms and their stable identity namespaces."""
 
     IMPORT = ("import", SemanticInspectionIdentityKind.IMPORT)
     FROM_IMPORT = ("from_import", SemanticInspectionIdentityKind.FROM_IMPORT)
 
-    def __new__(
-        cls,
-        value: str,
-        identity_kind: SemanticInspectionIdentityKind,
-    ) -> ImportSummaryKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._identity_kind = identity_kind
-        return member
+    _identity_kind: SemanticInspectionIdentityKind
 
     def stable_id(self, *parts: StableIdPart) -> str:
         return self._identity_kind.stable_id(*parts)
@@ -118,7 +111,7 @@ class CallSummary(SemanticInspectionRecord, ScopedAstEventReference):
     keyword_names: tuple[str, ...]
 
 
-class FunctionSummaryKind(StrEnum):
+class FunctionSummaryKind(FieldedStrEnum):
     """Function declaration forms carried by semantic inspection records."""
 
     FUNCTION = ("function", AstTargetNodeKind.FUNCTION, False)
@@ -126,17 +119,8 @@ class FunctionSummaryKind(StrEnum):
     METHOD = ("method", AstTargetNodeKind.METHOD, False)
     ASYNC_METHOD = ("async_method", AstTargetNodeKind.METHOD, True)
 
-    def __new__(
-        cls,
-        value: str,
-        target_kind: AstTargetNodeKind,
-        is_async: bool,
-    ) -> FunctionSummaryKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._target_kind = target_kind
-        member._is_async = is_async
-        return member
+    _target_kind: AstTargetNodeKind
+    _is_async: bool
 
     @classmethod
     def from_target(

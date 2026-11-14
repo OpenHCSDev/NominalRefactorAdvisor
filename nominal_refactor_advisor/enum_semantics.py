@@ -11,12 +11,13 @@ from functools import cached_property
 from typing import Callable, Self
 
 from nominal_refactor_advisor.ast_projection import StatementValues
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.value_expression import LiteralExpressionEffects
 
 QualifiedReferenceResolver = Callable[[ast.expr, frozenset[str]], str | None]
 
 
-class PythonEnumBaseKind(StrEnum):
+class PythonEnumBaseKind(FieldedStrEnum):
     """Exact standard-library enum bases with member-owned native behavior."""
 
     ENUM = "enum", Enum
@@ -26,12 +27,6 @@ class PythonEnumBaseKind(StrEnum):
     STR_ENUM = "str_enum", StrEnum
 
     native_type: type[Enum]
-
-    def __new__(cls, value: str, native_type: type[Enum]) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.native_type = native_type
-        return member
 
     @property
     def qualified_name(self) -> str:

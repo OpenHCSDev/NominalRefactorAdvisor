@@ -5,10 +5,10 @@ from __future__ import annotations
 from abc import ABC
 
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cache
 import inspect
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
 from nominal_refactor_advisor.codemod_runtime import FindingRecipeEvaluator
 from nominal_refactor_advisor.detectors._base import (
@@ -31,7 +31,7 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
 
-class DetectorContributionRole(StrEnum):
+class DetectorContributionRole(FieldedStrEnum):
     """Closed detector contributions derived from nominal execution contracts."""
 
     REQUIRED_RELATION_OBSERVATION = (
@@ -60,25 +60,8 @@ class DetectorContributionRole(StrEnum):
         "Can produce an executable recipe after runtime proof succeeds; membership alone is not success evidence.",
     )
 
-    def __new__(
-        cls,
-        value: str,
-        contract_type: type[ABC],
-        description: str,
-    ) -> DetectorContributionRole:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._contract_type = contract_type
-        member._description = description
-        return member
-
-    @property
-    def contract_type(self) -> type[ABC]:
-        return self._contract_type
-
-    @property
-    def description(self) -> str:
-        return self._description
+    contract_type: type[ABC]
+    description: str
 
     def applies_to(self, detector_type: type[IssueDetector]) -> bool:
         return issubclass(detector_type, self.contract_type)

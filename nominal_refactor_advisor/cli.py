@@ -23,6 +23,7 @@ from typing import ClassVar, Self, TypeAlias, cast
 
 from metaclass_registry import AutoRegisterMeta
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.type_checker_session import TypeCheckerTimingLedger
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -1185,7 +1186,7 @@ class JsonFindingPayloadEnvelope(DataclassJsonReport):
         return JsonFindingCounts(self.summary)
 
 
-class JsonScanMode(StrEnum):
+class JsonScanMode(FieldedStrEnum):
     """Nominal completeness semantics for one JSON scan execution path."""
 
     exact_cache = (
@@ -1194,12 +1195,8 @@ class JsonScanMode(StrEnum):
         "validated_cache_covers_the_complete_requested_detector_roster",
     )
 
-    def __new__(cls, value: str, complete: bool, reason: str) -> JsonScanMode:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._complete = complete
-        member._reason = reason
-        return member
+    complete: bool
+    reason: str
 
     exact_compact_global = (
         "exact_compact_global",
@@ -1226,14 +1223,6 @@ class JsonScanMode(StrEnum):
         False,
         "the_scan_roots_hold_python_source_the_result_does_not_cover",
     )
-
-    @property
-    def complete(self) -> bool:
-        return self._complete
-
-    @property
-    def reason(self) -> str:
-        return self._reason
 
 
 @dataclass(frozen=True)

@@ -30,6 +30,7 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSourceProjection,
     parse_python_module_roots,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
@@ -77,14 +78,10 @@ from nominal_refactor_advisor.stage_proof import TrajectoryScans
 IdentityT = TypeVar("IdentityT", bound=Hashable)
 
 
-class CodemodWorkflowStopReason(StrEnum):
+class CodemodWorkflowStopReason(FieldedStrEnum):
     """Terminal state for staged codemod workflows."""
 
-    def __new__(cls, value: str, completed: bool) -> CodemodWorkflowStopReason:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._completed = completed
-        return member
+    completed: bool
 
     ACHIEVED = ("achieved", True)
     PARTIALLY_ACHIEVED = ("partially_achieved", True)
@@ -93,12 +90,8 @@ class CodemodWorkflowStopReason(StrEnum):
     UNPROVED_TRAJECTORY = ("unproved_trajectory", False)
     NO_PROVED_TRAJECTORY = ("no_proved_trajectory", False)
 
-    @property
-    def completed(self) -> bool:
-        return self._completed
 
-
-class CodemodRefactorTrajectoryStatus(StrEnum):
+class CodemodRefactorTrajectoryStatus(FieldedStrEnum):
     """Proof status for exhaustive reachable-state exploration."""
 
     PROVED = (
@@ -149,27 +142,9 @@ class CodemodRefactorTrajectoryStatus(StrEnum):
         lambda proof: bool(proof.obstacles) and not proof.landable_prefix,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        stop_reason: CodemodWorkflowStopReason,
-        proved: bool,
-        matcher: Callable[[CodemodRefactorTrajectoryProof], bool],
-    ) -> CodemodRefactorTrajectoryStatus:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._stop_reason = stop_reason
-        member._proved = proved
-        member._matcher = matcher
-        return member
-
-    @property
-    def stop_reason(self) -> CodemodWorkflowStopReason:
-        return self._stop_reason
-
-    @property
-    def proved(self) -> bool:
-        return self._proved
+    stop_reason: CodemodWorkflowStopReason
+    proved: bool
+    _matcher: Callable[[CodemodRefactorTrajectoryProof], bool]
 
     def matches(self, proof: CodemodRefactorTrajectoryProof) -> bool:
         return self._matcher(proof)
@@ -212,36 +187,20 @@ class CodemodRefactorTrajectoryBudget(DataclassJsonReport):
         if self.max_states < 1:
             raise ValueError("trajectory state budget must be at least 1")
 
-class CodemodProjectedScanMode(StrEnum):
+class CodemodProjectedScanMode(FieldedStrEnum):
     """Completeness contract for a projected post-codemod scan."""
 
     EXACT = ("exact", True)
     EVIDENCE_LOCAL_PARTIAL = ("evidence_local_partial", False)
     TARGET_DETECTOR_PARTIAL = ("target_detector_partial", False)
 
-    def __new__(cls, value: str, exact: bool) -> CodemodProjectedScanMode:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._exact = exact
-        return member
-
-    @property
-    def exact(self) -> bool:
-        return self._exact
+    exact: bool
 
 
-class CodemodFindingClassStatus(StrEnum):
+class CodemodFindingClassStatus(FieldedStrEnum):
     """Projected status for one semantic class of advisor findings."""
 
-    def __new__(
-        cls,
-        value: str,
-        matcher: Callable[[CodemodFindingClassChange], bool] | None,
-    ) -> CodemodFindingClassStatus:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._matcher = matcher
-        return member
+    _matcher: Callable[[CodemodFindingClassChange], bool] | None
 
     ELIMINATED = (
         "eliminated",

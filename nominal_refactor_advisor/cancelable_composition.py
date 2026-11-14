@@ -12,13 +12,13 @@ import ast
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import reduce
 from typing import ClassVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import FunctionDefinitionNode
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.semantic_match import Maybe
 from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
@@ -146,7 +146,7 @@ class _PackUnpackForwardProjection(_CancelableCompositionProjectionABC):
                 return None
 
 
-class CancelableCompositionKind(StrEnum):
+class CancelableCompositionKind(FieldedStrEnum):
     """Kinds of product-carrier compositions with member-owned execution."""
 
     PRODUCT_PACK_FORWARD = (
@@ -158,15 +158,7 @@ class CancelableCompositionKind(StrEnum):
         _PackUnpackForwardProjection(),
     )
 
-    def __new__(
-        cls,
-        value: str,
-        projection: _CancelableCompositionProjectionABC,
-    ) -> CancelableCompositionKind:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._projection = projection
-        return member
+    _projection: _CancelableCompositionProjectionABC
 
     @property
     def load_bearing_bonus(self) -> int:

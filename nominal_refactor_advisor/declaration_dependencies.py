@@ -11,7 +11,6 @@ from contextlib import (
     nullcontext,
 )
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cached_property
 from typing import Callable, TypeAlias
 
@@ -30,6 +29,7 @@ from nominal_refactor_advisor.assignment_projection import (
     NamedAssignmentSelection,
     SingleAssignmentAndValueNameProjection,
 )
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_scopes import (
     ClassNamespaceScope,
     FunctionBindingProjection as FunctionBindingProjection,
@@ -67,7 +67,7 @@ def _has_private_identifiers(nodes: tuple[ast.AST, ...]) -> bool:
     return any(name.startswith("__") and not name.endswith("__") for name in names)
 
 
-class ClassScopeDependency(StrEnum):
+class ClassScopeDependency(FieldedStrEnum):
     """Python syntax whose meaning can depend on its enclosing class owner."""
 
     SUPER_REFERENCE = (
@@ -86,39 +86,19 @@ class ClassScopeDependency(StrEnum):
 
     predicate: Callable[[tuple[ast.AST, ...]], bool]
 
-    def __new__(
-        cls,
-        value: str,
-        predicate: Callable[[tuple[ast.AST, ...]], bool],
-    ) -> ClassScopeDependency:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.predicate = predicate
-        return member
-
     @classmethod
     def from_node(cls, node: ast.AST) -> tuple[ClassScopeDependency, ...]:
         nodes = tuple(ast.walk(node))
         return tuple(dependency for dependency in cls if dependency.predicate(nodes))
 
 
-class ModuleBindingResolutionPhase(StrEnum):
+class ModuleBindingResolutionPhase(FieldedStrEnum):
     """Module snapshot from which one direct source reference resolves."""
 
     SOURCE_POSITION = "source_position", lambda line: line
     FINAL_MODULE = "final_module", lambda _line: None
 
     snapshot_line_resolver: Callable[[int], int | None]
-
-    def __new__(
-        cls,
-        value: str,
-        snapshot_line_resolver: Callable[[int], int | None],
-    ) -> ModuleBindingResolutionPhase:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.snapshot_line_resolver = snapshot_line_resolver
-        return member
 
     def snapshot_line_for(self, reference: ast.Name) -> int | None:
         return self.snapshot_line_at(reference.lineno)
@@ -127,7 +107,7 @@ class ModuleBindingResolutionPhase(StrEnum):
         return self.snapshot_line_resolver(line)
 
 
-class DeclarationDependencyUse(StrEnum):
+class DeclarationDependencyUse(FieldedStrEnum):
     """Execution context and evaluation policy of an external reference."""
 
     EXECUTION = "execution", True, lambda phase, _eager: phase
@@ -148,20 +128,6 @@ class DeclarationDependencyUse(StrEnum):
     phase_resolver: Callable[
         [ModuleBindingResolutionPhase, bool], ModuleBindingResolutionPhase
     ]
-
-    def __new__(
-        cls,
-        value: str,
-        is_direct_source: bool,
-        phase_resolver: Callable[
-            [ModuleBindingResolutionPhase, bool], ModuleBindingResolutionPhase
-        ],
-    ) -> DeclarationDependencyUse:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.is_direct_source = is_direct_source
-        member.phase_resolver = phase_resolver
-        return member
 
     def binding_phase(
         self, phase: ModuleBindingResolutionPhase, *, eager_annotations: bool

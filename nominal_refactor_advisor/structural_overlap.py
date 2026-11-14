@@ -9,6 +9,7 @@ from functools import cached_property
 from typing import TypeAlias
 
 from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import (
     FindingMetrics,
     RefactorFinding,
@@ -24,7 +25,7 @@ from nominal_refactor_advisor.json_reports import (
 MetricCoordinateProjection: TypeAlias = Callable[[FindingMetrics], tuple[str, ...]]
 
 
-class MetricStructuralOverlapAxis(StrEnum):
+class MetricStructuralOverlapAxis(FieldedStrEnum):
     """Metric projections used only to group current-snapshot evidence."""
 
     CLASS_FAMILY = ("class-family", lambda metrics: metrics.plan_class_names)
@@ -58,15 +59,7 @@ class MetricStructuralOverlapAxis(StrEnum):
         ),
     )
 
-    def __new__(
-        cls,
-        value: str,
-        coordinate_projection: MetricCoordinateProjection,
-    ) -> MetricStructuralOverlapAxis:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._coordinate_projection = coordinate_projection
-        return member
+    _coordinate_projection: MetricCoordinateProjection
 
     def coordinate_values(self, metrics: FindingMetrics) -> tuple[str, ...]:
         """Project this axis from one finding's declared metric contract."""

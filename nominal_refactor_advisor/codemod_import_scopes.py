@@ -5,8 +5,8 @@ from __future__ import annotations
 import ast
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import TYPE_CHECKING, TypeAlias
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 
 
@@ -68,7 +68,7 @@ def _guarded_module_reference(
     return module_reference
 
 
-class ModuleImportScope(StrEnum):
+class ModuleImportScope(FieldedStrEnum):
     """Execution scope carried by every import requirement and mutation."""
 
     RUNTIME = (
@@ -86,36 +86,12 @@ class ModuleImportScope(StrEnum):
         _guarded_module_reference,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        canonical_rank: int,
-        is_guarded: bool,
-        statement_projection: Callable[[ast.Module], tuple[ImportStatement, ...]],
-        module_reference_resolver: Callable[
-            [SourceModuleImportGraph, str, str, str],
-            str,
-        ],
-    ) -> ModuleImportScope:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._canonical_rank = canonical_rank
-        member._is_guarded = is_guarded
-        member._statement_projection = statement_projection
-        member._module_reference_resolver = module_reference_resolver
-        return member
-
-    @property
-    def canonical_rank(self) -> int:
-        """Return source order without creating a second priority registry."""
-
-        return self._canonical_rank
-
-    @property
-    def is_guarded(self) -> bool:
-        """Return whether imports execute only for static type checking."""
-
-        return self._is_guarded
+    canonical_rank: int
+    """Return source order without creating a second priority registry."""
+    is_guarded: bool
+    """Return whether imports execute only for static type checking."""
+    _statement_projection: Callable[[ast.Module], tuple[ImportStatement, ...]]
+    _module_reference_resolver: Callable[[SourceModuleImportGraph, str, str, str], str]
 
     def import_statements(self, module: ast.Module) -> tuple[ImportStatement, ...]:
         """Project imports belonging to this declaration-owned scope."""

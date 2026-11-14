@@ -8,32 +8,24 @@ from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from enum import StrEnum
 from functools import cached_property
 from typing import ClassVar, Self
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ScopeBindingCollector,
 )
 
 
-class LexicalNameResolution(StrEnum):
+class LexicalNameResolution(FieldedStrEnum):
     """Whether a read is owned locally, externally, or remains path-dependent."""
 
     INTERNAL = ("internal", True)
     EXTERNAL = ("external", False)
     UNPROVED = ("unproved", None)
 
-    def __new__(
-        cls,
-        value: str,
-        is_internal: bool | None,
-    ) -> LexicalNameResolution:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._is_internal = is_internal
-        return member
+    _is_internal: bool | None
 
     @property
     def is_external_candidate(self) -> bool:

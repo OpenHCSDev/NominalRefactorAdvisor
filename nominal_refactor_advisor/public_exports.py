@@ -8,10 +8,8 @@ from abc import (
     abstractmethod,
 )
 from dataclasses import dataclass
-from enum import StrEnum
 from functools import cached_property
 from typing import (
-    Self,
     cast,
 )
 
@@ -22,25 +20,18 @@ from nominal_refactor_advisor.ast_projection import (
 from nominal_refactor_advisor.ast_tools import OwnScopeNodeVisitor, ParsedModule
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
 
-class CompactPublicNameExposure(StrEnum):
+class CompactPublicNameExposure(FieldedStrEnum):
     """Proof result for one name on a module's declared public surface."""
 
     PUBLIC = "public", True
     PRIVATE = "private", False
     UNRESOLVED = "unresolved", True
 
-    def __new__(cls, value: str, blocks_closed_boundary: bool) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._blocks_closed_boundary = blocks_closed_boundary
-        return member
-
-    @property
-    def blocks_closed_boundary(self) -> bool:
-        return self._blocks_closed_boundary
+    blocks_closed_boundary: bool
 
     @property
     def proves_public_exposure(self) -> bool:

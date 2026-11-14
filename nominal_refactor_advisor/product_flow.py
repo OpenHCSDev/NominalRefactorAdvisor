@@ -61,6 +61,7 @@ from nominal_refactor_advisor.call_binding import (
 from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import (
     CompactParameterKind as CompactParameterKind,
     DictionaryEvaluationVisitor,
@@ -110,7 +111,7 @@ SourcePositionedNode: TypeAlias = (
 )
 
 
-class CompactTransparentSignatureDecorator(StrEnum):
+class CompactTransparentSignatureDecorator(FieldedStrEnum):
     """Known decorators which preserve callable binding/signature semantics."""
 
     ABSTRACT_METHOD = (
@@ -139,15 +140,7 @@ class CompactTransparentSignatureDecorator(StrEnum):
     )
     STATIC_METHOD = "staticmethod", (("staticmethod",),)
 
-    def __new__(
-        cls,
-        value: str,
-        accepted_reference_parts: tuple[tuple[str, ...], ...],
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._accepted_reference_parts = accepted_reference_parts
-        return member
+    _accepted_reference_parts: tuple[tuple[str, ...], ...]
 
     def matches(self, decorator: CompactValueExpression) -> bool:
         return bool(
@@ -163,7 +156,7 @@ class CompactTransparentSignatureDecorator(StrEnum):
         return any(member.matches(decorator) for member in cls)
 
 
-class CompactDescriptorAccess(StrEnum):
+class CompactDescriptorAccess(FieldedStrEnum):
     """Descriptor lookup form with member-owned implicit argument projection."""
 
     DIRECT = "direct", lambda kind: kind.direct_implicit_parameter_count
@@ -171,21 +164,13 @@ class CompactDescriptorAccess(StrEnum):
     INSTANCE = "instance", lambda kind: kind.implicit_parameter_count
     UNKNOWN = "unknown", lambda kind: None
 
-    def __new__(
-        cls,
-        value: str,
-        parameter_count: Callable[[CompactFunctionBindingKind], int | None],
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._parameter_count = parameter_count
-        return member
+    _parameter_count: Callable[[CompactFunctionBindingKind], int | None]
 
     def implicit_parameter_count(self, kind: CompactFunctionBindingKind) -> int | None:
         return self._parameter_count(kind)
 
 
-class CompactFunctionBindingKind(StrEnum):
+class CompactFunctionBindingKind(FieldedStrEnum):
     """Nominal callable binding form with member-owned matching semantics."""
 
     FUNCTION = "function", 0, False, None, CompactDescriptorAccess.DIRECT, 0, 0
@@ -217,33 +202,12 @@ class CompactFunctionBindingKind(StrEnum):
         0,
     )
 
+    implicit_parameter_count: int
+    _class_owned: bool
+    _binding_decorator: CompactTransparentSignatureDecorator | None
     receiver_access: CompactDescriptorAccess
     class_implicit_parameter_count: int
     direct_implicit_parameter_count: int | None
-
-    def __new__(
-        cls,
-        value: str,
-        implicit_parameter_count: int,
-        class_owned: bool,
-        binding_decorator: CompactTransparentSignatureDecorator | None,
-        receiver_access: CompactDescriptorAccess,
-        class_implicit_parameter_count: int,
-        direct_implicit_parameter_count: int | None,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._implicit_parameter_count = implicit_parameter_count
-        member._class_owned = class_owned
-        member._binding_decorator = binding_decorator
-        member.receiver_access = receiver_access
-        member.class_implicit_parameter_count = class_implicit_parameter_count
-        member.direct_implicit_parameter_count = direct_implicit_parameter_count
-        return member
-
-    @property
-    def implicit_parameter_count(self) -> int:
-        return self._implicit_parameter_count
 
     def matches_declaration(
         self,
@@ -2622,7 +2586,7 @@ class SubscriptionResultValue(
         return resolver._subscription_result_value_resolution(self, context)
 
 
-class CompactLocalSignatureObserver(StrEnum):
+class CompactLocalSignatureObserver(FieldedStrEnum):
     """Runtime operations which can observe a function's local signature."""
 
     LOCAL_MAPPING = (
@@ -2671,17 +2635,8 @@ class CompactLocalSignatureObserver(StrEnum):
         False,
     )
 
-    def __new__(
-        cls,
-        value: str,
-        accepted_reference_parts: tuple[tuple[str, ...], ...],
-        requires_no_arguments: bool,
-    ) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member._accepted_reference_parts = accepted_reference_parts
-        member._requires_no_arguments = requires_no_arguments
-        return member
+    _accepted_reference_parts: tuple[tuple[str, ...], ...]
+    _requires_no_arguments: bool
 
     def observes(self, call: CompactFunctionCall) -> bool:
         reference = call.target.lexical_reference

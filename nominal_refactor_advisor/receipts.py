@@ -10,25 +10,17 @@ receipts, each over its own family of kinds.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
-from typing import Self
 
+from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
 from nominal_refactor_advisor.models import SourceLocation
 
 
-class ReceiptKind(StrEnum):
+class ReceiptKind(FieldedStrEnum):
     """One kind of evidence, with its log-odds weight per unit and whether it guards."""
 
     weight: float
     guards: bool
-
-    def __new__(cls, value: str, weight: float, guards: bool) -> Self:
-        member = str.__new__(cls, value)
-        member._value_ = value
-        member.weight = weight
-        member.guards = guards
-        return member
 
 
 @dataclass(frozen=True)
