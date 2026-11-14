@@ -1191,10 +1191,7 @@ def _target_has_keyed_family_axis_root(
     return any(
         indexed_class.declares_keyed_base
         and "registry_key_attr" in indexed_class.direct_declared_member_names
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
         for indexed_class in projection.classes
     )
 
@@ -1206,10 +1203,7 @@ def _target_has_manual_selector_axis(
     del config
     return any(
         projection.manual_selector_axes
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 
@@ -1220,10 +1214,7 @@ def _target_has_closed_axis_branch(
     del config
     return any(
         projection.closed_axis_branch_functions
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 
@@ -1234,10 +1225,7 @@ def _target_has_keyed_table_axis(
     del config
     return any(
         projection.keyed_table_axes
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 
@@ -1552,15 +1540,12 @@ def _target_has_external_enum_case_recovery(
     config: DetectorConfig,
 ) -> bool:
     del config
-    projections = projections_by_family.get(CompactModuleClassProjectionFamily, ())
+    projections = CompactModuleClassProjectionFamily.present_in(projections_by_family)
     return any(
-        projection.closed_axis_branch_functions
-        for projection in projections
-        if isinstance(projection, CompactModuleClassProjection)
+        projection.closed_axis_branch_functions for projection in projections
     ) and any(
         indexed_class.direct_enum_member_names
         for projection in projections
-        if isinstance(projection, CompactModuleClassProjection)
         for indexed_class in projection.classes
     )
 
@@ -2140,10 +2125,7 @@ def _target_has_repeated_keyed_family_root(
     del config
     return any(
         projection.repeated_keyed_family_roots
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 
@@ -2630,10 +2612,7 @@ def _target_has_keyed_registry_axis_root(
     return any(
         indexed_class.declares_keyed_base
         and indexed_class.constant_string_assignment("registry_key_attr") is not None
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
         for indexed_class in projection.classes
     )
 
@@ -2647,10 +2626,7 @@ def _target_has_named_registry_projection_surface(
     del config
     return any(
         projection.named_projection_surfaces
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 

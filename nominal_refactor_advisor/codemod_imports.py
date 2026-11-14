@@ -16,6 +16,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.codemod_import_scopes import (
     ImportStatement,
     ModuleImportScope,
@@ -626,8 +627,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         )
         flag = ImportAlias("TYPE_CHECKING")
         if not deleted_reads or any(
-            isinstance(node, ast.Name) and node.id == flag.name and id(node) not in deleted_reads
-            for node in ast.walk(module)
+            node.id == flag.name and id(node) not in deleted_reads
+            for node in name_nodes(module)
         ):
             return
         for statement in import_from_statements:

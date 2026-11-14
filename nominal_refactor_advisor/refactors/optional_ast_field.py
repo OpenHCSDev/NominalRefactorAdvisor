@@ -635,10 +635,7 @@ class IfPresentProbeSite(SingleNodeProbeSite):
         geometry = authority.geometry
         statement = self.statement
         name = self.decoder.present_name()
-        if name in authority.bound_names or any(
-            isinstance(node, ast.Name) and node.id == name
-            for node in ast.walk(statement)
-        ):
+        if name in authority.bound_names or name in names_mentioned(statement):
             raise authority.refusal(statement, f"`{name}` is already used here")
         start, _ = geometry.required_node_offsets(statement)
         if not geometry.source.startswith("if", start):

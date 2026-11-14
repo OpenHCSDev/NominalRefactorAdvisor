@@ -2231,6 +2231,17 @@ class CollectedFamily(
         return cast(Sequence[ShapeItemT], groups[cls])
 
     @classmethod
+    def present_in(
+        cls, groups: Mapping[type[CollectedFamily], Sequence[object]]
+    ) -> Sequence[ShapeItemT]:
+        """This family's items in a grouping that may not hold the family: none then.
+
+        A report target's projections only hold the families that target touched.
+        """
+
+        return cast(Sequence[ShapeItemT], groups.get(cls, ()))
+
+    @classmethod
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
         return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)

@@ -19,6 +19,7 @@ from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
+from nominal_refactor_advisor.ast_projection import names_mentioned
 from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
 from nominal_refactor_advisor.detectors._regex_bundle import (
     RepeatedLocalRegexBundleDetector,
@@ -366,10 +367,7 @@ class FormalBoundaryStringRegistryAuthority:
         node: ast.Call,
         constant_names: frozenset[str],
     ) -> bool:
-        return any(
-            isinstance(child, ast.Name) and child.id in constant_names
-            for child in ast.walk(node)
-        )
+        return not constant_names.isdisjoint(names_mentioned(node))
 
     @classmethod
     def source_constants(
@@ -1732,10 +1730,7 @@ def _target_has_manual_subclass_roster_root(
     del config
     return any(
         projection.manual_subclass_roster_roots
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 
@@ -1748,10 +1743,7 @@ def _target_has_latent_roster(
     del config
     return any(
         projection.latent_rosters
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
     )
 
 
@@ -1765,10 +1757,7 @@ def _target_has_predicate_selected_root(
     return any(
         indexed_class.predicate_selected_methods
         and "_registered_types" in indexed_class.direct_declared_member_names
-        for projection in projections_by_family.get(
-            CompactModuleClassProjectionFamily, ()
-        )
-        if isinstance(projection, CompactModuleClassProjection)
+        for projection in CompactModuleClassProjectionFamily.present_in(projections_by_family)
         for indexed_class in projection.classes
     )
 

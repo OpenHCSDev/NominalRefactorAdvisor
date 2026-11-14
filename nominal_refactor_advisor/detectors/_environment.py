@@ -18,6 +18,7 @@ from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
     name_nodes,
+    names_mentioned,
 )
 from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValues
 from nominal_refactor_advisor.ast_tools import (
@@ -1140,10 +1141,7 @@ def _expression_uses_parameters(
     node: ast.AST,
     parameter_names: frozenset[str],
 ) -> bool:
-    return any(
-        isinstance(descendant, ast.Name) and descendant.id in parameter_names
-        for descendant in ast.walk(node)
-    )
+    return not parameter_names.isdisjoint(names_mentioned(node))
 
 
 @dataclass(frozen=True)

@@ -2911,8 +2911,8 @@ class _ModuleSiblingData(ABC):
                 "it reads its top package's directory, and the destination is in another top package"
             )
         if source_dir != destination_dir and any(
-            isinstance(node, ast.Name) and node.id == "__package__" and node not in located
-            for node in ast.walk(module)
+            node.id == "__package__" and node not in located
+            for node in name_nodes(module)
         ):
             stays["__package__"] = "it reads `__package__`, which names another package at the destination"
         names = frozenset(name for read in reads for name in read.sibling_names)

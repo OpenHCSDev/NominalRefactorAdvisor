@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.ast_tools import BuiltinCallName
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 
@@ -310,8 +311,7 @@ class _StringizedAnnotationNameCollector:
     @classmethod
     def count(cls, expression: ast.expr, name: str) -> int:
         direct_count = sum(
-            isinstance(node, ast.Name) and node.id == name
-            for node in ast.walk(expression)
+            node.id == name for node in name_nodes(expression)
         )
         return direct_count + sum(
             cls.count(nested_expression, name)
