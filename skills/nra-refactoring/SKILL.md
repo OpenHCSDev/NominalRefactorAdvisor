@@ -487,8 +487,13 @@ shared with a family (`_base.py:4277`). One passed and was composed:
   has 17 unrelated owners. Whether a shared verb is a missing contract is
   the reader's call; the claim "no shared declaring ancestor" is now
   true of every finding.
-- `unused_method_parameter` is titled "ignored in every override" and
-  looks at one method in one module.
+- `unused_method_parameter` used to look at one method in one module
+  and call it "ignored in every override". It now reads every
+  declaration of the method in its member family: a default that ignores
+  a parameter its overrides read is not a finding, a parameter every
+  declaration ignores is one finding listing each of them, and a class
+  whose ancestry the scan cannot close is left out because an unseen
+  base may fix the signature.
 - Legacy-path erasure does not count a class or function referenced by
   bare name without a call.
 - `ClassOverlapVerdicts.existing_owner` (`class_overlap.py`) takes any

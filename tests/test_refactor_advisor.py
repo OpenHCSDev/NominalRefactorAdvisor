@@ -6951,7 +6951,7 @@ def test_dispatch_refactor_guard_rejects_later_branch_reintroduction(
                                 "RenderDispatchCase.__registry__.get(kind)\n"
                                 "    if _dispatch_case_type is None:\n"
                                 "        raise ValueError(kind)\n"
-                                "    return _dispatch_case_type().apply(kind)"
+                                "    return _dispatch_case_type().apply()"
                             ),
                             new_source=(
                                 "if kind == 'csv':\n"
@@ -28129,3 +28129,72 @@ def test_phantom_family_counts_an_override_with_what_it_overrides(tmp_path: Path
     assert "`pkg.base.Tracker`" in finding.summary
     assert "`pkg.gamma.Unrelated`" in finding.summary
     assert "AlphaTracker" not in finding.summary
+
+
+def test_unused_method_parameter_reads_every_declaration_of_the_method(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        (
+            "class Rule:\n"
+            "    def admits(self, sites, context):\n"
+            "        return True\n\n"
+            "    def describe(self, sites, context):\n"
+            "        return self.label\n"
+        ),
+    )
+    _write_module(
+        tmp_path,
+        "pkg/strict.py",
+        (
+            "from pkg.base import Rule\n\n\n"
+            "class StrictRule(Rule):\n"
+            "    def admits(self, sites, context):\n"
+            "        return len(sites) > context.threshold\n\n"
+            "    def describe(self, sites, context):\n"
+            "        return self.label.upper()\n"
+        ),
+    )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "unused_method_parameter"
+    ]
+    (finding,) = findings
+    assert "`describe`, in all 2 declarations under pkg.base.Rule," in finding.summary
+    assert "`sites`, `context`" in finding.summary
+    assert "admits" not in finding.summary
+    assert {location.symbol for location in finding.evidence} == {
+        "Rule.describe(sites)",
+        "Rule.describe(context)",
+        "StrictRule.describe(sites)",
+        "StrictRule.describe(context)",
+    }
+
+
+def test_a_base_the_scan_does_not_declare_stops_claims_about_its_subclasses(
+    tmp_path: Path,
+) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    for module, name in (("names", "NameCounter"), ("calls", "CallCounter")):
+        _write_module(
+            tmp_path,
+            f"pkg/{module}.py",
+            (
+                "import ast\n\n\n"
+                f"class {name}(ast.NodeVisitor):\n"
+                "    def generic_visit(self, node):\n"
+                "        self.count += 1\n\n"
+                "    def tally(self, node):\n"
+                "        return self.count\n"
+            ),
+        )
+    findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id in {"unused_method_parameter", "phantom_family"}
+    ]
+    assert findings == []

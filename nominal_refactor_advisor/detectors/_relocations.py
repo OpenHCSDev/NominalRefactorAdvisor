@@ -42,6 +42,7 @@ from nominal_refactor_advisor.relocation_observations import (
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.ast_tools import ScanContext
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.detectors._base import CompactProjectionGroups
 from nominal_refactor_advisor.detectors._restated_facts import (
     EVIDENCED_CONSUMERS,
@@ -127,6 +128,23 @@ class MemberFamilies(ScanContext):
         return symbol not in classes or not all(
             classes[lineage].base_references_are_complete
             for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+        )
+
+    def declares_all_ancestors(self, symbol: str) -> bool:
+        """Whether every class above `symbol` that can own a family is one the scan declares.
+
+        A base the scan does not declare may declare any member, so nothing can
+        be said about who first declares one below it. Bases that only mark a
+        role (`object`, `ABC`, `Generic`, `Protocol`) own no family.
+        """
+
+        if self.is_open(symbol):
+            return False
+        classes = self.class_index.classes_by_symbol
+        return not any(
+            ClassSymbolResolutionAuthority.establishes_nominal_family(base_name)
+            for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+            for base_name in classes[lineage].unresolved_base_names
         )
 
     def creates_classes(self, symbol: str) -> bool:

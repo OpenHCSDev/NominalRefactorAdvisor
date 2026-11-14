@@ -20,7 +20,8 @@ from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStat
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
-from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.observation_shapes import RestatingSite, SymbolSite
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.relocation_observations import (
     ClassShapeFamily,
@@ -441,84 +442,113 @@ def _attr_of_var(node: ast.expr, var_name: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 
-def _unused_params(
+def _candidate_parameters(
     func: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[tuple[str, int]]:
-    """Return (name, line) for parameters that never appear in the function body.
+) -> dict[str, int]:
+    """Each parameter a method could be asked to justify, with its line.
 
-    Skips `self`, `cls`, and parameters prefixed with `_` (convention for
-    intentionally unused). Only inspects Name nodes in the body statements,
-    not in the signature defaults or annotations.
+    Leaves out `self`, `cls`, `args`, `kwargs`, names starting with `_` (the
+    convention for intentionally unused) and every parameter of a dunder method.
     """
-    all_params: dict[str, int] = {}
-    for arg in func.args.args:
-        all_params[arg.arg] = arg.lineno
-    for arg in func.args.kwonlyargs:
-        all_params[arg.arg] = arg.lineno
-    if func.args.vararg:
-        all_params[func.args.vararg.arg] = func.args.vararg.lineno
-    if func.args.kwarg:
-        all_params[func.args.kwarg.arg] = func.args.kwarg.lineno
 
-    skip = {"self", "cls", "args", "kwargs"}
-    candidates = {
-        name: line for name, line in all_params.items()
-        if name not in skip and not name.startswith("_")
-    }
     if func.name.startswith("__") and func.name.endswith("__"):
-        return []
-    if not candidates:
-        return []
-
-    used_names: set[str] = set()
-    for stmt in func.body:
-        for node in ast.walk(stmt):
-            if isinstance(node, ast.Name) and node.id in candidates:
-                used_names.add(node.id)
-
-    return [(name, line) for name, line in candidates.items() if name not in used_names]
+        return {}
+    arguments = (
+        *func.args.args,
+        *func.args.kwonlyargs,
+        *(
+            argument
+            for argument in (func.args.vararg, func.args.kwarg)
+            if argument is not None
+        ),
+    )
+    return {
+        argument.arg: argument.lineno
+        for argument in arguments
+        if argument.arg not in {"self", "cls", "args", "kwargs"}
+        and not argument.arg.startswith("_")
+    }
 
 
 @dataclass(frozen=True)
-class _UnusedMethodParam:
+class MethodParameterReading(SymbolSite):
+    """One method declaration that does more than ask, and which of its
+    parameters its body names."""
+
+    class_qualname: str
     method_name: str
-    param_name: str
-    line: int
-    class_name: str
+    ignored: tuple[tuple[str, int], ...]
+    """Each parameter the body never names, with its line."""
+    read: tuple[str, ...]
+    """The parameters the body names."""
 
 
-def _collect_unused_method_params(module: ParsedModule) -> list[_UnusedMethodParam]:
-    """Find methods with unused non-self parameters inside classes.
+@dataclass(frozen=True)
+class MethodParametersModule:
+    module_name: str
+    methods: tuple[MethodParameterReading, ...]
 
-    A declaration that only asks (`declares_abstract`) fixes a signature it
-    does not use, and so does every method of the module that carries its name.
+
+class MethodParameterFamily(ShapeFamily[MethodParametersModule]):
+    """Each method that does more than ask, with the parameters it reads and ignores.
+
+    A declaration that only asks (`declares_abstract`) fixes a signature it does
+    not use, and is left out.
     """
 
-    methods = [
-        (reading, member)
-        for reading in module.fact(ModuleClassReadings).classes
-        for member in reading.node.body
-        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
-    ]
-    asked = {
-        member.name
-        for reading, member in methods
-        if declares_abstract(member, reading.bindings)
-    }
-    return [
-        _UnusedMethodParam(
-            method_name=member.name,
-            param_name=param_name,
-            line=param_line,
-            class_name=reading.node.name,
-        )
-        for reading, member in methods
-        if member.name not in asked
-        for param_name, param_line in _unused_params(member)
-    ]
+    item_type = MethodParametersModule
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[MethodParametersModule]:
+        methods: list[MethodParameterReading] = []
+        for reading in parsed_module.fact(ModuleClassReadings).classes:
+            for member in FunctionDefinition.within(reading.node.body):
+                candidates = _candidate_parameters(member)
+                if not candidates or declares_abstract(member, reading.bindings):
+                    continue
+                named = {
+                    node.id
+                    for statement in member.body
+                    for node in ast.walk(statement)
+                    if isinstance(node, ast.Name)
+                }
+                methods.append(
+                    MethodParameterReading(
+                        file_path=parsed_module.file_path,
+                        lineno=member.lineno,
+                        symbol=f"{reading.qualname}.{member.name}",
+                        class_qualname=reading.qualname,
+                        method_name=member.name,
+                        ignored=tuple(
+                            (name, line)
+                            for name, line in candidates.items()
+                            if name not in named
+                        ),
+                        read=tuple(name for name in candidates if name in named),
+                    )
+                )
+        return [MethodParametersModule(parsed_module.module_name, tuple(methods))]
 
 
-class UnusedMethodParameterDetector(PerModuleIssueDetector):
+class UnusedMethodParameterDetector(
+    CompactMultiModuleProjectionDetectorMixin, IssueDetector
+):
+    """A parameter that no declaration of a method reads.
+
+    Declarations are grouped by the topmost classes that declare the method
+    above them, so a default that ignores a parameter its overrides read is not
+    a finding. A class with an ancestor the scan does not declare is left out:
+    that ancestor may fix the signature.
+    """
+
+    module_projection_families = (
+        MethodParameterFamily,
+        CompactModuleClassProjectionFamily,
+        ClassShapeFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(
+        MemberFamilies.from_projection_groups
+    )
     finding_spec = high_confidence_spec(
         PatternId.UNUSED_METHOD_PARAMETER,
         "Method parameter ignored in every override",
@@ -534,35 +564,56 @@ class UnusedMethodParameterDetector(PerModuleIssueDetector):
         (ObservationTag.DATAFLOW_ROOT,),
     )
 
-    def _findings_for_module(
-        self, module: ParsedModule, config: DetectorConfig
+    def _findings_from_compact_projection_groups_context(
+        self,
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
+        config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        unused = _collect_unused_method_params(module)
-        if not unused:
-            return []
-
-        grouped: dict[str, list[_UnusedMethodParam]] = defaultdict(list)
-        for u in unused:
-            grouped[f"{u.class_name}.{u.method_name}"].append(u)
-
+        del config
+        families = MemberFamilies.require(context)
+        declarations: dict[tuple[str, str], list[MethodParameterReading]] = (
+            defaultdict(list)
+        )
+        for module in MethodParameterFamily.modules_in(projections_by_family):
+            for method in module.methods:
+                symbol = f"{module.module_name}.{method.class_qualname}"
+                if not families.declares_all_ancestors(symbol):
+                    continue
+                owner = families.family(symbol, method.method_name) or symbol
+                declarations[(owner, method.method_name)].append(method)
         findings: list[RefactorFinding] = []
-        for method_key, params in sorted(grouped.items()):
-            evidence = tuple(
-                SourceLocation(
-                    str(module.path),
-                    p.line,
-                    f"{p.class_name}.{p.method_name}({p.param_name})",
-                )
-                for p in params
+        for (owner, method_name), members in sorted(declarations.items()):
+            read = {name for member in members for name in member.read}
+            ignored = tuple(
+                (member, name, line)
+                for member in sorted(members, key=attrgetter("file_path", "lineno"))
+                for name, line in member.ignored
+                if name not in read
             )
-            param_list = ", ".join(f"`{p.param_name}`" for p in params)
+            if not ignored:
+                continue
+            names = ", ".join(
+                f"`{name}`" for name in dict.fromkeys(name for _, name, _ in ignored)
+            )
+            match members:
+                case [only]:
+                    where = only.symbol
+                case _:
+                    where = (
+                        f"`{method_name}`, in all {len(members)} declarations "
+                        f"under {owner},"
+                    )
             findings.append(
                 self.build_finding(
-                    (
-                        f"{method_key} ignores parameter(s) {param_list} — "
-                        f"the result depends only on self"
+                    f"{where} ignores parameter(s) {names} — "
+                    f"the result depends only on self",
+                    tuple(
+                        SourceLocation(
+                            member.file_path, line, f"{member.symbol}({name})"
+                        )
+                        for member, name, line in ignored
                     ),
-                    evidence,
                 )
             )
         return findings
@@ -722,8 +773,8 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
 
     A method's owner is the topmost classes declaring its name above it, so an
     override and the declaration it overrides are one owner. A module function
-    is its own owner. A class whose ancestry the scan cannot close is left out:
-    nothing is claimed about it.
+    is its own owner. A class with an ancestor the scan does not declare is left
+    out: that ancestor may declare the name, so nothing is claimed.
     """
 
     module_projection_families = (
@@ -770,7 +821,7 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
                 match site.detail:
                     case (class_name,):
                         symbol = f"{module.module_name}.{class_name}"
-                        if families.is_open(symbol):
+                        if not families.declares_all_ancestors(symbol):
                             continue
                         owner = families.family(symbol, site.group) or symbol
                     case _:

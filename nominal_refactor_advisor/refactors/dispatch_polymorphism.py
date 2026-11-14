@@ -719,19 +719,38 @@ class DispatchPolymorphismSource:
             *(case.class_name_for(self.base_name) for case in self.extraction.cases),
         )
 
+    @cached_property
+    def case_parameter_names(self) -> tuple[str, ...]:
+        """The function's parameters that at least one arm reads.
+
+        A parameter only the dispatch itself read stays with the function: a
+        strategy method that took it would ignore it in every case.
+        """
+
+        read = {
+            node.id
+            for arm in self.extraction.arms
+            for statement in arm.statements
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name)
+        }
+        return tuple(
+            name for name in self.dispatch_function.parameter_names if name in read
+        )
+
     @property
     def apply_signature(self) -> str:
         parameters = ", ".join(
             (
                 self.generated_binding_name("_dispatch_strategy"),
-                *self.dispatch_function.parameter_names,
+                *self.case_parameter_names,
             )
         )
         return f"def {self.method_name}({parameters})"
 
     @property
     def apply_call_arguments(self) -> str:
-        return ", ".join(self.dispatch_function.parameter_names)
+        return ", ".join(self.case_parameter_names)
 
     def dispatch_call_lines(self) -> tuple[str, ...]:
         case_type_binding = self.generated_binding_name("_dispatch_case_type")
