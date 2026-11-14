@@ -13276,6 +13276,23 @@ def test_parse_python_modules_can_explicitly_scan_hidden_root(
     assert [module.path.name for module in modules] == ["snapshot.py"]
 
 
+def test_cli_refuses_a_named_root_that_holds_only_test_files(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    root = tmp_path / "tests"
+    root.mkdir()
+    (root / "test_a.py").write_text("def test_a():\n    assert True\n")
+    monkeypatch.setattr(sys, "argv", ["nominal-refactor-advisor", str(root)])
+
+    with pytest.raises(SystemExit) as exit_info:
+        cli_main()
+
+    assert exit_info.value.code == 2
+    assert "holds only test files" in capsys.readouterr().err
+
+
 def test_parse_python_module_roots_can_skip_direct_test_files(
     tmp_path: Path,
 ) -> None:

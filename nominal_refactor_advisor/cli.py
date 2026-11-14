@@ -77,6 +77,7 @@ from nominal_refactor_advisor.analysis_cache import (
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     PythonModulePathAuthority,
+    PythonSourcePathDiscovery,
     PythonSourcePathPolicy,
     parse_python_module_roots,
     python_source_paths_for_roots,
@@ -4477,6 +4478,16 @@ def _scan_main(
     source_policy = PythonSourcePathPolicy(include_tests=args.include_tests)
     if selected_command_type is not None:
         source_policy = selected_command_type.scan_policy(args, source_policy, roots, config)
+    for named_root in roots:
+        if not PythonSourcePathDiscovery(named_root, source_policy).paths() and (
+            PythonSourcePathDiscovery(
+                named_root, PythonSourcePathPolicy(include_tests=True)
+            ).paths()
+        ):
+            parser.error(
+                f"{named_root} holds only test files, which a scan leaves out; "
+                "pass --include-tests to scan them"
+            )
     semantic_descent_cache_context = SemanticDescentGraphCacheContext.from_parse_cache(
         roots,
         parse_cache_dir,
