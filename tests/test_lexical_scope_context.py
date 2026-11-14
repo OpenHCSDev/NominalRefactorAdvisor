@@ -20,6 +20,7 @@ from nominal_refactor_advisor.lexical_scopes import (
     FunctionBindingProjection,
     LexicalScopeContext,
 )
+from tests.advisor_cli import run_advisor
 
 
 def test_class_provenance_is_derived_from_the_same_frames_as_lookup() -> None:
@@ -125,21 +126,14 @@ def test_cli_composes_member_promotion_and_module_move(tmp_path: Path) -> None:
         / "docs/examples/lexical_scope_context_refactor.py"
     )
     plan = runpy.run_path(str(example))["OWNERSHIP_PLAN"]
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     assert subprocess.check_output([sys.executable, str(probe)]) == before

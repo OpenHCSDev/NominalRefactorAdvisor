@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import subprocess
-import sys
 from pathlib import Path
 
 from test_class_overlap_codemod import SURFACE
+from tests.advisor_cli import run_advisor
 
 REFUSED = (
     "\n\n@dataclass(frozen=True)\nclass Span:\n"
@@ -19,21 +18,14 @@ REFUSED = (
 
 
 def _goal(root: Path, *extra: str) -> tuple[int, dict]:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(root / "pkg"),
-            "--json",
-            "--codemod-refactor-goal",
-            "class_body_composition",
-            *extra,
-        ],
-        capture_output=True,
-        text=True,
-        cwd=Path(__file__).resolve().parents[1],
-    )
+    completed = run_advisor(
+                    str(root / "pkg"),
+                    "--json",
+                    "--codemod-refactor-goal",
+                    "class_body_composition",
+                    *extra,
+                    cwd=Path(__file__).resolve().parents[1],
+                )
     return completed.returncode, json.loads(completed.stdout)
 
 

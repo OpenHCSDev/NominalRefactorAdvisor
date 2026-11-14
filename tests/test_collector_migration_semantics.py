@@ -16,6 +16,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize(
@@ -217,24 +218,17 @@ def test_cli_preserves_stable_imported_collector_alias(
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            str(native_collector_module.path),
-            "--scan-budget-seconds",
-            "0",
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 str(native_collector_module.path),
+                 "--scan-budget-seconds",
+                 "0",
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 1
     payload = json.loads(result.stdout)
     assert payload["preflight_failed"]

@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
@@ -55,21 +56,14 @@ def test_cli_changes_nested_class_decorators_without_rewriting_body(
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     after = subprocess.check_output([sys.executable, str(path)], text=True)
     assert before.splitlines()[0] == "True"

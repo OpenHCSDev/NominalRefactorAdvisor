@@ -11,6 +11,7 @@ import pytest
 
 from nominal_refactor_advisor import call_binding, product_flow, value_expression
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
@@ -54,21 +55,14 @@ def test_documented_extraction_can_split_its_new_module_in_the_next_stage(
         newline="",
     )
     before = subprocess.check_output([sys.executable, str(probe)], text=True)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     assert subprocess.check_output([sys.executable, str(probe)], text=True) == before

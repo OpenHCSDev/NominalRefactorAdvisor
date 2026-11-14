@@ -20,6 +20,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.codemod_declaration_source import ClassMemberInsertion
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
@@ -50,21 +51,14 @@ def test_cli_derives_member_indentation_and_preserves_decorators_and_literals(
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     rewritten = path.read_bytes().decode()
@@ -213,21 +207,14 @@ def test_documented_atomic_batch_then_body_edit_roundtrips_through_cli(
     # Exercise the published emitter rather than reproducing its plan in tests.
     plan = runpy.run_path(str(example))["build_plan"](str(path))
     assert json.loads(payload) == json.loads(json.dumps(json_report_object(plan)))
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=payload,
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=payload,
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     subprocess.run(

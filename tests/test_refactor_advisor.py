@@ -381,6 +381,7 @@ from nominal_refactor_advisor.taxonomy import (
     ConfidenceLevel,
     ObservationTag,
 )
+from tests.advisor_cli import run_advisor
 
 _PACKAGE_SCAN_LABEL = "package"
 _REPOSITORY_SCAN_LABEL = "repository"
@@ -10875,23 +10876,15 @@ def test_module_cli_preflights_claim_only_plan_against_claim_source(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-preflight",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-preflight",
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
     resolution = payload["reports"][0]["details"]["resolutions"][0]
 
@@ -17250,18 +17243,10 @@ def test_cli_command_selection_returns_declaration_owner() -> None:
 def test_module_cli_emits_declaration_derived_detector_capabilities() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--detector-capabilities",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 "--detector-capabilities",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     numeric_dispatch = next(
         capability
@@ -17358,20 +17343,12 @@ def test_module_cli_rejects_incompatible_command_modifiers(
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            *command_args,
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 *command_args,
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode != 0
     assert expected_error in result.stderr
@@ -17787,40 +17764,24 @@ def test_module_cli_composes_codemod_plan_documents(tmp_path: Path) -> None:
     )
     composed_plan_path = tmp_path / "composed-plan.json"
 
-    compose_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-compose-plans",
-            first_plan_path.as_posix(),
-            second_plan_path.as_posix(),
-            "--codemod-plan-out",
-            composed_plan_path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    compose_result = run_advisor(
+                         "--codemod-compose-plans",
+                         first_plan_path.as_posix(),
+                         second_plan_path.as_posix(),
+                         "--codemod-plan-out",
+                         composed_plan_path.as_posix(),
+                         cwd=repo_root,
+                     )
     composed_payload = json.loads(compose_result.stdout)
     emitted_composed_payload = json.loads(
         composed_plan_path.read_text(encoding="utf-8")
     )
-    validation_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-plan",
-            composed_plan_path.as_posix(),
-            "--codemod-validate-plan",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    validation_result = run_advisor(
+                            "--codemod-plan",
+                            composed_plan_path.as_posix(),
+                            "--codemod-validate-plan",
+                            cwd=repo_root,
+                        )
     validation_payload = json.loads(validation_result.stdout)
 
     assert compose_result.returncode == 0, compose_result.stderr
@@ -17915,39 +17876,23 @@ def test_module_cli_composes_codemod_plan_sequence_for_dependent_stages(
         newline="",
     )
 
-    compose_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-compose-sequence",
-            first_plan_path.as_posix(),
-            second_sequence_path.as_posix(),
-            "--codemod-plan-out",
-            composed_sequence_path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    compose_result = run_advisor(
+                         "--codemod-compose-sequence",
+                         first_plan_path.as_posix(),
+                         second_sequence_path.as_posix(),
+                         "--codemod-plan-out",
+                         composed_sequence_path.as_posix(),
+                         cwd=repo_root,
+                     )
     composed_payload = json.loads(compose_result.stdout)
-    simulation_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-plan",
-            composed_sequence_path.as_posix(),
-            "--codemod-simulate",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    simulation_result = run_advisor(
+                            tmp_path.as_posix(),
+                            "--no-cache",
+                            "--codemod-plan",
+                            composed_sequence_path.as_posix(),
+                            "--codemod-simulate",
+                            cwd=repo_root,
+                        )
     simulation_payload = json.loads(simulation_result.stdout)
 
     assert compose_result.returncode == 0, compose_result.stderr
@@ -17992,21 +17937,13 @@ def test_module_cli_validates_codemod_plan_from_stdin() -> None:
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-plan",
-            "-",
-            "--codemod-validate-plan",
-        ],
-        cwd=repo_root,
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-validate-plan",
+                 cwd=repo_root,
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -18016,21 +17953,13 @@ def test_module_cli_validates_codemod_plan_from_stdin() -> None:
 def test_module_cli_rejects_multiple_compose_stdin_documents() -> None:
     repo_root = Path(__file__).resolve().parents[1]
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--codemod-compose-plans",
-            "-",
-            "-",
-        ],
-        cwd=repo_root,
-        input="{}",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 "--codemod-compose-plans",
+                 "-",
+                 "-",
+                 cwd=repo_root,
+                 input="{}",
+             )
 
     assert result.returncode != 0
     assert "stdin JSON document token '-'" in result.stderr
@@ -18039,22 +17968,14 @@ def test_module_cli_rejects_multiple_compose_stdin_documents() -> None:
 def test_module_cli_rejects_plan_out_for_non_plan_query(tmp_path: Path) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-source-index",
-            "--codemod-plan-out",
-            (tmp_path / "source-index-plan.json").as_posix(),
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-source-index",
+                 "--codemod-plan-out",
+                 (tmp_path / "source-index-plan.json").as_posix(),
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode != 0
     assert "--codemod-plan-out requires a plan-producing codemod command" in (
@@ -18092,22 +18013,14 @@ def test_module_cli_simulates_codemod_plan_from_stdin(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-simulate",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-simulate",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -18153,23 +18066,15 @@ def test_module_cli_apply_cannot_bypass_authority_preflight(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 1
@@ -18781,22 +18686,14 @@ def test_module_cli_simulates_staged_codemod_plan(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-simulate",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-plan",
+                 plan_path.as_posix(),
+                 "--codemod-simulate",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     sequence = load_codemod_plan_sequence(plan_path)
 
@@ -18852,22 +18749,14 @@ def test_module_cli_simulates_stdin_plan_with_relative_file_paths(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-simulate",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-simulate",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -18911,22 +18800,14 @@ def test_module_cli_simulates_relative_multi_symbol_move_plan_from_stdin(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-simulate",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-simulate",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["applied"] is False
@@ -18974,22 +18855,14 @@ def test_module_cli_preflights_relative_multi_symbol_move_plan_from_stdin(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-preflight",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-preflight",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["preflight_failed"] is False
@@ -19046,22 +18919,14 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
         ]
     }
 
-    preflight = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-preflight",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    preflight = run_advisor(
+                    tmp_path.as_posix(),
+                    "--codemod-plan",
+                    "-",
+                    "--codemod-preflight",
+                    cwd=Path(__file__).resolve().parents[1],
+                    input=json.dumps(plan_payload),
+                )
     preflight_payload = json.loads(preflight.stdout)
 
     assert preflight.returncode == 0, preflight.stderr
@@ -19070,22 +18935,14 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert preflight_payload["reports"][0]["status"] == "passed"
     assert destination_path.exists() is False
 
-    simulation = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-simulate",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    simulation = run_advisor(
+                     tmp_path.as_posix(),
+                     "--codemod-plan",
+                     "-",
+                     "--codemod-simulate",
+                     cwd=Path(__file__).resolve().parents[1],
+                     input=json.dumps(plan_payload),
+                 )
     simulation_payload = json.loads(simulation.stdout)
 
     assert simulation.returncode == 0, simulation.stderr
@@ -19099,22 +18956,14 @@ def test_module_cli_creates_destination_and_moves_symbols_from_stdin(
     assert "+class Helper(LocalBase):" in simulation_payload["unified_diff"]
     assert destination_path.exists() is False
 
-    apply_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    apply_result = run_advisor(
+                       tmp_path.as_posix(),
+                       "--codemod-plan",
+                       "-",
+                       "--codemod-apply",
+                       cwd=Path(__file__).resolve().parents[1],
+                       input=json.dumps(plan_payload),
+                   )
 
     assert apply_result.returncode == 0, apply_result.stderr
     assert "Codemod apply complete" in apply_result.stdout
@@ -19159,22 +19008,14 @@ def test_module_cli_preflights_multi_symbol_move_failure_from_stdin(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-preflight",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-preflight",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 1
@@ -19218,22 +19059,14 @@ def test_module_cli_reports_multi_symbol_move_preflight_failure_from_stdin(
         ]
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            "-",
-            "--codemod-simulate",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input=json.dumps(plan_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-simulate",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input=json.dumps(plan_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 1
@@ -19264,22 +19097,14 @@ def test_module_cli_resolves_selector_stdin_relative_file_paths(
         "qualnames": ["Alpha.run"],
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-resolve-selector",
-            "-",
-        ],
-        cwd=repo_root,
-        input=json.dumps(selector_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-resolve-selector",
+                 "-",
+                 cwd=repo_root,
+                 input=json.dumps(selector_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -19298,22 +19123,14 @@ def test_module_cli_synthesizes_finding_backed_codemod_plan_document(
         "\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY['alpha'] = AlphaHandler\nREGISTRY['beta'] = BetaHandler\n",
     )
     plan_path = tmp_path / "synthesized-plan.json"
-    plan_result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-structural-overlap",
-            "--codemod-synthesize-plan",
-            "--codemod-plan-out",
-            plan_path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    plan_result = run_advisor(
+                      tmp_path.as_posix(),
+                      "--no-structural-overlap",
+                      "--codemod-synthesize-plan",
+                      "--codemod-plan-out",
+                      plan_path.as_posix(),
+                      cwd=repo_root,
+                  )
     plan_payload = json.loads(plan_result.stdout)
 
     assert plan_result.returncode == 1, plan_result.stderr
@@ -19331,22 +19148,14 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
     _write_module(tmp_path, "pkg/mod.py", original_source)
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-structural-overlap",
-            "--codemod-synthesize-plan",
-            "--codemod-simulate",
-            "--json",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-structural-overlap",
+                 "--codemod-synthesize-plan",
+                 "--codemod-simulate",
+                 "--json",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -19378,22 +19187,14 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     original_source = '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n'
     _write_module(tmp_path, "pkg/mod.py", original_source)
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-structural-overlap",
-            "--codemod-synthesize-plan",
-            "--codemod-preflight",
-            "--json",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-structural-overlap",
+                 "--codemod-synthesize-plan",
+                 "--codemod-preflight",
+                 "--json",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -19427,22 +19228,14 @@ def test_module_cli_blocks_unproved_finding_backed_plan_application(
         '\nREGISTRY = {}\n\n\nclass AlphaHandler:\n    pass\n\n\nclass BetaHandler:\n    pass\n\n\nREGISTRY["alpha"] = AlphaHandler\nREGISTRY["beta"] = BetaHandler\n',
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-structural-overlap",
-            "--codemod-synthesize-plan",
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-structural-overlap",
+                 "--codemod-synthesize-plan",
+                 "--codemod-apply",
+                 "--json",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 1, result.stderr
@@ -19459,20 +19252,12 @@ def test_module_cli_emits_codemod_source_index_targets(tmp_path: Path) -> None:
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-source-index",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-source-index",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     targets_by_qualname = {target["qualname"]: target for target in payload["targets"]}
 
@@ -19503,21 +19288,13 @@ def test_module_cli_resolves_codemod_target_selector(tmp_path: Path) -> None:
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-resolve-selector",
-            selector_path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-resolve-selector",
+                 selector_path.as_posix(),
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -19543,22 +19320,14 @@ def test_module_cli_resolves_codemod_target_selector_from_stdin(
         "qualnames": ["Alpha.run"],
     }
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-resolve-selector",
-            "-",
-        ],
-        cwd=repo_root,
-        input=json.dumps(selector_payload),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-resolve-selector",
+                 "-",
+                 cwd=repo_root,
+                 input=json.dumps(selector_payload),
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -19593,21 +19362,13 @@ def test_module_cli_emits_codemod_target_source_spans(tmp_path: Path) -> None:
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-target-source",
-            selector_path.as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-target-source",
+                 selector_path.as_posix(),
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     record = payload["targets"][0]
 
@@ -19631,24 +19392,16 @@ def test_module_cli_rejects_plan_input_for_selector_query(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-plan",
-            "-",
-            "--codemod-resolve-selector",
-            "-",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        input="{}",
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-resolve-selector",
+                 "-",
+                 cwd=Path(__file__).resolve().parents[1],
+                 input="{}",
+             )
 
     assert result.returncode != 0
     assert "does not consume --codemod-plan" in result.stderr
@@ -20079,22 +19832,14 @@ def test_cli_reports_the_guard_an_erasure_declares_when_a_use_remains(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-simulate",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-simulate",
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode == 1, result.stderr
     payload = json.loads(result.stdout)
@@ -20193,21 +19938,13 @@ def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> N
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--json",
-            "--json-payload",
-            "full",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--json",
+                 "--json-payload",
+                 "full",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -20228,21 +19965,13 @@ def test_module_cli_json_summary_skips_default_structural_overlap(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--json",
-            "--json-payload",
-            "summary",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--json",
+                 "--json-payload",
+                 "summary",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -20264,22 +19993,14 @@ def test_module_cli_emits_explicitly_requested_structural_overlap_evidence(
         "\nclass Alpha:\n    def run(self, value):\n        return value\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--json",
-            "--json-payload",
-            "summary",
-            "--include-structural-overlap",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--json",
+                 "--json-payload",
+                 "summary",
+                 "--include-structural-overlap",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
@@ -20435,21 +20156,13 @@ def test_module_cli_codemod_simulate_reports_diff_without_applying(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-simulate",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--codemod-plan",
+                 plan_path.as_posix(),
+                 "--codemod-simulate",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -22011,23 +21724,15 @@ def test_module_cli_rejects_refactor_goal_plan_recipes(tmp_path: Path) -> None:
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-refactor-goal",
-            "auto_register_class_registry",
-            "--codemod-plan",
-            plan_path.as_posix(),
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-refactor-goal",
+                 "auto_register_class_registry",
+                 "--codemod-plan",
+                 plan_path.as_posix(),
+                 cwd=Path(__file__).resolve().parents[1],
+             )
 
     assert result.returncode != 0
     assert "accepts guard-only --codemod-plan input" in result.stderr
@@ -22128,24 +21833,16 @@ def test_module_cli_simulates_projected_findings_for_created_files(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-simulate",
-            "--codemod-project-findings",
-            "--codemod-project-source-index",
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-plan",
+                 plan_path.as_posix(),
+                 "--codemod-simulate",
+                 "--codemod-project-findings",
+                 "--codemod-project-source-index",
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     projected_findings = payload["projected_findings"]
 
@@ -22594,22 +22291,14 @@ def test_module_cli_synthesizes_class_plan_with_typed_recipes(
         ),
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-synthesize-class-plan",
-            "--codemod-goal-detector",
-            "manual_class_registration",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-synthesize-class-plan",
+                 "--codemod-goal-detector",
+                 "manual_class_registration",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
     class_payload = payload["classes"][0]
 
@@ -22649,24 +22338,16 @@ def test_module_cli_class_plan_simulates_projected_finding_class_delta(
         ),
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-synthesize-class-plan",
-            "--codemod-goal-detector",
-            "manual_class_registration",
-            "--codemod-simulate",
-            "--codemod-project-findings",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-synthesize-class-plan",
+                 "--codemod-goal-detector",
+                 "manual_class_registration",
+                 "--codemod-simulate",
+                 "--codemod-project-findings",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
     projected = payload["projected_findings"]
     class_projection = payload["class_plan_projected_deltas"]
@@ -22723,24 +22404,16 @@ def test_module_cli_class_plan_uses_shared_typed_execution_lifecycle(
     original_source = _manual_class_registration_source()
     _write_module(tmp_path, "pkg/mod.py", original_source)
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-synthesize-class-plan",
-            "--codemod-goal-detector",
-            "manual_class_registration",
-            execution_flag,
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-synthesize-class-plan",
+                 "--codemod-goal-detector",
+                 "manual_class_registration",
+                 execution_flag,
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == expected_returncode, result.stderr
@@ -22786,26 +22459,18 @@ def test_module_cli_retains_unproved_projected_continuation_recipe(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-plan",
-            plan_path.as_posix(),
-            "--codemod-simulate",
-            "--codemod-project-findings",
-            "--codemod-continuation-plan-out",
-            continuation_plan_path.as_posix(),
-            *(["--codemod-project-source-index"] if include_source_index else []),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 tmp_path.as_posix(),
+                 "--no-cache",
+                 "--codemod-plan",
+                 plan_path.as_posix(),
+                 "--codemod-simulate",
+                 "--codemod-project-findings",
+                 "--codemod-continuation-plan-out",
+                 continuation_plan_path.as_posix(),
+                 *(["--codemod-project-source-index"] if include_source_index else []),
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     projected_findings = payload["projected_findings"]
     projected_continuation = projected_findings["projected_finding_continuation"]
@@ -22956,24 +22621,16 @@ def test_module_cli_recipe_only_codemod_apply_without_structural_overlap(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-structural-overlap",
-            "--raw-findings",
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--no-structural-overlap",
+                 "--raw-findings",
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-apply",
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
 
     assert result.returncode == 0, result.stderr
@@ -23034,24 +22691,16 @@ def test_module_cli_recipe_only_extract_authority_apply(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-structural-overlap",
-            "--raw-findings",
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--no-structural-overlap",
+                 "--raw-findings",
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-apply",
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
     rewritten = module_path.read_text()
 
@@ -23098,22 +22747,14 @@ def test_module_cli_codemod_apply_blocks_on_architecture_guard(
         newline="",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-apply",
+                 "--json",
+                 cwd=Path(__file__).resolve().parents[1],
+             )
     payload = json.loads(result.stdout)
     report = cast(dict[str, object], payload["architecture_guard_report"])
 
@@ -24763,22 +24404,14 @@ def test_module_cli_loop_payload_allows_no_structural_overlap_without_raw_bulk(
         "class Alpha:\n    KIND = 'shared'\n\nclass Beta:\n    KIND = 'shared'\n",
     )
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            "--json",
-            "--json-payload",
-            "loop",
-            "--no-structural-overlap",
-            (tmp_path / "pkg").as_posix(),
-        ],
-        cwd=repo_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = run_advisor(
+                 "--json",
+                 "--json-payload",
+                 "loop",
+                 "--no-structural-overlap",
+                 (tmp_path / "pkg").as_posix(),
+                 cwd=repo_root,
+             )
     payload = json.loads(result.stdout)
     scan_status = cast(dict[str, object], payload["scan_status"])
 
@@ -25780,19 +25413,11 @@ def test_no_structural_overlap_does_not_disable_authority_gate(
     tmp_path: Path,
 ) -> None:
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--no-structural-overlap",
-            "--json",
-        ],
-        capture_output=True,
-        check=False,
-        text=True,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--no-structural-overlap",
+                 "--json",
+             )
 
     payload = json.loads(result.stdout)
 
@@ -27815,21 +27440,14 @@ def test_type_keyed_descent_cli_preserves_runtime_or_rejects_without_writes(
     plan = CodemodPlanSequence.from_operations(
         (_authored_fixture_descent(snapshot, module_path),)
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(module_path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(module_path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     if private_access:
         assert result.returncode != 0
         assert "private_name_mangling" in result.stdout + result.stderr
@@ -27948,21 +27566,14 @@ def test_cross_module_behavior_descent_cli_reproves_global_authorities(
         snapshot = preceding.final_snapshot
     operations.append(_authored_fixture_descent(snapshot, projection_path))
     plan = CodemodPlanSequence.from_operations(tuple(operations))
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     if preserved:
         assert result.returncode == 0, result.stdout + result.stderr
         assert b"class EventProjection" not in projection_path.read_bytes()

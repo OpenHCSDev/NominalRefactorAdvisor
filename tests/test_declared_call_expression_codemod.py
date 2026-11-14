@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def _operation(
@@ -187,21 +188,14 @@ def test_cli_replaces_inherited_import_alias_without_touching_same_named_method(
         sequence.documents[0].recipes[0].operations[0].target,
         sequence.documents[0].recipes[0].operations[0].callee,
     )
-    cli = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(sequence)),
-        capture_output=True,
-        text=True,
-    )
+    cli = run_advisor(
+              str(path),
+              "--codemod-plan",
+              "-",
+              "--codemod-apply",
+              "--json",
+              input=json.dumps(json_report_object(sequence)),
+          )
     assert cli.returncode == 0, cli.stderr
     report = json.loads(cli.stdout)
     assert report["applied"]
@@ -304,21 +298,14 @@ def test_cli_follows_reexports_and_rejects_rebound_export(
     sequence = CodemodPlanSequence.from_operations(
         (_operation(path, "value + 1", callee_path=library),)
     )
-    cli = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(sequence)),
-        capture_output=True,
-        text=True,
-    )
+    cli = run_advisor(
+              str(path),
+              "--codemod-plan",
+              "-",
+              "--codemod-apply",
+              "--json",
+              input=json.dumps(json_report_object(sequence)),
+          )
     if shadowed:
         assert cli.returncode != 0
         assert path.read_bytes() == source.encode()

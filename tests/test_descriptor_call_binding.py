@@ -25,6 +25,7 @@ from nominal_refactor_advisor.product_flow import (
 from nominal_refactor_advisor.product_flow_authority import CompactProductFlowRepository
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.call_binding import CompactCallBindingViolation
+from tests.advisor_cli import run_advisor
 
 
 def _run_call(source: str, scope: str = "Owner.run"):
@@ -177,21 +178,14 @@ def test_cli_validates_unbound_class_access_with_explicit_receiver(
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     if accepted:
         assert result.returncode == 0, result.stdout + result.stderr
         assert json.loads(result.stdout)["applied"]

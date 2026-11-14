@@ -24,6 +24,7 @@ from nominal_refactor_advisor.declaration_dependencies import (
 )
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize(
@@ -173,19 +174,12 @@ def test_cli_composes_renames_without_rewriting_class_owned_reads(
     )
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(json_report_object(plan)), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-apply",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-apply",
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert subprocess.check_output([sys.executable, str(path)]) == before
     assert b"copy = hidden" in path.read_bytes()
@@ -289,19 +283,12 @@ def test_scope_refactor_example_moves_consumers_and_preserves_identity(
     plan = runpy.run_path(str(example))["PLAN"]
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(json_report_object(plan)), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-apply",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-apply",
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert (
         "from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection"
@@ -440,19 +427,12 @@ def test_argument_binding_example_replaces_calls_and_removes_duplicate_helper(
     plan = runpy.run_path(str(example))["PLAN"]
     plan_path = tmp_path / "plan.json"
     plan_path.write_text(json.dumps(json_report_object(plan)), encoding="utf-8")
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            str(plan_path),
-            "--codemod-apply",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 str(plan_path),
+                 "--codemod-apply",
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert subprocess.check_output([sys.executable, str(probe)]) == before
     assert "_argument_names" not in scopes.read_text(encoding="utf-8")

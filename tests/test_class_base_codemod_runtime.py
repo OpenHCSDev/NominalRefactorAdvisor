@@ -23,6 +23,7 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod_source_edits import CodemodSourceRevisionError
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize("newline", ("\n", "\r\n"))
@@ -139,21 +140,14 @@ def test_parser_cache_and_cli_preserve_exact_source_newlines(tmp_path: Path) -> 
         replacement_base_name="New",
     )
     sequence = CodemodPlanSequence.from_operations((operation,))
-    cli = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-simulate",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(sequence)),
-        text=True,
-        capture_output=True,
-    )
+    cli = run_advisor(
+              str(path),
+              "--codemod-plan",
+              "-",
+              "--codemod-simulate",
+              "--json",
+              input=json.dumps(json_report_object(sequence)),
+          )
     assert cli.returncode == 0, cli.stderr
     assert json.loads(cli.stdout)["plan_sequence_simulation"]["is_clean"]
     result = sequence.simulate(snapshot)

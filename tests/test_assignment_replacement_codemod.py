@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def test_module_assignment_preserves_same_line_neighbour(tmp_path: Path) -> None:
@@ -63,21 +64,14 @@ def test_cli_replaces_one_assignment_in_a_named_scope(
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     assert path.read_bytes() == source.replace("value = 1", "value = 2").encode()

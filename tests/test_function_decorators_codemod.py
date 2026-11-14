@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def _plan(
@@ -55,21 +56,14 @@ def test_cli_changes_property_to_cached_property_without_rewriting_its_body(
     ).replace("\n", newline) + suffix
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(_plan(path, "@cached_property"))),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(_plan(path, "@cached_property"))),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     after = subprocess.check_output([sys.executable, str(path)], text=True)
@@ -199,21 +193,14 @@ def test_module_extraction_retains_parenthesized_decorators(tmp_path: Path) -> N
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "@(\n    dataclass\n)\nclass Item" in destination.read_text(encoding="utf-8")
     assert subprocess.check_output([sys.executable, str(probe)], text=True) == before

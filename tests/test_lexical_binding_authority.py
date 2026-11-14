@@ -22,6 +22,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize(
@@ -237,21 +238,14 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         / "docs/examples/lexical_binding_authority_refactor.py"
     )
     plan = runpy.run_path(str(example))["PLAN"]
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(package),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(package),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     assert subprocess.check_output([sys.executable, str(probe)], text=True) == before

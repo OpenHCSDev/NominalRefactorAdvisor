@@ -17,24 +17,18 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def _apply_plan(root: Path, plan: CodemodPlanSequence) -> None:
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(root),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    completed = run_advisor(
+                    str(root),
+                    "--codemod-plan",
+                    "-",
+                    "--codemod-apply",
+                    "--json",
+                    input=json.dumps(json_report_object(plan)),
+                )
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 

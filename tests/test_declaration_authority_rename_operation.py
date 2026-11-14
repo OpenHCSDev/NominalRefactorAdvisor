@@ -25,6 +25,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def _write_module(root: Path, relative_path: str, source: str) -> Path:
@@ -576,21 +577,14 @@ def test_qualified_annotation_rename_uses_its_native_evaluation_phase(
     ]
     before = subprocess.check_output(command, cwd=tmp_path)
     plan = CodemodPlanSequence.from_operations((_operation(tmp_path),))
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(tmp_path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(tmp_path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert subprocess.check_output(command, cwd=tmp_path) == before
     renamed = before.strip() == b"pkg.family"

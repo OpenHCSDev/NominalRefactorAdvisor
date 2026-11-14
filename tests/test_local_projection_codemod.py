@@ -20,6 +20,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def _operation(path: Path) -> ProjectFunctionLocalOperation:
@@ -148,21 +149,14 @@ def test_local_projection_and_explicit_initializer_removal_apply_through_cli(
             ),
         )
     )
-    cli = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(sequence)),
-        text=True,
-        capture_output=True,
-    )
+    cli = run_advisor(
+              str(path),
+              "--codemod-plan",
+              "-",
+              "--codemod-apply",
+              "--json",
+              input=json.dumps(json_report_object(sequence)),
+          )
     assert cli.returncode == 0, cli.stderr
     report = json.loads(cli.stdout)
     assert report["applied"]

@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 def _plan(
@@ -65,21 +66,14 @@ def test_cli_preserves_argument_bytes_comments_and_native_effects(
     path.write_text(source, encoding="utf-8", newline="")
     before = subprocess.check_output([sys.executable, str(path)], text=True)
     plan = _plan(path, expression)
-    cli = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    cli = run_advisor(
+              str(path),
+              "--codemod-plan",
+              "-",
+              "--codemod-apply",
+              "--json",
+              input=json.dumps(json_report_object(plan)),
+          )
     assert cli.returncode == 0, cli.stderr
     assert json.loads(cli.stdout)["applied"]
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before

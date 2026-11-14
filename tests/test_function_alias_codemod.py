@@ -19,6 +19,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize("class_scope", (False, True))
@@ -60,21 +61,14 @@ def test_cli_can_edit_calls_after_introducing_an_alias(
         )
     )
     before = subprocess.check_output([sys.executable, str(path)], text=True)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        text=True,
-        capture_output=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["applied"]
     assert "second = first" in path.read_text(encoding="utf-8")
@@ -169,21 +163,14 @@ def test_cli_aliases_visitor_handler_without_changing_results(
     before = subprocess.check_output(
         [sys.executable, str(path)], text=True, encoding="utf-8"
     )
-    cli = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(_plan(path))),
-        capture_output=True,
-        text=True,
-    )
+    cli = run_advisor(
+              str(path),
+              "--codemod-plan",
+              "-",
+              "--codemod-apply",
+              "--json",
+              input=json.dumps(json_report_object(_plan(path))),
+          )
     assert cli.returncode == 0, cli.stderr
     assert json.loads(cli.stdout)["applied"]
     rewritten = path.read_bytes().decode()

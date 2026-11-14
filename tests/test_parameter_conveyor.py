@@ -45,6 +45,7 @@ from nominal_refactor_advisor.product_flow_authority import (
     CompactProductRuntimeViolation,
 )
 from nominal_refactor_advisor.value_expression import LexicalValueReference
+from tests.advisor_cli import run_advisor
 
 def _module(module_name: str, source: str) -> ParsedModule:
     path = Path(*module_name.split(".")).with_suffix(".py")
@@ -482,23 +483,15 @@ def test_parameter_conveyor_cli_proves_exports_and_applies_the_goal(
     assert replay_path.exists()
     assert source_path.read_text(encoding="utf-8") == _base_source()
 
-    application = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            tmp_path.as_posix(),
-            "--no-cache",
-            "--codemod-plan",
-            replay_path.as_posix(),
-            "--codemod-apply",
-            "--json",
-        ],
-        cwd=repository_root,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    application = run_advisor(
+                      tmp_path.as_posix(),
+                      "--no-cache",
+                      "--codemod-plan",
+                      replay_path.as_posix(),
+                      "--codemod-apply",
+                      "--json",
+                      cwd=repository_root,
+                  )
     application_payload = json.loads(application.stdout)
 
     assert application.returncode == 0, application.stderr

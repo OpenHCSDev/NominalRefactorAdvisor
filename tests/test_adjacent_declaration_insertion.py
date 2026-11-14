@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod import (
 )
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
+from tests.advisor_cli import run_advisor
 
 
 @pytest.mark.parametrize(
@@ -86,21 +87,14 @@ def test_cli_preserves_decorator_evaluation_and_owner(
             ),
         )
     )
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "nominal_refactor_advisor",
-            str(path),
-            "--codemod-plan",
-            "-",
-            "--codemod-apply",
-            "--json",
-        ],
-        input=json.dumps(json_report_object(plan)),
-        capture_output=True,
-        text=True,
-    )
+    result = run_advisor(
+                 str(path),
+                 "--codemod-plan",
+                 "-",
+                 "--codemod-apply",
+                 "--json",
+                 input=json.dumps(json_report_object(plan)),
+             )
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["applied"]
     assert subprocess.check_output([sys.executable, str(path)], text=True) == before
