@@ -202,7 +202,7 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         "    @staticmethod\n"
         "    def bound_names(nodes):\n"
         "        return frozenset(name for node in nodes for name in ImportBoundNameProjection(node).names())\n"
-        "LexicalScopeBindingAuthority = LexicalScopeBindingAuthority()\n",
+        "LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()\n",
         encoding="utf-8",
         newline="",
     )
@@ -216,7 +216,7 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         newline="",
     )
     (package / "consumer.py").write_text(
-        "from .ast_tools import LexicalScopeBindingAuthority, PythonModulePathIdentity\n"
+        "from .ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY, PythonModulePathIdentity\n"
         "from .declaration_dependencies import _CurrentScopeBindingCollector as Collector\n",
         encoding="utf-8",
         newline="",
@@ -227,7 +227,7 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         "from nominal_refactor_advisor import ast_tools, consumer\n"
         "tree = ast.parse('import math as maths')\n"
         "collector = consumer.Collector(); collector.visit(tree)\n"
-        "print(sorted(collector.bound_names), sorted(consumer.LexicalScopeBindingAuthority.bound_names(tree.body)), consumer.PythonModulePathIdentity is ast_tools.PythonModulePathIdentity)\n",
+        "print(sorted(collector.bound_names), sorted(consumer.LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(tree.body)), consumer.PythonModulePathIdentity is ast_tools.PythonModulePathIdentity)\n",
         encoding="utf-8",
         newline="",
     )

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from enum import StrEnum
 
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
@@ -13,6 +14,18 @@ class CertificationLevel(StrEnum):
     CERTIFIED = "certified"
     STRONG_HEURISTIC = "strong_heuristic"
     SPECULATIVE = "speculative"
+
+    @classmethod
+    def aggregate(cls, levels: Iterable[CertificationLevel]) -> CertificationLevel:
+        """One level for findings planned together: certified only when every
+        finding is, speculative when any is, a strong heuristic otherwise."""
+
+        held = set(levels)
+        if held == {cls.CERTIFIED}:
+            return cls.CERTIFIED
+        if cls.SPECULATIVE in held:
+            return cls.SPECULATIVE
+        return cls.STRONG_HEURISTIC
 
     @classmethod
     def actionable_certification_levels(cls) -> frozenset[str]:

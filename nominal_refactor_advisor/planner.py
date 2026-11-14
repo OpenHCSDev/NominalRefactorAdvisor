@@ -852,7 +852,9 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
         current_partial_view=current_partial_view,
         collapsed_distinctions=collapsed_distinctions,
         missing_capabilities=missing_capabilities,
-        certification=_aggregate_certification(cluster.findings),
+        certification=CertificationLevel.aggregate(
+            finding.certification for finding in cluster.findings
+        ),
         pattern_evidence=pattern_evidence,
         supporting_findings=supporting_findings,
         evidence=cluster.evidence,
@@ -914,17 +916,6 @@ def _estimate_outcome(
         description_length_after=description_length_after,
         description_length_savings=description_length_savings,
     )
-
-
-def _aggregate_certification(
-    findings: tuple[RefactorFinding, ...],
-) -> CertificationLevel:
-    certifications = {finding.certification for finding in findings}
-    if certifications == {CertificationLevel.CERTIFIED}:
-        return CertificationLevel.CERTIFIED
-    if CertificationLevel.SPECULATIVE in certifications:
-        return CertificationLevel.SPECULATIVE
-    return CertificationLevel.STRONG_HEURISTIC
 
 
 def _plan_summary(
