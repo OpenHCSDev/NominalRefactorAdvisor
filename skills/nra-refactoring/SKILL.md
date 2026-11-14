@@ -170,6 +170,16 @@ stronger than a synthesized recipe that hedged its way to silence.
   a second function moves with it: that function's only caller is the
   collector, and the candidate it builds cannot leave without it
   (`_helpers` importing the candidate back is a cycle).
+- **A receiver belongs to the innermost function that binds it.** After
+  moving a helper onto its reading class, `Owner.x` inside a method can
+  become `self.x` or `cls.x` only where the innermost function binding
+  that name is a direct method of Owner. A line-range rewrite also
+  reached a `Visitor` class declared inside a detector method, whose
+  `self` is the visitor, and the corpus dump died with AttributeError
+  (2026-11-14, fold 94). Imports and mypy both passed it; only running
+  the code found it. Also rewrite only names no other class binds, so
+  `self.x` cannot reach a different override, and drop a `del cls` that
+  silenced the unused argument once the method reads it.
 
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
