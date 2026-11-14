@@ -35,6 +35,7 @@ from nominal_refactor_advisor.source_index import (
     STABLE_ID_AUTHORITY,
     AstTargetDigest,
     AstTargetNodeKind,
+    EvidenceDigest,
     SourceFileDigest,
     SourceIndex,
     StableIdPart,
@@ -232,15 +233,6 @@ class FindingSummary(SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class EvidenceSummary(SemanticInspectionRecord, SourceLineReference):
-    evidence_id: str
-    file_id: str | None
-    symbol: str
-    finding_ids: tuple[str, ...]
-    target_ids: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class SemanticInspectionReport(SemanticInspectionRecord):
     roots: tuple[str, ...]
     modules: tuple[ModuleSummary, ...]
@@ -251,7 +243,7 @@ class SemanticInspectionReport(SemanticInspectionRecord):
     calls: tuple[CallSummary, ...]
     assignments: tuple[AssignmentSummary, ...]
     findings: tuple[FindingSummary, ...]
-    evidence: tuple[EvidenceSummary, ...]
+    evidence: tuple[EvidenceDigest, ...]
     source_index: SourceIndex
 
     @json_report_property()
@@ -380,7 +372,7 @@ class _SemanticInspectionProjection:
             calls=calls,
             assignments=assignments,
             findings=self._finding_summaries(findings),
-            evidence=self._evidence_summaries(),
+            evidence=self.source_index.evidence,
             source_index=self.source_index,
         )
 
@@ -457,20 +449,6 @@ class _SemanticInspectionProjection:
                 ),
             )
             for finding in findings
-        )
-
-    def _evidence_summaries(self) -> tuple[EvidenceSummary, ...]:
-        return tuple(
-            EvidenceSummary(
-                evidence_id=item.evidence_id,
-                file_id=item.file_id,
-                file_path=item.file_path,
-                line=item.line,
-                symbol=item.symbol,
-                finding_ids=item.finding_ids,
-                target_ids=item.target_ids,
-            )
-            for item in self.source_index.evidence
         )
 
     @staticmethod

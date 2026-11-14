@@ -678,6 +678,19 @@ not from the top of the list:
   `codemod_workflow.py` (key order), three top-level declarations in
   `codemod_module_declarations.py` (registry lineage), `result` in
   `native_call.py`, `_member` across the source entries.
+- Next concrete parent, traced and not yet written: "the classes of one
+  module that a proved component covers". `ExactDataclassFieldAuthorityComponent`
+  (`exact_field_authority.py`) and `ExactMethodOrbitComponent`
+  (`exact_method_authority.py`) both answer `file_path` and
+  `participant_class_names` with no shared parent, and the two rewrites
+  built from them (`_ExactDataclassFieldAuthoritySourceRewrite.required`,
+  `_ExactMethodRoleSourceRewrite.required` in
+  `refactors/class_member_authority.py`) are the same fifteen lines. An
+  ABC for the cohort in `class_index.py` (both modules import it), the
+  rewrite base holding `component: ClassCohort` and the one `required`,
+  each rewrite narrowing the field's type. A generic rewrite base does
+  not type-check: the operation base returns the rewrite and an
+  invariant parameter rejects the narrower overrides.
 - `own_type_test` 282: 128 are in the native-execution kernel
   (`source_execution.py` 57, `captured_reference.py` 32,
   `native_compilation.py` 22, `product_flow.py` 17). After `closed()`,
