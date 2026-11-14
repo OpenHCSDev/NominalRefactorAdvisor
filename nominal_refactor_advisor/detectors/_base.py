@@ -79,7 +79,6 @@ from nominal_refactor_advisor.registration_facets import (
 )
 from nominal_refactor_advisor.semantic_match import (
     Maybe,
-    NamedValueBinding,
     as_ast,
     loaded_nominal_descendants,
     name_id,
@@ -176,7 +175,9 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _is_abstract_method,
-    CLASS_INDEX_PROJECTION,
+    _is_upper_snake_identifier,
+    ModuleNamedSequenceMap,
+    ModuleNamedValues,
 )
 
 _PIPELINE_ASSIGN_STAGE = "assign"
@@ -1233,7 +1234,6 @@ OptionalCandidateValueRenderer: TypeAlias = (
 ManualRecordConstructorFieldPartition: TypeAlias = tuple[
     tuple[str, ...], tuple[str, ...]
 ]
-ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
 NormalizedRoleFieldMap: TypeAlias = tuple[
     tuple[SemanticFieldRole, tuple[str, ...]], ...
 ]
@@ -3252,12 +3252,6 @@ class _LineCaseSpec(ABC):
 
 
 @dataclass(frozen=True)
-class _ModuleConstantBinding:
-    line: int
-    constructor_name: str | None
-
-
-@dataclass(frozen=True)
 class _SelectionDictCompContext:
     returned: ast.DictComp
     generator: ast.comprehension
@@ -3281,17 +3275,6 @@ _SUBJECT_NAME_FIELD = "subject_name"
 _NAME_FAMILY_FIELD = "name_family"
 _NAME_LITERAL = "name"
 _EVAL_PARSE_MODE = "eval"
-
-
-def _is_upper_snake_identifier(name: str) -> bool:
-    return bool(re.fullmatch("[A-Z][A-Z0-9_]*", name))
-
-
-_AstValueT = TypeVar("_AstValueT", bound=ast.AST)
-
-
-def _module_level_named_calls(module: ParsedModule) -> dict[str, tuple[int, ast.Call]]:
-    return SUPPORT_PROJECTION_AUTHORITY.module_level_named_instances(module, ast.Call)
 
 
 def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -> bool:
@@ -3362,8 +3345,9 @@ def _named_family_for_constants(
 def _derived_wrapper_spec_shadow_candidates(
     module: ParsedModule,
 ) -> tuple[DerivedWrapperSpecShadowCandidate, ...]:
-    constant_bindings = SUPPORT_PROJECTION_AUTHORITY.module_constant_bindings(module)
-    named_sequences = SUPPORT_PROJECTION_AUTHORITY.module_level_named_sequences(module)
+    named_values = module.fact(ModuleNamedValues)
+    constant_bindings = named_values.constants
+    named_sequences = named_values.sequences
     candidates: list[DerivedWrapperSpecShadowCandidate] = []
     for family_name, (family_line, elements) in sorted(named_sequences.items()):
         if len(elements) < 2 or not all(
@@ -3566,8 +3550,9 @@ def _module_keyed_selection_helper_candidates(
     )
     if not helper_shapes or not lookup_shapes:
         return ()
-    named_sequences = SUPPORT_PROJECTION_AUTHORITY.module_level_named_sequences(module)
-    named_calls = _module_level_named_calls(module)
+    named_values = module.fact(ModuleNamedValues)
+    named_sequences = named_values.sequences
+    named_calls = named_values.calls
     candidates: list[ModuleKeyedSelectionHelperCandidate] = []
     for declared in module.fact(ModuleClassStatements).top_level:
         node = declared.node
@@ -4835,7 +4820,7 @@ def _resolved_isinstance_type_names(
         )
         if indexed_class is None:
             continue
-        display_name = CLASS_INDEX_PROJECTION.display_name(indexed_class, class_index)
+        display_name = class_index.display_name(indexed_class)
         if indexed_class.spells_abstract:
             abstract_names.append(display_name)
         else:
@@ -4902,7 +4887,7 @@ def _common_abstract_base_names(
         ),
         key=lambda item: item.symbol,
     )
-    return CLASS_INDEX_PROJECTION.display_names(abstract_bases, class_index)
+    return class_index.display_names(abstract_bases)
 
 
 def _concrete_type_case_function_candidates_for_function(
@@ -5085,8 +5070,8 @@ def _implicit_self_contract_mixin_candidates(
         consumer_classes = tuple(
             (
                 descendant
-                for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
-                    class_index, indexed_class.symbol
+                for descendant in class_index.descendant_classes(
+                    indexed_class.symbol
                 )
                 if not descendant.spells_abstract
             )
@@ -5117,15 +5102,11 @@ def _implicit_self_contract_mixin_candidates(
             ImplicitSelfContractMixinCandidate(
                 file_path=indexed_class.file_path,
                 line=indexed_class.line,
-                mixin_name=CLASS_INDEX_PROJECTION.display_name(
-                    indexed_class, class_index
-                ),
+                mixin_name=class_index.display_name(indexed_class),
                 method_names=tuple(method_names),
                 method_lines=tuple(method_lines),
                 cast_type_names=sorted_tuple(cast_type_names),
-                consumer_class_names=CLASS_INDEX_PROJECTION.display_names(
-                    consumer_classes, class_index
-                ),
+                consumer_class_names=class_index.display_names(consumer_classes),
                 consumer_lines=tuple(
                     (consumer_class.line for consumer_class in consumer_classes)
                 ),
@@ -5493,60 +5474,6 @@ class SupportProjectionAuthority:
                 return None
             return f"{parent}.{node.attr}"
         return None
-
-    def module_named_value_bindings(
-        self, module: ParsedModule
-    ) -> tuple[NamedValueBinding, ...]:
-        return tuple(
-            binding
-            for statement in statements_without_docstring(module.module.body)
-            if (binding := named_value_binding(statement)) is not None
-        )
-
-    def module_level_named_values(
-        self, module: ParsedModule
-    ) -> dict[str, tuple[int, ast.AST]]:
-        values: dict[str, tuple[int, ast.AST]] = {}
-        for binding in self.module_named_value_bindings(module):
-            if binding.value is not None:
-                values[binding.name] = (binding.line, binding.value)
-        return values
-
-    def module_constant_bindings(
-        self, module: ParsedModule
-    ) -> dict[str, _ModuleConstantBinding]:
-        bindings: dict[str, _ModuleConstantBinding] = {}
-        for binding in self.module_named_value_bindings(module):
-            if binding.value is None or not _is_upper_snake_identifier(binding.name):
-                continue
-            constructor_name = (
-                ast.unparse(binding.value.func)
-                if isinstance(binding.value, ast.Call)
-                else None
-            )
-            bindings[binding.name] = _ModuleConstantBinding(
-                line=binding.line, constructor_name=constructor_name
-            )
-        return bindings
-
-    def module_level_named_sequences(
-        self, module: ParsedModule
-    ) -> ModuleNamedSequenceMap:
-        sequences: ModuleNamedSequenceMap = {}
-        for binding in self.module_named_value_bindings(module):
-            if not isinstance(binding.value, (ast.Tuple, ast.List)):
-                continue
-            sequences[binding.name] = (binding.line, tuple(binding.value.elts))
-        return sequences
-
-    def module_level_named_instances(
-        self, module: ParsedModule, value_type: type[_AstValueT]
-    ) -> dict[str, tuple[int, _AstValueT]]:
-        return {
-            name: (line, cast(_AstValueT, value))
-            for name, (line, value) in self.module_level_named_values(module).items()
-            if isinstance(value, value_type)
-        }
 
     def identifier_name_overlap(self, left_name: str, right_name: str) -> float:
         left_tokens = CLASS_NAME_ALGEBRA.token_set(left_name)

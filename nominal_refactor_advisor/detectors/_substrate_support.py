@@ -9,23 +9,20 @@ from __future__ import annotations
 import ast
 import re
 from abc import ABC, abstractmethod
-from collections import defaultdict
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from functools import cached_property
+from typing import Generic, TypeAlias, TypeVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
+    ParsedModule,
+    ParsedModuleFact,
     TypeQuery,
     is_docstring_statement,
     statements_without_docstring,
 )
-from nominal_refactor_advisor.class_families.parsed_index import (
-    ClassFamilyIndex,
-    ClassStatement,
-    IndexedClass,
-)
-from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.semantic_match import NamedValueBinding, named_value_binding
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 
 ProjectionT = TypeVar("ProjectionT")
@@ -106,67 +103,87 @@ def _class_ancestor_name_map(
     }
 
 
+def _is_upper_snake_identifier(name: str) -> bool:
+    return bool(re.fullmatch("[A-Z][A-Z0-9_]*", name))
+
+
+ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
+
+
 @dataclass(frozen=True)
-class ClassIndexProjection:
-    def descendant_names(
-        self, classes_by_name: dict[str, ClassStatement], base_name: str
-    ) -> tuple[str, ...]:
-        children_by_base: dict[str, set[str]] = defaultdict(set)
-        for class_name, declared in classes_by_name.items():
-            for declared_base_name in declared.base_terminal_names:
-                children_by_base[declared_base_name].add(class_name)
-        descendants: list[str] = []
-        queue = sorted(children_by_base.get(base_name, ()))
-        seen: set[str] = set()
-        while queue:
-            current = queue.pop(0)
-            if current in seen:
-                continue
-            seen.add(current)
-            descendants.append(current)
-            queue.extend(
-                (
-                    child
-                    for child in sorted(children_by_base.get(current, ()))
-                    if child not in seen
+class _ModuleConstantBinding:
+    line: int
+    constructor_name: str | None
+
+
+@dataclass(frozen=True)
+class ModuleNamedValues(ParsedModuleFact):
+    """The names a module's own body binds, read once per parse.
+
+    Each view keeps the last binding of a name, as the module itself would.
+    """
+
+    bindings: tuple[NamedValueBinding, ...]
+    """Every assignment or annotation of one name in the module body, in order."""
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleNamedValues:
+        return cls(
+            tuple(
+                binding
+                for statement in statements_without_docstring(
+                    parsed_module.module.body
                 )
-            )
-        return tuple(descendants)
-
-    def display_name(
-        self,
-        indexed_class: IndexedClass,
-        class_index: ClassFamilyIndex,
-    ) -> str:
-        simple_name = indexed_class.simple_name
-        if len(class_index.symbols_by_simple_name.get(simple_name, ())) <= 1:
-            return simple_name
-        return indexed_class.symbol
-
-    def display_names(
-        self, indexed_classes: tuple[IndexedClass, ...], class_index: ClassFamilyIndex
-    ) -> tuple[str, ...]:
-        return sorted_tuple(
-            (
-                self.display_name(indexed_class, class_index)
-                for indexed_class in indexed_classes
+                if (binding := named_value_binding(statement)) is not None
             )
         )
 
-    def descendant_classes(
-        self, class_index: ClassFamilyIndex, base_symbol: str
-    ) -> tuple[IndexedClass, ...]:
-        return tuple(
-            (
-                indexed_class
-                for descendant_symbol in class_index.descendant_symbols(base_symbol)
-                if (indexed_class := class_index.class_for(descendant_symbol))
-                is not None
+    @cached_property
+    def values(self) -> dict[str, tuple[int, ast.AST]]:
+        """Each name given a value, with its line and that value."""
+
+        return {
+            binding.name: (binding.line, binding.value)
+            for binding in self.bindings
+            if binding.value is not None
+        }
+
+    @cached_property
+    def calls(self) -> dict[str, tuple[int, ast.Call]]:
+        """The names whose value is a call."""
+
+        return {
+            name: (line, value)
+            for name, (line, value) in self.values.items()
+            if isinstance(value, ast.Call)
+        }
+
+    @cached_property
+    def sequences(self) -> ModuleNamedSequenceMap:
+        """The names bound to a tuple or list display, with its elements."""
+
+        return {
+            binding.name: (binding.line, tuple(binding.value.elts))
+            for binding in self.bindings
+            if isinstance(binding.value, (ast.Tuple, ast.List))
+        }
+
+    @cached_property
+    def constants(self) -> dict[str, _ModuleConstantBinding]:
+        """The UPPER_SNAKE names given a value, with the constructor a call names."""
+
+        return {
+            binding.name: _ModuleConstantBinding(
+                line=binding.line,
+                constructor_name=(
+                    ast.unparse(binding.value.func)
+                    if isinstance(binding.value, ast.Call)
+                    else None
+                ),
             )
-        )
-
-
-CLASS_INDEX_PROJECTION = ClassIndexProjection()
+            for binding in self.bindings
+            if binding.value is not None and _is_upper_snake_identifier(binding.name)
+        }
 
 
 def _is_private_symbol_name(name: str) -> bool:
@@ -185,6 +202,9 @@ __all__ = (
     "CLASS_NAME_ALGEBRA",
     "_IGNORED_BASE_NAMES",
     "_IGNORED_ANCESTOR_NAMES",
-    "CLASS_INDEX_PROJECTION",
     "_is_private_symbol_name",
+    "_is_upper_snake_identifier",
+    "_ModuleConstantBinding",
+    "ModuleNamedSequenceMap",
+    "ModuleNamedValues",
 )

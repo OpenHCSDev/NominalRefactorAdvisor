@@ -149,7 +149,6 @@ from nominal_refactor_advisor.detectors._base import (
     StaticTypedObservationDetectorCandidate,
     StringBackedReflectiveNominalLookupCandidate,
     StructuralObservationPropertyCandidate,
-    SUPPORT_PROJECTION_AUTHORITY,
     TupleIndexSemanticOpacityCandidate,
     TypedCandidateCastBoilerplateCandidate,
 )
@@ -158,11 +157,11 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
+    ModuleNamedValues,
     _constant_string,
     _IGNORED_BASE_NAMES,
     _is_private_symbol_name,
     _selector_attribute_name,
-    CLASS_INDEX_PROJECTION,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     _class_ancestor_name_map,
@@ -255,7 +254,7 @@ def _fragmented_family_authority_candidates(
     module: ParsedModule,
 ) -> tuple[FragmentedFamilyAuthorityCandidate, ...]:
     family_maps: NamedStringSequenceSpecsByName = defaultdict(list)
-    for binding in SUPPORT_PROJECTION_AUTHORITY.module_named_value_bindings(module):
+    for binding in module.fact(ModuleNamedValues).bindings:
         if not isinstance(binding.value, ast.Dict):
             continue
         key_pairs = tuple(
@@ -1135,7 +1134,8 @@ def _reflective_lookup_shape(
 def _string_backed_reflective_nominal_lookup_candidates(
     module: ParsedModule, config: DetectorConfig
 ) -> tuple[StringBackedReflectiveNominalLookupCandidate, ...]:
-    classes_by_name = module.fact(ModuleClassStatements).by_name
+    statements = module.fact(ModuleClassStatements)
+    classes_by_name = statements.by_name
     class_string_assignments = {
         class_name: _class_direct_constant_string_assignments(declared)
         for class_name, declared in classes_by_name.items()
@@ -1144,9 +1144,7 @@ def _string_backed_reflective_nominal_lookup_candidates(
         tuple[str, str, str, str, str], StringBackedReflectiveNominalLookupCandidate
     ] = {}
     for class_name, declared in sorted(classes_by_name.items()):
-        descendants = CLASS_INDEX_PROJECTION.descendant_names(
-            classes_by_name, class_name
-        )
+        descendants = statements.descendant_names(class_name)
         if len(descendants) < config.min_reflective_selector_values:
             continue
         for method in declared.methods:
@@ -3218,12 +3216,11 @@ class HelperSyntaxProjectionAuthority:
 HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
 
 
-def _enum_metadata_table_cases(module: ast.Module) -> dict[str, tuple[str, int]]:
+def _enum_metadata_table_cases(module: ParsedModule) -> dict[str, tuple[str, int]]:
     tables: dict[str, tuple[str, int]] = {}
-    for statement in module.body:
-        binding = named_value_binding(statement)
-        value = as_ast(None if binding is None else binding.value, ast.Dict)
-        if binding is None or value is None:
+    for binding in module.fact(ModuleNamedValues).bindings:
+        value = as_ast(binding.value, ast.Dict)
+        if value is None:
             continue
         enum_key_names = tuple(
             (
@@ -3256,7 +3253,7 @@ def _enum_metadata_property_table(method: ast.FunctionDef) -> str | None:
 def _enum_metadata_table_candidates(
     module: ParsedModule,
 ) -> tuple[EnumMetadataTableCandidate, ...]:
-    table_cases = _enum_metadata_table_cases(module.module)
+    table_cases = _enum_metadata_table_cases(module)
     candidates: list[EnumMetadataTableCandidate] = []
     for statement in module.module.body:
         if not isinstance(statement, ast.ClassDef):
@@ -3431,9 +3428,8 @@ def _cli_argument_spec_fields(
     module: ParsedModule,
 ) -> NamedStringSequenceSpecs:
     specs: MutableNamedStringSequenceSpecs = []
-    for statement in module.module.body:
-        binding = named_value_binding(statement)
-        if binding is None or not isinstance(binding.value, ast.Tuple):
+    for binding in module.fact(ModuleNamedValues).bindings:
+        if not isinstance(binding.value, ast.Tuple):
             continue
         field_names = tuple(
             (

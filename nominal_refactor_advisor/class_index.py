@@ -2453,6 +2453,25 @@ class ClassDeclarationIndex(Generic[ClassDeclarationT]):
             return ()
         return self.inheritance_graph.reversed.reachable_from(base_symbol)
 
+    def descendant_classes(self, base_symbol: str) -> tuple[ClassDeclarationT, ...]:
+        """The indexed classes that inherit from `base_symbol`."""
+
+        return tuple(
+            record
+            for symbol in self.descendant_symbols(base_symbol)
+            if (record := self.class_for(symbol)) is not None
+        )
+
+    def display_name(self, record: ClassDeclaration) -> str:
+        """The class's simple name, or its symbol when another class shares that name."""
+
+        if len(self.symbols_by_simple_name.get(record.simple_name, ())) <= 1:
+            return record.simple_name
+        return record.symbol
+
+    def display_names(self, records: Iterable[ClassDeclaration]) -> tuple[str, ...]:
+        return sorted_tuple(self.display_name(record) for record in records)
+
 
 @dataclass
 class _ProductLineageComposer:

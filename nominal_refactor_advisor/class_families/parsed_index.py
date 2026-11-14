@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from collections import defaultdict, deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
@@ -451,6 +452,34 @@ class ModuleClassStatements(ParsedModuleFact):
         """Each module-level class name with the last statement declaring it."""
 
         return {statement.node.name: statement for statement in self.top_level}
+
+    @cached_property
+    def child_names_by_base(self) -> dict[str, tuple[str, ...]]:
+        """Each spelled base name with the classes that spell it, sorted."""
+
+        children: dict[str, set[str]] = defaultdict(set)
+        for name, statement in self.by_name.items():
+            for base_name in statement.base_terminal_names:
+                children[base_name].add(name)
+        return {base: tuple(sorted(names)) for base, names in children.items()}
+
+    def descendant_names(self, base_name: str) -> tuple[str, ...]:
+        """The classes of this module reaching `base_name` through spelled bases,
+        nearest first."""
+
+        descendants: dict[str, None] = {}
+        queue = deque(self.child_names_by_base.get(base_name, ()))
+        while queue:
+            current = queue.popleft()
+            if current in descendants:
+                continue
+            descendants[current] = None
+            queue.extend(
+                child
+                for child in self.child_names_by_base.get(current, ())
+                if child not in descendants
+            )
+        return tuple(descendants)
 
 
 def build_class_family_index(modules: Sequence[ParsedModule]) -> ClassFamilyIndex:
