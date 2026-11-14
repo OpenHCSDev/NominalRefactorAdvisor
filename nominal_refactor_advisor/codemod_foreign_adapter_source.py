@@ -28,7 +28,7 @@ from nominal_refactor_advisor.foreign_family import (
     AssignmentStatement,
     FunctionDefinition,
 )
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.observation_families import (
     ShapeFamily,
     TypeArgumentResolver,
@@ -325,8 +325,8 @@ class FreshNames:
         return cls(
             frozenset(
                 read
-                | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
-                | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+                | LexicalScopeBindingAuthority.bound_names(function.body)
+                | LexicalScopeBindingAuthority.argument_names(function)
                 | parsed_module.bound_names
             )
         )

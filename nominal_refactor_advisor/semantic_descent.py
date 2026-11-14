@@ -105,7 +105,7 @@ from nominal_refactor_advisor.implementation_identity import (
     implementation_module_names,
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     SemanticRecord,
@@ -4801,9 +4801,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             super().visit_FunctionDef(node)
             if self.include_presentations:
                 collector = MappingReadProjectionCollector()
-                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                bound_names = LexicalScopeBindingAuthority.bound_names(
                     node.body
-                ) | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+                ) | LexicalScopeBindingAuthority.argument_names(node)
                 for statement in node.body:
                     collector.visit(statement)
                 for subject, reads in collector.reads.items():
@@ -4850,7 +4850,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                         or (
                             parts == (classmethod_receiver,)
                             and classmethod_receiver
-                            not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                            not in LexicalScopeBindingAuthority.bound_names(
                                 node.body
                             )
                         )

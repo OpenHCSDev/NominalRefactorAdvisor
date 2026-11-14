@@ -16314,7 +16314,7 @@ def test_literal_dispatch_families_collect_only_their_declared_kind(
     )
     module = parse_python_modules(tmp_path)[0]
     literal_types: list[type[str] | type[int]] = []
-    original_match = ast_tools_module.LITERAL_DISPATCH_CASE_MATCHER.match
+    original_match = ast_tools_module.LiteralDispatchCaseMatcher.match
 
     def record_literal_type(
         test: ast.AST,
@@ -16324,7 +16324,7 @@ def test_literal_dispatch_families_collect_only_their_declared_kind(
         return original_match(test, literal_type)
 
     monkeypatch.setattr(
-        ast_tools_module.LITERAL_DISPATCH_CASE_MATCHER,
+        ast_tools_module.LiteralDispatchCaseMatcher,
         "match",
         record_literal_type,
     )

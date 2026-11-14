@@ -30,7 +30,7 @@ from nominal_refactor_advisor.ast_projection import (
     names_mentioned,
 )
 from nominal_refactor_advisor.ast_tools import (
-    ROOT_NAME_PROJECTION,
+    RootNameProjection,
     walk_function_body_nodes,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
@@ -526,7 +526,7 @@ class DataclassInstanceFieldProjection:
         projection: ReturnCollectionProjectionTarget,
         proof: DataclassAuthorityReferenceProof,
     ) -> bool:
-        roots = ROOT_NAME_PROJECTION.root_names(reference)
+        roots = RootNameProjection.root_names(reference)
         bindings = FunctionBindingProjection.from_function(projection.node)
         return roots.isdisjoint(bindings.local_names) and proof.resolves(reference)
 

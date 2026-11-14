@@ -41,7 +41,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanReplacement,
     SourceTargetEditor,
 )
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.refactor_concepts import DerivedProjectionConcept
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
@@ -241,7 +241,7 @@ class EnumSubsetDerivation:
                 f"literal frozenset subset; found {len(projections)}"
             )
         projection = projections[0]
-        if projection.accessor_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if projection.accessor_name in LexicalScopeBindingAuthority.bound_names(
             authority_node.body
         ):
             raise ValueError(

@@ -33,8 +33,8 @@ from nominal_refactor_advisor.ast_projection import (
     name_nodes,
 )
 from nominal_refactor_advisor.ast_tools import (
-    ROOT_NAME_PROJECTION,
     root_agnostic_expression_fingerprint,
+    RootNameProjection,
     statements_without_docstring,
     walk_function_body_nodes,
 )
@@ -134,7 +134,7 @@ def _repeated_builder_root_name_source(
     value: ast.expr,
 ) -> str | None:
     del geometry
-    roots = ROOT_NAME_PROJECTION.root_names(value)
+    roots = RootNameProjection.root_names(value)
     return next(iter(roots)) if len(roots) == 1 else None
 
 
@@ -1357,7 +1357,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
     def call_source_root_name(call: ast.Call) -> str | None:
         roots: set[str] = set()
         for keyword in CallKeywords.of(call.keywords).named:
-            roots.update(ROOT_NAME_PROJECTION.root_names(keyword.value))
+            roots.update(RootNameProjection.root_names(keyword.value))
         if len(roots) != 1:
             return None
         return next(iter(roots))
@@ -1391,7 +1391,7 @@ class RepeatedBuilderAuthorityMethodDeriver(ABC):
                 if values_by_field is not None
             )
             if all(
-                len(ROOT_NAME_PROJECTION.root_names(value)) == 1 for value in values
+                len(RootNameProjection.root_names(value)) == 1 for value in values
             ):
                 return field_name
         return None

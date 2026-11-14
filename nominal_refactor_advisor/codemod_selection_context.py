@@ -42,7 +42,7 @@ from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.declaration_dependencies import (
     ModuleLexicalDependencyProjection,
 )
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
@@ -291,7 +291,7 @@ class ResolvedClassTarget:
     @cached_property
     def bound_names(self) -> frozenset[str]:
         """Derive lexical bindings from this class declaration."""
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.node.body)
+        return LexicalScopeBindingAuthority.bound_names(self.node.body)
 
     @classmethod
     def from_rewrite_target(

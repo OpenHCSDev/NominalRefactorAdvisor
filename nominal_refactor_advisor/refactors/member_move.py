@@ -62,7 +62,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.refactors.function_operations import (
     imports_only_read_by,
@@ -120,7 +120,7 @@ class MovedMethod(AnsweredMethod):
 
     @cached_property
     def locals(self) -> frozenset[str]:
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.method.body) | frozenset(
+        return LexicalScopeBindingAuthority.bound_names(self.method.body) | frozenset(
             argument.arg for argument in nodes_of(ast.arg, self.method.args)
         )
 
@@ -284,7 +284,7 @@ class MovedMethod(AnsweredMethod):
         snapshot = self.snapshot
         source_module = snapshot.module_nodes_by_file_path[self.source_class.file_path]
         destination_path = self.destination.file_path
-        destination_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        destination_names = LexicalScopeBindingAuthority.bound_names(
             snapshot.module_nodes_by_file_path[destination_path].body
         )
         graph = snapshot.module_import_graph
@@ -682,7 +682,7 @@ class DestinationClassMethod(DestinationMember):
     destination with its arguments as they are."""
 
     def __post_init__(self) -> None:
-        if "cls" in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.moved.method.body):
+        if "cls" in LexicalScopeBindingAuthority.bound_names(self.moved.method.body):
             raise ValueError(f"{self.moved.name!r} already binds 'cls'")
 
     def signature_edits(self, signature: SignatureText) -> tuple[_Edit, ...]:
@@ -899,7 +899,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
             )
             if not moved.member.callers_import_destination:
                 continue
-            module_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            module_names = LexicalScopeBindingAuthority.bound_names(
                 snapshot.module_nodes_by_file_path[call.file_path].body
             )
             if call.file_path != moved.destination.file_path and moved.destination.name not in module_names:

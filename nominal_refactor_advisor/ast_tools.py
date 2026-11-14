@@ -65,7 +65,6 @@ from nominal_refactor_advisor.lexical_bindings import (
     FunctionAnnotationVisitor,
     ImportBoundNameProjection as ImportBoundNameProjection,
     ImportedNameOrigin as ImportedNameOrigin,
-    LEXICAL_SCOPE_BINDING_AUTHORITY as LEXICAL_SCOPE_BINDING_AUTHORITY,
     LexicalScopeBindingAuthority as LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.native_compilation import (
@@ -787,7 +786,7 @@ class ParsedModule(SourceFileIdentity):
         """The names this module's own scope binds, read without entering a function,
         a class or a comprehension."""
 
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.module.body)
+        return LexicalScopeBindingAuthority.bound_names(self.module.body)
 
     @cached_property
     def native_compilation(self) -> NativePythonCompilation:
@@ -864,7 +863,7 @@ class ParsedModule(SourceFileIdentity):
             else:
                 items = tuple(
                     item
-                    for item in COLLECTED_ITEM_PROJECTION.flatten(
+                    for item in CollectedItemProjection.flatten(
                         self._collected(family, demand)
                     )
                     if isinstance(item, family.item_type)
@@ -2051,8 +2050,9 @@ def _registered_type_token(_name: str, cls: type[_TRegistered]) -> str | None:
 
 
 class RegisteredTypeLineage:
+    @classmethod
     def ordered_registered_types(
-        self,
+        cls,
         root: type[_TRegisteredType],
     ) -> tuple[type[_TRegisteredType], ...]:
         registry = root.__registry__
@@ -2060,7 +2060,7 @@ class RegisteredTypeLineage:
         ordered: list[type[_TRegisteredType]] = []
         for registered_type in sorted(
             registry.values(),
-            key=self._registry_member_key,
+            key=cls._registry_member_key,
         ):
             registered_class = cast(type[_TRegisteredType], registered_type)
             if registered_class in seen or not issubclass(registered_class, root):
@@ -2069,14 +2069,15 @@ class RegisteredTypeLineage:
             ordered.append(registered_class)
         return tuple(ordered)
 
+    @classmethod
     def direct_registered_types(
-        self, root: type[_TRegisteredType], *, registry_base: type
+        cls, root: type[_TRegisteredType], *, registry_base: type
     ) -> tuple[type[_TRegisteredType], ...]:
         return tuple(
             (
                 registered_type
-                for registered_type in self.ordered_registered_types(root)
-                if self._is_direct_registered_descendant(
+                for registered_type in cls.ordered_registered_types(root)
+                if cls._is_direct_registered_descendant(
                     registered_type, root, registry_base=registry_base
                 )
             )
@@ -2111,7 +2112,6 @@ class RegisteredTypeLineage:
         )
 
 
-REGISTERED_TYPE_LINEAGE = RegisteredTypeLineage()
 
 
 class ModuleShapeSpec(Generic[ShapeItemT], ABC):
@@ -2146,7 +2146,7 @@ class AutoRegisteredModuleShapeSpec(
         return tuple(
             (
                 spec_type()
-                for spec_type in REGISTERED_TYPE_LINEAGE.direct_registered_types(
+                for spec_type in RegisteredTypeLineage.direct_registered_types(
                     cls, registry_base=AutoRegisteredModuleShapeSpec
                 )
             )
@@ -2234,7 +2234,7 @@ class CollectedFamily(
     @classmethod
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
-        return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
+        return RegisteredTypeLineage.ordered_registered_types(cls)
 
     @classmethod
     @ScanCache.cached
@@ -2946,7 +2946,7 @@ class RegisteredSpecCollectedFamily(
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ShapeItemT]:
-        return COLLECTED_ITEM_PROJECTION.from_spec_root(
+        return CollectedItemProjection.from_spec_root(
             cls.spec_root, parsed_module, cls.item_type
         )
 
@@ -2961,7 +2961,7 @@ class SingleSpecCollectedFamily(CollectedFamily[ShapeItemT], Generic[ShapeItemT]
     def collect(cls, parsed_module: ParsedModule) -> list[ShapeItemT]:
         return [
             item
-            for item in COLLECTED_ITEM_PROJECTION.flatten(
+            for item in CollectedItemProjection.flatten(
                 cls.spec.collect(parsed_module)
             )
             if isinstance(item, cls.item_type)
@@ -3843,8 +3843,9 @@ def collect_scoped_observations(
 
 
 class CollectedItemProjection:
+    @classmethod
     def flatten(
-        self,
+        cls,
         items: list[FlattenedItemT | tuple[FlattenedItemT, ...]],
     ) -> tuple[FlattenedItemT, ...]:
         flattened: list[FlattenedItemT] = []
@@ -3855,8 +3856,9 @@ class CollectedItemProjection:
                 flattened.append(item)
         return tuple(flattened)
 
+    @classmethod
     def from_spec_root(
-        self,
+        cls,
         spec_root: type[AutoRegisteredModuleShapeSpec],
         parsed_module: ParsedModule,
         item_type: type[FlattenedItemT],
@@ -3866,14 +3868,13 @@ class CollectedItemProjection:
             items.extend(
                 (
                     item
-                    for item in self.flatten(spec.collect(parsed_module))
+                    for item in cls.flatten(spec.collect(parsed_module))
                     if isinstance(item, item_type)
                 )
             )
         return items
 
 
-COLLECTED_ITEM_PROJECTION = CollectedItemProjection()
 
 
 def _execution_level_for_scope(function_name: str | None) -> StructuralExecutionLevel:
@@ -3885,7 +3886,8 @@ def _execution_level_for_scope(function_name: str | None) -> StructuralExecution
 class ClassObservationProjection:
     _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
 
-    def project(self, parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
+    @classmethod
+    def project(cls, parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
         observations: list[ClassAstObservation] = []
         for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
             node = observation.node
@@ -3895,7 +3897,7 @@ class ClassObservationProjection:
                     node=node,
                     is_dataclass_family=any(
                         (
-                            self._DATACLASS_DECORATOR_FAMILY.matches(decorator)
+                            cls._DATACLASS_DECORATOR_FAMILY.matches(decorator)
                             for decorator in node.decorator_list
                         )
                     ),
@@ -3904,7 +3906,6 @@ class ClassObservationProjection:
         return tuple(observations)
 
 
-CLASS_OBSERVATION_PROJECTION = ClassObservationProjection()
 
 
 def _class_body_field_observation(
@@ -4026,8 +4027,9 @@ def _init_field_observations(
 
 
 class LiteralDispatchCaseMatcher:
+    @classmethod
     def match(
-        self, test: ast.AST, literal_type: type[LiteralDispatchScalar]
+        cls, test: ast.AST, literal_type: type[LiteralDispatchScalar]
     ) -> tuple[str, str, str] | None:
         return (
             Maybe.of(test)
@@ -4037,7 +4039,6 @@ class LiteralDispatchCaseMatcher:
         )
 
 
-LITERAL_DISPATCH_CASE_MATCHER = LiteralDispatchCaseMatcher()
 
 
 @dataclass(frozen=True)
@@ -4093,7 +4094,7 @@ def _literal_dispatch_observation_from_if(
     dispatch_axis_expression: str | None = None
     current: ast.stmt | None = node
     while isinstance(current, ast.If):
-        case = LITERAL_DISPATCH_CASE_MATCHER.match(
+        case = LiteralDispatchCaseMatcher.match(
             current.test,
             literal_kind.literal_type,
         )
@@ -4185,7 +4186,7 @@ def _inline_literal_dispatch_groups(
     for stmt in block:
         if not isinstance(stmt, ast.If):
             continue
-        case = LITERAL_DISPATCH_CASE_MATCHER.match(
+        case = LiteralDispatchCaseMatcher.match(
             stmt.test,
             literal_kind.literal_type,
         )
@@ -4469,7 +4470,7 @@ def _builder_call_shape(
     )
     source_roots = set()
     for _, value in context.field_pairs:
-        source_roots.update(ROOT_NAME_PROJECTION.root_names(value))
+        source_roots.update(RootNameProjection.root_names(value))
     source_name = next(iter(source_roots)) if len(source_roots) == 1 else None
     identity_field_names = tuple(
         (
@@ -4499,17 +4500,18 @@ def root_agnostic_expression_fingerprint(node: ast.AST) -> str:
 
 
 class RootNameProjection:
-    def root_names(self, node: ast.AST) -> set[str]:
+    @classmethod
+    def root_names(cls, node: ast.AST) -> set[str]:
         roots: set[str] = set()
 
         class Visitor(ast.NodeVisitor):
             def visit_Call(self, node: ast.Call) -> None:
                 if isinstance(node.func, ast.Attribute):
-                    self.visit(node.func.value)
+                    cls.visit(node.func.value)
                 for argument in node.args:
-                    self.visit(argument)
+                    cls.visit(argument)
                 for keyword_node in node.keywords:
-                    self.visit(keyword_node.value)
+                    cls.visit(keyword_node.value)
 
             def visit_Attribute(self, node: ast.Attribute) -> None:
                 current: ast.AST = node
@@ -4517,7 +4519,7 @@ class RootNameProjection:
                     current = current.value
                 if isinstance(current, ast.Name):
                     roots.add(current.id)
-                self.generic_visit(node)
+                cls.generic_visit(node)
 
             def visit_Name(self, node: ast.Name) -> None:
                 roots.add(node.id)
@@ -4526,7 +4528,6 @@ class RootNameProjection:
         return roots
 
 
-ROOT_NAME_PROJECTION = RootNameProjection()
 
 
 def _registration_key_fingerprint(node: ast.AST) -> str | None:

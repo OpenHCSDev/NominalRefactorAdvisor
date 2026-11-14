@@ -13,7 +13,7 @@ from typing import ClassVar, Self
 
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.lexical_bindings import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
     ScopeBindingCollector,
 )
 
@@ -141,7 +141,7 @@ class FunctionBindingProjection(ScopeBindingProjection, LexicalScopeABC):
     ) -> FunctionBindingProjection:
         nodes = (node.body,) if isinstance(node, ast.Lambda) else node.body
         return cls.from_nodes(
-            nodes, (LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)), node=node
+            nodes, (LexicalScopeBindingAuthority.argument_names(node)), node=node
         )
 
     @classmethod

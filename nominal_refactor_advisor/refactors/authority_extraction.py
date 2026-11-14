@@ -32,7 +32,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceSpanDeletion,
     SourceTargetEditor,
 )
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.refactors.semantic_mirror import (
     SemanticMirrorOperationTargets,
     SemanticMirrorRecipeBuilder,
@@ -114,7 +114,7 @@ class AuthoritySourceOperation(
         _target_identifier, target = self.target_digest(context)
         source_path = target.file_path
         authority_name = self.authority_declaration.name
-        bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        bound_names = LexicalScopeBindingAuthority.bound_names(
             context.module_nodes_by_file_path[source_path].body
         )
         if authority_name in bound_names and target.name != authority_name:

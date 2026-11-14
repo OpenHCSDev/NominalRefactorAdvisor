@@ -27,7 +27,7 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAuthority
 from nominal_refactor_advisor.descriptor_algebra import CollectionAttributeProjection
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.captured_reference import NamespaceContentsABC
 from nominal_refactor_advisor.registry_identity import (
@@ -241,7 +241,7 @@ class SourceClassKeyEntry:
                 f"Registry key for {self.class_name!r} is not a relocatable "
                 "declaration expression"
             )
-        preceding_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        preceding_names = LexicalScopeBindingAuthority.bound_names(
             statement
             for statement in module.body
             if statement.lineno < self.class_node.lineno
@@ -676,7 +676,7 @@ class DirectManualRegistryComponent(RegistryEntries):
                     "Generated registry authority requires empty, object, or ABC "
                     "leaf bases"
                 )
-            bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.module.body)
+            bound_names = LexicalScopeBindingAuthority.bound_names(self.module.body)
             if self.generated_authority_name in bound_names:
                 raise ValueError(
                     f"Generated authority name {self.generated_authority_name!r} is bound"

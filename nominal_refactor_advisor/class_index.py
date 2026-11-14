@@ -48,8 +48,8 @@ from nominal_refactor_advisor.annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
 from nominal_refactor_advisor.ast_field_decoders import (
-    TYPE_PARAMETERS,
     declared_annotations,
+    TypeParameterSyntax,
     variadic_parameters,
 )
 from nominal_refactor_advisor.ast_projection import (
@@ -172,7 +172,7 @@ from nominal_refactor_advisor.enum_semantics import (
 from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.native_declarations import (
     DataclassRuntimeDeclaration as DataclassRuntimeDeclaration,
@@ -1785,7 +1785,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 ).is_reconstructible,
                 base_key_type_names=CompactModuleClassHeader._compact_base_key_type_names(node),
                 base_argument_sources=CompactModuleClassHeader._compact_base_argument_sources(node),
-                type_parameter_names=TYPE_PARAMETERS.names(node),
+                type_parameter_names=TypeParameterSyntax.names(node),
                 is_final=binding_snapshots[node.lineno].decorated_by(node, (FINAL_DECORATOR,)),
                 end_line=node.end_lineno,
                 method_names=tuple(
@@ -3788,7 +3788,7 @@ class ModuleNominalBindingView(ABC):
         """Prove the native type emitted into a class resolves to its declaration."""
 
         name = declaration.__name__
-        class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
+        class_names = LexicalScopeBindingAuthority.bound_names(owner.body)
         if name in class_names:
             raise ValueError(f"Class namespace shadows native type {name!r}")
         witness = self.reference_or_builtin_witness_at(
@@ -4128,7 +4128,7 @@ class ClassBodyNormalForm:
     ) -> tuple[ClassBodyNormalForm, ...]:
         """Every direct declaration of one class body, in source order."""
 
-        class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        class_bound_names = LexicalScopeBindingAuthority.bound_names(node.body)
         declarations: list[ClassBodyNormalForm] = []
         for statement in node.body:
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -4433,7 +4433,7 @@ def _direct_statement_bound_names(statement: ast.stmt) -> frozenset[str]:
             for target in statement.targets
             for name in _direct_binding_target_names(target)
         )
-    return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,))
+    return LexicalScopeBindingAuthority.bound_names((statement,))
 
 
 def _module_nominal_binding_snapshots(
@@ -4917,8 +4917,8 @@ class CompactModuleClassProjectionFamily(
         module_bound_names = parsed_module.bound_names
         import_aliases = module_import_aliases(parsed_module)
         locals_by_function_index = {
-            function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
-            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+            function_index: LexicalScopeBindingAuthority.bound_names(function.body)
+            | LexicalScopeBindingAuthority.argument_names(function)
             for function_index in {
                 index
                 for scope in syntax_index.scopes

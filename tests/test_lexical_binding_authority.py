@@ -11,7 +11,7 @@ import textwrap
 
 import pytest
 
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor import ast_tools, lexical_bindings, python_module_identity
 from nominal_refactor_advisor.declaration_dependencies import FunctionBindingProjection
 from nominal_refactor_advisor.ast_tools import parse_python_modules
@@ -48,7 +48,7 @@ def test_enclosing_bindings_match_native_python(source: str) -> None:
     )
     expected = frozenset(native.get_locals())
     assert (
-        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(ast.parse(source).body) == expected
+        LexicalScopeBindingAuthority.bound_names(ast.parse(source).body) == expected
     )
 
 
@@ -74,7 +74,7 @@ def test_comprehension_ownership_matches_live_function_scope(source: str) -> Non
         namespace,
     )
     assert (
-        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(ast.parse(source).body)
+        LexicalScopeBindingAuthority.bound_names(ast.parse(source).body)
         == namespace["probe"]()
     )
 
@@ -165,8 +165,8 @@ def test_insertion_accepts_comprehension_with_its_own_loop_binding(
 
 def test_public_imports_retain_the_same_declaration_identity() -> None:
     assert (
-        ast_tools.LEXICAL_SCOPE_BINDING_AUTHORITY
-        is lexical_bindings.LEXICAL_SCOPE_BINDING_AUTHORITY
+        ast_tools.LexicalScopeBindingAuthority
+        is lexical_bindings.LexicalScopeBindingAuthority
     )
     assert (
         ast_tools.ImportBoundNameProjection
@@ -202,7 +202,7 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         "    @staticmethod\n"
         "    def bound_names(nodes):\n"
         "        return frozenset(name for node in nodes for name in ImportBoundNameProjection(node).names())\n"
-        "LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()\n",
+        "LexicalScopeBindingAuthority = LexicalScopeBindingAuthority()\n",
         encoding="utf-8",
         newline="",
     )
@@ -216,7 +216,7 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         newline="",
     )
     (package / "consumer.py").write_text(
-        "from .ast_tools import LEXICAL_SCOPE_BINDING_AUTHORITY, PythonModulePathIdentity\n"
+        "from .ast_tools import LexicalScopeBindingAuthority, PythonModulePathIdentity\n"
         "from .declaration_dependencies import _CurrentScopeBindingCollector as Collector\n",
         encoding="utf-8",
         newline="",
@@ -227,7 +227,7 @@ def test_recorded_binding_plan_runs_through_cli_and_preserves_imports(
         "from nominal_refactor_advisor import ast_tools, consumer\n"
         "tree = ast.parse('import math as maths')\n"
         "collector = consumer.Collector(); collector.visit(tree)\n"
-        "print(sorted(collector.bound_names), sorted(consumer.LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(tree.body)), consumer.PythonModulePathIdentity is ast_tools.PythonModulePathIdentity)\n",
+        "print(sorted(collector.bound_names), sorted(consumer.LexicalScopeBindingAuthority.bound_names(tree.body)), consumer.PythonModulePathIdentity is ast_tools.PythonModulePathIdentity)\n",
         encoding="utf-8",
         newline="",
     )

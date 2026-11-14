@@ -19,8 +19,8 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.export_tools import (
@@ -62,8 +62,8 @@ from nominal_refactor_advisor.ast_tools import (
     AutoRegisteredModuleShapeSpec,
     AutoRegisterMeta,
     BuiltinCallName,
-    CLASS_OBSERVATION_PROJECTION,
     ClassAstObservation,
+    ClassObservationProjection,
     CollectedFamily,
     ContextHelperShapeSpec,
     FunctionObservationSpec,
@@ -690,7 +690,7 @@ class FieldObservationSpec(AutoRegisteredModuleShapeSpec[FieldObservation], ABC)
 class ClassObservationSpec(FieldObservationSpec, ABC, metaclass=AutoRegisterMeta):
     def collect(self, parsed_module: ParsedModule) -> list[FieldObservation]:
         observations: list[FieldObservation] = []
-        for class_observation in CLASS_OBSERVATION_PROJECTION.project(parsed_module):
+        for class_observation in ClassObservationProjection.project(parsed_module):
             observations.extend(
                 self.collect_for_class(parsed_module, class_observation)
             )
@@ -1021,10 +1021,10 @@ class EnclosingScope:
         shadowed: set[str] = set()
         imports: dict[str, list[str | None]] = defaultdict(list)
         for function in FunctionDefinition.within(ancestors):
-            bound, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(
+            bound, imported = LexicalScopeBindingAuthority.import_only_bindings(
                 function.body
             )
-            shadowed |= bound | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+            shadowed |= bound | LexicalScopeBindingAuthority.argument_names(function)
             for name, statement in imported.items():
                 imports[name].extend(
                     origin.qualified_name
@@ -1073,7 +1073,7 @@ def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> Subject
 
     match subject:
         case ast.Name():
-            match LEXICAL_SCOPE_BINDING_AUTHORITY.parameter_annotation(
+            match LexicalScopeBindingAuthority.parameter_annotation(
                 subject, ancestors
             ):
                 case ast.Name(id=declared) | ast.Constant(value=declared) if (

@@ -77,7 +77,7 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     ImportFromModuleName,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.registry_identity import (
@@ -120,7 +120,7 @@ class _TypeKeyedBehaviorMethodDescent:
             self.source_module.fact(ClassLineBindingSnapshots).snapshots[
                 self.projection_class.node.lineno
             ],
-            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            LexicalScopeBindingAuthority.bound_names(
                 self.projection_class.node.body
             ),
             source_lines=tuple(self.source_module.source.splitlines()),
@@ -144,7 +144,7 @@ class _TypeKeyedBehaviorMethodDescent:
             positional_parameters[0].arg,
             positional_parameters[1].arg,
         )
-        if subject_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(method.body):
+        if subject_name in LexicalScopeBindingAuthority.bound_names(method.body):
             raise ValueError(
                 f"projected method {method.name!r} rebinds its subject parameter"
             )

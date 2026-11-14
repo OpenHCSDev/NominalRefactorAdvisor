@@ -64,7 +64,7 @@ from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
@@ -303,7 +303,7 @@ class DispatchPolymorphismFunction:
                 and not statement.orelse
                 and not self.test_literals(statement.test)
                 and self.terminal(statement.body)
-                and not LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,))
+                and not LexicalScopeBindingAuthority.bound_names((statement,))
             ):
                 break
             guards.append(statement)
@@ -315,7 +315,7 @@ class DispatchPolymorphismFunction:
 
     @cached_property
     def function_locals(self) -> frozenset[str]:
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        return LexicalScopeBindingAuthority.bound_names(
             self.executable_body
         ) - frozenset(self.parameter_names)
 
@@ -465,7 +465,7 @@ class DispatchPolymorphismFunction:
         """Leave the axis root bound and read no local bound outside the statements."""
 
         statements = tuple(statements)
-        bound_here = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(statements)
+        bound_here = LexicalScopeBindingAuthority.bound_names(statements)
         loaded = names_read(*statements)
         return self.axis.root_name not in bound_here and not (
             loaded & (self.function_locals - bound_here)
@@ -808,7 +808,7 @@ class DispatchPolymorphismSource:
                 continue
             conflicts.update(
                 required_sources.keys()
-                & LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,))
+                & LexicalScopeBindingAuthority.bound_names((statement,))
             )
         return sorted_tuple(conflicts)
 
@@ -1084,7 +1084,7 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
     ) -> tuple[str, ...]:
         return sorted_tuple(
             frozenset(class_names)
-            & LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            & LexicalScopeBindingAuthority.bound_names(
                 context.module_nodes_by_file_path[target.file_path].body
             )
         )

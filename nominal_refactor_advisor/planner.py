@@ -52,7 +52,7 @@ class _FindingCluster:
         return cls(
             subsystem=SubsystemNameProjection(findings, root).name(),
             findings=findings,
-            evidence=_FINDING_PROJECTION.combined_evidence(findings),
+            evidence=FindingProjection.combined_evidence(findings),
         )
 
 
@@ -103,8 +103,9 @@ _MetricValueT = TypeVar("_MetricValueT")
 
 
 class FindingProjection:
+    @classmethod
     def combined_evidence(
-        self, findings: tuple[RefactorFinding, ...]
+        cls, findings: tuple[RefactorFinding, ...]
     ) -> tuple[SourceLocation, ...]:
         seen: set[tuple[str, int, str]] = set()
         evidence: list[SourceLocation] = []
@@ -117,8 +118,9 @@ class FindingProjection:
                 evidence.append(item)
         return tuple(sorted(evidence, key=lambda item: (item.file_path, item.line))[:8])
 
+    @classmethod
     def evidence_symbols(
-        self, findings: tuple[RefactorFinding, ...]
+        cls, findings: tuple[RefactorFinding, ...]
     ) -> tuple[str, ...]:
         seen: set[str] = set()
         ordered: list[str] = []
@@ -130,7 +132,8 @@ class FindingProjection:
                 ordered.append(item.symbol)
         return tuple(ordered)
 
-    def class_names(self, findings: tuple[RefactorFinding, ...]) -> tuple[str, ...]:
+    @classmethod
+    def class_names(cls, findings: tuple[RefactorFinding, ...]) -> tuple[str, ...]:
         names: list[str] = []
         for finding in findings:
             names.extend(finding.metrics.plan_class_names)
@@ -140,10 +143,11 @@ class FindingProjection:
                 head = item.symbol.split(".", 1)[0]
                 if head and (not head.startswith("<")):
                     names.append(head)
-        return tuple(self.dedupe_preserve_order(names))
+        return tuple(cls.dedupe_preserve_order(names))
 
+    @classmethod
     def first_metric_value(
-        self,
+        cls,
         findings: tuple[RefactorFinding, ...],
         extractor: Callable[[object], _MetricValueT | None],
         default: _MetricValueT,
@@ -154,13 +158,15 @@ class FindingProjection:
                 return value
         return default
 
-    def registry_name(self, findings: tuple[RefactorFinding, ...]) -> str:
-        registry_name = self.first_metric_value(
+    @classmethod
+    def registry_name(cls, findings: tuple[RefactorFinding, ...]) -> str:
+        registry_name = cls.first_metric_value(
             findings, lambda metrics: metrics.plan_registry_name, "Registry"
         )
-        return self._safe_identifier(registry_name)
+        return cls._safe_identifier(registry_name)
 
-    def dispatch_axis(self, findings: tuple[RefactorFinding, ...]) -> str:
+    @classmethod
+    def dispatch_axis(cls, findings: tuple[RefactorFinding, ...]) -> str:
         axes = {
             axis
             for finding in findings
@@ -172,14 +178,16 @@ class FindingProjection:
             return next(iter(axes))
         return "the shared dispatch axes"
 
-    def statement_count(self, findings: tuple[RefactorFinding, ...]) -> int:
+    @classmethod
+    def statement_count(cls, findings: tuple[RefactorFinding, ...]) -> int:
         return int(
-            self.first_metric_value(
+            cls.first_metric_value(
                 findings, lambda metrics: metrics.plan_statement_count, 0
             )
         )
 
-    def human_join(self, items: tuple[str, ...] | list[str]) -> str:
+    @classmethod
+    def human_join(cls, items: tuple[str, ...] | list[str]) -> str:
         if not items:
             return ""
         if len(items) == 1:
@@ -188,7 +196,8 @@ class FindingProjection:
             return f"{items[0]} and {items[1]}"
         return f"{', '.join(items[:-1])}, and {items[-1]}"
 
-    def dedupe_preserve_order(self, items) -> list[str]:
+    @classmethod
+    def dedupe_preserve_order(cls, items) -> list[str]:
         seen: set[str] = set()
         ordered: list[str] = []
         for item in items:
@@ -205,7 +214,6 @@ class FindingProjection:
         return cleaned or "value"
 
 
-_FINDING_PROJECTION = FindingProjection()
 
 
 
@@ -695,7 +703,7 @@ class ExecutionClassInputAuthority:
             graph_density=graph_density,
             pattern_evidence=RefactorPatternEvidence(observed_patterns),
             supporting_findings=tuple(
-                _FINDING_PROJECTION.dedupe_preserve_order(
+                FindingProjection.dedupe_preserve_order(
                     finding.title for finding in self.cluster.findings
                 )
             ),
@@ -779,7 +787,7 @@ class ExecutionPartitionPlanner(SemanticRecord):
         return _FindingCluster(
             subsystem=axis.subsystem_label,
             findings=finding_tuple,
-            evidence=_FINDING_PROJECTION.combined_evidence(finding_tuple),
+            evidence=FindingProjection.combined_evidence(finding_tuple),
         )
 
     def axis_for(self, finding: RefactorFinding) -> ExecutionPartitionAxis:
@@ -834,7 +842,7 @@ def _plan_for_cluster(cluster: _FindingCluster) -> RefactorPlan:
     current_partial_view = _current_partial_view(cluster.findings)
     summary = _plan_summary(cluster.subsystem, observed_patterns, cluster.findings)
     supporting_findings = tuple(
-        _FINDING_PROJECTION.dedupe_preserve_order(
+        FindingProjection.dedupe_preserve_order(
             (finding.title for finding in cluster.findings)
         )
     )
@@ -942,13 +950,13 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
         return "The subsystem is currently described by mixed structural observations."
     return (
         "The subsystem is currently observed through "
-        f"{_FINDING_PROJECTION.human_join(observations)}, which leaves semantic distinctions to later recovery."
+        f"{FindingProjection.human_join(observations)}, which leaves semantic distinctions to later recovery."
     )
 
 
 def _render_tag_values(items, projector) -> tuple[str, ...]:
     return tuple(
-        _FINDING_PROJECTION.dedupe_preserve_order((projector(item) for item in items))
+        FindingProjection.dedupe_preserve_order((projector(item) for item in items))
     )
 
 

@@ -30,8 +30,8 @@ from nominal_refactor_advisor.class_method_facets import (
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
+    LexicalScopeBindingAuthority,
 )
 
 @dataclass(frozen=True)
@@ -55,7 +55,7 @@ class ClassBehaviorProofContext:
     ) -> ClassBehaviorProofContext:
         return cls(
             owner=owner,
-            class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            class_bound_names=LexicalScopeBindingAuthority.bound_names(
                 owner.node.body
             ),
             source_lines=tuple(parsed_module.source.splitlines(keepends=True)),

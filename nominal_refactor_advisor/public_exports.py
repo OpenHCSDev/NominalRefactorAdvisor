@@ -21,7 +21,7 @@ from nominal_refactor_advisor.ast_tools import OwnScopeNodeVisitor, ParsedModule
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 
 
 class CompactPublicNameExposure(FieldedStrEnum):
@@ -231,7 +231,7 @@ def module_public_export_contract(
 ) -> CompactModulePublicExportContract:
     module = parsed_module.module
     if PYTHON_PUBLIC_EXPORT_ASSIGNMENT not in (
-        LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        LexicalScopeBindingAuthority.bound_names(module.body)
     ):
         return CompactImplicitPublicExportContract()
     declaration = ModulePublicExportSourceAuthority.from_module(module)

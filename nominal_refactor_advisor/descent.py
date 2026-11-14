@@ -66,9 +66,9 @@ from nominal_refactor_advisor.enum_keyed_query import (
 )
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
     ImportFromModuleName,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
@@ -1565,7 +1565,7 @@ class Fold(Cases, ABC):
             raise ValueError(
                 f"handback: {site}: branch is not arms then a returning tail"
             )
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body) - {subject}
+        bound = LexicalScopeBindingAuthority.bound_names(function.body) - {subject}
         if any(bound & names_read(arm.node) for arm in arms):
             raise ValueError(
                 f"handback: {site}: arm reads a local bound in the function"
@@ -2141,7 +2141,7 @@ def _scope_names(
         )
     }
     body = scope.body if isinstance(scope.body, list) else [scope.body]
-    return frozenset(parameters) | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
+    return frozenset(parameters) | LexicalScopeBindingAuthority.bound_names(body)
 
 
 class KeyedMirror(Mirror, Keyed, Enumerated, Descent):

@@ -48,7 +48,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.semantic_algebra import DirectedGraph
 
 
@@ -165,7 +165,7 @@ class ResolvedServedClass:
         return frozenset(member.statement for member in self.members)
 
     def module_names(self, snapshot: CodemodSourceSnapshot) -> frozenset[str]:
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        return LexicalScopeBindingAuthority.bound_names(
             snapshot.module_nodes_by_file_path[self.file_path].body
         )
 
@@ -458,7 +458,7 @@ class FamilyMemberReads:
 
         index = self.snapshot.required_class_family_index
         return frozenset().union(*(
-            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(_class_node(
+            LexicalScopeBindingAuthority.bound_names(_class_node(
                 self.snapshot, index.classes_by_symbol[symbol].file_path,
                 index.classes_by_symbol[symbol].qualname,
             ).body)

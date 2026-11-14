@@ -117,9 +117,9 @@ from nominal_refactor_advisor.declaration_dependencies import (
 )
 from nominal_refactor_advisor.json_reports import DataclassJsonReport
 from nominal_refactor_advisor.lexical_bindings import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
     ImportFromModuleName,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.package_walks import family_walk_roots
 from nominal_refactor_advisor.public_exports import (
@@ -3856,8 +3856,8 @@ class _ScriptEntry:
         binds itself and the builtins the module does not shadow."""
 
         loads = names_read(self.statement)
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.statement.body)
-        module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        bound = LexicalScopeBindingAuthority.bound_names(self.statement.body)
+        module_bound = LexicalScopeBindingAuthority.bound_names(module.body)
         builtin = frozenset(dir(builtins)) - module_bound
         return frozenset(loads - bound - builtin - {"__name__"})
 

@@ -74,7 +74,7 @@ from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
 )
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
 from nominal_refactor_advisor.source_identity import source_path_text
@@ -2589,7 +2589,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         # a property getter still receives its declared owning instance.
         if name != declaration.nominal_receiver_name:
             return None
-        if name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body):
+        if name in LexicalScopeBindingAuthority.bound_names(function.body):
             return None
         return f"{context.module_name}.{declaration.owner_class.require_qualname()}"
 
@@ -2729,7 +2729,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             )
             if annotation is None:
                 return False
-            class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+            class_names = LexicalScopeBindingAuthority.bound_names(node.body)
             wrapper = self.reference_or_builtin_witness_at(
                 module,
                 annotation.value,
@@ -2776,7 +2776,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                             bindings,
                             annotation,
                             line=member.line,
-                            class_bound_names=LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                            class_bound_names=LexicalScopeBindingAuthority.bound_names(
                                 node.body
                             ),
                         )
@@ -2833,7 +2833,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             method = methods[0]
             if len(method.decorator_list) != 1:
                 return False
-            class_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+            class_names = LexicalScopeBindingAuthority.bound_names(node.body)
             descriptor = self.reference_or_builtin_witness_at(
                 module,
                 method.decorator_list[0],

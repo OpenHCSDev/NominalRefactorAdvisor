@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Callable, TypeAlias
 
-from nominal_refactor_advisor.ast_field_decoders import TYPE_PARAMETERS
+from nominal_refactor_advisor.ast_field_decoders import TypeParameterSyntax
 from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
@@ -39,12 +39,12 @@ from nominal_refactor_advisor.lexical_scopes import (
     TypeParameterScope,
 )
 from nominal_refactor_advisor.lexical_bindings import (
+    _store_names,
     DictionaryEvaluationVisitor,
     FunctionAnnotationVisitor,
     ImportBoundNameProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
     ScopeBindingCollector,
-    _store_names,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -360,7 +360,7 @@ class FunctionParameterBinding(FunctionBindingABC):
 
     def without_binding(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
         if self.binding_name not in (
-            LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.node)
+            LexicalScopeBindingAuthority.argument_names(self.node)
         ):
             raise ValueError(
                 f"No parameter {self.binding_name!r} on {self.node.name!r}"
@@ -602,7 +602,7 @@ class _DeclarationDependencyCollector(
         self,
         node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> None:
-        for expression in TYPE_PARAMETERS.expressions(node):
+        for expression in TypeParameterSyntax.expressions(node):
             self._visit_annotation(expression)
 
     def _visit_annotation(
@@ -788,4 +788,4 @@ class _DeclarationDependencyCollector(
 def _type_parameter_names(
     node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> frozenset[str]:
-    return frozenset(TYPE_PARAMETERS.names(node))
+    return frozenset(TypeParameterSyntax.names(node))

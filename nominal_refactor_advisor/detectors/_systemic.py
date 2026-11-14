@@ -94,16 +94,16 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id, constant_value, single_item, single_return_value, NamedCallAssignment, named_call_assignment
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
-    KeyedRecordInfrastructureCandidate,
-    CollectsItself,
-    SubscriptedCandidateType,
-    ModuleCollectedLineWitnessCandidate,
-    TargetClassEvidenceAnchored,
-    TargetProjectionRequired,
-    SYNTAX_PROJECTION_AUTHORITY,
+    _KeyedFamilyAxisSpec,
+    _PIPELINE_RETURN_STAGE,
+    CandidateCollectionAuthority,
     CandidateCollectorBoilerplateCandidate,
+    ClassLineNumbersGroup,
     ClassLineWitnessCandidate,
     ClassMethodLineWitnessCandidate,
+    CollectsItself,
+    CollectsItselfFromCompactContext,
+    CollectsItselfUnderConfig,
     CompactClassIndexMultiProjectionDetector,
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
@@ -111,51 +111,51 @@ from nominal_refactor_advisor.detectors._base import (
     CompactMultiProjectionCandidateDetector,
     CompactProjectionCandidateDetector,
     CompactProjectionGroups,
+    ConcreteCandidateDetectorShape,
     ConfiguredModuleCollectorCandidateDetector,
     DeclarativeDetectorClassCandidate,
+    declare_candidate_rule_detector,
     DetectorConfig,
     DirectBuildFindingRendererCandidate,
+    DispatchAlgebraAuthority,
+    EnumProjectionTableCandidate,
+    EvidenceLocationsWitnessCandidate,
+    FieldFamilyCompressionSurface,
     FindingSpecConstructionCandidate,
+    high_confidence_certified_spec,
+    high_confidence_spec,
     InjectiveTypeRegistryCandidate,
     IssueDetector,
+    KeyedFamilyAxisSpecsByKey,
+    KeyedRecordInfrastructureCandidate,
     ManualFiberTagCandidate,
+    ManualStructuralRecordMechanicsClassCandidate,
+    ModuleCollectedLineWitnessCandidate,
     ModuleCollectorCandidateDetector,
+    NamedFunctionNode,
+    NameFamilyClassNamesMixin,
     NonInjectiveTypeRegistryCandidate,
+    PipelineAssemblyStage,
+    RegistryProjectionMaterialization,
+    RegistryProjectionRole,
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
     RepeatedKeyedFamilyCandidate,
+    ResidualClosedAxisBranchingIdentity,
+    ResultAssemblyPipelineFunction,
+    SelfCastAliasPartition,
     SemanticMirrorIssueDetector,
     SourceModuleCollectorCandidateDetector,
-    TupleIndexSemanticOpacityCandidate,
-    _KeyedFamilyAxisSpec,
-    declare_candidate_rule_detector,
-    high_confidence_certified_spec,
-    high_confidence_spec,
-    ConcreteCandidateDetectorShape,
-    ZippedSourceLocationEvidenceProperty,
-    CollectsItselfUnderConfig,
-    PipelineAssemblyStage,
-    ResultAssemblyPipelineFunction,
-    _PIPELINE_RETURN_STAGE,
-    CollectsItselfFromCompactContext,
-    RegistryProjectionMaterialization,
-    RegistryProjectionRole,
-    KeyedFamilyAxisSpecsByKey,
-    ResidualClosedAxisBranchingIdentity,
-    CandidateCollectionAuthority,
-    EnumProjectionTableCandidate,
-    EvidenceLocationsWitnessCandidate,
-    NameFamilyClassNamesMixin,
-    NamedFunctionNode,
-    SUPPORT_PROJECTION_AUTHORITY,
-    SubjectNameFunctionNameMixin,
-    ClassLineNumbersGroup,
-    FieldFamilyCompressionSurface,
-    ManualStructuralRecordMechanicsClassCandidate,
-    WitnessCarrierClassCandidate,
-    DISPATCH_ALGEBRA_AUTHORITY,
-    SelfCastAliasPartition,
     StaticModulePatternDetector,
+    SubjectNameFunctionNameMixin,
+    SubscriptedCandidateType,
+    SupportProjectionAuthority,
+    SyntaxProjectionAuthority,
+    TargetClassEvidenceAnchored,
+    TargetProjectionRequired,
+    TupleIndexSemanticOpacityCandidate,
+    WitnessCarrierClassCandidate,
+    ZippedSourceLocationEvidenceProperty,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
@@ -360,7 +360,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
                 method_lines.append(method.node.lineno)
                 cast_type_names.update(method_cast_types)
                 accessed_attribute_names.update(
-                    SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
+                    SyntaxProjectionAuthority.attribute_names_for_roots(
                         method.node, root_names=set(alias_names)
                     )
                 )
@@ -389,7 +389,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
             if aliased is None or "." not in aliased:
                 return None
             return aliased
-        subject_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
+        subject_expression = SupportProjectionAuthority.simple_name_or_attr_expression(
             node
         )
         if subject_expression is None or "." not in subject_expression:
@@ -448,7 +448,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
                 or (not isinstance(statement.targets[0], ast.Name))
             ):
                 continue
-            value_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
+            value_expression = SupportProjectionAuthority.simple_name_or_attr_expression(
                 statement.value
             )
             if value_expression is None or "." not in value_expression:
@@ -3774,7 +3774,7 @@ class ManualStructuralRecordMechanicsGroupCandidate(CollectsItselfUnderConfig, E
     def _returns_tuple_of_self_attributes(
         method: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> bool:
-        returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(method.body)
+        returned = DispatchAlgebraAuthority.single_return_case(method.body)
         if returned is None:
             return False
         return_value, _ = returned
@@ -3824,7 +3824,7 @@ class ManualStructuralRecordMechanicsGroupCandidate(CollectsItselfUnderConfig, E
         *,
         accepted_names: tuple[str, ...],
     ) -> bool:
-        returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(method.body)
+        returned = DispatchAlgebraAuthority.single_return_case(method.body)
         if returned is None:
             return False
         return_value, _ = returned
@@ -5456,10 +5456,10 @@ class StructuralConfusabilityCandidate(CollectsItself,
         classes: Sequence[ClassStatement],
         class_lookup: dict[str, ClassStatement],
     ) -> Iterable[Self]:
-        annotated_parameter_names = SUPPORT_PROJECTION_AUTHORITY.annotated_parameter_names(
+        annotated_parameter_names = SupportProjectionAuthority.annotated_parameter_names(
             function
         )
-        for parameter_name in SUPPORT_PROJECTION_AUTHORITY.parameter_names(function):
+        for parameter_name in SupportProjectionAuthority.parameter_names(function):
             if parameter_name in annotated_parameter_names:
                 continue
             observed_method_names = sorted_tuple(
@@ -5604,7 +5604,7 @@ class WitnessCarrierFamilyCandidate(CollectsItself, ClassLineNumbersGroup):
                     (role, aliased_field_names)
                     for role in SemanticFieldRole.mixin_roles()
                     for aliased_field_names in (
-                        SUPPORT_PROJECTION_AUTHORITY.aliased_field_names_for_role(
+                        SupportProjectionAuthority.aliased_field_names_for_role(
                             role,
                             ordered_items,
                         ),

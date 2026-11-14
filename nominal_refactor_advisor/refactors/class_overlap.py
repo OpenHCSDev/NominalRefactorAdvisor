@@ -98,7 +98,7 @@ from nominal_refactor_advisor.codemod_statement_source import (
 )
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
@@ -1213,7 +1213,7 @@ def _owner_import_edits(
     resolver = snapshot.class_reference_resolver_for_source_path(composer.file_path)
     if resolver.symbol_for_reference(ast.Name(id=name, ctx=ast.Load())) == owner.symbol:
         return ()
-    bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+    bound = LexicalScopeBindingAuthority.bound_names(
         snapshot.parsed_module_for_source_path(composer.file_path).module.body
     )
     if name in bound:
@@ -1865,7 +1865,7 @@ class ConstructionKeywording:
     def receiver_constructions(
         self, parameters: tuple[str, ...]
     ) -> tuple[PositionalConstruction, ...]:
-        module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        module_bound = LexicalScopeBindingAuthority.bound_names(
             self.snapshot.parsed_module_for_source_path(self.target.file_path).module.body
         )
         calls = tuple(
@@ -2208,7 +2208,7 @@ class MixinCreation:
         )
         if not name.isidentifier() or keyword_module.iskeyword(name):
             raise ValueError(f"`{name}` is no class name")
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        bound = LexicalScopeBindingAuthority.bound_names(
             snapshot.parsed_module_for_source_path(anchor.file_path).module.body
         )
         if name in bound:

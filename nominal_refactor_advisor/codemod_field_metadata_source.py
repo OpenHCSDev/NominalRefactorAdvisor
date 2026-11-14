@@ -23,7 +23,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpan,
     SourceTextSpanReplacement,
 )
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.source_index import AstTargetDigest
 from nominal_refactor_advisor.value_expression import LiteralExpressionEffects
 
@@ -57,7 +57,7 @@ class FieldMetadataKeywordRemoval(SourceTextGeometry):
 
     def stable_name(self, reference: ast.expr) -> str | None:
         root = nominal_reference_root_name(reference)
-        if root is None or root in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if root is None or root in LexicalScopeBindingAuthority.bound_names(
             self.owner.node.body
         ):
             return None

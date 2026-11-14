@@ -27,8 +27,8 @@ from pathlib import Path
 from typing import ClassVar
 
 from nominal_refactor_advisor.lexical_bindings import (
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.ast_projection import (
@@ -1927,7 +1927,7 @@ class IdentityPositions:
         if isinstance(subject, ast.Name):
             yield from self.typed_site(
                 literal_node,
-                LEXICAL_SCOPE_BINDING_AUTHORITY.parameter_annotation(
+                LexicalScopeBindingAuthority.parameter_annotation(
                     subject, self.index.ancestor_nodes(self.node_indices[id(subject)])
                 ),
             )

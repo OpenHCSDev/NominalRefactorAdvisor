@@ -86,7 +86,7 @@ from nominal_refactor_advisor.declaration_dependencies import (
     FunctionParameterBinding,
 )
 from nominal_refactor_advisor.declared_root import DeclaredRoot
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.product_flow import BareCallTargetReference
@@ -844,7 +844,7 @@ class _ForwardedNames:
     def imports_into(self, file_path: str) -> tuple[ModuleImportMutation, ...]:
         graph = self.snapshot.module_import_graph
         source_module = self.snapshot.module_nodes_by_file_path[self.source_path]
-        unshadowed = frozenset(dir(builtins)) - LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(source_module.body)
+        unshadowed = frozenset(dir(builtins)) - LexicalScopeBindingAuthority.bound_names(source_module.body)
         consumer = ModuleSymbolTable(
             file_path=file_path,
             source=self.snapshot.sources_by_file_path[file_path],

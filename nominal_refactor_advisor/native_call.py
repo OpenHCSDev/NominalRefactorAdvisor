@@ -16,7 +16,7 @@ from typing import (
     cast,
 )
 
-from nominal_refactor_advisor.ast_field_decoders import TYPE_PARAMETERS
+from nominal_refactor_advisor.ast_field_decoders import TypeParameterSyntax
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.captured_reference import (
@@ -593,7 +593,7 @@ class NativeReturnedClosureFactorySource:
             )
             or closure.args.vararg is not None
             or closure.args.kwarg is not None
-            or TYPE_PARAMETERS.names(closure)
+            or TypeParameterSyntax.names(closure)
         ):
             raise ValueError("Returned closure creation has executable header inputs")
         return closure

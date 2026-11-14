@@ -116,7 +116,8 @@ MethodFamilyCandidateItemT = TypeVar("MethodFamilyCandidateItemT", covariant=Tru
 
 _IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
 class HelperSupportProjectionAuthority:
-    def expression_root_names(self, node: ast.AST) -> set[str]:
+    @classmethod
+    def expression_root_names(cls, node: ast.AST) -> set[str]:
         roots: set[str] = set()
 
         class Visitor(ast.NodeVisitor):
@@ -126,7 +127,7 @@ class HelperSupportProjectionAuthority:
                     current = current.value
                 if isinstance(current, ast.Name):
                     roots.add(current.id)
-                self.generic_visit(node)
+                cls.generic_visit(node)
 
             def visit_Name(self, node: ast.Name) -> None:
                 roots.add(node.id)
@@ -134,7 +135,8 @@ class HelperSupportProjectionAuthority:
         Visitor().visit(node)
         return roots
 
-    def if_returns_none_only(self, node: ast.If) -> bool:
+    @classmethod
+    def if_returns_none_only(cls, node: ast.If) -> bool:
         return bool(
             len(node.body) == 1
             and isinstance(node.body[0], ast.Return)
@@ -142,7 +144,6 @@ class HelperSupportProjectionAuthority:
             and (not node.orelse)
         )
 
-HELPER_SUPPORT_PROJECTION_AUTHORITY = HelperSupportProjectionAuthority()
 
 
 def _call_display_name(node: ast.Call) -> str | None:
@@ -1266,20 +1267,22 @@ def _finding_spec_build_boilerplate_candidates(
 
 
 class HelperSyntaxProjectionAuthority:
-    def annotation_root_name(self, node: ast.AST) -> str | None:
+    @classmethod
+    def annotation_root_name(cls, node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
         if isinstance(node, ast.Attribute):
             return node.attr
         if isinstance(node, ast.Subscript):
-            return self.annotation_root_name(node.value)
+            return cls.annotation_root_name(node.value)
         if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-            return self.annotation_root_name(node.left) or self.annotation_root_name(
+            return cls.annotation_root_name(node.left) or cls.annotation_root_name(
                 node.right
             )
         return None
 
-    def typed_field_map(self, node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
+    @classmethod
+    def typed_field_map(cls, node: ast.ClassDef) -> tuple[tuple[str, str], ...]:
         typed_fields: dict[str, str] = {}
         for statement in node.body:
             if isinstance(statement, ast.AnnAssign) and isinstance(
@@ -1295,7 +1298,7 @@ class HelperSyntaxProjectionAuthority:
                 continue
             if statement.name != "__init__":
                 continue
-            parameter_annotations = self._function_parameter_annotation_map(statement)
+            parameter_annotations = cls._function_parameter_annotation_map(statement)
             for inner in statement.body:
                 target: ast.AST | None = None
                 value: ast.AST | None = None
@@ -1331,7 +1334,6 @@ class HelperSyntaxProjectionAuthority:
             annotations[arg.arg] = ast.unparse(arg.annotation)
         return annotations
 
-HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
 
 
 class TupleIndexSemanticOpacityCandidateCollector:

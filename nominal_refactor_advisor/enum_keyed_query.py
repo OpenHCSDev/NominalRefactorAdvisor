@@ -27,7 +27,7 @@ from nominal_refactor_advisor.class_index import (
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.models import EvidenceLocated, SourceLocation
 
 
@@ -590,7 +590,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
             ),
             None,
         )
-        preceding_class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        preceding_class_bound_names = LexicalScopeBindingAuthority.bound_names(
             enum_class.node.body
             if first_method is None
             else (
@@ -627,7 +627,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
         owner: IndexedClass,
         method: ast.FunctionDef,
     ) -> frozenset[str]:
-        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        return LexicalScopeBindingAuthority.bound_names(
             statement
             for statement in owner.node.body
             if statement.lineno < method.lineno

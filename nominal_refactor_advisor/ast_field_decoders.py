@@ -94,9 +94,10 @@ TypeParameterDefinition = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 class TypeParameterSyntax:
     """The PEP 695 type parameters a definition declares, from its `type_params`."""
 
-    def names(self, node: TypeParameterDefinition) -> tuple[str, ...]:
+    @classmethod
+    def names(cls, node: TypeParameterDefinition) -> tuple[str, ...]:
         """The names of the definition's type parameters, in order."""
-        return tuple(self.name(parameter) for parameter in node.type_params)
+        return tuple(cls.name(parameter) for parameter in node.type_params)
 
     @staticmethod
     def name(parameter: ast.type_param) -> str:
@@ -106,7 +107,8 @@ class TypeParameterSyntax:
                 return name
         raise TypeError(f"unknown type parameter syntax {type(parameter).__name__}")
 
-    def expressions(self, node: TypeParameterDefinition) -> tuple[ast.expr, ...]:
+    @classmethod
+    def expressions(cls, node: TypeParameterDefinition) -> tuple[ast.expr, ...]:
         """The bounds, constraints and defaults the type parameters evaluate."""
         return tuple(
             expression
@@ -116,11 +118,10 @@ class TypeParameterSyntax:
         )
 
 
-TYPE_PARAMETERS = TypeParameterSyntax()
 
 
 __all__ = (
-    "TYPE_PARAMETERS",
+    "TypeParameterSyntax",
     "AbsentTypeParameterSyntax",
     "TypeParameterDefinition",
     "TypeParameterSyntax",

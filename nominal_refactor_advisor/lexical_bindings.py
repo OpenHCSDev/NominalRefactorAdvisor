@@ -900,4 +900,3 @@ class LexicalScopeBindingAuthority:
         )
 
 
-LEXICAL_SCOPE_BINDING_AUTHORITY = LexicalScopeBindingAuthority()

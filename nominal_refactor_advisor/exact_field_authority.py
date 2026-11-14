@@ -32,7 +32,7 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
 from nominal_refactor_advisor.source_geometry import (
     ClassHeaderSourceSpan,
@@ -424,7 +424,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             source_segments,
             comment_lines,
         )
-        class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        class_bound_names = LexicalScopeBindingAuthority.bound_names(node.body)
         fields = tuple(
             ExactDataclassFieldSemantics.from_statement(
                 statement,

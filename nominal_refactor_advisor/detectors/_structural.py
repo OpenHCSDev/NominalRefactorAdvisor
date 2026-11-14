@@ -68,11 +68,11 @@ from nominal_refactor_advisor.detectors._base import (
     PropertyHookGroup,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    CompactMethodFamilyContext,
-    BaseBundleClassGroups,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
     _RegisteredUnionSurfaceSource,
-    HELPER_SYNTAX_PROJECTION_AUTHORITY,
+    BaseBundleClassGroups,
+    CompactMethodFamilyContext,
+    HelperSyntaxProjectionAuthority,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
@@ -987,10 +987,10 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
     def _class_object_type_argument_name(node: ast.AST) -> str | None:
         if not isinstance(node, ast.Subscript):
             return None
-        root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
+        root_name = HelperSyntaxProjectionAuthority.annotation_root_name(node.value)
         if not TypeWrapper.CLASS_OBJECT.spelled_by(root_name):
             return None
-        return HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.slice)
+        return HelperSyntaxProjectionAuthority.annotation_root_name(node.slice)
 
     @staticmethod
     def _class_def_declared_and_ancestor_names(
@@ -1049,7 +1049,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
                 *ConcreteTypeUnionContractCandidate._annotation_union_members(node.right),
             )
         if isinstance(node, ast.Subscript):
-            root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
+            root_name = HelperSyntaxProjectionAuthority.annotation_root_name(node.value)
             if root_name != "Union":
                 return (node,)
             if isinstance(node.slice, ast.Tuple):

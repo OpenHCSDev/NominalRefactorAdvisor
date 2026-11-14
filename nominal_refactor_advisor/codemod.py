@@ -36,7 +36,7 @@ from nominal_refactor_advisor.refactors.assignment_operations import (
     ReplaceScopeAssignmentOperation as ReplaceScopeAssignmentOperation,
 )
 from nominal_refactor_advisor.ast_projection import CallKeywords
-from nominal_refactor_advisor.ast_tools import ROOT_NAME_PROJECTION
+from nominal_refactor_advisor.ast_tools import RootNameProjection
 from nominal_refactor_advisor.cancelable_composition import (
     CancelableCompositionKind as CancelableCompositionKind,
 )
@@ -827,7 +827,7 @@ class NominalConstructorCall:
             return None
         if scope is not None:
             bindings = FunctionBindingProjection.from_function(scope)
-            if not ROOT_NAME_PROJECTION.root_names(call_node.func).isdisjoint(
+            if not RootNameProjection.root_names(call_node.func).isdisjoint(
                 bindings.local_names
             ):
                 return None

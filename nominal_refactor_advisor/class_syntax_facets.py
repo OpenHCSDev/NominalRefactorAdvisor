@@ -48,7 +48,7 @@ from nominal_refactor_advisor.class_symbols import (
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import AssignmentStatement
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     LineWitness,
@@ -631,8 +631,8 @@ def _compact_class_syntax_facets(
         else {}
     )
     function_bindings_by_id = {
-        id(function): LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
-        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+        id(function): LexicalScopeBindingAuthority.bound_names(function.body)
+        | LexicalScopeBindingAuthority.argument_names(function)
         for _qualname, function in syntax_index.named_functions
     }
     module_binds_type = "type" in parsed_module.bound_names

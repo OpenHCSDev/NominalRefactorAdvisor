@@ -36,7 +36,7 @@ from nominal_refactor_advisor.ast_tools import (
     CollectedFamily,
     Globals,
     ItemPresenceReportedFamily,
-    LITERAL_DISPATCH_CASE_MATCHER,
+    LiteralDispatchCaseMatcher,
     ParsedModule,
     ParsedModuleSet,
     SourceCollectedFamily,
@@ -174,11 +174,11 @@ from nominal_refactor_advisor.detectors._base import (
     _self_attr_name,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    HELPER_SYNTAX_PROJECTION_AUTHORITY,
-    HELPER_SUPPORT_PROJECTION_AUTHORITY,
+    HelperSupportProjectionAuthority,
+    HelperSyntaxProjectionAuthority,
+    MethodProjection,
     MutableNamedStringSequenceSpecs,
     NamedStringSequenceSpecs,
-    MethodProjection,
 )
 from nominal_refactor_advisor.detectors._substrate_support import _constant_string
 from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
@@ -2474,7 +2474,7 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
         config_field_names = {
             class_name: {
                 field_name
-                for field_name, _ in HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(
+                for field_name, _ in HelperSyntaxProjectionAuthority.typed_field_map(
                     declared.node
                 )
             }
@@ -2828,7 +2828,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             literal_cases: list[str] = []
             unresolved: list[str] = []
             for branch, item in enumerate(chain, start=1):
-                matched = LITERAL_DISPATCH_CASE_MATCHER.match(item.test, str)
+                matched = LiteralDispatchCaseMatcher.match(item.test, str)
                 if matched is None:
                     original_test = ast.get_source_segment(module.source, item.test)
                     unresolved.append(f"branch {branch}: {original_test or ast.unparse(item.test)}")
@@ -2956,7 +2956,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             matches = tuple(
                 matched
                 for comparison in comparisons
-                if (matched := LITERAL_DISPATCH_CASE_MATCHER.match(comparison, str))
+                if (matched := LiteralDispatchCaseMatcher.match(comparison, str))
                 is not None
             )
             # Two kind equalities in one conjunction are not two alternative
@@ -3312,7 +3312,7 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
             guard, return_stmt = body
             if not isinstance(
                 guard, ast.If
-            ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
+            ) or not HelperSupportProjectionAuthority.if_returns_none_only(guard):
                 continue
             if not isinstance(return_stmt, ast.Return):
                 continue

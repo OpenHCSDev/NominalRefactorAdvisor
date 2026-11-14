@@ -11,7 +11,7 @@ from functools import cached_property
 
 from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.ast_tools import BuiltinCallName
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 
 
 class TypeWrapper(Enum):
@@ -195,7 +195,7 @@ class ModuleNameReferenceScope:
     ) -> bool:
         return all(
             owner is self_binding_owner
-            or name not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(owner.body)
+            or name not in LexicalScopeBindingAuthority.bound_names(owner.body)
             for owner in self.owner_classes
         )
 

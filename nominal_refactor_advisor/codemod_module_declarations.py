@@ -18,10 +18,10 @@ from nominal_refactor_advisor.assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from nominal_refactor_advisor.ast_tools import (
-    ParsedModule,
-    REGISTERED_TYPE_LINEAGE,
-    SharedRegistryRootBase,
     is_docstring_statement,
+    ParsedModule,
+    RegisteredTypeLineage,
+    SharedRegistryRootBase,
 )
 from nominal_refactor_advisor.codemod_import_bindings import (
     FromModuleImportBindingIdentity as FromModuleImportBindingIdentity,
@@ -65,7 +65,7 @@ from nominal_refactor_advisor.declaration_dependencies import (
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias as ImportAlias,
     ImportBoundNameProjection,
-    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.public_exports import (
     ModulePublicExportSourceAuthority,
@@ -690,7 +690,7 @@ class SourceTopLevelDeclaration(
         return single_item(
             tuple(
                 declaration
-                for declaration_type in REGISTERED_TYPE_LINEAGE.direct_registered_types(
+                for declaration_type in RegisteredTypeLineage.direct_registered_types(
                     cls,
                     registry_base=SourceTopLevelDeclaration,
                 )
@@ -978,7 +978,7 @@ class SourceTopLevelDeclarationIndex:
     def binding_statements_by_name(self) -> dict[str, tuple[ast.stmt, ...]]:
         statements: dict[str, list[ast.stmt]] = {}
         for statement in self.module.body:
-            for name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((statement,)):
+            for name in LexicalScopeBindingAuthority.bound_names((statement,)):
                 statements.setdefault(name, []).append(statement)
         return {
             name: tuple(binding_statements)

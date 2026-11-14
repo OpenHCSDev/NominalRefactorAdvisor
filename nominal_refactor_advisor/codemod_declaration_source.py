@@ -53,7 +53,7 @@ from nominal_refactor_advisor.declaration_dependencies import (
 )
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.source_geometry import (
     ClassHeaderSourceSpan,
     SourceLineSegmentAuthority,
@@ -595,7 +595,7 @@ class ClassMemberSource:
             | ast.AnnAssign,
         ):
             raise ValueError("Class member source must contain one declaration")
-        names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(statements)
+        names = LexicalScopeBindingAuthority.bound_names(statements)
         if len(names) != 1:
             raise ValueError("Class member source must bind exactly one member name")
         return cls(
@@ -669,7 +669,7 @@ class ClassMemberInsertion(NominalSourceEdit):
             raise ValueError(
                 f"Class member insertion target {self.target_id!r} is unavailable"
             )
-        existing_member_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        existing_member_names = LexicalScopeBindingAuthority.bound_names(node.body)
         collisions = existing_member_names.intersection(
             member.name for member in self.members
         )

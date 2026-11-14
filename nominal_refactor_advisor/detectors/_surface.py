@@ -34,11 +34,11 @@ from nominal_refactor_advisor.detectors._base import (
     _module_builder_call_shapes,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    DerivedQuerySpecsBySignature,
-    NamedStringSequenceSpecsByName,
-    HELPER_SUPPORT_PROJECTION_AUTHORITY,
-    _IMPLICIT_METHOD_PARAMETER_NAMES,
     _call_display_name,
+    _IMPLICIT_METHOD_PARAMETER_NAMES,
+    DerivedQuerySpecsBySignature,
+    HelperSupportProjectionAuthority,
+    NamedStringSequenceSpecsByName,
 )
 from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
 import ast
@@ -267,7 +267,7 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
     ) -> str | None:
         expression = ast.parse(source_expression, mode="eval").body
         if not (
-            HELPER_SUPPORT_PROJECTION_AUTHORITY.expression_root_names(expression)
+            HelperSupportProjectionAuthority.expression_root_names(expression)
             & _IMPLICIT_METHOD_PARAMETER_NAMES
         ):
             return None
@@ -719,7 +719,7 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
             guard, return_stmt = body
             if not isinstance(
                 guard, ast.If
-            ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
+            ) or not HelperSupportProjectionAuthority.if_returns_none_only(guard):
                 continue
             if not isinstance(return_stmt, ast.Return):
                 continue

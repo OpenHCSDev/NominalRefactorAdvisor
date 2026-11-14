@@ -11,7 +11,7 @@ from typing import ClassVar
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.probe_owner import (
@@ -476,7 +476,7 @@ def _class_node(snapshot: CodemodSourceSnapshot, symbol: str) -> _ClassBody:
             if isinstance(statement, ast.ClassDef) and statement.name == part
         )
     assert isinstance(scope, ast.ClassDef)
-    return _ClassBody(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(scope.body))
+    return _ClassBody(LexicalScopeBindingAuthority.bound_names(scope.body))
 
 
 @dataclass(frozen=True)

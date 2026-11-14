@@ -4623,7 +4623,7 @@ class CPython311CreationBackend(
 class CPythonGeneratedClassBinding(StrEnum):
     """Compiler-owned class-body closure fields and their exact native types."""
 
-    TYPE_PARAMETERS = ("__type_params__", tuple)
+    TypeParameterSyntax = ("__type_params__", tuple)
 
     declaration: NativeTypeDeclaration
 

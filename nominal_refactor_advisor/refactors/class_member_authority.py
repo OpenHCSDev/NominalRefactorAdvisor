@@ -77,7 +77,7 @@ from nominal_refactor_advisor.exact_method_authority import (
     ParallelMirroredLeafFamilyComponent,
 )
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
@@ -145,7 +145,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         insertion_module = targets.module_nodes_by_file_path[
             targets.insertion_target.file_path
         ]
-        if authority_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if authority_name in LexicalScopeBindingAuthority.bound_names(
             insertion_module.body
         ):
             raise ValueError(
@@ -316,7 +316,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
             binding_snapshot = self.parsed_module_for_source_path(
                 class_target.file_path
             ).fact(ClassLineBindingSnapshots).snapshots[class_target.node.lineno]
-            class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            class_bound_names = LexicalScopeBindingAuthority.bound_names(
                 class_target.node.body
             )
             for statement in FunctionDefinition.within(class_target.node.body):
@@ -499,7 +499,7 @@ class ParallelMirroredLeafFamilyTargets:
         module = self.all_classes.module_nodes_by_file_path[
             self.component.roots[0].file_path
         ]
-        bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        bound_names = LexicalScopeBindingAuthority.bound_names(module.body)
         colliding_names = tuple(name for name in authority_names if name in bound_names)
         if colliding_names:
             return f"Role authority names are already bound: {colliding_names!r}"
@@ -1071,11 +1071,11 @@ class ModuleDeclarationRelocation:
             for statement in module.body
             if statement.lineno < self.insertion_line
         )
-        if self.name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if self.name in LexicalScopeBindingAuthority.bound_names(
             preceding_statements
         ):
             raise ValueError(f"{self.name!r} is already bound before the new position")
-        rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(intervening_statements)
+        rebound = LexicalScopeBindingAuthority.bound_names(intervening_statements)
         read_while_declared = sorted(
             name
             for name in rebound

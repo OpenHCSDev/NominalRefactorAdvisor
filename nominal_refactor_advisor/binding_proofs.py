@@ -18,7 +18,7 @@ from nominal_refactor_advisor.class_index import (
     nominal_reference_root_name,
 )
 from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.lexical_scopes import FunctionBindingProjection
 from nominal_refactor_advisor.public_exports import (
     CompactModulePublicExportContract,
@@ -36,7 +36,7 @@ class FunctionNominalParameterBindingAuthority:
 
     @cached_property
     def stable_parameter_annotations(self) -> dict[str, ast.AST]:
-        rebound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body)
+        rebound = LexicalScopeBindingAuthority.bound_names(self.function.body)
         return {
             parameter.arg: parameter.annotation
             for parameter in ParameterAnnotations.of(
@@ -60,8 +60,8 @@ class FunctionNominalParameterBindingAuthority:
                     ClassNamespaceExecutionEvidence.from_class(parent).binding_names
                 )
             elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(parent.body))
-                names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(parent))
+                names.update(LexicalScopeBindingAuthority.bound_names(parent.body))
+                names.update(LexicalScopeBindingAuthority.argument_names(parent))
             current = parent
         return frozenset(names)
 
@@ -106,7 +106,7 @@ class FunctionNominalParameterBindingAuthority:
         return next(
             (
                 node
-                for node in LEXICAL_SCOPE_BINDING_AUTHORITY.enclosing_comprehensions(
+                for node in LexicalScopeBindingAuthority.enclosing_comprehensions(
                     reference, self.function, parents
                 )
                 if reference.id
@@ -120,7 +120,7 @@ class FunctionNominalParameterBindingAuthority:
     ) -> ast.expr | None:
         """The exact target's iterable; rebinding/unpacking/async remain open."""
         owner = self.comprehension_owner_for_reference(reference)
-        if owner is None or reference.id in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if owner is None or reference.id in LexicalScopeBindingAuthority.bound_names(
             (owner,)
         ):
             return None
@@ -128,7 +128,7 @@ class FunctionNominalParameterBindingAuthority:
             generator
             for generator in owner.generators
             if reference.id
-            in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((generator.target,))
+            in LexicalScopeBindingAuthority.bound_names((generator.target,))
         ]
         if len(generators) != 1:
             return None
@@ -140,10 +140,10 @@ class FunctionNominalParameterBindingAuthority:
     def runtime_bound_names_for_reference(self, reference: ast.Name) -> frozenset[str]:
         """Names which prevent a runtime reference proving a module/builtin binding."""
         names = set(self.class_bound_names)
-        names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.function))
-        names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.function.body))
+        names.update(LexicalScopeBindingAuthority.argument_names(self.function))
+        names.update(LexicalScopeBindingAuthority.bound_names(self.function.body))
         parents = self.module_bindings.parsed_module.syntax_index.parent_by_node
-        for scope in LEXICAL_SCOPE_BINDING_AUTHORITY.enclosing_comprehensions(
+        for scope in LexicalScopeBindingAuthority.enclosing_comprehensions(
             reference, self.function, parents
         ):
             names.update(
@@ -161,7 +161,7 @@ class FunctionNominalParameterBindingAuthority:
         if self.function.name != "__init__" or not positional:
             return {}
         receiver = positional[0].arg
-        rebound = receiver in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        rebound = receiver in LexicalScopeBindingAuthority.bound_names(
             self.function.body
         )
         syntax = self.module_bindings.parsed_module.syntax_index

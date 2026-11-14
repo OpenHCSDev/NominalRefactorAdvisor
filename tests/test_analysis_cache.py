@@ -4636,7 +4636,7 @@ def test_compact_keyed_registry_axis_facts_preserve_axis_semantics(
     tmp_path: Path,
 ) -> None:
     assert not hasattr(
-        base_detectors.DISPATCH_ALGEBRA_AUTHORITY,
+        base_detectors.DispatchAlgebraAuthority,
         "keyed_registry_axis_fact_records",
     )
     assert not hasattr(base_detectors, "_keyed_type_registry_injectivity_proof")

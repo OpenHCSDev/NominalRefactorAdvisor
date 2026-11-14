@@ -25,7 +25,7 @@ from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingSnapshot,
 )
 from nominal_refactor_advisor.class_syntax_facets import CompactClassMemberDeclaration
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.models import SourceLocation
 
 
@@ -69,7 +69,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
         self.checks: list[DeclaredAttributeCheck] = []
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        assigned = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        assigned = LexicalScopeBindingAuthority.bound_names(node.body)
         parameters = (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
         subjects = {}
         for parameter in parameters:
@@ -94,7 +94,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             subjects["self"] = (*self.class_stack,)
         self.subjects.append(subjects)
         self.locals.append(
-            assigned | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+            assigned | LexicalScopeBindingAuthority.argument_names(node)
         )
         try:
             super().visit_FunctionDef(node)

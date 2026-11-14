@@ -2922,8 +2922,9 @@ class CandidateCollectionAuthority:
 
 
 class SyntaxProjectionAuthority:
+    @classmethod
     def attribute_names_for_roots(
-        self, node: ast.AST, *, root_names: set[str]
+        cls, node: ast.AST, *, root_names: set[str]
     ) -> tuple[str, ...]:
         return sorted_tuple(
             {
@@ -2935,8 +2936,9 @@ class SyntaxProjectionAuthority:
             }
         )
 
+    @classmethod
     def assigned_self_attr_from_param(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        cls, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> dict[str, str]:
         param_names = {
             item.arg for item in tuple(node.args.posonlyargs) + tuple(node.args.args)
@@ -2954,11 +2956,11 @@ class SyntaxProjectionAuthority:
                 assigned[attr_name] = value_name
         return assigned
 
-SYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()
 
 
 class DispatchAlgebraAuthority:
-    def comparison_dispatch_case(self, test: ast.AST) -> tuple[str, str] | None:
+    @classmethod
+    def comparison_dispatch_case(cls, test: ast.AST) -> tuple[str, str] | None:
         if not isinstance(test, ast.Compare):
             return None
         if len(test.ops) != 1 or len(test.comparators) != 1:
@@ -2967,8 +2969,9 @@ class DispatchAlgebraAuthority:
             return None
         return (ast.unparse(test.left), ast.unparse(test.comparators[0]))
 
+    @classmethod
     def single_return_case(
-        self,
+        cls,
         statements: Sequence[ast.stmt],
     ) -> tuple[ast.AST, int] | None:
         trimmed = statements_without_docstring(list(statements))
@@ -2980,7 +2983,6 @@ class DispatchAlgebraAuthority:
         return (value, trimmed[0].lineno)
 
 
-DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
 
 
 @dataclass(frozen=True)
@@ -3247,8 +3249,9 @@ def _self_attr_name(target: ast.AST) -> str | None:
 
 
 class SupportProjectionAuthority:
+    @classmethod
     def parameter_names(
-        self, node: ast.FunctionDef | ast.AsyncFunctionDef
+        cls, node: ast.FunctionDef | ast.AsyncFunctionDef
     ) -> tuple[str, ...]:
         return tuple(
             (
@@ -3260,8 +3263,9 @@ class SupportProjectionAuthority:
             )
         )
 
+    @classmethod
     def annotated_parameter_names(
-        self,
+        cls,
         node: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> frozenset[str]:
         return frozenset(
@@ -3276,17 +3280,19 @@ class SupportProjectionAuthority:
             if parameter.arg not in {"self", "cls"}
         )
 
-    def simple_name_or_attr_expression(self, node: ast.AST) -> str | None:
+    @classmethod
+    def simple_name_or_attr_expression(cls, node: ast.AST) -> str | None:
         if isinstance(node, ast.Name):
             return node.id
         if isinstance(node, ast.Attribute):
-            parent = self.simple_name_or_attr_expression(node.value)
+            parent = cls.simple_name_or_attr_expression(node.value)
             if parent is None:
                 return None
             return f"{parent}.{node.attr}"
         return None
 
-    def is_empty_dict_expr(self, node: ast.AST | None) -> bool:
+    @classmethod
+    def is_empty_dict_expr(cls, node: ast.AST | None) -> bool:
         if isinstance(node, ast.Dict):
             return not node.keys and (not node.values)
         return (
@@ -3295,8 +3301,9 @@ class SupportProjectionAuthority:
             and node.func.id == "dict"
         )
 
+    @classmethod
     def aliased_field_names_for_role(
-        self,
+        cls,
         role: SemanticFieldRole,
         candidates: tuple[WitnessCarrierClassCandidate, ...],
     ) -> tuple[str, ...]:
@@ -3332,7 +3339,6 @@ class SupportProjectionAuthority:
         return aliases if len(aliases) >= 2 else ()
 
 
-SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
 
 
 class ModuleCollectedLineWitnessCandidate(CollectsItself, LineWitnessCandidate, ABC):
@@ -3896,7 +3902,7 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             node = declared.node
             if not declared.is_dataclass:
                 continue
-            if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
+            if not SupportProjectionAuthority.is_empty_dict_expr(
                 declared.direct_assignments.get("_registry")
             ):
                 continue
@@ -4553,7 +4559,7 @@ class ManualFiberTagCandidate(
         init_method = methods.get("__init__")
         if init_method is None:
             return ()
-        assigned_from_param = SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param(
+        assigned_from_param = SyntaxProjectionAuthority.assigned_self_attr_from_param(
             init_method
         )
         tag_names = tuple(
@@ -4620,7 +4626,7 @@ class ManualFiberTagCandidate(
             return ()
         current = body[0]
         while isinstance(current, ast.If):
-            dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
+            dispatch_case = DispatchAlgebraAuthority.comparison_dispatch_case(
                 current.test
             )
             if dispatch_case is None:

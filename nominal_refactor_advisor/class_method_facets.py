@@ -29,7 +29,7 @@ from nominal_refactor_advisor.class_syntax_facets import _trim_leading_docstring
 from nominal_refactor_advisor.declaration_dependencies import ClassScopeDependency
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 
 class DecoratorBindings(ABC):
     """What the bindings at a class statement's line say each decorator names. The
@@ -546,7 +546,7 @@ def _compact_class_methods(
     source_lines = tuple(parsed_module.source.splitlines(keepends=True))
     for qualname, node in indexed_class_nodes:
         class_symbol = f"{parsed_module.module_name}.{qualname}"
-        class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
+        class_bound_names = LexicalScopeBindingAuthority.bound_names(node.body)
         establishes_nominal_family = any(
             ClassSymbolResolutionAuthority.establishes_nominal_family(declared_name)
             for base in node.bases

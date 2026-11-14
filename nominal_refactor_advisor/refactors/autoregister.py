@@ -92,7 +92,7 @@ from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.manual_registry import (
     AutoRegisterInstanceViewComponent,
     DirectManualRegistryComponent,
@@ -263,7 +263,7 @@ class DeriveAutoregisterInstanceViewOperation(
     ) -> tuple[SourceTextMutation, ...]:
         if (
             self.instance_view_method_name
-            in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            in LexicalScopeBindingAuthority.bound_names(
                 component.authority_node.body
             )
         ):
@@ -839,7 +839,7 @@ class AutoRegisterMroOrderingDerivation:
             )
         resolution_class_name = cls.resolution_class_name_for(root.node.name)
         module = context.module_nodes_by_file_path[root.file_path]
-        if resolution_class_name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+        if resolution_class_name in LexicalScopeBindingAuthority.bound_names(
             module.body
         ):
             raise ValueError(
