@@ -72,7 +72,6 @@ from nominal_refactor_advisor.descriptor_algebra import (
     ClassAliasProperty,
     ConstantProperty,
 )
-from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.class_syntax_facets import (
     CompactFamilyAxis,
 )
@@ -304,21 +303,6 @@ FINDING_SPEC_FACTORIES = (
 
 def finding_spec_factory_by_constructor_name() -> dict[str, FindingSpecFactory]:
     return {factory.constructor_name: factory for factory in FINDING_SPEC_FACTORIES}
-
-
-def finding_spec_factory_for_constructor_name(
-    constructor_name: str,
-) -> FindingSpecFactory | None:
-    return finding_spec_factory_by_constructor_name().get(constructor_name)
-
-
-def finding_spec_factory_for_defaults(
-    defaults: FindingSpecSemanticDefaults,
-) -> FindingSpecFactory | None:
-    for factory in FINDING_SPEC_FACTORIES:
-        if factory.semantic_defaults == defaults:
-            return factory
-    return None
 
 
 def detector_config_option(default: object, help_text: str) -> object:
@@ -2725,54 +2709,6 @@ class CompactGroupedShapeIssueDetector(
 CollectedItemT = TypeVar("CollectedItemT")
 
 
-def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
-    enum_members: dict[str, tuple[str, ...]] = {}
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(declared.base_terminal_names):
-            continue
-        bindings: list[tuple[str, bool]] = []
-        for statement in node.body:
-            target: ast.AST | None = None
-            value: ast.AST | None = None
-            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
-                target = statement.targets[0]
-                value = statement.value
-            elif isinstance(statement, ast.AnnAssign):
-                target = statement.target
-                value = statement.value
-            if not isinstance(target, ast.Name):
-                continue
-            bindings.append((target.id, value is not None))
-        members = PYTHON_ENUM_BASE_AUTHORITY.declared_member_names(bindings)
-        if len(members) >= 2:
-            enum_members[node.name] = members
-    return enum_members
-
-
-def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
-    if isinstance(value, ast.Dict):
-        return value
-    if (
-        isinstance(value, ast.Call)
-        and ExpressionReference.decoded(value.func).terminal_name
-        in {"MappingProxyType", "dict"}
-        and (len(value.args) == 1)
-        and isinstance(value.args[0], ast.Dict)
-    ):
-        return value.args[0]
-    return None
-
-
-def _is_enum_projection_table_value(value: ast.AST) -> bool:
-    """Whether a table value projects its case: a name, an attribute, or a lambda
-    returning a name, an attribute or a subscript."""
-
-    if isinstance(value, ast.Lambda):
-        return isinstance(value.body, ast.Attribute | ast.Subscript | ast.Name)
-    return isinstance(value, ast.Attribute | ast.Name)
-
-
 NamedFunctionCandidateT = TypeVar("NamedFunctionCandidateT")
 NamedFunctionProjectorP = ParamSpec("NamedFunctionProjectorP")
 NamedFunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -3031,15 +2967,6 @@ class _SelectionLookupShape:
 
 _TYPE_NAME_LITERAL = "type"
 _EVAL_PARSE_MODE = "eval"
-
-
-def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -> bool:
-    return any(
-        (
-            isinstance(subnode, ast.Name) and subnode.id == iteration_variable_name
-            for subnode in ast.walk(node)
-        )
-    )
 
 
 def _selection_helper_shape(
@@ -3453,21 +3380,6 @@ def _manual_record_registration_constructor(
     )
 
 
-def _returns_constructor_call(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-    *,
-    accepted_names: tuple[str, ...],
-) -> bool:
-    returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(method.body)
-    if returned is None:
-        return False
-    return_value, _ = returned
-    if not isinstance(return_value, ast.Call):
-        return False
-    call_name = ExpressionReference.decoded(return_value.func).terminal_name
-    return call_name in accepted_names
-
-
 def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _flatten_union_member_type_names(
@@ -3477,22 +3389,6 @@ def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
     if type_name in {None, "None", "NoneType"}:
         return ()
     return (type_name,)
-
-
-def _self_cast_type_name(node: ast.AST) -> str | None:
-    if not (
-        isinstance(node, ast.Call)
-        and ExpressionReference.decoded(node.func).terminal_name == "cast"
-        and (len(node.args) == 2)
-        and (not node.keywords)
-        and isinstance(node.args[1], ast.Name)
-        and (node.args[1].id == "self")
-    ):
-        return None
-    type_name = ast.unparse(node.args[0])
-    if not type_name:
-        return None
-    return type_name
 
 
 def _self_attr_name(target: ast.AST) -> str | None:

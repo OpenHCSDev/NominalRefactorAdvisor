@@ -31,7 +31,6 @@ from nominal_refactor_advisor.class_method_facets import (
     MethodFamilyResidueRole,
 )
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
-from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
 )
@@ -41,7 +40,6 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValue,
 )
 from nominal_refactor_advisor.ast_tools import (
-    BuiltinCallName,
     SourceModule,
     walk_function_body_nodes,
 )
@@ -97,7 +95,6 @@ from nominal_refactor_advisor.detectors._base import (
     DetectorConfig,
     NamedFunctionNode,
     OverlappingInheritanceFamiliesCandidate,
-    PipelineAssemblyStage,
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
     SemanticOverlapResidueAxisCandidate,
@@ -177,38 +174,6 @@ def _call_display_name(node: ast.Call) -> str | None:
     return None
 
 
-def _name_mentions(node: ast.AST, name: str) -> bool:
-    return any(
-        (
-            isinstance(current, ast.Name) and current.id == name
-            for current in ast.walk(node)
-        )
-    )
-
-
-def _raised_exception_name(
-    statement: ast.stmt,
-) -> tuple[str, tuple[str, ...]] | None:
-    if not isinstance(statement, ast.Raise) or statement.exc is None:
-        return None
-    exc = statement.exc
-    if isinstance(exc, ast.Call):
-        exc_name = ExpressionReference.decoded(exc.func).terminal_name
-        referenced_names = sorted_tuple(
-            {
-                current.id
-                for current in ast.walk(exc)
-                if isinstance(current, ast.Name)
-            }
-        )
-        if exc_name is not None:
-            return (exc_name, referenced_names)
-    exc_name = ExpressionReference.decoded(exc).terminal_name
-    if exc_name is not None:
-        return (exc_name, ())
-    return None
-
-
 class MethodProjection:
     def aliases_to_self_attrs(
         self, method: ast.FunctionDef | ast.AsyncFunctionDef
@@ -228,21 +193,6 @@ class MethodProjection:
                 continue
             aliases[binding.name] = attr_name
         return aliases
-
-
-def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
-    test = node.test
-    if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
-        return None
-    isinstance_arguments = BuiltinCallName.isinstance_arguments(test.operand)
-    if isinstance_arguments is None:
-        return None
-    _subject, type_node = isinstance_arguments
-    if isinstance(type_node, ast.Tuple):
-        node_types = tuple(ast.unparse(item) for item in type_node.elts)
-    else:
-        node_types = (ast.unparse(type_node),)
-    return tuple(item for item in node_types if item)
 
 
 def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
@@ -269,7 +219,6 @@ def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
     return None
 
 
-_ABC_BASE_NAME = "ABC"
 @dataclass(frozen=True)
 class _RegisteredUnionSurfaceSource:
     owner_name: str
@@ -1305,25 +1254,6 @@ def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
     return _PipelineStageSource(_PIPELINE_RETURN_STAGE, call, 0)
 
 
-def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
-    source = _pipeline_stage_source(statement)
-    callee_name = (
-        ExpressionReference.decoded(source.call.func).terminal_name
-        if source is not None
-        else None
-    )
-    if source is None or callee_name is None:
-        return None
-    keyword_names = CallKeywords.of(source.call.keywords).names
-    return PipelineAssemblyStage(
-        kind=source.kind,
-        callee_name=callee_name,
-        output_arity=source.output_arity,
-        arg_count=len(source.call.args) + len(keyword_names),
-        keyword_names=keyword_names,
-    )
-
-
 def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:
     call = as_ast(node, ast.Call)
     if call is None or len(call.args) < 1:
@@ -1631,31 +1561,10 @@ def _assignment_target_arity(target: ast.AST) -> int | None:
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
 
 
-def _schema_accessor_self_fetch_func(call: ast.Call) -> ast.Attribute | None:
-    return (
-        Maybe.of(as_ast(call.func, ast.Attribute))
-        .filter(
-            lambda func: (
-                isinstance(func.value, ast.Name)
-                and func.value.id == _SCHEMA_ACCESSOR_SELF_NAME
-            )
-        )
-        .unwrap_or_none()
-    )
-
-
 def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
     return any(
         isinstance(item, ast.Name) and item.id == local_name
         for item in ast.walk(node)
-    )
-
-
-def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
-    operands = (node.left, *node.comparators)
-    return _node_mentions_name(node, local_name) and any(
-        CompactValueExpression.project(operand).value_is_none_literal
-        for operand in operands
     )
 
 

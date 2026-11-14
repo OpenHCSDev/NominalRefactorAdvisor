@@ -74,7 +74,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     _RegisteredUnionSurfaceSource,
     _annotation_union_members,
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
-    _ABC_BASE_NAME,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
@@ -551,6 +550,8 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
     class_count: int
     line_count: int
 
+    _ABC_BASE_NAME = "ABC"
+
     _COMPOSABLE_BASE_NAME_SUFFIXES = (
         _ABC_BASE_NAME,
         "Base",
@@ -635,7 +636,7 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
 
     @staticmethod
     def _is_composable_base_name(base_name: str) -> bool:
-        return base_name == _ABC_BASE_NAME or base_name.endswith(
+        return base_name == RepeatedBaseBundleCandidate._ABC_BASE_NAME or base_name.endswith(
             RepeatedBaseBundleCandidate._COMPOSABLE_BASE_NAME_SUFFIXES
         )
 

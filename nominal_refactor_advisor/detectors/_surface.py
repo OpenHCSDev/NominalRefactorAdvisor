@@ -39,8 +39,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     HELPER_SUPPORT_PROJECTION_AUTHORITY,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
     _call_display_name,
-    _name_mentions,
-    _raised_exception_name,
 )
 from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
 import ast
@@ -290,7 +288,7 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
     @staticmethod
     def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
         return_exprs = StatementValues.of(nodes_of(ast.Return, loop)).values
-        if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
+        if len(return_exprs) != 1 or not DerivedQueryIndexCandidate._name_mentions(return_exprs[0], result_name):
             return None
         return return_exprs[0]
 
@@ -300,9 +298,9 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
     ) -> tuple[str, tuple[str, ...]] | None:
         raised = next(
             (
-                _raised_exception_name(statement)
+                DerivedQueryIndexCandidate._raised_exception_name(statement)
                 for statement in body
-                if _raised_exception_name(statement) is not None
+                if DerivedQueryIndexCandidate._raised_exception_name(statement) is not None
             ),
             None,
         )
@@ -333,17 +331,49 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
             (
                 name
                 for name in parameter_names
-                if _name_mentions(return_expr, name)
+                if DerivedQueryIndexCandidate._name_mentions(return_expr, name)
                 or name in exception_names
                 or any(
                     (
-                        isinstance(current, ast.If) and _name_mentions(current.test, name)
+                        isinstance(current, ast.If) and DerivedQueryIndexCandidate._name_mentions(current.test, name)
                         for current in ast.walk(loop)
                     )
                 )
             )
         )
         return query_key_names
+
+    @staticmethod
+    def _name_mentions(node: ast.AST, name: str) -> bool:
+        return any(
+            (
+                isinstance(current, ast.Name) and current.id == name
+                for current in ast.walk(node)
+            )
+        )
+
+    @staticmethod
+    def _raised_exception_name(
+        statement: ast.stmt,
+    ) -> tuple[str, tuple[str, ...]] | None:
+        if not isinstance(statement, ast.Raise) or statement.exc is None:
+            return None
+        exc = statement.exc
+        if isinstance(exc, ast.Call):
+            exc_name = ExpressionReference.decoded(exc.func).terminal_name
+            referenced_names = sorted_tuple(
+                {
+                    current.id
+                    for current in ast.walk(exc)
+                    if isinstance(current, ast.Name)
+                }
+            )
+            if exc_name is not None:
+                return (exc_name, referenced_names)
+        exc_name = ExpressionReference.decoded(exc).terminal_name
+        if exc_name is not None:
+            return (exc_name, ())
+        return None
 
 
 declare_candidate_rule_detector(

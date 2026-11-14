@@ -175,7 +175,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     HELPER_SUPPORT_PROJECTION_AUTHORITY,
     MutableNamedStringSequenceSpecs,
     NamedStringSequenceSpecs,
-    _guarded_wrapper_node_types,
     MethodProjection,
 )
 from nominal_refactor_advisor.detectors._substrate_support import _constant_string
@@ -3300,11 +3299,26 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
             guarded_returns.append(((statement, guard), return_stmt))
         # A wrapper whose return is bare wraps nothing.
         for (statement, guard), _returned in StatementValues.keyed(guarded_returns).supplied:
-            node_types = _guarded_wrapper_node_types(guard)
+            node_types = ScopedShapeWrapperDetector._guarded_wrapper_node_types(guard)
             if not node_types:
                 continue
             candidates.append((statement.name, statement.lineno, node_types))
         return tuple(candidates)
+
+    @staticmethod
+    def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
+        test = node.test
+        if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
+            return None
+        isinstance_arguments = BuiltinCallName.isinstance_arguments(test.operand)
+        if isinstance_arguments is None:
+            return None
+        _subject, type_node = isinstance_arguments
+        if isinstance(type_node, ast.Tuple):
+            node_types = tuple(ast.unparse(item) for item in type_node.elts)
+        else:
+            node_types = (ast.unparse(type_node),)
+        return tuple(item for item in node_types if item)
 
 
 class ForeignFamilySiteDetector(

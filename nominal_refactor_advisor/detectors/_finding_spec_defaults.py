@@ -14,8 +14,8 @@ from nominal_refactor_advisor.detectors._base import (
     FindingSpecSemanticDefaults,
     FindingSpecSemanticField,
     FindingSpecSemanticValue,
-    finding_spec_factory_for_constructor_name,
-    finding_spec_factory_for_defaults,
+    FINDING_SPEC_FACTORIES,
+    finding_spec_factory_by_constructor_name,
 )
 from nominal_refactor_advisor.ast_projection import StatementValues, single_name_targets
 
@@ -107,7 +107,7 @@ class FindingSpecCallSemantics:
         factory = (
             None
             if constructor_name is None
-            else finding_spec_factory_for_constructor_name(constructor_name)
+            else FindingSpecCallSemantics.finding_spec_factory_for_constructor_name(constructor_name)
         )
         if factory is None:
             return None
@@ -116,7 +116,7 @@ class FindingSpecCallSemantics:
 
     @property
     def recommended_factory(self) -> FindingSpecFactory | None:
-        return finding_spec_factory_for_defaults(
+        return FindingSpecCallSemantics.finding_spec_factory_for_defaults(
             self.keywords.defaults_over(self.factory.semantic_defaults)
         )
 
@@ -145,6 +145,21 @@ class FindingSpecCallSemantics:
                 if keyword.value_name is not None
             ),
         )
+
+    @staticmethod
+    def finding_spec_factory_for_constructor_name(
+        constructor_name: str,
+    ) -> FindingSpecFactory | None:
+        return finding_spec_factory_by_constructor_name().get(constructor_name)
+
+    @staticmethod
+    def finding_spec_factory_for_defaults(
+        defaults: FindingSpecSemanticDefaults,
+    ) -> FindingSpecFactory | None:
+        for factory in FINDING_SPEC_FACTORIES:
+            if factory.semantic_defaults == defaults:
+                return factory
+        return None
 
 
 class FindingSpecConstructionCandidateCollector:

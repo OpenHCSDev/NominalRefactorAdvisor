@@ -154,13 +154,7 @@ from nominal_refactor_advisor.detectors._base import (
     witness_carrier_class_candidates,
     DISPATCH_ALGEBRA_AUTHORITY,
     SelfCastAliasPartition,
-    _call_uses_iteration_variable,
-    _dict_expr_from_table_value,
-    _enum_member_names_by_class,
     _flatten_union_member_type_names,
-    _is_enum_projection_table_value,
-    _returns_constructor_call,
-    _self_cast_type_name,
     StaticModulePatternDetector,
 )
 from nominal_refactor_advisor.detectors._helpers import (
@@ -169,10 +163,9 @@ from nominal_refactor_advisor.detectors._helpers import (
     _finding_spec_build_boilerplate_candidates,
     _from_namespace_keyword_names,
     TupleIndexSemanticOpacityCandidateCollector,
-    _compare_mentions_none,
     _node_mentions_name,
-    _pipeline_stage,
-    _schema_accessor_self_fetch_func,
+    _SCHEMA_ACCESSOR_SELF_NAME,
+    _pipeline_stage_source,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
@@ -195,6 +188,8 @@ from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.registration_facets import CompactManualSelectorAxis
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 
 
 @dataclass(frozen=True)
@@ -381,6 +376,22 @@ def _compact_concrete_type_case_function_facts(
         facts,
         key=lambda item: (item.file_path, item.subject_role, item.line),
     )
+
+
+def _self_cast_type_name(node: ast.AST) -> str | None:
+    if not (
+        isinstance(node, ast.Call)
+        and ExpressionReference.decoded(node.func).terminal_name == "cast"
+        and (len(node.args) == 2)
+        and (not node.keywords)
+        and isinstance(node.args[1], ast.Name)
+        and (node.args[1].id == "self")
+    ):
+        return None
+    type_name = ast.unparse(node.args[0])
+    if not type_name:
+        return None
+    return type_name
 
 
 def _self_cast_alias_names(
@@ -1254,7 +1265,7 @@ class ResidualClosedAxisIndirectionCandidate(CollectsItself,
     def _enum_projection_tables(
         module: ParsedModule,
     ) -> tuple[EnumProjectionTableCandidate, ...]:
-        enum_members = _enum_member_names_by_class(module)
+        enum_members = ResidualClosedAxisIndirectionCandidate._enum_member_names_by_class(module)
         tables: list[EnumProjectionTableCandidate] = []
         for statement in statements_without_docstring(module.module.body):
             target_name: str | None = None
@@ -1271,7 +1282,7 @@ class ResidualClosedAxisIndirectionCandidate(CollectsItself,
                 value = statement.value
             if target_name is None:
                 continue
-            dict_value = _dict_expr_from_table_value(value)
+            dict_value = ResidualClosedAxisIndirectionCandidate._dict_expr_from_table_value(value)
             if dict_value is None or len(dict_value.keys) < 2:
                 continue
             key_pairs: list[tuple[str, str]] = []
@@ -1281,7 +1292,7 @@ class ResidualClosedAxisIndirectionCandidate(CollectsItself,
                 key_chain = ExpressionReference.decoded(key).attribute_chain
                 if key_chain is None or len(key_chain) != 2:
                     break
-                if not _is_enum_projection_table_value(item_value):
+                if not ResidualClosedAxisIndirectionCandidate._is_enum_projection_table_value(item_value):
                     break
                 key_pairs.append((key_chain[0], key_chain[1]))
             else:
@@ -1335,6 +1346,54 @@ class ResidualClosedAxisIndirectionCandidate(CollectsItself,
         if not isinstance(node.value, ast.Name) or node.value.id != table_name:
             return None
         return ast.unparse(node.slice)
+
+    @staticmethod
+    def _enum_member_names_by_class(module: ParsedModule) -> dict[str, tuple[str, ...]]:
+        enum_members: dict[str, tuple[str, ...]] = {}
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            if not PYTHON_ENUM_BASE_AUTHORITY.matches_any(declared.base_terminal_names):
+                continue
+            bindings: list[tuple[str, bool]] = []
+            for statement in node.body:
+                target: ast.AST | None = None
+                value: ast.AST | None = None
+                if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                    target = statement.targets[0]
+                    value = statement.value
+                elif isinstance(statement, ast.AnnAssign):
+                    target = statement.target
+                    value = statement.value
+                if not isinstance(target, ast.Name):
+                    continue
+                bindings.append((target.id, value is not None))
+            members = PYTHON_ENUM_BASE_AUTHORITY.declared_member_names(bindings)
+            if len(members) >= 2:
+                enum_members[node.name] = members
+        return enum_members
+
+    @staticmethod
+    def _dict_expr_from_table_value(value: ast.AST | None) -> ast.Dict | None:
+        if isinstance(value, ast.Dict):
+            return value
+        if (
+            isinstance(value, ast.Call)
+            and ExpressionReference.decoded(value.func).terminal_name
+            in {"MappingProxyType", "dict"}
+            and (len(value.args) == 1)
+            and isinstance(value.args[0], ast.Dict)
+        ):
+            return value.args[0]
+        return None
+
+    @staticmethod
+    def _is_enum_projection_table_value(value: ast.AST) -> bool:
+        """Whether a table value projects its case: a name, an attribute, or a lambda
+        returning a name, an attribute or a subscript."""
+
+        if isinstance(value, ast.Lambda):
+            return isinstance(value.body, ast.Attribute | ast.Subscript | ast.Name)
+        return isinstance(value, ast.Attribute | ast.Name)
 
 
 class ResidualClosedAxisIndirectionDetector(
@@ -1512,7 +1571,7 @@ class DerivedWrapperSpecShadowCandidate(CollectsItself, EvidenceLocationsWitness
                 if candidate_node is None:
                     continue
                 for nested in ast.walk(candidate_node):
-                    if isinstance(nested, ast.Call) and _call_uses_iteration_variable(
+                    if isinstance(nested, ast.Call) and DerivedWrapperSpecShadowCandidate._call_uses_iteration_variable(
                         nested, iteration_variable_name
                     ):
                         candidate_calls.append(nested)
@@ -1537,6 +1596,15 @@ class DerivedWrapperSpecShadowCandidate(CollectsItself, EvidenceLocationsWitness
             if constant_set <= set(element_names):
                 return family_name
         return None
+
+    @staticmethod
+    def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -> bool:
+        return any(
+            (
+                isinstance(subnode, ast.Name) and subnode.id == iteration_variable_name
+                for subnode in ast.walk(node)
+            )
+        )
 
 
 class DerivedWrapperSpecShadowDetector(
@@ -3875,12 +3943,12 @@ class ManualStructuralRecordMechanicsGroupCandidate(CollectsItselfUnderConfig, E
         names: list[str] = []
         for method in declared.methods:
             if method.spells("classmethod"):
-                if include_classmethods and _returns_constructor_call(
+                if include_classmethods and ManualStructuralRecordMechanicsGroupCandidate._returns_constructor_call(
                     method.node, accepted_names=accepted_class_names
                 ):
                     names.append(method.name)
                 continue
-            if include_instance_methods and _returns_constructor_call(
+            if include_instance_methods and ManualStructuralRecordMechanicsGroupCandidate._returns_constructor_call(
                 method.node, accepted_names=accepted_instance_names
             ):
                 names.append(method.name)
@@ -3933,6 +4001,21 @@ class ManualStructuralRecordMechanicsGroupCandidate(CollectsItselfUnderConfig, E
         return sorted_tuple(
             {"validate"} | shared_projection_method_names | shared_roundtrip_method_names
         )
+
+    @staticmethod
+    def _returns_constructor_call(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+        *,
+        accepted_names: tuple[str, ...],
+    ) -> bool:
+        returned = DISPATCH_ALGEBRA_AUTHORITY.single_return_case(method.body)
+        if returned is None:
+            return False
+        return_value, _ = returned
+        if not isinstance(return_value, ast.Call):
+            return False
+        call_name = ExpressionReference.decoded(return_value.func).terminal_name
+        return call_name in accepted_names
 
 
 class ManualStructuralRecordMechanicsDetector(
@@ -4246,13 +4329,32 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
             return None
         stages: list[PipelineAssemblyStage] = []
         for statement in body:
-            stage = _pipeline_stage(statement)
+            stage = RepeatedResultAssemblyPipelineCandidate._pipeline_stage(statement)
             if stage is None:
                 return None
             stages.append(stage)
         if not stages or stages[-1].kind != _PIPELINE_RETURN_STAGE:
             return None
         return tuple(stages)
+
+    @staticmethod
+    def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
+        source = _pipeline_stage_source(statement)
+        callee_name = (
+            ExpressionReference.decoded(source.call.func).terminal_name
+            if source is not None
+            else None
+        )
+        if source is None or callee_name is None:
+            return None
+        keyword_names = CallKeywords.of(source.call.keywords).names
+        return PipelineAssemblyStage(
+            kind=source.kind,
+            callee_name=callee_name,
+            output_arity=source.output_arity,
+            arg_count=len(source.call.args) + len(keyword_names),
+            keyword_names=keyword_names,
+        )
 
 
 class RepeatedResultAssemblyPipelineDetector(
@@ -4849,7 +4951,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
             Maybe.of(as_ast(value, ast.Call))
             .filter(lambda call: len(call.args) == 1 and not call.keywords)
             .combine(
-                _schema_accessor_self_fetch_func,
+                SchemaAccessorFamilyCandidate._schema_accessor_self_fetch_func,
                 lambda call, func: (call, func),
             )
             .filter(lambda context: context[1].attr in SchemaAccessorFamilyCandidate._SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
@@ -4876,7 +4978,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
     ) -> tuple[str, ...]:
         kinds: set[str] = set()
         for node in ast.walk(function):
-            if isinstance(node, ast.Compare) and _compare_mentions_none(node, local_name):
+            if isinstance(node, ast.Compare) and SchemaAccessorFamilyCandidate._compare_mentions_none(node, local_name):
                 kinds.add("none_guard")
             if not isinstance(node, ast.Call):
                 continue
@@ -4906,6 +5008,27 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
         return any(
             _node_mentions_name(returned, local_name)
             for returned in StatementValues.of(nodes_of(ast.Return, function)).values
+        )
+
+    @staticmethod
+    def _schema_accessor_self_fetch_func(call: ast.Call) -> ast.Attribute | None:
+        return (
+            Maybe.of(as_ast(call.func, ast.Attribute))
+            .filter(
+                lambda func: (
+                    isinstance(func.value, ast.Name)
+                    and func.value.id == _SCHEMA_ACCESSOR_SELF_NAME
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
+        operands = (node.left, *node.comparators)
+        return _node_mentions_name(node, local_name) and any(
+            CompactValueExpression.project(operand).value_is_none_literal
+            for operand in operands
         )
 
 
