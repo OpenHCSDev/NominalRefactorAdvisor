@@ -7,7 +7,7 @@ axis authority, registration, and other repo-wide architectural smells.
 from __future__ import annotations
 
 import ast
-from abc import ABC
+from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
@@ -1724,9 +1724,47 @@ class ParallelKeyedTableAndFamilyDetector(
         )
 
 
-class InheritedAutoRegisterConfigBoilerplateDetector(
+class _CompactClassIndexDetectorBase(
     CompactClassRepositoryProjectionMixin,
     IssueDetector,
+    ABC,
+):
+    """A detector whose findings come from the class projections and their class index."""
+
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[CompactModuleClassProjection],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        return self._findings_from_class_index(
+            projections,
+            build_compact_class_family_index(projections),
+        )
+
+    def _findings_from_compact_context(
+        self,
+        projections: Sequence[CompactModuleClassProjection],
+        context: object | None,
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        return self._findings_from_class_index(
+            projections,
+            CompactClassRepositoryContext.require(context).class_index,
+        )
+
+    @abstractmethod
+    def _findings_from_class_index(
+        self,
+        projections: Sequence[CompactModuleClassProjection],
+        class_index: CompactClassFamilyIndex,
+    ) -> list[RefactorFinding]:
+        raise NotImplementedError
+
+
+class InheritedAutoRegisterConfigBoilerplateDetector(
+    _CompactClassIndexDetectorBase,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 ):
     detector_id = "inherited_autoregister_config_boilerplate"
@@ -1747,30 +1785,12 @@ class InheritedAutoRegisterConfigBoilerplateDetector(
         ),
     )
 
-    def _findings_from_compact_projections(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        class_index = build_compact_class_family_index(projections)
-        return self._findings_from_class_index(class_index)
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del projections, config
-        return self._findings_from_class_index(
-            CompactClassRepositoryContext.require(context).class_index
-        )
-
     def _findings_from_class_index(
         self,
+        projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> list[RefactorFinding]:
+        del projections
         findings: list[RefactorFinding] = []
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
@@ -1807,8 +1827,7 @@ _EXPLICIT_CLASS_ORDER_AXIS_NAMES = ("priority", "precedence", "rank", "order")
 
 
 class AutoRegisterExplicitPriorityOrderingDetector(
-    CompactClassRepositoryProjectionMixin,
-    IssueDetector,
+    _CompactClassIndexDetectorBase,
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
 ):
     detector_id = "autoregister_explicit_priority_ordering"
@@ -1828,27 +1847,6 @@ class AutoRegisterExplicitPriorityOrderingDetector(
             ObservationTag.DATAFLOW_ROOT,
         ),
     )
-
-    def _findings_from_compact_projections(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        class_index = build_compact_class_family_index(projections)
-        return self._findings_from_class_index(projections, class_index)
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        return self._findings_from_class_index(
-            projections,
-            CompactClassRepositoryContext.require(context).class_index,
-        )
 
     def _findings_from_class_index(
         self,
@@ -1952,10 +1950,7 @@ def _class_order_axis_label(axis_names: tuple[str, ...]) -> str:
     return " / ".join(f"`{axis_name}`" for axis_name in axis_names)
 
 
-class NominalInstanceExplicitOrderingDetector(
-    CompactClassRepositoryProjectionMixin,
-    IssueDetector,
-):
+class NominalInstanceExplicitOrderingDetector(_CompactClassIndexDetectorBase):
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Nominal declaration catalog uses explicit ordering instead of MRO",
@@ -1972,29 +1967,6 @@ class NominalInstanceExplicitOrderingDetector(
             ObservationTag.DATAFLOW_ROOT,
         ),
     )
-
-    def _findings_from_compact_projections(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        return self._findings_from_class_index(
-            projections,
-            build_compact_class_family_index(projections),
-        )
-
-    def _findings_from_compact_context(
-        self,
-        projections: Sequence[CompactModuleClassProjection],
-        context: object | None,
-        config: DetectorConfig,
-    ) -> list[RefactorFinding]:
-        del config
-        return self._findings_from_class_index(
-            projections,
-            CompactClassRepositoryContext.require(context).class_index,
-        )
 
     def _findings_from_class_index(
         self,
