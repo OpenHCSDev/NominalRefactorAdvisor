@@ -127,7 +127,7 @@ class HelperSupportProjectionAuthority:
                     current = current.value
                 if isinstance(current, ast.Name):
                     roots.add(current.id)
-                cls.generic_visit(node)
+                self.generic_visit(node)
 
             def visit_Name(self, node: ast.Name) -> None:
                 roots.add(node.id)

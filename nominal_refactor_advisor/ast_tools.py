@@ -4507,11 +4507,11 @@ class RootNameProjection:
         class Visitor(ast.NodeVisitor):
             def visit_Call(self, node: ast.Call) -> None:
                 if isinstance(node.func, ast.Attribute):
-                    cls.visit(node.func.value)
+                    self.visit(node.func.value)
                 for argument in node.args:
-                    cls.visit(argument)
+                    self.visit(argument)
                 for keyword_node in node.keywords:
-                    cls.visit(keyword_node.value)
+                    self.visit(keyword_node.value)
 
             def visit_Attribute(self, node: ast.Attribute) -> None:
                 current: ast.AST = node
@@ -4519,7 +4519,7 @@ class RootNameProjection:
                     current = current.value
                 if isinstance(current, ast.Name):
                     roots.add(current.id)
-                cls.generic_visit(node)
+                self.generic_visit(node)
 
             def visit_Name(self, node: ast.Name) -> None:
                 roots.add(node.id)
