@@ -656,6 +656,11 @@ class FamilyWalkRoot(ABC):
         """Why moving a member from module `source` to `destination` takes it out
         of this walk, or None when the walk still reaches it."""
 
+    def walks(self, module: str) -> bool:
+        """Whether this walk can import `module`: no, unless the walk says where it looks."""
+
+        return False
+
 
 @dataclass(frozen=True)
 class NoWalkRoot(FamilyWalkRoot):
@@ -694,6 +699,11 @@ class UnresolvedWalkRoot(FamilyWalkRoot):
 
     def leaving_reason(self, source: str, destination: str) -> str | None:
         return f"it walks the package `{self.expression}`, which is not a static value"
+
+    def walks(self, module: str) -> bool:
+        """A walk over a package no one can name statically may import any module."""
+
+        return True
 
 
 def static_module_name(node: ast.AST | None, parsed_module: ParsedModule) -> str | None:

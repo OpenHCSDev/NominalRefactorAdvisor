@@ -833,6 +833,22 @@ tree (each is a plain script over the syntax trees, seconds to run):
   has 17 unrelated owners. Whether a shared verb is a missing contract is
   the reader's call; the claim "no shared declaring ancestor" is now
   true of every finding.
+- `dead_module` used to know two loaders, `pkgutil.iter_modules` and
+  `walk_packages`, and so called every module a registry discovers dead:
+  on NRA's own package, 22 modules of `detectors/` and `refactors/`,
+  which `RegistryConfig(discovery_package=...)` imports on first read.
+  The fact already had an owner, `registry_config_walk_root`
+  (`registration_facets.py`), which module moves read to refuse taking a
+  member out of its walk. The detector now asks each declared family's
+  walk root which modules it imports (`FamilyWalkRoot.walks`): a flat
+  walk reaches the package's direct modules and not a subpackage's, and
+  a walk whose package is not a static value may reach anything. On
+  NRA: 25 findings before, 3 after, and those 3 are true:
+  `derivation_run.py`, `relation_factorization.py` and
+  `semantic_inspection.py` are imported only by their own tests. Whether
+  they are library surface or dead is Tristan's call.
+  When a detector calls live code dead, look for the owner of "what
+  loads this" before teaching the detector another special name.
 - `unused_method_parameter` used to look at one method in one module
   and call it "ignored in every override". It now reads every
   declaration of the method in its member family: a default that ignores

@@ -35,6 +35,10 @@ from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.probe_owner import ProbeOwner, ProbeOwnerResolver
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.registration_facets import (
+    FamilyWalkRoot,
+    registry_config_walk_root,
+)
 
 # A subject needs this many distinct string arms before it is a family spelled out.
 STRING_DISPATCH_MIN_ARMS = 3
@@ -931,6 +935,8 @@ class ModuleReferenceFacts:
     file_path: str
     runs_as_script: bool
     enumerates_modules: bool
+    walk_roots: tuple[FamilyWalkRoot, ...]
+    """Where each registry family this module declares looks for its members."""
     imported: tuple[str, ...]
     named: tuple[str, ...]
     referenced: tuple[tuple[str, int], ...]
@@ -1019,6 +1025,12 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                 enumerates_modules=any(
                     cls.is_enumerator(call)
                     for _i, call in index.indexed_nodes_of_type(ast.Call)
+                ),
+                walk_roots=tuple(
+                    dict.fromkeys(
+                        registry_config_walk_root(parsed_module, node)
+                        for _i, node in index.indexed_nodes_of_type(ast.ClassDef)
+                    )
                 ),
                 imported=tuple(sorted(imported)),
                 named=tuple(sorted(named)),
@@ -1111,6 +1123,9 @@ class UnreachedModules:
             if any(module.enumerates_modules for module in facts)
             else set()
         )
+        # A registry family that declares where it discovers its members reaches
+        # exactly the modules that walk imports: `registry_config_walk_root` owns that.
+        walk_roots = {root for module in facts for root in module.walk_roots}
         return cls(
             frozenset(
                 module.module_name
@@ -1122,6 +1137,7 @@ class UnreachedModules:
                 and not any(
                     module.module_name.startswith(f"{package}.") for package in listable
                 )
+                and not any(root.walks(module.module_name) for root in walk_roots)
             )
         )
 

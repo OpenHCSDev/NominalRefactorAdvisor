@@ -518,6 +518,39 @@ def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path
     assert dead == ["orphan"]
 
 
+def test_a_registry_that_discovers_a_package_reaches_the_modules_its_walk_imports(
+    tmp_path: Path,
+):
+    """A registry family's `discovery_package` is a loader: its flat walk imports the
+    package's direct modules, so they are reached, and a module one level deeper is not."""
+
+    package = tmp_path / "pkg"
+    (package / "plugins" / "deep").mkdir(parents=True)
+    for directory in (package, package / "plugins", package / "plugins" / "deep"):
+        (directory / "__init__.py").write_text("")
+    (package / "base.py").write_text(
+        "from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig\n\n\n"
+        "class Plugin(metaclass=AutoRegisterMeta):\n"
+        "    __registry_config__ = RegistryConfig(\n"
+        "        registry_dict=LazyDiscoveryDict(),\n"
+        "        key_attribute='plugin_key',\n"
+        "        discovery_package=f'{__package__}.plugins',\n"
+        "    )\n"
+    )
+    member = "from pkg.base import Plugin\n\n\nclass {name}(Plugin):\n    plugin_key = '{key}'\n"
+    (package / "plugins" / "one.py").write_text(member.format(name="One", key="one"))
+    (package / "plugins" / "deep" / "two.py").write_text(
+        member.format(name="Two", key="two")
+    )
+    (tmp_path / "orphan.py").write_text("VALUE = 1\n")
+    dead = sorted(
+        finding.evidence[0].symbol
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == DeadModuleDetector.effective_detector_id()
+    )
+    assert dead == ["orphan", "pkg.plugins.deep.two"]
+
+
 def test_an_empty_dead_module_dissolves(tmp_path: Path):
     package = tmp_path / "pkg"
     package.mkdir()
