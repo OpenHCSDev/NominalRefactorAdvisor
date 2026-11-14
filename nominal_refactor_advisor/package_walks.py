@@ -89,7 +89,7 @@ class ModuleWalks(ParsedModuleFact):
         }
         return cls(
             walkers=walkers,
-            calls=_walk_calls(parsed_module),
+            calls=cls._walk_calls(parsed_module),
             keyword_walks={
                 symbol: walk
                 for symbol, node in classes.items()
@@ -116,6 +116,25 @@ class ModuleWalks(ParsedModuleFact):
                 if node.keywords
             },
         )
+
+    @staticmethod
+    def _walk_calls(parsed_module: ParsedModule) -> tuple[PackageWalkCall, ...]:
+        """Calls `Receiver.method(name, ...)` whose first argument is an imported name:
+        whether it names a module is the repository's to say (`family_walk_roots`), since
+        `from a import b` binds a submodule and a name alike."""
+
+        aliases = module_import_aliases(parsed_module)
+        calls: list[PackageWalkCall] = []
+        for node in parsed_module.syntax_index.breadth_first_nodes:
+            match node:
+                case ast.Call(
+                    func=ast.Attribute(value=ast.Name(id=receiver), attr=method),
+                    args=[ast.Name(id=package), *_],
+                ) if package in aliases:
+                    owner = _class_symbol(parsed_module, aliases, receiver)
+                    if owner is not None:
+                        calls.append(PackageWalkCall(owner, method, aliases[package]))
+        return tuple(calls)
 
 
 def _class_symbol(parsed_module: ParsedModule, aliases: dict[str, str], name: str) -> str | None:
@@ -199,25 +218,6 @@ def _called_name(func: ast.expr) -> str | None:
         case ast.Name(id=name) | ast.Attribute(attr=name):
             return name
     return None
-
-
-def _walk_calls(parsed_module: ParsedModule) -> tuple[PackageWalkCall, ...]:
-    """Calls `Receiver.method(name, ...)` whose first argument is an imported name:
-    whether it names a module is the repository's to say (`family_walk_roots`), since
-    `from a import b` binds a submodule and a name alike."""
-
-    aliases = module_import_aliases(parsed_module)
-    calls: list[PackageWalkCall] = []
-    for node in parsed_module.syntax_index.breadth_first_nodes:
-        match node:
-            case ast.Call(
-                func=ast.Attribute(value=ast.Name(id=receiver), attr=method),
-                args=[ast.Name(id=package), *_],
-            ) if package in aliases:
-                owner = _class_symbol(parsed_module, aliases, receiver)
-                if owner is not None:
-                    calls.append(PackageWalkCall(owner, method, aliases[package]))
-    return tuple(calls)
 
 
 def family_walk_roots(

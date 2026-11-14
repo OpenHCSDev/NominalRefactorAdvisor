@@ -32,16 +32,6 @@ ProjectionPath: TypeAlias = tuple[str, ...]
 CoverNodeT = TypeVar("CoverNodeT")
 
 
-def _axis_signature(axis_values: Mapping[AxisName, object]) -> AxisSignature:
-    return sorted_tuple(
-        (
-            (axis_name, structural_key(axis_value))
-            for axis_name, axis_value in axis_values.items()
-        ),
-        key=lambda item: item[0],
-    )
-
-
 @dataclass(frozen=True)
 class FactorizationRow:
     """One semantic object embedded in a finite axis product."""
@@ -60,7 +50,7 @@ class FactorizationRow:
     ) -> FactorizationRow:
         return cls(
             object_name=object_name,
-            axis_values=_axis_signature(axis_values),
+            axis_values=cls._axis_signature(axis_values),
             source_name=source_name,
         )
 
@@ -76,6 +66,16 @@ class FactorizationRow:
 
     def project(self, axis_names: Iterable[AxisName]) -> AxisSignature:
         return tuple((axis_name, self.value_for(axis_name)) for axis_name in axis_names)
+
+    @staticmethod
+    def _axis_signature(axis_values: Mapping[AxisName, object]) -> AxisSignature:
+        return sorted_tuple(
+            (
+                (axis_name, structural_key(axis_value))
+                for axis_name, axis_value in axis_values.items()
+            ),
+            key=lambda item: item[0],
+        )
 
 
 class FiniteCoverRelation(ABC, Generic[CoverNodeT]):

@@ -1247,8 +1247,6 @@ class CandidateFindingRenderer(CandidateFindingRendererABC[LocatedCandidateT]):
         )
 _FILE_PATHS_ATTRIBUTE = "file_paths"
 _LINE_NUMBERS_ATTRIBUTE = "line_numbers"
-_CLASS_NAMES_ATTRIBUTE = "class_names"
-_METHOD_SYMBOLS_ATTRIBUTE = "method_symbols"
 
 
 @dataclass(frozen=True)
@@ -1309,11 +1307,6 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
                 strict=True,
             )
         )
-
-
-_LINENO_QUALNAME_LOCATION = SourceLocationEvidenceProperty(
-    line_attribute_name="lineno", symbol_attribute_name="qualname"
-)
 
 
 def _contextual_global_rows_digest(
@@ -1380,16 +1373,6 @@ def _stable_context_signature_payload(value):
     if isinstance(value, (tuple, list, set, frozenset)):
         return tuple(_stable_context_signature_payload(item) for item in value)
     return value
-
-
-def _contextual_global_candidate_signature(
-    detector_type: type[IssueDetector],
-    candidates: Iterable,
-) -> str:
-    return _contextual_global_rows_digest(
-        detector_type,
-        ((_stable_context_signature_text(candidate),) for candidate in candidates),
-    )
 
 
 class RenderedFindingMixin(Generic[CandidateItemT]):
@@ -1864,7 +1847,7 @@ class CrossModuleCandidateDetector(
     def context_signature(
         cls, modules: ParsedModuleSet, config: DetectorConfig
     ) -> str:
-        return _contextual_global_candidate_signature(
+        return cls._contextual_global_candidate_signature(
             cls,
             cls()._candidate_items(modules, config),
         )
@@ -1900,7 +1883,7 @@ class CrossModuleCandidateDetector(
             detector=self,
             candidates=candidates,
             config=config,
-            context_signature=_contextual_global_candidate_signature(
+            context_signature=self._contextual_global_candidate_signature(
                 type(self),
                 candidates,
             ),
@@ -1911,6 +1894,16 @@ class CrossModuleCandidateDetector(
         self, modules: ParsedModuleSet, config: DetectorConfig
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
+
+    @staticmethod
+    def _contextual_global_candidate_signature(
+        detector_type: type[IssueDetector],
+        candidates: Iterable,
+    ) -> str:
+        return _contextual_global_rows_digest(
+            detector_type,
+            ((_stable_context_signature_text(candidate),) for candidate in candidates),
+        )
 
 
 @dataclass(frozen=True)
@@ -2305,9 +2298,6 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
         return cls(**options)
 
 
-_DEFAULT_DETECTOR_DECLARATION_OPTIONS = DetectorDeclarationOptions()
-
-
 class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=False):
     detector_name: str | None
     detector_base: type[IssueDetector]
@@ -2317,6 +2307,7 @@ class DetectorDeclarationOptionKwargs(TypedDict, Generic[CandidateItemT], total=
 
 @dataclass(frozen=True)
 class DetectorDeclaration(Generic[CandidateItemT]):
+    _DEFAULT_DETECTOR_DECLARATION_OPTIONS = DetectorDeclarationOptions()
     detector_id_field_name: ClassVar[str] = "detector_id"
     finding_spec_field_name: ClassVar[str] = "finding_spec"
     finding_renderer_field_name: ClassVar[str] = "finding_renderer"
@@ -2731,7 +2722,7 @@ class ModuleBuilderCallShapes(ParsedModuleFact):
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
-        return cls(_derive_builder_call_shapes(parsed_module))
+        return cls(cls._derive_builder_call_shapes(parsed_module))
 
     def calling(self, callee_names: frozenset[str]) -> tuple[BuilderCallShape, ...]:
         """The shapes whose callee is one of ``callee_names``."""
@@ -2740,30 +2731,30 @@ class ModuleBuilderCallShapes(ParsedModuleFact):
             shape for shape in self.shapes if shape.callee_name in callee_names
         )
 
+    @staticmethod
+    def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
+        shapes: list[BuilderCallShape] = []
+        module_class_names = module.class_names
+
+        for qualname, function in module.syntax_index.named_functions:
+            owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
+            for node in walk_function_body_nodes(function.body):
+                if not isinstance(node, ast.Call):
+                    continue
+                shape = _builder_call_shape(
+                    module,
+                    node,
+                    owner_name,
+                    function.name,
+                    module_class_names,
+                )
+                if shape is not None:
+                    shapes.append(shape)
+        return tuple(shapes)
+
 
 def _module_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
     return module.fact(ModuleBuilderCallShapes).shapes
-
-
-def _derive_builder_call_shapes(module: ParsedModule) -> tuple[BuilderCallShape, ...]:
-    shapes: list[BuilderCallShape] = []
-    module_class_names = module.class_names
-
-    for qualname, function in module.syntax_index.named_functions:
-        owner_name = qualname.rsplit(".", 1)[0] if "." in qualname else None
-        for node in walk_function_body_nodes(function.body):
-            if not isinstance(node, ast.Call):
-                continue
-            shape = _builder_call_shape(
-                module,
-                node,
-                owner_name,
-                function.name,
-                module_class_names,
-            )
-            if shape is not None:
-                shapes.append(shape)
-    return tuple(shapes)
 
 
 AstNodeCandidateT = TypeVar("AstNodeCandidateT")
@@ -2854,7 +2845,7 @@ class CandidateCollectionAuthority:
             normalized_roles = tuple(
                 role_name for role_name, _ in normalized_role_fields
             )
-            family_tokens = _carrier_family_tokens(node.name)
+            family_tokens = self._carrier_family_tokens(node.name)
             if not family_tokens:
                 continue
             if len(normalized_roles) < 3:
@@ -2876,6 +2867,21 @@ class CandidateCollectionAuthority:
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
+        tokens = tuple(
+            (
+                token.lower()
+                for token in re.findall(
+                    "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", class_name
+                )
+                if token.lower() not in _GENERIC_FAMILY_CLASS_TOKENS
+            )
+        )
+        if not tokens:
+            return ()
+        return (tokens[-1],)
 
 
 CANDIDATE_COLLECTION_AUTHORITY = CandidateCollectionAuthority()
@@ -2969,40 +2975,6 @@ _TYPE_NAME_LITERAL = "type"
 _EVAL_PARSE_MODE = "eval"
 
 
-def _selection_helper_shape(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> _SelectionHelperShape | None:
-    return (
-        Maybe.of(
-            as_ast(
-                single_return_value(statements_without_docstring(function.body)),
-                ast.DictComp,
-            )
-        )
-        .combine(
-            lambda returned: single_item(returned.generators),
-            lambda returned, generator: _SelectionDictCompContext(returned, generator),
-        )
-        .filter(
-            lambda context: (
-                not context.generator.ifs
-                and isinstance(context.generator.target, ast.Name)
-            )
-        )
-        .combine(
-            lambda context: _selection_dict_value_field(
-                context.returned, cast(ast.Name, context.generator.target).id
-            ),
-            lambda context, selected_field_name: _SelectionHelperShape(
-                function_name=function.name,
-                selected_field_name=selected_field_name,
-                line=function.lineno,
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
 def _selection_dict_value_field(returned: ast.DictComp, target_name: str) -> str | None:
     key = returned.key
     value = returned.value
@@ -3020,19 +2992,6 @@ def _selection_dict_value_field(returned: ast.DictComp, target_name: str) -> str
     ):
         return None
     return value.attr
-
-
-def _selection_lookup_shape(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> _SelectionLookupShape | None:
-    try_node = _single_try_statement(function)
-    if try_node is None:
-        return None
-    if not _selection_lookup_returns_subscript(try_node):
-        return None
-    if not _selection_lookup_raises_key_error(try_node):
-        return None
-    return _SelectionLookupShape(function_name=function.name, line=function.lineno)
 
 
 def _single_try_statement(
@@ -3298,45 +3257,6 @@ class RegistryProjectionSurfaceKind(FieldedStrEnum):
         )
 
 
-def _manual_record_registration_shape(
-    method: FunctionStatement,
-) -> ManualRecordRegistrationShape | None:
-    body = statements_without_docstring(list(method.node.body))
-    return (
-        Maybe.of(body)
-        .filter(lambda _body: method.spells("classmethod"))
-        .combine(
-            _manual_record_registration_key_expr,
-            lambda _body, key_expr: _ManualRecordRegistrationKeyContext(
-                body=_body,
-                key_expr=key_expr,
-            ),
-        )
-        .combine(
-            lambda context: _manual_record_registration_constructor(
-                context.body[1:],
-                context.key_expr,
-            ),
-            lambda context, constructor: (
-                ManualRecordRegistrationShape(
-                    key_expr=context.key_expr,
-                    key_field_name=constructor_context.key_field_names[0],
-                    constructor_field_names=constructor_context.constructor_field_names,
-                )
-                if (
-                    constructor_context := _ManualRecordRegistrationConstructorContext(
-                        constructor_field_names=constructor[0],
-                        key_field_names=constructor[1],
-                    )
-                )
-                and len(constructor_context.key_field_names) == 1
-                else None
-            ),
-        )
-        .unwrap_or_none()
-    )
-
-
 def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
     first_statement = body[0] if len(body) >= 2 else None
     if not isinstance(first_statement, ast.If):
@@ -3398,53 +3318,6 @@ def _self_attr_name(target: ast.AST) -> str | None:
     return None
 
 
-def _assigned_self_attrs(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[str, ...]:
-    assigned: list[str] = []
-    for subnode in ast.walk(node):
-        if isinstance(subnode, ast.Assign):
-            for target in subnode.targets:
-                attr_name = _self_attr_name(target)
-                if attr_name is not None:
-                    assigned.append(attr_name)
-        elif isinstance(subnode, ast.AnnAssign):
-            attr_name = _self_attr_name(subnode.target)
-            if attr_name is not None:
-                assigned.append(attr_name)
-    return tuple(dict.fromkeys(assigned))
-
-
-def _string_dispatch_cases_from_body(
-    body: list[ast.stmt],
-    dispatch_axis_expression: str,
-) -> tuple[str, ...]:
-    cases: list[str] = []
-    if not body:
-        return ()
-    current = body[0]
-    while isinstance(current, ast.If):
-        dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
-            current.test
-        )
-        if dispatch_case is None:
-            return ()
-        current_axis, case_name = dispatch_case
-        if current_axis != dispatch_axis_expression:
-            return ()
-        if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None:
-            return ()
-        cases.append(case_name)
-        if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
-            current = current.orelse[0]
-            continue
-        break
-    return tuple(cases)
-
-
-_TAG_PARAM_NAMES = frozenset({"kind", "mode", _TYPE_NAME_LITERAL, "tag", "backend"})
-
-
 _GENERIC_FAMILY_CLASS_TOKENS = frozenset(
     {
         "candidate",
@@ -3459,21 +3332,6 @@ _GENERIC_FAMILY_CLASS_TOKENS = frozenset(
         "spec",
     }
 )
-
-
-def _carrier_family_tokens(class_name: str) -> tuple[str, ...]:
-    tokens = tuple(
-        (
-            token.lower()
-            for token in re.findall(
-                "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", class_name
-            )
-            if token.lower() not in _GENERIC_FAMILY_CLASS_TOKENS
-        )
-    )
-    if not tokens:
-        return ()
-    return (tokens[-1],)
 
 
 class SupportProjectionAuthority:
@@ -3788,7 +3646,7 @@ class ModuleKeyedSelectionHelperCandidate(
                 helper
                 for _, function in module.syntax_index.named_functions
                 if "." not in _
-                and (helper := _selection_helper_shape(function)) is not None
+                and (helper := cls._selection_helper_shape(function)) is not None
             )
         )
         lookup_shapes = tuple(
@@ -3796,7 +3654,7 @@ class ModuleKeyedSelectionHelperCandidate(
                 lookup
                 for _, function in module.syntax_index.named_functions
                 if "." not in _
-                and (lookup := _selection_lookup_shape(function)) is not None
+                and (lookup := cls._selection_lookup_shape(function)) is not None
             )
         )
         if not helper_shapes or not lookup_shapes:
@@ -3884,6 +3742,53 @@ class ModuleKeyedSelectionHelperCandidate(
         return sorted_tuple(
             candidates, key=lambda item: (item.file_path, item.line, item.rule_class_name)
         )
+
+    @staticmethod
+    def _selection_helper_shape(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> _SelectionHelperShape | None:
+        return (
+            Maybe.of(
+                as_ast(
+                    single_return_value(statements_without_docstring(function.body)),
+                    ast.DictComp,
+                )
+            )
+            .combine(
+                lambda returned: single_item(returned.generators),
+                lambda returned, generator: _SelectionDictCompContext(returned, generator),
+            )
+            .filter(
+                lambda context: (
+                    not context.generator.ifs
+                    and isinstance(context.generator.target, ast.Name)
+                )
+            )
+            .combine(
+                lambda context: _selection_dict_value_field(
+                    context.returned, cast(ast.Name, context.generator.target).id
+                ),
+                lambda context, selected_field_name: _SelectionHelperShape(
+                    function_name=function.name,
+                    selected_field_name=selected_field_name,
+                    line=function.lineno,
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def _selection_lookup_shape(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> _SelectionLookupShape | None:
+        try_node = _single_try_statement(function)
+        if try_node is None:
+            return None
+        if not _selection_lookup_returns_subscript(try_node):
+            return None
+        if not _selection_lookup_raises_key_error(try_node):
+            return None
+        return _SelectionLookupShape(function_name=function.name, line=function.lineno)
 
 
 @dataclass(frozen=True)
@@ -4041,7 +3946,7 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             register_method = declared.method_named("register")
             if register_method is None:
                 continue
-            registration_shape = _manual_record_registration_shape(register_method)
+            registration_shape = cls._manual_record_registration_shape(register_method)
             if registration_shape is None:
                 continue
             lookup_methods = [
@@ -4089,6 +3994,45 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             )
         )
 
+    @staticmethod
+    def _manual_record_registration_shape(
+        method: FunctionStatement,
+    ) -> ManualRecordRegistrationShape | None:
+        body = statements_without_docstring(list(method.node.body))
+        return (
+            Maybe.of(body)
+            .filter(lambda _body: method.spells("classmethod"))
+            .combine(
+                _manual_record_registration_key_expr,
+                lambda _body, key_expr: _ManualRecordRegistrationKeyContext(
+                    body=_body,
+                    key_expr=key_expr,
+                ),
+            )
+            .combine(
+                lambda context: _manual_record_registration_constructor(
+                    context.body[1:],
+                    context.key_expr,
+                ),
+                lambda context, constructor: (
+                    ManualRecordRegistrationShape(
+                        key_expr=context.key_expr,
+                        key_field_name=constructor_context.key_field_names[0],
+                        constructor_field_names=constructor_context.constructor_field_names,
+                    )
+                    if (
+                        constructor_context := _ManualRecordRegistrationConstructorContext(
+                            constructor_field_names=constructor[0],
+                            key_field_names=constructor[1],
+                        )
+                    )
+                    and len(constructor_context.key_field_names) == 1
+                    else None
+                ),
+            )
+            .unwrap_or_none()
+        )
+
 
 @dataclass(frozen=True)
 class ManualStructuralRecordMechanicsClassCandidate(ClassLineWitnessCandidate):
@@ -4129,6 +4073,9 @@ class PipelineAssemblyStage:
 
 @dataclass(frozen=True)
 class ResultAssemblyPipelineFunction:
+    _LINENO_QUALNAME_LOCATION = SourceLocationEvidenceProperty(
+        line_attribute_name="lineno", symbol_attribute_name="qualname"
+    )
     file_path: str
     qualname: str
     lineno: int
@@ -4485,6 +4432,7 @@ class MethodFamilyLineCompressionSurface:
 
 @dataclass(frozen=True)
 class MethodFamilyEvidenceSurface(MethodFamilyLineCompressionSurface):
+    _METHOD_SYMBOLS_ATTRIBUTE = "method_symbols"
     method_names: tuple[str, ...]
     method_symbols: tuple[str, ...]
     evidence: ClassVar[MultiFileZippedSourceLocationEvidenceProperty] = (
@@ -4513,6 +4461,7 @@ class SemanticOverlapMethodCandidate(
     MethodFamilyLatticeMetricsCarrier,
     MethodFamilyResidueEvidenceCarrier,
 ):
+    _CLASS_NAMES_ATTRIBUTE = "class_names"
     method_name: str
     shared_statement_count: int
     varying_coordinate_count: int
@@ -4567,6 +4516,7 @@ class SemanticOverlapResidueAxisCandidate(
 class ManualFiberTagCandidate(
     ModuleCollectedLineWitnessCandidate, WitnessCarrierCandidate
 ):
+    _TAG_PARAM_NAMES = frozenset({"kind", "mode", _TYPE_NAME_LITERAL, "tag", "backend"})
     init_line: int
     method_name: str
     tag_name: str
@@ -4608,19 +4558,19 @@ class ManualFiberTagCandidate(
             (
                 attr_name
                 for attr_name, param_name in assigned_from_param.items()
-                if param_name in _TAG_PARAM_NAMES
+                if param_name in cls._TAG_PARAM_NAMES
             )
         )
         if not tag_names:
             return ()
-        assigned_field_names = _assigned_self_attrs(init_method)
+        assigned_field_names = cls._assigned_self_attrs(init_method)
         for method_name, method in methods.items():
             if method_name == "__init__":
                 continue
             if not method.body:
                 continue
             for tag_name in tag_names:
-                case_names = _string_dispatch_cases_from_body(
+                case_names = cls._string_dispatch_cases_from_body(
                     method.body, f"self.{tag_name}"
                 )
                 if len(case_names) < 2:
@@ -4640,6 +4590,50 @@ class ManualFiberTagCandidate(
                     )
                 )
         return tuple(candidates)
+
+    @staticmethod
+    def _assigned_self_attrs(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, ...]:
+        assigned: list[str] = []
+        for subnode in ast.walk(node):
+            if isinstance(subnode, ast.Assign):
+                for target in subnode.targets:
+                    attr_name = _self_attr_name(target)
+                    if attr_name is not None:
+                        assigned.append(attr_name)
+            elif isinstance(subnode, ast.AnnAssign):
+                attr_name = _self_attr_name(subnode.target)
+                if attr_name is not None:
+                    assigned.append(attr_name)
+        return tuple(dict.fromkeys(assigned))
+
+    @staticmethod
+    def _string_dispatch_cases_from_body(
+        body: list[ast.stmt],
+        dispatch_axis_expression: str,
+    ) -> tuple[str, ...]:
+        cases: list[str] = []
+        if not body:
+            return ()
+        current = body[0]
+        while isinstance(current, ast.If):
+            dispatch_case = DISPATCH_ALGEBRA_AUTHORITY.comparison_dispatch_case(
+                current.test
+            )
+            if dispatch_case is None:
+                return ()
+            current_axis, case_name = dispatch_case
+            if current_axis != dispatch_axis_expression:
+                return ()
+            if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None:
+                return ()
+            cases.append(case_name)
+            if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
+                current = current.orelse[0]
+                continue
+            break
+        return tuple(cases)
 
 
 @dataclass(frozen=True)

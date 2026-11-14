@@ -13,10 +13,6 @@ import re
 from typing import ClassVar, Self
 
 
-def snake_case(name: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-
-
 class UnknownMember(LookupError):
     pass
 
@@ -33,7 +29,7 @@ class Family:
             cls._declared = []
             cls._affix = affix
             return
-        cls.family_name = name or snake_case(cls.__name__.removesuffix(cls._affix))
+        cls.family_name = name or cls.snake_case(cls.__name__.removesuffix(cls._affix))
         cls._declared.append(cls)
 
     @classmethod
@@ -67,3 +63,7 @@ class Family:
         if member is None or not issubclass(member, cls):
             raise UnknownMember(f"{cls.__name__} has no member named {name!r}")
         return member
+
+    @staticmethod
+    def snake_case(name: str) -> str:
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()

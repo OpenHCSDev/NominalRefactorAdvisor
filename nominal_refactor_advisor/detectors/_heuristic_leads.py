@@ -254,9 +254,9 @@ class ForeignTypeSwitchDetector(
             f"type(x) is C) in {len(modules)} module(s) "
             f"test classes of `{owner}`, which this repository does not "
             "declare. Type sets seen: "
-            + _counted_list(
+            + self._counted_list(
                 type_sets.most_common(),
-                lambda type_set: _type_set_text(type_set),
+                lambda type_set: self._type_set_text(type_set),
                 "type sets",
             )
             + ". Whether each set is meant to be closed, and which site should own "
@@ -267,13 +267,13 @@ class ForeignTypeSwitchDetector(
             lines.append(
                 f"{sum(type_sets[type_set] for type_set, _twins in misses)} sites "
                 "test a class without its same-shape twin (possible missed case): "
-                + _counted_list(
+                + self._counted_list(
                     sorted(
                         ((miss, type_sets[miss[0]]) for miss in misses),
                         key=lambda item: -item[1],
                     ),
                     lambda miss: (
-                        f"{_type_set_text(miss[0])} without {_type_set_text(miss[1])}"
+                        f"{self._type_set_text(miss[0])} without {self._type_set_text(miss[1])}"
                     ),
                     "type sets",
                 )
@@ -286,20 +286,20 @@ class ForeignTypeSwitchDetector(
             ),
         )
 
+    @staticmethod
+    def _counted_list(
+        entries: Sequence[tuple[T, int]], render: Callable[[T], str], noun: str
+    ) -> str:
+        """The most frequent entries with their site counts, then how many were cut."""
 
-def _counted_list(
-    entries: Sequence[tuple[T, int]], render: Callable[[T], str], noun: str
-) -> str:
-    """The most frequent entries with their site counts, then how many were cut."""
+        shown = entries[:DIVERGENCE_LISTING_LIMIT]
+        text = "; ".join(f"{render(item)} x{count}" for item, count in shown)
+        hidden = len(entries) - len(shown)
+        return f"{text}; and {hidden} more {noun}" if hidden else text
 
-    shown = entries[:DIVERGENCE_LISTING_LIMIT]
-    text = "; ".join(f"{render(item)} x{count}" for item, count in shown)
-    hidden = len(entries) - len(shown)
-    return f"{text}; and {hidden} more {noun}" if hidden else text
-
-
-def _type_set_text(type_set: tuple[str, ...]) -> str:
-    return "`" + " | ".join(type_set) + "`"
+    @staticmethod
+    def _type_set_text(type_set: tuple[str, ...]) -> str:
+        return "`" + " | ".join(type_set) + "`"
 
 
 @dataclass(frozen=True)

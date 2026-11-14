@@ -252,11 +252,6 @@ def class_bindings(module: ParsedModule, node: ast.ClassDef) -> ModuleNominalBin
     return ModuleNominalBindingAuthority(module).snapshot_before(node.lineno)
 
 
-ENUM_METHOD_DECORATORS = (
-    PROPERTY_DECORATOR,
-    CLASS_METHOD_DECORATOR,
-    STATIC_METHOD_DECORATOR,
-)
 """The native decorators an enum method may carry onto the family."""
 
 
@@ -299,31 +294,6 @@ def rebuilt(node: ast.AST, renames: dict[int, str]) -> ast.AST:
         else:
             fields[name] = value
     return type(node)(**fields)
-
-
-def plain_lambda(node: ast.expr) -> bool:
-    """A lambda of positional names whose body binds no name of its own."""
-
-    return (
-        isinstance(node, ast.Lambda)
-        and not node.args.posonlyargs
-        and node.args.vararg is None
-        and not node.args.kwonlyargs
-        and node.args.kwarg is None
-        and not node.args.defaults
-        and not any(
-            isinstance(
-                part,
-                ast.Lambda
-                | ast.NamedExpr
-                | ast.ListComp
-                | ast.SetComp
-                | ast.DictComp
-                | ast.GeneratorExp,
-            )
-            for part in ast.walk(node.body)
-        )
-    )
 
 
 def applied(function: ast.Lambda, arguments: list[str]) -> str:
@@ -883,6 +853,12 @@ class CasesFamily(Cases, Descent):
     The enum's name becomes an abstract root; members become its subclasses.
     """
 
+    ENUM_METHOD_DECORATORS = (
+        PROPERTY_DECORATOR,
+        CLASS_METHOD_DECORATOR,
+        STATIC_METHOD_DECORATOR,
+    )
+
     def admitted(self, enum: EnumDeclaration) -> EnumDeclaration:
         """Every method has a place: on the root, or split across the members."""
 
@@ -1050,7 +1026,7 @@ class CasesFamily(Cases, Descent):
                 member.name: model.expressions[member.name][datum.stored]
                 for member in model.members
             }
-            if not all(map(plain_lambda, functions.values())):
+            if not all(map(CasesFamily.plain_lambda, functions.values())):
                 continue
             lambdas = {
                 name: function
@@ -1350,7 +1326,7 @@ class CasesFamily(Cases, Descent):
         decorators = tuple(
             identity
             for reference in references
-            for identity in ENUM_METHOD_DECORATORS
+            for identity in self.ENUM_METHOD_DECORATORS
             if reference.has_bound_name(identity)
         )
         if function.name in model.folded or function.name in model.forwarded.values():
@@ -1810,7 +1786,7 @@ class CasesFamily(Cases, Descent):
         annotations = {
             id(node): annotation
             for annotated in module.syntax_index.breadth_first_nodes
-            for annotation in annotations_of(annotated)
+            for annotation in self.annotations_of(annotated)
             for node in type_positions(annotation)
         }
         bound = module.bound_names
@@ -1871,7 +1847,7 @@ class CasesFamily(Cases, Descent):
             ):
                 # An enum call decodes a value and passes a member through; the
                 # declared decoder is only declared for values.
-                if not provably_text(parent.args[0], parent, parents):
+                if not self.provably_text(parent.args[0], parent, parents):
                     raise handback(
                         module,
                         parent,
@@ -1939,18 +1915,53 @@ class CasesFamily(Cases, Descent):
                     rewrite.span(module, end, end, "()")
                     handled.add(id(node))
 
+    @staticmethod
+    def annotations_of(node: ast.AST) -> tuple[ast.expr, ...]:
+        if isinstance(node, ast.arg):
+            return declared_annotations(node)
+        if isinstance(node, ast.AnnAssign):
+            return (node.annotation,)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            return declared_annotations(node)
+        return ()
 
-def provably_text(
-    argument: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]
-) -> bool:
-    """``argument`` is a string literal or a name declared ``str``: a value, never
-    a member."""
+    @staticmethod
+    def plain_lambda(node: ast.expr) -> bool:
+        """A lambda of positional names whose body binds no name of its own."""
 
-    if isinstance(argument, ast.Constant):
-        return isinstance(argument.value, str)
-    return isinstance(argument, ast.Name) and is_name(
-        declared_type(argument.id, call, parents), ["str"]
-    )
+        return (
+            isinstance(node, ast.Lambda)
+            and not node.args.posonlyargs
+            and node.args.vararg is None
+            and not node.args.kwonlyargs
+            and node.args.kwarg is None
+            and not node.args.defaults
+            and not any(
+                isinstance(
+                    part,
+                    ast.Lambda
+                    | ast.NamedExpr
+                    | ast.ListComp
+                    | ast.SetComp
+                    | ast.DictComp
+                    | ast.GeneratorExp,
+                )
+                for part in ast.walk(node.body)
+            )
+        )
+
+    @staticmethod
+    def provably_text(
+        argument: ast.expr, call: ast.Call, parents: dict[ast.AST, ast.AST]
+    ) -> bool:
+        """``argument`` is a string literal or a name declared ``str``: a value, never
+        a member."""
+
+        if isinstance(argument, ast.Constant):
+            return isinstance(argument.value, str)
+        return isinstance(argument, ast.Name) and is_name(
+            declared_type(argument.id, call, parents), ["str"]
+        )
 
 
 def declared_type(
@@ -2051,25 +2062,6 @@ def scope_walk(scope: ast.AST) -> Iterator[ast.AST]:
             pending.extend(ast.iter_child_nodes(node))
 
 
-def may_carry_value(annotation: ast.expr) -> bool:
-    """Whether a value of this annotation may have a ``value`` attribute of its own:
-    any type it names that is neither a builtin nor a typing wrapper."""
-
-    builtin = set(dir(builtins)) | TYPE_WRAPPERS
-    return any(
-        isinstance(node, ast.Attribute)
-        and node.attr not in builtin
-        or isinstance(node, ast.Name)
-        and node.id not in builtin
-        for node in type_positions(held_type(annotation))
-    )
-
-
-CONTAINERS = frozenset(
-    {"tuple", "list", "set", "frozenset", "Sequence", "Iterable", "Collection"}
-)
-
-
 class DeclaredType(ABC):
     """What declarations alone say an expression's type is: an annotation, or nothing."""
 
@@ -2104,6 +2096,10 @@ class DeclaredType(ABC):
 class Typed(DeclaredType):
     """An annotation read in the module that wrote it."""
 
+    CONTAINERS = frozenset(
+        {"tuple", "list", "set", "frozenset", "Sequence", "Iterable", "Collection"}
+    )
+
     module: ParsedModule
     annotation: ast.expr
 
@@ -2121,7 +2117,7 @@ class Typed(DeclaredType):
         """Whether the container is a tuple, and its element annotations (none if not one)."""
 
         held = held_type(self.annotation)
-        if not (isinstance(held, ast.Subscript) and is_name(held.value, CONTAINERS)):
+        if not (isinstance(held, ast.Subscript) and is_name(held.value, self.CONTAINERS)):
             return False, []
         elements = held.slice.elts if isinstance(held.slice, ast.Tuple) else [held.slice]
         return is_name(held.value, ["tuple"]), elements
@@ -2331,9 +2327,6 @@ class ModuleScope(Scope):
         return UNKNOWN_TYPE
 
 
-MODULE_SCOPE = ModuleScope()
-
-
 class Enclosure(ABC):
     """The body a def statement sits in, which decides the scope it opens."""
 
@@ -2369,15 +2362,14 @@ class FreeBody(Enclosure):
         return FunctionScope(function)
 
 
-FREE_BODY = FreeBody()
-
-
 class ScopeCollector(ast.NodeVisitor):
     """Maps each node of a module to the scope its bare names are read in."""
 
+    FREE_BODY = FreeBody()
+
     def __init__(self, module: ParsedModule) -> None:
         self.found: dict[int, Scope] = {}
-        self.enclosure: Enclosure = FREE_BODY
+        self.enclosure: Enclosure = self.FREE_BODY
         self.bindings = ModuleNominalBindingAuthority(module).snapshots_before(
             node.lineno for node in module.syntax_index.instances_of(ast.ClassDef)
         )
@@ -2395,7 +2387,7 @@ class ScopeCollector(ast.NodeVisitor):
         scope = self.enclosure.scope_for(function)
         for node in scope_walk(function):
             self.found[id(node)] = scope
-        self._visit_within(FREE_BODY, function)
+        self._visit_within(self.FREE_BODY, function)
 
     def _visit_within(self, enclosure: Enclosure, node: ast.AST) -> None:
         outer = self.enclosure
@@ -2458,6 +2450,8 @@ class ValueReads:
     hands the read back.
     """
 
+    MODULE_SCOPE = ModuleScope()
+
     model: CaseModel
     snapshot: CodemodSourceSnapshot
     aliases: dict[ParsedModule, ModuleNames]
@@ -2499,7 +2493,7 @@ class ValueReads:
             if isinstance(statement.target, ast.Name)
             and statement.target.id in self.held_fields
             and not self.holds_member(module, statement.annotation)
-            and may_carry_value(statement.annotation)
+            and self.may_carry_value(statement.annotation)
         )
 
     def held_subjects(self, module: ParsedModule) -> frozenset[int]:
@@ -2603,8 +2597,22 @@ class ValueReads:
                     self.rename_if_member(
                         MemberValueRead(rewrite, module, node, attribute, handled),
                         held,
-                        scopes.get(id(node), MODULE_SCOPE),
+                        scopes.get(id(node), self.MODULE_SCOPE),
                     )
+
+    @staticmethod
+    def may_carry_value(annotation: ast.expr) -> bool:
+        """Whether a value of this annotation may have a ``value`` attribute of its own:
+        any type it names that is neither a builtin nor a typing wrapper."""
+
+        builtin = set(dir(builtins)) | TYPE_WRAPPERS
+        return any(
+            isinstance(node, ast.Attribute)
+            and node.attr not in builtin
+            or isinstance(node, ast.Name)
+            and node.id not in builtin
+            for node in type_positions(held_type(annotation))
+        )
 
 
 @dataclass(frozen=True)
@@ -2629,16 +2637,6 @@ def literal_value(expression: ast.expr) -> object:
     except ValueError:
         return UNKNOWN
     return value if literal_constant(value) else UNKNOWN
-
-
-def annotations_of(node: ast.AST) -> tuple[ast.expr, ...]:
-    if isinstance(node, ast.arg):
-        return declared_annotations(node)
-    if isinstance(node, ast.AnnAssign):
-        return (node.annotation,)
-    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
-        return declared_annotations(node)
-    return ()
 
 
 class SourceLines:

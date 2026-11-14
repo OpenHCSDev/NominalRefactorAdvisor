@@ -709,7 +709,7 @@ class DispatchPolymorphismSource:
 
     @property
     def base_name(self) -> str:
-        return dispatch_strategy_base_name(self.host.strategy_name_source)
+        return self.dispatch_strategy_base_name(self.host.strategy_name_source)
 
     @cached_property
     def class_names(self) -> tuple[str, ...]:
@@ -873,6 +873,13 @@ class DispatchPolymorphismSource:
             for statement in statements
             for line in ast.unparse(statement).splitlines()
         )
+
+    @staticmethod
+    def dispatch_strategy_base_name(function_name: str) -> str:
+        function_suffix = CLASS_NAME_ALGEBRA.pascal_identifier(function_name)
+        if function_suffix:
+            return f"{function_suffix}DispatchCase"
+        return "DispatchCase"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1186,9 +1193,3 @@ class NumericLiteralDispatchFindingRecipeSynthesizer(
 ):
     """Build recipes for closed numeric-literal dispatch functions."""
 
-
-def dispatch_strategy_base_name(function_name: str) -> str:
-    function_suffix = CLASS_NAME_ALGEBRA.pascal_identifier(function_name)
-    if function_suffix:
-        return f"{function_suffix}DispatchCase"
-    return "DispatchCase"

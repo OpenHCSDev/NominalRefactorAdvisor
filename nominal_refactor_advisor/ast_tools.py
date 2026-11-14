@@ -122,28 +122,6 @@ from nominal_refactor_advisor.value_graph import (
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
 
-_IGNORED_PYTHON_TREE_DIRS = frozenset(
-    {
-        ".eggs",
-        ".git",
-        ".hg",
-        ".mypy_cache",
-        ".nox",
-        ".nra-cache",
-        ".pytest_cache",
-        ".ruff_cache",
-        ".tox",
-        ".venv",
-        ".svn",
-        "__pycache__",
-        "build",
-        "dist",
-        "htmlcov",
-        "node_modules",
-        "site-packages",
-        "venv",
-    }
-)
 _DEFAULT_PARSE_WORKERS = 1
 
 
@@ -227,9 +205,17 @@ class CollectedFamilyImplementationIdentity:
         return cls(
             tuple(
                 CollectedFamilyImplementationSource.from_module_name(module_name)
-                for module_name in _collected_family_implementation_module_names(family)
+                for module_name in cls._collected_family_implementation_module_names(family)
             )
         )
+
+    @staticmethod
+    def _collected_family_implementation_module_names(
+        family: type[CollectedFamily[object]],
+    ) -> tuple[str, ...]:
+        """Project cache dependencies from the collected-family declaration itself."""
+
+        return declaration_implementation_module_names((family,))
 
 
 @dataclass(frozen=True, repr=False)
@@ -387,13 +373,14 @@ class CollectedFamilyDemandCacheIdentity(CollectedFamilyCacheIdentity):
 
 
 collected_family_cache_schema = CollectedFamilyCacheSchema()
-collected_family_content_signature_index_schema = (
-    CollectedFamilyContentSignatureIndexSchema()
-)
 
 
 class CollectedFamilyContentSignatureIndex:
     """One-read derived view over per-source family signature receipts."""
+
+    collected_family_content_signature_index_schema = (
+        CollectedFamilyContentSignatureIndexSchema()
+    )
 
     _file_name = "content-signature-index-v1.pickle"
 
@@ -428,7 +415,7 @@ class CollectedFamilyContentSignatureIndex:
             payload = None
         if (
             isinstance(payload, CollectedFamilyContentSignatureIndexPayload)
-            and payload.schema == collected_family_content_signature_index_schema
+            and payload.schema == cls.collected_family_content_signature_index_schema
             and payload.family_cache_schema == collected_family_cache_schema
             and payload.python_version
             == PythonVersion.running()
@@ -484,7 +471,7 @@ class CollectedFamilyContentSignatureIndex:
             return
         self._entries = current
         payload = CollectedFamilyContentSignatureIndexPayload(
-            schema=collected_family_content_signature_index_schema,
+            schema=self.collected_family_content_signature_index_schema,
             family_cache_schema=collected_family_cache_schema,
             python_version=PythonVersion.running(),
             # `load` rebuilds a dict, so order carries nothing; sorting every
@@ -522,14 +509,6 @@ class PythonModuleParseContext(ParseCacheDirectory):
         repr=False,
         compare=False,
     )
-
-
-def _collected_family_implementation_module_names(
-    family: type[CollectedFamily[object]],
-) -> tuple[str, ...]:
-    """Project cache dependencies from the collected-family declaration itself."""
-
-    return declaration_implementation_module_names((family,))
 
 
 def semantic_python_source_hash(source: str) -> str:
@@ -2092,38 +2071,10 @@ class CollectedFamilyCachePayload(Generic[ShapeItemT]):
     """The checkout these items still spell after relocation; None when portable."""
 
 
-def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
-    return (
-        registered_type.__module__,
-        cast(int, registered_type.__dict__.get("__firstlineno__", 0)),
-        registered_type.__qualname__,
-    )
-
-
 def _registered_type_token(_name: str, cls: type[_TRegistered]) -> str | None:
     if cls.__dict__.get("_registry_skip", False):
         return None
     return f"{cls.__module__}:{cls.__qualname__}"
-
-
-def _is_direct_registered_descendant(
-    candidate: type[_TRegistered],
-    root: type[_TRegisteredType],
-    *,
-    registry_base: type,
-) -> bool:
-    if not issubclass(candidate, root):
-        return False
-    if not root.__dict__.get("_registry_root", False):
-        return True
-    for ancestor in candidate.__mro__[1:]:
-        if ancestor is root:
-            return True
-        if not issubclass(ancestor, registry_base):
-            continue
-        if ancestor.__dict__.get("_registry_root", False):
-            return False
-    return False
 
 
 class RegisteredTypeLineage:
@@ -2136,7 +2087,7 @@ class RegisteredTypeLineage:
         ordered: list[type[_TRegisteredType]] = []
         for registered_type in sorted(
             registry.values(),
-            key=_registry_member_key,
+            key=self._registry_member_key,
         ):
             registered_class = cast(type[_TRegisteredType], registered_type)
             if registered_class in seen or not issubclass(registered_class, root):
@@ -2152,10 +2103,38 @@ class RegisteredTypeLineage:
             (
                 registered_type
                 for registered_type in self.ordered_registered_types(root)
-                if _is_direct_registered_descendant(
+                if self._is_direct_registered_descendant(
                     registered_type, root, registry_base=registry_base
                 )
             )
+        )
+
+    @staticmethod
+    def _is_direct_registered_descendant(
+        candidate: type[_TRegistered],
+        root: type[_TRegisteredType],
+        *,
+        registry_base: type,
+    ) -> bool:
+        if not issubclass(candidate, root):
+            return False
+        if not root.__dict__.get("_registry_root", False):
+            return True
+        for ancestor in candidate.__mro__[1:]:
+            if ancestor is root:
+                return True
+            if not issubclass(ancestor, registry_base):
+                continue
+            if ancestor.__dict__.get("_registry_root", False):
+                return False
+        return False
+
+    @staticmethod
+    def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
+        return (
+            registered_type.__module__,
+            cast(int, registered_type.__dict__.get("__firstlineno__", 0)),
+            registered_type.__qualname__,
         )
 
 
@@ -2512,20 +2491,6 @@ class _StableCacheWalk:
         return "repr", value_type.__module__, value_type.__qualname__, repr(value)
 
 
-def _replace_atomically(path: Path, data: bytes) -> None:
-    """Write to a private temporary file, then rename: a concurrent reader sees
-    the old entry or the new one, never a partial write."""
-
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(data):x}.tmp")
-    try:
-        with temp_path.open("wb") as handle:
-            handle.write(data)
-        os.replace(temp_path, path)
-    except BaseException:
-        temp_path.unlink(missing_ok=True)
-        raise
-
-
 def collected_family_demand_cache_signature(demand: object) -> str:
     """Hash one immutable demand once for reuse across every source shard."""
 
@@ -2772,7 +2737,7 @@ class CollectedFamilyCacheContext:
             if len(payload_bytes) > payload_max_bytes:
                 return None
             self.family_cache_dir.mkdir(parents=True, exist_ok=True)
-            _replace_atomically(
+            self._replace_atomically(
                 _collected_family_cache_path(self.family_cache_dir, identity),
                 payload_bytes,
             )
@@ -2844,9 +2809,23 @@ class CollectedFamilyCacheContext:
     def _store_bundle_marker(marker_path: Path) -> None:
         try:
             marker_path.parent.mkdir(parents=True, exist_ok=True)
-            _replace_atomically(marker_path, b"complete-v4\n")
+            CollectedFamilyCacheContext._replace_atomically(marker_path, b"complete-v4\n")
         except OSError:
             pass
+
+    @staticmethod
+    def _replace_atomically(path: Path, data: bytes) -> None:
+        """Write to a private temporary file, then rename: a concurrent reader sees
+        the old entry or the new one, never a partial write."""
+
+        temp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(data):x}.tmp")
+        try:
+            with temp_path.open("wb") as handle:
+                handle.write(data)
+            os.replace(temp_path, path)
+        except BaseException:
+            temp_path.unlink(missing_ok=True)
+            raise
 
 
 @dataclass(frozen=True)
@@ -3048,17 +3027,6 @@ class SentinelTypeObservationSpecRoot(AutoRegisteredModuleShapeSpec, ABC):
     _registry_root = True
 
 
-def _parse_module_roots(
-    root_parser: PythonModuleRootParser, paths: tuple[Path, ...]
-) -> list[ParsedModule]:
-    modules: list[ParsedModule] = []
-    with suspend_cyclic_gc():
-        for path in paths:
-            scan_deadline_checkpoint("parse_python_module")
-            modules.append(_parse_source_module(path, context=root_parser))
-    return modules
-
-
 @contextmanager
 def suspend_cyclic_gc() -> Iterator[None]:
     """Avoid repeated heap traversals while building one bounded fact batch.
@@ -3081,6 +3049,29 @@ def suspend_cyclic_gc() -> Iterator[None]:
 class PythonSourcePathPolicy:
     """Decide which Python source files belong to one scan."""
 
+    _IGNORED_PYTHON_TREE_DIRS = frozenset(
+        {
+            ".eggs",
+            ".git",
+            ".hg",
+            ".mypy_cache",
+            ".nox",
+            ".nra-cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".tox",
+            ".venv",
+            ".svn",
+            "__pycache__",
+            "build",
+            "dist",
+            "htmlcov",
+            "node_modules",
+            "site-packages",
+            "venv",
+        }
+    )
+
     include_tests: bool = True
 
     def allows_directory_name(self, directory_name: str) -> bool:
@@ -3090,7 +3081,7 @@ class PythonSourcePathPolicy:
         # the root; this boundary only prunes it from a broader tree walk.
         if directory_name.startswith("."):
             return False
-        if directory_name in _IGNORED_PYTHON_TREE_DIRS:
+        if directory_name in self._IGNORED_PYTHON_TREE_DIRS:
             return False
         if directory_name.endswith((".egg-info", ".dist-info")):
             return False
@@ -3326,7 +3317,18 @@ class PythonModuleRootParser(PythonModuleParseContext):
             for path in paths
             if path.is_file() and self.source_policy.allows_file_path(path)
         )
-        return _parse_module_roots(self, allowed_paths)
+        return self._parse_module_roots(self, allowed_paths)
+
+    @staticmethod
+    def _parse_module_roots(
+        root_parser: PythonModuleRootParser, paths: tuple[Path, ...]
+    ) -> list[ParsedModule]:
+        modules: list[ParsedModule] = []
+        with suspend_cyclic_gc():
+            for path in paths:
+                scan_deadline_checkpoint("parse_python_module")
+                modules.append(_parse_source_module(path, context=root_parser))
+        return modules
 
 
 def parse_python_modules(
@@ -3446,7 +3448,6 @@ def _builder_value_key(node: AstFingerprintInput) -> str:
 
 
 _CLASSVAR_REFERENCE_FAMILY = AstNameFamily(frozenset({"ClassVar"}))
-_DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
 REGISTRATION_CALL_FAMILY = AstNameFamily(
     frozenset({"register", "add", "register_class", "register_type"})
 )
@@ -3831,6 +3832,8 @@ def _execution_level_for_scope(function_name: str | None) -> StructuralExecution
 
 
 class ClassObservationProjection:
+    _DATACLASS_DECORATOR_FAMILY = AstNameFamily(frozenset({"dataclass"}))
+
     def project(self, parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
         observations: list[ClassAstObservation] = []
         for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
@@ -3841,7 +3844,7 @@ class ClassObservationProjection:
                     node=node,
                     is_dataclass_family=any(
                         (
-                            _DATACLASS_DECORATOR_FAMILY.matches(decorator)
+                            self._DATACLASS_DECORATOR_FAMILY.matches(decorator)
                             for decorator in node.decorator_list
                         )
                     ),
@@ -4017,23 +4020,23 @@ class _LiteralDispatchCaseStep(
     step_id = "literal_dispatch_case"
 
     def project(self, value: _LiteralDispatchCompare) -> tuple[str, str, str] | None:
-        return _literal_dispatch_side(
+        return self._literal_dispatch_side(
             value.right, value.left, self.literal_type
-        ) or _literal_dispatch_side(value.left, value.right, self.literal_type)
+        ) or self._literal_dispatch_side(value.left, value.right, self.literal_type)
 
-
-def _literal_dispatch_side(
-    axis: ast.AST, literal: ast.AST, literal_type: type[LiteralDispatchScalar]
-) -> tuple[str, str, str] | None:
-    if not isinstance(literal, ast.Constant) or not isinstance(
-        literal.value, literal_type
-    ):
-        return None
-    return (
-        ast.dump(axis, include_attributes=False),
-        ast.unparse(axis),
-        repr(literal.value),
-    )
+    @staticmethod
+    def _literal_dispatch_side(
+        axis: ast.AST, literal: ast.AST, literal_type: type[LiteralDispatchScalar]
+    ) -> tuple[str, str, str] | None:
+        if not isinstance(literal, ast.Constant) or not isinstance(
+            literal.value, literal_type
+        ):
+            return None
+        return (
+            ast.dump(axis, include_attributes=False),
+            ast.unparse(axis),
+            repr(literal.value),
+        )
 
 
 def _literal_dispatch_observation_from_if(

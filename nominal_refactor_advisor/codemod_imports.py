@@ -342,17 +342,6 @@ def _indent_source(source: str, indentation: str) -> str:
     )
 
 
-def _indented_source_for_statement(
-    source: str,
-    statement: ast.stmt,
-    replacement_source: str,
-) -> str:
-    return _indent_source(
-        replacement_source,
-        _line_indentation(source, statement.lineno),
-    )
-
-
 def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
     """The comment ending a one-line statement's line: it is about that statement, so a
     rewrite of the statement keeps it there. A statement spanning lines, or sharing its line
@@ -363,19 +352,6 @@ def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
     line = source.splitlines()[statement.lineno - 1].encode()
     tail = line[statement.end_col_offset:].decode().strip()
     return tail if tail.startswith("#") else None
-
-
-def _node_contains_comment(source: str, node: ast.AST) -> bool:
-    if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
-        return False
-    fragment = SourceLineSpan(
-        start_line=node.lineno,
-        end_line=node.end_lineno or node.lineno,
-    ).source_from(source)
-    return SourceTextSpan(
-        start_offset=0,
-        end_offset=len(fragment),
-    ).contains_comment(fragment)
 
 
 @dataclass(frozen=True)
@@ -849,7 +825,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 and not aliases_by_statement[id(statement)]
                 for statement in guard.body
             )
-            and not _node_contains_comment(source, guard)
+            and not self._node_contains_comment(source, guard)
         )
         self._drop_unread_guard_flag(
             module, guard_projection, deletable_guards, import_from_statements,
@@ -891,7 +867,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if aliases == original_aliases:
                 continue
             comment = _trailing_comment(source, statement)
-            if comment is None and _node_contains_comment(source, statement):
+            if comment is None and self._node_contains_comment(source, statement):
                 raise ValueError(
                     f"Cannot rewrite commented import at {self.file_path!r}:"
                     f"{statement.lineno}"
@@ -925,7 +901,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                     )
                 replacement_source = f"{rewritten[0]}  {comment}\n"
             if scope.is_guarded and replacement_source:
-                replacement_source = _indented_source_for_statement(
+                replacement_source = self._indented_source_for_statement(
                     source,
                     statement,
                     replacement_source,
@@ -1168,6 +1144,30 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 origins=self.origins,
             ),
         )
+
+    @staticmethod
+    def _indented_source_for_statement(
+        source: str,
+        statement: ast.stmt,
+        replacement_source: str,
+    ) -> str:
+        return _indent_source(
+            replacement_source,
+            _line_indentation(source, statement.lineno),
+        )
+
+    @staticmethod
+    def _node_contains_comment(source: str, node: ast.AST) -> bool:
+        if not hasattr(node, "lineno") or not hasattr(node, "end_lineno"):
+            return False
+        fragment = SourceLineSpan(
+            start_line=node.lineno,
+            end_line=node.end_lineno or node.lineno,
+        ).source_from(source)
+        return SourceTextSpan(
+            start_offset=0,
+            end_offset=len(fragment),
+        ).contains_comment(fragment)
 
 
 class ImportSourceGroup(FieldedStrEnum):

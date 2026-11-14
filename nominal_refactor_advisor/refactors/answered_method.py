@@ -114,7 +114,7 @@ class AnsweredMethod:
         """The scanned class an expression names where it stands: `Name` by its
         binding, `module.Name` through the module it imports; None for anything else."""
 
-        scopes = _name_scopes(expression, parents)
+        scopes = self._name_scopes(expression, parents)
         match expression:
             case ast.Name(id=name):
                 binding = self.named_class(file_path, name, scopes)
@@ -210,7 +210,7 @@ class AnsweredMethod:
             index = parsed.fact(ModuleNodeIndex)
             parents = index.parents
             for call in index.calls:
-                if _dynamic_access(call, self.name):
+                if self._dynamic_access(call, self.name):
                     raise ValueError(
                         f"{parsed.file_path}:{call.lineno} "
                         f"reaches {self.name!r} by a string"
@@ -227,7 +227,7 @@ class AnsweredMethod:
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and (
                     node.value.func.id == "super"
                 ):
-                    if _enclosing_class(snapshot, parsed.file_path, node, parents) in self.family:
+                    if self._enclosing_class(snapshot, parsed.file_path, node, parents) in self.family:
                         raise ValueError(f"{where} reaches {self.name!r} through super()")
                     continue
                 receivers.append(TypedReceiver(parsed, node.value, node, where, site))
@@ -256,10 +256,10 @@ class AnsweredMethod:
                     f"{receiver.where} reads `{ast.unparse(receiver.expression)}`, which its "
                     "function rebinds, so no annotation types it"
                 )
-            enclosing = _enclosing_class(snapshot, receiver.parsed.file_path, receiver.anchor, parents)
+            enclosing = self._enclosing_class(snapshot, receiver.parsed.file_path, receiver.anchor, parents)
             bound = self.bound_class(
                 receiver.expression, receiver.parsed.file_path, enclosing,
-                _name_scopes(receiver.anchor, parents),
+                self._name_scopes(receiver.anchor, parents),
             )
             if bound is not None:
                 if bound.reaches_family():
@@ -316,7 +316,7 @@ class AnsweredMethod:
                 if AttributeLookup.callee_name(node.func) in AttributeLookup.NAME_LOOKUPS:
                     return where
                 index = parsed.fact(ModuleNodeIndex)
-                for receiver in _literal_loop_values(node.args[0], index.parents) or (node.args[0],):
+                for receiver in self._literal_loop_values(node.args[0], index.parents) or (node.args[0],):
                     receivers.append(TypedReceiver(parsed, receiver, node, where, None))
         try:
             reached = self.reaching(receivers, session)
@@ -328,6 +328,89 @@ class AnsweredMethod:
             return str(error)
         found = [receiver for receiver, _binding in reached] + classes
         return found[0].where if found else None
+
+    @staticmethod
+    def _dynamic_access(node: ast.AST, name: str) -> bool:
+        """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
+
+        return isinstance(node, ast.Call) and any(
+            isinstance(argument, ast.Constant) and argument.value == name
+            for argument in AttributeLookup.name_arguments(node)
+        )
+
+    @staticmethod
+    def _enclosing_class(
+        snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
+    ) -> str | None:
+        """The symbol of the class whose body a node sits in, when the index knows it."""
+
+        names: list[str] = []
+        current = parents.get(node)
+        while current is not None:
+            if isinstance(current, ast.ClassDef):
+                names.append(current.name)
+            current = parents.get(current)
+        qualname = ".".join(reversed(names))
+        return next(
+            (
+                symbol for symbol, declaration in snapshot.required_class_family_index.classes_by_symbol.items()
+                if names and declaration.file_path == file_path and declaration.qualname == qualname
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _literal_loop_values(
+        expression: ast.expr, parents: dict[ast.AST, ast.AST]
+    ) -> tuple[ast.expr, ...] | None:
+        """The values a loop target takes when its loop runs over a literal: for `for a, b
+        in ((X, "m"), (Y, "n")):`, `a` is X, then Y. None when the name is no such target."""
+
+        if not isinstance(expression, ast.Name):
+            return None
+        loop = parents.get(expression)
+        while loop is not None and not isinstance(loop, ast.For):
+            loop = parents.get(loop)
+        if loop is None or not isinstance(loop.iter, (ast.Tuple, ast.List)):
+            return None
+        match loop.target:
+            case ast.Name(id=name) if name == expression.id:
+                return tuple(loop.iter.elts)
+            case ast.Tuple(elts=targets):
+                position = next(
+                    (i for i, target in enumerate(targets) if isinstance(target, ast.Name) and target.id == expression.id),
+                    None,
+                )
+                if position is None:
+                    return None
+                values = []
+                for element in loop.iter.elts:
+                    if not isinstance(element, (ast.Tuple, ast.List)) or len(element.elts) != len(targets):
+                        return None
+                    values.append(element.elts[position])
+                return tuple(values)
+        return None
+
+    @staticmethod
+    def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
+        """The scopes a name read at `node` resolves through: enclosing functions innermost first,
+        a class body only when the read sits directly in it, then the module."""
+
+        scopes: list[ast.AST] = []
+        current = parents.get(node)
+        direct = True
+        while current is not None:
+            if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                scopes.append(current)
+                direct = False
+            elif isinstance(current, ast.ClassDef):
+                if direct:
+                    scopes.append(current)
+                direct = False
+            elif isinstance(current, ast.Module):
+                scopes.append(current)
+            current = parents.get(current)
+        return tuple(scopes)
 
 
 @dataclass(frozen=True)
@@ -464,12 +547,11 @@ class AliasBinding(NameBinding):
         return moved.named_class(file_path, self.value.id, (scope,))
 
 
-_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
-
-
 @dataclass(frozen=True)
 class _ScopeBindings:
     """The names one scope binds itself, without the scopes nested in it."""
+
+    _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
 
     scope: ast.AST
 
@@ -479,7 +561,7 @@ class _ScopeBindings:
         while pending:
             node = pending.pop()
             found.append(node)
-            if not isinstance(node, _NESTED_SCOPES):
+            if not isinstance(node, self._NESTED_SCOPES):
                 pending.extend(ast.iter_child_nodes(node))
         return found
 
@@ -519,38 +601,6 @@ class _ScopeBindings:
         return last
 
 
-def _literal_loop_values(
-    expression: ast.expr, parents: dict[ast.AST, ast.AST]
-) -> tuple[ast.expr, ...] | None:
-    """The values a loop target takes when its loop runs over a literal: for `for a, b
-    in ((X, "m"), (Y, "n")):`, `a` is X, then Y. None when the name is no such target."""
-
-    if not isinstance(expression, ast.Name):
-        return None
-    loop = parents.get(expression)
-    while loop is not None and not isinstance(loop, ast.For):
-        loop = parents.get(loop)
-    if loop is None or not isinstance(loop.iter, (ast.Tuple, ast.List)):
-        return None
-    match loop.target:
-        case ast.Name(id=name) if name == expression.id:
-            return tuple(loop.iter.elts)
-        case ast.Tuple(elts=targets):
-            position = next(
-                (i for i, target in enumerate(targets) if isinstance(target, ast.Name) and target.id == expression.id),
-                None,
-            )
-            if position is None:
-                return None
-            values = []
-            for element in loop.iter.elts:
-                if not isinstance(element, (ast.Tuple, ast.List)) or len(element.elts) != len(targets):
-                    return None
-                values.append(element.elts[position])
-            return tuple(values)
-    return None
-
-
 def _rebound(expression: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
     """Whether a receiver name is a parameter its enclosing function also assigns:
     the annotation then types only some of the values it holds."""
@@ -570,48 +620,6 @@ def _rebound(expression: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
     return any(
         isinstance(node, ast.Name) and node.id == expression.id and isinstance(node.ctx, ast.Store)
         for node in _ScopeBindings(function).nodes()
-    )
-
-
-def _name_scopes(node: ast.AST, parents: dict[ast.AST, ast.AST]) -> tuple[ast.AST, ...]:
-    """The scopes a name read at `node` resolves through: enclosing functions innermost first,
-    a class body only when the read sits directly in it, then the module."""
-
-    scopes: list[ast.AST] = []
-    current = parents.get(node)
-    direct = True
-    while current is not None:
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            scopes.append(current)
-            direct = False
-        elif isinstance(current, ast.ClassDef):
-            if direct:
-                scopes.append(current)
-            direct = False
-        elif isinstance(current, ast.Module):
-            scopes.append(current)
-        current = parents.get(current)
-    return tuple(scopes)
-
-
-def _enclosing_class(
-    snapshot: CodemodSourceSnapshot, file_path: str, node: ast.AST, parents: dict[ast.AST, ast.AST],
-) -> str | None:
-    """The symbol of the class whose body a node sits in, when the index knows it."""
-
-    names: list[str] = []
-    current = parents.get(node)
-    while current is not None:
-        if isinstance(current, ast.ClassDef):
-            names.append(current.name)
-        current = parents.get(current)
-    qualname = ".".join(reversed(names))
-    return next(
-        (
-            symbol for symbol, declaration in snapshot.required_class_family_index.classes_by_symbol.items()
-            if names and declaration.file_path == file_path and declaration.qualname == qualname
-        ),
-        None,
     )
 
 
@@ -750,11 +758,3 @@ def _namespace_lookup(node: ast.AST) -> ast.expr | None:
             return namespace_of(value)
     return None
 
-
-def _dynamic_access(node: ast.AST, name: str) -> bool:
-    """Whether a node reaches an attribute of this name by a string, past any receiver typing."""
-
-    return isinstance(node, ast.Call) and any(
-        isinstance(argument, ast.Constant) and argument.value == name
-        for argument in AttributeLookup.name_arguments(node)
-    )

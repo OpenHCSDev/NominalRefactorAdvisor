@@ -435,17 +435,6 @@ def initialize_detector_analysis_worker(
     detector_analysis_worker_state = state
 
 
-def detect_with_active_worker_state(
-    detector_type: type[IssueDetector],
-) -> list[RefactorFinding]:
-    """Run one detector inside a process-pool worker."""
-
-    state = detector_analysis_worker_state
-    if state is None:
-        raise RuntimeError("detector analysis worker state has not been initialized")
-    return state.detect_with(detector_type)
-
-
 @dataclass(frozen=True)
 class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
     """Process-local parsed source for per-module detector shard tasks."""
@@ -474,17 +463,6 @@ def initialize_per_module_detector_shard_worker(
     ScanCache.initialize_worker()
     global per_module_detector_shard_worker_state
     per_module_detector_shard_worker_state = state
-
-
-def detect_per_module_shard_with_active_state(
-    task: tuple[int, tuple[type[IssueDetector], ...]],
-) -> list[RefactorFinding]:
-    """Run per-module detector classes for one parsed module in a worker."""
-
-    state = per_module_detector_shard_worker_state
-    if state is None:
-        raise RuntimeError("per-module shard worker state has not been initialized")
-    return state.detect_task(task)
 
 
 @dataclass(frozen=True)
@@ -524,7 +502,7 @@ class DetectorTypeShardRunner:
             ) as executor:
                 return list(
                     executor.map(
-                        detect_with_active_worker_state,
+                        self.detect_with_active_worker_state,
                         self.detector_types,
                         chunksize=self.worker_plan.process_map_chunksize,
                     )
@@ -545,6 +523,17 @@ class DetectorTypeShardRunner:
                 for finding in detector_findings
             )
         )
+
+    @staticmethod
+    def detect_with_active_worker_state(
+        detector_type: type[IssueDetector],
+    ) -> list[RefactorFinding]:
+        """Run one detector inside a process-pool worker."""
+
+        state = detector_analysis_worker_state
+        if state is None:
+            raise RuntimeError("detector analysis worker state has not been initialized")
+        return state.detect_with(detector_type)
 
 
 def default_detector_types_for_analysis() -> tuple[type[IssueDetector], ...]:
@@ -3774,7 +3763,7 @@ class IncrementalAnalysisCacheResolver:
             ) as executor:
                 return list(
                     executor.map(
-                        detect_per_module_shard_with_active_state,
+                        self.detect_per_module_shard_with_active_state,
                         tasks,
                         chunksize=worker_plan.process_map_chunksize,
                     )
@@ -4040,6 +4029,17 @@ class IncrementalAnalysisCacheResolver:
             tuple(self._modules),
             self._cache_identity.presentation_roots,
         ).cache_token
+
+    @staticmethod
+    def detect_per_module_shard_with_active_state(
+        task: tuple[int, tuple[type[IssueDetector], ...]],
+    ) -> list[RefactorFinding]:
+        """Run per-module detector classes for one parsed module in a worker."""
+
+        state = per_module_detector_shard_worker_state
+        if state is None:
+            raise RuntimeError("per-module shard worker state has not been initialized")
+        return state.detect_task(task)
 
 
 @ScanCache.scope()

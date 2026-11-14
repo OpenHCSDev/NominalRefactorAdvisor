@@ -335,7 +335,7 @@ class MovedMethod(AnsweredMethod):
                 import_source = graph.required_import_source(
                     importing_file_path=destination_path,
                     imported_file_path=self.source_class.file_path if statement is None
-                    else _imported_file(snapshot, self.source_class.file_path, statement),
+                    else self._imported_file(snapshot, self.source_class.file_path, statement),
                     imported_name=name,
                 )
             imports.append(ModuleImportMutation.from_source(
@@ -345,6 +345,18 @@ class MovedMethod(AnsweredMethod):
                 rationale=f"{self.name!r} reads {name!r} in its new class.",
             ))
         return tuple(imports)
+
+    @staticmethod
+    def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: ast.ImportFrom) -> str:
+        graph = snapshot.module_import_graph
+        source_file = graph.source_file_for_path(file_path)
+        module = None if source_file is None else source_file.module_path_identity.resolve_import_from_module(
+            imported_module=statement.module, level=statement.level,
+        )
+        provider = None if module is None else graph.unique_source_file_for_module_name(module)
+        if provider is None:
+            raise ValueError(f"{file_path}:{statement.lineno} imports from a module outside the scan")
+        return provider.file_path
 
 
 def _annotation_names(annotation: ast.expr | None, name: str) -> bool:
@@ -807,18 +819,6 @@ class SignatureText:
         if "\n" in self.source[self.opening:first_start]:
             return first_start, first_start, f"{text},\n{' ' * first.col_offset}"
         return first_start, first_start, f"{text}, "
-
-
-def _imported_file(snapshot: CodemodSourceSnapshot, file_path: str, statement: ast.ImportFrom) -> str:
-    graph = snapshot.module_import_graph
-    source_file = graph.source_file_for_path(file_path)
-    module = None if source_file is None else source_file.module_path_identity.resolve_import_from_module(
-        imported_module=statement.module, level=statement.level,
-    )
-    provider = None if module is None else graph.unique_source_file_for_module_name(module)
-    if provider is None:
-        raise ValueError(f"{file_path}:{statement.lineno} imports from a module outside the scan")
-    return provider.file_path
 
 
 class ModuleBinding(NamedTuple):

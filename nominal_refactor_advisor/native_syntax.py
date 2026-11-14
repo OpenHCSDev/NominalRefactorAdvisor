@@ -21,35 +21,21 @@ def _python_language() -> Language:
 
 
 _PYTHON_QUERIES: dict[str, Query] = {}
-_COMMON_PROJECTION_QUERY = """
-(class_definition) @class
-(function_definition) @function
-(if_statement) @if
-(elif_clause) @elif
-(call) @call
-(dictionary) @dictionary
-(assignment) @assignment
-"""
-
-
-def _python_query(source: str) -> Query:
-    """Return one process-lifetime query authority for a declaration.
-
-    Query objects contain no module AST state.  Keep them outside the generic
-    module-memory cache clearing protocol so workers do not recompile every
-    declared native query for every source shard.
-    """
-
-    query = _PYTHON_QUERIES.get(source)
-    if query is None:
-        query = Query(_python_language(), source)
-        _PYTHON_QUERIES[source] = query
-    return query
 
 
 @dataclass(frozen=True)
 class NativePythonSyntaxIndex:
     """One native concrete-syntax tree with reusable compiled queries."""
+
+    _COMMON_PROJECTION_QUERY = """
+    (class_definition) @class
+    (function_definition) @function
+    (if_statement) @if
+    (elif_clause) @elif
+    (call) @call
+    (dictionary) @dictionary
+    (assignment) @assignment
+    """
 
     source_bytes: bytes
     tree: Tree
@@ -112,7 +98,7 @@ class NativePythonSyntaxIndex:
         cached = self._captures_by_query.get(query_source)
         if cached is not None:
             return cached
-        captures = QueryCursor(_python_query(query_source)).captures(
+        captures = QueryCursor(self._python_query(query_source)).captures(
             self.tree.root_node
         )
         frozen = {name: tuple(nodes) for name, nodes in captures.items()}
@@ -122,7 +108,7 @@ class NativePythonSyntaxIndex:
     def common_captures(self) -> dict[str, tuple[Node, ...]]:
         """Return the shared event stream for compact source projections."""
 
-        return self.captures(_COMMON_PROJECTION_QUERY)
+        return self.captures(self._COMMON_PROJECTION_QUERY)
 
     def top_level_assignment_statements(self) -> tuple[Node, ...]:
         """Return module-body assignment statements in lexical order.
@@ -351,3 +337,18 @@ class NativePythonSyntaxIndex:
         ast.increment_lineno(expression, node.start_point.row)
         self._expressions_by_node[node] = expression
         return expression
+
+    @staticmethod
+    def _python_query(source: str) -> Query:
+        """Return one process-lifetime query authority for a declaration.
+
+        Query objects contain no module AST state.  Keep them outside the generic
+        module-memory cache clearing protocol so workers do not recompile every
+        declared native query for every source shard.
+        """
+
+        query = _PYTHON_QUERIES.get(source)
+        if query is None:
+            query = Query(_python_language(), source)
+            _PYTHON_QUERIES[source] = query
+        return query

@@ -23,10 +23,6 @@ from nominal_refactor_advisor.lexical_scopes import (
     ScopeBindingProjection,
 )
 
-_FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
-_COMPREHENSION_SCOPES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
-
-
 @dataclass(frozen=True)
 class ModuleNodeIndex(ParsedModuleFact):
     """The nodes of one module that consumer passes look up, from a single walk.
@@ -47,6 +43,10 @@ class ModuleNodeIndex(ParsedModuleFact):
     resolve to the module's binding. Class writes have their own frame; reads
     use the existing ordered lexical resolver, including class fallback and
     function/comprehension lookup that skips enclosing class locals."""
+
+    _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
+
+    _COMPREHENSION_SCOPES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
     module: ast.Module = field(repr=False)
     imports: tuple[ast.Import | ast.ImportFrom, ...]
@@ -269,14 +269,14 @@ class ModuleNodeIndex(ParsedModuleFact):
         below: ast.AST | None = None
         child, current = node, parents.get(node)
         while current is not None:
-            if isinstance(current, _FUNCTION_SCOPES):
+            if isinstance(current, ModuleNodeIndex._FUNCTION_SCOPES):
                 body = current.body if isinstance(current.body, list) else [current.body]
                 if child in body or (isinstance(node, ast.arg) and child is current.args):
                     return current
             elif isinstance(current, ast.ClassDef):
                 if child in current.body:
                     return current
-            elif isinstance(current, _COMPREHENSION_SCOPES):
+            elif isinstance(current, ModuleNodeIndex._COMPREHENSION_SCOPES):
                 first = current.generators[0]
                 if not (child is first and below is first.iter):
                     return current

@@ -31,8 +31,6 @@ from nominal_refactor_advisor.json_reports import (
 )
 
 
-_DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS = 20.0
-
 ManifestT = TypeVar("ManifestT")
 
 
@@ -94,18 +92,6 @@ MANIFEST_INT = TypedManifestDecoder[int](
     projection=lambda value: cast(int, value),
     reject_bool=True,
 )
-MANIFEST_FLOAT = TypedManifestDecoder[float](
-    expected_types=(int, float),
-    type_label="a number",
-    projection=float,
-    reject_bool=True,
-    validation_error=lambda value: None if value >= 0 else "non-negative",
-)
-MANIFEST_BOOL = TypedManifestDecoder[bool](
-    expected_types=(bool,),
-    type_label="a boolean",
-    projection=lambda value: cast(bool, value),
-)
 
 
 def _non_negative_int(value: object, context: str) -> int:
@@ -162,6 +148,22 @@ class DetectorExpectation(SemanticRecord):
 class CalibrationTarget(SemanticRecord):
     """One corpus target with detector and payoff contracts."""
 
+    _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS = 20.0
+
+    MANIFEST_FLOAT = TypedManifestDecoder[float](
+        expected_types=(int, float),
+        type_label="a number",
+        projection=float,
+        reject_bool=True,
+        validation_error=lambda value: None if value >= 0 else "non-negative",
+    )
+
+    MANIFEST_BOOL = TypedManifestDecoder[bool](
+        expected_types=(bool,),
+        type_label="a boolean",
+        projection=lambda value: cast(bool, value),
+    )
+
     name: str
     path: str
     expected_detectors: tuple[DetectorExpectation, ...] = field(default_factory=tuple)
@@ -213,11 +215,11 @@ class CalibrationTarget(SemanticRecord):
             max_test_only_findings=_optional_non_negative_int(
                 row.get("max_test_only_findings"), "max_test_only_findings"
             ),
-            require_payoff_guard=MANIFEST_BOOL(
+            require_payoff_guard=cls.MANIFEST_BOOL(
                 row.get("require_payoff_guard", True), "require_payoff_guard"
             ),
-            max_scan_seconds=MANIFEST_FLOAT(
-                row.get("max_scan_seconds", _DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS),
+            max_scan_seconds=cls.MANIFEST_FLOAT(
+                row.get("max_scan_seconds", cls._DEFAULT_CALIBRATION_SCAN_BUDGET_SECONDS),
                 "max_scan_seconds",
             ),
             min_certified_description_length_savings=_non_negative_int(

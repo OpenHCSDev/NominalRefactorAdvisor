@@ -44,18 +44,6 @@ from nominal_refactor_advisor.restated_fact_observations import (
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite, SymbolSite
 
-def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
-    """A statement's nodes in source order, stopping at each def, lambda and class it nests."""
-
-    _scope_boundaries = (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        yield current
-        if not isinstance(current, _scope_boundaries):
-            stack.extend(reversed(tuple(ast.iter_child_nodes(current))))
-
-
 @dataclass(frozen=True)
 class ScopedDefinition:
     """A def under its dotted name, with its own body read once."""
@@ -68,7 +56,7 @@ class ScopedDefinition:
         """The nodes of the body, not of the functions, lambdas or classes it nests."""
 
         return tuple(
-            node for statement in self.node.body for node in scope_nodes(statement)
+            node for statement in self.node.body for node in self.scope_nodes(statement)
         )
 
     @cached_property
@@ -86,6 +74,18 @@ class ScopedDefinition:
                 case ast.Return():
                     return frozenset()
         return frozenset(arities)
+
+    @staticmethod
+    def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
+        """A statement's nodes in source order, stopping at each def, lambda and class it nests."""
+
+        _scope_boundaries = (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            yield current
+            if not isinstance(current, _scope_boundaries):
+                stack.extend(reversed(tuple(ast.iter_child_nodes(current))))
 
 
 @dataclass(frozen=True)
@@ -113,15 +113,6 @@ def statements_after_docstring(body: list[ast.stmt]) -> list[ast.stmt]:
     return body
 
 
-def takes_only_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    arguments = node.args
-    return (
-        len([*arguments.posonlyargs, *arguments.args]) == 1
-        and not variadic_parameters(arguments)
-        and not arguments.kwonlyargs
-    )
-
-
 def declares_abstract(
     node: ast.FunctionDef | ast.AsyncFunctionDef, bindings: ModuleNominalBindingSnapshot
 ) -> bool:
@@ -140,36 +131,6 @@ def declares_abstract(
         ]:
             return True
     return False
-
-
-def is_frozen_record(
-    node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
-) -> bool:
-    """A frozen dataclass or a NamedTuple: its state is fixed once built.
-
-    The decorator and the base are resolved through the module's bindings, so a
-    local class named `dataclass` or `NamedTuple` is not one.
-    """
-
-    def resolves_to(reference: ast.expr, qualified_name: str) -> bool:
-        parts = ExpressionReference.decoded(
-            ClassSymbolResolutionAuthority.reference_node(reference)
-        ).attribute_chain
-        return parts is not None and bindings.reference_for(parts).has_bound_name(qualified_name)
-
-    if any(resolves_to(base, "typing.NamedTuple") for base in node.bases):
-        return True
-    return any(
-        isinstance(decorator, ast.Call)
-        and resolves_to(decorator.func, "dataclasses.dataclass")
-        and any(
-            keyword.arg == "frozen"
-            and isinstance(keyword.value, ast.Constant)
-            and keyword.value.value is True
-            for keyword in decorator.keywords
-        )
-        for decorator in node.decorator_list
-    )
 
 
 # ---- the class shapes every family join reads
@@ -256,7 +217,7 @@ class ClassBodyReading:
 
     @cached_property
     def frozen(self) -> bool:
-        return is_frozen_record(self.node, self.bindings)
+        return self.is_frozen_record(self.node, self.bindings)
 
     def answer(self, answer: MemberAnswer) -> None:
         self.answers[type(answer)].append(answer)
@@ -264,7 +225,7 @@ class ClassBodyReading:
     def read(self, statement: ast.stmt) -> None:
         match statement:
             case ast.FunctionDef(name=name, returns=ast.Name(id="bool")) if (
-                takes_only_receiver(statement) and self.frozen
+                self.takes_only_receiver(statement) and self.frozen
             ):
                 self.read_own_state(name, statement)
         match statement:
@@ -305,7 +266,7 @@ class ClassBodyReading:
         ][1:]
         match statements_after_docstring(statement.body):
             case [ast.Return(value=ast.Constant(value=bool() | str() as value))] if (
-                not name.startswith("__") and takes_only_receiver(statement)
+                not name.startswith("__") and self.takes_only_receiver(statement)
             ):
                 self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
                 return
@@ -317,10 +278,10 @@ class ClassBodyReading:
 
     def read_own_state(self, name: str, statement: ast.FunctionDef) -> None:
         match statements_after_docstring(statement.body):
-            case [ast.Return(value=ast.expr() as expression)] if calls_only_pure_builtins(
+            case [ast.Return(value=ast.expr() as expression)] if self.calls_only_pure_builtins(
                 expression, self.bindings
             ):
-                probes = list(own_state_probes(expression))
+                probes = list(self.own_state_probes(expression))
             case _:
                 return
         match probes:
@@ -335,6 +296,99 @@ class ClassBodyReading:
                         first,
                     )
                 )
+
+    @staticmethod
+    def calls_only_pure_builtins(
+        expression: ast.expr, snapshot: ModuleNominalBindingSnapshot
+    ) -> bool:
+        """Every call in the expression is a pure builtin the module does not shadow.
+
+        A call of anything else (a method of a field, a global's accessor) can read
+        state the record does not hold, so the answer is not fixed at construction.
+        """
+
+        for node in ast.walk(expression):
+            match node:
+                case ast.Call(func=ast.Name(id=name)) if name in PURE_BUILTINS and (
+                    snapshot.resolves_unshadowed_builtin(name)
+                ):
+                    pass
+                case ast.Call():
+                    return False
+        return True
+
+    @staticmethod
+    def is_frozen_record(
+        node: ast.ClassDef, bindings: ModuleNominalBindingSnapshot
+    ) -> bool:
+        """A frozen dataclass or a NamedTuple: its state is fixed once built.
+
+        The decorator and the base are resolved through the module's bindings, so a
+        local class named `dataclass` or `NamedTuple` is not one.
+        """
+
+        def resolves_to(reference: ast.expr, qualified_name: str) -> bool:
+            parts = ExpressionReference.decoded(
+                ClassSymbolResolutionAuthority.reference_node(reference)
+            ).attribute_chain
+            return parts is not None and bindings.reference_for(parts).has_bound_name(qualified_name)
+
+        if any(resolves_to(base, "typing.NamedTuple") for base in node.bases):
+            return True
+        return any(
+            isinstance(decorator, ast.Call)
+            and resolves_to(decorator.func, "dataclasses.dataclass")
+            and any(
+                keyword.arg == "frozen"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in decorator.keywords
+            )
+            for decorator in node.decorator_list
+        )
+
+    @staticmethod
+    def own_state_probes(expression: ast.expr) -> Iterator[str]:
+        """Each direct probe of one of the record's own fields: absence or a kind.
+
+        A kind is a constant, a name or another object's attribute; a comparison
+        with a computed value (`self.count == len(self.items)`) or with another own
+        field (`self.start == self.end`) is a relation, not a state.
+        """
+
+        for node in ast.walk(expression):
+            match node:
+                case ast.Compare(
+                    left=ast.Attribute(value=ast.Name(id="self")) as field,
+                    ops=[ast.Is() | ast.IsNot()],
+                    comparators=[ast.Constant(value=None)],
+                ):
+                    yield f"probes `{ast.unparse(field)}` for absence"
+                case ast.Call(
+                    func=ast.Name(id="isinstance"),
+                    args=[ast.Attribute(value=ast.Name(id="self")) as field, _],
+                ):
+                    yield f"tests the kind of `{ast.unparse(field)}`"
+                case ast.Compare(
+                    left=ast.Attribute(value=ast.Name(id="self")),
+                    comparators=[ast.Attribute() as other],
+                ) if reads_through_self(other):
+                    pass
+                case ast.Compare(
+                    left=ast.Attribute(value=ast.Name(id="self")) as field,
+                    ops=[ast.Eq() | ast.NotEq() | ast.Is() | ast.IsNot() | ast.In() | ast.NotIn()],
+                    comparators=[ast.Constant() | ast.Name() | ast.Attribute()],
+                ):
+                    yield f"compares `{ast.unparse(field)}` with a kind"
+
+    @staticmethod
+    def takes_only_receiver(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        arguments = node.args
+        return (
+            len([*arguments.posonlyargs, *arguments.args]) == 1
+            and not variadic_parameters(arguments)
+            and not arguments.kwonlyargs
+        )
 
 
 @dataclass(frozen=True)
@@ -443,33 +497,6 @@ class ConsumerShapesModule:
     lambda_calls: tuple[LambdaCall, ...]
 
 
-def branch_tests(node: ast.AST) -> Iterator[ast.expr]:
-    """The expressions whose truth selects a branch at this node."""
-
-    match node:
-        case ast.If(test=test) | ast.While(test=test) | ast.IfExp(test=test):
-            yield test
-        case ast.comprehension(ifs=tests):
-            yield from tests
-        case ast.match_case(guard=ast.expr() as guard):
-            yield guard
-
-
-def tested_reads(test: ast.expr) -> Iterator[tuple[ast.expr, str, bool]]:
-    """Attribute reads a branch test decides on, through `not`, `and` and `or`."""
-
-    match test:
-        case ast.UnaryOp(op=ast.Not(), operand=operand):
-            yield from tested_reads(operand)
-        case ast.BoolOp(values=values):
-            for value in values:
-                yield from tested_reads(value)
-        case ast.Attribute(attr=member):
-            yield test, member, False
-        case ast.Call(func=ast.Attribute(attr=member), args=[], keywords=[]):
-            yield test, member, True
-
-
 class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
     """Branch tests that read a member, and calls that pass two or more lambdas."""
 
@@ -492,8 +519,8 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
         reads = []
         calls = []
         for node_index, node in enumerate(index.depth_first_nodes):
-            for test in branch_tests(node):
-                for read, member, called in tested_reads(test):
+            for test in cls.branch_tests(node):
+                for read, member, called in cls.tested_reads(test):
                     reads.append(
                         BranchRead(
                             parsed_module.file_path,
@@ -524,6 +551,33 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
         return [
             ConsumerShapesModule(parsed_module.module_name, tuple(reads), tuple(calls))
         ]
+
+    @staticmethod
+    def branch_tests(node: ast.AST) -> Iterator[ast.expr]:
+        """The expressions whose truth selects a branch at this node."""
+
+        match node:
+            case ast.If(test=test) | ast.While(test=test) | ast.IfExp(test=test):
+                yield test
+            case ast.comprehension(ifs=tests):
+                yield from tests
+            case ast.match_case(guard=ast.expr() as guard):
+                yield guard
+
+    @staticmethod
+    def tested_reads(test: ast.expr) -> Iterator[tuple[ast.expr, str, bool]]:
+        """Attribute reads a branch test decides on, through `not`, `and` and `or`."""
+
+        match test:
+            case ast.UnaryOp(op=ast.Not(), operand=operand):
+                yield from ConsumerShapeFamily.tested_reads(operand)
+            case ast.BoolOp(values=values):
+                for value in values:
+                    yield from ConsumerShapeFamily.tested_reads(value)
+            case ast.Attribute(attr=member):
+                yield test, member, False
+            case ast.Call(func=ast.Attribute(attr=member), args=[], keywords=[]):
+                yield test, member, True
 
 
 # ---- site families, one per relocation detector
@@ -577,63 +631,9 @@ def reads_through_self(expression: ast.expr) -> bool:
     return False
 
 
-def own_state_probes(expression: ast.expr) -> Iterator[str]:
-    """Each direct probe of one of the record's own fields: absence or a kind.
-
-    A kind is a constant, a name or another object's attribute; a comparison
-    with a computed value (`self.count == len(self.items)`) or with another own
-    field (`self.start == self.end`) is a relation, not a state.
-    """
-
-    for node in ast.walk(expression):
-        match node:
-            case ast.Compare(
-                left=ast.Attribute(value=ast.Name(id="self")) as field,
-                ops=[ast.Is() | ast.IsNot()],
-                comparators=[ast.Constant(value=None)],
-            ):
-                yield f"probes `{ast.unparse(field)}` for absence"
-            case ast.Call(
-                func=ast.Name(id="isinstance"),
-                args=[ast.Attribute(value=ast.Name(id="self")) as field, _],
-            ):
-                yield f"tests the kind of `{ast.unparse(field)}`"
-            case ast.Compare(
-                left=ast.Attribute(value=ast.Name(id="self")),
-                comparators=[ast.Attribute() as other],
-            ) if reads_through_self(other):
-                pass
-            case ast.Compare(
-                left=ast.Attribute(value=ast.Name(id="self")) as field,
-                ops=[ast.Eq() | ast.NotEq() | ast.Is() | ast.IsNot() | ast.In() | ast.NotIn()],
-                comparators=[ast.Constant() | ast.Name() | ast.Attribute()],
-            ):
-                yield f"compares `{ast.unparse(field)}` with a kind"
-
-
 PURE_BUILTINS = frozenset(
     ("all", "any", "bool", "frozenset", "isinstance", "issubclass", "len", "max", "min", "set", "sorted", "sum", "tuple")
 )
-
-
-def calls_only_pure_builtins(
-    expression: ast.expr, snapshot: ModuleNominalBindingSnapshot
-) -> bool:
-    """Every call in the expression is a pure builtin the module does not shadow.
-
-    A call of anything else (a method of a field, a global's accessor) can read
-    state the record does not hold, so the answer is not fixed at construction.
-    """
-
-    for node in ast.walk(expression):
-        match node:
-            case ast.Call(func=ast.Name(id=name)) if name in PURE_BUILTINS and (
-                snapshot.resolves_unshadowed_builtin(name)
-            ):
-                pass
-            case ast.Call():
-                return False
-    return True
 
 
 class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
@@ -665,30 +665,6 @@ def spells_none(node: ast.AST) -> bool:
     return False
 
 
-def optional_annotation(annotation: ast.expr | None) -> bool:
-    match annotation:
-        case ast.BinOp(op=ast.BitOr()):
-            return any(spells_none(part) for part in ast.walk(annotation))
-        case ast.Subscript(value=wrapper) if TypeWrapper.OPTIONAL.spelled_by(
-            ExpressionReference.decoded(wrapper).terminal_name
-        ):
-            return True
-        case ast.Constant(value=str() as text):
-            return "| None" in text or "None |" in text or text.startswith("Optional[")
-    return False
-
-
-def undefaulted_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
-    positional = [*node.args.posonlyargs, *node.args.args]
-    undefaulted = positional[: len(positional) - len(node.args.defaults)]
-    undefaulted.extend(
-        argument
-        for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
-        if not isinstance(default, ast.expr)
-    )
-    return undefaulted
-
-
 class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """An undefaulted `X | None` parameter that its own body compares with None.
 
@@ -708,12 +684,12 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 continue
             optional = {
                 argument.arg
-                for argument in undefaulted_parameters(definition.node)
-                if optional_annotation(argument.annotation)
+                for argument in cls.undefaulted_parameters(definition.node)
+                if cls.optional_annotation(argument.annotation)
             }
             match definition.node.returns:
                 case ast.expr() as declared:
-                    settles = not optional_annotation(declared)
+                    settles = not cls.optional_annotation(declared)
                 case _:
                     settles = False
             deciding = {
@@ -749,3 +725,27 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                                 else "is not None",
                             ),
                         )
+
+    @staticmethod
+    def optional_annotation(annotation: ast.expr | None) -> bool:
+        match annotation:
+            case ast.BinOp(op=ast.BitOr()):
+                return any(spells_none(part) for part in ast.walk(annotation))
+            case ast.Subscript(value=wrapper) if TypeWrapper.OPTIONAL.spelled_by(
+                ExpressionReference.decoded(wrapper).terminal_name
+            ):
+                return True
+            case ast.Constant(value=str() as text):
+                return "| None" in text or "None |" in text or text.startswith("Optional[")
+        return False
+
+    @staticmethod
+    def undefaulted_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.arg]:
+        positional = [*node.args.posonlyargs, *node.args.args]
+        undefaulted = positional[: len(positional) - len(node.args.defaults)]
+        undefaulted.extend(
+            argument
+            for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+            if not isinstance(default, ast.expr)
+        )
+        return undefaulted

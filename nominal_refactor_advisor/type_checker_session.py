@@ -38,9 +38,6 @@ if TYPE_CHECKING:
     from nominal_refactor_advisor.ast_tools import ParsedModule
     from mypy.types import Type
 
-TYPES_EXTRA = "pip install 'nominal-refactor-advisor[types]'"
-
-
 @dataclass(frozen=True)
 class TypeCheckerTiming(DataclassJsonReport):
     """Where a scan's type-checker time went."""
@@ -134,6 +131,8 @@ class SourceTexts(TypeCheckerSources):
 class TypeCheckerSession(ABC):
     """The scan's type checker: one finished build, or the reason there is none."""
 
+    TYPES_EXTRA = "pip install 'nominal-refactor-advisor[types]'"
+
     @abstractmethod
     def receiver_types(
         self, spans: Iterable[ReceiverSpan]
@@ -155,7 +154,7 @@ class TypeCheckerSession(ABC):
         """Build these sources once with exported types, or name why that failed."""
 
         if importlib.util.find_spec("mypy") is None:
-            return UnavailableTypeChecker(f"mypy is not installed ({TYPES_EXTRA})")
+            return UnavailableTypeChecker(f"mypy is not installed ({TypeCheckerSession.TYPES_EXTRA})")
         build = importlib.import_module("mypy.build")
         errors = importlib.import_module("mypy.errors")
         options = importlib.import_module("mypy.options").Options()
@@ -225,29 +224,6 @@ class UnavailableTypeChecker(TypeCheckerSession):
         return f"no type checker: {self.reason}"
 
 
-def _classes_of(found: Type) -> tuple[str, ...]:
-    """The classes a mypy type is: the decoder at the type checker's boundary."""
-
-    types = importlib.import_module("mypy.types")
-    proper = types.get_proper_type(found)
-    match proper:
-        case types.Instance():
-            return (proper.type.fullname,)
-        case types.TypeType():
-            return _classes_of(proper.item)
-        case types.TypeVarType():
-            return _classes_of(proper.upper_bound)
-        case types.UnionType():
-            return tuple(
-                chain.from_iterable(
-                    _classes_of(item)
-                    for item in proper.items
-                    if not isinstance(types.get_proper_type(item), types.NoneType)
-                )
-            )
-    return ()
-
-
 @dataclass(frozen=True)
 class BuiltTypeChecker(TypeCheckerSession):
     """A finished build's types for the scanned files, keyed by expression span."""
@@ -283,7 +259,7 @@ class BuiltTypeChecker(TypeCheckerSession):
                     )
                     inferred[span] = InferredReceiverType(
                         format_type_bare(found, options, verbosity=2),
-                        _classes_of(found),
+                        cls._classes_of(found),
                     )
         return cls(inferred, shared)
 
@@ -313,6 +289,29 @@ class BuiltTypeChecker(TypeCheckerSession):
             f"mypy typed {len(self.inferred)} expression(s); "
             f"{len(self.shared)} file(s) left out for a module name another file shares"
         )
+
+    @staticmethod
+    def _classes_of(found: Type) -> tuple[str, ...]:
+        """The classes a mypy type is: the decoder at the type checker's boundary."""
+
+        types = importlib.import_module("mypy.types")
+        proper = types.get_proper_type(found)
+        match proper:
+            case types.Instance():
+                return (proper.type.fullname,)
+            case types.TypeType():
+                return BuiltTypeChecker._classes_of(proper.item)
+            case types.TypeVarType():
+                return BuiltTypeChecker._classes_of(proper.upper_bound)
+            case types.UnionType():
+                return tuple(
+                    chain.from_iterable(
+                        BuiltTypeChecker._classes_of(item)
+                        for item in proper.items
+                        if not isinstance(types.get_proper_type(item), types.NoneType)
+                    )
+                )
+        return ()
 
 
 __all__ = (

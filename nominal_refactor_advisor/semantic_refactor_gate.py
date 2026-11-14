@@ -35,9 +35,6 @@ from nominal_refactor_advisor.semantic_descent import (
 from nominal_refactor_advisor.taxonomy import CertificationLevel, ConfidenceLevel
 
 
-UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
-
-
 def ssot_authority_findings(
     findings: tuple[RefactorFinding, ...],
 ) -> tuple[RefactorFinding, ...]:
@@ -231,6 +228,8 @@ class SemanticRefactorBoundaryEvidence(SemanticRecord):
 class AuthorityDiscoveryRequiredFindingProjection:
     """Project unresolved gate authority claims into hard advisor findings."""
 
+    UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID = "unresolved_authority_claim"
+
     synthetic_file_path: str = "<semantic-refactor-gate>"
 
     @classmethod
@@ -271,7 +270,7 @@ class AuthorityDiscoveryRequiredFindingProjection:
             ),
             confidence=ConfidenceLevel.HIGH,
             certification=CertificationLevel.CERTIFIED,
-            detector_id=UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID,
+            detector_id=cls.UNRESOLVED_AUTHORITY_CLAIM_DETECTOR_ID,
             summary=(
                 f"You claimed `{claim.claimed_symbol}`, but NRA found "
                 f"{discovery.candidate_count} candidate authority proof path(s) after "

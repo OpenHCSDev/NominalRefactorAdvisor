@@ -121,12 +121,11 @@ class DefaultFreeField(StatementValueQuestion[None]):
         """A bare annotation is the default-free field the promotion moves."""
 
 
-DEFAULT_FREE_FIELD = DefaultFreeField()
-
-
 @dataclass(frozen=True)
 class ExactDataclassFieldSemantics:
     """One default-free field's class-body normal form, bound only outside the class."""
+
+    DEFAULT_FREE_FIELD = DefaultFreeField()
 
     name: str
     digest: str
@@ -143,7 +142,7 @@ class ExactDataclassFieldSemantics:
     ) -> ExactDataclassFieldSemantics:
         if not isinstance(statement.target, ast.Name):
             raise ValueError("Promoted dataclass fields must be default-free names")
-        StatementValue.of(statement).answer(DEFAULT_FREE_FIELD)
+        StatementValue.of(statement).answer(cls.DEFAULT_FREE_FIELD)
         if comment_lines.intersects(statement) or (
             statement.lineno > 1 and statement.lineno - 1 in comment_lines.comment_lines
         ):
@@ -300,7 +299,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
                 or left.decorator.frozen != right.decorator.frozen
             ):
                 continue
-            common_prefix = _common_prefix(
+            common_prefix = self._common_prefix(
                 left.fields,
                 right.fields,
             )
@@ -438,14 +437,15 @@ class ExactDataclassFieldAuthorityComponentBuilder:
         )
         return ExactDataclassFieldParticipant(indexed_class, decorator, fields)
 
+    @staticmethod
+    def _common_prefix(
+        left: tuple[ExactDataclassFieldSemantics, ...],
+        right: tuple[ExactDataclassFieldSemantics, ...],
+    ) -> tuple[ExactDataclassFieldSemantics, ...]:
+        prefix = []
+        for left_field, right_field in zip(left, right, strict=False):
+            if left_field != right_field:
+                break
+            prefix.append(left_field)
+        return tuple(prefix)
 
-def _common_prefix(
-    left: tuple[ExactDataclassFieldSemantics, ...],
-    right: tuple[ExactDataclassFieldSemantics, ...],
-) -> tuple[ExactDataclassFieldSemantics, ...]:
-    prefix = []
-    for left_field, right_field in zip(left, right, strict=False):
-        if left_field != right_field:
-            break
-        prefix.append(left_field)
-    return tuple(prefix)

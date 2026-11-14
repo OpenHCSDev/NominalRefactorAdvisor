@@ -328,50 +328,50 @@ class ServedMemberScope:
                 failures.append(f"{name!r} is looked up implicitly")
             failures.extend(
                 f"{name!r} uses private name {private!r}, mangled by its owner"
-                for private in sorted(_private_names(member.statement))
+                for private in sorted(self._private_names(member.statement))
             )
             failures.extend(
                 f"{name!r} reads class-scope {captured!r}, which stays behind"
-                for captured in sorted(_class_scope_reads(member.statement) & left_behind)
+                for captured in sorted(self._class_scope_reads(member.statement) & left_behind)
             )
         if failures:
             raise ValueError("Members cannot change class: " + "; ".join(failures))
 
+    @staticmethod
+    def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
+        """Names a member reads while the class body runs: a method's decorators, defaults and
+        annotations, or a class attribute's whole statement. Method bodies run later and cannot see
+        class scope."""
 
-def _private_names(statement: ast.stmt) -> frozenset[str]:
-    return frozenset(
-        found
-        for node in ast.walk(statement)
-        if (found := node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else "")
-        .startswith("__") and not found.endswith("__")
-    )
+        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            arguments = statement.args
+            evaluated: tuple[ast.AST, ...] = (
+                *statement.decorator_list,
+                *arguments.defaults,
+                *(default for default in arguments.kw_defaults if default is not None),
+                *(
+                    argument.annotation
+                    for argument in (
+                        *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                        *((arguments.vararg,) if arguments.vararg else ()),
+                        *((arguments.kwarg,) if arguments.kwarg else ()),
+                    )
+                    if argument.annotation is not None
+                ),
+                *((statement.returns,) if statement.returns is not None else ()),
+            )
+        else:
+            evaluated = (statement,)
+        return names_read(*evaluated)
 
-
-def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
-    """Names a member reads while the class body runs: a method's decorators, defaults and
-    annotations, or a class attribute's whole statement. Method bodies run later and cannot see
-    class scope."""
-
-    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        arguments = statement.args
-        evaluated: tuple[ast.AST, ...] = (
-            *statement.decorator_list,
-            *arguments.defaults,
-            *(default for default in arguments.kw_defaults if default is not None),
-            *(
-                argument.annotation
-                for argument in (
-                    *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
-                    *((arguments.vararg,) if arguments.vararg else ()),
-                    *((arguments.kwarg,) if arguments.kwarg else ()),
-                )
-                if argument.annotation is not None
-            ),
-            *((statement.returns,) if statement.returns is not None else ()),
+    @staticmethod
+    def _private_names(statement: ast.stmt) -> frozenset[str]:
+        return frozenset(
+            found
+            for node in ast.walk(statement)
+            if (found := node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else "")
+            .startswith("__") and not found.endswith("__")
         )
-    else:
-        evaluated = (statement,)
-    return names_read(*evaluated)
 
 
 @dataclass(frozen=True)
@@ -406,7 +406,7 @@ class FamilyMemberReads:
                         member in ancestors
                         and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                         and statement.name in served.moved
-                        and any(map(_names_abstractmethod, statement.decorator_list))
+                        and any(map(self._names_abstractmethod, statement.decorator_list))
                     ):
                         failures.append(
                             f"{where.format(line=statement.lineno)} declares {statement.name!r} abstract"
@@ -415,7 +415,7 @@ class FamilyMemberReads:
                         f"{where.format(line=read.lineno)} reads {read.attr!r}"
                         for read in nodes_of(ast.Attribute, statement)
                         if read.attr in leaving
-                        and _is_own_receiver(read.value)
+                        and self._is_own_receiver(read.value)
                     )
         if failures:
             raise ValueError(
@@ -465,6 +465,20 @@ class FamilyMemberReads:
             for symbol in symbols
         ))
 
+    @staticmethod
+    def _is_own_receiver(value: ast.expr) -> bool:
+        """self.x, cls.x and super().x: lookups that run on whatever instance the method has."""
+
+        return (isinstance(value, ast.Name) and value.id in {"self", "cls"}) or (
+            isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "super"
+        )
+
+    @staticmethod
+    def _names_abstractmethod(decorator: ast.expr) -> bool:
+        return (isinstance(decorator, ast.Name) and decorator.id == "abstractmethod") or (
+            isinstance(decorator, ast.Attribute) and decorator.attr == "abstractmethod"
+        )
+
 
 def _class_node(snapshot: CodemodSourceSnapshot, file_path: str, qualname: str) -> ast.ClassDef:
     """The class statement a family-index declaration names."""
@@ -477,20 +491,6 @@ def _class_node(snapshot: CodemodSourceSnapshot, file_path: str, qualname: str) 
         )
     assert isinstance(scope, ast.ClassDef)
     return scope
-
-
-def _names_abstractmethod(decorator: ast.expr) -> bool:
-    return (isinstance(decorator, ast.Name) and decorator.id == "abstractmethod") or (
-        isinstance(decorator, ast.Attribute) and decorator.attr == "abstractmethod"
-    )
-
-
-def _is_own_receiver(value: ast.expr) -> bool:
-    """self.x, cls.x and super().x: lookups that run on whatever instance the method has."""
-
-    return (isinstance(value, ast.Name) and value.id in {"self", "cls"}) or (
-        isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "super"
-    )
 
 
 @dataclass(frozen=True, kw_only=True)

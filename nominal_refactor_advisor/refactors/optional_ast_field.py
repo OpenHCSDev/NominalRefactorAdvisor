@@ -84,12 +84,6 @@ from nominal_refactor_advisor.registry_identity import ClassNameKeyed
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
 
-FUNCTION_CLASSES = frozenset(("FunctionDef", "AsyncFunctionDef", "Lambda"))
-
-
-GENERATED_MODULE = "ast_field_decoders"
-
-
 def _same_expression(left: ast.AST, right: ast.AST) -> bool:
     return ast.dump(left) == ast.dump(right)
 
@@ -1212,6 +1206,8 @@ class ProjectDecoderOwners:
     owners this package declares.
     """
 
+    GENERATED_MODULE = "ast_field_decoders"
+
     snapshot: CodemodSourceSnapshot
     root: str
 
@@ -1224,7 +1220,7 @@ class ProjectDecoderOwners:
 
     @property
     def generated_module(self) -> str:
-        return f"{self.root}.{GENERATED_MODULE}"
+        return f"{self.root}.{self.GENERATED_MODULE}"
 
     @cached_property
     def named_declarations(self) -> tuple[NamedOwnerDeclaration, ...]:
@@ -1327,9 +1323,9 @@ class ProjectDecoderOwners:
         )
         if package is None or not package.is_package_init:
             raise ValueError(
-                f"`{self.root}` is not a package to generate {GENERATED_MODULE} in"
+                f"`{self.root}` is not a package to generate {self.GENERATED_MODULE} in"
             )
-        return str(Path(package.file_path).parent / f"{GENERATED_MODULE}.py")
+        return str(Path(package.file_path).parent / f"{self.GENERATED_MODULE}.py")
 
     @property
     def needs_declaration(self) -> bool:
@@ -1418,6 +1414,8 @@ _PROJECT_OWNERS = SnapshotCache[ProjectDecoderOwners]()
 @dataclass(frozen=True)
 class OptionalAstFieldAuthority(FunctionRewriteAuthority):
     """Every routable probe of one decoder's fields inside one function."""
+
+    FUNCTION_CLASSES = frozenset(("FunctionDef", "AsyncFunctionDef", "Lambda"))
 
     decoder: type[OptionalAstFieldDecoder]
     rewrite_name = "Probe routing"
@@ -1543,7 +1541,7 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                 owner_classes = self.guarded(subject, at) or self.classes_of(owner, at)
                 if owner_classes == frozenset(("arguments",)):
                     return owner_classes
-                if owner_classes and owner_classes <= FUNCTION_CLASSES:
+                if owner_classes and owner_classes <= self.FUNCTION_CLASSES:
                     return frozenset(("arguments",))
         return self.guarded(subject, at)
 

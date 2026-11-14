@@ -54,7 +54,7 @@ class ClassHeaderSourceSpan:
         """Tokenise only the candidate header lines and stop at the suite colon."""
 
         tokens = []
-        for token in unenclosed_python_tokens(
+        for token in self.unenclosed_python_tokens(
             tokenize.generate_tokens(io.StringIO(self.candidate_source).readline)
         ):
             tokens.append(token)
@@ -116,27 +116,27 @@ class ClassHeaderSourceSpan:
     def is_reconstructible(self) -> bool:
         return not self.contains_comment
 
+    @staticmethod
+    def unenclosed_python_tokens(
+        tokens: Iterable[tokenize.TokenInfo],
+    ) -> Iterator[tokenize.TokenInfo]:
+        """Yield tokens outside brackets, including each opening delimiter."""
+
+        depth = 0
+        for token in tokens:
+            if depth == 0:
+                yield token
+            if token.type == tokenize.OP:
+                if token.string in "([{":
+                    depth += 1
+                elif token.string in ")]}":
+                    depth -= 1
+
 
 def read_source_text(path: Path, *, encoding: str = "utf-8") -> str:
     """Decode exact source bytes without newline translation."""
 
     return path.read_bytes().decode(encoding)
-
-
-def unenclosed_python_tokens(
-    tokens: Iterable[tokenize.TokenInfo],
-) -> Iterator[tokenize.TokenInfo]:
-    """Yield tokens outside brackets, including each opening delimiter."""
-
-    depth = 0
-    for token in tokens:
-        if depth == 0:
-            yield token
-        if token.type == tokenize.OP:
-            if token.string in "([{":
-                depth += 1
-            elif token.string in ")]}":
-                depth -= 1
 
 
 @dataclass(frozen=True)

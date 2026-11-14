@@ -81,18 +81,16 @@ class AbstractionsDocument(Document):
 
 D = TypeVar("D", bound=Document)
 
-DOCUMENT_KINDS: tuple[type[Document], ...] = (AbstractionsDocument, SurfaceDocument)
-
-
 @dataclass(frozen=True)
 class PlanPackage:
+    DOCUMENT_KINDS: ClassVar[tuple[type[Document], ...]] = (AbstractionsDocument, SurfaceDocument)
     root: Path
     documents: tuple[Document, ...]
 
     @classmethod
     def load(cls, root: Path) -> PlanPackage:
         def document(path: Path) -> Document:
-            kind = next((kind for kind in DOCUMENT_KINDS if kind.claims(path.name)), Document)
+            kind = next((kind for kind in cls.DOCUMENT_KINDS if kind.claims(path.name)), Document)
             return kind(path.name, path.read_text())
         return cls(root, tuple(document(path) for path in sorted(root.glob("*.md"))))
 

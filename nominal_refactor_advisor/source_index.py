@@ -401,7 +401,7 @@ class EvidenceDigestBuilder:
         return tuple(
             EvidenceDigest(
                 evidence_id=evidence_id,
-                file_id=_optional_file_id(source_location.file_path, file_ids_by_path),
+                file_id=self._optional_file_id(source_location.file_path, file_ids_by_path),
                 file_path=source_location.file_path,
                 line=source_location.line,
                 symbol=source_location.symbol,
@@ -411,11 +411,11 @@ class EvidenceDigestBuilder:
             for evidence_id, source_location in sorted(source_locations_by_id.items())
         )
 
-
-def _optional_file_id(file_path: str, file_ids_by_path: dict[str, str]) -> str | None:
-    if file_path not in file_ids_by_path:
-        return None
-    return file_ids_by_path[file_path]
+    @staticmethod
+    def _optional_file_id(file_path: str, file_ids_by_path: dict[str, str]) -> str | None:
+        if file_path not in file_ids_by_path:
+            return None
+        return file_ids_by_path[file_path]
 
 
 @dataclass
@@ -803,20 +803,6 @@ class SourceIndexBuildArtifacts:
         )
 
 
-def iter_statement_definition_nodes(
-    statements: Iterable[ast.stmt],
-) -> Iterable[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Yield nested class/function statements without visiting expression trees."""
-
-    for statement in statements:
-        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
-            yield statement
-            continue
-        for child in ast.iter_child_nodes(statement):
-            if isinstance(child, ast.stmt):
-                yield from iter_statement_definition_nodes((child,))
-
-
 class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
     def __init__(self, file_id: str, file_path: str) -> None:
         super().__init__()
@@ -828,7 +814,7 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         ]()
 
     def traverse_statements(self, body: list[ast.stmt]) -> None:
-        for node in iter_statement_definition_nodes(body):
+        for node in self.iter_statement_definition_nodes(body):
             self.visit(node)
 
     def before_visit_class(self, node: ast.ClassDef) -> None:
@@ -903,6 +889,20 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         if node.args.kwarg is not None:
             args.append(f"**{node.args.kwarg.arg}")
         return tuple(args)
+
+    @staticmethod
+    def iter_statement_definition_nodes(
+        statements: Iterable[ast.stmt],
+    ) -> Iterable[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
+        """Yield nested class/function statements without visiting expression trees."""
+
+        for statement in statements:
+            if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                yield statement
+                continue
+            for child in ast.iter_child_nodes(statement):
+                if isinstance(child, ast.stmt):
+                    yield from _AstTargetDigestVisitor.iter_statement_definition_nodes((child,))
 
 
 @dataclass(frozen=True)

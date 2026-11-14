@@ -40,7 +40,7 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         candidates: list[Self] = []
         projector = ClassMethodGroupsShapeProjector(
-            _accumulator_fold_method, lambda method: method.shape_key
+            cls._accumulator_fold_method, lambda method: method.shape_key
         )
         for class_node, ordered in projector.project(module):
             if len({method.step_method_name for method in ordered}) < 2:
@@ -64,6 +64,31 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
         return sorted_tuple(
             candidates,
             key=lambda item: (item.file_path, item.line_numbers, item.class_name),
+        )
+
+    @staticmethod
+    def _accumulator_fold_method(
+        method: ast.FunctionDef,
+    ) -> _AccumulatorFoldMethod | None:
+        body = statements_without_docstring(method.body)
+        fold_shape = _accumulator_fold_shape(body)
+        if fold_shape is None:
+            return None
+        accumulator_name, accumulator_type_name, loop, step_call, result_call = fold_shape
+        args = method.args.args
+        offset = 1 if args and args[0].arg in {"self", "cls"} else 0
+        if len(args) <= offset:
+            return None
+        source_parameter = args[offset].arg
+        if not (isinstance(loop.iter, ast.Name) and loop.iter.id == source_parameter):
+            return None
+        return _AccumulatorFoldMethod(
+            method_name=method.name,
+            line=method.lineno,
+            source_parameter_name=source_parameter,
+            accumulator_type_name=accumulator_type_name,
+            step_method_name=step_call.func.attr,
+            result_method_name=result_call.func.attr,
         )
 
 
@@ -179,31 +204,6 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
                     )
                 )
         return tuple(groups)
-
-
-def _accumulator_fold_method(
-    method: ast.FunctionDef,
-) -> _AccumulatorFoldMethod | None:
-    body = statements_without_docstring(method.body)
-    fold_shape = _accumulator_fold_shape(body)
-    if fold_shape is None:
-        return None
-    accumulator_name, accumulator_type_name, loop, step_call, result_call = fold_shape
-    args = method.args.args
-    offset = 1 if args and args[0].arg in {"self", "cls"} else 0
-    if len(args) <= offset:
-        return None
-    source_parameter = args[offset].arg
-    if not (isinstance(loop.iter, ast.Name) and loop.iter.id == source_parameter):
-        return None
-    return _AccumulatorFoldMethod(
-        method_name=method.name,
-        line=method.lineno,
-        source_parameter_name=source_parameter,
-        accumulator_type_name=accumulator_type_name,
-        step_method_name=step_call.func.attr,
-        result_method_name=result_call.func.attr,
-    )
 
 
 def _accumulator_fold_shape(

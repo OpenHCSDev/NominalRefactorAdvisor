@@ -235,7 +235,7 @@ class SourceClassKeyEntry:
         return ast.unparse(self.key_node)
 
     def require_relocatable_key(self, module: ast.Module) -> None:
-        reference_names = _relocatable_key_reference_names(self.key_node)
+        reference_names = self._relocatable_key_reference_names(self.key_node)
         if reference_names is None:
             raise ValueError(
                 f"Registry key for {self.class_name!r} is not a relocatable "
@@ -252,6 +252,29 @@ class SourceClassKeyEntry:
                 f"Registry key for {self.class_name!r} depends on names not bound "
                 f"before its declaration: {tuple(sorted(unresolved_names))!r}"
             )
+
+    @staticmethod
+    def _relocatable_key_reference_names(node: ast.expr) -> frozenset[str] | None:
+        try:
+            LiteralExpressionEffects(node).hashable_value
+        except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
+            pass
+        else:
+            return frozenset()
+        if isinstance(node, ast.Name):
+            return frozenset((node.id,))
+        if isinstance(node, ast.Attribute):
+            return SourceClassKeyEntry._relocatable_key_reference_names(node.value)
+        if isinstance(node, ast.Tuple):
+            child_names = tuple(
+                SourceClassKeyEntry._relocatable_key_reference_names(element) for element in node.elts
+            )
+            if any(names is None for names in child_names):
+                return None
+            return frozenset(
+                name for names in child_names if names is not None for name in names
+            )
+        return None
 
 
 @dataclass(frozen=True)
@@ -874,29 +897,6 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
 
 def _source_span(node: ast.AST) -> tuple[int, int]:
     return node.lineno, node.end_lineno or node.lineno
-
-
-def _relocatable_key_reference_names(node: ast.expr) -> frozenset[str] | None:
-    try:
-        LiteralExpressionEffects(node).hashable_value
-    except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
-        pass
-    else:
-        return frozenset()
-    if isinstance(node, ast.Name):
-        return frozenset((node.id,))
-    if isinstance(node, ast.Attribute):
-        return _relocatable_key_reference_names(node.value)
-    if isinstance(node, ast.Tuple):
-        child_names = tuple(
-            _relocatable_key_reference_names(element) for element in node.elts
-        )
-        if any(names is None for names in child_names):
-            return None
-        return frozenset(
-            name for names in child_names if names is not None for name in names
-        )
-    return None
 
 
 def _class_declares_non_null_name(node: ast.ClassDef, name: str) -> bool:

@@ -40,15 +40,15 @@ class MetricStructuralOverlapAxis(FieldedStrEnum):
     )
     MAPPING = (
         "mapping",
-        lambda metrics: _optional_coordinate(metrics.plan_mapping_name),
+        lambda metrics: MetricStructuralOverlapAxis._optional_coordinate(metrics.plan_mapping_name),
     )
     SOURCE_AUTHORITY = (
         "source-authority",
-        lambda metrics: _optional_coordinate(metrics.plan_source_name),
+        lambda metrics: MetricStructuralOverlapAxis._optional_coordinate(metrics.plan_source_name),
     )
     DISPATCH_AXIS = (
         "dispatch-axis",
-        lambda metrics: _optional_coordinate(metrics.plan_dispatch_axis),
+        lambda metrics: MetricStructuralOverlapAxis._optional_coordinate(metrics.plan_dispatch_axis),
     )
     DISPATCH_CASE_FAMILY = (
         "dispatch-case-family",
@@ -66,6 +66,10 @@ class MetricStructuralOverlapAxis(FieldedStrEnum):
 
         return self._coordinate_projection(metrics)
 
+    @staticmethod
+    def _optional_coordinate(value: str | None) -> tuple[str, ...]:
+        return (value,) if value else ()
+
 
 class SourceStructuralOverlapAxis(StrEnum):
     """Source-index coordinates used to group current-snapshot evidence."""
@@ -82,10 +86,6 @@ class StructuralOverlapActionability(StrEnum):
     """Public actionability contract for structural-overlap reports."""
 
     EVIDENCE_ONLY = "structural_evidence_only"
-
-
-def _optional_coordinate(value: str | None) -> tuple[str, ...]:
-    return (value,) if value else ()
 
 
 @dataclass(frozen=True)

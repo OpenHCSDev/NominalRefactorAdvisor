@@ -83,7 +83,6 @@ class OwnerReceiptKind(ReceiptKind):
     PLAYS_SAME_ROLE = "plays_same_role", 1.0, False
 
 
-SERVED_CONSUMER_CAP = 4
 """At most this many shared consumers, or other restating classes, count toward a
 candidate's score."""
 
@@ -432,6 +431,8 @@ class BlockOwnerQuestion:
     owner, and counts for a new mixin instead. `declares_differently` says
     whether a class declares a block name with a different answer.
     """
+
+    SERVED_CONSUMER_CAP = 4
 
     first: CompactIndexedClass
     second: CompactIndexedClass
@@ -1128,7 +1129,7 @@ class BlockOwnerQuestion:
                     for symbol in restaters[:4]
                     if (indexed_class := self.class_for(symbol)) is not None
                 ),
-                count=min(len(restaters), SERVED_CONSUMER_CAP),
+                count=min(len(restaters), self.SERVED_CONSUMER_CAP),
             ),
         )
 
@@ -1162,7 +1163,7 @@ class BlockOwnerQuestion:
                 "of the classes: "
                 + ", ".join(f"`{consumer}`" for _path, consumer in served[:4]),
                 tuple(self.use_locations(owner)[key] for key in served[:4]),
-                count=min(len(served), SERVED_CONSUMER_CAP),
+                count=min(len(served), self.SERVED_CONSUMER_CAP),
             ),
         )
 

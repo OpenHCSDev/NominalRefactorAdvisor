@@ -166,21 +166,6 @@ from nominal_refactor_advisor.product_flow_authority import (
 ARCHITECTURE_GUARDS_PAYLOAD_FIELD = "architecture_guards"
 
 
-def _parsed_modules_from_source_mapping(
-    source_by_path: Mapping[str, str],
-    *,
-    analysis_roots: Iterable[Path] = (),
-) -> tuple[ParsedModule, ...]:
-    module_path_authority = PythonModulePathAuthority.from_parsed_modules(
-        (),
-        analysis_roots=analysis_roots,
-    )
-    return tuple(
-        module_path_authority.source_module(Path(file_path), source).parse()
-        for file_path, source in sorted(source_by_path.items())
-    )
-
-
 @dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
@@ -359,7 +344,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         analysis_roots: Iterable[Path] = (),
     ) -> CodemodSourceSnapshot:
         canonical_sources = canonical_source_mapping(source_by_path)
-        modules = _parsed_modules_from_source_mapping(
+        modules = cls._parsed_modules_from_source_mapping(
             canonical_sources,
             analysis_roots=analysis_roots,
         )
@@ -799,6 +784,21 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> tuple[str, int, int, str]:
         target = group.target
         return (target.file_path, target.line, target.end_line, target.qualname)
+
+    @staticmethod
+    def _parsed_modules_from_source_mapping(
+        source_by_path: Mapping[str, str],
+        *,
+        analysis_roots: Iterable[Path] = (),
+    ) -> tuple[ParsedModule, ...]:
+        module_path_authority = PythonModulePathAuthority.from_parsed_modules(
+            (),
+            analysis_roots=analysis_roots,
+        )
+        return tuple(
+            module_path_authority.source_module(Path(file_path), source).parse()
+            for file_path, source in sorted(source_by_path.items())
+        )
 
 
 

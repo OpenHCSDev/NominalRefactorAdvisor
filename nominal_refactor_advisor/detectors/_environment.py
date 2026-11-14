@@ -51,28 +51,6 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
 )
 
-_BOOLEAN_TOKEN_VOCABULARY = frozenset(
-    (
-        "",
-        "0",
-        "1",
-        "disable",
-        "disabled",
-        "enable",
-        "enabled",
-        "f",
-        "false",
-        "n",
-        "no",
-        "none",
-        "off",
-        "on",
-        "t",
-        "true",
-        "y",
-        "yes",
-    )
-)
 _ENVIRONMENT_KEY_PARAMETER_TOKENS = frozenset(
     ("env", "environment", "flag", "key", "name", "variable")
 )
@@ -322,6 +300,28 @@ def _assignment_target_names(node: ast.Assign | ast.AnnAssign) -> tuple[str, ...
 
 @dataclass(frozen=True)
 class _LiteralResolver:
+    _BOOLEAN_TOKEN_VOCABULARY = frozenset(
+        (
+            "",
+            "0",
+            "1",
+            "disable",
+            "disabled",
+            "enable",
+            "enabled",
+            "f",
+            "false",
+            "n",
+            "no",
+            "none",
+            "off",
+            "on",
+            "t",
+            "true",
+            "y",
+            "yes",
+        )
+    )
     values_by_name: dict[str, ast.AST]
 
     @classmethod
@@ -372,7 +372,7 @@ class _LiteralResolver:
             raw_values = tuple(dict.fromkeys(str(value) for value in values))
             normalized = tuple(value.strip().lower() for value in raw_values)
             if len(normalized) >= 2 and all(
-                value in _BOOLEAN_TOKEN_VOCABULARY for value in normalized
+                value in self._BOOLEAN_TOKEN_VOCABULARY for value in normalized
             ):
                 return raw_values
             return None
@@ -649,15 +649,6 @@ def _missing_overrides(
     return overrides
 
 
-def _unique_read(
-    reads: Iterable[_EnvironmentRead],
-) -> _EnvironmentRead | None:
-    reads_by_identity = {read.identity: read for read in reads}
-    if len(reads_by_identity) != 1:
-        return None
-    return next(iter(reads_by_identity.values()))
-
-
 @dataclass(frozen=True)
 class _EnvironmentReadAuthority:
     aliases: _EnvironmentImportAliases
@@ -720,7 +711,7 @@ class _EnvironmentReadAuthority:
             value = assignment.value
             if value is None:
                 continue
-            source_read = _unique_read(
+            source_read = self._unique_read(
                 (
                     *self.in_expression(value),
                     *(
@@ -746,7 +737,7 @@ class _EnvironmentReadAuthority:
         node: ast.AST,
         lineage: dict[str, _EnvironmentRead],
     ) -> _EnvironmentRead | None:
-        source_read = _unique_read(
+        source_read = self._unique_read(
             (
                 *self.in_expression(node),
                 *(
@@ -759,6 +750,15 @@ class _EnvironmentReadAuthority:
         if source_read is None:
             return None
         return self.with_expression_fallback(source_read, node, lineage)
+
+    @staticmethod
+    def _unique_read(
+        reads: Iterable[_EnvironmentRead],
+    ) -> _EnvironmentRead | None:
+        reads_by_identity = {read.identity: read for read in reads}
+        if len(reads_by_identity) != 1:
+            return None
+        return next(iter(reads_by_identity.values()))
 
 
 def _expression_lineage_names(
@@ -952,60 +952,6 @@ class _EnvironmentBooleanParserSite(SourceLocation):
     absence: _EnvironmentAbsentSemantics
 
 
-def _environment_boolean_parser_sites(
-    scope: _FunctionScope,
-    aliases: _EnvironmentImportAliases,
-) -> tuple[_EnvironmentBooleanParserSite, ...]:
-    resolver = _LiteralResolver.for_scope(scope)
-    read_authority = _EnvironmentReadAuthority(aliases, resolver)
-    lineage = read_authority.lineage(scope)
-    overrides = _missing_overrides(scope, resolver)
-    sites: list[_EnvironmentBooleanParserSite] = []
-    seen: set[tuple[int, int]] = set()
-    for node in scope.nodes:
-        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
-            continue
-        operator = node.ops[0]
-        if not isinstance(operator, (ast.In, ast.NotIn)):
-            continue
-        token_values = resolver.boolean_tokens(node.comparators[0])
-        if token_values is None:
-            continue
-        read = read_authority.source_for_expression(
-            node.left,
-            lineage,
-        )
-        if read is None:
-            continue
-        identity = (node.lineno, node.col_offset)
-        if identity in seen:
-            continue
-        seen.add(identity)
-        matched_decision = isinstance(operator, ast.In)
-        source_names = _expression_lineage_names(node.left, read, lineage)
-        absence = _EnvironmentAbsentSemantics.from_parser_context(
-            read,
-            source_names,
-            node.left,
-            overrides,
-            token_values,
-            matched_decision,
-        )
-        sites.append(
-            _EnvironmentBooleanParserSite(
-                file_path=scope.module.file_path,
-                line=node.lineno,
-                symbol=scope.symbol,
-                read_kind=read.kind,
-                environment_key=read.key,
-                token_values=token_values,
-                matched_decision=matched_decision,
-                absence=absence,
-            )
-        )
-    return tuple(sites)
-
-
 class EnvironmentSemanticNameAuthority:
     """Own canonical name-token projection for environment flag symbols."""
 
@@ -1056,51 +1002,6 @@ def _scope_has_declared_authority_shape(scope: _FunctionScope) -> bool:
 @dataclass(frozen=True)
 class _DeclaredEnvironmentFlagAuthority(SourceLocation):
     selectors: tuple[str, ...]
-
-
-def _declared_environment_flag_authorities(
-    scopes: Iterable[_FunctionScope],
-) -> tuple[_DeclaredEnvironmentFlagAuthority, ...]:
-    authorities: list[_DeclaredEnvironmentFlagAuthority] = []
-    for scope in scopes:
-        if not _scope_has_declared_authority_shape(scope):
-            continue
-        selectors = (scope.node.name,)
-        if scope.class_name is not None:
-            selectors = (scope.node.name, f"{scope.class_name}.{scope.node.name}")
-        authorities.append(
-            _DeclaredEnvironmentFlagAuthority(
-                file_path=scope.module.file_path,
-                line=scope.node.lineno,
-                symbol=scope.symbol,
-                selectors=selectors,
-            )
-        )
-    return tuple(authorities)
-
-
-def _authority_for_parser(
-    site: _EnvironmentBooleanParserSite,
-    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
-) -> _DeclaredEnvironmentFlagAuthority | None:
-    parser_tokens = EnvironmentSemanticNameAuthority.tokens(site.symbol)
-    scored = sorted(
-        (
-            (
-                len(
-                    parser_tokens
-                    & EnvironmentSemanticNameAuthority.tokens(authority.symbol)
-                ),
-                authority,
-            )
-            for authority in authorities
-            if authority.symbol != site.symbol
-        ),
-        key=lambda row: (-row[0], row[1].file_path, row[1].line, row[1].symbol),
-    )
-    if not scored or scored[0][0] < 2:
-        return None
-    return scored[0][1]
 
 
 def _returned_call(scope: _FunctionScope) -> ast.Call | None:
@@ -1156,50 +1057,6 @@ class _FixedKeyAuthorityWrapperFact(SourceLocation):
     selector_chain: tuple[str, ...]
 
 
-def _fixed_key_authority_wrapper_facts(
-    scopes: Iterable[_FunctionScope],
-) -> tuple[_FixedKeyAuthorityWrapperFact, ...]:
-    facts: list[_FixedKeyAuthorityWrapperFact] = []
-    for scope in scopes:
-        if scope.class_name is None or scope.class_method_count > 2:
-            continue
-        call = _returned_call(scope)
-        if call is None:
-            continue
-        selector_chain = ExpressionReference.decoded(call.func).attribute_chain
-        if selector_chain is None:
-            continue
-        key_expression = next(
-            (
-                keyword.value
-                for keyword in CallKeywords.of(call.keywords).named
-                if EnvironmentSemanticNameAuthority.tokens(keyword.name)
-                & _ENVIRONMENT_KEY_PARAMETER_TOKENS
-            ),
-            None,
-        )
-        if call.args:
-            key_expression = call.args[0]
-        if key_expression is None:
-            continue
-        dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
-        if _expression_uses_parameters(key_expression, dynamic_parameters):
-            continue
-        environment_key = _LiteralResolver.for_scope(scope).string(key_expression)
-        if environment_key is None:
-            continue
-        facts.append(
-            _FixedKeyAuthorityWrapperFact(
-                file_path=scope.module.file_path,
-                line=scope.node.lineno,
-                symbol=scope.symbol,
-                environment_key=environment_key,
-                selector_chain=selector_chain,
-            )
-        )
-    return tuple(facts)
-
-
 @dataclass(frozen=True)
 class _EnvironmentBooleanDriftCandidate(SourceLocation):
     metrics: EnvironmentBooleanDriftMetrics
@@ -1230,37 +1087,6 @@ class _EnvironmentBooleanDriftCandidate(SourceLocation):
         if authority is None:
             return (self.projection_evidence,)
         return (self.projection_evidence, authority)
-
-
-def _parser_candidate(
-    site: _EnvironmentBooleanParserSite,
-    authority: _DeclaredEnvironmentFlagAuthority | None,
-) -> _EnvironmentBooleanDriftCandidate:
-    token_role = str(site.matched_decision).lower()
-    detail = (
-        f"interprets `{site.read_kind.value}` through local {token_role}-token "
-        f"values {site.token_values}"
-    )
-    if site.absence.decision is not None:
-        absent_state = EnvironmentFlagDecision(site.absence.decision).label
-        detail += f"; {site.absence.source} makes absence {absent_state}"
-    if authority is not None:
-        detail += f" despite existing declared authority `{authority.symbol}`"
-    return _EnvironmentBooleanDriftCandidate(
-        file_path=site.file_path,
-        line=site.line,
-        symbol=site.symbol,
-        metrics=LocalEnvironmentBooleanParserMetrics(
-            environment_key=site.environment_key,
-            read_kind=site.read_kind,
-            token_values=site.token_values,
-            matched_decision=site.matched_decision,
-            absent_decision=site.absence.decision,
-            absent_source=site.absence.source,
-        ),
-        summary_detail=detail,
-        authority=authority,
-    )
 
 
 def _wrapper_candidate(
@@ -1300,14 +1126,133 @@ class _EnvironmentBooleanModuleProjection:
                     site
                     for scope in scopes
                     if scope.references_any_name(environment_read_names)
-                    for site in _environment_boolean_parser_sites(scope, aliases)
+                    for site in cls._environment_boolean_parser_sites(scope, aliases)
                 )
                 if environment_read_names
                 else ()
             ),
-            authorities=_declared_environment_flag_authorities(scopes),
-            wrapper_facts=_fixed_key_authority_wrapper_facts(scopes),
+            authorities=cls._declared_environment_flag_authorities(scopes),
+            wrapper_facts=cls._fixed_key_authority_wrapper_facts(scopes),
         )
+
+    @staticmethod
+    def _declared_environment_flag_authorities(
+        scopes: Iterable[_FunctionScope],
+    ) -> tuple[_DeclaredEnvironmentFlagAuthority, ...]:
+        authorities: list[_DeclaredEnvironmentFlagAuthority] = []
+        for scope in scopes:
+            if not _scope_has_declared_authority_shape(scope):
+                continue
+            selectors = (scope.node.name,)
+            if scope.class_name is not None:
+                selectors = (scope.node.name, f"{scope.class_name}.{scope.node.name}")
+            authorities.append(
+                _DeclaredEnvironmentFlagAuthority(
+                    file_path=scope.module.file_path,
+                    line=scope.node.lineno,
+                    symbol=scope.symbol,
+                    selectors=selectors,
+                )
+            )
+        return tuple(authorities)
+
+    @staticmethod
+    def _environment_boolean_parser_sites(
+        scope: _FunctionScope,
+        aliases: _EnvironmentImportAliases,
+    ) -> tuple[_EnvironmentBooleanParserSite, ...]:
+        resolver = _LiteralResolver.for_scope(scope)
+        read_authority = _EnvironmentReadAuthority(aliases, resolver)
+        lineage = read_authority.lineage(scope)
+        overrides = _missing_overrides(scope, resolver)
+        sites: list[_EnvironmentBooleanParserSite] = []
+        seen: set[tuple[int, int]] = set()
+        for node in scope.nodes:
+            if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+                continue
+            operator = node.ops[0]
+            if not isinstance(operator, (ast.In, ast.NotIn)):
+                continue
+            token_values = resolver.boolean_tokens(node.comparators[0])
+            if token_values is None:
+                continue
+            read = read_authority.source_for_expression(
+                node.left,
+                lineage,
+            )
+            if read is None:
+                continue
+            identity = (node.lineno, node.col_offset)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            matched_decision = isinstance(operator, ast.In)
+            source_names = _expression_lineage_names(node.left, read, lineage)
+            absence = _EnvironmentAbsentSemantics.from_parser_context(
+                read,
+                source_names,
+                node.left,
+                overrides,
+                token_values,
+                matched_decision,
+            )
+            sites.append(
+                _EnvironmentBooleanParserSite(
+                    file_path=scope.module.file_path,
+                    line=node.lineno,
+                    symbol=scope.symbol,
+                    read_kind=read.kind,
+                    environment_key=read.key,
+                    token_values=token_values,
+                    matched_decision=matched_decision,
+                    absence=absence,
+                )
+            )
+        return tuple(sites)
+
+    @staticmethod
+    def _fixed_key_authority_wrapper_facts(
+        scopes: Iterable[_FunctionScope],
+    ) -> tuple[_FixedKeyAuthorityWrapperFact, ...]:
+        facts: list[_FixedKeyAuthorityWrapperFact] = []
+        for scope in scopes:
+            if scope.class_name is None or scope.class_method_count > 2:
+                continue
+            call = _returned_call(scope)
+            if call is None:
+                continue
+            selector_chain = ExpressionReference.decoded(call.func).attribute_chain
+            if selector_chain is None:
+                continue
+            key_expression = next(
+                (
+                    keyword.value
+                    for keyword in CallKeywords.of(call.keywords).named
+                    if EnvironmentSemanticNameAuthority.tokens(keyword.name)
+                    & _ENVIRONMENT_KEY_PARAMETER_TOKENS
+                ),
+                None,
+            )
+            if call.args:
+                key_expression = call.args[0]
+            if key_expression is None:
+                continue
+            dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
+            if _expression_uses_parameters(key_expression, dynamic_parameters):
+                continue
+            environment_key = _LiteralResolver.for_scope(scope).string(key_expression)
+            if environment_key is None:
+                continue
+            facts.append(
+                _FixedKeyAuthorityWrapperFact(
+                    file_path=scope.module.file_path,
+                    line=scope.node.lineno,
+                    symbol=scope.symbol,
+                    environment_key=environment_key,
+                    selector_chain=selector_chain,
+                )
+            )
+        return tuple(facts)
 
 
 def _native_environment_function_may_declare_authority(name: str) -> bool:
@@ -1467,30 +1412,6 @@ class _EnvironmentBooleanModuleProjectionFamily(
         return [_EnvironmentBooleanModuleProjection.from_scopes(scopes, aliases)]
 
 
-def _fixed_key_authority_wrapper_sites_from_facts(
-    facts: Iterable[_FixedKeyAuthorityWrapperFact],
-    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
-) -> tuple[_FixedKeyAuthorityWrapperSite, ...]:
-    authority_symbols = {authority.symbol for authority in authorities}
-    sites: list[_FixedKeyAuthorityWrapperSite] = []
-    for fact in facts:
-        if fact.symbol in authority_symbols:
-            continue
-        authority = _authority_for_selector_chain(fact.selector_chain, authorities)
-        if authority is None:
-            continue
-        sites.append(
-            _FixedKeyAuthorityWrapperSite(
-                file_path=fact.file_path,
-                line=fact.line,
-                symbol=fact.symbol,
-                environment_key=fact.environment_key,
-                authority=authority,
-            )
-        )
-    return tuple(sites)
-
-
 class EnvironmentBooleanAuthorityDriftDetector(
     CompactModuleProjectionDetectorMixin[_EnvironmentBooleanModuleProjection],
     SemanticMirrorIssueDetector,
@@ -1532,13 +1453,13 @@ class EnvironmentBooleanAuthorityDriftDetector(
             for authority in projection.authorities
         )
         candidates = [
-            _parser_candidate(site, _authority_for_parser(site, authorities))
+            self._parser_candidate(site, self._authority_for_parser(site, authorities))
             for projection in projections
             for site in projection.parser_sites
         ]
         candidates.extend(
             _wrapper_candidate(site)
-            for site in _fixed_key_authority_wrapper_sites_from_facts(
+            for site in self._fixed_key_authority_wrapper_sites_from_facts(
                 (
                     fact
                     for projection in projections
@@ -1569,6 +1490,85 @@ class EnvironmentBooleanAuthorityDriftDetector(
                 ),
             )
         ]
+
+    @staticmethod
+    def _authority_for_parser(
+        site: _EnvironmentBooleanParserSite,
+        authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
+    ) -> _DeclaredEnvironmentFlagAuthority | None:
+        parser_tokens = EnvironmentSemanticNameAuthority.tokens(site.symbol)
+        scored = sorted(
+            (
+                (
+                    len(
+                        parser_tokens
+                        & EnvironmentSemanticNameAuthority.tokens(authority.symbol)
+                    ),
+                    authority,
+                )
+                for authority in authorities
+                if authority.symbol != site.symbol
+            ),
+            key=lambda row: (-row[0], row[1].file_path, row[1].line, row[1].symbol),
+        )
+        if not scored or scored[0][0] < 2:
+            return None
+        return scored[0][1]
+
+    @staticmethod
+    def _fixed_key_authority_wrapper_sites_from_facts(
+        facts: Iterable[_FixedKeyAuthorityWrapperFact],
+        authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
+    ) -> tuple[_FixedKeyAuthorityWrapperSite, ...]:
+        authority_symbols = {authority.symbol for authority in authorities}
+        sites: list[_FixedKeyAuthorityWrapperSite] = []
+        for fact in facts:
+            if fact.symbol in authority_symbols:
+                continue
+            authority = _authority_for_selector_chain(fact.selector_chain, authorities)
+            if authority is None:
+                continue
+            sites.append(
+                _FixedKeyAuthorityWrapperSite(
+                    file_path=fact.file_path,
+                    line=fact.line,
+                    symbol=fact.symbol,
+                    environment_key=fact.environment_key,
+                    authority=authority,
+                )
+            )
+        return tuple(sites)
+
+    @staticmethod
+    def _parser_candidate(
+        site: _EnvironmentBooleanParserSite,
+        authority: _DeclaredEnvironmentFlagAuthority | None,
+    ) -> _EnvironmentBooleanDriftCandidate:
+        token_role = str(site.matched_decision).lower()
+        detail = (
+            f"interprets `{site.read_kind.value}` through local {token_role}-token "
+            f"values {site.token_values}"
+        )
+        if site.absence.decision is not None:
+            absent_state = EnvironmentFlagDecision(site.absence.decision).label
+            detail += f"; {site.absence.source} makes absence {absent_state}"
+        if authority is not None:
+            detail += f" despite existing declared authority `{authority.symbol}`"
+        return _EnvironmentBooleanDriftCandidate(
+            file_path=site.file_path,
+            line=site.line,
+            symbol=site.symbol,
+            metrics=LocalEnvironmentBooleanParserMetrics(
+                environment_key=site.environment_key,
+                read_kind=site.read_kind,
+                token_values=site.token_values,
+                matched_decision=site.matched_decision,
+                absent_decision=site.absence.decision,
+                absent_source=site.absence.source,
+            ),
+            summary_detail=detail,
+            authority=authority,
+        )
 
 
 __all__ = ("EnvironmentBooleanAuthorityDriftDetector",)

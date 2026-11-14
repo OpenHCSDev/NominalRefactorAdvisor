@@ -145,12 +145,12 @@ class DeclaredCapabilityRequirementOperation(
             if override.docstring is not None:
                 text += f"\n{_quoted(override.docstring)}"
             replacements.setdefault(declaration.file_path, []).append(
-                (*_whole_lines(geometry(declaration.file_path), override.method), _indented(text, override.method))
+                (*self._whole_lines(geometry(declaration.file_path), override.method), _indented(text, override.method))
             )
         if not replacements:
             raise ValueError(f"no descendant of `{base.qualname}` overrides {method_name!r}")
         assert isinstance(base_method, ast.FunctionDef)
-        start, _end = _whole_lines(geometry(source_path), base_method)
+        start, _end = self._whole_lines(geometry(source_path), base_method)
         declared = (
             f"{self.attribute_name}: ClassVar[type] = object\n"
             f"\"\"\"The class `{method_name}` requires its argument to be; every class is an object.\"\"\"\n"
@@ -186,6 +186,16 @@ class DeclaredCapabilityRequirementOperation(
         )
         return tuple(edits)
 
+    @staticmethod
+    def _whole_lines(geometry: SourceTextGeometry, method: ast.FunctionDef) -> tuple[int, int]:
+        """A method's lines from its first decorator through its last, without the final newline."""
+
+        lines = geometry.source.splitlines(keepends=True)
+        first = min((decorator.lineno for decorator in method.decorator_list), default=method.lineno)
+        start = sum(len(line) for line in lines[: first - 1])
+        end = sum(len(line) for line in lines[: method.end_lineno or method.lineno])
+        return start, end - (1 if lines[(method.end_lineno or method.lineno) - 1].endswith("\n") else 0)
+
 
 def _binds(statement: ast.stmt, name: str) -> bool:
     match statement:
@@ -196,16 +206,6 @@ def _binds(statement: ast.stmt, name: str) -> bool:
         case ast.AnnAssign(target=ast.Name(id=bound)):
             return bound == name
     return False
-
-
-def _whole_lines(geometry: SourceTextGeometry, method: ast.FunctionDef) -> tuple[int, int]:
-    """A method's lines from its first decorator through its last, without the final newline."""
-
-    lines = geometry.source.splitlines(keepends=True)
-    first = min((decorator.lineno for decorator in method.decorator_list), default=method.lineno)
-    start = sum(len(line) for line in lines[: first - 1])
-    end = sum(len(line) for line in lines[: method.end_lineno or method.lineno])
-    return start, end - (1 if lines[(method.end_lineno or method.lineno) - 1].endswith("\n") else 0)
 
 
 def _indented(text: str, method: ast.FunctionDef) -> str:

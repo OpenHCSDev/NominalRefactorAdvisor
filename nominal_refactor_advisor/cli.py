@@ -214,19 +214,6 @@ from nominal_refactor_advisor.refactor_search import (
 )
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
-MEMBER_AWARENESS_LISTING_LIMIT = 20
-MEMBER_AWARENESS_BYPASS_LIMIT = 3
-_VALUELESS_ARGUMENT_ACTIONS = frozenset(
-    {
-        "store_true",
-        "store_false",
-        "store_const",
-        "append_const",
-        "count",
-        "help",
-        "version",
-    }
-)
 CliArgumentDefault: TypeAlias = JsonValue | Path
 CliArgumentValueType: TypeAlias = type[str] | type[int] | type[float] | type[Path]
 CodemodSelectorReportFactory: TypeAlias = Callable[
@@ -237,6 +224,17 @@ CodemodSelectorReportFactory: TypeAlias = Callable[
 
 @dataclass(frozen=True)
 class CliArgumentSpec:
+    _VALUELESS_ARGUMENT_ACTIONS = frozenset(
+        {
+            "store_true",
+            "store_false",
+            "store_const",
+            "append_const",
+            "count",
+            "help",
+            "version",
+        }
+    )
     flags: tuple[str, ...]
     help: str
     action: str | None = None
@@ -254,7 +252,7 @@ class CliArgumentSpec:
             kwargs["default"] = self.default
         if self.dest is not None:
             kwargs["dest"] = self.dest
-        if self.action not in _VALUELESS_ARGUMENT_ACTIONS:
+        if self.action not in self._VALUELESS_ARGUMENT_ACTIONS:
             if self.nargs is not None:
                 kwargs["nargs"] = self.nargs
             if self.value_type is not None:
@@ -1506,18 +1504,17 @@ class JsonPayloadBuilder:
         return payload
 
 
-STDIN_JSON_DOCUMENT_TOKEN = "-"
-
-
 @dataclass(frozen=True)
 class JsonDocumentSource:
     """CLI JSON source backed by one path or the stdin token."""
+
+    STDIN_JSON_DOCUMENT_TOKEN = "-"
 
     path: Path
 
     @property
     def reads_stdin(self) -> bool:
-        return self.path.as_posix() == STDIN_JSON_DOCUMENT_TOKEN
+        return self.path.as_posix() == self.STDIN_JSON_DOCUMENT_TOKEN
 
     def load(self) -> JsonValue:
         if self.reads_stdin:
@@ -1584,20 +1581,6 @@ def load_codemod_plan_sequence(path: Path) -> CodemodPlanSequence:
     return CodemodPlanRoot.from_json_value(
         JsonDocumentSource(path).load()
     ).as_sequence()
-
-
-def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
-    """Load a codemod document or sequence and return its normalized JSON shape."""
-
-    return json_report_object(
-        CodemodPlanRoot.from_json_value(JsonDocumentSource(path).load())
-    )
-
-
-def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
-    """Load one registry-backed codemod target selector from JSON."""
-
-    return CodemodTargetSelector.from_json_value(JsonDocumentSource(path).load())
 
 
 def write_cli_json_artifact(path: Path | None, payload: JsonObject) -> None:
@@ -1703,33 +1686,6 @@ class CodemodFindingProjectionAuthority:
         ).report()
         self.continuation_artifact.write(report)
         return report
-
-
-def format_codemod_refactor_goal_markdown(
-    report: CodemodRefactorGoalReport,
-) -> str:
-    """Render a concise goal-directed codemod workflow summary."""
-
-    return report.to_markdown()
-
-
-def codemod_refactor_concept_from_args(
-    args: argparse.Namespace,
-) -> type[RefactorConcept]:
-    """Resolve the nominal semantic migration requested at the CLI boundary."""
-
-    try:
-        concept_type = RefactorConcept.declaration_for_key(args.codemod_refactor_goal)
-    except ValueError as error:
-        choices = ", ".join(
-            declaration.concept_key()
-            for declaration in RefactorConcept.declaration_types()
-        )
-        raise ValueError(
-            f"unknown codemod refactor goal {args.codemod_refactor_goal!r}; "
-            f"choose one of {choices}"
-        ) from error
-    return concept_type
 
 
 def format_architecture_guard_markdown(report: ArchitectureGuardReport) -> str:
@@ -1951,29 +1907,12 @@ def format_structural_overlap_markdown(
     return "\n".join(lines)
 
 
-def format_raw_findings_suppressed_markdown(findings: list[RefactorFinding]) -> str:
-    return "\n".join(
-        (
-            "Raw finding evidence suppressed:",
-            (
-                "   - Full finding details are hidden because the refactor gate "
-                "is on."
-            ),
-            (
-                "   - Read the gate first. It lists what must be proven before "
-                "you change anything."
-            ),
-            (
-                "   - Use --raw-findings when the gate asks for raw evidence. "
-                "Otherwise wait until you've chosen the owner."
-            ),
-            f"   - Suppressed finding count: {len(findings)}",
-        )
-    )
-
-
 class MarkdownReportRenderer(ABC):
     """Shared markdown rendering algorithm with one layout hook."""
+
+    MEMBER_AWARENESS_LISTING_LIMIT = 20
+
+    MEMBER_AWARENESS_BYPASS_LIMIT = 3
 
     @property
     @abstractmethod
@@ -2023,7 +1962,7 @@ class MarkdownReportRenderer(ABC):
                     + self.findings(findings)
                 )
             elif findings:
-                sections.append(format_raw_findings_suppressed_markdown(findings))
+                sections.append(self.format_raw_findings_suppressed_markdown(findings))
         if timing is not None:
             sections.append(format_timing_markdown(timing))
         return self.join_sections(sections)
@@ -2112,7 +2051,7 @@ class MarkdownReportRenderer(ABC):
             f"   - Consumers naming one member: {report.single_member_consumers}",
             f"   - Distinct member sets: {report.distinct_member_sets}",
         ]
-        for group in report.groups[:MEMBER_AWARENESS_LISTING_LIMIT]:
+        for group in report.groups[:self.MEMBER_AWARENESS_LISTING_LIMIT]:
             owners = ", ".join(group.covering_owners) or "none declared"
             lines.append(
                 f"   - [{group.kind.value}] {group.family}: "
@@ -2122,22 +2061,22 @@ class MarkdownReportRenderer(ABC):
             )
             lines.extend(
                 f"       bypass: {consumer.file_path}::{consumer.qualname}"
-                for consumer in group.bypassing[:MEMBER_AWARENESS_BYPASS_LIMIT]
+                for consumer in group.bypassing[:self.MEMBER_AWARENESS_BYPASS_LIMIT]
             )
         lines.extend(
             f"   - owner {item.owner}: {item.consumers} consumer(s) name its "
             f"members, {item.owner_using} use it"
-            for item in report.owners[:MEMBER_AWARENESS_LISTING_LIMIT]
+            for item in report.owners[:self.MEMBER_AWARENESS_LISTING_LIMIT]
         )
         lines.append(
             f"   - Add-member cost: {report.add_member_edits} edit(s) outside declarations "
             f"across {len(report.add_member_costs)} famil(ies); correct maintenance is 0"
         )
-        for cost in report.add_member_costs[:MEMBER_AWARENESS_LISTING_LIMIT]:
+        for cost in report.add_member_costs[:self.MEMBER_AWARENESS_LISTING_LIMIT]:
             lines.append(f"   - add to [{cost.kind.value}] {cost.family}: {cost.edits} edit(s)")
             lines.extend(
                 f"       edit: {consumer.file_path}::{consumer.qualname}"
-                for consumer in cost.consumers[:MEMBER_AWARENESS_BYPASS_LIMIT]
+                for consumer in cost.consumers[:self.MEMBER_AWARENESS_BYPASS_LIMIT]
             )
         inherited = report.inherited
         lines.append(
@@ -2156,7 +2095,7 @@ class MarkdownReportRenderer(ABC):
         )
         lines.extend(
             f"   - introspects {item.classes} class(es), {item.fields} field(s): {item.consumer}"
-            for item in introspected.generic[:MEMBER_AWARENESS_LISTING_LIMIT]
+            for item in introspected.generic[:self.MEMBER_AWARENESS_LISTING_LIMIT]
         )
         lines.append(
             f"   - Derived by declarations: {report.derived_total} "
@@ -2166,7 +2105,7 @@ class MarkdownReportRenderer(ABC):
         lines.extend(
             f"   - inherited from {owner.owner}: {owner.derived_pairs} pair(s) across "
             f"{owner.members} class(es), called from {owner.consumers} function(s)"
-            for owner in inherited.owners[:MEMBER_AWARENESS_LISTING_LIMIT]
+            for owner in inherited.owners[:self.MEMBER_AWARENESS_LISTING_LIMIT]
         )
         return "\n".join(lines)
 
@@ -2224,6 +2163,27 @@ class MarkdownReportRenderer(ABC):
                 )
             )
         return "\n".join(lines)
+
+    @staticmethod
+    def format_raw_findings_suppressed_markdown(findings: list[RefactorFinding]) -> str:
+        return "\n".join(
+            (
+                "Raw finding evidence suppressed:",
+                (
+                    "   - Full finding details are hidden because the refactor gate "
+                    "is on."
+                ),
+                (
+                    "   - Read the gate first. It lists what must be proven before "
+                    "you change anything."
+                ),
+                (
+                    "   - Use --raw-findings when the gate asks for raw evidence. "
+                    "Otherwise wait until you've chosen the owner."
+                ),
+                f"   - Suppressed finding count: {len(findings)}",
+            )
+        )
 
 
 class StandardMarkdownReportRenderer(MarkdownReportRenderer):
@@ -2695,7 +2655,7 @@ class CodemodValidatePlanCliCommand(
         return args.codemod_validate_plan
 
     def run(self) -> int:
-        payload = load_codemod_plan_validation_payload(self.plan_path)
+        payload = self.load_codemod_plan_validation_payload(self.plan_path)
         write_cli_json_artifact(self.args.codemod_plan_out, payload)
         print(
             json.dumps(
@@ -2710,6 +2670,14 @@ class CodemodValidatePlanCliCommand(
         if self.args.codemod_plan is None:
             self.parser.error("--codemod-validate-plan requires --codemod-plan")
         return self.args.codemod_plan
+
+    @staticmethod
+    def load_codemod_plan_validation_payload(path: Path) -> JsonObject:
+        """Load a codemod document or sequence and return its normalized JSON shape."""
+
+        return json_report_object(
+            CodemodPlanRoot.from_json_value(JsonDocumentSource(path).load())
+        )
 
 
 class CodemodComposePlansCliCommand(
@@ -3764,7 +3732,7 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
     def run(self) -> int:
         snapshot = self.required_source_snapshot()
         try:
-            selector = load_codemod_target_selector(self.selector_path)
+            selector = self.load_codemod_target_selector(self.selector_path)
         except (OSError, json.JSONDecodeError, ValueError) as error:
             self.parser.error(str(error))
         payload = self.payload_for_selector(snapshot, selector)
@@ -3792,6 +3760,12 @@ class CodemodSelectorQueryCliCommand(CodemodScanQueryCliCommand, ABC):
                 "payload_for_selector"
             )
         return json_report_object(self.report_factory(snapshot, selector))
+
+    @staticmethod
+    def load_codemod_target_selector(path: Path) -> CodemodTargetSelector:
+        """Load one registry-backed codemod target selector from JSON."""
+
+        return CodemodTargetSelector.from_json_value(JsonDocumentSource(path).load())
 
 
 class CodemodResolveSelectorCliCommand(CodemodSelectorQueryCliCommand):
@@ -3853,7 +3827,7 @@ class CodemodRefactorGoalCliCommand(
         """The goal concept's domain: what its declarations can read."""
 
         return FindingRecipeSynthesizer.scan_policy_for_concept(
-            codemod_refactor_concept_from_args(args), policy, roots, config
+            cls.codemod_refactor_concept_from_args(args), policy, roots, config
         )
 
     def run(self) -> int:
@@ -3862,7 +3836,7 @@ class CodemodRefactorGoalCliCommand(
                 "--codemod-refactor-goal accepts guard-only --codemod-plan input"
             )
         try:
-            migration_type = codemod_refactor_concept_from_args(self.args)
+            migration_type = self.codemod_refactor_concept_from_args(self.args)
         except ValueError as error:
             self.parser.error(str(error))
         report = CodemodRefactorGoalRunner(
@@ -3898,8 +3872,35 @@ class CodemodRefactorGoalCliCommand(
         if self.args.json:
             print(json.dumps(json_report_object(report), indent=2))
         else:
-            print(format_codemod_refactor_goal_markdown(report))
+            print(self.format_codemod_refactor_goal_markdown(report))
         return 0 if report.stop_reason.completed else 1
+
+    @staticmethod
+    def codemod_refactor_concept_from_args(
+        args: argparse.Namespace,
+    ) -> type[RefactorConcept]:
+        """Resolve the nominal semantic migration requested at the CLI boundary."""
+
+        try:
+            concept_type = RefactorConcept.declaration_for_key(args.codemod_refactor_goal)
+        except ValueError as error:
+            choices = ", ".join(
+                declaration.concept_key()
+                for declaration in RefactorConcept.declaration_types()
+            )
+            raise ValueError(
+                f"unknown codemod refactor goal {args.codemod_refactor_goal!r}; "
+                f"choose one of {choices}"
+            ) from error
+        return concept_type
+
+    @staticmethod
+    def format_codemod_refactor_goal_markdown(
+        report: CodemodRefactorGoalReport,
+    ) -> str:
+        """Render a concise goal-directed codemod workflow summary."""
+
+        return report.to_markdown()
 
 
 @dataclass(frozen=True)

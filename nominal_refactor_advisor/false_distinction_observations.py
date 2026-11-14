@@ -112,41 +112,6 @@ def evaluates_without_effect(node: ast.AST) -> bool:
     return False
 
 
-def matches_without_effect(pattern: ast.pattern) -> bool:
-    """Whether matching `pattern` only tests types and reads attributes.
-
-    A value pattern compares with `==`; sequence and mapping patterns call
-    `len` and `__getitem__`; each can run user code.
-    """
-
-    match pattern:
-        case ast.MatchAs(pattern=None) | ast.MatchSingleton():
-            return True
-        case ast.MatchAs(pattern=ast.pattern() as inner):
-            return matches_without_effect(inner)
-        case ast.MatchOr(patterns=patterns):
-            return all(map(matches_without_effect, patterns))
-        case ast.MatchClass(cls=cls, patterns=patterns, kwd_patterns=keywords):
-            return evaluates_without_effect(cls) and all(
-                map(matches_without_effect, (*patterns, *keywords))
-            )
-    return False
-
-
-def captures_names(pattern: ast.pattern) -> bool:
-    """Whether matching `pattern` binds a name the arm can read."""
-
-    for node in ast.walk(pattern):
-        match node:
-            case (
-                ast.MatchAs(name=str())
-                | ast.MatchStar(name=str())
-                | ast.MatchMapping(rest=str())
-            ):
-                return True
-    return False
-
-
 @dataclass(frozen=True)
 class Scope:
     """One scope's own code: its body walked without entering nested definitions."""
@@ -449,7 +414,7 @@ class MatchArms(StatementArms):
 
     def refusals(self) -> Iterator[str]:
         for case in self.node.cases:
-            if not matches_without_effect(case.pattern):
+            if not self.matches_without_effect(case.pattern):
                 yield f"matching `{ast.unparse(case.pattern)}` can have an effect"
         yield from super().refusals()
 
@@ -460,10 +425,45 @@ class MatchArms(StatementArms):
                 pattern=ast.MatchAs(pattern=None, name=None), guard=None
             ) if all(
                 same_code(case.body, node.cases[0].body)
-                and not captures_names(case.pattern)
+                and not cls.captures_names(case.pattern)
                 for case in node.cases
             ):
                 yield cls(node)
+
+    @staticmethod
+    def captures_names(pattern: ast.pattern) -> bool:
+        """Whether matching `pattern` binds a name the arm can read."""
+
+        for node in ast.walk(pattern):
+            match node:
+                case (
+                    ast.MatchAs(name=str())
+                    | ast.MatchStar(name=str())
+                    | ast.MatchMapping(rest=str())
+                ):
+                    return True
+        return False
+
+    @staticmethod
+    def matches_without_effect(pattern: ast.pattern) -> bool:
+        """Whether matching `pattern` only tests types and reads attributes.
+
+        A value pattern compares with `==`; sequence and mapping patterns call
+        `len` and `__getitem__`; each can run user code.
+        """
+
+        match pattern:
+            case ast.MatchAs(pattern=None) | ast.MatchSingleton():
+                return True
+            case ast.MatchAs(pattern=ast.pattern() as inner):
+                return MatchArms.matches_without_effect(inner)
+            case ast.MatchOr(patterns=patterns):
+                return all(map(MatchArms.matches_without_effect, patterns))
+            case ast.MatchClass(cls=cls, patterns=patterns, kwd_patterns=keywords):
+                return evaluates_without_effect(cls) and all(
+                    map(MatchArms.matches_without_effect, (*patterns, *keywords))
+                )
+        return False
 
 
 @dataclass(frozen=True)
@@ -798,6 +798,8 @@ class IdentityRead:
 class NameUse:
     """One name spelled somewhere in a module, and what that spelling does."""
 
+    SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
+
     name: str
     kind: NameUseKind
 
@@ -822,7 +824,7 @@ class NameUse:
                 case ast.Name(id=name) | ast.Attribute(attr=name):
                     yield name, NameUseKind.of(node, parents), node.lineno
                 case ast.Constant(value=str() as text):
-                    for word in SPELLED_WORD.findall(text):
+                    for word in NameUse.SPELLED_WORD.findall(text):
                         yield word, NameUseKind.OTHER, node.lineno
                 case ast.alias(name=name, asname=exported) if exported == name:
                     yield name, NameUseKind.OTHER, node.lineno
@@ -833,7 +835,7 @@ class NameUse:
                         yield name, NameUseKind.READ_IDENTITY, node.lineno
         for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
             if token.type == tokenize.COMMENT:
-                for word in SPELLED_WORD.findall(token.string):
+                for word in NameUse.SPELLED_WORD.findall(token.string):
                     yield word, NameUseKind.OTHER, token.start[0]
 
 
@@ -906,9 +908,6 @@ class SiblingTestModules(ParsedModuleSetFact):
             frozenset(Path(module.file_path).resolve() for module in modules),
         )
         return cls((*held_tests, *unheld.modules))
-
-
-SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
 
 
 @dataclass(frozen=True)

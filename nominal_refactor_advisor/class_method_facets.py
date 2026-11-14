@@ -362,18 +362,91 @@ class CompactClassMethod:
         coordinates = tuple(
             coordinate
             for statement_index, statement in enumerate(statements)
-            for coordinate in _compact_class_method_coordinates(
+            for coordinate in self._compact_class_method_coordinates(
                 statement,
                 ("body", statement_index),
             )
         )
         return CompactClassMethodSemanticProfile(
             skeleton=tuple(
-                _compact_class_method_statement_skeleton(statement)
+                self._compact_class_method_statement_skeleton(statement)
                 for statement in statements
             ),
             coordinates=coordinates,
         )
+
+    @staticmethod
+    def _compact_class_method_coordinates(
+        node: ast.AST,
+        path: tuple[object, ...] = (),
+    ) -> tuple[CompactMethodSemanticCoordinate, ...]:
+        coordinates: list[CompactMethodSemanticCoordinate] = []
+        coordinate_path = tuple(str(item) for item in path)
+        if isinstance(node, ast.Constant):
+            coordinates.append(
+                CompactMethodSemanticCoordinate(
+                    coordinate_path,
+                    CompactMethodSemanticCoordinateKind.CONSTANT,
+                    repr(node.value),
+                )
+            )
+        elif isinstance(node, ast.Name):
+            coordinates.append(
+                CompactMethodSemanticCoordinate(
+                    coordinate_path,
+                    CompactMethodSemanticCoordinateKind.NAME,
+                    node.id,
+                )
+            )
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Name) and node.value.id == "self":
+                coordinates.append(
+                    CompactMethodSemanticCoordinate(
+                        coordinate_path,
+                        CompactMethodSemanticCoordinateKind.SELF_ATTRIBUTE,
+                        node.attr,
+                    )
+                )
+            else:
+                coordinates.append(
+                    CompactMethodSemanticCoordinate(
+                        coordinate_path,
+                        CompactMethodSemanticCoordinateKind.ATTRIBUTE,
+                        ast.unparse(node),
+                    )
+                )
+        elif isinstance(node, ast.Call):
+            coordinates.append(
+                CompactMethodSemanticCoordinate(
+                    tuple(str(item) for item in (*path, "func")),
+                    CompactMethodSemanticCoordinateKind.CALL,
+                    ast.unparse(node.func),
+                )
+            )
+        skipped_fields = {"func"} if isinstance(node, ast.Call) else set()
+        for field_name, value in ast.iter_fields(node):
+            if field_name in skipped_fields:
+                continue
+            if isinstance(value, ast.AST):
+                coordinates.extend(
+                    CompactClassMethod._compact_class_method_coordinates(value, (*path, field_name))
+                )
+            elif isinstance(value, list):
+                for index, item in enumerate(value):
+                    if isinstance(item, ast.AST):
+                        coordinates.extend(
+                            CompactClassMethod._compact_class_method_coordinates(
+                                item,
+                                (*path, field_name, index),
+                            )
+                        )
+        return tuple(coordinates)
+
+    @staticmethod
+    def _compact_class_method_statement_skeleton(statement: ast.stmt) -> str:
+        normalized = _CompactClassMethodSemanticSkeletonNormalizer().visit(statement)
+        ast.fix_missing_locations(normalized)
+        return ast.dump(normalized, include_attributes=False)
 
 
 class _CompactClassMethodSemanticSkeletonNormalizer(ast.NodeTransformer):
@@ -396,79 +469,6 @@ class _CompactClassMethodSemanticSkeletonNormalizer(ast.NodeTransformer):
 
     def visit_Constant(self, node: ast.Constant) -> ast.AST:
         return ast.copy_location(ast.Constant(value="CONST"), node)
-
-
-def _compact_class_method_statement_skeleton(statement: ast.stmt) -> str:
-    normalized = _CompactClassMethodSemanticSkeletonNormalizer().visit(statement)
-    ast.fix_missing_locations(normalized)
-    return ast.dump(normalized, include_attributes=False)
-
-
-def _compact_class_method_coordinates(
-    node: ast.AST,
-    path: tuple[object, ...] = (),
-) -> tuple[CompactMethodSemanticCoordinate, ...]:
-    coordinates: list[CompactMethodSemanticCoordinate] = []
-    coordinate_path = tuple(str(item) for item in path)
-    if isinstance(node, ast.Constant):
-        coordinates.append(
-            CompactMethodSemanticCoordinate(
-                coordinate_path,
-                CompactMethodSemanticCoordinateKind.CONSTANT,
-                repr(node.value),
-            )
-        )
-    elif isinstance(node, ast.Name):
-        coordinates.append(
-            CompactMethodSemanticCoordinate(
-                coordinate_path,
-                CompactMethodSemanticCoordinateKind.NAME,
-                node.id,
-            )
-        )
-    elif isinstance(node, ast.Attribute):
-        if isinstance(node.value, ast.Name) and node.value.id == "self":
-            coordinates.append(
-                CompactMethodSemanticCoordinate(
-                    coordinate_path,
-                    CompactMethodSemanticCoordinateKind.SELF_ATTRIBUTE,
-                    node.attr,
-                )
-            )
-        else:
-            coordinates.append(
-                CompactMethodSemanticCoordinate(
-                    coordinate_path,
-                    CompactMethodSemanticCoordinateKind.ATTRIBUTE,
-                    ast.unparse(node),
-                )
-            )
-    elif isinstance(node, ast.Call):
-        coordinates.append(
-            CompactMethodSemanticCoordinate(
-                tuple(str(item) for item in (*path, "func")),
-                CompactMethodSemanticCoordinateKind.CALL,
-                ast.unparse(node.func),
-            )
-        )
-    skipped_fields = {"func"} if isinstance(node, ast.Call) else set()
-    for field_name, value in ast.iter_fields(node):
-        if field_name in skipped_fields:
-            continue
-        if isinstance(value, ast.AST):
-            coordinates.extend(
-                _compact_class_method_coordinates(value, (*path, field_name))
-            )
-        elif isinstance(value, list):
-            for index, item in enumerate(value):
-                if isinstance(item, ast.AST):
-                    coordinates.extend(
-                        _compact_class_method_coordinates(
-                            item,
-                            (*path, field_name, index),
-                        )
-                    )
-    return tuple(coordinates)
 
 
 def _compact_class_method_statements_from_sources(

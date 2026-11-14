@@ -150,7 +150,7 @@ class PredictionBranchAuthority:
         findings = self.findings()
         elapsed = round(perf_counter() - started, 3)
         source_index = build_source_index(self.modules, findings)
-        estimated_repository_seconds = _project_repository_seconds(
+        estimated_repository_seconds = self._project_repository_seconds(
             elapsed, len(self.modules), self.total_module_count
         )
         return ScanBranchPrediction(
@@ -169,13 +169,13 @@ class PredictionBranchAuthority:
             return []
         return analyze_modules(ParsedModuleSet(tuple(self.modules)), self.config)
 
-
-def _project_repository_seconds(
-    elapsed_seconds: float, module_count: int, total_module_count: int
-) -> float:
-    if not module_count or not total_module_count:
-        return 0.0
-    return round(elapsed_seconds * (total_module_count / module_count), 3)
+    @staticmethod
+    def _project_repository_seconds(
+        elapsed_seconds: float, module_count: int, total_module_count: int
+    ) -> float:
+        if not module_count or not total_module_count:
+            return 0.0
+        return round(elapsed_seconds * (total_module_count / module_count), 3)
 
 
 def build_scan_prediction_report(

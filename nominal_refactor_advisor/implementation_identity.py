@@ -27,12 +27,12 @@ class ImplementationSource:
         module = sys.modules.get(module_name)
         source_path = None if module is None else module.__dict__.get("__file__")
         if not isinstance(source_path, str):
-            return cls(module_name, _text_signature(module_name), module_name)
+            return cls(module_name, cls._text_signature(module_name), module_name)
         path = Path(source_path)
         try:
             path_stat = path.stat()
         except OSError:
-            return cls(module_name, _text_signature(str(path)), str(path))
+            return cls(module_name, cls._text_signature(str(path)), str(path))
         path_text = str(path.resolve())
         return cls(
             module_name,
@@ -43,6 +43,10 @@ class ImplementationSource:
             ),
             path_text,
         )
+
+    @staticmethod
+    def _text_signature(value: str) -> str:
+        return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
 def implementation_module_names(values: Iterable[object]) -> tuple[str, ...]:
@@ -251,10 +255,38 @@ class _DependencyGraph:
             module_names.append(type(value).__module__)
 
         dependencies.extend(get_args(value))
-        dependencies.extend(_descriptor_dependencies(value))
+        dependencies.extend(self._descriptor_dependencies(value))
         if expands_dependencies:
-            dependencies.extend(_callable_dependencies(value))
+            dependencies.extend(self._callable_dependencies(value))
         return _DependencyNode(value, tuple(module_names), tuple(dependencies))
+
+    @staticmethod
+    def _callable_dependencies(value: object) -> tuple[object, ...]:
+        function = getattr(value, "__func__", value)
+        function_code = getattr(function, "__code__", None)
+        function_globals = getattr(function, "__globals__", None)
+        if function_code is None or not isinstance(function_globals, dict):
+            return ()
+        return (
+            *(
+                dependency
+                for dependency_name in function_code.co_names
+                if (dependency := function_globals.get(dependency_name)) is not None
+            ),
+            *_annotation_dependencies(function, function_globals),
+            *(getattr(function, "__defaults__", None) or ()),
+            *(getattr(function, "__kwdefaults__", None) or {}).values(),
+            *_closure_dependencies(function),
+        )
+
+    @staticmethod
+    def _descriptor_dependencies(value: object) -> tuple[object, ...]:
+        return tuple(
+            dependency
+            for attribute_name in ("func", "fget", "fset", "fdel", "__wrapped__")
+            if (dependency := getattr(value, attribute_name, None)) is not None
+            and dependency is not value
+        )
 
 
 @ScanCache.cached
@@ -269,25 +301,6 @@ def _module_name(value: object) -> str | None:
         else getattr(value, "__module__", None)
     )
     return module_name if isinstance(module_name, str) else None
-
-
-def _callable_dependencies(value: object) -> tuple[object, ...]:
-    function = getattr(value, "__func__", value)
-    function_code = getattr(function, "__code__", None)
-    function_globals = getattr(function, "__globals__", None)
-    if function_code is None or not isinstance(function_globals, dict):
-        return ()
-    return (
-        *(
-            dependency
-            for dependency_name in function_code.co_names
-            if (dependency := function_globals.get(dependency_name)) is not None
-        ),
-        *_annotation_dependencies(function, function_globals),
-        *(getattr(function, "__defaults__", None) or ()),
-        *(getattr(function, "__kwdefaults__", None) or {}).values(),
-        *_closure_dependencies(function),
-    )
 
 
 def _annotation_dependencies(
@@ -331,19 +344,6 @@ def _closure_dependencies(function: object) -> tuple[object, ...]:
         except ValueError:
             continue
     return tuple(dependencies)
-
-
-def _descriptor_dependencies(value: object) -> tuple[object, ...]:
-    return tuple(
-        dependency
-        for attribute_name in ("func", "fget", "fset", "fdel", "__wrapped__")
-        if (dependency := getattr(value, attribute_name, None)) is not None
-        and dependency is not value
-    )
-
-
-def _text_signature(value: str) -> str:
-    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
 @ScanCache.cached

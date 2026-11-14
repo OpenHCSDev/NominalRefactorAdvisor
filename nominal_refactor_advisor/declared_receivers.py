@@ -137,16 +137,6 @@ def container_of(value: object) -> ContainerClass:
     return UNNAMED_CONTAINER
 
 
-def container_named(qualified: str) -> ContainerClass:
-    """The container class an annotation head's qualified name binds, read off
-    the module that defines it; a module not installed names no class."""
-
-    module, _, name = qualified.rpartition(".")
-    if importlib.util.find_spec(module) is None:
-        return UNNAMED_CONTAINER
-    return container_of(vars(importlib.import_module(module)).get(name))
-
-
 class DeclaredType(NamesClasses):
     """What a receiver is declared to be; each operation answers the type it yields."""
 
@@ -381,6 +371,8 @@ class DeclaredCollection(DeclaredType):
 class DeclaredTuple(DeclaredType):
     """`tuple[A, B, ...]` with one declared type per position."""
 
+    TUPLE_CONTAINER = container_of(tuple)
+
     items: tuple[DeclaredType, ...]
 
     def element(self, typing: DeclaredReceiverTyping) -> DeclaredType:
@@ -395,10 +387,10 @@ class DeclaredTuple(DeclaredType):
         return typing.joined(self.items)
 
     def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredCollection(typing.joined(self.items), TUPLE_CONTAINER)
+        return DeclaredCollection(typing.joined(self.items), self.TUPLE_CONTAINER)
 
     def class_symbols(self) -> tuple[str, ...]:
-        return TUPLE_CONTAINER.class_symbols()
+        return self.TUPLE_CONTAINER.class_symbols()
 
     def spelled(self) -> str:
         return f"tuple[{', '.join(item.spelled() for item in self.items)}]"
@@ -605,7 +597,7 @@ class AnnotationHead(ABC):
     def container(self) -> ContainerClass:
         """The class the head's spelling binds, when it declares a collection."""
 
-        return container_named(self.qualified)
+        return self.container_named(self.qualified)
 
     @abstractmethod
     def declared(
@@ -626,6 +618,16 @@ class AnnotationHead(ABC):
             if qualified in head.spellings:
                 return head(qualified)
         return ClassHead(qualified)
+
+    @staticmethod
+    def container_named(qualified: str) -> ContainerClass:
+        """The container class an annotation head's qualified name binds, read off
+        the module that defines it; a module not installed names no class."""
+
+        module, _, name = qualified.rpartition(".")
+        if importlib.util.find_spec(module) is None:
+            return UNNAMED_CONTAINER
+        return container_of(vars(importlib.import_module(module)).get(name))
 
 
 def _typing_names(*names: str) -> frozenset[str]:
@@ -747,16 +749,18 @@ class ClassHead(AnnotationHead):
         return named()
 
 
-SELF_SPELLINGS = _typing_names("Self")
-ANY_SPELLINGS = _typing_names("Any")
-
-
 # --- evaluation ---------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
 class DeclaredReceiverTyping:
     """Evaluates receiver paths over the scan's class index and declared returns."""
+
+    SELF_SPELLINGS = _typing_names("Self")
+
+    REEXPORT_HOPS = 8
+
+    ANY_SPELLINGS = _typing_names("Any")
 
     class_index: CompactClassFamilyIndex
     resolver: CompactClassReferenceResolver
@@ -970,7 +974,7 @@ class DeclaredReceiverTyping:
         following re-exporting imports."""
 
         spelled = qualified
-        for _hop in range(REEXPORT_HOPS):
+        for _hop in range(self.REEXPORT_HOPS):
             if qualified in self.class_index.classes_by_symbol:
                 return ScannedClass(qualified)
             owner, _, name = qualified.rpartition(".")
@@ -1075,9 +1079,9 @@ class DeclaredReceiverTyping:
         qualified = self.qualified(module_name, parts)
         if qualified in scope.parameters:
             return scope.parameters[qualified]
-        if qualified in SELF_SPELLINGS:
+        if qualified in self.SELF_SPELLINGS:
             return scope.self_type
-        if qualified in ANY_SPELLINGS:
+        if qualified in self.ANY_SPELLINGS:
             return UndeclaredType("`Any` declares no type")
         return self.class_symbol(module_name, parts).instance(self)
 
@@ -1319,7 +1323,6 @@ def stub_projection(stub: ParsedModule) -> CompactModuleClassProjection:
     return projection
 
 
-REEXPORT_HOPS = 8
 GENERIC_DECLARERS = frozenset(
     f"{module}.{name}"
     for module in ("typing", "typing_extensions")
@@ -1606,12 +1609,14 @@ class LiteralRoot(ReceiverRoot):
 class MappingDisplayRoot(ReceiverRoot):
     """A dict comprehension: a mapping of its key's type to its value's."""
 
+    DICT_CONTAINER = container_of(dict)
+
     key: ReceiverPath
     value: ReceiverPath
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredMapping(
-            self.key.declared(typing), self.value.declared(typing), DICT_CONTAINER
+            self.key.declared(typing), self.value.declared(typing), self.DICT_CONTAINER
         )
 
 
@@ -1747,23 +1752,7 @@ def unresolved(reason: str) -> ReceiverPath:
 
 Pending = frozenset[tuple[int, str]]
 PathThunk = Callable[[], ReceiverPath]
-TUPLE_CONTAINER = container_of(tuple)
-DICT_CONTAINER = container_of(dict)
-DISPLAY_CLASSES: Mapping[type[ast.expr], type] = {
-    ast.List: list,
-    ast.ListComp: list,
-    ast.Set: set,
-    ast.SetComp: set,
-    ast.Tuple: tuple,
-    ast.GeneratorExp: types.GeneratorType,
-}
 """The class each display or comprehension constructs."""
-COLLECTING_BUILTINS = frozenset(
-    ("sorted", "list", "tuple", "set", "frozenset", "reversed")
-)
-ENUMERATE_BUILTIN = "enumerate"
-ELEMENT_BUILTINS = frozenset(("next",))
-CAST_FUNCTIONS = frozenset(("typing.cast", "typing_extensions.cast"))
 
 
 @dataclass
@@ -1779,6 +1768,25 @@ class ReceiverPathBuilder:
     `except`, a match capture, an import, a nested definition, `del`,
     `global`/`nonlocal`) leaves it unresolved, with the reason.
     """
+
+    ENUMERATE_BUILTIN = "enumerate"
+
+    ELEMENT_BUILTINS = frozenset(("next",))
+
+    DISPLAY_CLASSES: ClassVar[Mapping[type[ast.expr], type]] = {
+        ast.List: list,
+        ast.ListComp: list,
+        ast.Set: set,
+        ast.SetComp: set,
+        ast.Tuple: tuple,
+        ast.GeneratorExp: types.GeneratorType,
+    }
+
+    COLLECTING_BUILTINS = frozenset(
+        ("sorted", "list", "tuple", "set", "frozenset", "reversed")
+    )
+
+    CAST_FUNCTIONS = frozenset(("typing.cast", "typing_extensions.cast"))
 
     module_name: str
     module: ast.Module
@@ -1878,7 +1886,7 @@ class ReceiverPathBuilder:
                 return ReceiverPath(
                     CollectionDisplayRoot(
                         tuple(self._display_element(item, pending) for item in items),
-                        container_of(DISPLAY_CLASSES[type(expression)]),
+                        container_of(self.DISPLAY_CLASSES[type(expression)]),
                     )
                 )
             case ast.ListComp(elt=element) | ast.SetComp(elt=element) | ast.GeneratorExp(
@@ -1887,7 +1895,7 @@ class ReceiverPathBuilder:
                 return ReceiverPath(
                     CollectionDisplayRoot(
                         (self._path(element, pending),),
-                        container_of(DISPLAY_CLASSES[type(expression)]),
+                        container_of(self.DISPLAY_CLASSES[type(expression)]),
                     )
                 )
         return unresolved(
@@ -1911,13 +1919,13 @@ class ReceiverPathBuilder:
         """A call of a module-level or builtin name."""
 
         (name,) = parts
-        if name not in self.module_names and name in COLLECTING_BUILTINS:
+        if name not in self.module_names and name in self.COLLECTING_BUILTINS:
             if len(arguments) != 1:
                 return unresolved(f"`{name}(...)` takes no single iterable")
             return self._path(arguments[0], pending).then(
                 CollectedStep(container_of(vars(builtins)[name]))
             )
-        if name not in self.module_names and name in ELEMENT_BUILTINS:
+        if name not in self.module_names and name in self.ELEMENT_BUILTINS:
             match arguments:
                 case [iterable] | [iterable, ast.Constant(value=None)]:
                     return self._path(iterable, pending).then(ElementStep())
@@ -1926,11 +1934,11 @@ class ReceiverPathBuilder:
             return self._path(arguments[0], pending).then(
                 CollectedStep(container_of(vars(builtins)[name]))
             )
-        if name not in self.module_names and name == ENUMERATE_BUILTIN:
+        if name not in self.module_names and name == self.ENUMERATE_BUILTIN:
             if not arguments:
                 return unresolved("`enumerate()` has no iterable")
             return self._path(arguments[0], pending).then(EnumeratedStep())
-        if self.aliases.get(name) in CAST_FUNCTIONS and len(arguments) == 2:
+        if self.aliases.get(name) in self.CAST_FUNCTIONS and len(arguments) == 2:
             return ReceiverPath(AnnotatedRoot(self.module_name, ast.unparse(arguments[0])))
         return ReceiverPath(CalledReferenceRoot(self.module_name, parts))
 
@@ -1981,12 +1989,12 @@ class ReceiverPathBuilder:
                         found = self._target_path(
                             generator.target,
                             name,
-                            _element_thunk(self, generator.iter, pending),
+                            self._element_thunk(self, generator.iter, pending),
                         )
                         if found:
                             return found[0]
                 case ast.FunctionDef() | ast.AsyncFunctionDef():
-                    if name in _declared_global_or_nonlocal(scope):
+                    if name in self._declared_global_or_nonlocal(scope):
                         return unresolved(f"`{name}` is declared global or nonlocal")
                     if name in _parameter_names(scope.args) or name in _bound_names(scope):
                         return self._function_binding(scope, name, pending)
@@ -2059,7 +2067,7 @@ class ReceiverPathBuilder:
             case ast.Assign(targets=targets, value=value):
                 for target in targets:
                     yield from self._target_path(
-                        target, name, _value_thunk(self, value, pending)
+                        target, name, self._value_thunk(self, value, pending)
                     )
             case ast.AnnAssign(target=ast.Name(id=bound), annotation=annotation) if (
                 bound == name
@@ -2071,7 +2079,7 @@ class ReceiverPathBuilder:
                 target=target, iter=iterable
             ):
                 yield from self._target_path(
-                    target, name, _element_thunk(self, iterable, pending)
+                    target, name, self._element_thunk(self, iterable, pending)
                 )
             case ast.AugAssign(target=ast.Name(id=bound)) if bound == name:
                 yield unresolved(f"`{name}` is rebound by augmented assignment")
@@ -2111,12 +2119,37 @@ class ReceiverPathBuilder:
                             if name in names_mentioned(starred):
                                 return [unresolved(f"`{name}` is a starred target")]
                             continue
-                    found = self._target_path(item, name, _index_thunk(value, index))
+                    found = self._target_path(item, name, self._index_thunk(value, index))
                     if found and any(isinstance(other, ast.Starred) for other in items[:index]):
                         return [unresolved(f"`{name}` follows a starred target")]
                     if found:
                         return found
         return []
+
+    @staticmethod
+    def _declared_global_or_nonlocal(function: FunctionNode) -> frozenset[str]:
+        return frozenset(
+            name
+            for node in _own_nodes(function)
+            if isinstance(node, ast.Global | ast.Nonlocal)
+            for name in node.names
+        )
+
+    @staticmethod
+    def _element_thunk(
+        builder: ReceiverPathBuilder, iterable: ast.expr, pending: Pending
+    ) -> PathThunk:
+        return lambda: builder._path(iterable, pending).then(ElementStep())
+
+    @staticmethod
+    def _index_thunk(value: PathThunk, index: int) -> PathThunk:
+        return lambda: value().then(IndexStep(index))
+
+    @staticmethod
+    def _value_thunk(
+        builder: ReceiverPathBuilder, value: ast.expr, pending: Pending
+    ) -> PathThunk:
+        return lambda: builder._path(value, pending)
 
 
 class FunctionPlacement(ABC):
@@ -2139,7 +2172,7 @@ class MethodPlacement(FunctionPlacement):
     class_symbol: str
 
     def first_parameter(self, function: FunctionNode) -> Iterator[ReceiverPath]:
-        decorators = {_decorator_name(decorator) for decorator in function.decorator_list}
+        decorators = {self._decorator_name(decorator) for decorator in function.decorator_list}
         if "staticmethod" in decorators:
             return
         if "classmethod" in decorators:
@@ -2150,6 +2183,17 @@ class MethodPlacement(FunctionPlacement):
     def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
         return MethodAnnotatedRoot(module_name, annotation, self.class_symbol)
 
+    @staticmethod
+    def _decorator_name(decorator: ast.expr) -> str:
+        match decorator:
+            case ast.Name(id=name):
+                return name
+            case ast.Attribute(attr=name):
+                return name
+            case ast.Call(func=func):
+                return MethodPlacement._decorator_name(func)
+        return ast.unparse(decorator)
+
 
 class FreeFunctionPlacement(FunctionPlacement):
     """A def outside a class body: no parameter is fixed and `Self` names nothing."""
@@ -2159,22 +2203,6 @@ class FreeFunctionPlacement(FunctionPlacement):
 
     def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
         return AnnotatedRoot(module_name, annotation)
-
-
-def _value_thunk(
-    builder: ReceiverPathBuilder, value: ast.expr, pending: Pending
-) -> PathThunk:
-    return lambda: builder._path(value, pending)
-
-
-def _element_thunk(
-    builder: ReceiverPathBuilder, iterable: ast.expr, pending: Pending
-) -> PathThunk:
-    return lambda: builder._path(iterable, pending).then(ElementStep())
-
-
-def _index_thunk(value: PathThunk, index: int) -> PathThunk:
-    return lambda: value().then(IndexStep(index))
 
 
 def _parameter_names(arguments: ast.arguments) -> frozenset[str]:
@@ -2231,26 +2259,6 @@ def _bound_names(function: FunctionNode) -> frozenset[str]:
             case ast.MatchMapping(rest=str() as name):
                 names.add(name)
     return frozenset(names)
-
-
-def _declared_global_or_nonlocal(function: FunctionNode) -> frozenset[str]:
-    return frozenset(
-        name
-        for node in _own_nodes(function)
-        if isinstance(node, ast.Global | ast.Nonlocal)
-        for name in node.names
-    )
-
-
-def _decorator_name(decorator: ast.expr) -> str:
-    match decorator:
-        case ast.Name(id=name):
-            return name
-        case ast.Attribute(attr=name):
-            return name
-        case ast.Call(func=func):
-            return _decorator_name(func)
-    return ast.unparse(decorator)
 
 
 __all__ = (

@@ -48,31 +48,6 @@ class ConstructorConstant(Generic[ConstructorValueT]):
     value: ConstructorValueT
 
 
-def _bind_constructor_parameters(
-    method_name: str,
-    parameter_names: Sequence[str],
-    args: tuple[ConstructorValueT, ...],
-    kwargs: Mapping[str, ConstructorValueT],
-) -> dict[str, ConstructorValueT]:
-    if len(args) > len(parameter_names):
-        raise TypeError(f"{method_name} received too many positional arguments")
-    bound: dict[str, ConstructorValueT] = dict(zip(parameter_names, args, strict=False))
-    unexpected = set(kwargs) - set(parameter_names)
-    if unexpected:
-        names = ", ".join(sorted(unexpected))
-        raise TypeError(f"{method_name} received unexpected arguments: {names}")
-    duplicate = set(bound) & set(kwargs)
-    if duplicate:
-        names = ", ".join(sorted(duplicate))
-        raise TypeError(f"{method_name} received duplicate arguments: {names}")
-    bound.update(kwargs)
-    missing = tuple(name for name in parameter_names if name not in bound)
-    if missing:
-        names = ", ".join(missing)
-        raise TypeError(f"{method_name} missing required arguments: {names}")
-    return bound
-
-
 @dataclass(frozen=True)
 class ConstructorVariantSpec(Generic[ConstructorValueT]):
     method_name: str
@@ -95,7 +70,7 @@ class ConstructorVariantSpec(Generic[ConstructorValueT]):
             *args: ConstructorValueT,
             **kwargs: ConstructorValueT,
         ) -> ConstructedRecordT:
-            bound = _bind_constructor_parameters(
+            bound = self._bind_constructor_parameters(
                 self.method_name, self.parameters, args, kwargs
             )
             field_values = {
@@ -116,6 +91,31 @@ class ConstructorVariantSpec(Generic[ConstructorValueT]):
         method.__name__ = self.method_name
         method.__qualname__ = self.method_name
         return classmethod(method)
+
+    @staticmethod
+    def _bind_constructor_parameters(
+        method_name: str,
+        parameter_names: Sequence[str],
+        args: tuple[ConstructorValueT, ...],
+        kwargs: Mapping[str, ConstructorValueT],
+    ) -> dict[str, ConstructorValueT]:
+        if len(args) > len(parameter_names):
+            raise TypeError(f"{method_name} received too many positional arguments")
+        bound: dict[str, ConstructorValueT] = dict(zip(parameter_names, args, strict=False))
+        unexpected = set(kwargs) - set(parameter_names)
+        if unexpected:
+            names = ", ".join(sorted(unexpected))
+            raise TypeError(f"{method_name} received unexpected arguments: {names}")
+        duplicate = set(bound) & set(kwargs)
+        if duplicate:
+            names = ", ".join(sorted(duplicate))
+            raise TypeError(f"{method_name} received duplicate arguments: {names}")
+        bound.update(kwargs)
+        missing = tuple(name for name in parameter_names if name not in bound)
+        if missing:
+            names = ", ".join(missing)
+            raise TypeError(f"{method_name} missing required arguments: {names}")
+        return bound
 
 
 @dataclass(frozen=True)

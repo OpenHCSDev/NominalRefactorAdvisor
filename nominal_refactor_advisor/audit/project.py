@@ -28,9 +28,6 @@ from nominal_refactor_advisor.json_reports import DataclassJsonReport
 from nominal_refactor_advisor.audit.measures import MechanismOwners
 from nominal_refactor_advisor.audit.repository import Repository
 
-AUDIT_PACKAGE = Path(__file__).resolve().parent
-
-
 @dataclass(frozen=True)
 class StoredFormat(DataclassJsonReport):
     """A versioned record as its writer stores it: its format version, each stored key with
@@ -144,6 +141,8 @@ class ContentCache(ABC):
     Batch 3579 went red on 170 Toad errors nobody wrote, because the key held mypy's version but
     not Textual's commit, and a git dependency moves without changing its version."""
 
+    AUDIT_PACKAGE = Path(__file__).resolve().parent
+
     retention_days: typing.ClassVar[int] = 14
     # The measuring code's digest, part of every key, taken when the cache's owner is made:
     # after the measures it runs are imported, so every worker a comparison forks carries it.
@@ -175,7 +174,7 @@ class ContentCache(ABC):
                    if isinstance(module, types.ModuleType)
                    and (origin := module.__dict__.get("__file__")))
         loaded = {path for path in origins if any(path.is_relative_to(root) for root in roots)}
-        audited = {path.resolve() for path in AUDIT_PACKAGE.rglob("*.py")}
+        audited = {path.resolve() for path in self.AUDIT_PACKAGE.rglob("*.py")}
         return tuple(sorted(loaded | audited))
 
     def measuring_code(self) -> bytes:

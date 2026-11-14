@@ -40,12 +40,6 @@ from nominal_refactor_advisor.registration_facets import (
     registry_config_walk_root,
 )
 
-# A subject needs this many distinct string arms before it is a family spelled out.
-STRING_DISPATCH_MIN_ARMS = 3
-# A key set needs this many keys before it is a record rather than one probe.
-EXACT_KEY_SET_MIN_KEYS = 2
-
-
 @dataclass(frozen=True)
 class RestatingSiteModule:
     """One module's restating sites, kept even when empty so a scan knows its modules."""
@@ -104,30 +98,11 @@ def _string_constants(elements: list[ast.expr]) -> tuple[str, ...] | None:
     return values if len(values) == len(elements) else None
 
 
-def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
-    """The string keys of a literal set, tuple, list or frozenset/set call."""
-
-    match node:
-        case (
-            ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements)
-        ):
-            return _string_constants(elements)
-        case ast.Call(
-            func=ast.Name(id=name),
-            args=[
-                ast.Set(elts=elements)
-                | ast.Tuple(elts=elements)
-                | ast.List(elts=elements)
-            ],
-        ) if (
-            name in BuiltinCallName.set_constructor_names()
-        ):
-            return _string_constants(elements)
-    return None
-
-
 class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """One subject compared against several string literals inside one function."""
+
+    # A subject needs this many distinct string arms before it is a family spelled out.
+    STRING_DISPATCH_MIN_ARMS = 3
 
 
     @classmethod
@@ -152,7 +127,7 @@ class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         for (_function, subject), nodes in arms.items():
             if (
                 len(set().union(*(literals for _symbol, literals in nodes.values())))
-                < STRING_DISPATCH_MIN_ARMS
+                < cls.STRING_DISPATCH_MIN_ARMS
             ):
                 continue
             for node, (symbol, literals) in nodes.items():
@@ -276,6 +251,9 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 class _KeyViewSyntax:
     """Recognise a mapping's key collection and a literal key collection."""
 
+    # A key set needs this many keys before it is a record rather than one probe.
+    EXACT_KEY_SET_MIN_KEYS = 2
+
     WRAPPERS = BuiltinCallName.key_view_wrapper_names()
     SET_METHODS = frozenset(
         ("issubset", "issuperset", "isdisjoint", "difference", "symmetric_difference")
@@ -303,10 +281,32 @@ class _KeyViewSyntax:
 
     @classmethod
     def literal_keys(cls, node: ast.expr) -> tuple[str, ...] | None:
-        keys = _literal_strings(node)
-        if keys is None or len(set(keys)) < EXACT_KEY_SET_MIN_KEYS:
+        keys = cls._literal_strings(node)
+        if keys is None or len(set(keys)) < cls.EXACT_KEY_SET_MIN_KEYS:
             return None
         return tuple(sorted(set(keys)))
+
+    @staticmethod
+    def _literal_strings(node: ast.expr) -> tuple[str, ...] | None:
+        """The string keys of a literal set, tuple, list or frozenset/set call."""
+
+        match node:
+            case (
+                ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements)
+            ):
+                return _string_constants(elements)
+            case ast.Call(
+                func=ast.Name(id=name),
+                args=[
+                    ast.Set(elts=elements)
+                    | ast.Tuple(elts=elements)
+                    | ast.List(elts=elements)
+                ],
+            ) if (
+                name in BuiltinCallName.set_constructor_names()
+            ):
+                return _string_constants(elements)
+        return None
 
 
 class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):

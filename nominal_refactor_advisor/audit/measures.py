@@ -135,21 +135,20 @@ class ForeignAttributeProbe(NodeCount):
     @classmethod
     def occurrences(cls, node: ast.AST) -> int:
         attribute = cls.attribute(node)
-        return int(attribute is not None and not _is_self(attribute.value))
+        return int(attribute is not None and not cls._is_self(attribute.value))
+
+    @staticmethod
+    def _is_self(node: ast.expr) -> bool:
+        match node:
+            case ast.Name(id="self"):
+                return True
+        return False
 
 
 
 class ForeignNegation(ForeignNegationSyntax, ForeignAttributeProbe, Measure):
     """Unresolved truth-value syntax is a reading lead, not ranked absence debt."""
     node_types = (ast.UnaryOp,)
-
-
-def _is_self(node: ast.expr) -> bool:
-    match node:
-        case ast.Name(id="self"):
-            return True
-    return False
-
 
 
 class LiteralKeyGet(PatternMeasure):
@@ -173,8 +172,15 @@ class StringEquality(NodeCount):
         match node:
             case ast.Compare(ops=ops, comparators=comparators):
                 return sum(1 for op, cmp in zip(ops, comparators)
-                           if isinstance(op, (ast.Eq, ast.NotEq)) and _is_string_constant(cmp))
+                           if isinstance(op, (ast.Eq, ast.NotEq)) and cls._is_string_constant(cmp))
         return 0
+
+    @staticmethod
+    def _is_string_constant(node: ast.AST) -> bool:
+        match node:
+            case ast.Constant(value=str()):
+                return True
+        return False
 
 
 class IsinstanceCall(PatternMeasure):
@@ -253,13 +259,6 @@ class AbstractBase(PatternMeasure):
             case ast.ClassDef(bases=bases):
                 return any(_base_name(base) in ("ABC", "Protocol") for base in bases)
         return False
-
-
-def _is_string_constant(node: ast.AST) -> bool:
-    match node:
-        case ast.Constant(value=str()):
-            return True
-    return False
 
 
 def _base_name(node: ast.AST) -> str:

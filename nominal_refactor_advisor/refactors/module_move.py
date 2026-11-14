@@ -1272,26 +1272,6 @@ def _from_import(owner: str, binding: str) -> str:
     return f"from {package} import {leaf if leaf == binding else f'{leaf} as {binding}'}"
 
 
-def _module_import_scope(
-    index: ModuleNodeIndex, statement: ast.ImportFrom
-) -> ModuleImportScope | None:
-    """The scope a module-level or `TYPE_CHECKING` import sits in; none inside a body."""
-
-    root: ast.AST = statement
-    while (parent := index.parents.get(root)) is not None:
-        root = parent
-    if not isinstance(root, ast.Module):
-        return None
-    return next(
-        (
-            scope
-            for scope in ModuleImportScope
-            if any(own is statement for own in scope.import_statements(root))
-        ),
-        None,
-    )
-
-
 @dataclass(frozen=True)
 class _SourceModuleAliasRetargets:
     """`import source as s` whose every load of `s` reaches a name in one module
@@ -1347,7 +1327,7 @@ class _SourceModuleAliasRetargets:
                 and not node.level
                 and node.module == package
                 and len(node.names) > 1
-                and (scope := _module_import_scope(index, node)) is not None
+                and (scope := cls._module_import_scope(index, node)) is not None
                 for alias in node.names
                 if alias.name == leaf
             ),
@@ -1460,6 +1440,26 @@ class _SourceModuleAliasRetargets:
                 else ()
             ),
             *(edit for binding, owner in self.aliases for edit in binding.mutations(file_path, owner)),
+        )
+
+    @staticmethod
+    def _module_import_scope(
+        index: ModuleNodeIndex, statement: ast.ImportFrom
+    ) -> ModuleImportScope | None:
+        """The scope a module-level or `TYPE_CHECKING` import sits in; none inside a body."""
+
+        root: ast.AST = statement
+        while (parent := index.parents.get(root)) is not None:
+            root = parent
+        if not isinstance(root, ast.Module):
+            return None
+        return next(
+            (
+                scope
+                for scope in ModuleImportScope
+                if any(own is statement for own in scope.import_statements(root))
+            ),
+            None,
         )
 
 
@@ -2405,16 +2405,6 @@ class RetainedCallOperation(RepositorySourceReprovedOperation, ABC):
     )
 
 
-def _package_inits(graph: SourceModuleImportGraph, path: str) -> frozenset[str]:
-    """The indexed packages above the file at `path`, by their `__init__.py`."""
-
-    return frozenset(
-        source_file.module_name
-        for directory in PurePosixPath(path).parents
-        if (source_file := graph.source_file_by_path.get(f"{directory}/__init__.py")) is not None
-    )
-
-
 @dataclass(frozen=True)
 class BatchModuleMove(CodemodPayloadRecord):
     """A module another move of the same stage takes, whole, to a new home."""
@@ -2615,7 +2605,7 @@ class ModuleSymbolMoveOperation(DestinationModuleOperationABC, ABC):
         source_path = self.required_source_path(context, self.operation_key())
         source = graph.module_name_for_file_path(source_path)
         destination = self.indexed_destination_path(context)
-        packages = _package_inits(graph, destination) - _package_inits(graph, source_path)
+        packages = self._package_inits(graph, destination) - self._package_inits(graph, source_path)
         importers = sorted(
             module for module, imported in graph.import_edges_by_module.items() if source in imported
         )
@@ -2792,6 +2782,16 @@ class ModuleSymbolMoveOperation(DestinationModuleOperationABC, ABC):
         context: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         return self.move_plan(context).source_edits(context)
+
+    @staticmethod
+    def _package_inits(graph: SourceModuleImportGraph, path: str) -> frozenset[str]:
+        """The indexed packages above the file at `path`, by their `__init__.py`."""
+
+        return frozenset(
+            source_file.module_name
+            for directory in PurePosixPath(path).parents
+            if (source_file := graph.source_file_by_path.get(f"{directory}/__init__.py")) is not None
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3988,34 +3988,34 @@ class _FunctionBinding(_LambdaBinding):
             (
                 literals
                 for decorator in self.node.decorator_list
-                for literals in (_parametrized(decorator, name),)
+                for literals in (self._parametrized(decorator, name),)
                 if literals is not None
             ),
             None,
         )
 
+    @staticmethod
+    def _parametrized(decorator: ast.expr, name: str) -> tuple[ast.Constant, ...] | None:
+        match decorator:
+            case ast.Call(
+                func=ast.Attribute(attr="parametrize"),
+                args=[ast.Constant(value=str(argnames)), rows_node, *_],
+            ):
+                names = [part.strip() for part in argnames.split(",")]
+            case _:
+                return None
+        rows = _LiteralSequence.decoded(rows_node).elements
+        if name not in names or rows is None:
+            return None
+        column = names.index(name)
+        cells = tuple(_ParametrizeRow.decoded(row).cells(len(names)) for row in rows)
+        if any(len(row_cells) <= column for row_cells in cells):
+            return None
+        return _LiteralSequence(ast.Tuple(elts=[row_cells[column] for row_cells in cells])).literals
+
 
 class _AsyncFunctionBinding(_FunctionBinding):
     adapts = ast.AsyncFunctionDef
-
-
-def _parametrized(decorator: ast.expr, name: str) -> tuple[ast.Constant, ...] | None:
-    match decorator:
-        case ast.Call(
-            func=ast.Attribute(attr="parametrize"),
-            args=[ast.Constant(value=str(argnames)), rows_node, *_],
-        ):
-            names = [part.strip() for part in argnames.split(",")]
-        case _:
-            return None
-    rows = _LiteralSequence.decoded(rows_node).elements
-    if name not in names or rows is None:
-        return None
-    column = names.index(name)
-    cells = tuple(_ParametrizeRow.decoded(row).cells(len(names)) for row in rows)
-    if any(len(row_cells) <= column for row_cells in cells):
-        return None
-    return _LiteralSequence(ast.Tuple(elts=[row_cells[column] for row_cells in cells])).literals
 
 
 class _ParametrizeRow(ForeignAdapter):
@@ -4950,9 +4950,6 @@ class RetargetModuleMentionsOperation(PreflightByReproof, RetainedCallOperation)
         ).edits(context)
 
 
-_FROM_MODULE = re.compile(r"from\s+(\.*)([\w.]*)(?=\s+import\b)")
-
-
 @dataclass(frozen=True)
 class _MovedImports:
     """A moved block's from-imports, named absolutely at the destination and
@@ -4968,6 +4965,8 @@ class _MovedImports:
     ``import a.b as name`` of a batch module names its new home; a bare
     ``import a.b`` is refused, since its readers spell the old dotted path
     (``DirectModuleImportBindingIdentity.follows_move``)."""
+
+    _FROM_MODULE = re.compile(r"from\s+(\.*)([\w.]*)(?=\s+import\b)")
 
     source_identity: PythonModulePathIdentity
     moved_modules: Mapping[str, str]
@@ -5040,7 +5039,7 @@ class _MovedImports:
             if not node.level and named == node.module:
                 continue
             start, _end = geometry.required_node_offsets(node)
-            spelled = _FROM_MODULE.match(block, start)
+            spelled = self._FROM_MODULE.match(block, start)
             if spelled is None:
                 raise ValueError(f"Cannot read the import at block line {node.lineno}")
             replacements.append((start, spelled.end(), f"from {named}"))

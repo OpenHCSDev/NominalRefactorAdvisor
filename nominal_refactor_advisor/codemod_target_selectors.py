@@ -505,15 +505,16 @@ class _CallSiteSelectorVisitor(ast.NodeVisitor):
 
     @staticmethod
     def call_symbol(node: ast.Call) -> str:
-        return _call_surface_name(node.func)
+        return _CallSiteSelectorVisitor._call_surface_name(node.func)
 
+    @staticmethod
+    def _call_surface_name(node: ast.AST) -> str:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, ast.Attribute):
+            parent = _CallSiteSelectorVisitor._call_surface_name(node.value)
+            if not parent:
+                return node.attr
+            return f"{parent}.{node.attr}"
+        return ""
 
-def _call_surface_name(node: ast.AST) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        parent = _call_surface_name(node.value)
-        if not parent:
-            return node.attr
-        return f"{parent}.{node.attr}"
-    return ""

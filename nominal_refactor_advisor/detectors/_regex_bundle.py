@@ -190,7 +190,7 @@ class RegexBundleModuleProjection(ParsedModuleFact):
             if not isinstance(node, ast.Call):
                 continue
             literal = self.pattern_literal(node)
-            if literal is not None and _is_substantial_regex_literal(literal):
+            if literal is not None and self._is_substantial_regex_literal(literal):
                 literals.setdefault(literal, node.lineno)
         return literals
 
@@ -239,13 +239,13 @@ class RegexBundleModuleProjection(ParsedModuleFact):
             ),
         )
 
-
-def _is_substantial_regex_literal(literal: str) -> bool:
-    return (
-        len(literal) >= 12
-        and any(token in literal for token in ("\\", "[", "(", "{", "^", "$"))
-        and sum(char.isalpha() for char in literal) >= 3
-    )
+    @staticmethod
+    def _is_substantial_regex_literal(literal: str) -> bool:
+        return (
+            len(literal) >= 12
+            and any(token in literal for token in ("\\", "[", "(", "{", "^", "$"))
+            and sum(char.isalpha() for char in literal) >= 3
+        )
 
 
 class RepeatedLocalRegexBundleDetector(

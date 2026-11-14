@@ -328,56 +328,6 @@ def _attribute_family_subject_expression(
     return subject_expression
 
 
-def _compact_concrete_type_case_function_facts(
-    module: ParsedModule,
-) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
-    union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
-    facts: list[CompactConcreteTypeCaseFunctionFact] = []
-    for qualname, function in module.syntax_index.named_functions:
-        alias_sources = _top_level_attribute_aliases(function)
-        grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
-        for subnode in module.syntax_index.function_walks[function]:
-            isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
-            if isinstance_arguments is None:
-                continue
-            subject, type_node = isinstance_arguments
-            subject_expression = _attribute_family_subject_expression(
-                subject, alias_sources=alias_sources
-            )
-            if subject_expression is None:
-                continue
-            type_items = (
-                type_node.elts if isinstance(type_node, ast.Tuple) else (type_node,)
-            )
-            type_names = sorted_tuple(
-                {
-                    type_name
-                    for item in type_items
-                    if (type_name := ExpressionReference.decoded(item).terminal_name)
-                    not in {None, "None", "NoneType"}
-                }
-            )
-            if type_names:
-                grouped_checks[subject_expression].append(type_names)
-        for subject_expression, checks in sorted(grouped_checks.items()):
-            facts.append(
-                CompactConcreteTypeCaseFunctionFact(
-                    file_path=module.file_path,
-                    module_name=module.module_name,
-                    line=function.lineno,
-                    function_name=qualname,
-                    subject_expression=subject_expression,
-                    subject_role=subject_expression.rsplit(".", 1)[-1],
-                    type_names_by_check=tuple(checks),
-                    union_aliases=union_aliases,
-                )
-            )
-    return sorted_tuple(
-        facts,
-        key=lambda item: (item.file_path, item.subject_role, item.line),
-    )
-
-
 def _self_cast_type_name(node: ast.AST) -> str | None:
     if not (
         isinstance(node, ast.Call)
@@ -414,47 +364,6 @@ def _self_cast_alias_names(
     return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
 
 
-def _compact_implicit_self_mixin_facts(
-    module: ParsedModule,
-) -> tuple[CompactImplicitSelfMixinFact, ...]:
-    facts: list[CompactImplicitSelfMixinFact] = []
-    for indexed_class in module.fact(ModuleIndexedClasses).records:
-        qualname, class_node = indexed_class.qualname, indexed_class.node
-        if not class_node.name.endswith("Mixin") or indexed_class.is_abstract:
-            continue
-        method_names: list[str] = []
-        method_lines: list[int] = []
-        cast_type_names: set[str] = set()
-        accessed_attribute_names: set[str] = set()
-        for method in indexed_class.methods:
-            if method.spells("abstractmethod"):
-                continue
-            alias_names, method_cast_types = _self_cast_alias_names(method.node)
-            if not alias_names:
-                continue
-            method_names.append(method.name)
-            method_lines.append(method.node.lineno)
-            cast_type_names.update(method_cast_types)
-            accessed_attribute_names.update(
-                SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
-                    method.node, root_names=set(alias_names)
-                )
-            )
-        if method_names:
-            facts.append(
-                CompactImplicitSelfMixinFact(
-                    file_path=module.file_path,
-                    qualname=qualname,
-                    line=class_node.lineno,
-                    method_names=tuple(method_names),
-                    method_lines=tuple(method_lines),
-                    cast_type_names=sorted_tuple(cast_type_names),
-                    accessed_attribute_names=sorted_tuple(accessed_attribute_names),
-                )
-            )
-    return tuple(facts)
-
-
 class CompactRemainingSystemicModuleProjectionFamily(
     CollectedFamily[CompactRemainingSystemicModuleProjection]
 ):
@@ -464,17 +373,107 @@ class CompactRemainingSystemicModuleProjectionFamily(
     def collect(
         cls, parsed_module: ParsedModule
     ) -> list[CompactRemainingSystemicModuleProjection]:
-        del cls
         return [
             CompactRemainingSystemicModuleProjection(
                 file_path=parsed_module.file_path,
                 module_name=parsed_module.module_name,
-                concrete_type_functions=_compact_concrete_type_case_function_facts(
+                concrete_type_functions=cls._compact_concrete_type_case_function_facts(
                     parsed_module
                 ),
-                implicit_self_mixins=_compact_implicit_self_mixin_facts(parsed_module),
+                implicit_self_mixins=cls._compact_implicit_self_mixin_facts(parsed_module),
             )
         ]
+
+    @staticmethod
+    def _compact_concrete_type_case_function_facts(
+        module: ParsedModule,
+    ) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
+        union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
+        facts: list[CompactConcreteTypeCaseFunctionFact] = []
+        for qualname, function in module.syntax_index.named_functions:
+            alias_sources = _top_level_attribute_aliases(function)
+            grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
+            for subnode in module.syntax_index.function_walks[function]:
+                isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
+                if isinstance_arguments is None:
+                    continue
+                subject, type_node = isinstance_arguments
+                subject_expression = _attribute_family_subject_expression(
+                    subject, alias_sources=alias_sources
+                )
+                if subject_expression is None:
+                    continue
+                type_items = (
+                    type_node.elts if isinstance(type_node, ast.Tuple) else (type_node,)
+                )
+                type_names = sorted_tuple(
+                    {
+                        type_name
+                        for item in type_items
+                        if (type_name := ExpressionReference.decoded(item).terminal_name)
+                        not in {None, "None", "NoneType"}
+                    }
+                )
+                if type_names:
+                    grouped_checks[subject_expression].append(type_names)
+            for subject_expression, checks in sorted(grouped_checks.items()):
+                facts.append(
+                    CompactConcreteTypeCaseFunctionFact(
+                        file_path=module.file_path,
+                        module_name=module.module_name,
+                        line=function.lineno,
+                        function_name=qualname,
+                        subject_expression=subject_expression,
+                        subject_role=subject_expression.rsplit(".", 1)[-1],
+                        type_names_by_check=tuple(checks),
+                        union_aliases=union_aliases,
+                    )
+                )
+        return sorted_tuple(
+            facts,
+            key=lambda item: (item.file_path, item.subject_role, item.line),
+        )
+
+    @staticmethod
+    def _compact_implicit_self_mixin_facts(
+        module: ParsedModule,
+    ) -> tuple[CompactImplicitSelfMixinFact, ...]:
+        facts: list[CompactImplicitSelfMixinFact] = []
+        for indexed_class in module.fact(ModuleIndexedClasses).records:
+            qualname, class_node = indexed_class.qualname, indexed_class.node
+            if not class_node.name.endswith("Mixin") or indexed_class.is_abstract:
+                continue
+            method_names: list[str] = []
+            method_lines: list[int] = []
+            cast_type_names: set[str] = set()
+            accessed_attribute_names: set[str] = set()
+            for method in indexed_class.methods:
+                if method.spells("abstractmethod"):
+                    continue
+                alias_names, method_cast_types = _self_cast_alias_names(method.node)
+                if not alias_names:
+                    continue
+                method_names.append(method.name)
+                method_lines.append(method.node.lineno)
+                cast_type_names.update(method_cast_types)
+                accessed_attribute_names.update(
+                    SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
+                        method.node, root_names=set(alias_names)
+                    )
+                )
+            if method_names:
+                facts.append(
+                    CompactImplicitSelfMixinFact(
+                        file_path=module.file_path,
+                        qualname=qualname,
+                        line=class_node.lineno,
+                        method_names=tuple(method_names),
+                        method_lines=tuple(method_lines),
+                        cast_type_names=sorted_tuple(cast_type_names),
+                        accessed_attribute_names=sorted_tuple(accessed_attribute_names),
+                    )
+                )
+        return tuple(facts)
 
 
 def _compact_class_for_detector_name(
@@ -564,125 +563,6 @@ def _compact_common_abstract_base_names(
     )
 
 
-def _compact_repeated_concrete_type_case_candidates(
-    projections: Sequence[CompactRemainingSystemicModuleProjection],
-    class_projections: Sequence[CompactModuleClassProjection],
-    config: DetectorConfig,
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
-    if class_index is None:
-        class_index = build_compact_class_family_index(class_projections)
-    min_function_count = max(3, config.min_registration_sites)
-    min_class_count = max(2, config.min_reflective_selector_values)
-    candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
-    for projection in projections:
-        grouped: dict[str, list[ConcreteTypeCaseFunctionCandidate]] = defaultdict(list)
-        for function_candidate in _compact_concrete_type_function_candidates(
-            projection, class_index
-        ):
-            grouped[function_candidate.fact.subject_role].append(function_candidate)
-        for subject_role, functions in sorted(grouped.items()):
-            if len(functions) < min_function_count:
-                continue
-            concrete_class_names = sorted_tuple(
-                class_name
-                for function in functions
-                for class_name in function.concrete_class_names
-            )
-            concrete_class_names = sorted_tuple(set(concrete_class_names))
-            if len(concrete_class_names) < min_class_count:
-                continue
-            abstract_base_names = _compact_common_abstract_base_names(
-                projection, class_index, concrete_class_names
-            )
-            union_alias_names = sorted_tuple(
-                {
-                    alias_name
-                    for function in functions
-                    for alias_name in function.union_alias_names
-                }
-            )
-            shared_suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(
-                concrete_class_names
-            )
-            shared_prefix = CLASS_NAME_ALGEBRA.longest_common_prefix(
-                concrete_class_names
-            )
-            if (
-                not abstract_base_names
-                and not union_alias_names
-                and max(len(shared_suffix), len(shared_prefix)) < 6
-            ):
-                continue
-            candidates.append(
-                RepeatedConcreteTypeCaseAnalysisCandidate(
-                    functions=sorted_tuple(
-                        functions,
-                        key=lambda item: (item.fact.line, item.fact.function_name),
-                    ),
-                    concrete_class_names=concrete_class_names,
-                    union_alias_names=union_alias_names,
-                    abstract_base_names=abstract_base_names,
-                )
-            )
-    return tuple(candidates)
-
-
-def _compact_implicit_self_contract_mixin_candidates(
-    projections: Sequence[CompactRemainingSystemicModuleProjection],
-    class_projections: Sequence[CompactModuleClassProjection],
-    config: DetectorConfig,
-    *,
-    class_index: CompactClassFamilyIndex | None = None,
-) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
-    if class_index is None:
-        class_index = build_compact_class_family_index(class_projections)
-    min_consumer_count = max(2, config.min_registration_sites)
-    facts_by_class_symbol = {
-        class_symbol: fact
-        for projection in projections
-        for fact in projection.implicit_self_mixins
-        if (
-            class_symbol := class_index.symbol_for(
-                file_path=fact.file_path, qualname=fact.qualname
-            )
-        )
-        is not None
-    }
-    candidates: list[ImplicitSelfContractMixinCandidate] = []
-    for class_symbol, fact in sorted(facts_by_class_symbol.items()):
-        indexed_class = class_index.class_for(class_symbol)
-        if indexed_class is None:
-            continue
-        consumers = tuple(
-            descendant
-            for descendant_symbol in class_index.descendant_symbols(class_symbol)
-            if (descendant := class_index.class_for(descendant_symbol)) is not None
-            and not descendant.is_abstract
-        )
-        if len(consumers) < min_consumer_count:
-            continue
-        candidates.append(
-            ImplicitSelfContractMixinCandidate(
-                fact=fact,
-                mixin_name=class_index.display_name(indexed_class),
-                consumers=sorted_tuple(
-                    (
-                        SourceLocation(
-                            consumer.file_path,
-                            consumer.line,
-                            class_index.display_name(consumer),
-                        )
-                        for consumer in consumers
-                    ),
-                    key=lambda consumer: consumer.symbol,
-                ),
-            )
-        )
-    return tuple(candidates)
-
-
 @dataclass(frozen=True)
 class _DataclassNamespaceProjection(LineWitness):
     """A dataclass and the fields its `from_namespace` constructor reads back by name."""
@@ -752,7 +632,7 @@ class _DataclassNamespaceCliModuleProjectionFamily(
         )
     )
     source_collector = staticmethod(
-        lambda source_module, syntax_index: _native_dataclass_namespace_cli_projections(
+        lambda source_module, syntax_index: _DataclassNamespaceCliModuleProjectionFamily._native_dataclass_namespace_cli_projections(
             source_module,
             syntax_index,
         )
@@ -802,77 +682,77 @@ class _DataclassNamespaceCliModuleProjectionFamily(
             )
         ]
 
+    @staticmethod
+    def _native_dataclass_namespace_cli_projections(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[_DataclassNamespaceCliModuleProjection] | None:
+        """Project sparse dataclass/CLI mirrors from selected declarations."""
 
-def _native_dataclass_namespace_cli_projections(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[_DataclassNamespaceCliModuleProjection] | None:
-    """Project sparse dataclass/CLI mirrors from selected declarations."""
-
-    if not syntax_index.is_complete:
-        return None
-    file_path = source_module.file_path
-    try:
-        dataclasses: list[_DataclassNamespaceProjection] = []
-        for class_node in syntax_index.top_level_declarations("class"):
-            class_source = syntax_index.source_for(class_node)
-            decorated_source = (
-                syntax_index.source_for(class_node.parent)
-                if class_node.parent is not None
-                and class_node.parent.type == "decorated_definition"
-                else class_source
-            )
-            if b"dataclass" not in decorated_source or b"from_namespace" not in (
-                class_source
-            ):
-                continue
-            parsed_class = syntax_index.class_for(class_node)
-            field_names = _dataclass_config_field_names(
-                UnindexedClassStatement(parsed_class)
-            )
-            if not field_names:
-                continue
-            namespace_assignment = _from_namespace_keyword_names(parsed_class)
-            if namespace_assignment is None:
-                continue
-            from_namespace_line, namespace_field_names = namespace_assignment
-            dataclasses.append(
-                _DataclassNamespaceProjection(
-                    file_path=file_path,
-                    line=parsed_class.lineno,
-                    class_name=parsed_class.name,
-                    field_names=field_names,
-                    namespace_field_names=namespace_field_names,
-                    from_namespace_line=from_namespace_line,
+        if not syntax_index.is_complete:
+            return None
+        file_path = source_module.file_path
+        try:
+            dataclasses: list[_DataclassNamespaceProjection] = []
+            for class_node in syntax_index.top_level_declarations("class"):
+                class_source = syntax_index.source_for(class_node)
+                decorated_source = (
+                    syntax_index.source_for(class_node.parent)
+                    if class_node.parent is not None
+                    and class_node.parent.type == "decorated_definition"
+                    else class_source
                 )
+                if b"dataclass" not in decorated_source or b"from_namespace" not in (
+                    class_source
+                ):
+                    continue
+                parsed_class = syntax_index.class_for(class_node)
+                field_names = _dataclass_config_field_names(
+                    UnindexedClassStatement(parsed_class)
+                )
+                if not field_names:
+                    continue
+                namespace_assignment = _from_namespace_keyword_names(parsed_class)
+                if namespace_assignment is None:
+                    continue
+                from_namespace_line, namespace_field_names = namespace_assignment
+                dataclasses.append(
+                    _DataclassNamespaceProjection(
+                        file_path=file_path,
+                        line=parsed_class.lineno,
+                        class_name=parsed_class.name,
+                        field_names=field_names,
+                        namespace_field_names=namespace_field_names,
+                        from_namespace_line=from_namespace_line,
+                    )
+                )
+            cli_statements = tuple(
+                syntax_index.statement_for(node)
+                for node in syntax_index.top_level_assignment_statements()
+                if b"ArgumentSpec" in syntax_index.source_for(node)
             )
-        cli_statements = tuple(
-            syntax_index.statement_for(node)
-            for node in syntax_index.top_level_assignment_statements()
-            if b"ArgumentSpec" in syntax_index.source_for(node)
-        )
-        cli_module = source_module.parsed_module(
-            ast.Module(body=list(cli_statements), type_ignores=[]),
-        )
-        cli_specs = tuple(
-            _CliArgumentSpecProjection(
-                file_path=file_path,
-                name=name,
-                line=line,
-                field_names=field_names,
+            cli_module = source_module.parsed_module(
+                ast.Module(body=list(cli_statements), type_ignores=[]),
             )
-            for name, line, field_names in _cli_argument_spec_fields(cli_module)
-        )
-        if not dataclasses and not cli_specs:
-            return []
-        return [
-            _DataclassNamespaceCliModuleProjection(
-                dataclasses=tuple(dataclasses),
-                cli_specs=cli_specs,
+            cli_specs = tuple(
+                _CliArgumentSpecProjection(
+                    file_path=file_path,
+                    name=name,
+                    line=line,
+                    field_names=field_names,
+                )
+                for name, line, field_names in _cli_argument_spec_fields(cli_module)
             )
-        ]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
+            if not dataclasses and not cli_specs:
+                return []
+            return [
+                _DataclassNamespaceCliModuleProjection(
+                    dataclasses=tuple(dataclasses),
+                    cli_specs=cli_specs,
+                )
+            ]
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return None
 
 
 def _dataclass_namespace_cli_mirror_candidates_from_projections(
@@ -954,7 +834,7 @@ class ProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidat
                 body = statements_without_docstring(statement.body)
                 if len(body) != 1 or not isinstance(body[0], ast.Return):
                     continue
-                base_name = _path_projection_base(body[0].value)
+                base_name = cls._path_projection_base(body[0].value)
                 if base_name is None:
                     continue
                 properties.append((statement, base_name))
@@ -974,6 +854,19 @@ class ProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidat
         return sorted_tuple(
             candidates, key=lambda item: (item.file_path, item.line, item.class_name)
         )
+
+    @staticmethod
+    def _path_projection_base(returned: ast.AST) -> str | None:
+        node = returned
+        saw_path_part = False
+        while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            if not _is_path_projection_part(node.right):
+                return None
+            saw_path_part = True
+            node = node.left
+        if not saw_path_part:
+            return None
+        return SELF_ATTRIBUTE_AUTHORITY.attr_name(node)
 
 
 @dataclass(frozen=True)
@@ -1008,19 +901,6 @@ def _is_path_projection_part(node: ast.AST) -> bool:
     return False
 
 
-def _path_projection_base(returned: ast.AST) -> str | None:
-    node = returned
-    saw_path_part = False
-    while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-        if not _is_path_projection_part(node.right):
-            return None
-        saw_path_part = True
-        node = node.left
-    if not saw_path_part:
-        return None
-    return SELF_ATTRIBUTE_AUTHORITY.attr_name(node)
-
-
 declare_candidate_rule_detector(
     ProjectionPropertyFamilyCandidate,
     high_confidence_certified_spec(
@@ -1053,46 +933,6 @@ declare_candidate_rule_detector(
 )
 
 
-def _collection_projection_property_shape(
-    returned: ast.AST,
-) -> tuple[str, str] | None:
-    return (
-        Maybe.of(as_ast(returned, ast.Call))
-        .filter(
-            lambda call: (
-                name_id(call.func) in {"tuple", "list", "set", "frozenset"}
-                and len(call.args) == 1
-                and not call.keywords
-            )
-        )
-        .project(lambda call: as_ast(call.args[0], ast.GeneratorExp))
-        .filter(lambda generator: len(generator.generators) == 1)
-        .map(lambda generator: (generator, generator.generators[0]))
-        .filter(lambda context: not context[1].ifs)
-        .combine(
-            lambda context: SELF_ATTRIBUTE_AUTHORITY.attr_name(context[1].iter),
-            lambda context, collection_name: (
-                collection_name,
-                as_ast(context[0].elt, ast.Attribute),
-                name_id(context[1].target),
-            ),
-        )
-        .project(
-            lambda context: (
-                (
-                    context[0],
-                    context[1].attr,
-                )
-                if context[1] is not None
-                and context[2] is not None
-                and name_id(context[1].value) == context[2]
-                else None
-            )
-        )
-        .unwrap_or_none()
-    )
-
-
 @dataclass(frozen=True)
 class CollectionProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidate):
     property_names: tuple[str, ...]
@@ -1117,7 +957,7 @@ class CollectionProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitne
                 body = statements_without_docstring(statement.body)
                 if len(body) != 1 or not isinstance(body[0], ast.Return):
                     continue
-                shape = _collection_projection_property_shape(body[0].value)
+                shape = cls._collection_projection_property_shape(body[0].value)
                 if shape is None:
                     continue
                 collection_name, projected_attribute_name = shape
@@ -1149,6 +989,46 @@ class CollectionProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitne
                 )
         return sorted_tuple(
             candidates, key=lambda item: (item.file_path, item.line, item.class_name)
+        )
+
+    @staticmethod
+    def _collection_projection_property_shape(
+        returned: ast.AST,
+    ) -> tuple[str, str] | None:
+        return (
+            Maybe.of(as_ast(returned, ast.Call))
+            .filter(
+                lambda call: (
+                    name_id(call.func) in {"tuple", "list", "set", "frozenset"}
+                    and len(call.args) == 1
+                    and not call.keywords
+                )
+            )
+            .project(lambda call: as_ast(call.args[0], ast.GeneratorExp))
+            .filter(lambda generator: len(generator.generators) == 1)
+            .map(lambda generator: (generator, generator.generators[0]))
+            .filter(lambda context: not context[1].ifs)
+            .combine(
+                lambda context: SELF_ATTRIBUTE_AUTHORITY.attr_name(context[1].iter),
+                lambda context, collection_name: (
+                    collection_name,
+                    as_ast(context[0].elt, ast.Attribute),
+                    name_id(context[1].target),
+                ),
+            )
+            .project(
+                lambda context: (
+                    (
+                        context[0],
+                        context[1].attr,
+                    )
+                    if context[1] is not None
+                    and context[2] is not None
+                    and name_id(context[1].value) == context[2]
+                    else None
+                )
+            )
+            .unwrap_or_none()
         )
 
 
@@ -3127,54 +3007,6 @@ def _compact_keyed_registry_axis_facts(
     return tuple(facts)
 
 
-def _compact_keyed_registry_axis_facts_from_context(
-    context: object | None,
-) -> tuple[KeyedRegistryAxisFact, ...]:
-    repository = CompactClassRepositoryContext.require(context)
-    return repository.cached(
-        _compact_keyed_registry_axis_facts,
-        lambda: _compact_keyed_registry_axis_facts(
-            repository.projections,
-            repository.config,
-            class_index=repository.class_index,
-        ),
-    )
-
-
-def _compact_registry_projection_import_aliases(
-    projection: CompactModuleClassProjection,
-    *,
-    registry_projection: CompactModuleClassProjection,
-    fact: KeyedRegistryAxisFact,
-) -> dict[str, str]:
-    canonical_names = frozenset(
-        (
-            fact.class_name,
-            fact.key_type_name,
-            *fact.require_proof().registered_type_names,
-        )
-    )
-    return {
-        local_name: canonical_name
-        for local_name, qualified_name in projection.import_aliases
-        for canonical_name in canonical_names
-        if qualified_name == f"{registry_projection.module_name}.{canonical_name}"
-    }
-
-
-def _compact_registry_projection_reference_name(
-    reference: tuple[str, str | None],
-    import_aliases: dict[str, str],
-) -> str:
-    value, alias_head = reference
-    if alias_head is None or alias_head not in import_aliases:
-        return value
-    canonical_head = import_aliases[alias_head]
-    if value == alias_head:
-        return canonical_head
-    return f"{canonical_head}{value[len(alias_head) :]}"
-
-
 @dataclass(frozen=True)
 class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWitnessCandidate):
     registry_class_name: str
@@ -3265,7 +3097,7 @@ class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWi
                 if projection.file_path == fact.file_path:
                     import_aliases: dict[str, str] = {}
                 else:
-                    import_aliases = _compact_registry_projection_import_aliases(
+                    import_aliases = cls._compact_registry_projection_import_aliases(
                         projection,
                         registry_projection=registry_projection,
                         fact=fact,
@@ -3365,7 +3197,7 @@ class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWi
         proof = fact.require_proof()
         if surface.sequence_references:
             reference_names = tuple(
-                _compact_registry_projection_reference_name(reference, import_aliases)
+                cls._compact_registry_projection_reference_name(reference, import_aliases)
                 for reference in surface.sequence_references
             )
             shared_key_names = sorted_tuple(
@@ -3394,11 +3226,11 @@ class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWi
             )
 
         key_names = tuple(
-            _compact_registry_projection_reference_name(reference, import_aliases)
+            cls._compact_registry_projection_reference_name(reference, import_aliases)
             for reference in surface.dict_key_references
         )
         value_names = tuple(
-            _compact_registry_projection_reference_name(reference, import_aliases)
+            cls._compact_registry_projection_reference_name(reference, import_aliases)
             for reference in surface.dict_value_references
         )
         proof_key_names = frozenset(proof.key_names)
@@ -3435,6 +3267,40 @@ class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWi
             surface_kind=surface_kind,
             projected_names=(*key_names, *value_names),
         )
+
+    @staticmethod
+    def _compact_registry_projection_import_aliases(
+        projection: CompactModuleClassProjection,
+        *,
+        registry_projection: CompactModuleClassProjection,
+        fact: KeyedRegistryAxisFact,
+    ) -> dict[str, str]:
+        canonical_names = frozenset(
+            (
+                fact.class_name,
+                fact.key_type_name,
+                *fact.require_proof().registered_type_names,
+            )
+        )
+        return {
+            local_name: canonical_name
+            for local_name, qualified_name in projection.import_aliases
+            for canonical_name in canonical_names
+            if qualified_name == f"{registry_projection.module_name}.{canonical_name}"
+        }
+
+    @staticmethod
+    def _compact_registry_projection_reference_name(
+        reference: tuple[str, str | None],
+        import_aliases: dict[str, str],
+    ) -> str:
+        value, alias_head = reference
+        if alias_head is None or alias_head not in import_aliases:
+            return value
+        canonical_head = import_aliases[alias_head]
+        if value == alias_head:
+            return canonical_head
+        return f"{canonical_head}{value[len(alias_head) :]}"
 
 
 class KeyedRegistryAxisRootAnchored(TargetClassEvidenceAnchored):
@@ -3513,9 +3379,23 @@ class _CompactKeyedRegistryCandidateDetectorBase(
         context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        facts = _compact_keyed_registry_axis_facts_from_context(context)
+        facts = self._compact_keyed_registry_axis_facts_from_context(context)
         return self._findings_for_candidates(
             self._candidates_from_registry_facts(projections, facts), config
+        )
+
+    @staticmethod
+    def _compact_keyed_registry_axis_facts_from_context(
+        context: object | None,
+    ) -> tuple[KeyedRegistryAxisFact, ...]:
+        repository = CompactClassRepositoryContext.require(context)
+        return repository.cached(
+            _compact_keyed_registry_axis_facts,
+            lambda: _compact_keyed_registry_axis_facts(
+                repository.projections,
+                repository.config,
+                class_index=repository.class_index,
+            ),
         )
 
 
@@ -4095,7 +3975,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         context: object | None,
         config: DetectorConfig,
     ) -> Sequence[RepeatedConcreteTypeCaseAnalysisCandidate]:
-        return _compact_repeated_concrete_type_case_candidates(
+        return self._compact_repeated_concrete_type_case_candidates(
             CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
             CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
@@ -4143,6 +4023,71 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
             ),
         )
 
+    @staticmethod
+    def _compact_repeated_concrete_type_case_candidates(
+        projections: Sequence[CompactRemainingSystemicModuleProjection],
+        class_projections: Sequence[CompactModuleClassProjection],
+        config: DetectorConfig,
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> tuple[RepeatedConcreteTypeCaseAnalysisCandidate, ...]:
+        if class_index is None:
+            class_index = build_compact_class_family_index(class_projections)
+        min_function_count = max(3, config.min_registration_sites)
+        min_class_count = max(2, config.min_reflective_selector_values)
+        candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
+        for projection in projections:
+            grouped: dict[str, list[ConcreteTypeCaseFunctionCandidate]] = defaultdict(list)
+            for function_candidate in _compact_concrete_type_function_candidates(
+                projection, class_index
+            ):
+                grouped[function_candidate.fact.subject_role].append(function_candidate)
+            for subject_role, functions in sorted(grouped.items()):
+                if len(functions) < min_function_count:
+                    continue
+                concrete_class_names = sorted_tuple(
+                    class_name
+                    for function in functions
+                    for class_name in function.concrete_class_names
+                )
+                concrete_class_names = sorted_tuple(set(concrete_class_names))
+                if len(concrete_class_names) < min_class_count:
+                    continue
+                abstract_base_names = _compact_common_abstract_base_names(
+                    projection, class_index, concrete_class_names
+                )
+                union_alias_names = sorted_tuple(
+                    {
+                        alias_name
+                        for function in functions
+                        for alias_name in function.union_alias_names
+                    }
+                )
+                shared_suffix = CLASS_NAME_ALGEBRA.longest_common_suffix(
+                    concrete_class_names
+                )
+                shared_prefix = CLASS_NAME_ALGEBRA.longest_common_prefix(
+                    concrete_class_names
+                )
+                if (
+                    not abstract_base_names
+                    and not union_alias_names
+                    and max(len(shared_suffix), len(shared_prefix)) < 6
+                ):
+                    continue
+                candidates.append(
+                    RepeatedConcreteTypeCaseAnalysisCandidate(
+                        functions=sorted_tuple(
+                            functions,
+                            key=lambda item: (item.fact.line, item.fact.function_name),
+                        ),
+                        concrete_class_names=concrete_class_names,
+                        union_alias_names=union_alias_names,
+                        abstract_base_names=abstract_base_names,
+                    )
+                )
+        return tuple(candidates)
+
 
 class ImplicitSelfContractMixinDetector(
     CompactClassIndexMultiProjectionDetector,
@@ -4176,7 +4121,7 @@ class ImplicitSelfContractMixinDetector(
         context: object | None,
         config: DetectorConfig,
     ) -> Sequence[ImplicitSelfContractMixinCandidate]:
-        return _compact_implicit_self_contract_mixin_candidates(
+        return self._compact_implicit_self_contract_mixin_candidates(
             CompactRemainingSystemicModuleProjectionFamily.modules_in(projections_by_family),
             CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             config,
@@ -4203,6 +4148,60 @@ class ImplicitSelfContractMixinDetector(
                 class_count=len(mixin_candidate.consumers) + 1,
             ),
         )
+
+    @staticmethod
+    def _compact_implicit_self_contract_mixin_candidates(
+        projections: Sequence[CompactRemainingSystemicModuleProjection],
+        class_projections: Sequence[CompactModuleClassProjection],
+        config: DetectorConfig,
+        *,
+        class_index: CompactClassFamilyIndex | None = None,
+    ) -> tuple[ImplicitSelfContractMixinCandidate, ...]:
+        if class_index is None:
+            class_index = build_compact_class_family_index(class_projections)
+        min_consumer_count = max(2, config.min_registration_sites)
+        facts_by_class_symbol = {
+            class_symbol: fact
+            for projection in projections
+            for fact in projection.implicit_self_mixins
+            if (
+                class_symbol := class_index.symbol_for(
+                    file_path=fact.file_path, qualname=fact.qualname
+                )
+            )
+            is not None
+        }
+        candidates: list[ImplicitSelfContractMixinCandidate] = []
+        for class_symbol, fact in sorted(facts_by_class_symbol.items()):
+            indexed_class = class_index.class_for(class_symbol)
+            if indexed_class is None:
+                continue
+            consumers = tuple(
+                descendant
+                for descendant_symbol in class_index.descendant_symbols(class_symbol)
+                if (descendant := class_index.class_for(descendant_symbol)) is not None
+                and not descendant.is_abstract
+            )
+            if len(consumers) < min_consumer_count:
+                continue
+            candidates.append(
+                ImplicitSelfContractMixinCandidate(
+                    fact=fact,
+                    mixin_name=class_index.display_name(indexed_class),
+                    consumers=sorted_tuple(
+                        (
+                            SourceLocation(
+                                consumer.file_path,
+                                consumer.line,
+                                class_index.display_name(consumer),
+                            )
+                            for consumer in consumers
+                        ),
+                        key=lambda consumer: consumer.symbol,
+                    ),
+                )
+            )
+        return tuple(candidates)
 
 
 @dataclass(frozen=True)

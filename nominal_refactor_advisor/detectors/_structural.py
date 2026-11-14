@@ -139,16 +139,6 @@ class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCand
                 )
 
 
-def _reflective_self_attribute_compression_certificate(
-    candidate: ReflectiveSelfAttributeCandidate,
-) -> CompressionCertificate:
-    return CompressionCertificate.from_object_family(
-        manual_object_count=4,
-        replacement_shape=_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE,
-        semantic_axes=(candidate.attribute_name, candidate.reflective_builtin),
-    )
-
-
 @dataclass(frozen=True)
 class PropertyAliasHookGroup(CollectsItself, PropertyHookGroup):
     returned_attribute: str
@@ -537,9 +527,19 @@ class ReflectiveSelfAttributeEscapeDetector(
                     f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
                 ),
             ),
-            compression_certificate=_reflective_self_attribute_compression_certificate(
+            compression_certificate=self._reflective_self_attribute_compression_certificate(
                 reflective_candidate
             ),
+        )
+
+    @staticmethod
+    def _reflective_self_attribute_compression_certificate(
+        candidate: ReflectiveSelfAttributeCandidate,
+    ) -> CompressionCertificate:
+        return CompressionCertificate.from_object_family(
+            manual_object_count=4,
+            replacement_shape=_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE,
+            semantic_axes=(candidate.attribute_name, candidate.reflective_builtin),
         )
 
 

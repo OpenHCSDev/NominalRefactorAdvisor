@@ -6,13 +6,12 @@ import re
 from enum import StrEnum
 from functools import lru_cache
 
-_SEMANTIC_IDENTIFIER_TOKEN_PATTERN = re.compile(
-    r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+[0-9]*|[0-9]+"
-)
-
-
 class SemanticIdentifierTokenProjection:
     """Project identifier-like text into stable lowercase semantic tokens."""
+
+    _SEMANTIC_IDENTIFIER_TOKEN_PATTERN = re.compile(
+        r"[A-Z]+(?=[A-Z][a-z]|[0-9]|$)|[A-Z]?[a-z]+[0-9]*|[0-9]+"
+    )
 
     @staticmethod
     @lru_cache(maxsize=16_384)
@@ -21,7 +20,7 @@ class SemanticIdentifierTokenProjection:
             token.lower()
             for segment in re.split(r"[^0-9A-Za-z]+", text)
             if segment
-            for token in _SEMANTIC_IDENTIFIER_TOKEN_PATTERN.findall(segment)
+            for token in SemanticIdentifierTokenProjection._SEMANTIC_IDENTIFIER_TOKEN_PATTERN.findall(segment)
         )
 
 

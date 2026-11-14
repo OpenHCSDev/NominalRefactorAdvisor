@@ -1475,7 +1475,7 @@ class Fold(Cases, ABC):
                 if not isinstance(owner, ast.ClassDef) or owner.name == enum.name:
                     continue
                 for function in owner.body:
-                    if isinstance(function, ast.FunctionDef) and _reads_enum(
+                    if isinstance(function, ast.FunctionDef) and self._reads_enum(
                         function, enum, holder
                     ):
                         found.append(
@@ -1780,7 +1780,7 @@ class Fold(Cases, ABC):
             if module is holder.module
             else set()
         )
-        enum_typed = _enum_typed_names(module.module, names.enum)
+        enum_typed = self._enum_typed_names(module.module, names.enum)
         is_test = PythonSourcePathPolicy.is_test_path(module.path)
         members = {member.name: member.class_name for member in enum.members}
         shadowed = self.shadowed(module, names.enum)
@@ -1916,6 +1916,33 @@ class Fold(Cases, ABC):
             for child in ast.walk(following.test)
         )
 
+    @staticmethod
+    def _enum_typed_names(tree: ast.Module, enum_names: frozenset[str]) -> frozenset[str]:
+        """Parameters annotated with the enum: values that become member classes."""
+
+        return frozenset(
+            node.arg
+            for node in nodes_of(ast.arg, tree)
+            if _is_any_name(node.annotation, enum_names)
+        )
+
+    @staticmethod
+    def _reads_enum(
+        function: ast.FunctionDef, enum: EnumDeclaration, holder: Holder
+    ) -> bool:
+        return any(
+            (isinstance(node, ast.Attribute) and _is_name(node.value, enum.name))
+            or (
+                isinstance(node, ast.Attribute)
+                and node.attr in enum.data_fields
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == holder.field_name
+            )
+            for statement in function.body
+            if isinstance(statement, ast.If)
+            for node in ast.walk(statement.test)
+        )
+
 
 @dataclass(frozen=True)
 class ModuleNames:
@@ -1949,33 +1976,6 @@ def _annotations(node: ast.AST) -> tuple[ast.expr, ...]:
     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
         return declared_annotations(node)
     return ()
-
-
-def _enum_typed_names(tree: ast.Module, enum_names: frozenset[str]) -> frozenset[str]:
-    """Parameters annotated with the enum: values that become member classes."""
-
-    return frozenset(
-        node.arg
-        for node in nodes_of(ast.arg, tree)
-        if _is_any_name(node.annotation, enum_names)
-    )
-
-
-def _reads_enum(
-    function: ast.FunctionDef, enum: EnumDeclaration, holder: Holder
-) -> bool:
-    return any(
-        (isinstance(node, ast.Attribute) and _is_name(node.value, enum.name))
-        or (
-            isinstance(node, ast.Attribute)
-            and node.attr in enum.data_fields
-            and isinstance(node.value, ast.Attribute)
-            and node.value.attr == holder.field_name
-        )
-        for statement in function.body
-        if isinstance(statement, ast.If)
-        for node in ast.walk(statement.test)
-    )
 
 
 @dataclass
@@ -2144,15 +2144,6 @@ def _scope_names(
     return frozenset(parameters) | LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
 
 
-def _postponed_annotations(module: ParsedModule) -> bool:
-    return any(
-        isinstance(statement, ast.ImportFrom)
-        and statement.module == "__future__"
-        and any(alias.name == "annotations" for alias in statement.names)
-        for statement in module.module.body
-    )
-
-
 class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
     """An enum whose one map pairs each member with a class of one family.
 
@@ -2210,7 +2201,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
     ) -> None:
         indent = " " * root.body[0].col_offset
         returns = f"tuple[type[{root.name}], ...]"
-        if not _postponed_annotations(module):
+        if not self._postponed_annotations(module):
             returns = f'"{returns}"'
         source = (
             f"@classmethod\n"
@@ -2335,6 +2326,15 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
                     keyed.root,
                     shadowed,
                 )
+
+    @staticmethod
+    def _postponed_annotations(module: ParsedModule) -> bool:
+        return any(
+            isinstance(statement, ast.ImportFrom)
+            and statement.module == "__future__"
+            and any(alias.name == "annotations" for alias in statement.names)
+            for statement in module.module.body
+        )
 
 
 class CasesFold(Fold, Cases, Descent):

@@ -151,21 +151,6 @@ class HelperSupportProjectionAuthority:
 HELPER_SUPPORT_PROJECTION_AUTHORITY = HelperSupportProjectionAuthority()
 
 
-def _function_parameter_annotation_map(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, str]:
-    annotations: dict[str, str] = {}
-    for arg in (
-        ParameterAnnotations.of(
-            tuple(node.args.posonlyargs)
-            + tuple(node.args.args)
-            + tuple(node.args.kwonlyargs)
-        ).annotated
-    ):
-        annotations[arg.arg] = ast.unparse(arg.annotation)
-    return annotations
-
-
 def _call_display_name(node: ast.Call) -> str | None:
     if isinstance(node.func, ast.Name):
         return node.func.id
@@ -1357,7 +1342,7 @@ class HelperSyntaxProjectionAuthority:
                 continue
             if statement.name != "__init__":
                 continue
-            parameter_annotations = _function_parameter_annotation_map(statement)
+            parameter_annotations = self._function_parameter_annotation_map(statement)
             for inner in statement.body:
                 target: ast.AST | None = None
                 value: ast.AST | None = None
@@ -1377,6 +1362,21 @@ class HelperSyntaxProjectionAuthority:
                     continue
                 typed_fields.setdefault(target.attr, parameter_annotations[value.id])
         return sorted_tuple(typed_fields.items())
+
+    @staticmethod
+    def _function_parameter_annotation_map(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> dict[str, str]:
+        annotations: dict[str, str] = {}
+        for arg in (
+            ParameterAnnotations.of(
+                tuple(node.args.posonlyargs)
+                + tuple(node.args.args)
+                + tuple(node.args.kwonlyargs)
+            ).annotated
+        ):
+            annotations[arg.arg] = ast.unparse(arg.annotation)
+        return annotations
 
 HELPER_SYNTAX_PROJECTION_AUTHORITY = HelperSyntaxProjectionAuthority()
 

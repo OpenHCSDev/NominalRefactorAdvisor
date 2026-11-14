@@ -52,8 +52,8 @@ class SourceInsertionBoundary(FieldedStrEnum):
 
         if self is SourceInsertionBoundary.PRESERVE:
             return (*preceding_lines, *inserted_lines)
-        preceding_content = _without_trailing_blank_lines(preceding_lines)
-        inserted_content = _without_leading_blank_lines(inserted_lines)
+        preceding_content = self._without_trailing_blank_lines(preceding_lines)
+        inserted_content = self._without_leading_blank_lines(inserted_lines)
         if not preceding_content or not inserted_content:
             return (*preceding_content, *inserted_content)
         return (
@@ -62,23 +62,23 @@ class SourceInsertionBoundary(FieldedStrEnum):
             *inserted_content,
         )
 
+    @staticmethod
+    def _without_leading_blank_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
+        first_content_index = next(
+            (index for index, line in enumerate(lines) if line.strip()),
+            len(lines),
+        )
+        return lines[first_content_index:]
 
-def _without_leading_blank_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
-    first_content_index = next(
-        (index for index, line in enumerate(lines) if line.strip()),
-        len(lines),
-    )
-    return lines[first_content_index:]
-
-
-def _without_trailing_blank_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
-    trailing_blank_line_count = next(
-        (index for index, line in enumerate(reversed(lines)) if line.strip()),
-        len(lines),
-    )
-    if trailing_blank_line_count == 0:
-        return lines
-    return lines[:-trailing_blank_line_count]
+    @staticmethod
+    def _without_trailing_blank_lines(lines: tuple[str, ...]) -> tuple[str, ...]:
+        trailing_blank_line_count = next(
+            (index for index, line in enumerate(reversed(lines)) if line.strip()),
+            len(lines),
+        )
+        if trailing_blank_line_count == 0:
+            return lines
+        return lines[:-trailing_blank_line_count]
 
 
 @dataclass(frozen=True)

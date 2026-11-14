@@ -131,15 +131,6 @@ class _ModuleScopeNameReferenceCollector(OwnScopeNodeVisitor):
             self.references.append(node)
 
 
-def _module_scope_name_references(
-    module: ast.Module,
-    name: str,
-) -> tuple[ast.Name, ...]:
-    collector = _ModuleScopeNameReferenceCollector(name)
-    collector.visit(module)
-    return tuple(collector.references)
-
-
 @dataclass(frozen=True)
 class PublicExportNameReference:
     """One exact string literal in a static public-export declaration."""
@@ -213,7 +204,7 @@ class ModulePublicExportSourceAuthority:
         if len(declarations) != 1:
             return None
         declaration = declarations[0]
-        references = _module_scope_name_references(
+        references = cls._module_scope_name_references(
             module,
             PYTHON_PUBLIC_EXPORT_ASSIGNMENT,
         )
@@ -224,6 +215,15 @@ class ModulePublicExportSourceAuthority:
         if references is None:
             return ()
         return tuple(reference for reference in references if reference.name == name)
+
+    @staticmethod
+    def _module_scope_name_references(
+        module: ast.Module,
+        name: str,
+    ) -> tuple[ast.Name, ...]:
+        collector = _ModuleScopeNameReferenceCollector(name)
+        collector.visit(module)
+        return tuple(collector.references)
 
 
 def module_public_export_contract(

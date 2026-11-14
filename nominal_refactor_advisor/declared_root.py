@@ -27,7 +27,6 @@ from functools import cache
 from pathlib import Path
 
 TABLE = "[tool.nominal-refactor-advisor.family-root]"
-BLACK_DEFAULT_LINE_LENGTH = 88
 
 
 class ValueCarrier(ABC):
@@ -67,6 +66,8 @@ class DerivedValue(ValueCarrier):
 @dataclass(frozen=True)
 class DeclaredRoot:
     """One repository's family root: where it lives and how members carry values."""
+
+    BLACK_DEFAULT_LINE_LENGTH = 88
 
     module: str
     name: str
@@ -110,7 +111,7 @@ class DeclaredRoot:
 
         pyproject = cls.nearest_pyproject(path)
         if pyproject is None:
-            return BLACK_DEFAULT_LINE_LENGTH
+            return cls.BLACK_DEFAULT_LINE_LENGTH
         return cls.line_length_of(tomllib.loads(pyproject.read_text()))
 
     @classmethod
@@ -151,7 +152,7 @@ class DeclaredRoot:
                 return length
             case {"tool": {"black": {"line-length": int(length)}}}:
                 return length
-        return BLACK_DEFAULT_LINE_LENGTH
+        return DeclaredRoot.BLACK_DEFAULT_LINE_LENGTH
 
     @classmethod
     def decoded(

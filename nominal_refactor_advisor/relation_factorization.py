@@ -201,62 +201,6 @@ def _is_laminar(relation: RequiredRelation) -> bool:
     return True
 
 
-def _expected_parent_maps(
-    retained: RequiredRelation,
-) -> tuple[tuple[tuple[str, str | None], ...], tuple[tuple[str, str | None], ...]]:
-    scopes = {key: retained.consumers_for(key) for key in retained.implementation_keys}
-    ordered_keys = sorted_tuple(
-        retained.implementation_keys,
-        key=lambda key: (len(scopes[key]), sorted_tuple(scopes[key]), key),
-    )
-    implementation_parents: list[tuple[str, str | None]] = []
-    for index, child in enumerate(ordered_keys):
-        parent = next(
-            (
-                candidate
-                for candidate in ordered_keys[index + 1 :]
-                if scopes[child] <= scopes[candidate]
-            ),
-            None,
-        )
-        implementation_parents.append((child, parent))
-    consumer_parents = tuple(
-        (
-            consumer,
-            next((key for key in ordered_keys if consumer in scopes[key]), None),
-        )
-        for consumer in retained.consumers
-    )
-    return (
-        sorted_tuple(implementation_parents),
-        sorted_tuple(consumer_parents),
-    )
-
-
-def _descendant_consumers(
-    implementation_key: str,
-    implementation_parents: Mapping[str, str | None],
-    consumer_parents: Mapping[str, str | None],
-) -> frozenset[str]:
-    def descends_from(candidate: str, ancestor: str) -> bool:
-        seen: set[str] = set()
-        current: str | None = candidate
-        while current is not None:
-            if current == ancestor:
-                return True
-            if current in seen:
-                raise ValueError("implementation parent map contains a cycle")
-            seen.add(current)
-            current = implementation_parents[current]
-        return False
-
-    return frozenset(
-        consumer
-        for consumer, parent in consumer_parents.items()
-        if parent is not None and descends_from(parent, implementation_key)
-    )
-
-
 @dataclass(frozen=True)
 class SingleParentArrangement(DataclassJsonReport):
     """Canonical single-parent witness validated against one retained relation.
@@ -320,13 +264,13 @@ class SingleParentArrangement(DataclassJsonReport):
                     raise ValueError("implementation parent map contains a cycle")
                 seen.add(current)
                 current = implementation_map[current]
-        expected_implementations, expected_consumers = _expected_parent_maps(retained)
+        expected_implementations, expected_consumers = self._expected_parent_maps(retained)
         if implementation_rows != expected_implementations:
             raise ValueError("implementation parent map violates canonical policy")
         if consumer_rows != expected_consumers:
             raise ValueError("consumer parent map violates canonical policy")
         for key in retained.implementation_keys:
-            if _descendant_consumers(key, implementation_map, consumer_map) != (
+            if self._descendant_consumers(key, implementation_map, consumer_map) != (
                 retained.consumers_for(key)
             ):
                 raise ValueError("arrangement descendants do not equal retained scope")
@@ -335,7 +279,7 @@ class SingleParentArrangement(DataclassJsonReport):
     def from_relation(cls, retained: RequiredRelation) -> SingleParentArrangement:
         if not _is_laminar(retained):
             raise ValueError("single-parent arrangement requires a laminar relation")
-        implementation_parents, consumer_parents = _expected_parent_maps(retained)
+        implementation_parents, consumer_parents = cls._expected_parent_maps(retained)
         return cls(
             implementation_parents=implementation_parents,
             consumer_parents=consumer_parents,
@@ -347,10 +291,66 @@ class SingleParentArrangement(DataclassJsonReport):
         implementation_map = dict(self.implementation_parents)
         if implementation_key not in implementation_map:
             raise KeyError(implementation_key)
-        return _descendant_consumers(
+        return self._descendant_consumers(
             implementation_key,
             implementation_map,
             dict(self.consumer_parents),
+        )
+
+    @staticmethod
+    def _descendant_consumers(
+        implementation_key: str,
+        implementation_parents: Mapping[str, str | None],
+        consumer_parents: Mapping[str, str | None],
+    ) -> frozenset[str]:
+        def descends_from(candidate: str, ancestor: str) -> bool:
+            seen: set[str] = set()
+            current: str | None = candidate
+            while current is not None:
+                if current == ancestor:
+                    return True
+                if current in seen:
+                    raise ValueError("implementation parent map contains a cycle")
+                seen.add(current)
+                current = implementation_parents[current]
+            return False
+
+        return frozenset(
+            consumer
+            for consumer, parent in consumer_parents.items()
+            if parent is not None and descends_from(parent, implementation_key)
+        )
+
+    @staticmethod
+    def _expected_parent_maps(
+        retained: RequiredRelation,
+    ) -> tuple[tuple[tuple[str, str | None], ...], tuple[tuple[str, str | None], ...]]:
+        scopes = {key: retained.consumers_for(key) for key in retained.implementation_keys}
+        ordered_keys = sorted_tuple(
+            retained.implementation_keys,
+            key=lambda key: (len(scopes[key]), sorted_tuple(scopes[key]), key),
+        )
+        implementation_parents: list[tuple[str, str | None]] = []
+        for index, child in enumerate(ordered_keys):
+            parent = next(
+                (
+                    candidate
+                    for candidate in ordered_keys[index + 1 :]
+                    if scopes[child] <= scopes[candidate]
+                ),
+                None,
+            )
+            implementation_parents.append((child, parent))
+        consumer_parents = tuple(
+            (
+                consumer,
+                next((key for key in ordered_keys if consumer in scopes[key]), None),
+            )
+            for consumer in retained.consumers
+        )
+        return (
+            sorted_tuple(implementation_parents),
+            sorted_tuple(consumer_parents),
         )
 
 

@@ -940,15 +940,6 @@ def stays_in_shell(statement: ast.stmt, *, first: bool) -> bool:
     )
 
 
-def _carried_statement(statement: ast.stmt) -> bool:
-    """What a whole module's move carries with the declaration before it: an `assert`
-    or a bare call (`register(Name)`). A script guard, an import or a binding stays."""
-
-    return isinstance(statement, ast.Assert) or (
-        isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
-    )
-
-
 @dataclass(frozen=True)
 class SourceTopLevelDeclarationIndex:
     """Movable declarations derived from one module's lexical bindings."""
@@ -1041,7 +1032,7 @@ class SourceTopLevelDeclarationIndex:
         body = self.module.body
         start = self._position_after[id(declaration.statements[-1])]
         end = start
-        while end < len(body) and _carried_statement(body[end]):
+        while end < len(body) and self._carried_statement(body[end]):
             end += 1
         if end == start:
             return declaration
@@ -1067,6 +1058,15 @@ class SourceTopLevelDeclarationIndex:
                 "Module symbol move requires unique top-level declaration names"
             )
         return declarations
+
+    @staticmethod
+    def _carried_statement(statement: ast.stmt) -> bool:
+        """What a whole module's move carries with the declaration before it: an `assert`
+        or a bare call (`register(Name)`). A script guard, an import or a binding stays."""
+
+        return isinstance(statement, ast.Assert) or (
+            isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call)
+        )
 
 
 @dataclass(frozen=True)

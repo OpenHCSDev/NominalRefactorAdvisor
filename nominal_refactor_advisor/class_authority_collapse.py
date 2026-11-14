@@ -34,18 +34,6 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
 )
 
-_NESTED_METHOD_SCOPES = (
-    ast.AsyncFunctionDef,
-    ast.ClassDef,
-    ast.DictComp,
-    ast.FunctionDef,
-    ast.GeneratorExp,
-    ast.Lambda,
-    ast.ListComp,
-    ast.SetComp,
-)
-
-
 @dataclass(frozen=True)
 class ClassBehaviorProofContext:
     """Class-local proof inputs derived once for all behavior comparisons."""
@@ -81,6 +69,17 @@ class ClassBehaviorProofContext:
 class ClassMethodBehaviorAuthority:
     """One method's class-body normal form, admitted only when it is fully bound
     and its behavior does not depend on which class owns it."""
+
+    _NESTED_METHOD_SCOPES = (
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.DictComp,
+        ast.FunctionDef,
+        ast.GeneratorExp,
+        ast.Lambda,
+        ast.ListComp,
+        ast.SetComp,
+    )
 
     digest: str
     normal_form: ClassBodyNormalForm = field(compare=False)
@@ -125,7 +124,7 @@ class ClassMethodBehaviorAuthority:
         for node in ast.walk(method):
             if node is method:
                 continue
-            if isinstance(node, _NESTED_METHOD_SCOPES):
+            if isinstance(node, ClassMethodBehaviorAuthority._NESTED_METHOD_SCOPES):
                 raise ValueError(f"Method {method.name!r} has a nested lexical scope")
             if isinstance(node, (ast.Global, ast.Import, ast.ImportFrom, ast.Nonlocal)):
                 raise ValueError(

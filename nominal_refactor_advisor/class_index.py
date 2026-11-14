@@ -1690,15 +1690,196 @@ class CompactModuleClassHeader(CompactModuleIdentity):
             import_aliases=tuple(sorted(module_import_aliases(parsed_module).items())),
             public_export_contract=module_public_export_contract(parsed_module),
             star_import_origins=module_star_import_origins(parsed_module),
-            classes=_compact_indexed_classes(
+            classes=cls._compact_indexed_classes(
                 parsed_module,
                 indexed_class_nodes,
                 binding_snapshots,
                 include_body_facets=include_body_facets,
             ),
-            field_declaration_wrappers=module_field_declaration_wrappers(
+            field_declaration_wrappers=cls.module_field_declaration_wrappers(
                 parsed_module, binding_snapshots[None]
             ),
+        )
+
+    @staticmethod
+    def _compact_indexed_classes(
+        parsed_module: ParsedModule,
+        indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
+        binding_snapshots: Mapping[int | None, ModuleNominalBindingSnapshot],
+        *,
+        include_body_facets: bool,
+    ) -> tuple[CompactIndexedClass, ...]:
+        file_path = parsed_module.file_path
+        star_snapshots = (
+            _module_nominal_binding_snapshots(
+                ModuleNominalBindingAuthority(parsed_module),
+                tuple(node.lineno for _qualname, node in indexed_class_nodes),
+                include_final=False,
+                star_import_excluded_names=_class_nominal_reference_root_names(parsed_module),
+            )
+            if module_star_import_origins(parsed_module)
+            else None
+        )
+        body_scopes = (
+            ClassBodyModuleScope.for_lines(
+                parsed_module, (node.lineno for _qualname, node in indexed_class_nodes)
+            )
+            if include_body_facets
+            else {}
+        )
+        return tuple(
+            CompactIndexedClass(
+                symbol=f"{parsed_module.module_name}.{qualname}",
+                module_name=parsed_module.module_name,
+                qualname=qualname,
+                simple_name=qualname.rsplit(".", 1)[-1],
+                file_path=file_path,
+                line=node.lineno,
+                declared_base_names=tuple(
+                    declared_name
+                    for base in node.bases
+                    if (
+                        declared_name := ClassSymbolResolutionAuthority.declared_base_name(
+                            base
+                        )
+                    )
+                    is not None
+                ),
+                base_references=binding_facets.base_references,
+                mro_bases_are_static=all(
+                    isinstance(base, ast.Name | ast.Attribute) for base in node.bases
+                ),
+                direct_base_count=sum(
+                    ClassSymbolResolutionAuthority.establishes_nominal_family(
+                        declared_base_name
+                    )
+                    for base in node.bases
+                    if (
+                        declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
+                            base
+                        )
+                    )
+                    is not None
+                ),
+                base_references_are_complete=binding_facets.base_references_are_complete,
+                product_base_bindings_are_exact=(
+                    binding_facets.product_base_bindings_are_exact
+                ),
+                direct_member_declarations=_compact_class_member_declarations(node),
+                metaclass_names=tuple(
+                    terminal_name
+                    for keyword in node.keywords
+                    if keyword.arg == "metaclass"
+                    if (terminal_name := _terminal_reference_name(keyword.value))
+                    is not None
+                ),
+                class_keyword_names=tuple(
+                    keyword.spelled_name for keyword in CallKeywords.of(node.keywords).entries
+                ),
+                class_decorators_are_promotion_safe=(
+                    binding_facets.class_decorators_are_promotion_safe
+                ),
+                class_header_is_reconstructible=ClassHeaderSourceSpan(
+                    node,
+                    parsed_module.source_segments.lines,
+                ).is_reconstructible,
+                base_key_type_names=_compact_base_key_type_names(node),
+                base_argument_sources=_compact_base_argument_sources(node),
+                type_parameter_names=TYPE_PARAMETERS.names(node),
+                is_final=binding_snapshots[node.lineno].decorated_by(node, (FINAL_DECORATOR,)),
+                end_line=node.end_lineno,
+                method_names=tuple(
+                    statement.name
+                    for statement in FunctionDefinition.within(node.body)
+                ),
+                callable_member_declarations=_compact_callable_member_declarations(
+                    node, binding_snapshots[node.lineno]
+                ),
+                abstract_method_names=sorted_tuple(
+                    statement.name
+                    for statement in FunctionDefinition.within(node.body)
+                    if binding_snapshots[node.lineno].decorated_by(
+                        statement, (ABSTRACT_METHOD_DECORATOR,)
+                    )
+                ),
+                is_abstract=_is_abstract_class(node, binding_snapshots[node.lineno]),
+                dataclass_declaration=binding_facets.dataclass_declaration,
+                enum_declaration=binding_facets.enum_declaration,
+                registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot, parsed_module),
+                is_registration_authority=_is_registration_authority(node),
+                autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
+                    parsed_module,
+                    node,
+                ),
+                autoregister_registry_projection_names=(
+                    _autoregister_registry_projection_names(node)
+                    if include_body_facets
+                    else ()
+                ),
+                keyed_registry_lookup_method_names=(
+                    _keyed_registry_lookup_method_names(node) if include_body_facets else ()
+                ),
+                keyed_registry_reverse_lookup_method_names=(
+                    _keyed_registry_reverse_lookup_method_names(node)
+                    if include_body_facets
+                    else ()
+                ),
+                predicate_selected_methods=(
+                    _compact_predicate_selected_methods(node) if include_body_facets else ()
+                ),
+                body_declarations=(
+                    tuple(
+                        declaration.compact()
+                        for declaration in ClassBodyNormalForm.of_class(
+                            node, body_scopes[node.lineno]
+                        )
+                    )
+                    if include_body_facets
+                    else ()
+                ),
+                star_resolution=(
+                    None
+                    if star_snapshots is None
+                    else _star_resolved_facets(
+                        node,
+                        star_snapshots[node.lineno],
+                        parsed_module.module_name,
+                        qualname,
+                        include_body_facets=include_body_facets,
+                    )
+                ),
+            )
+            for qualname, node in indexed_class_nodes
+            for module_binding_snapshot in (binding_snapshots[node.lineno],)
+            for binding_facets in (
+                _compact_class_binding_facets(
+                    node,
+                    module_binding_snapshot,
+                    parsed_module.module_name,
+                    qualname,
+                    include_body_facets=include_body_facets,
+                ),
+            )
+        )
+
+    @staticmethod
+    def module_field_declaration_wrappers(
+        parsed_module: ParsedModule,
+        snapshot: ModuleNominalBindingSnapshot,
+    ) -> tuple[CompactFieldDeclarationWrapper, ...]:
+        """Every top-level function of the module that may wrap `dataclasses.field`,
+        its names read through the module's final bindings."""
+
+        return tuple(
+            wrapper
+            for statement in parsed_module.module.body
+            if isinstance(statement, ast.FunctionDef)
+            if (
+                wrapper := CompactFieldDeclarationWrapper.of_function(
+                    parsed_module.module_name, statement, snapshot
+                )
+            )
+            is not None
         )
 
 ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
@@ -2283,7 +2464,7 @@ class RegistryLookupShape:
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> RegistryLookupShape | None:
-        body = _trim_method_docstring(method)
+        body = cls._trim_method_docstring(method)
         if len(body) == 1 and isinstance(body[0], ast.Try):
             try_node = body[0]
             if (
@@ -2330,6 +2511,20 @@ class RegistryLookupShape:
             cls._raise_type_name(raised),
             RegistryLookupStyle.MEMBERSHIP_GUARD,
         )
+
+    @staticmethod
+    def _trim_method_docstring(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> list[ast.stmt]:
+        body = list(method.body)
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            return body[1:]
+        return body
 
 
 class DeclaredFamilyBase(NamedTuple):
@@ -4345,167 +4540,6 @@ def _compact_class_binding_facets(
     )
 
 
-def _compact_indexed_classes(
-    parsed_module: ParsedModule,
-    indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
-    binding_snapshots: Mapping[int | None, ModuleNominalBindingSnapshot],
-    *,
-    include_body_facets: bool,
-) -> tuple[CompactIndexedClass, ...]:
-    file_path = parsed_module.file_path
-    star_snapshots = (
-        _module_nominal_binding_snapshots(
-            ModuleNominalBindingAuthority(parsed_module),
-            tuple(node.lineno for _qualname, node in indexed_class_nodes),
-            include_final=False,
-            star_import_excluded_names=_class_nominal_reference_root_names(parsed_module),
-        )
-        if module_star_import_origins(parsed_module)
-        else None
-    )
-    body_scopes = (
-        ClassBodyModuleScope.for_lines(
-            parsed_module, (node.lineno for _qualname, node in indexed_class_nodes)
-        )
-        if include_body_facets
-        else {}
-    )
-    return tuple(
-        CompactIndexedClass(
-            symbol=f"{parsed_module.module_name}.{qualname}",
-            module_name=parsed_module.module_name,
-            qualname=qualname,
-            simple_name=qualname.rsplit(".", 1)[-1],
-            file_path=file_path,
-            line=node.lineno,
-            declared_base_names=tuple(
-                declared_name
-                for base in node.bases
-                if (
-                    declared_name := ClassSymbolResolutionAuthority.declared_base_name(
-                        base
-                    )
-                )
-                is not None
-            ),
-            base_references=binding_facets.base_references,
-            mro_bases_are_static=all(
-                isinstance(base, ast.Name | ast.Attribute) for base in node.bases
-            ),
-            direct_base_count=sum(
-                ClassSymbolResolutionAuthority.establishes_nominal_family(
-                    declared_base_name
-                )
-                for base in node.bases
-                if (
-                    declared_base_name := ClassSymbolResolutionAuthority.declared_base_name(
-                        base
-                    )
-                )
-                is not None
-            ),
-            base_references_are_complete=binding_facets.base_references_are_complete,
-            product_base_bindings_are_exact=(
-                binding_facets.product_base_bindings_are_exact
-            ),
-            direct_member_declarations=_compact_class_member_declarations(node),
-            metaclass_names=tuple(
-                terminal_name
-                for keyword in node.keywords
-                if keyword.arg == "metaclass"
-                if (terminal_name := _terminal_reference_name(keyword.value))
-                is not None
-            ),
-            class_keyword_names=tuple(
-                keyword.spelled_name for keyword in CallKeywords.of(node.keywords).entries
-            ),
-            class_decorators_are_promotion_safe=(
-                binding_facets.class_decorators_are_promotion_safe
-            ),
-            class_header_is_reconstructible=ClassHeaderSourceSpan(
-                node,
-                parsed_module.source_segments.lines,
-            ).is_reconstructible,
-            base_key_type_names=_compact_base_key_type_names(node),
-            base_argument_sources=_compact_base_argument_sources(node),
-            type_parameter_names=TYPE_PARAMETERS.names(node),
-            is_final=binding_snapshots[node.lineno].decorated_by(node, (FINAL_DECORATOR,)),
-            end_line=node.end_lineno,
-            method_names=tuple(
-                statement.name
-                for statement in FunctionDefinition.within(node.body)
-            ),
-            callable_member_declarations=_compact_callable_member_declarations(
-                node, binding_snapshots[node.lineno]
-            ),
-            abstract_method_names=sorted_tuple(
-                statement.name
-                for statement in FunctionDefinition.within(node.body)
-                if binding_snapshots[node.lineno].decorated_by(
-                    statement, (ABSTRACT_METHOD_DECORATOR,)
-                )
-            ),
-            is_abstract=_is_abstract_class(node, binding_snapshots[node.lineno]),
-            dataclass_declaration=binding_facets.dataclass_declaration,
-            enum_declaration=binding_facets.enum_declaration,
-            registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot, parsed_module),
-            is_registration_authority=_is_registration_authority(node),
-            autoregister_registry_key_attr_name=_autoregister_registry_key_attr_name(
-                parsed_module,
-                node,
-            ),
-            autoregister_registry_projection_names=(
-                _autoregister_registry_projection_names(node)
-                if include_body_facets
-                else ()
-            ),
-            keyed_registry_lookup_method_names=(
-                _keyed_registry_lookup_method_names(node) if include_body_facets else ()
-            ),
-            keyed_registry_reverse_lookup_method_names=(
-                _keyed_registry_reverse_lookup_method_names(node)
-                if include_body_facets
-                else ()
-            ),
-            predicate_selected_methods=(
-                _compact_predicate_selected_methods(node) if include_body_facets else ()
-            ),
-            body_declarations=(
-                tuple(
-                    declaration.compact()
-                    for declaration in ClassBodyNormalForm.of_class(
-                        node, body_scopes[node.lineno]
-                    )
-                )
-                if include_body_facets
-                else ()
-            ),
-            star_resolution=(
-                None
-                if star_snapshots is None
-                else _star_resolved_facets(
-                    node,
-                    star_snapshots[node.lineno],
-                    parsed_module.module_name,
-                    qualname,
-                    include_body_facets=include_body_facets,
-                )
-            ),
-        )
-        for qualname, node in indexed_class_nodes
-        for module_binding_snapshot in (binding_snapshots[node.lineno],)
-        for binding_facets in (
-            _compact_class_binding_facets(
-                node,
-                module_binding_snapshot,
-                parsed_module.module_name,
-                qualname,
-                include_body_facets=include_body_facets,
-            ),
-        )
-    )
-
-
 def _star_resolved_facets(
     node: ast.ClassDef,
     star_snapshot: ModuleNominalBindingSnapshot,
@@ -4721,7 +4755,6 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         parsed_module: ParsedModule,
         demand: CompactClassProjectionDemand | None,
     ) -> list[CompactModuleClassProjection]:
-        del cls
         declarations = CompactModuleClassHeader.from_module(parsed_module)
         syntax_facets = parsed_module.fact(
             ModuleClassSyntaxFacets
@@ -4752,7 +4785,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                         node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
                     )
                 ),
-                type_variable_names=_module_type_variable_names(parsed_module),
+                type_variable_names=cls._module_type_variable_names(parsed_module),
                 annotated_function_returns=tuple(
                     CompactAnnotatedFunctionReturn(
                         node.name, node.lineno, ast.unparse(returns)
@@ -4765,7 +4798,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 autoregister_reference_index=(
                     syntax_facets.autoregister_reference_index
                 ),
-                repeated_keyed_family_roots=_compact_repeated_keyed_family_roots(
+                repeated_keyed_family_roots=cls._compact_repeated_keyed_family_roots(
                     parsed_module, declarations
                 ),
                 manual_subclass_roster_roots=_compact_manual_subclass_roster_roots(
@@ -4776,9 +4809,176 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     parsed_module
                 ),
                 class_methods=class_methods,
-                class_references=_compact_class_references(parsed_module),
+                class_references=cls._compact_class_references(parsed_module),
             )
         ]
+
+    @staticmethod
+    def _compact_class_references(
+        parsed_module: ParsedModule,
+    ) -> tuple[CompactClassReference, ...]:
+        """Every read of a module-level name chain, by consumer and role.
+
+        Only chains rooted at a name the module itself binds are kept, and a root a
+        function rebinds locally is that function's own. The join resolves the
+        chains against the class index; most name no class and are dropped there.
+        """
+
+        syntax_index = parsed_module.syntax_index
+        module_bound_names = parsed_module.bound_names
+        import_aliases = module_import_aliases(parsed_module)
+        locals_by_function_index = {
+            function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
+            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+            for function_index in {
+                index
+                for scope in syntax_index.scopes
+                for index in scope.function_node_indices
+            }
+            if isinstance(
+                function := syntax_index.depth_first_nodes[function_index],
+                (ast.FunctionDef, ast.AsyncFunctionDef),
+            )
+        }
+        nodes = syntax_index.depth_first_nodes
+        parent_indices = syntax_index.parent_indices
+        references: dict[
+            tuple[str, tuple[str, ...], ClassReferenceRole],
+            tuple[int, int, bool, tuple[str, ...]],
+        ] = {}
+        for node_type in (ast.Name, ast.Attribute):
+            for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
+                node = nodes[node_index]
+                if not isinstance(getattr(node, "ctx", None), ast.Load):
+                    continue
+                parent_index = parent_indices[node_index]
+                parent = nodes[parent_index] if parent_index >= 0 else None
+                if isinstance(parent, ast.Attribute) and parent.value is node:
+                    continue
+                scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
+                receiver_class = _classmethod_receiver_class(
+                    node, scope, nodes, parent_indices, module_bound_names
+                )
+                if receiver_class is not None:
+                    parts = receiver_class
+                else:
+                    parts = ExpressionReference.decoded(node).attribute_chain
+                    if parts is None or parts[0] not in module_bound_names:
+                        continue
+                    if any(
+                        parts[0] in locals_by_function_index.get(function_index, ())
+                        for function_index in scope.function_node_indices
+                    ):
+                        continue
+                grandparent_index = parent_indices[parent_index] if parent is not None else -1
+                grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
+                role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)
+                key = (".".join(scope.names), parts, role)
+                positional, unpacked = (
+                    (
+                        len(parent.args),
+                        any(isinstance(argument, ast.Starred) for argument in parent.args)
+                        or bool(CallKeywords.of(parent.keywords).splats),
+                    )
+                    if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+                    else (0, False)
+                )
+                copied = (
+                    _copied_keyword_fields(parent)
+                    if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+                    else ()
+                )
+                line, seen_positional, seen_unpacked, seen_copied = references.get(
+                    key, (node.lineno, 0, False, ())
+                )
+                references[key] = (
+                    min(line, node.lineno),
+                    max(seen_positional, positional),
+                    seen_unpacked or unpacked,
+                    max(seen_copied, copied, key=lambda names: (len(names), names)),
+                )
+        return tuple(
+            CompactClassReference(consumer, parts, role, *facts)
+            for (consumer, parts, role), facts in sorted(
+                references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
+            )
+        )
+
+    @staticmethod
+    def _compact_repeated_keyed_family_roots(
+        parsed_module: ParsedModule,
+        declarations: CompactModuleClassHeader,
+    ) -> tuple[CompactRepeatedKeyedFamilyRoot, ...]:
+        roots: list[CompactRepeatedKeyedFamilyRoot] = []
+        classes = {record.qualname: record for record in declarations.classes}
+        for node in parsed_module.module.body:
+            if not isinstance(node, ast.ClassDef):
+                continue
+            assignments = _direct_class_assignments(node)
+            registry_key_attr_name = _string_constant(assignments.get("registry_key_attr"))
+            registry = assignments.get("_registry")
+            registry_is_empty = (
+                isinstance(registry, ast.Dict) and not registry.keys and not registry.values
+            ) or (
+                isinstance(registry, ast.Call)
+                and isinstance(registry.func, ast.Name)
+                and registry.func.id == "dict"
+            )
+            if registry_key_attr_name is None or not registry_is_empty:
+                continue
+            lookup_methods = tuple(
+                (method, shape)
+                for method in FunctionDefinition.within(node.body)
+                if _is_classmethod(method)
+                and method.name.startswith("for_")
+                and (shape := RegistryLookupShape.from_method(method)) is not None
+            )
+            if len(lookup_methods) != 1:
+                continue
+            lookup_method, lookup_shape = lookup_methods[0]
+            roots.append(
+                CompactRepeatedKeyedFamilyRoot(
+                    file_path=parsed_module.file_path,
+                    line=node.lineno,
+                    class_name=node.name,
+                    family_bases=tuple(
+                        DeclaredFamilyBase.of(reference)
+                        for reference in classes[node.name].base_references
+                    ),
+                    registry_key_attr_name=registry_key_attr_name,
+                    lookup_method_name=lookup_method.name,
+                    lookup_style=lookup_shape.style,
+                    error_type_name=lookup_shape.error_type_name,
+                    abstract_hook_names=tuple(
+                        method.name
+                        for method in FunctionDefinition.within(node.body)
+                        if any(
+                            _terminal_reference_name(decorator) == "abstractmethod"
+                            for decorator in method.decorator_list
+                        )
+                    ),
+                )
+            )
+        return tuple(roots)
+
+    @staticmethod
+    def _module_type_variable_names(parsed_module: ParsedModule) -> tuple[str, ...]:
+        """Names the module binds at top level to a type variable constructor."""
+
+        aliases = module_import_aliases(parsed_module)
+        names: list[str] = []
+        for statement in parsed_module.module.body:
+            match statement:
+                case ast.Assign(targets=targets, value=ast.Call(func=constructor)):
+                    parts = ExpressionReference.decoded(constructor).attribute_chain
+                    if not parts or parts[0] not in aliases:
+                        continue
+                    qualified = ".".join((aliases[parts[0]], *parts[1:]))
+                    if qualified in TYPE_VARIABLE_CONSTRUCTORS:
+                        names.extend(
+                            target.id for target in targets if isinstance(target, ast.Name)
+                        )
+        return tuple(names)
 
 
 def _autoregister_registry_projection_names(
@@ -4817,77 +5017,6 @@ def _keyed_registry_reverse_lookup_method_names(node: ast.ClassDef) -> tuple[str
         and _method_references_cls_registry(method)
         and any(token in method.name for token in ("class", "type", "reverse"))
     )
-
-
-def _trim_method_docstring(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[ast.stmt]:
-    body = list(method.body)
-    if (
-        body
-        and isinstance(body[0], ast.Expr)
-        and isinstance(body[0].value, ast.Constant)
-        and isinstance(body[0].value.value, str)
-    ):
-        return body[1:]
-    return body
-
-
-def _compact_repeated_keyed_family_roots(
-    parsed_module: ParsedModule,
-    declarations: CompactModuleClassHeader,
-) -> tuple[CompactRepeatedKeyedFamilyRoot, ...]:
-    roots: list[CompactRepeatedKeyedFamilyRoot] = []
-    classes = {record.qualname: record for record in declarations.classes}
-    for node in parsed_module.module.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        assignments = _direct_class_assignments(node)
-        registry_key_attr_name = _string_constant(assignments.get("registry_key_attr"))
-        registry = assignments.get("_registry")
-        registry_is_empty = (
-            isinstance(registry, ast.Dict) and not registry.keys and not registry.values
-        ) or (
-            isinstance(registry, ast.Call)
-            and isinstance(registry.func, ast.Name)
-            and registry.func.id == "dict"
-        )
-        if registry_key_attr_name is None or not registry_is_empty:
-            continue
-        lookup_methods = tuple(
-            (method, shape)
-            for method in FunctionDefinition.within(node.body)
-            if _is_classmethod(method)
-            and method.name.startswith("for_")
-            and (shape := RegistryLookupShape.from_method(method)) is not None
-        )
-        if len(lookup_methods) != 1:
-            continue
-        lookup_method, lookup_shape = lookup_methods[0]
-        roots.append(
-            CompactRepeatedKeyedFamilyRoot(
-                file_path=parsed_module.file_path,
-                line=node.lineno,
-                class_name=node.name,
-                family_bases=tuple(
-                    DeclaredFamilyBase.of(reference)
-                    for reference in classes[node.name].base_references
-                ),
-                registry_key_attr_name=registry_key_attr_name,
-                lookup_method_name=lookup_method.name,
-                lookup_style=lookup_shape.style,
-                error_type_name=lookup_shape.error_type_name,
-                abstract_hook_names=tuple(
-                    method.name
-                    for method in FunctionDefinition.within(node.body)
-                    if any(
-                        _terminal_reference_name(decorator) == "abstractmethod"
-                        for decorator in method.decorator_list
-                    )
-                ),
-            )
-        )
-    return tuple(roots)
 
 
 def _classmethod_receiver_class(
@@ -4939,97 +5068,6 @@ def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
         (tuple(sorted(names)) for names in by_root.values()),
         key=lambda names: (len(names), names),
         default=(),
-    )
-
-
-def _compact_class_references(
-    parsed_module: ParsedModule,
-) -> tuple[CompactClassReference, ...]:
-    """Every read of a module-level name chain, by consumer and role.
-
-    Only chains rooted at a name the module itself binds are kept, and a root a
-    function rebinds locally is that function's own. The join resolves the
-    chains against the class index; most name no class and are dropped there.
-    """
-
-    syntax_index = parsed_module.syntax_index
-    module_bound_names = parsed_module.bound_names
-    import_aliases = module_import_aliases(parsed_module)
-    locals_by_function_index = {
-        function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
-        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
-        for function_index in {
-            index
-            for scope in syntax_index.scopes
-            for index in scope.function_node_indices
-        }
-        if isinstance(
-            function := syntax_index.depth_first_nodes[function_index],
-            (ast.FunctionDef, ast.AsyncFunctionDef),
-        )
-    }
-    nodes = syntax_index.depth_first_nodes
-    parent_indices = syntax_index.parent_indices
-    references: dict[
-        tuple[str, tuple[str, ...], ClassReferenceRole],
-        tuple[int, int, bool, tuple[str, ...]],
-    ] = {}
-    for node_type in (ast.Name, ast.Attribute):
-        for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
-            node = nodes[node_index]
-            if not isinstance(getattr(node, "ctx", None), ast.Load):
-                continue
-            parent_index = parent_indices[node_index]
-            parent = nodes[parent_index] if parent_index >= 0 else None
-            if isinstance(parent, ast.Attribute) and parent.value is node:
-                continue
-            scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-            receiver_class = _classmethod_receiver_class(
-                node, scope, nodes, parent_indices, module_bound_names
-            )
-            if receiver_class is not None:
-                parts = receiver_class
-            else:
-                parts = ExpressionReference.decoded(node).attribute_chain
-                if parts is None or parts[0] not in module_bound_names:
-                    continue
-                if any(
-                    parts[0] in locals_by_function_index.get(function_index, ())
-                    for function_index in scope.function_node_indices
-                ):
-                    continue
-            grandparent_index = parent_indices[parent_index] if parent is not None else -1
-            grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
-            role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)
-            key = (".".join(scope.names), parts, role)
-            positional, unpacked = (
-                (
-                    len(parent.args),
-                    any(isinstance(argument, ast.Starred) for argument in parent.args)
-                    or bool(CallKeywords.of(parent.keywords).splats),
-                )
-                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
-                else (0, False)
-            )
-            copied = (
-                _copied_keyword_fields(parent)
-                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
-                else ()
-            )
-            line, seen_positional, seen_unpacked, seen_copied = references.get(
-                key, (node.lineno, 0, False, ())
-            )
-            references[key] = (
-                min(line, node.lineno),
-                max(seen_positional, positional),
-                seen_unpacked or unpacked,
-                max(seen_copied, copied, key=lambda names: (len(names), names)),
-            )
-    return tuple(
-        CompactClassReference(consumer, parts, role, *facts)
-        for (consumer, parts, role), facts in sorted(
-            references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
-        )
     )
 
 
@@ -5133,7 +5171,7 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
 
     def supplied(self, supplied: SuppliedValue) -> CompactDataclassFieldRole:
         value = supplied.value
-        if _is_literal_default(value):
+        if self._is_literal_default(value):
             return CompactDataclassFieldRole.STORED_INIT
         if not isinstance(value, ast.Call):
             return CompactDataclassFieldRole.UNRESOLVED
@@ -5174,6 +5212,13 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
             else CompactDataclassFieldRole.STORED_NON_INIT
         )
 
+    @staticmethod
+    def _is_literal_default(value: ast.expr) -> bool:
+        """A default built only from literals: it names nothing, so it cannot be a
+        `dataclasses.Field` and the member is a plain stored field."""
+
+        return all(isinstance(node, _LITERAL_DEFAULT_NODES) for node in ast.walk(value))
+
 
 def _native_qualified_name(value: object) -> str:
     """The name a module binding resolves one native module attribute to."""
@@ -5187,7 +5232,6 @@ def _native_qualified_name(value: object) -> str:
 
 
 _MISSING_QUALIFIED_NAME = _native_qualified_name(MISSING)
-_CAST_QUALIFIED_NAME = f"{typing.cast.__module__}.{typing.cast.__qualname__}"
 
 
 class CompactFieldDeclarationCall(NamedTuple):
@@ -5333,6 +5377,8 @@ class _FieldDeclarationFold:
     """Run a function body with its MISSING-defaulted parameters absent: each
     `parameter is MISSING` test is decided, everything else stays open."""
 
+    _CAST_QUALIFIED_NAME = f"{typing.cast.__module__}.{typing.cast.__qualname__}"
+
     snapshot: ModuleNominalBindingSnapshot
     absent: frozenset[str]
 
@@ -5440,7 +5486,7 @@ class _FieldDeclarationFold:
         callee = self.qualified(value.func)
         if callee is None:
             return None
-        if callee == _CAST_QUALIFIED_NAME and len(value.args) == 2 and not value.keywords:
+        if callee == self._CAST_QUALIFIED_NAME and len(value.args) == 2 and not value.keywords:
             return self.returned_call(value.args[1])
         return CompactFieldDeclarationCall.of_call(callee, value, self.absent)
 
@@ -5499,26 +5545,6 @@ class CompactFieldDeclarationWrapper(NamedTuple):
             ),
             returned=returned,
         )
-
-
-def module_field_declaration_wrappers(
-    parsed_module: ParsedModule,
-    snapshot: ModuleNominalBindingSnapshot,
-) -> tuple[CompactFieldDeclarationWrapper, ...]:
-    """Every top-level function of the module that may wrap `dataclasses.field`,
-    its names read through the module's final bindings."""
-
-    return tuple(
-        wrapper
-        for statement in parsed_module.module.body
-        if isinstance(statement, ast.FunctionDef)
-        if (
-            wrapper := CompactFieldDeclarationWrapper.of_function(
-                parsed_module.module_name, statement, snapshot
-            )
-        )
-        is not None
-    )
 
 
 @dataclass(frozen=True)
@@ -5619,13 +5645,6 @@ _LITERAL_DEFAULT_NODES = (
     ast.operator,
     ast.expr_context,
 )
-
-
-def _is_literal_default(value: ast.expr) -> bool:
-    """A default built only from literals: it names nothing, so it cannot be a
-    `dataclasses.Field` and the member is a plain stored field."""
-
-    return all(isinstance(node, _LITERAL_DEFAULT_NODES) for node in ast.walk(value))
 
 
 def _dataclass_plain_annotation_is_resolved(
@@ -5920,25 +5939,6 @@ TYPE_VARIABLE_CONSTRUCTORS = frozenset(
     for module in ("typing", "typing_extensions")
     for name in ("TypeVar", "ParamSpec", "TypeVarTuple")
 )
-
-
-def _module_type_variable_names(parsed_module: ParsedModule) -> tuple[str, ...]:
-    """Names the module binds at top level to a type variable constructor."""
-
-    aliases = module_import_aliases(parsed_module)
-    names: list[str] = []
-    for statement in parsed_module.module.body:
-        match statement:
-            case ast.Assign(targets=targets, value=ast.Call(func=constructor)):
-                parts = ExpressionReference.decoded(constructor).attribute_chain
-                if not parts or parts[0] not in aliases:
-                    continue
-                qualified = ".".join((aliases[parts[0]], *parts[1:]))
-                if qualified in TYPE_VARIABLE_CONSTRUCTORS:
-                    names.extend(
-                        target.id for target in targets if isinstance(target, ast.Name)
-                    )
-    return tuple(names)
 
 
 def _compact_callable_member_declarations(

@@ -757,7 +757,7 @@ class ForwardingFacadeDetector(
 
         if site.detail[0] == ForwardingFacadeSiteFamily.CLASS_SITE:
             return True
-        return not _overrides_inherited(context, site.file_path, site.symbol, site.detail[0])
+        return not self._overrides_inherited(context, site.file_path, site.symbol, site.detail[0])
 
     def admits(self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex) -> bool:
         return len(self.forwards(sites)) >= ForwardingFacadeSiteFamily.MIN_FORWARDS
@@ -799,15 +799,15 @@ class ForwardingFacadeDetector(
             len(self.forwards(sites)), restater=self.restater(sites, context)
         )
 
+    @staticmethod
+    def _overrides_inherited(
+        index: CompactClassFamilyIndex, file_path: str, qualname: str, member: str
+    ) -> bool:
+        """Whether the member overrides a declaration the class inherits; a class the
+        index does not know is not proven free of one."""
 
-def _overrides_inherited(
-    index: CompactClassFamilyIndex, file_path: str, qualname: str, member: str
-) -> bool:
-    """Whether the member overrides a declaration the class inherits; a class the
-    index does not know is not proven free of one."""
-
-    symbol = index.symbol_for(file_path=file_path, qualname=qualname)
-    return symbol is None or bool(index.overridden_declarations(symbol, member))
+        symbol = index.symbol_for(file_path=file_path, qualname=qualname)
+        return symbol is None or bool(index.overridden_declarations(symbol, member))
 
 
 class DeadModuleDetector(

@@ -114,8 +114,6 @@ from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 # Hooks through which a class or module answers any attribute name.
 DYNAMIC_ATTRIBUTE_HOOKS = frozenset(("__getattr__", "__getattribute__"))
-# Attributes whose access reaches something other than a function of that name.
-INDIRECT_ATTRIBUTES = DYNAMIC_ATTRIBUTE_HOOKS | frozenset(("__call__", "__get__"))
 
 
 @dataclass(frozen=True)
@@ -503,9 +501,6 @@ class _ProductMemberAnswers(ClassMemberAnswersABC[_CompactClassMemberResolution]
         return _ClassMemberViolation(
             CompactFunctionTargetResolutionViolation.INCOMPLETE_RECEIVER_FAMILY
         )
-
-
-_PRODUCT_MEMBER_ANSWERS = _ProductMemberAnswers()
 
 
 class CompactFunctionCallResolution(ABC):
@@ -959,6 +954,11 @@ class ProductFlowRepository(
 ):
     """Derived query authority over product flows and nominal class declarations."""
 
+    _PRODUCT_MEMBER_ANSWERS = _ProductMemberAnswers()
+
+    # Attributes whose access reaches something other than a function of that name.
+    INDIRECT_ATTRIBUTES = DYNAMIC_ATTRIBUTE_HOOKS | frozenset(("__call__", "__get__"))
+
     def iter_product_projections(self) -> Iterator[CompactProductFlowModuleProjection]:
         """Visit retained projections; source repositories supply their original demand."""
         yield from self.product_projections
@@ -1358,7 +1358,7 @@ class ProductFlowRepository(
         attribute, dunder or not, is looked up by its name.
         """
 
-        return attribute_name in INDIRECT_ATTRIBUTES
+        return attribute_name in ProductFlowRepository.INDIRECT_ATTRIBUTES
 
     def attribute_target(
         self,
@@ -2016,7 +2016,7 @@ class ProductFlowRepository(
         member_name: str,
     ) -> _CompactClassMemberResolution:
         return self.class_index.member_in_mro(owner_symbol, member_name).answer(
-            _PRODUCT_MEMBER_ANSWERS
+            self._PRODUCT_MEMBER_ANSWERS
         )
 
     def _lexical_binding_exists(

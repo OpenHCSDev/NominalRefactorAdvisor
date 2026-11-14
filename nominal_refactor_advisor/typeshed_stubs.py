@@ -23,12 +23,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import cache, cached_property
 from pathlib import Path
-from typing import Generic, TypeVar
+from typing import ClassVar, Generic, TypeVar
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 
-STUB_SUFFIX = ".pyi"
-PACKAGE_STUB = "__init__"
 STUB_PROVIDER = "mypy"
 STDLIB_STUBS = Path("typeshed") / "stdlib"
 
@@ -61,6 +59,8 @@ class StubRoot(ABC):
 
 @dataclass(frozen=True)
 class InstalledStubRoot(StubRoot):
+    STUB_SUFFIX = ".pyi"
+    PACKAGE_STUB = "__init__"
     directory: Path
 
     def answer(self, qualified: str, answers: StubAnswers[AnswerT]) -> AnswerT:
@@ -76,9 +76,9 @@ class InstalledStubRoot(StubRoot):
         """Each stub module's name, `pkg/__init__.pyi` naming `pkg`, and its file."""
 
         paths: dict[str, Path] = {}
-        for path in self.directory.rglob(f"*{STUB_SUFFIX}"):
+        for path in self.directory.rglob(f"*{self.STUB_SUFFIX}"):
             parts = path.relative_to(self.directory).with_suffix("").parts
-            if parts[-1] == PACKAGE_STUB:
+            if parts[-1] == self.PACKAGE_STUB:
                 parts = parts[:-1]
             paths[".".join(parts)] = path
         return paths
@@ -121,25 +121,7 @@ def installed_stub_root() -> StubRoot:
 
 
 VersionTest = Callable[[tuple[int, ...], tuple[int, ...]], bool]
-VERSION_TESTS: dict[type[ast.cmpop], VersionTest] = {
-    ast.Lt: lambda running, bound: running < bound,
-    ast.LtE: lambda running, bound: running <= bound,
-    ast.Gt: lambda running, bound: running > bound,
-    ast.GtE: lambda running, bound: running >= bound,
-    ast.Eq: lambda running, bound: running == bound,
-    ast.NotEq: lambda running, bound: running != bound,
-}
 PlatformTest = Callable[[str, str], bool]
-PLATFORM_TESTS: dict[type[ast.cmpop], PlatformTest] = {
-    ast.Eq: lambda running, named: running == named,
-    ast.NotEq: lambda running, named: running != named,
-}
-RUNNING_VERSION: tuple[int, ...] = (
-    sys.version_info.major,
-    sys.version_info.minor,
-    sys.version_info.micro,
-)
-EITHER = frozenset((True, False))
 """The outcomes of a test on anything but the running interpreter: both."""
 
 
@@ -149,9 +131,31 @@ class RunningInterpreterBranches(ast.NodeTransformer):
     when that branch is empty, so every body stays a body; an `if` on anything
     else stays, both branches visited."""
 
+    VERSION_TESTS: ClassVar[dict[type[ast.cmpop], VersionTest]] = {
+        ast.Lt: lambda running, bound: running < bound,
+        ast.LtE: lambda running, bound: running <= bound,
+        ast.Gt: lambda running, bound: running > bound,
+        ast.GtE: lambda running, bound: running >= bound,
+        ast.Eq: lambda running, bound: running == bound,
+        ast.NotEq: lambda running, bound: running != bound,
+    }
+
+    RUNNING_VERSION: ClassVar[tuple[int, ...]] = (
+        sys.version_info.major,
+        sys.version_info.minor,
+        sys.version_info.micro,
+    )
+
+    PLATFORM_TESTS: ClassVar[dict[type[ast.cmpop], PlatformTest]] = {
+        ast.Eq: lambda running, named: running == named,
+        ast.NotEq: lambda running, named: running != named,
+    }
+
+    EITHER = frozenset((True, False))
+
     def visit_If(self, node: ast.If) -> ast.AST | list[ast.stmt]:
         outcomes = self.outcomes(node.test)
-        if outcomes == EITHER:
+        if outcomes == self.EITHER:
             return self.generic_visit(node)
         chosen: list[ast.stmt] = []
         for statement in node.body if True in outcomes else node.orelse:
@@ -184,21 +188,21 @@ class RunningInterpreterBranches(ast.NodeTransformer):
                 left=ast.Attribute(value=ast.Name(id="sys"), attr="version_info"),
                 ops=[operator],
                 comparators=[ast.Tuple(elts=items)],
-            ) if type(operator) in VERSION_TESTS:
+            ) if type(operator) in self.VERSION_TESTS:
                 bound = tuple(
                     item.value
                     for item in items
                     if isinstance(item, ast.Constant) and isinstance(item.value, int)
                 )
                 if len(bound) == len(items):
-                    running = RUNNING_VERSION[: len(bound)]
-                    return frozenset((VERSION_TESTS[type(operator)](running, bound),))
+                    running = self.RUNNING_VERSION[: len(bound)]
+                    return frozenset((self.VERSION_TESTS[type(operator)](running, bound),))
             case ast.Compare(
                 left=ast.Attribute(value=ast.Name(id="sys"), attr="platform"),
                 ops=[operator],
                 comparators=[ast.Constant(value=str() as named)],
-            ) if type(operator) in PLATFORM_TESTS:
-                return frozenset((PLATFORM_TESTS[type(operator)](sys.platform, named),))
+            ) if type(operator) in self.PLATFORM_TESTS:
+                return frozenset((self.PLATFORM_TESTS[type(operator)](sys.platform, named),))
             case ast.Call(
                 func=ast.Attribute(
                     value=ast.Attribute(value=ast.Name(id="sys"), attr="platform"),
@@ -207,4 +211,4 @@ class RunningInterpreterBranches(ast.NodeTransformer):
                 args=[ast.Constant(value=str() as prefix)],
             ):
                 return frozenset((sys.platform.startswith(prefix),))
-        return EITHER
+        return self.EITHER

@@ -163,7 +163,7 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
     operator_type: ClassVar[type[ast.cmpop]]
 
     def project_ast(self, value: ast.Compare) -> U | None:
-        match = single_compare_match(value, self.operator_type)
+        match = self.single_compare_match(value, self.operator_type)
         if match is None:
             return None
         return self.project_compare(match.left, match.right)
@@ -171,6 +171,16 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
     @abstractmethod
     def project_compare(self, left: ast.AST, right: ast.AST) -> U | None:
         raise NotImplementedError
+
+    @staticmethod
+    def single_compare_match(
+        node: ast.Compare, operator_type: type[ast.cmpop] | tuple[type[ast.cmpop], ...]
+    ) -> SingleCompareMatch | None:
+        operator = single_item(node.ops)
+        comparator = single_item(node.comparators)
+        if not isinstance(operator, operator_type) or comparator is None:
+            return None
+        return SingleCompareMatch(node.left, operator, comparator)
 
 
 @dataclass(frozen=True)
@@ -373,10 +383,17 @@ class _AttributeCallOwnerStep(
         if owner is None:
             return None
         if self.owner_name is not None and (
-            not node_has_owner_name(owner, self.owner_name)
+            not self.node_has_owner_name(owner, self.owner_name)
         ):
             return None
         return _AttributeCallOwnedParts(value.call, value.attribute, owner)
+
+    @staticmethod
+    def node_has_owner_name(node: ast.AST | None, owner_name: str) -> bool:
+        return (
+            name_id(node) == owner_name
+            or attribute_name(node, owner_name=owner_name) is not None
+        )
 
 
 @dataclass(frozen=True)
@@ -392,7 +409,7 @@ class _AttributeCallArgumentStep(
     def project(
         self, value: _AttributeCallOwnedParts[OwnerT]
     ) -> AttributeCallMatch[OwnerT] | None:
-        argument = call_argument_match(
+        argument = self.call_argument_match(
             value.call,
             argument_name=self.single_argument_name,
             required=self.single_argument_required,
@@ -403,6 +420,34 @@ class _AttributeCallArgumentStep(
             return None
         return AttributeCallMatch(
             value.call, value.attribute, value.owner, argument.argument
+        )
+
+    @staticmethod
+    def call_argument_match(
+        call: ast.Call,
+        *,
+        argument_name: str | None = None,
+        required: bool = False,
+        argument_count: int | None = None,
+        allow_keywords: bool = True,
+    ) -> CallArgumentMatch | None:
+        if (not allow_keywords and call.keywords) or (
+            argument_count is not None and len(call.args) != argument_count
+        ):
+            return None
+        if argument_name is None and (not required):
+            return CallArgumentMatch(None, tuple(call.args))
+        return (
+            Maybe.of(single_item(call.args))
+            .project(
+                lambda argument: (
+                    argument
+                    if argument_name is None or name_id(argument) == argument_name
+                    else None
+                )
+            )
+            .map(lambda argument: CallArgumentMatch(argument, tuple(call.args)))
+            .unwrap_or_none()
         )
 
 
@@ -555,16 +600,6 @@ def named_value_binding(node: ast.AST) -> NamedValueBinding | None:
     return named_assign_value_binding(node) or named_ann_assign_value_binding(node)
 
 
-def single_compare_match(
-    node: ast.Compare, operator_type: type[ast.cmpop] | tuple[type[ast.cmpop], ...]
-) -> SingleCompareMatch | None:
-    operator = single_item(node.ops)
-    comparator = single_item(node.comparators)
-    if not isinstance(operator, operator_type) or comparator is None:
-        return None
-    return SingleCompareMatch(node.left, operator, comparator)
-
-
 def single_return_value(body: Sequence[ast.stmt]) -> ast.AST | None:
     statement = single_ast(body, ast.Return)
     return None if statement is None else statement.value
@@ -577,34 +612,6 @@ def return_value(statement: ast.stmt) -> ast.AST | None:
 
 def return_call(statement: ast.stmt) -> ast.Call | None:
     return as_ast(return_value(statement), ast.Call)
-
-
-def call_argument_match(
-    call: ast.Call,
-    *,
-    argument_name: str | None = None,
-    required: bool = False,
-    argument_count: int | None = None,
-    allow_keywords: bool = True,
-) -> CallArgumentMatch | None:
-    if (not allow_keywords and call.keywords) or (
-        argument_count is not None and len(call.args) != argument_count
-    ):
-        return None
-    if argument_name is None and (not required):
-        return CallArgumentMatch(None, tuple(call.args))
-    return (
-        Maybe.of(single_item(call.args))
-        .project(
-            lambda argument: (
-                argument
-                if argument_name is None or name_id(argument) == argument_name
-                else None
-            )
-        )
-        .map(lambda argument: CallArgumentMatch(argument, tuple(call.args)))
-        .unwrap_or_none()
-    )
 
 
 def collection_literal(
@@ -640,13 +647,6 @@ def attribute_name(
     if owner_name is not None and name_id(attribute.value) != owner_name:
         return None
     return attribute.attr
-
-
-def node_has_owner_name(node: ast.AST | None, owner_name: str) -> bool:
-    return (
-        name_id(node) == owner_name
-        or attribute_name(node, owner_name=owner_name) is not None
-    )
 
 
 def attribute_method_names(

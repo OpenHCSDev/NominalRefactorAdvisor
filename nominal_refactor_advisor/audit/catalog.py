@@ -12,9 +12,6 @@ from importlib.resources import files
 from pathlib import Path
 from typing import ClassVar
 
-CATALOG = Path(str(files("nominal_refactor_advisor.audit") / "patterns"))
-
-
 @dataclass(frozen=True)
 class Entry:
     pattern: str
@@ -57,6 +54,7 @@ class Rung:
 
 @dataclass(frozen=True)
 class Catalog:
+    CATALOG = Path(str(files("nominal_refactor_advisor.audit") / "patterns"))
     root: Path = CATALOG
     rungs: ClassVar[tuple[str, ...]] = (
         "implementation.md", "membership.md", "identity.md",

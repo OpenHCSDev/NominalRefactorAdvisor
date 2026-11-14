@@ -40,13 +40,6 @@ from nominal_refactor_advisor.product_flow import (
     CompactSubscription,
 )
 
-NATIVE_BUILTIN_DECLARATIONS = tuple(
-    NativeDeclaration(declaration)
-    for declaration in vars(builtins).values()
-    if isinstance(declaration, (type, BuiltinFunctionType))
-)
-
-
 if TYPE_CHECKING:
     from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 
@@ -213,6 +206,12 @@ class BuiltinGenericAliasCapture(NativeTypeCapture, OpaqueCapturedObjectOperatio
 class NativeArgumentInspection(ast.NodeVisitor):
     """Derive inert binding representatives without evaluating repository objects."""
 
+    NATIVE_BUILTIN_DECLARATIONS = tuple(
+        NativeDeclaration(declaration)
+        for declaration in vars(builtins).values()
+        if isinstance(declaration, (type, BuiltinFunctionType))
+    )
+
     def __init__(self, environment: NativeReferenceEnvironment) -> None:
         self.environment = environment
 
@@ -221,7 +220,7 @@ class NativeArgumentInspection(ast.NodeVisitor):
 
     def visit_Name(self, node: ast.Name | ast.Attribute) -> object:
         return self.environment.require_native(
-            node, NATIVE_BUILTIN_DECLARATIONS
+            node, self.NATIVE_BUILTIN_DECLARATIONS
         ).declaration
 
     visit_Attribute = visit_Name

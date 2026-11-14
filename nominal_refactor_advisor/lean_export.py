@@ -74,27 +74,6 @@ def _evidence(row: JsonObject) -> tuple[SourceLocation, ...]:
     )
 
 
-_LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC = high_confidence_spec(
-    PatternId.NOMINAL_INTERFACE_WITNESS,
-    "Repeated Lean declaration signature should use a semantic abstraction",
-    (
-        "Exact Lean signature orbits indicate proof declarations are "
-        "structurally confusable without a named semantic owner."
-    ),
-    (
-        "named Lean structure, typeclass, theorem schema, or bridge object "
-        "that owns the repeated signature"
-    ),
-    "Lean environment declaration-signature orbit",
-    (
-        CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
-        CapabilityTag.PROVENANCE,
-        CapabilityTag.NOMINAL_IDENTITY,
-    ),
-    (ObservationTag.NORMALIZED_AST,),
-)
-
-
 class LeanFindingAdapter(ABC, metaclass=AutoRegisterMeta):
     """Nominal adapter root for one Lean detector family."""
 
@@ -113,6 +92,26 @@ class LeanFindingAdapter(ABC, metaclass=AutoRegisterMeta):
 
 class LeanRepeatedStructuralSignatureAdapter(LeanFindingAdapter):
     """Adapter for exact Lean declaration-signature orbits."""
+
+    _LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC = high_confidence_spec(
+        PatternId.NOMINAL_INTERFACE_WITNESS,
+        "Repeated Lean declaration signature should use a semantic abstraction",
+        (
+            "Exact Lean signature orbits indicate proof declarations are "
+            "structurally confusable without a named semantic owner."
+        ),
+        (
+            "named Lean structure, typeclass, theorem schema, or bridge object "
+            "that owns the repeated signature"
+        ),
+        "Lean environment declaration-signature orbit",
+        (
+            CapabilityTag.SHARED_ALGORITHM_AUTHORITY,
+            CapabilityTag.PROVENANCE,
+            CapabilityTag.NOMINAL_IDENTITY,
+        ),
+        (ObservationTag.NORMALIZED_AST,),
+    )
 
     detector_id = "lean_repeated_structural_signature"
     finding_spec = _LEAN_REPEATED_STRUCTURAL_SIGNATURE_SPEC

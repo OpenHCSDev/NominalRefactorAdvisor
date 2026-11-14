@@ -297,30 +297,6 @@ class MemberCensusSource(ABC):
         raise NotImplementedError
 
 
-def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
-    """The owner and every class below it, as (module, qualname): the decoder code."""
-
-    def below(klass: type) -> Iterator[type]:
-        yield klass
-        for child in klass.__subclasses__():
-            yield from below(child)
-
-    return frozenset((klass.__module__, klass.__qualname__) for klass in below(owner))
-
-
-def _public_method_names(owner: type) -> frozenset[str]:
-    """Names of the public callables a declaration exposes, from its MRO."""
-
-    return frozenset(
-        name
-        for klass in owner.__mro__
-        for name, value in vars(klass).items()
-        if not name.startswith("_")
-        if isinstance(value, (classmethod, staticmethod, property))
-        or callable(value)
-    )
-
-
 class ForeignModuleSource(MemberCensusSource):
     """Classes of foreign modules named by type tests and class patterns."""
 
@@ -330,9 +306,9 @@ class ForeignModuleSource(MemberCensusSource):
                 kind=CensusFamilyKind.FOREIGN_MODULE,
                 name=family.import_path(),
                 covered=family.member_names(),
-                method_names=_public_method_names(family),
+                method_names=self._public_method_names(family),
                 aliases=self.corpus.aliases_of(family.import_path()),
-                definitions=_own_definitions(family),
+                definitions=self._own_definitions(family),
             )
             for root in (ForeignFamily, ForeignAdapter)
             for family in root.concrete_families()
@@ -351,6 +327,30 @@ class ForeignModuleSource(MemberCensusSource):
                             subject=shape.subject,
                             members=frozenset(shape.type_names),
                         )
+
+    @staticmethod
+    def _own_definitions(owner: type) -> frozenset[tuple[str, str]]:
+        """The owner and every class below it, as (module, qualname): the decoder code."""
+
+        def below(klass: type) -> Iterator[type]:
+            yield klass
+            for child in klass.__subclasses__():
+                yield from below(child)
+
+        return frozenset((klass.__module__, klass.__qualname__) for klass in below(owner))
+
+    @staticmethod
+    def _public_method_names(owner: type) -> frozenset[str]:
+        """Names of the public callables a declaration exposes, from its MRO."""
+
+        return frozenset(
+            name
+            for klass in owner.__mro__
+            for name, value in vars(klass).items()
+            if not name.startswith("_")
+            if isinstance(value, (classmethod, staticmethod, property))
+            or callable(value)
+        )
 
 
 class EnumSource(MemberCensusSource):

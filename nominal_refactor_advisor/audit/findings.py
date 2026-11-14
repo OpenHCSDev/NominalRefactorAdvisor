@@ -47,7 +47,7 @@ class FunctionFacts(ast.NodeVisitor):
         for op, comparator in zip(node.ops, node.comparators):
             match op, comparator:
                 case ast.In() | ast.NotIn(), ast.Set(elts=elements) | ast.Tuple(elts=elements) | ast.List(elts=elements):
-                    values = _string_literals(elements)
+                    values = self._string_literals(elements)
                     if values:
                         self.literal_sets.append(values)
         self.generic_visit(node)
@@ -67,16 +67,16 @@ class FunctionFacts(ast.NodeVisitor):
                 self.keys[ast.unparse(container)[:30]].add(key)
         self.generic_visit(node)
 
-
-def _string_literals(elements: list[ast.expr]) -> tuple[str, ...]:
-    values = []
-    for element in elements:
-        match element:
-            case ast.Constant(value=str() as value):
-                values.append(value)
-            case _:
-                return ()
-    return tuple(sorted(values))
+    @staticmethod
+    def _string_literals(elements: list[ast.expr]) -> tuple[str, ...]:
+        values = []
+        for element in elements:
+            match element:
+                case ast.Constant(value=str() as value):
+                    values.append(value)
+                case _:
+                    return ()
+        return tuple(sorted(values))
 
 
 def _entry_points(pyproject: str) -> frozenset[str]:

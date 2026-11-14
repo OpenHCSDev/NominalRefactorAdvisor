@@ -116,7 +116,6 @@ if TYPE_CHECKING:
 
 NativeScalar: TypeAlias = str | int | bool | None
 NativeDictionaryKey: TypeAlias = NativeScalar | type
-NativeConstantAtom: TypeAlias = NativeScalar | types.EllipsisType
 
 
 class NativeConstantContentsABC(ABC):
@@ -125,6 +124,8 @@ class NativeConstantContentsABC(ABC):
     Comparison consumes only declared exact atoms and exact tuples. It never
     invokes equality, iteration or conversion on an unadmitted object.
     """
+
+    NativeConstantAtom: ClassVar[TypeAlias] = NativeScalar | types.EllipsisType
 
     @staticmethod
     def supports_scalar(value: object) -> bool:
@@ -152,7 +153,7 @@ class NativeConstantContentsABC(ABC):
                 continue
             if not any(
                 type(actual) is declaration
-                for declaration in get_args(NativeConstantAtom)
+                for declaration in get_args(NativeConstantContentsABC.NativeConstantAtom)
             ):
                 raise ValueError("Native constant requires admitted exact contents")
             if actual != expected:
@@ -451,9 +452,9 @@ class OwnerIndependentMethodWrapper(Case, NativeDeclarationFamily):
             or functools.wraps.__globals__.get("update_wrapper") is not functools.update_wrapper
         ):
             raise ValueError("Owner-independent wrapper differs from its claimed functools contract")
-        cls._require_decorator_shape(_docless_body(NativeDeclaration(decorator).node))
-        _require_wraps_shape(_docless_body(NativeDeclaration(functools.wraps).node))
-        _require_update_wrapper_shape(NativeDeclaration(functools.update_wrapper).node)
+        cls._require_decorator_shape(cls._docless_body(NativeDeclaration(decorator).node))
+        cls._require_wraps_shape(cls._docless_body(NativeDeclaration(functools.wraps).node))
+        cls._require_update_wrapper_shape(NativeDeclaration(functools.update_wrapper).node)
 
     @classmethod
     def _require_decorator_shape(cls, body: tuple[ast.stmt, ...]) -> None:
@@ -489,44 +490,44 @@ class OwnerIndependentMethodWrapper(Case, NativeDeclarationFamily):
                 return
         raise ValueError("Owner-independent wrapper source differs from its claimed shape")
 
+    @staticmethod
+    def _docless_body(
+        node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[ast.stmt, ...]:
+        body = tuple(node.body)
+        match body:
+            case (ast.Expr(value=ast.Constant(value=str())), *rest):
+                return tuple(rest)
+        return body
 
-def _docless_body(
-    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[ast.stmt, ...]:
-    body = tuple(node.body)
-    match body:
-        case (ast.Expr(value=ast.Constant(value=str())), *rest):
-            return tuple(rest)
-    return body
+    @staticmethod
+    def _require_update_wrapper_shape(node: ast.AST) -> None:
+        """`update_wrapper` calls only `getattr`, `setattr` and a dict's `update`, and its only
+        attribute store is `wrapper.__wrapped__`: no call reaches a user object."""
 
+        for child in ast.walk(node):
+            match child:
+                case ast.Call(func=ast.Name(id="getattr" | "setattr")) | ast.Call(func=ast.Attribute(attr="update", value=ast.Call(func=ast.Name(id="getattr")))):
+                    continue
+                case ast.Call():
+                    raise ValueError("functools.update_wrapper calls outside its claimed contract")
+                case ast.Attribute(ctx=ast.Store()) if not (
+                    child.attr == "__wrapped__" and isinstance(child.value, ast.Name) and child.value.id == "wrapper"
+                ):
+                    raise ValueError("functools.update_wrapper stores outside its claimed contract")
+                case ast.Lambda() | ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Yield() | ast.Await() if child is not node:
+                    raise ValueError("functools.update_wrapper has code outside its claimed contract")
 
-def _require_wraps_shape(body: tuple[ast.stmt, ...]) -> None:
-    """`wraps` only constructs a native partial over `update_wrapper` from its own names."""
+    @staticmethod
+    def _require_wraps_shape(body: tuple[ast.stmt, ...]) -> None:
+        """`wraps` only constructs a native partial over `update_wrapper` from its own names."""
 
-    match body:
-        case (ast.Return(value=ast.Call(func=ast.Name(id="partial"), args=[ast.Name(id="update_wrapper")], keywords=keywords)),) if all(
-            isinstance(keyword.value, ast.Name) for keyword in keywords
-        ):
-            return
-    raise ValueError("functools.wraps differs from its claimed shape")
-
-
-def _require_update_wrapper_shape(node: ast.AST) -> None:
-    """`update_wrapper` calls only `getattr`, `setattr` and a dict's `update`, and its only
-    attribute store is `wrapper.__wrapped__`: no call reaches a user object."""
-
-    for child in ast.walk(node):
-        match child:
-            case ast.Call(func=ast.Name(id="getattr" | "setattr")) | ast.Call(func=ast.Attribute(attr="update", value=ast.Call(func=ast.Name(id="getattr")))):
-                continue
-            case ast.Call():
-                raise ValueError("functools.update_wrapper calls outside its claimed contract")
-            case ast.Attribute(ctx=ast.Store()) if not (
-                child.attr == "__wrapped__" and isinstance(child.value, ast.Name) and child.value.id == "wrapper"
+        match body:
+            case (ast.Return(value=ast.Call(func=ast.Name(id="partial"), args=[ast.Name(id="update_wrapper")], keywords=keywords)),) if all(
+                isinstance(keyword.value, ast.Name) for keyword in keywords
             ):
-                raise ValueError("functools.update_wrapper stores outside its claimed contract")
-            case ast.Lambda() | ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Yield() | ast.Await() if child is not node:
-                raise ValueError("functools.update_wrapper has code outside its claimed contract")
+                return
+        raise ValueError("functools.wraps differs from its claimed shape")
 
 
 class ContextManagerWrapper(OwnerIndependentMethodWrapper):

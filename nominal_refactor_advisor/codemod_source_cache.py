@@ -139,12 +139,11 @@ class CodemodSourceContextCacheSchema:
     version: int = 2
 
 
-codemod_source_context_cache_schema = CodemodSourceContextCacheSchema()
-
-
 @dataclass(frozen=True)
 class CodemodSourceContextCacheEntry:
     """One complete persisted source-context cache entry."""
+
+    codemod_source_context_cache_schema = CodemodSourceContextCacheSchema()
 
     identity: AnalysisCacheIdentity
     schema: CodemodSourceContextCacheSchema
@@ -156,7 +155,7 @@ class CodemodSourceContextCacheEntry:
         identity: AnalysisCacheIdentity,
         context: CodemodSourceContext,
     ) -> CodemodSourceContextCacheEntry:
-        return cls(identity, codemod_source_context_cache_schema, context)
+        return cls(identity, cls.codemod_source_context_cache_schema, context)
 
     def context_for(
         self,
@@ -164,7 +163,7 @@ class CodemodSourceContextCacheEntry:
     ) -> CodemodSourceContext | None:
         if (
             self.identity == identity
-            and self.schema == codemod_source_context_cache_schema
+            and self.schema == self.codemod_source_context_cache_schema
             and isinstance(self.context, CodemodSourceContext)
         ):
             return self.context

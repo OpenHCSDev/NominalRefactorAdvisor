@@ -29,9 +29,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, AnsweredUse
 from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
-
-_shared_type_checker_session: TypeCheckerSession | None = None
-
+from typing import ClassVar
 
 def _tuple_return_kind(node: ast.Return) -> str | None:
     """Classify a return statement as zero-or-one tuple, or None if other."""
@@ -81,22 +79,6 @@ def _collect_returns(
                 _collect_returns(case.body, into)
 
 
-def _classify_returns(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> list[tuple[ast.Return, str]]:
-    """Every return in the function classified as zero-or-one tuple.
-    Raises ValueError if any return doesn't fit the pattern."""
-    classified: list[tuple[ast.Return, str]] = []
-    for ret in _find_returns(function):
-        kind = _tuple_return_kind(ret)
-        if kind is None:
-            raise ValueError(
-                f"return at line {ret.lineno} does not return a zero-or-one tuple"
-            )
-        classified.append((ret, kind))
-    return classified
-
-
 @dataclass(frozen=True, kw_only=True)
 class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
     """Rewrite ``Class.method`` from returning zero-or-one tuples to returning
@@ -107,6 +89,8 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
     ``None``.  Every reader that iterates, unpacks or probes the result is
     rewritten to test ``None``.  An override or reader this proof cannot
     rewrite refuses, naming the site."""
+
+    _shared_type_checker_session: ClassVar[TypeCheckerSession | None] = None
 
     method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
@@ -158,7 +142,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
             )
 
         for resolved_class, method in overrides:
-            classified = _classify_returns(method)
+            classified = self._classify_returns(method)
             for ret, kind in classified:
                 geo = geometry(resolved_class.file_path)
                 if ret.value is None:
@@ -181,7 +165,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                     add(resolved_class.file_path, start, end, new_annotation)
 
         answered = AnsweredMethod(snapshot, base, function)
-        shared = _shared_type_checker_session
+        shared = self._shared_type_checker_session
         owned_session = shared is None
         session = shared or TypeCheckerSession.started(
             SourceTexts(snapshot.parsed_modules)
@@ -370,5 +354,21 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                 replacement_source=new_src,
             )
         )
+
+    @staticmethod
+    def _classify_returns(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> list[tuple[ast.Return, str]]:
+        """Every return in the function classified as zero-or-one tuple.
+        Raises ValueError if any return doesn't fit the pattern."""
+        classified: list[tuple[ast.Return, str]] = []
+        for ret in _find_returns(function):
+            kind = _tuple_return_kind(ret)
+            if kind is None:
+                raise ValueError(
+                    f"return at line {ret.lineno} does not return a zero-or-one tuple"
+                )
+            classified.append((ret, kind))
+        return classified
 
 

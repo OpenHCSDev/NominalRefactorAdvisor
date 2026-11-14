@@ -59,20 +59,21 @@ from nominal_refactor_advisor.refactors.module_move import (
     RelocateSymbolsToNewModuleOperation,
 )
 
-_ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]*)\|")
-_MODULE_FILE = re.compile(r"`(?P<name>[A-Za-z_]\w*)\.py`")
-_RENAMED_MODULE = re.compile(
-    r"`(?P<name>[A-Za-z_]\w*)`\s+moves\s+to\s+`(?P<destination>[A-Za-z_][\w/]*)`"
-)
-_MERGED_MODULE = re.compile(
-    r"`(?P<name>[A-Za-z_]\w*)\.py`\s+merges\s+into\s+`(?P<target>[A-Za-z_]\w*)\.py`"
-)
-_WORD = re.compile(r"[A-Za-z_]\w*")
-
-
 @dataclass(frozen=True)
 class DestinationRow:
     """One package row: the package and the text naming what belongs there."""
+
+    _WORD = re.compile(r"[A-Za-z_]\w*")
+
+    _RENAMED_MODULE = re.compile(
+        r"`(?P<name>[A-Za-z_]\w*)`\s+moves\s+to\s+`(?P<destination>[A-Za-z_][\w/]*)`"
+    )
+
+    _MODULE_FILE = re.compile(r"`(?P<name>[A-Za-z_]\w*)\.py`")
+
+    _MERGED_MODULE = re.compile(
+        r"`(?P<name>[A-Za-z_]\w*)\.py`\s+merges\s+into\s+`(?P<target>[A-Za-z_]\w*)\.py`"
+    )
 
     package: str
     owners: str
@@ -82,18 +83,18 @@ class DestinationRow:
 
         renamed = {
             match["name"]: match["destination"]
-            for match in _RENAMED_MODULE.finditer(self.owners)
+            for match in self._RENAMED_MODULE.finditer(self.owners)
         }
         merged = frozenset(name for name, _target in self.module_merges())
         yield from renamed.items()
-        for match in _MODULE_FILE.finditer(self.owners):
+        for match in self._MODULE_FILE.finditer(self.owners):
             if match["name"] not in renamed and match["name"] not in merged:
                 yield match["name"], f"{self.package}/{match['name']}"
 
     def module_merges(self) -> Iterator[tuple[str, str]]:
         """(flat module name, flat module whose destination it joins)."""
 
-        for match in _MERGED_MODULE.finditer(self.owners):
+        for match in self._MERGED_MODULE.finditer(self.owners):
             yield match["name"], match["target"]
 
     def owner_words(self) -> frozenset[str]:
@@ -101,14 +102,16 @@ class DestinationRow:
         naming modules (`name.py`, a rename, a merge), whose stems name files."""
 
         prose = self.owners
-        for pattern in (_RENAMED_MODULE, _MERGED_MODULE, _MODULE_FILE):
+        for pattern in (self._RENAMED_MODULE, self._MERGED_MODULE, self._MODULE_FILE):
             prose = pattern.sub(" ", prose)
-        return frozenset(_WORD.findall(prose))
+        return frozenset(self._WORD.findall(prose))
 
 
 @dataclass(frozen=True)
 class DestinationTable:
     """Every package row of the destination tables a run declares."""
+
+    _ROW = re.compile(r"^\s*\|\s*`(?P<package>[A-Za-z_][\w./]*)`\s*\|(?P<owners>[^|]*)\|")
 
     rows: tuple[DestinationRow, ...]
 
@@ -119,7 +122,7 @@ class DestinationTable:
                 DestinationRow(match["package"], match["owners"])
                 for text in texts
                 for line in text.splitlines()
-                if (match := _ROW.match(line)) is not None
+                if (match := cls._ROW.match(line)) is not None
             )
         )
 

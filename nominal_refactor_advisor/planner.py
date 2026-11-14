@@ -160,7 +160,7 @@ class FindingProjection:
         registry_name = self.first_metric_value(
             findings, lambda metrics: metrics.plan_registry_name, "Registry"
         )
-        return _safe_identifier(registry_name)
+        return self._safe_identifier(registry_name)
 
     def dispatch_axis(self, findings: tuple[RefactorFinding, ...]) -> str:
         axes = {
@@ -199,6 +199,12 @@ class FindingProjection:
             seen.add(item)
             ordered.append(item)
         return ordered
+
+    @staticmethod
+    def _safe_identifier(value: str) -> str:
+        cleaned = "".join((ch if ch.isalnum() else "_" for ch in value))
+        cleaned = cleaned.strip("_")
+        return cleaned or "value"
 
 
 _FINDING_PROJECTION = FindingProjection()
@@ -444,9 +450,9 @@ class _FindingRelationFacts:
             stable_id=finding.stable_id,
             paths=paths,
             relative_parent_parts=relative_parent_parts,
-            relative_parent_prefixes=_parent_prefixes(relative_parent_parts),
+            relative_parent_prefixes=cls._parent_prefixes(relative_parent_parts),
             capability_labels=frozenset(tag.label for tag in finding.capability_tags),
-            symbol_roots=frozenset(_symbol_roots(finding)),
+            symbol_roots=frozenset(cls._symbol_roots(finding)),
         )
 
     def relation_to(self, right: _FindingRelationFacts) -> _FindingRelation:
@@ -504,6 +510,26 @@ class _FindingRelationFacts:
         if not shared_prefixes:
             return 0
         return max(len(prefix) for prefix in shared_prefixes)
+
+    @staticmethod
+    def _parent_prefixes(
+        parent_parts: tuple[tuple[str, ...], ...],
+    ) -> frozenset[tuple[str, ...]]:
+        return frozenset(
+            parts[:prefix_length]
+            for parts in parent_parts
+            for prefix_length in range(1, len(parts) + 1)
+        )
+
+    @staticmethod
+    def _symbol_roots(finding: RefactorFinding) -> set[str]:
+        roots: set[str] = set()
+        for item in finding.evidence:
+            symbol = item.symbol.replace(":", ".")
+            root = symbol.split(".", maxsplit=1)[0]
+            if root and (not root.startswith("<")):
+                roots.add(root)
+        return roots
 
 
 @dataclass(frozen=True)
@@ -646,7 +672,7 @@ class ExecutionClassInputAuthority:
             finding.stable_id for finding in self.cluster.findings
         )
         internal_edges = self.relation_graph.internal_edges_for(finding_ids)
-        file_paths = frozenset(_evidence_paths_for_findings(self.cluster.findings))
+        file_paths = frozenset(self._evidence_paths_for_findings(self.cluster.findings))
         symbol_roots = self.symbol_roots()
         possible_edge_count = len(finding_ids) * max(len(finding_ids) - 1, 0) // 2
         internal_edge_weight = sum(edge.weight for edge in internal_edges)
@@ -687,6 +713,10 @@ class ExecutionClassInputAuthority:
                 finding.stable_id
             ].symbol_roots
         )
+
+    @staticmethod
+    def _evidence_paths_for_findings(findings: tuple[RefactorFinding, ...]) -> set[Path]:
+        return {path for finding in findings for path in _evidence_paths(finding)}
 
 
 @dataclass(frozen=True)
@@ -769,23 +799,9 @@ class ExecutionPartitionPlanner(SemanticRecord):
         return paths[0]
 
 
-def _symbol_roots(finding: RefactorFinding) -> set[str]:
-    roots: set[str] = set()
-    for item in finding.evidence:
-        symbol = item.symbol.replace(":", ".")
-        root = symbol.split(".", maxsplit=1)[0]
-        if root and (not root.startswith("<")):
-            roots.add(root)
-    return roots
-
-
 def _execution_class_id(finding_ids: tuple[str, ...]) -> str:
     payload = "|".join(finding_ids)
     return hashlib.blake2s(payload.encode("utf-8"), digest_size=5).hexdigest()
-
-
-def _evidence_paths_for_findings(findings: tuple[RefactorFinding, ...]) -> set[Path]:
-    return {path for finding in findings for path in _evidence_paths(finding)}
 
 
 def _execution_class_from_input(
@@ -932,12 +948,6 @@ def _current_partial_view(findings: tuple[RefactorFinding, ...]) -> str:
     )
 
 
-def _safe_identifier(value: str) -> str:
-    cleaned = "".join((ch if ch.isalnum() else "_" for ch in value))
-    cleaned = cleaned.strip("_")
-    return cleaned or "value"
-
-
 def _render_tag_values(items, projector) -> tuple[str, ...]:
     return tuple(
         _FINDING_PROJECTION.dedupe_preserve_order((projector(item) for item in items))
@@ -962,16 +972,6 @@ def _safe_relative(path: Path, root: Path) -> Path:
         return path.relative_to(root)
     except ValueError:
         return path
-
-
-def _parent_prefixes(
-    parent_parts: tuple[tuple[str, ...], ...],
-) -> frozenset[tuple[str, ...]]:
-    return frozenset(
-        parts[:prefix_length]
-        for parts in parent_parts
-        for prefix_length in range(1, len(parts) + 1)
-    )
 
 
 @cache

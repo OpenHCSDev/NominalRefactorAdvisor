@@ -4709,7 +4709,7 @@ class _CompactFlowCollector(
     def visit_Match(self, node: ast.Match) -> None:
         self.visit(node.subject)
         for index, case in enumerate(node.cases):
-            for name in _match_bound_names(case.pattern):
+            for name in self._match_bound_names(case.pattern):
                 self._record_mutation(
                     CompactBindingTarget(name),
                     case.pattern,
@@ -4722,6 +4722,19 @@ class _CompactFlowCollector(
                 CompactControlBranchKind.MATCH_CASE,
                 index,
             )
+
+    @staticmethod
+    def _match_bound_names(pattern: ast.pattern) -> tuple[str, ...]:
+        return tuple(
+            sorted(
+                {
+                    node.name
+                    for node in ast.walk(pattern)
+                    if isinstance(node, (ast.MatchAs, ast.MatchStar))
+                    and node.name is not None
+                }
+            )
+        )
 
 
 class _SourceFlowCollector(_CompactFlowCollector):
@@ -4751,19 +4764,6 @@ class _SourceFlowCollector(_CompactFlowCollector):
 
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(values))
-
-
-def _match_bound_names(pattern: ast.pattern) -> tuple[str, ...]:
-    return tuple(
-        sorted(
-            {
-                node.name
-                for node in ast.walk(pattern)
-                if isinstance(node, (ast.MatchAs, ast.MatchStar))
-                and node.name is not None
-            }
-        )
-    )
 
 
 FlowCollectorT = TypeVar("FlowCollectorT", bound=_CompactFlowCollector)

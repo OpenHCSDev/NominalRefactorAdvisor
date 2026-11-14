@@ -52,20 +52,6 @@ class ImpactDeltaClassifier:
 IMPACT_DELTA_CLASSIFIER = ImpactDeltaClassifier()
 
 
-def _sum_impacts(impacts: Iterable[ImpactDelta]) -> ImpactDelta:
-    total = ImpactDelta()
-    for impact in impacts:
-        total += impact
-    return total
-
-
-def _finding_has_payoff_proof(finding: RefactorFinding) -> bool:
-    certificate = finding.compression_certificate
-    if certificate is not None and certificate.pays_rent:
-        return True
-    return IMPACT_DELTA_CLASSIFIER.has_positive_impact(finding.metrics.impact_delta)
-
-
 def _is_test_file_path(file_path: str) -> bool:
     normalized = file_path.replace("\\", "/")
     return (
@@ -75,12 +61,6 @@ def _is_test_file_path(file_path: str) -> bool:
         or normalized.endswith("_tests.py")
         or normalized.startswith("test_")
         or "/test_" in normalized
-    )
-
-
-def _is_test_only_finding(finding: RefactorFinding) -> bool:
-    return bool(finding.evidence) and all(
-        (_is_test_file_path(item.file_path) for item in finding.evidence)
     )
 
 
@@ -140,8 +120,8 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
                 if finding.compression_certificate is not None
             )
         )
-        plan_outcome = _sum_impacts((plan.outcome for plan in plan_tuple))
-        finding_outcome = _sum_impacts(
+        plan_outcome = cls._sum_impacts((plan.outcome for plan in plan_tuple))
+        finding_outcome = cls._sum_impacts(
             (finding.metrics.impact_delta for finding in finding_tuple)
         )
         outcome = plan_outcome if plan_tuple else finding_outcome
@@ -169,10 +149,10 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
         unproved = tuple(
             finding
             for finding in finding_tuple
-            if not _finding_has_payoff_proof(finding)
+            if not cls._finding_has_payoff_proof(finding)
         )
         proven_finding_count = sum(
-            (1 for finding in finding_tuple if _finding_has_payoff_proof(finding))
+            (1 for finding in finding_tuple if cls._finding_has_payoff_proof(finding))
         )
         loc_payoff_finding_count = sum(
             (
@@ -222,6 +202,20 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
             ),
         )
 
+    @staticmethod
+    def _finding_has_payoff_proof(finding: RefactorFinding) -> bool:
+        certificate = finding.compression_certificate
+        if certificate is not None and certificate.pays_rent:
+            return True
+        return IMPACT_DELTA_CLASSIFIER.has_positive_impact(finding.metrics.impact_delta)
+
+    @staticmethod
+    def _sum_impacts(impacts: Iterable[ImpactDelta]) -> ImpactDelta:
+        total = ImpactDelta()
+        for impact in impacts:
+            total += impact
+        return total
+
 
 @dataclass(frozen=True, kw_only=True)
 class TimedScan:
@@ -259,10 +253,10 @@ class ScanEconomicsProof(TimedScan, DataclassJsonReport):
         finding_tuple = tuple(findings)
         plan_tuple = tuple(plans)
         production_findings = tuple(
-            (finding for finding in finding_tuple if not _is_test_only_finding(finding))
+            (finding for finding in finding_tuple if not cls._is_test_only_finding(finding))
         )
         test_only_findings = tuple(
-            (finding for finding in finding_tuple if _is_test_only_finding(finding))
+            (finding for finding in finding_tuple if cls._is_test_only_finding(finding))
         )
         return cls(
             label=label,
@@ -314,6 +308,12 @@ class ScanEconomicsProof(TimedScan, DataclassJsonReport):
         if not self.economics.evidence_guard_passes:
             reasons.append(f"{self.label}_payoff_guard")
         return tuple(reasons)
+
+    @staticmethod
+    def _is_test_only_finding(finding: RefactorFinding) -> bool:
+        return bool(finding.evidence) and all(
+            (_is_test_file_path(item.file_path) for item in finding.evidence)
+        )
 
 @dataclass(frozen=True)
 class EconomicsProofReport(DataclassJsonReport):

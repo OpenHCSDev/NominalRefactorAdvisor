@@ -115,9 +115,6 @@ class BuilderCallShapeSpec(ContextHelperShapeSpec[BuilderCallShape]):
     shape_helper = staticmethod(_builder_call_shape)
 
 
-_BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
-
-
 class ScopeFilteredFunctionObservationSpec(
     FunctionObservationSpec[FamilyItemT], Generic[FamilyItemT], ABC
 ):
@@ -877,6 +874,7 @@ class InitAssignmentFieldObservationSpec(ClassObservationSpec):
 class BuilderCallShapeFamily(
     SingleSpecCollectedFamily[BuilderCallShape], ShapeFamily[BuilderCallShape]
 ):
+    _BUILDER_CALL_SHAPE_SPEC = BuilderCallShapeSpec()
     spec = _BUILDER_CALL_SHAPE_SPEC
 
 
@@ -947,61 +945,61 @@ def _is_constant_index(index: ast.AST) -> bool:
     return False
 
 
-def _module_expression_shapes(
-    parsed_module: ParsedModule,
-) -> list[ModuleExpressionShape]:
-    """Collect maximal pure module-attribute expressions; a bare `mod.name` is not one.
-
-    A lone attribute needs two reads (`sys.version_info.major`); a tuple,
-    subscript or comparison needs one. A callee and a subscript's index or
-    type argument (`tuple[ast.expr, ...]`) are not values.
-    """
-
-    module_names = module_import_names(parsed_module)
-    if not module_names:
-        return []
-    index = parsed_module.syntax_index
-    shapes: list[ModuleExpressionShape] = []
-    for node_index, node in sorted(
-        (
-            *index.indexed_nodes_of_type(ast.Tuple),
-            *index.indexed_nodes_of_type(ast.Attribute),
-            *index.indexed_nodes_of_type(ast.Subscript),
-            *index.indexed_nodes_of_type(ast.Compare),
-        )
-    ):
-        attribute_reads = sum(
-            isinstance(item, ast.Attribute) for item in ast.walk(node)
-        )
-        if attribute_reads < (2 if isinstance(node, ast.Attribute) else 1):
-            continue
-        if not _reads_only_modules(node, module_names):
-            continue
-        parent = index.parent_node(node_index)
-        match parent:
-            case ast.Call(func=callee) if callee is node:
-                continue
-            case ast.Subscript(slice=argument) if argument is node:
-                continue
-        if parent is not None and _reads_only_modules(parent, module_names):
-            continue
-        shapes.append(
-            ModuleExpressionShape(
-                file_path=parsed_module.file_path,
-                lineno=node.lineno,
-                symbol=index.lexical_symbol(node_index),
-                expression_key=ast.dump(node, include_attributes=False),
-                expression_text=ast.unparse(node),
-            )
-        )
-    return shapes
-
-
 class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleExpressionShape]:
-        return _module_expression_shapes(parsed_module)
+        return cls._module_expression_shapes(parsed_module)
+
+    @staticmethod
+    def _module_expression_shapes(
+        parsed_module: ParsedModule,
+    ) -> list[ModuleExpressionShape]:
+        """Collect maximal pure module-attribute expressions; a bare `mod.name` is not one.
+
+        A lone attribute needs two reads (`sys.version_info.major`); a tuple,
+        subscript or comparison needs one. A callee and a subscript's index or
+        type argument (`tuple[ast.expr, ...]`) are not values.
+        """
+
+        module_names = module_import_names(parsed_module)
+        if not module_names:
+            return []
+        index = parsed_module.syntax_index
+        shapes: list[ModuleExpressionShape] = []
+        for node_index, node in sorted(
+            (
+                *index.indexed_nodes_of_type(ast.Tuple),
+                *index.indexed_nodes_of_type(ast.Attribute),
+                *index.indexed_nodes_of_type(ast.Subscript),
+                *index.indexed_nodes_of_type(ast.Compare),
+            )
+        ):
+            attribute_reads = sum(
+                isinstance(item, ast.Attribute) for item in ast.walk(node)
+            )
+            if attribute_reads < (2 if isinstance(node, ast.Attribute) else 1):
+                continue
+            if not _reads_only_modules(node, module_names):
+                continue
+            parent = index.parent_node(node_index)
+            match parent:
+                case ast.Call(func=callee) if callee is node:
+                    continue
+                case ast.Subscript(slice=argument) if argument is node:
+                    continue
+            if parent is not None and _reads_only_modules(parent, module_names):
+                continue
+            shapes.append(
+                ModuleExpressionShape(
+                    file_path=parsed_module.file_path,
+                    lineno=node.lineno,
+                    symbol=index.lexical_symbol(node_index),
+                    expression_key=ast.dump(node, include_attributes=False),
+                    expression_text=ast.unparse(node),
+                )
+            )
+        return shapes
 
 
 @dataclass(frozen=True)

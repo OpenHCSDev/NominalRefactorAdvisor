@@ -134,22 +134,6 @@ from nominal_refactor_advisor.semantic_identity import (
 )
 from nominal_refactor_advisor.source_identity import resolved_source_path_text
 
-_SEMANTIC_STRING_LITERAL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
-_CLASS_SUFFIXES = (
-    "Detector",
-    "Candidate",
-    "Handler",
-    "Adapter",
-    "Renderer",
-    "Operation",
-    "Strategy",
-    "Authority",
-    "Report",
-    "Config",
-    "Payload",
-    "Record",
-    "Spec",
-)
 SemanticClassFamilyIndex: TypeAlias = ClassFamilyIndex | CompactClassFamilyIndex
 IndexedClassDeclarationT = TypeVar(
     "IndexedClassDeclarationT",
@@ -511,7 +495,7 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         return cls(
             path=checkout_relative_path(module.path, roots),
             parsed_import_name=module.module_name,
-            source_hash=_text_hash(module.source),
+            source_hash=cls._text_hash(module.source),
         )
 
     @classmethod
@@ -523,8 +507,22 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         return cls(
             path=checkout_relative_path(identity.path, roots),
             parsed_import_name=identity.import_name,
-            source_hash=_source_file_hash(identity.path),
+            source_hash=cls._source_file_hash(identity.path),
         )
+
+    @staticmethod
+    def _source_file_hash(path: Path) -> str:
+        return hashlib.blake2s(
+            path.read_bytes(),
+            digest_size=semantic_descent_graph_cache_schema.digest_size,
+        ).hexdigest()
+
+    @staticmethod
+    def _text_hash(value: str) -> str:
+        return hashlib.blake2s(
+            value.encode("utf-8"),
+            digest_size=semantic_descent_graph_cache_schema.digest_size,
+        ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -3006,10 +3004,6 @@ class SemanticDescentGraphPayloadReport(SemanticRecord):
         )
 
 
-def semantic_descent_finding_authority_id(finding: RefactorFinding) -> str:
-    return f"finding:{finding.stable_id}:authority"
-
-
 def semantic_descent_finding_projection_id(finding: RefactorFinding) -> str:
     return f"finding:{finding.stable_id}:projection"
 
@@ -3126,7 +3120,7 @@ class FindingBackedSemanticDescent:
 
     @cached_property
     def authority_id(self) -> str:
-        return semantic_descent_finding_authority_id(self.finding)
+        return self.semantic_descent_finding_authority_id(self.finding)
 
     @cached_property
     def authority_name(self) -> str:
@@ -3243,6 +3237,10 @@ class FindingBackedSemanticDescent:
     def _symbol_owner_name(cls, symbol: str) -> str:
         owner = symbol.split(":", 1)[0]
         return cls._authority_name_candidates(owner)[0]
+
+    @staticmethod
+    def semantic_descent_finding_authority_id(finding: RefactorFinding) -> str:
+        return f"finding:{finding.stable_id}:authority"
 
 
 def build_finding_backed_semantic_descent_graph(
@@ -4988,7 +4986,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         *,
         axis_type_names: tuple[str, ...] = (),
     ) -> bool:
-        label = _assignment_label(node, owner_symbol=self.qualname)
+        label = self._assignment_label(node, owner_symbol=self.qualname)
         if ProjectionSuppressionPolicy(label).suppresses_semantic_projection():
             return False
         if SingleAssignmentAndValueNameProjection(node).pair is None:
@@ -5191,6 +5189,15 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
             self.owner_construction_stack[-1].projection_indices.append(
                 len(self.projections) - 1
             )
+
+    @staticmethod
+    def _assignment_label(node: ast.stmt, *, owner_symbol: str) -> str:
+        name = SingleAssignmentAndValueNameProjection(node).name
+        if name is not None:
+            return name
+        if isinstance(node, ast.Assign) and node.targets:
+            return ast.unparse(node.targets[0])
+        return PresentationProjectionSiteKind.ASSIGNMENT.label_for(owner_symbol)
 
 
 @dataclass(frozen=True)
@@ -6335,12 +6342,28 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
 class NormalizeNameProjection:
     """Normalize source names and literal keys into semantic comparison tokens."""
 
+    _CLASS_SUFFIXES = (
+        "Detector",
+        "Candidate",
+        "Handler",
+        "Adapter",
+        "Renderer",
+        "Operation",
+        "Strategy",
+        "Authority",
+        "Report",
+        "Config",
+        "Payload",
+        "Record",
+        "Spec",
+    )
+
     @classmethod
     @lru_cache(maxsize=8_192)
     def variants(cls, raw_name: str) -> tuple[str, ...]:
         normalized = cls.normalize(raw_name)
         variants = {normalized} if normalized else set()
-        for suffix in _CLASS_SUFFIXES:
+        for suffix in cls._CLASS_SUFFIXES:
             if raw_name.endswith(suffix) and len(raw_name) > len(suffix):
                 suffix_trimmed = cls.normalize(raw_name[: -len(suffix)])
                 if suffix_trimmed:
@@ -6426,6 +6449,8 @@ class PresentationTokenNodeProjector(ABC, ClassNameKeyed, metaclass=AutoRegister
 class PresentationTokenProjection:
     """Project AST syntax into normalized presentation tokens."""
 
+    _SEMANTIC_STRING_LITERAL_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:-]*$")
+
     @classmethod
     def tokens_for_node(
         cls,
@@ -6443,7 +6468,7 @@ class PresentationTokenProjection:
         stripped = value.strip()
         if stripped != value:
             return False
-        return bool(_SEMANTIC_STRING_LITERAL_PATTERN.fullmatch(value))
+        return bool(PresentationTokenProjection._SEMANTIC_STRING_LITERAL_PATTERN.fullmatch(value))
 
 
 class IterChildPresentationTokenProjectorMixin(ABC):
@@ -6807,25 +6832,3 @@ class PresentationAuthorityConstructionCollector:
             return node.value
         return None
 
-
-def _assignment_label(node: ast.stmt, *, owner_symbol: str) -> str:
-    name = SingleAssignmentAndValueNameProjection(node).name
-    if name is not None:
-        return name
-    if isinstance(node, ast.Assign) and node.targets:
-        return ast.unparse(node.targets[0])
-    return PresentationProjectionSiteKind.ASSIGNMENT.label_for(owner_symbol)
-
-
-def _source_file_hash(path: Path) -> str:
-    return hashlib.blake2s(
-        path.read_bytes(),
-        digest_size=semantic_descent_graph_cache_schema.digest_size,
-    ).hexdigest()
-
-
-def _text_hash(value: str) -> str:
-    return hashlib.blake2s(
-        value.encode("utf-8"),
-        digest_size=semantic_descent_graph_cache_schema.digest_size,
-    ).hexdigest()

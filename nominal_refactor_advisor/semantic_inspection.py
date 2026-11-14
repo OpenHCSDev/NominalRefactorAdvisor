@@ -555,7 +555,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                     name=node.name,
                     qualname=target.qualname,
                     line=target.line,
-                    field_names=_class_field_names(node.body),
+                    field_names=self._class_field_names(node.body),
                     method_ids=(),
                 )
             )
@@ -688,7 +688,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
     def _append_assignment_with_value_kind(
         self, *, node: ast.AST, target_names: tuple[str, ...], value_kind: str
     ) -> None:
-        line = _node_line(node)
+        line = self._node_line(node)
         scope = self._current_scope()
         if scope is None:
             target_id = None
@@ -823,11 +823,22 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         else:
             target_values[target_id] = [value]
 
+    @staticmethod
+    def _class_field_names(body: Iterable[ast.stmt]) -> tuple[str, ...]:
+        names: list[str] = []
+        for statement in body:
+            if isinstance(statement, ast.AnnAssign):
+                names.extend(_target_names(statement.target))
+            elif isinstance(statement, ast.Assign):
+                for target in statement.targets:
+                    names.extend(_target_names(target))
+        return tuple(names)
 
-def _node_line(node: ast.AST) -> int:
-    if isinstance(node, ast.stmt):
-        return node.lineno
-    raise TypeError(f"expected statement node, got {type(node).__name__}")
+    @staticmethod
+    def _node_line(node: ast.AST) -> int:
+        if isinstance(node, ast.stmt):
+            return node.lineno
+        raise TypeError(f"expected statement node, got {type(node).__name__}")
 
 
 def _decorator_names(decorators: Iterable[ast.expr]) -> tuple[str, ...]:
@@ -839,17 +850,6 @@ def _is_dataclass_decorator(decorators: tuple[str, ...]) -> bool:
         DataclassRuntimeDeclaration.dataclass_decorator_for_name(name) is not None
         for name in decorators
     )
-
-
-def _class_field_names(body: Iterable[ast.stmt]) -> tuple[str, ...]:
-    names: list[str] = []
-    for statement in body:
-        if isinstance(statement, ast.AnnAssign):
-            names.extend(_target_names(statement.target))
-        elif isinstance(statement, ast.Assign):
-            for target in statement.targets:
-                names.extend(_target_names(target))
-    return tuple(names)
 
 
 def _target_names(node: ast.expr) -> tuple[str, ...]:

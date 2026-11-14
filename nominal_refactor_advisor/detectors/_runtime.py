@@ -239,35 +239,6 @@ class LiteralDispatchFindingFactory:
         ]
 
 
-LITERAL_DISPATCH_FINDING_FACTORY = LiteralDispatchFindingFactory()
-
-
-_FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
-    {
-        "artifact",
-        "default",
-        "formal",
-        "kernel",
-        "lean",
-        "manifest",
-        "policy",
-        "profile",
-        "schema",
-        "theorem",
-    }
-)
-_FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS = 3
-_FORMAL_BOUNDARY_STRING_ID_TOKENS = frozenset(
-    (
-        *SemanticRoleIdentityToken.pluralized_string_identifier_values(),
-        "field",
-        "fields",
-        "source",
-        "sources",
-    )
-)
-
-
 @dataclass(frozen=True)
 class FormalBoundaryStringRegistryConstant:
     target_name: str
@@ -276,6 +247,30 @@ class FormalBoundaryStringRegistryConstant:
 
 
 class FormalBoundaryStringRegistryAuthority:
+    _FORMAL_BOUNDARY_STRING_ID_TOKENS = frozenset(
+        (
+            *SemanticRoleIdentityToken.pluralized_string_identifier_values(),
+            "field",
+            "fields",
+            "source",
+            "sources",
+        )
+    )
+    _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS = frozenset(
+        {
+            "artifact",
+            "default",
+            "formal",
+            "kernel",
+            "lean",
+            "manifest",
+            "policy",
+            "profile",
+            "schema",
+            "theorem",
+        }
+    )
+
     @classmethod
     def module_constants(
         cls,
@@ -348,7 +343,7 @@ class FormalBoundaryStringRegistryAuthority:
         call_name = ast.unparse(node.func).lower()
         return any(
             token in call_name
-            for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+            for token in FormalBoundaryStringRegistryAuthority._FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
         )
 
     @staticmethod
@@ -370,8 +365,8 @@ class FormalBoundaryStringRegistryAuthority:
             )
         )
         return bool(
-            boundary_tokens & _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
-        ) and bool(boundary_tokens & _FORMAL_BOUNDARY_STRING_ID_TOKENS)
+            boundary_tokens & FormalBoundaryStringRegistryAuthority._FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+        ) and bool(boundary_tokens & FormalBoundaryStringRegistryAuthority._FORMAL_BOUNDARY_STRING_ID_TOKENS)
 
     @staticmethod
     def call_consumes_constant(
@@ -413,7 +408,7 @@ class FormalBoundaryStringRegistryAuthority:
                 )
                 if not any(
                     token in function_source
-                    for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+                    for token in cls._FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
                 ):
                     continue
                 expression = syntax_index.expression_for(call_node)
@@ -450,10 +445,10 @@ class FormalBoundaryStringRegistryAuthority:
             bool(statement_source)
             and any(
                 token in lowered_source
-                for token in _FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
+                for token in FormalBoundaryStringRegistryAuthority._FORMAL_BOUNDARY_LITERAL_REGISTRY_CALL_TOKENS
             )
             and any(
-                token in lowered_source for token in _FORMAL_BOUNDARY_STRING_ID_TOKENS
+                token in lowered_source for token in FormalBoundaryStringRegistryAuthority._FORMAL_BOUNDARY_STRING_ID_TOKENS
             )
         )
 
@@ -553,28 +548,6 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 ]
 
 
-def _module_formal_boundary_string_constants(
-    modules: ParsedModuleSet,
-) -> FormalBoundaryStringConstantRecords:
-    return tuple(
-        constant
-        for module in modules
-        for constant in collect_family_items(
-            module,
-            FormalBoundaryPythonStringConstantFamily,
-        )
-    )
-
-
-def _formal_boundary_python_constants_by_value(
-    constants: FormalBoundaryStringConstantRecords,
-) -> FormalBoundaryStringConstantsByValue:
-    grouped: FormalBoundaryStringConstantsByValue = defaultdict(list)
-    for constant in constants:
-        grouped[constant.value].append(constant)
-    return grouped
-
-
 def _formal_boundary_nearest_repository_root(path: Path) -> Path:
     current = path if path.is_dir() else path.parent
     fallback_root = current.parent if current.parent != current else current
@@ -587,16 +560,6 @@ def _formal_boundary_nearest_repository_root(path: Path) -> Path:
     return fallback_root
 
 
-def _formal_boundary_scan_root_for_paths(file_paths: Sequence[str]) -> Path | None:
-    if not file_paths:
-        return None
-    resolved_paths = tuple(str(Path(path).resolve()) for path in file_paths)
-    common_path = Path(os.path.commonpath(resolved_paths))
-    if common_path.is_file():
-        common_path = common_path.parent
-    return _formal_boundary_nearest_repository_root(common_path)
-
-
 def _formal_boundary_external_path_has_authority_hint(path: Path) -> bool:
     path_tokens = frozenset(
         token
@@ -604,37 +567,6 @@ def _formal_boundary_external_path_has_authority_hint(path: Path) -> bool:
         for token in SemanticIdentifierTokenProjection.project(part)
     )
     return bool(path_tokens & _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
-
-
-def _formal_boundary_external_file_paths(root: Path) -> tuple[Path, ...]:
-    paths: list[Path] = []
-    for directory, dirnames, filenames in os.walk(root):
-        dirnames[:] = sorted(
-            (
-                dirname
-                for dirname in dirnames
-                if dirname not in _FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES
-                and not dirname.startswith(".")
-                and not dirname.startswith("benchmark_results")
-                and not dirname.endswith((".egg-info", ".dist-info"))
-            )
-        )
-        directory_path = Path(directory)
-        for filename in sorted(filenames):
-            path = directory_path / filename
-            if path.suffix not in _FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES:
-                continue
-            if not _formal_boundary_external_path_has_authority_hint(path):
-                continue
-            try:
-                if path.stat().st_size > _FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES:
-                    continue
-            except OSError:
-                continue
-            paths.append(path)
-            if len(paths) >= _FORMAL_BOUNDARY_EXTERNAL_MAX_FILES:
-                return tuple(paths)
-    return tuple(paths)
 
 
 def _formal_boundary_external_string_sites(
@@ -663,48 +595,16 @@ def _formal_boundary_external_string_sites(
     return tuple(sites)
 
 
-def _formal_boundary_external_sites_by_value(
-    path: Path,
-    values: tuple[str, ...],
-) -> FormalBoundaryExternalSitesByValue:
-    grouped: FormalBoundaryExternalSitesByValue = defaultdict(list)
-    for site in _formal_boundary_external_string_sites(path, values):
-        grouped[site.value].append(site)
-    return grouped
-
-
-def _formal_boundary_python_evidence_for_values(
-    constants_by_value: FormalBoundaryStringConstantsByValue,
-    values: tuple[str, ...],
-) -> tuple[SourceLocation, ...]:
-    evidence: list[SourceLocation] = []
-    for value in values:
-        constant = constants_by_value[value][0]
-        evidence.append(
-            constant.named(constant.target_name)
-        )
-    return tuple(evidence)
-
-
-def _formal_boundary_external_evidence_for_values(
-    sites_by_value: FormalBoundaryExternalSitesByValue,
-    values: tuple[str, ...],
-) -> tuple[SourceLocation, ...]:
-    evidence: list[SourceLocation] = []
-    for value in values:
-        site = sites_by_value[value][0]
-        evidence.append(SourceLocation(str(site.path), site.line, value))
-    return tuple(evidence)
-
-
 class FormalBoundaryExternalStringRegistryMirrorAuthority:
+    _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS = 3
+
     @classmethod
     def findings(
         cls,
         detector: IssueDetector,
         modules: ParsedModuleSet,
     ) -> list[RefactorFinding]:
-        constants = _module_formal_boundary_string_constants(modules)
+        constants = cls._module_formal_boundary_string_constants(modules)
         return cls.findings_from_constants(detector, constants)
 
     @classmethod
@@ -713,18 +613,18 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         detector: IssueDetector,
         constants: FormalBoundaryStringConstantRecords,
     ) -> list[RefactorFinding]:
-        if len(constants) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+        if len(constants) < cls._FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
             return []
-        constants_by_value = _formal_boundary_python_constants_by_value(constants)
+        constants_by_value = cls._formal_boundary_python_constants_by_value(constants)
         values = tuple(sorted(constants_by_value))
-        root = _formal_boundary_scan_root_for_paths(
+        root = cls._formal_boundary_scan_root_for_paths(
             tuple(constant.file_path for constant in constants)
         )
         if root is None:
             return []
         return [
             finding
-            for path in _formal_boundary_external_file_paths(root)
+            for path in cls._formal_boundary_external_file_paths(root)
             if (
                 finding := cls.finding_for_external_path(
                     detector,
@@ -743,15 +643,15 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         values: tuple[str, ...],
         path: Path,
     ) -> RefactorFinding | None:
-        sites_by_value = _formal_boundary_external_sites_by_value(path, values)
+        sites_by_value = FormalBoundaryExternalStringRegistryMirrorAuthority._formal_boundary_external_sites_by_value(path, values)
         shared_values = tuple(sorted(set(sites_by_value) & set(constants_by_value)))
-        if len(shared_values) < _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
+        if len(shared_values) < FormalBoundaryExternalStringRegistryMirrorAuthority._FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS:
             return None
-        projection_evidence = _formal_boundary_python_evidence_for_values(
+        projection_evidence = FormalBoundaryExternalStringRegistryMirrorAuthority._formal_boundary_python_evidence_for_values(
             constants_by_value,
             shared_values[:6],
         )
-        authority_evidence = _formal_boundary_external_evidence_for_values(
+        authority_evidence = FormalBoundaryExternalStringRegistryMirrorAuthority._formal_boundary_external_evidence_for_values(
             sites_by_value,
             shared_values[:6],
         )
@@ -777,6 +677,103 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         return (
             f"`{path}` and Python runtime code mirror "
             f"{len(shared_values)} formal-boundary string ids ({preview_values})."
+        )
+
+    @staticmethod
+    def _formal_boundary_external_evidence_for_values(
+        sites_by_value: FormalBoundaryExternalSitesByValue,
+        values: tuple[str, ...],
+    ) -> tuple[SourceLocation, ...]:
+        evidence: list[SourceLocation] = []
+        for value in values:
+            site = sites_by_value[value][0]
+            evidence.append(SourceLocation(str(site.path), site.line, value))
+        return tuple(evidence)
+
+    @staticmethod
+    def _formal_boundary_external_file_paths(root: Path) -> tuple[Path, ...]:
+        paths: list[Path] = []
+        for directory, dirnames, filenames in os.walk(root):
+            dirnames[:] = sorted(
+                (
+                    dirname
+                    for dirname in dirnames
+                    if dirname not in _FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES
+                    and not dirname.startswith(".")
+                    and not dirname.startswith("benchmark_results")
+                    and not dirname.endswith((".egg-info", ".dist-info"))
+                )
+            )
+            directory_path = Path(directory)
+            for filename in sorted(filenames):
+                path = directory_path / filename
+                if path.suffix not in _FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES:
+                    continue
+                if not _formal_boundary_external_path_has_authority_hint(path):
+                    continue
+                try:
+                    if path.stat().st_size > _FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES:
+                        continue
+                except OSError:
+                    continue
+                paths.append(path)
+                if len(paths) >= _FORMAL_BOUNDARY_EXTERNAL_MAX_FILES:
+                    return tuple(paths)
+        return tuple(paths)
+
+    @staticmethod
+    def _formal_boundary_external_sites_by_value(
+        path: Path,
+        values: tuple[str, ...],
+    ) -> FormalBoundaryExternalSitesByValue:
+        grouped: FormalBoundaryExternalSitesByValue = defaultdict(list)
+        for site in _formal_boundary_external_string_sites(path, values):
+            grouped[site.value].append(site)
+        return grouped
+
+    @staticmethod
+    def _formal_boundary_python_constants_by_value(
+        constants: FormalBoundaryStringConstantRecords,
+    ) -> FormalBoundaryStringConstantsByValue:
+        grouped: FormalBoundaryStringConstantsByValue = defaultdict(list)
+        for constant in constants:
+            grouped[constant.value].append(constant)
+        return grouped
+
+    @staticmethod
+    def _formal_boundary_python_evidence_for_values(
+        constants_by_value: FormalBoundaryStringConstantsByValue,
+        values: tuple[str, ...],
+    ) -> tuple[SourceLocation, ...]:
+        evidence: list[SourceLocation] = []
+        for value in values:
+            constant = constants_by_value[value][0]
+            evidence.append(
+                constant.named(constant.target_name)
+            )
+        return tuple(evidence)
+
+    @staticmethod
+    def _formal_boundary_scan_root_for_paths(file_paths: Sequence[str]) -> Path | None:
+        if not file_paths:
+            return None
+        resolved_paths = tuple(str(Path(path).resolve()) for path in file_paths)
+        common_path = Path(os.path.commonpath(resolved_paths))
+        if common_path.is_file():
+            common_path = common_path.parent
+        return _formal_boundary_nearest_repository_root(common_path)
+
+    @staticmethod
+    def _module_formal_boundary_string_constants(
+        modules: ParsedModuleSet,
+    ) -> FormalBoundaryStringConstantRecords:
+        return tuple(
+            constant
+            for module in modules
+            for constant in collect_family_items(
+                module,
+                FormalBoundaryPythonStringConstantFamily,
+            )
         )
 
 
@@ -818,9 +815,6 @@ class FormalBoundaryExternalStringRegistryMirrorDetector(
         )
 
 
-_GENERATED_BOUNDARY_TOKENS = frozenset({"autogen", "autogenerated", "generated"})
-
-
 @dataclass(frozen=True)
 class GeneratedBoundarySemanticConstantSite(SourceLineReference):
     target_name: str
@@ -836,6 +830,8 @@ class GeneratedBoundarySemanticConstantSite(SourceLineReference):
 
 
 class GeneratedBoundarySemanticConstantAuthority:
+    _GENERATED_BOUNDARY_TOKENS = frozenset({"autogen", "autogenerated", "generated"})
+
     @classmethod
     def source_sites(
         cls,
@@ -990,13 +986,13 @@ class GeneratedBoundarySemanticConstantAuthority:
             for part in (*module_name.split("."), path.stem)
             for token in SemanticIdentifierTokenProjection.project(part)
         )
-        if path_tokens & _GENERATED_BOUNDARY_TOKENS:
+        if path_tokens & GeneratedBoundarySemanticConstantAuthority._GENERATED_BOUNDARY_TOKENS:
             return True
         return any(
             line.lstrip().startswith("#")
             and bool(
                 frozenset(SemanticIdentifierTokenProjection.project(line))
-                & _GENERATED_BOUNDARY_TOKENS
+                & GeneratedBoundarySemanticConstantAuthority._GENERATED_BOUNDARY_TOKENS
             )
             for line in source.splitlines()[:8]
         )
@@ -1116,12 +1112,6 @@ class RuntimeNamespaceBridgeKind(StrEnum):
 _RUNTIME_BRIDGE_NAMESPACE_NAME = "runtime_bridge_namespace"
 
 
-def _runtime_namespace_bridge_source_may_match(source: str) -> bool:
-    """Return whether source contains a symbol required by every bridge witness."""
-
-    return BuiltinCallName.GLOBALS in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
-
-
 def _call_symbol(node: ast.AST) -> str:
     if isinstance(node, ast.Name):
         return node.id
@@ -1139,39 +1129,6 @@ def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
     return isinstance(node, ast.Call) and _call_symbol(node.func).endswith(
         _RUNTIME_BRIDGE_NAMESPACE_NAME
     )
-
-
-def _runtime_namespace_bridge_kind_for_call(
-    node: ast.Call,
-) -> RuntimeNamespaceBridgeKind | None:
-    if not (
-        isinstance(node.func, ast.Attribute)
-        and node.func.attr == "update"
-        and _is_globals_call(node.func.value)
-    ):
-        return None
-    if any(_is_runtime_bridge_namespace_call(argument) for argument in node.args):
-        return RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_GLOBALS_UPDATE
-    if (
-        len(node.args) == 1
-        and not node.keywords
-        and isinstance(node.args[0], ast.Name | ast.Attribute)
-    ):
-        return RuntimeNamespaceBridgeKind.GLOBALS_UPDATE
-    return None
-
-
-def _globals_guard_symbol(node: ast.If) -> str | None:
-    test = node.test
-    if not isinstance(test, ast.Compare):
-        return None
-    if len(test.ops) != 1 or not isinstance(test.ops[0], ast.NotIn):
-        return None
-    if len(test.comparators) != 1 or not _is_globals_call(test.comparators[0]):
-        return None
-    if isinstance(test.left, ast.Constant) and isinstance(test.left.value, str):
-        return test.left.value
-    return None
 
 
 class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
@@ -1197,7 +1154,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
-        if not _runtime_namespace_bridge_source_may_match(module.source):
+        if not self._runtime_namespace_bridge_source_may_match(module.source):
             return []
         sites: list[RuntimeNamespaceBridgeSite] = []
 
@@ -1217,7 +1174,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call) -> None:
-                bridge_kind = _runtime_namespace_bridge_kind_for_call(node)
+                bridge_kind = self._runtime_namespace_bridge_kind_for_call(node)
                 if bridge_kind is not None:
                     sites.append(
                         RuntimeNamespaceBridgeSite(
@@ -1229,7 +1186,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                guarded_symbol = _globals_guard_symbol(node)
+                guarded_symbol = self._globals_guard_symbol(node)
                 if guarded_symbol is not None:
                     sites.append(
                         RuntimeNamespaceBridgeSite(
@@ -1260,6 +1217,45 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 capability_gap="no runtime namespace bridge or guarded globals definition remains",
             )
         ]
+
+    @staticmethod
+    def _globals_guard_symbol(node: ast.If) -> str | None:
+        test = node.test
+        if not isinstance(test, ast.Compare):
+            return None
+        if len(test.ops) != 1 or not isinstance(test.ops[0], ast.NotIn):
+            return None
+        if len(test.comparators) != 1 or not _is_globals_call(test.comparators[0]):
+            return None
+        if isinstance(test.left, ast.Constant) and isinstance(test.left.value, str):
+            return test.left.value
+        return None
+
+    @staticmethod
+    def _runtime_namespace_bridge_kind_for_call(
+        node: ast.Call,
+    ) -> RuntimeNamespaceBridgeKind | None:
+        if not (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+            and _is_globals_call(node.func.value)
+        ):
+            return None
+        if any(_is_runtime_bridge_namespace_call(argument) for argument in node.args):
+            return RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_GLOBALS_UPDATE
+        if (
+            len(node.args) == 1
+            and not node.keywords
+            and isinstance(node.args[0], ast.Name | ast.Attribute)
+        ):
+            return RuntimeNamespaceBridgeKind.GLOBALS_UPDATE
+        return None
+
+    @staticmethod
+    def _runtime_namespace_bridge_source_may_match(source: str) -> bool:
+        """Return whether source contains a symbol required by every bridge witness."""
+
+        return BuiltinCallName.GLOBALS in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
 
 
 def _native_call_terminal_name(
@@ -1772,20 +1768,6 @@ def _compact_concrete_family_context(
     )
 
 
-def _compact_concrete_family_context_from_repository(
-    context: object | None,
-) -> _CompactConcreteFamilyContext:
-    repository = CompactClassRepositoryContext.require(context)
-    return repository.cached(
-        _compact_concrete_family_context,
-        lambda: _compact_concrete_family_context(
-            repository.projections,
-            repository.config,
-            class_index=repository.class_index,
-        ),
-    )
-
-
 CompactConcreteFamilyCandidateT = TypeVar("CompactConcreteFamilyCandidateT")
 
 
@@ -1811,7 +1793,21 @@ class _CompactConcreteFamilyDetectorBase(
         cls,
         context: object | None,
     ) -> _CompactConcreteFamilyContext:
-        return _compact_concrete_family_context_from_repository(context)
+        return cls._compact_concrete_family_context_from_repository(context)
+
+    @staticmethod
+    def _compact_concrete_family_context_from_repository(
+        context: object | None,
+    ) -> _CompactConcreteFamilyContext:
+        repository = CompactClassRepositoryContext.require(context)
+        return repository.cached(
+            _compact_concrete_family_context,
+            lambda: _compact_concrete_family_context(
+                repository.projections,
+                repository.config,
+                class_index=repository.class_index,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -1976,7 +1972,7 @@ class LatentImplementationRosterCandidate(CollectsItselfFromCompactContext[_Comp
         for indexed_class in sorted(
             class_index.classes_by_symbol.values(), key=lambda item: item.symbol
         ):
-            if not indexed_class.is_abstract or _compact_family_has_registration_authority(
+            if not indexed_class.is_abstract or cls._compact_family_has_registration_authority(
                 class_index, indexed_class
             ):
                 continue
@@ -1999,7 +1995,7 @@ class LatentImplementationRosterCandidate(CollectsItselfFromCompactContext[_Comp
                     )
                 )
                 if len(
-                    key_values := _compact_descendant_key_values(
+                    key_values := cls._compact_descendant_key_values(
                         descendants,
                         key_attr_name,
                     )
@@ -2014,7 +2010,7 @@ class LatentImplementationRosterCandidate(CollectsItselfFromCompactContext[_Comp
                     concrete_simple_names
                 )
                 if match is None:
-                    key_match = _compact_matched_latent_roster_key_attr(
+                    key_match = cls._compact_matched_latent_roster_key_attr(
                         roster,
                         key_values_by_attr,
                     )
@@ -2034,6 +2030,44 @@ class LatentImplementationRosterCandidate(CollectsItselfFromCompactContext[_Comp
                     )
                 )
         return tuple(candidates)
+
+    @staticmethod
+    def _compact_descendant_key_values(
+        descendants: tuple[CompactIndexedClass, ...], key_attr_name: str
+    ) -> tuple[str, ...]:
+        return sorted_tuple(
+            {
+                value
+                for descendant in descendants
+                for name, value in descendant.direct_constant_string_assignments
+                if name == key_attr_name
+            }
+        )
+
+    @staticmethod
+    def _compact_family_has_registration_authority(
+        class_index: CompactClassFamilyIndex,
+        indexed_class: CompactIndexedClass,
+    ) -> bool:
+        return any(
+            candidate is not None and candidate.is_registration_authority
+            for symbol in (
+                indexed_class.symbol,
+                *class_index.ancestor_symbols(indexed_class.symbol),
+            )
+            for candidate in (class_index.class_for(symbol),)
+        )
+
+    @staticmethod
+    def _compact_matched_latent_roster_key_attr(
+        roster: LatentRosterObservation,
+        key_values_by_attr: tuple[tuple[str, tuple[str, ...]], ...],
+    ) -> tuple[str, LatentRosterMatch] | None:
+        for key_attr_name, key_values in key_values_by_attr:
+            match = roster.match(key_values)
+            if match is not None:
+                return key_attr_name, match
+        return None
 
 
 class LatentImplementationRosterDetector(
@@ -2104,30 +2138,6 @@ def _compact_concrete_descendants(
     )
 
 
-def _compact_descendant_key_values(
-    descendants: tuple[CompactIndexedClass, ...], key_attr_name: str
-) -> tuple[str, ...]:
-    return sorted_tuple(
-        {
-            value
-            for descendant in descendants
-            for name, value in descendant.direct_constant_string_assignments
-            if name == key_attr_name
-        }
-    )
-
-
-def _compact_matched_latent_roster_key_attr(
-    roster: LatentRosterObservation,
-    key_values_by_attr: tuple[tuple[str, tuple[str, ...]], ...],
-) -> tuple[str, LatentRosterMatch] | None:
-    for key_attr_name, key_values in key_values_by_attr:
-        match = roster.match(key_values)
-        if match is not None:
-            return key_attr_name, match
-    return None
-
-
 def _compact_parallel_mirrored_leaf_family_candidates(
     context: _CompactConcreteFamilyContext,
     config: DetectorConfig,
@@ -2138,58 +2148,6 @@ def _compact_parallel_mirrored_leaf_family_candidates(
             builder.minimum_product_role_count,
             config.min_registration_sites,
         ),
-    )
-
-
-def _type_keyed_behavior_projection_components(
-    repository: CompactClassRepositoryContext,
-) -> tuple[TypeKeyedBehaviorProjectionComponent, ...]:
-    builder = TypeKeyedBehaviorProjectionComponentBuilder.from_projections(
-        repository.projections,
-        repository.class_index,
-    )
-    return builder.proven_components()
-
-
-def _enum_keyed_derived_map_facade_components(
-    projections_by_family: dict[type[CollectedFamily], Sequence[object]],
-) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
-    facade_projections = EnumKeyedDerivedMapFacadeModuleProjectionFamily.modules_in(projections_by_family)
-    class_projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
-    exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
-    return sorted_tuple(
-        (
-            component
-            for projection in facade_projections
-            for component in projection.components
-            if all(
-                exposure_authority.star_imports_exclude(
-                    projection.module_name,
-                    binding_name,
-                )
-                for binding_name in component.star_import_exclusion_names
-            )
-        ),
-        key=lambda component: (
-            component.file_path,
-            component.enum_symbol,
-            component.map_owner_symbol,
-            component.map_method_name,
-        ),
-    )
-
-
-def _compact_family_has_registration_authority(
-    class_index: CompactClassFamilyIndex,
-    indexed_class: CompactIndexedClass,
-) -> bool:
-    return any(
-        candidate is not None and candidate.is_registration_authority
-        for symbol in (
-            indexed_class.symbol,
-            *class_index.ancestor_symbols(indexed_class.symbol),
-        )
-        for candidate in (class_index.class_for(symbol),)
     )
 
 
@@ -2387,7 +2345,7 @@ class TypeKeyedBehaviorProjectionDetector(
         del config
         return context.cached(
             TypeKeyedBehaviorProjectionComponentBuilder,
-            lambda: _type_keyed_behavior_projection_components(context),
+            lambda: self._type_keyed_behavior_projection_components(context),
         )
 
     def _finding_for_candidate(
@@ -2408,6 +2366,16 @@ class TypeKeyedBehaviorProjectionDetector(
             projection_evidence=component.projection_evidence,
             authority_evidence=component.authority_evidence,
         )
+
+    @staticmethod
+    def _type_keyed_behavior_projection_components(
+        repository: CompactClassRepositoryContext,
+    ) -> tuple[TypeKeyedBehaviorProjectionComponent, ...]:
+        builder = TypeKeyedBehaviorProjectionComponentBuilder.from_projections(
+            repository.projections,
+            repository.class_index,
+        )
+        return builder.proven_components()
 
 
 class EnumKeyedDerivedMapFacadeDetector(
@@ -2442,7 +2410,7 @@ class EnumKeyedDerivedMapFacadeDetector(
         config: DetectorConfig,
     ) -> Sequence[EnumKeyedDerivedMapFacadeComponent]:
         del context, config
-        return _enum_keyed_derived_map_facade_components(projections_by_family)
+        return self._enum_keyed_derived_map_facade_components(projections_by_family)
 
     def _finding_for_candidate(
         self,
@@ -2460,6 +2428,34 @@ class EnumKeyedDerivedMapFacadeDetector(
             component.evidence,
             projection_evidence=component.projection_evidence,
             authority_evidence=component.authority_evidence,
+        )
+
+    @staticmethod
+    def _enum_keyed_derived_map_facade_components(
+        projections_by_family: dict[type[CollectedFamily], Sequence[object]],
+    ) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
+        facade_projections = EnumKeyedDerivedMapFacadeModuleProjectionFamily.modules_in(projections_by_family)
+        class_projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
+        exposure_authority = CompactRepositoryPublicExposureIndex(class_projections)
+        return sorted_tuple(
+            (
+                component
+                for projection in facade_projections
+                for component in projection.components
+                if all(
+                    exposure_authority.star_imports_exclude(
+                        projection.module_name,
+                        binding_name,
+                    )
+                    for binding_name in component.star_import_exclusion_names
+                )
+            ),
+            key=lambda component: (
+                component.file_path,
+                component.enum_symbol,
+                component.map_owner_symbol,
+                component.map_method_name,
+            ),
         )
 
 
@@ -2760,23 +2756,6 @@ def _source_spelled_elif(lines: list[str], line: int) -> bool:
     return bool(re.match(r"\s*elif\b", lines[line - 1]))
 
 
-def _following_original_statements(
-    parent: ast.AST | None, root: ast.If
-) -> tuple[ast.stmt, ...]:
-    """Retain block siblings after a ladder; do not infer they are its fallback."""
-    if parent is None:
-        return ()
-    for _field, value in ast.iter_fields(parent):
-        if isinstance(value, list) and any(statement is root for statement in value):
-            position = next(i for i, statement in enumerate(value) if statement is root)
-            return tuple(
-                statement
-                for statement in value[position + 1:]
-                if isinstance(statement, ast.stmt)
-            )
-    return ()
-
-
 class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
     """Retain original ordered cases, including guards the matcher cannot bind.
 
@@ -2844,7 +2823,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             assert axis_expression is not None
             symbol = index.lexical_symbol(node_index)
             chain_else = tuple(current.orelse)
-            trailing = _following_original_statements(parent, root)
+            trailing = self._following_original_statements(parent, root)
             evidence = tuple(
                 SourceLocation(module.file_path, item.lineno, symbol)
                 for item in (*chain, *chain_else, *trailing)
@@ -2864,6 +2843,23 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
                 )
             )
         return findings
+
+    @staticmethod
+    def _following_original_statements(
+        parent: ast.AST | None, root: ast.If
+    ) -> tuple[ast.stmt, ...]:
+        """Retain block siblings after a ladder; do not infer they are its fallback."""
+        if parent is None:
+            return ()
+        for _field, value in ast.iter_fields(parent):
+            if isinstance(value, list) and any(statement is root for statement in value):
+                position = next(i for i, statement in enumerate(value) if statement is root)
+                return tuple(
+                    statement
+                    for statement in value[position + 1:]
+                    if isinstance(statement, ast.stmt)
+                )
+        return ()
 
 
 @dataclass(frozen=True)
@@ -2998,6 +2994,7 @@ class NumericLiteralDispatchDetector(
     PerModuleIssueDetector,
     NumericLiteralDispatchFindingRecipeSynthesizer,
 ):
+    LITERAL_DISPATCH_FINDING_FACTORY = LiteralDispatchFindingFactory()
     finding_spec = certified_spec(
         PatternId.CLOSED_FAMILY_DISPATCH,
         "Closed-family dispatch expressed through numeric IDs",
@@ -3017,7 +3014,7 @@ class NumericLiteralDispatchDetector(
     def _findings_for_module(
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
-        return LITERAL_DISPATCH_FINDING_FACTORY.findings(
+        return self.LITERAL_DISPATCH_FINDING_FACTORY.findings(
             self,
             module,
             config,
@@ -3046,7 +3043,7 @@ class MirroredImportFallbackCandidate(CollectsItself, LineWitnessCandidate):
                 (
                     signature
                     for body_statement in statement.body
-                    if (signature := _import_from_signature(body_statement)) is not None
+                    if (signature := cls._import_from_signature(body_statement)) is not None
                 )
             )
             if not relative_imports or len(relative_imports) != len(statement.body):
@@ -3054,13 +3051,13 @@ class MirroredImportFallbackCandidate(CollectsItself, LineWitnessCandidate):
             if not all((level > 0 for _, _, level in relative_imports)):
                 continue
             for handler in statement.handlers:
-                if not _is_import_error_handler(handler):
+                if not cls._is_import_error_handler(handler):
                     continue
                 absolute_imports = tuple(
                     (
                         signature
                         for body_statement in handler.body
-                        if (signature := _import_from_signature(body_statement)) is not None
+                        if (signature := cls._import_from_signature(body_statement)) is not None
                     )
                 )
                 if len(absolute_imports) != len(handler.body):
@@ -3092,28 +3089,28 @@ class MirroredImportFallbackCandidate(CollectsItself, LineWitnessCandidate):
                 break
         return tuple(candidates)
 
+    @staticmethod
+    def _import_from_signature(
+        statement: ast.stmt,
+    ) -> tuple[str, tuple[tuple[str, str | None], ...], int] | None:
+        if not isinstance(statement, ast.ImportFrom) or statement.module is None:
+            return None
+        return (
+            statement.module,
+            tuple(((alias.name, alias.asname) for alias in statement.names)),
+            statement.level,
+        )
 
-def _import_from_signature(
-    statement: ast.stmt,
-) -> tuple[str, tuple[tuple[str, str | None], ...], int] | None:
-    if not isinstance(statement, ast.ImportFrom) or statement.module is None:
-        return None
-    return (
-        statement.module,
-        tuple(((alias.name, alias.asname) for alias in statement.names)),
-        statement.level,
-    )
-
-
-def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:
-        return False
-    if isinstance(handler.type, ast.Name):
-        return handler.type.id == "ImportError"
-    return isinstance(handler.type, ast.Tuple) and any(
-        isinstance(item, ast.Name) and item.id == "ImportError"
-        for item in handler.type.elts
-    )
+    @staticmethod
+    def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
+        if handler.type is None:
+            return False
+        if isinstance(handler.type, ast.Name):
+            return handler.type.id == "ImportError"
+        return isinstance(handler.type, ast.Tuple) and any(
+            isinstance(item, ast.Name) and item.id == "ImportError"
+            for item in handler.type.elts
+        )
 
 
 class MirroredImportFallbackDetector(
