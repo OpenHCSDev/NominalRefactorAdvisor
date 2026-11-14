@@ -32,6 +32,7 @@ from nominal_refactor_advisor.detectors._carrier_collapse import ClosedParameter
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
+from nominal_refactor_advisor.carrier_collapse import CarrierCollapseAuthorityViolation
 from nominal_refactor_advisor.parameter_conveyor import (
     ClosedParameterConveyorAuthorityViolation,
     ClosedParameterConveyorComponentBuilder,
@@ -40,6 +41,7 @@ from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.product_flow import CompactItemTarget
 from nominal_refactor_advisor.refactor_search import RefactorSearch, SearchBudget
 from nominal_refactor_advisor.product_flow_authority import (
+    CompactCallableComponentAuthorityViolation,
     CompactProductRuntimeViolation,
 )
 from nominal_refactor_advisor.value_expression import LexicalValueReference
@@ -116,9 +118,9 @@ def test_rejected_conveyor_boolean_preserves_on_demand_diagnostics() -> None:
     proof = replace(original, authority_symbols=())
     assert not proof.is_proven
     assert "violations" not in proof.__dict__
-    assert "escaping_callable_symbols" not in proof.callable_component.__dict__
+    assert "escaping_callable_symbols" not in proof.__dict__
     assert ClosedParameterConveyorAuthorityViolation.NO_UNIQUE_NOMINAL_AUTHORITY in proof.violations
-    assert "escaping_callable_symbols" in proof.callable_component.__dict__
+    assert "escaping_callable_symbols" in proof.__dict__
     assert proof.is_proven == (not proof.violations)
 
 
@@ -236,7 +238,7 @@ def test_parameter_declaration_semantics_keep_conveyor_open(signature: str) -> N
 
     component = builder.assessed_components()[0]
 
-    assert ClosedParameterConveyorAuthorityViolation.SIGNATURE_SEMANTICS_HAZARD in (
+    assert CompactCallableComponentAuthorityViolation.SIGNATURE_SEMANTICS_HAZARD in (
         component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -851,7 +853,7 @@ def test_attractive_root_is_not_exposed_when_its_transitive_family_is_open() -> 
         "pkg.open_tail._first",
         "pkg.open_tail._second",
     )
-    assert ClosedParameterConveyorAuthorityViolation.INCOMPLETE_CALL_FAMILY in (
+    assert CompactCallableComponentAuthorityViolation.INCOMPLETE_CALL_FAMILY in (
         components[0].proof.violations
     )
     assert builder.proven_components() == ()
@@ -895,7 +897,7 @@ def test_open_disconnected_island_blocks_the_whole_nominal_authority() -> None:
         "pkg.disconnected_open._open",
     )
     assert len(components[0].root_edges) == 2
-    assert ClosedParameterConveyorAuthorityViolation.INCOMPLETE_CALL_FAMILY in (
+    assert CompactCallableComponentAuthorityViolation.INCOMPLETE_CALL_FAMILY in (
         components[0].proof.violations
     )
     assert builder.proven_components() == ()
@@ -976,7 +978,7 @@ def test_unconverted_incoming_call_blocks_the_whole_component() -> None:
     component = builder.assessed_components()[0]
 
     assert component.proof.violations == (
-        ClosedParameterConveyorAuthorityViolation.INCOMPLETE_CALL_FAMILY,
+        CompactCallableComponentAuthorityViolation.INCOMPLETE_CALL_FAMILY,
     )
     assert builder.proven_components() == ()
 
@@ -991,8 +993,25 @@ def test_callable_escape_blocks_the_whole_component() -> None:
 
     component = builder.assessed_components()[0]
 
-    assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
+    assert CompactCallableComponentAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
         component.proof.violations
+    )
+    assert builder.proven_components() == ()
+
+
+def test_computed_fetch_of_a_participant_blocks_the_whole_component() -> None:
+    builder = _builder(
+        _module(
+            "pkg.fetched",
+            _base_source()
+            + "\ndef _run(thing, name):\n    return getattr(thing, name)(1, 2)\n",
+        )
+    )
+
+    component = builder.assessed_components()[0]
+
+    assert component.proof.violations == (
+        CompactCallableComponentAuthorityViolation.DYNAMICALLY_FETCHED_CALLABLE,
     )
     assert builder.proven_components() == ()
 
@@ -1011,7 +1030,7 @@ def test_callable_used_as_attribute_receiver_blocks_signature_collapse(
     assert namespace["invoke"](1, 2) == (1, 2)
     builder = _builder(module)
     assert builder.repository.callable_escapes_for("pkg.receiver_escape._build")
-    assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
+    assert CompactCallableComponentAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
         builder.assessed_components()[0].proof.violations
     )
     assert builder.proven_components() == ()
@@ -1042,7 +1061,7 @@ def test_possible_callable_escape_blocks_signature_collapse(
     assert len(escapes) == 1
     assert not isinstance(escapes[0].target_resolution, ResolvedCompactFunctionTarget)
     assert "escape._build" in escapes[0].target_resolution.possible_symbols
-    assert ClosedParameterConveyorAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
+    assert CompactCallableComponentAuthorityViolation.ESCAPING_CALLABLE_REFERENCE in (
         builder.assessed_components()[0].proof.violations
     )
     assert builder.proven_components() == ()
@@ -1062,7 +1081,7 @@ def test_public_participant_is_not_treated_as_a_closed_repository_boundary() -> 
     component = builder.assessed_components()[0]
 
     assert (
-        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        CompactCallableComponentAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
         in component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1079,7 +1098,7 @@ def test_explicitly_exported_private_participant_keeps_boundary_open() -> None:
     component = builder.assessed_components()[0]
 
     assert (
-        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        CompactCallableComponentAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
         in component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1094,7 +1113,7 @@ def test_public_named_reexport_keeps_private_participant_boundary_open() -> None
     component = builder.assessed_components()[0]
 
     assert (
-        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        CompactCallableComponentAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
         in component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1113,7 +1132,7 @@ def test_transitive_public_reexport_keeps_private_participant_boundary_open() ->
     component = builder.assessed_components()[0]
 
     assert (
-        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        CompactCallableComponentAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
         in component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1130,7 +1149,7 @@ def test_dynamic_export_contract_keeps_private_participant_boundary_open() -> No
     component = builder.assessed_components()[0]
 
     assert (
-        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        CompactCallableComponentAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
         in component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1160,7 +1179,7 @@ def test_private_method_on_public_class_keeps_boundary_open() -> None:
     component = builder.assessed_components()[0]
 
     assert (
-        ClosedParameterConveyorAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
+        CompactCallableComponentAuthorityViolation.PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED
         in component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1246,7 +1265,7 @@ def test_mutated_or_unconsumed_field_parameters_block_the_component() -> None:
         ClosedParameterConveyorAuthorityViolation.REBINDING_OR_MUTATION_BETWEEN_BINDING_AND_USE
         in mutated.proof.violations
     )
-    assert ClosedParameterConveyorAuthorityViolation.INCOMPLETE_PRODUCT_CONSUMPTION in (
+    assert CarrierCollapseAuthorityViolation.INCOMPLETE_PRODUCT_CONSUMPTION in (
         unconsumed.proof.violations
     )
 
@@ -1467,7 +1486,7 @@ def test_local_signature_introspection_blocks_parameter_rewrite() -> None:
 
     component = builder.assessed_components()[0]
 
-    assert ClosedParameterConveyorAuthorityViolation.SIGNATURE_SEMANTICS_HAZARD in (
+    assert CompactCallableComponentAuthorityViolation.SIGNATURE_SEMANTICS_HAZARD in (
         component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1500,7 +1519,7 @@ def test_incomplete_override_family_blocks_method_signature_change() -> None:
 
     component = builder.assessed_components()[0]
 
-    assert ClosedParameterConveyorAuthorityViolation.INCOMPLETE_METHOD_FAMILY in (
+    assert CompactCallableComponentAuthorityViolation.INCOMPLETE_METHOD_FAMILY in (
         component.proof.violations
     )
     assert builder.proven_components() == ()
@@ -1544,7 +1563,7 @@ def test_competing_product_authorities_block_both_local_trajectories() -> None:
         for component in components
     )
     assert all(
-        ClosedParameterConveyorAuthorityViolation.CONFLICTING_CALL_MAPPING
+        CarrierCollapseAuthorityViolation.CONFLICTING_CALL_MAPPING
         in component.proof.violations
         for component in components
     )

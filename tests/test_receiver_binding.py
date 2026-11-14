@@ -16,7 +16,10 @@ from nominal_refactor_advisor.codemod import (
     ReplaceDeclaredCallArgumentsOperation,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
+from nominal_refactor_advisor.product_flow_authority import (
+    CompactCallableComponentAuthorityProof,
+    SourceProductFlowRepository,
+)
 
 
 def module_for(source: str) -> ParsedModule:
@@ -59,12 +62,15 @@ def test_rebound_receiver_does_not_select_the_original_method(use: str) -> None:
         resolution.target_resolution.candidate_symbols_within(participants)
         == participants
     )
-    proof = repository.callable_component_authority_proof(
-        {symbol: frozenset(("value",)) for symbol in participants},
-        frozenset(),
+    proof = CompactCallableComponentAuthorityProof(
+        repository=repository,
+        participant_parameters=tuple(
+            (symbol, frozenset(("value",))) for symbol in sorted(participants)
+        ),
+        component_call_identities=frozenset(),
     )
     assert set(proof.unresolved_consumer_symbols) == participants
-    assert not proof.is_closed
+    assert not proof.is_proven
     if "callback" in use:
         assert repository.callable_escapes_for("receiver._Other.method")
 

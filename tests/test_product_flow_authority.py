@@ -20,6 +20,7 @@ from nominal_refactor_advisor.product_flow import (
     compact_product_flow_projection,
 )
 from nominal_refactor_advisor.product_flow_authority import (
+    CompactCallableComponentAuthorityProof,
     CompactFunctionTargetResolutionViolation,
     CompactOpenFunctionCall,
     CompactProductFlowRepository,
@@ -95,13 +96,17 @@ def test_callable_proof_rejects_lazily_but_preserves_later_diagnostics() -> None
         "def _leaf(value): return value\n"
         "def leak(): return _leaf\n",
     ))
-    proof = repository.callable_component_authority_proof(
-        {"pkg.lazy.missing": frozenset(), "pkg.lazy._leaf": frozenset({"value"})},
-        frozenset(),
+    proof = CompactCallableComponentAuthorityProof(
+        repository=repository,
+        participant_parameters=(
+            ("pkg.lazy.missing", frozenset()),
+            ("pkg.lazy._leaf", frozenset({"value"})),
+        ),
+        component_call_identities=frozenset(),
     )
     assert "function_call_resolutions" not in repository.__dict__
     assert "callable_escapes" not in repository.__dict__
-    assert not proof.is_closed
+    assert not proof.is_proven
     assert proof.missing_declaration_symbols == ("pkg.lazy.missing",)
     assert "function_call_resolutions" not in repository.__dict__
     assert "callable_escapes" not in repository.__dict__
@@ -113,13 +118,19 @@ def test_callable_proof_rejects_lazily_but_preserves_later_diagnostics() -> None
 def test_callable_proof_snapshots_caller_owned_component_inputs() -> None:
     repository = _repository(_module("pkg.inputs", "def _leaf(value): return value\n"))
     parameters = {"pkg.inputs._leaf": frozenset({"value"})}
-    proof = repository.callable_component_authority_proof(parameters, frozenset())
+    proof = CompactCallableComponentAuthorityProof(
+        repository=repository,
+        participant_parameters=(
+            CompactCallableComponentAuthorityProof.stored_participant_parameters(parameters)
+        ),
+        component_call_identities=frozenset(),
+    )
     parameters.clear()
     parameters["pkg.inputs.missing"] = frozenset()
     assert proof.participant_symbols == ("pkg.inputs._leaf",)
     assert proof.missing_declaration_symbols == ()
     assert proof.signature_hazard_symbols == ()
-    assert proof.is_closed
+    assert proof.is_proven
 
 
 @pytest.mark.parametrize(

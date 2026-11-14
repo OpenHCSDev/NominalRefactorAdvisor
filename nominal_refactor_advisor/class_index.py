@@ -127,6 +127,7 @@ from nominal_refactor_advisor.class_mro import (
     DeclarationMroType,
     DeclaredBases,
 )
+from nominal_refactor_advisor.fail_closed_proof import FailClosedProof, ProofObligation
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import LineWitness, SourceLineReference
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
@@ -2846,10 +2847,6 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanCo
         return fields
 
 
-ClosedLeafMethodAuthorityPredicate: TypeAlias = Callable[
-    ["ClosedLeafMethodAuthorityProof"],
-    bool,
-]
 CLASS_METHOD_OWNERSHIP_HOOK_NAMES = frozenset(("__init_subclass__",))
 # The metaclasses Python provides: a class reaching one creates classes.
 NATIVE_METACLASS_BASES = frozenset(("builtins.type", "abc.ABCMeta"))
@@ -2871,7 +2868,7 @@ class ClassCohort(ABC):
         raise NotImplementedError
 
 
-class ClosedLeafMethodAuthorityViolation(FieldedStrEnum):
+class ClosedLeafMethodAuthorityViolation(ProofObligation):
     """One failed proof obligation for promoting leaf methods to an ancestor."""
 
     TOO_FEW_PARTICIPANTS = (
@@ -2942,15 +2939,11 @@ class ClosedLeafMethodAuthorityViolation(FieldedStrEnum):
         ),
     )
 
-    explanation: str
-    _predicate: ClosedLeafMethodAuthorityPredicate
-
-    def is_violated_by(self, proof: ClosedLeafMethodAuthorityProof) -> bool:
-        return self._predicate(proof)
-
 
 @dataclass(frozen=True)
-class ClosedLeafMethodAuthorityProof:
+class ClosedLeafMethodAuthorityProof(
+    FailClosedProof, obligations=ClosedLeafMethodAuthorityViolation
+):
     """Representation-independent proof of one exact method-promotion owner."""
 
     authority_symbol: str
@@ -2984,22 +2977,6 @@ class ClosedLeafMethodAuthorityProof:
         return frozenset(
             name.rsplit(".", 1)[-1] for name in self.common_declared_nominal_base_names
         )
-
-    @cached_property
-    def violations(self) -> tuple[ClosedLeafMethodAuthorityViolation, ...]:
-        return tuple(
-            violation
-            for violation in ClosedLeafMethodAuthorityViolation
-            if violation.is_violated_by(self)
-        )
-
-    @property
-    def is_proven(self) -> bool:
-        return not self.violations
-
-    @property
-    def rejection_reason(self) -> str:
-        return "; ".join(violation.explanation for violation in self.violations)
 
 
 def declared_nominal_base_count(declaration: ClassDeclaration) -> int:

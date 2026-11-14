@@ -15,6 +15,7 @@ from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjection,
     CompactProductAuthority,
 )
+from nominal_refactor_advisor.fail_closed_proof import ProofObligation
 from nominal_refactor_advisor.product_flow import (
     CompactFunctionDeclaration,
     CompactFlowContext,
@@ -98,24 +99,41 @@ class CarrierCollapseParticipant:
         return self.declaration.identity.symbol
 
 
+class CarrierCollapseAuthorityViolation(ProofObligation):
+    """One failed obligation every carrier collapse answers for."""
+
+    INCOMPLETE_PRODUCT_CONSUMPTION = (
+        "incomplete_product_consumption",
+        "a participant does not consume every projected product field",
+        lambda proof: bool(proof.incompletely_consuming_participant_symbols),
+    )
+    CONFLICTING_CALL_MAPPING = (
+        "conflicting_call_mapping",
+        "the same participant is reached through competing field mappings",
+        lambda proof: bool(proof.conflicting_mapping_symbols),
+    )
+    NON_POSITIVE_BATCH_COMPRESSION = (
+        "non_positive_batch_compression",
+        "the whole atomic batch does not pay positive compression rent",
+        lambda proof: proof.batch_compression_delta <= 0,
+    )
+
+
 @dataclass(frozen=True, kw_only=True)
-class CarrierCollapseAuthorityProof(ABC):
-    """Proof predicate shared by carrier-collapse component families."""
+class CarrierCollapseAuthorityProof(
+    CompactCallableComponentAuthorityProof,
+    obligations=CarrierCollapseAuthorityViolation,
+):
+    """What every carrier collapse proves of its participants.
+
+    They are closed to unknown callers, which the proof inherits, and each consumes the
+    whole product through one mapping in a batch that pays for itself.
+    """
 
     projected_field_names_by_edge: tuple[tuple[str, ...], ...]
     incompletely_consuming_participant_symbols: tuple[str, ...]
     conflicting_mapping_symbols: tuple[str, ...]
-    callable_component: CompactCallableComponentAuthorityProof
     batch_compression_delta: int
-
-    @property
-    def rejection_reason(self) -> str:
-        return "; ".join(violation.explanation for violation in self.violations)
-
-    @property
-    @abstractmethod
-    def is_proven(self) -> bool:
-        raise NotImplementedError
 
 
 class ClosedCarrierCollapseComponent(ABC):

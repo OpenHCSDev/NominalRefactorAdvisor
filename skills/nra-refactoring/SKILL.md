@@ -717,6 +717,22 @@ parent would have to return the named class's own type, a class-level
 attribute cannot carry a type parameter, and a cast in the parent
 untypes the result for every consumer.
 
+**A hand list of another object's checks misses the next check.** The
+closure proof (`CompactCallableComponentAuthorityProof`) has eight
+obligations. The two proofs that gate the conveyor and carrier-expansion
+rewrites each held one as `callable_component` and listed its
+obligations again in their own enum, seven of the eight. The eighth, a
+computed `getattr`, went into the owner's `is_closed`, which no product
+code read, so both rewrites were proven under a caller the scan had just
+found. Two signs, either is enough: a class reads several same-shaped
+facts through one attribute (`proof.callable_component.X`, seven times),
+or an owner has an all-of-them answer nobody calls. The repair is the
+parent, not a longer list. The carrier proofs inherit the closure proof,
+`FailClosedProof` collects each class's `obligations=` down the MRO, and
+a new obligation is one enum member at its owner. `missing_mixin`
+reported the two enums for their shared member names; nothing reports
+the hole itself.
+
 **A branch the dispatch already took.** A class that only one dispatcher
 builds knows what the dispatcher tested. The mapping recipe builders are
 built only by the strategy registered for `MappingMetrics`, so their

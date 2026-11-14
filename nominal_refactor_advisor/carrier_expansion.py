@@ -6,7 +6,7 @@ from collections import defaultdict, deque
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Callable, ClassVar, TypeAlias
+from typing import ClassVar
 
 from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseAuthorityProof,
@@ -17,7 +17,7 @@ from nominal_refactor_advisor.carrier_collapse import (
     ClosedCarrierCollapseComponent,
 )
 from nominal_refactor_advisor.class_index import CompactProductAuthority
-from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
+from nominal_refactor_advisor.fail_closed_proof import ProofObligation
 from nominal_refactor_advisor.product_flow import CompactFlowPosition
 from nominal_refactor_advisor.product_flow_authority import (
     CompactFunctionCallIdentity,
@@ -121,14 +121,8 @@ class DeclaredCarrierExpansionComponent:
         }
 
 
-CarrierExpansionAuthorityPredicate: TypeAlias = Callable[
-    ["DeclaredCarrierExpansionAuthorityProof"],
-    bool,
-]
-
-
-class DeclaredCarrierExpansionAuthorityViolation(FieldedStrEnum):
-    """One failed proof obligation for collapsing a carrier expansion graph."""
+class DeclaredCarrierExpansionAuthorityViolation(ProofObligation):
+    """One failed obligation that only a carrier expansion graph answers for."""
 
     UNPROVEN_CARRIER_PRODUCT = (
         "unproven_carrier_product",
@@ -150,16 +144,6 @@ class DeclaredCarrierExpansionAuthorityViolation(FieldedStrEnum):
         "a root call expands more than one candidate carrier",
         lambda proof: bool(proof.ambiguous_root_call_identities),
     )
-    INCOMPLETE_PRODUCT_CONSUMPTION = (
-        "incomplete_product_consumption",
-        "a participant does not consume every projected carrier field",
-        lambda proof: bool(proof.incompletely_consuming_participant_symbols),
-    )
-    CONFLICTING_CALL_MAPPING = (
-        "conflicting_call_mapping",
-        "the same participant is reached through competing field mappings",
-        lambda proof: bool(proof.conflicting_mapping_symbols),
-    )
     COMPETING_CARRIER_AUTHORITY = (
         "competing_carrier_authority",
         "a participant belongs to expansion graphs for competing carriers",
@@ -170,82 +154,19 @@ class DeclaredCarrierExpansionAuthorityViolation(FieldedStrEnum):
         "a projected field parameter is rebound or mutated in the component",
         lambda proof: bool(proof.mutated_parameter_symbols),
     )
-    MISSING_PARTICIPANT_DECLARATION = (
-        "missing_participant_declaration",
-        "a component participant lacks one declaration and execution flow",
-        lambda proof: bool(
-            proof.callable_component.missing_declaration_symbols
-        ),
-    )
-    UNRESOLVED_CONSUMER = (
-        "unresolved_consumer",
-        "a possible participant call cannot be resolved nominally",
-        lambda proof: bool(proof.callable_component.unresolved_consumer_symbols),
-    )
-    INCOMPLETE_CALL_FAMILY = (
-        "incomplete_call_family",
-        "not every incoming call belongs to the atomic component",
-        lambda proof: bool(
-            proof.callable_component.incomplete_call_family_symbols
-        ),
-    )
-    ESCAPING_CALLABLE_REFERENCE = (
-        "escaping_callable_reference",
-        "a participant callable escapes direct nominal invocation",
-        lambda proof: bool(proof.callable_component.escaping_callable_symbols),
-    )
-    SIGNATURE_SEMANTICS_HAZARD = (
-        "signature_semantics_hazard",
-        "a participant has declaration-time or observed signature semantics",
-        lambda proof: bool(proof.callable_component.signature_hazard_symbols),
-    )
-    PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED = (
-        "public_or_external_boundary_not_closed",
-        "a participant is not a repository-private callable boundary",
-        lambda proof: bool(proof.callable_component.open_boundary_symbols),
-    )
-    INCOMPLETE_METHOD_FAMILY = (
-        "incomplete_method_family",
-        "an override-related method declaration lies outside the component",
-        lambda proof: bool(
-            proof.callable_component.incomplete_method_family_symbols
-        ),
-    )
-    NON_POSITIVE_BATCH_COMPRESSION = (
-        "non_positive_batch_compression",
-        "the whole atomic batch does not pay positive compression rent",
-        lambda proof: proof.batch_compression_delta <= 0,
-    )
-
-    explanation: str
-    _predicate: CarrierExpansionAuthorityPredicate
-
-    def is_violated_by(self, proof: DeclaredCarrierExpansionAuthorityProof) -> bool:
-        return self._predicate(proof)
 
 
 @dataclass(frozen=True)
-class DeclaredCarrierExpansionAuthorityProof(CarrierCollapseAuthorityProof):
+class DeclaredCarrierExpansionAuthorityProof(
+    CarrierCollapseAuthorityProof,
+    obligations=DeclaredCarrierExpansionAuthorityViolation,
+):
     """Fail-closed authority proof for one maximal carrier expansion graph."""
 
     carrier_authority: CompactProductAuthority | None
     ambiguous_root_call_identities: tuple[CompactFunctionCallIdentity, ...]
     competing_carrier_participant_symbols: tuple[str, ...]
     mutated_parameter_symbols: tuple[str, ...]
-
-    @cached_property
-    def violations(self) -> tuple[DeclaredCarrierExpansionAuthorityViolation, ...]:
-        return tuple(
-            violation
-            for violation in DeclaredCarrierExpansionAuthorityViolation
-            if violation.is_violated_by(self)
-        )
-
-    @property
-    def is_proven(self) -> bool:
-        return not any(
-            violation.is_violated_by(self) for violation in DeclaredCarrierExpansionAuthorityViolation
-        )
 
 
 @dataclass(frozen=True)
@@ -409,10 +330,6 @@ class DeclaredCarrierExpansionBuilder(
             )
             for participant_symbol in component.participant_symbols
         }
-        callable_component = self.repository.callable_component_authority_proof(
-            parameter_names_by_participant,
-            frozenset(edge.call_identity for edge in component.edges),
-        )
         incompletely_consuming_participant_symbols = tuple(
             participant_symbol
             for participant_symbol in component.participant_symbols
@@ -462,7 +379,15 @@ class DeclaredCarrierExpansionBuilder(
                 if len(carrier_symbols_by_participant[participant_symbol]) != 1
             ),
             mutated_parameter_symbols=mutated_parameter_symbols,
-            callable_component=callable_component,
+            repository=self.repository,
+            participant_parameters=(
+                DeclaredCarrierExpansionAuthorityProof.stored_participant_parameters(
+                    parameter_names_by_participant
+                )
+            ),
+            component_call_identities=frozenset(
+                edge.call_identity for edge in component.edges
+            ),
             batch_compression_delta=(field_count - 1)
             * (len(component.participant_symbols) + len(component.edges)),
         )

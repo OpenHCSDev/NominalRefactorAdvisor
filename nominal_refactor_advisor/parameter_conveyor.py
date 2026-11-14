@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from dataclasses import dataclass
 from functools import cached_property
 from collections.abc import Mapping
-from typing import Callable, TypeAlias
+from typing import TypeAlias
 
 from nominal_refactor_advisor.carrier_collapse import (
     CarrierCollapseAuthorityProof,
@@ -21,7 +21,7 @@ from nominal_refactor_advisor.carrier_expansion import (
     ForwardedCarrierExpansion,
     ResolvedFieldBindingCall,
 )
-from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
+from nominal_refactor_advisor.fail_closed_proof import ProofObligation
 from nominal_refactor_advisor.product_flow import (
     CompactFlowPosition,
     CompactFunctionCall,
@@ -124,14 +124,8 @@ class ForwardedProductCallEdge(ParameterConveyorCallEdge, ForwardedCarrierExpans
         return LexicalValueReference(carrier_parameter_names[self.caller_symbol])
 
 
-ParameterConveyorAuthorityPredicate: TypeAlias = Callable[
-    ["ClosedParameterConveyorAuthorityProof"],
-    bool,
-]
-
-
-class ClosedParameterConveyorAuthorityViolation(FieldedStrEnum):
-    """One failed proof obligation for an atomic parameter-conveyor rewrite."""
+class ClosedParameterConveyorAuthorityViolation(ProofObligation):
+    """One failed obligation that only a parameter-conveyor rewrite answers for."""
 
     NO_UNIQUE_NOMINAL_AUTHORITY = (
         "no_unique_nominal_authority",
@@ -156,21 +150,6 @@ class ClosedParameterConveyorAuthorityViolation(FieldedStrEnum):
         "a converted root call is dominated by more than one matching carrier",
         lambda proof: bool(proof.ambiguous_root_call_ids),
     )
-    INCOMPLETE_PRODUCT_CONSUMPTION = (
-        "incomplete_product_consumption",
-        "a participant does not consume every authority field",
-        lambda proof: bool(proof.incompletely_consuming_participant_symbols),
-    )
-    UNRESOLVED_CONSUMER = (
-        "unresolved_consumer",
-        "a same-name consumer cannot be resolved to one nominal declaration",
-        lambda proof: bool(proof.callable_component.unresolved_consumer_symbols),
-    )
-    MISSING_PARTICIPANT_DECLARATION = (
-        "missing_participant_declaration",
-        "a component participant lacks one declaration and execution flow",
-        lambda proof: bool(proof.callable_component.missing_declaration_symbols),
-    )
     OPEN_VALUE_ALIAS_FORWARDING = (
         "open_value_alias_forwarding",
         "a complete product may flow through an alias whose origin is not exact",
@@ -180,21 +159,6 @@ class ClosedParameterConveyorAuthorityViolation(FieldedStrEnum):
         "unresolved_complete_product_call",
         "a complete product reaches a call outside the closed component",
         lambda proof: bool(proof.unresolved_complete_product_call_ids),
-    )
-    INCOMPLETE_CALL_FAMILY = (
-        "incomplete_call_family",
-        "not every incoming call belongs to the atomic component",
-        lambda proof: bool(proof.callable_component.incomplete_call_family_symbols),
-    )
-    ESCAPING_CALLABLE_REFERENCE = (
-        "escaping_callable_reference",
-        "a participant callable escapes direct nominal invocation",
-        lambda proof: bool(proof.callable_component.escaping_callable_symbols),
-    )
-    CONFLICTING_CALL_MAPPING = (
-        "conflicting_call_mapping",
-        "the same participant is reached through competing product mappings",
-        lambda proof: bool(proof.conflicting_mapping_symbols),
     )
     NON_DOMINATING_CARRIER_BINDING = (
         "non_dominating_carrier_binding",
@@ -216,36 +180,13 @@ class ClosedParameterConveyorAuthorityViolation(FieldedStrEnum):
         "a source expression can change when two evaluations collapse to one",
         lambda proof: bool(proof.reevaluated_source_expression_symbols),
     )
-    SIGNATURE_SEMANTICS_HAZARD = (
-        "signature_semantics_hazard",
-        "a decorator, parameter declaration, or receiver has non-plain signature semantics",
-        lambda proof: bool(proof.callable_component.signature_hazard_symbols),
-    )
-    PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED = (
-        "public_or_external_boundary_not_closed",
-        "a participant is not a repository-private callable boundary",
-        lambda proof: bool(proof.callable_component.open_boundary_symbols),
-    )
-    INCOMPLETE_METHOD_FAMILY = (
-        "incomplete_method_family",
-        "an override-related method declaration lies outside the component",
-        lambda proof: bool(proof.callable_component.incomplete_method_family_symbols),
-    )
-    NON_POSITIVE_BATCH_COMPRESSION = (
-        "non_positive_batch_compression",
-        "the whole atomic batch does not pay positive compression rent",
-        lambda proof: proof.batch_compression_delta <= 0,
-    )
-
-    explanation: str
-    _predicate: ParameterConveyorAuthorityPredicate
-
-    def is_violated_by(self, proof: ClosedParameterConveyorAuthorityProof) -> bool:
-        return self._predicate(proof)
 
 
 @dataclass(frozen=True)
-class ClosedParameterConveyorAuthorityProof(CarrierCollapseAuthorityProof):
+class ClosedParameterConveyorAuthorityProof(
+    CarrierCollapseAuthorityProof,
+    obligations=ClosedParameterConveyorAuthorityViolation,
+):
     """Representation-independent proof that one whole component is final."""
 
     authority_symbols: tuple[str, ...]
@@ -266,20 +207,6 @@ class ClosedParameterConveyorAuthorityProof(CarrierCollapseAuthorityProof):
     @cached_property
     def authority_field_name_set(self) -> frozenset[str]:
         return frozenset(self.authority_field_names)
-
-    @cached_property
-    def violations(self) -> tuple[ClosedParameterConveyorAuthorityViolation, ...]:
-        return tuple(
-            violation
-            for violation in ClosedParameterConveyorAuthorityViolation
-            if violation.is_violated_by(self)
-        )
-
-    @property
-    def is_proven(self) -> bool:
-        return not any(
-            violation.is_violated_by(self) for violation in ClosedParameterConveyorAuthorityViolation
-        )
 
 
 @dataclass(frozen=True)
@@ -672,18 +599,15 @@ class ClosedParameterConveyorComponentBuilder(
             for participant_symbol, mappings in field_mappings_by_participant.items()
             if len(mappings) == 1
         }
-        callable_component = self.repository.callable_component_authority_proof(
-            {
-                participant_symbol: frozenset(
-                    parameter_name
-                    for _field_name, parameter_name in (
-                        exact_field_mapping_by_participant.get(participant_symbol, ())
-                    )
+        parameter_names_by_participant = {
+            participant_symbol: frozenset(
+                parameter_name
+                for _field_name, parameter_name in (
+                    exact_field_mapping_by_participant.get(participant_symbol, ())
                 )
-                for participant_symbol in participant_symbols
-            },
-            component_call_ids,
-        )
+            )
+            for participant_symbol in participant_symbols
+        }
         open_alias_call_ids, unresolved_product_call_ids = (
             self._participant_product_call_hazards(
                 participants,
@@ -807,7 +731,13 @@ class ClosedParameterConveyorComponentBuilder(
                     }
                 )
             ),
-            callable_component=callable_component,
+            repository=self.repository,
+            participant_parameters=(
+                ClosedParameterConveyorAuthorityProof.stored_participant_parameters(
+                    parameter_names_by_participant
+                )
+            ),
+            component_call_identities=component_call_ids,
             batch_compression_delta=compression_delta,
         )
         return ClosedParameterConveyorComponent(

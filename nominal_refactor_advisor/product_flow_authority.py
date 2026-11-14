@@ -51,6 +51,7 @@ from nominal_refactor_advisor.captured_reference import (
     OpenCapturedReference,
 )
 from nominal_refactor_advisor.closed_world import ClosedWorldPremise
+from nominal_refactor_advisor.fail_closed_proof import FailClosedProof, ProofObligation
 from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedMethod,
@@ -668,17 +669,76 @@ class CompactFunctionCallIdentity:
         return cls(resolution.context.owner_symbol, resolution.call.position)
 
 
-@dataclass(frozen=True)
-class CompactCallableComponentAuthorityProof:
-    """Derive closure obligations on demand from one repository snapshot.
+class CompactCallableComponentAuthorityViolation(ProofObligation):
+    """One way a set of functions is still open to a caller the scan does not know."""
 
-    Boolean consumers can stop at a failed obligation. Each diagnostic remains
-    independently available and retains the complete, sorted symbol set.
+    MISSING_PARTICIPANT_DECLARATION = (
+        "missing_participant_declaration",
+        "a component participant lacks one declaration and execution flow",
+        lambda proof: bool(proof.missing_declaration_symbols),
+    )
+    UNRESOLVED_CONSUMER = (
+        "unresolved_consumer",
+        "a call that may reach a participant cannot be resolved to one declaration",
+        lambda proof: bool(proof.unresolved_consumer_symbols),
+    )
+    INCOMPLETE_CALL_FAMILY = (
+        "incomplete_call_family",
+        "not every incoming call belongs to the atomic component",
+        lambda proof: bool(proof.incomplete_call_family_symbols),
+    )
+    ESCAPING_CALLABLE_REFERENCE = (
+        "escaping_callable_reference",
+        "a participant callable escapes direct nominal invocation",
+        lambda proof: bool(proof.escaping_callable_symbols),
+    )
+    DYNAMICALLY_FETCHED_CALLABLE = (
+        "dynamically_fetched_callable",
+        "a computed fetch can return a participant as a value",
+        lambda proof: bool(proof.dynamically_fetched_symbols),
+    )
+    SIGNATURE_SEMANTICS_HAZARD = (
+        "signature_semantics_hazard",
+        "a decorator, parameter declaration, or receiver has non-plain signature semantics",
+        lambda proof: bool(proof.signature_hazard_symbols),
+    )
+    PUBLIC_OR_EXTERNAL_BOUNDARY_NOT_CLOSED = (
+        "public_or_external_boundary_not_closed",
+        "a participant is not a repository-private callable boundary",
+        lambda proof: bool(proof.open_boundary_symbols),
+    )
+    INCOMPLETE_METHOD_FAMILY = (
+        "incomplete_method_family",
+        "an override-related method declaration lies outside the component",
+        lambda proof: bool(proof.incomplete_method_family_symbols),
+    )
+
+
+@dataclass(frozen=True)
+class CompactCallableComponentAuthorityProof(
+    FailClosedProof, obligations=CompactCallableComponentAuthorityViolation
+):
+    """Whether every call that can reach a set of functions is known.
+
+    The obligations are derived on demand from one repository snapshot.  Boolean
+    consumers stop at a failed obligation.  Each diagnostic remains independently
+    available and retains the complete, sorted symbol set.
     """
 
     repository: ProductFlowRepository
     participant_parameters: tuple[tuple[str, frozenset[str]], ...]
     component_call_identities: frozenset[CompactFunctionCallIdentity]
+
+    @staticmethod
+    def stored_participant_parameters(
+        parameter_names_by_participant: Mapping[str, frozenset[str]],
+    ) -> tuple[tuple[str, frozenset[str]], ...]:
+        """Each participant with the parameter names the proof is about, by symbol."""
+
+        return tuple(
+            (symbol, frozenset(parameters))
+            for symbol, parameters in sorted(parameter_names_by_participant.items())
+        )
 
     @cached_property
     def participant_symbols(self) -> tuple[str, ...]:
@@ -822,19 +882,6 @@ class CompactCallableComponentAuthorityProof:
                     self._participant_symbol_set
                 )
             )
-        )
-
-    @property
-    def is_closed(self) -> bool:
-        return not (
-            self.missing_declaration_symbols
-            or self.unresolved_consumer_symbols
-            or self.incomplete_call_family_symbols
-            or self.escaping_callable_symbols
-            or self.dynamically_fetched_symbols
-            or self.signature_hazard_symbols
-            or self.open_boundary_symbols
-            or self.incomplete_method_family_symbols
         )
 
 
@@ -2081,22 +2128,6 @@ class ProductFlowRepository(
             return CompactPublicNameExposure.PRIVATE
         return self.public_exposure_index.exposure_for(
             declaration.identity.module_name, qualname
-        )
-
-    def callable_component_authority_proof(
-        self,
-        parameter_names_by_participant: Mapping[str, frozenset[str]],
-        component_call_identities: frozenset[CompactFunctionCallIdentity],
-    ) -> CompactCallableComponentAuthorityProof:
-        """Capture immutable component inputs; derive obligations when queried."""
-
-        return CompactCallableComponentAuthorityProof(
-            repository=self,
-            participant_parameters=tuple(
-                (symbol, frozenset(parameters))
-                for symbol, parameters in sorted(parameter_names_by_participant.items())
-            ),
-            component_call_identities=frozenset(component_call_identities),
         )
 
     @staticmethod

@@ -26,6 +26,9 @@ from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
 from nominal_refactor_advisor.models import ParameterThreadMetrics, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.product_flow_authority import (
+    CompactCallableComponentAuthorityViolation,
+)
 
 
 def _module(module_name: str, source: str) -> ParsedModule:
@@ -63,6 +66,21 @@ def _closed_expansion_source() -> str:
     )
 
 
+def test_computed_fetch_of_a_participant_blocks_the_expansion() -> None:
+    def proof(source: str):
+        builder = DeclaredCarrierExpansionBuilder.from_modules((_module("pkg.fetched", source),))
+        return builder.assessed_components()[0].proof
+
+    assert proof(_closed_expansion_source()).is_proven
+    fetched = proof(
+        _closed_expansion_source()
+        + "\ndef _run(thing, name):\n    return getattr(thing, name)(1, 2)\n"
+    )
+    assert fetched.violations == (
+        CompactCallableComponentAuthorityViolation.DYNAMICALLY_FETCHED_CALLABLE,
+    )
+
+
 def test_rejected_carrier_boolean_does_not_force_callable_diagnostics() -> None:
     builder = DeclaredCarrierExpansionBuilder.from_modules((
         _module("pkg.lazy", _closed_expansion_source()),
@@ -71,9 +89,9 @@ def test_rejected_carrier_boolean_does_not_force_callable_diagnostics() -> None:
     proof = replace(original, carrier_authority=None)
     assert not proof.is_proven
     assert "violations" not in proof.__dict__
-    assert "escaping_callable_symbols" not in proof.callable_component.__dict__
+    assert "escaping_callable_symbols" not in proof.__dict__
     assert DeclaredCarrierExpansionAuthorityViolation.UNPROVEN_CARRIER_PRODUCT in proof.violations
-    assert "escaping_callable_symbols" in proof.callable_component.__dict__
+    assert "escaping_callable_symbols" in proof.__dict__
     assert proof.is_proven == (not proof.violations)
 
 
@@ -243,7 +261,7 @@ def test_builder_unifies_connected_root_expansions_into_one_component() -> None:
     assert component.participant_symbols == ("pkg.connected.consume",)
     assert (
         builder.assessed_components()[0]
-        .proof.callable_component.incomplete_call_family_symbols
+        .proof.incomplete_call_family_symbols
         == ()
     )
 
@@ -314,7 +332,7 @@ def test_builder_rejects_calls_outside_the_atomic_component() -> None:
     proof = builder.assessed_components()[0].proof
 
     assert (
-        DeclaredCarrierExpansionAuthorityViolation.INCOMPLETE_CALL_FAMILY
+        CompactCallableComponentAuthorityViolation.INCOMPLETE_CALL_FAMILY
         in proof.violations
     )
     assert builder.proven_components() == ()

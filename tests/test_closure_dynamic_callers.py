@@ -14,6 +14,8 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.product_flow import compact_product_flow_projection
 from nominal_refactor_advisor.product_flow_authority import (
+    CompactCallableComponentAuthorityProof,
+    CompactCallableComponentAuthorityViolation,
     CompactFunctionCallIdentity,
     CompactProductFlowRepository,
 )
@@ -33,16 +35,25 @@ def _repository(source: str) -> CompactProductFlowRepository:
     )
 
 
+def _closure_proof(
+    repository: CompactProductFlowRepository, symbol: str, *, known_calls: bool = False
+) -> CompactCallableComponentAuthorityProof:
+    """The closure proof of one function, with or without its resolved calls counted as known."""
+
+    return CompactCallableComponentAuthorityProof(
+        repository=repository,
+        participant_parameters=((symbol, frozenset()),),
+        component_call_identities=frozenset(
+            CompactFunctionCallIdentity.from_resolution(call)
+            for call in (repository.incoming_calls_for(symbol) if known_calls else ())
+        ),
+    )
+
+
 def _closed(repository: CompactProductFlowRepository, symbol: str) -> bool:
     """Whether every call that can reach `symbol` is among its resolved calls."""
 
-    return repository.callable_component_authority_proof(
-        {symbol: frozenset()},
-        frozenset(
-            CompactFunctionCallIdentity.from_resolution(call)
-            for call in repository.incoming_calls_for(symbol)
-        ),
-    ).is_closed
+    return _closure_proof(repository, symbol, known_calls=True).is_proven
 
 
 CLASSES = (
@@ -55,10 +66,8 @@ CLASSES = (
 
 def test_a_chained_call_is_a_caller_of_every_method_of_its_name():
     repository = _repository(CLASSES + "def _run():\n    return _make()._label()\n")
-    proof = repository.callable_component_authority_proof(
-        {"pkg.calls._Kind._label": frozenset()}, frozenset()
-    )
-    assert not proof.is_closed
+    proof = _closure_proof(repository, "pkg.calls._Kind._label")
+    assert not proof.is_proven
     assert proof.unresolved_consumer_symbols == ("pkg.calls._Kind._label",)
     # The same call cannot reach a method of another name.
     assert _closed(repository, "pkg.calls._Kind._other")
@@ -74,11 +83,11 @@ def test_a_computed_getattr_on_an_unproved_receiver_keeps_every_method_open():
     repository = _repository(
         CLASSES + "def _run(thing, name):\n    return getattr(thing, name)()\n"
     )
-    proof = repository.callable_component_authority_proof(
-        {"pkg.calls._Kind._other": frozenset()}, frozenset()
-    )
+    proof = _closure_proof(repository, "pkg.calls._Kind._other")
     assert proof.dynamically_fetched_symbols == ("pkg.calls._Kind._other",)
-    assert not proof.is_closed
+    assert proof.violations == (
+        CompactCallableComponentAuthorityViolation.DYNAMICALLY_FETCHED_CALLABLE,
+    )
 
 
 def test_a_literal_getattr_fetches_only_its_name():
@@ -151,20 +160,14 @@ def test_a_closed_world_project_closes_public_functions_and_records_its_premise(
     )
 
     def proof():
-        incoming = repository.incoming_calls_for("pkg.calls.label")
-        return repository.callable_component_authority_proof(
-            {"pkg.calls.label": frozenset()},
-            frozenset(
-                CompactFunctionCallIdentity.from_resolution(call) for call in incoming
-            ),
-        )
+        return _closure_proof(repository, "pkg.calls.label", known_calls=True)
 
     assert proof().open_boundary_symbols == ("pkg.calls.label",)
     (tmp_path / "pyproject.toml").write_text(
         "[tool.nominal-refactor-advisor]\nclosed-world = true\n"
     )
     closed = proof()
-    assert closed.is_closed
+    assert closed.is_proven
     premise = closed.closed_world_premises["pkg.calls.label"]
     assert premise.pyproject == str(tmp_path / "pyproject.toml")
     assert len(premise.digest) == 64
