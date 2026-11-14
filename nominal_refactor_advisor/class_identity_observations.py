@@ -1834,12 +1834,12 @@ class IdentityPositions:
 
     def sites(self) -> Iterator[RestatingSite]:
         for node, detail in self.spellings():
-            yield RestatingSiteFamily.site(
-                self.parsed_module,
-                node,
-                self.index.lexical_symbol(self.node_indices[id(node)]),
-                detail[-1],
-                detail,
+            yield RestatingSite(
+                file_path=self.parsed_module.file_path,
+                lineno=node.lineno,
+                symbol=self.index.lexical_symbol(self.node_indices[id(node)]),
+                group=detail[-1],
+                detail=detail,
             )
 
     @cached_property
