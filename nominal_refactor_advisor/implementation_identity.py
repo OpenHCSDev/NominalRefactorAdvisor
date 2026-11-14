@@ -276,7 +276,7 @@ class _DependencyGraph:
             *_annotation_dependencies(function, function_globals),
             *(getattr(function, "__defaults__", None) or ()),
             *(getattr(function, "__kwdefaults__", None) or {}).values(),
-            *_closure_dependencies(function),
+            *_DependencyGraph._closure_dependencies(function),
         )
 
     @staticmethod
@@ -287,6 +287,16 @@ class _DependencyGraph:
             if (dependency := getattr(value, attribute_name, None)) is not None
             and dependency is not value
         )
+
+    @staticmethod
+    def _closure_dependencies(function: object) -> tuple[object, ...]:
+        dependencies: list[object] = []
+        for cell in getattr(function, "__closure__", ()) or ():
+            try:
+                dependencies.append(cell.cell_contents)
+            except ValueError:
+                continue
+        return tuple(dependencies)
 
 
 @ScanCache.cached
@@ -334,16 +344,6 @@ def _annotation_reference_names(annotation: str) -> tuple[str, ...]:
             names.append(annotation_node.id)
         annotation_stack.extend(ast.iter_child_nodes(annotation_node))
     return tuple(names)
-
-
-def _closure_dependencies(function: object) -> tuple[object, ...]:
-    dependencies: list[object] = []
-    for cell in getattr(function, "__closure__", ()) or ():
-        try:
-            dependencies.append(cell.cell_contents)
-        except ValueError:
-            continue
-    return tuple(dependencies)
 
 
 @ScanCache.cached

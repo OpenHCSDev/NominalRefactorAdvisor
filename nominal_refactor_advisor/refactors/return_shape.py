@@ -31,26 +31,6 @@ from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, A
 from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
 from typing import ClassVar
 
-def _tuple_return_kind(node: ast.Return) -> str | None:
-    """Classify a return statement as zero-or-one tuple, or None if other."""
-    value = node.value
-    if value is None:
-        return None
-    if isinstance(value, ast.Tuple):
-        if len(value.elts) == 0:
-            return "empty"
-        if len(value.elts) == 1:
-            return "value"
-    return None
-
-
-def _find_returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
-    """Every return statement directly in this function (not nested functions)."""
-    returns: list[ast.Return] = []
-    _collect_returns(function.body, returns)
-    return returns
-
-
 def _collect_returns(
     stmts: list[ast.stmt], into: list[ast.Return]
 ) -> None:
@@ -362,13 +342,33 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
         """Every return in the function classified as zero-or-one tuple.
         Raises ValueError if any return doesn't fit the pattern."""
         classified: list[tuple[ast.Return, str]] = []
-        for ret in _find_returns(function):
-            kind = _tuple_return_kind(ret)
+        for ret in FlattenTupleReturnOperation._find_returns(function):
+            kind = FlattenTupleReturnOperation._tuple_return_kind(ret)
             if kind is None:
                 raise ValueError(
                     f"return at line {ret.lineno} does not return a zero-or-one tuple"
                 )
             classified.append((ret, kind))
         return classified
+
+    @staticmethod
+    def _find_returns(function: ast.FunctionDef | ast.AsyncFunctionDef) -> list[ast.Return]:
+        """Every return statement directly in this function (not nested functions)."""
+        returns: list[ast.Return] = []
+        _collect_returns(function.body, returns)
+        return returns
+
+    @staticmethod
+    def _tuple_return_kind(node: ast.Return) -> str | None:
+        """Classify a return statement as zero-or-one tuple, or None if other."""
+        value = node.value
+        if value is None:
+            return None
+        if isinstance(value, ast.Tuple):
+            if len(value.elts) == 0:
+                return "empty"
+            if len(value.elts) == 1:
+                return "value"
+        return None
 
 

@@ -49,21 +49,6 @@ class ImpactDeltaClassifier:
         )
 
 
-IMPACT_DELTA_CLASSIFIER = ImpactDeltaClassifier()
-
-
-def _is_test_file_path(file_path: str) -> bool:
-    normalized = file_path.replace("\\", "/")
-    return (
-        normalized.startswith("tests/")
-        or "/tests/" in normalized
-        or normalized.endswith("_test.py")
-        or normalized.endswith("_tests.py")
-        or normalized.startswith("test_")
-        or "/test_" in normalized
-    )
-
-
 def _run_git_command(start_path: Path, *arguments: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-C", str(start_path), *arguments],
@@ -87,6 +72,8 @@ def _git_root(start_path: Path) -> Path:
 @dataclass(frozen=True)
 class RefactorEvidenceEconomics(DataclassJsonReport):
     """Aggregate the payoff evidence carried by structural findings."""
+
+    IMPACT_DELTA_CLASSIFIER = ImpactDeltaClassifier()
 
     finding_count: int = 0
     plan_count: int = 0
@@ -158,7 +145,7 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
             (
                 1
                 for finding in finding_tuple
-                if IMPACT_DELTA_CLASSIFIER.has_positive_impact(
+                if cls.IMPACT_DELTA_CLASSIFIER.has_positive_impact(
                     finding.metrics.impact_delta
                 )
             )
@@ -207,7 +194,7 @@ class RefactorEvidenceEconomics(DataclassJsonReport):
         certificate = finding.compression_certificate
         if certificate is not None and certificate.pays_rent:
             return True
-        return IMPACT_DELTA_CLASSIFIER.has_positive_impact(finding.metrics.impact_delta)
+        return RefactorEvidenceEconomics.IMPACT_DELTA_CLASSIFIER.has_positive_impact(finding.metrics.impact_delta)
 
     @staticmethod
     def _sum_impacts(impacts: Iterable[ImpactDelta]) -> ImpactDelta:
@@ -312,7 +299,19 @@ class ScanEconomicsProof(TimedScan, DataclassJsonReport):
     @staticmethod
     def _is_test_only_finding(finding: RefactorFinding) -> bool:
         return bool(finding.evidence) and all(
-            (_is_test_file_path(item.file_path) for item in finding.evidence)
+            (ScanEconomicsProof._is_test_file_path(item.file_path) for item in finding.evidence)
+        )
+
+    @staticmethod
+    def _is_test_file_path(file_path: str) -> bool:
+        normalized = file_path.replace("\\", "/")
+        return (
+            normalized.startswith("tests/")
+            or "/tests/" in normalized
+            or normalized.endswith("_test.py")
+            or normalized.endswith("_tests.py")
+            or normalized.startswith("test_")
+            or "/test_" in normalized
         )
 
 @dataclass(frozen=True)

@@ -618,37 +618,6 @@ class _MissingOverride:
     decision: bool | None = None
 
 
-def _missing_overrides(
-    scope: _FunctionScope,
-    resolver: _LiteralResolver,
-) -> dict[str, _MissingOverride]:
-    overrides: dict[str, _MissingOverride] = {}
-    for node in scope.nodes:
-        if not isinstance(node, ast.If):
-            continue
-        checked_names = _none_checked_names(node.test)
-        for checked_name in checked_names:
-            for statement in node.body:
-                if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                    if checked_name not in _assignment_target_names(statement):
-                        continue
-                    value = statement.value
-                    if (
-                        value is not None
-                        and (literal := resolver.string(value)) is not None
-                    ):
-                        overrides[checked_name] = _MissingOverride(literal=literal)
-                elif (
-                    isinstance(statement, ast.Return)
-                    and isinstance(statement.value, ast.Constant)
-                    and isinstance(statement.value.value, bool)
-                ):
-                    overrides[checked_name] = _MissingOverride(
-                        decision=statement.value.value
-                    )
-    return overrides
-
-
 @dataclass(frozen=True)
 class _EnvironmentReadAuthority:
     aliases: _EnvironmentImportAliases
@@ -759,21 +728,6 @@ class _EnvironmentReadAuthority:
         if len(reads_by_identity) != 1:
             return None
         return next(iter(reads_by_identity.values()))
-
-
-def _expression_lineage_names(
-    node: ast.AST,
-    read: _EnvironmentRead,
-    lineage: dict[str, _EnvironmentRead],
-) -> tuple[str, ...]:
-    return tuple(
-        dict.fromkeys(
-            name.id
-            for name in name_nodes(node)
-            if name.id in lineage
-            and lineage[name.id].identity == read.identity
-        )
-    )
 
 
 class EnvironmentValueNormalizer(Enum):
@@ -970,79 +924,9 @@ def _annotation_is_bool(node: ast.AST | None) -> bool:
     )
 
 
-def _scope_has_declared_authority_shape(scope: _FunctionScope) -> bool:
-    semantic_tokens = EnvironmentSemanticNameAuthority.tokens(scope.symbol)
-    if "environment" not in semantic_tokens:
-        return False
-    if not semantic_tokens & _ENVIRONMENT_BOOLEAN_TOKENS:
-        return False
-    if not semantic_tokens & _DECLARED_AUTHORITY_TOKENS:
-        return False
-    dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
-    if not any(
-        EnvironmentSemanticNameAuthority.tokens(parameter_name)
-        & _ENVIRONMENT_KEY_PARAMETER_TOKENS
-        for parameter_name in dynamic_parameters
-    ):
-        return False
-    if not _annotation_is_bool(scope.node.returns) and not (
-        semantic_tokens & frozenset(("decision", "enabled"))
-    ):
-        return False
-    nodes = scope.nodes
-    return any(isinstance(node, ast.Raise) for node in nodes) or any(
-        not EnvironmentSemanticNameAuthority.tokens(ast.unparse(call.func)).isdisjoint(
-            _DECLARED_AUTHORITY_CALL_TOKENS
-        )
-        for call in nodes
-        if isinstance(call, ast.Call)
-    )
-
-
 @dataclass(frozen=True)
 class _DeclaredEnvironmentFlagAuthority(SourceLocation):
     selectors: tuple[str, ...]
-
-
-def _returned_call(scope: _FunctionScope) -> ast.Call | None:
-    body = tuple(
-        statement
-        for statement in scope.node.body
-        if not (
-            isinstance(statement, ast.Expr)
-            and isinstance(statement.value, ast.Constant)
-            and isinstance(statement.value.value, str)
-        )
-    )
-    if len(body) != 1 or not isinstance(body[0], ast.Return):
-        return None
-    return body[0].value if isinstance(body[0].value, ast.Call) else None
-
-
-def _authority_for_selector_chain(
-    chain: tuple[str, ...],
-    authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
-) -> _DeclaredEnvironmentFlagAuthority | None:
-    qualified_selector = ".".join(chain[-2:])
-    qualified_matches = tuple(
-        authority
-        for authority in authorities
-        if qualified_selector in authority.selectors
-    )
-    qualified_match = single_item(qualified_matches)
-    if qualified_match is not None:
-        return qualified_match
-    terminal_matches = tuple(
-        authority for authority in authorities if chain[-1] in authority.selectors
-    )
-    return single_item(terminal_matches)
-
-
-def _expression_uses_parameters(
-    node: ast.AST,
-    parameter_names: frozenset[str],
-) -> bool:
-    return not parameter_names.isdisjoint(names_mentioned(node))
 
 
 @dataclass(frozen=True)
@@ -1141,7 +1025,7 @@ class _EnvironmentBooleanModuleProjection:
     ) -> tuple[_DeclaredEnvironmentFlagAuthority, ...]:
         authorities: list[_DeclaredEnvironmentFlagAuthority] = []
         for scope in scopes:
-            if not _scope_has_declared_authority_shape(scope):
+            if not _EnvironmentBooleanModuleProjection._scope_has_declared_authority_shape(scope):
                 continue
             selectors = (scope.node.name,)
             if scope.class_name is not None:
@@ -1164,7 +1048,7 @@ class _EnvironmentBooleanModuleProjection:
         resolver = _LiteralResolver.for_scope(scope)
         read_authority = _EnvironmentReadAuthority(aliases, resolver)
         lineage = read_authority.lineage(scope)
-        overrides = _missing_overrides(scope, resolver)
+        overrides = _EnvironmentBooleanModuleProjection._missing_overrides(scope, resolver)
         sites: list[_EnvironmentBooleanParserSite] = []
         seen: set[tuple[int, int]] = set()
         for node in scope.nodes:
@@ -1187,7 +1071,7 @@ class _EnvironmentBooleanModuleProjection:
                 continue
             seen.add(identity)
             matched_decision = isinstance(operator, ast.In)
-            source_names = _expression_lineage_names(node.left, read, lineage)
+            source_names = _EnvironmentBooleanModuleProjection._expression_lineage_names(node.left, read, lineage)
             absence = _EnvironmentAbsentSemantics.from_parser_context(
                 read,
                 source_names,
@@ -1218,7 +1102,7 @@ class _EnvironmentBooleanModuleProjection:
         for scope in scopes:
             if scope.class_name is None or scope.class_method_count > 2:
                 continue
-            call = _returned_call(scope)
+            call = _EnvironmentBooleanModuleProjection._returned_call(scope)
             if call is None:
                 continue
             selector_chain = ExpressionReference.decoded(call.func).attribute_chain
@@ -1238,7 +1122,7 @@ class _EnvironmentBooleanModuleProjection:
             if key_expression is None:
                 continue
             dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
-            if _expression_uses_parameters(key_expression, dynamic_parameters):
+            if _EnvironmentBooleanModuleProjection._expression_uses_parameters(key_expression, dynamic_parameters):
                 continue
             environment_key = _LiteralResolver.for_scope(scope).string(key_expression)
             if environment_key is None:
@@ -1253,6 +1137,103 @@ class _EnvironmentBooleanModuleProjection:
                 )
             )
         return tuple(facts)
+
+    @staticmethod
+    def _expression_lineage_names(
+        node: ast.AST,
+        read: _EnvironmentRead,
+        lineage: dict[str, _EnvironmentRead],
+    ) -> tuple[str, ...]:
+        return tuple(
+            dict.fromkeys(
+                name.id
+                for name in name_nodes(node)
+                if name.id in lineage
+                and lineage[name.id].identity == read.identity
+            )
+        )
+
+    @staticmethod
+    def _expression_uses_parameters(
+        node: ast.AST,
+        parameter_names: frozenset[str],
+    ) -> bool:
+        return not parameter_names.isdisjoint(names_mentioned(node))
+
+    @staticmethod
+    def _missing_overrides(
+        scope: _FunctionScope,
+        resolver: _LiteralResolver,
+    ) -> dict[str, _MissingOverride]:
+        overrides: dict[str, _MissingOverride] = {}
+        for node in scope.nodes:
+            if not isinstance(node, ast.If):
+                continue
+            checked_names = _none_checked_names(node.test)
+            for checked_name in checked_names:
+                for statement in node.body:
+                    if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                        if checked_name not in _assignment_target_names(statement):
+                            continue
+                        value = statement.value
+                        if (
+                            value is not None
+                            and (literal := resolver.string(value)) is not None
+                        ):
+                            overrides[checked_name] = _MissingOverride(literal=literal)
+                    elif (
+                        isinstance(statement, ast.Return)
+                        and isinstance(statement.value, ast.Constant)
+                        and isinstance(statement.value.value, bool)
+                    ):
+                        overrides[checked_name] = _MissingOverride(
+                            decision=statement.value.value
+                        )
+        return overrides
+
+    @staticmethod
+    def _returned_call(scope: _FunctionScope) -> ast.Call | None:
+        body = tuple(
+            statement
+            for statement in scope.node.body
+            if not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            )
+        )
+        if len(body) != 1 or not isinstance(body[0], ast.Return):
+            return None
+        return body[0].value if isinstance(body[0].value, ast.Call) else None
+
+    @staticmethod
+    def _scope_has_declared_authority_shape(scope: _FunctionScope) -> bool:
+        semantic_tokens = EnvironmentSemanticNameAuthority.tokens(scope.symbol)
+        if "environment" not in semantic_tokens:
+            return False
+        if not semantic_tokens & _ENVIRONMENT_BOOLEAN_TOKENS:
+            return False
+        if not semantic_tokens & _DECLARED_AUTHORITY_TOKENS:
+            return False
+        dynamic_parameters = scope.parameter_names - _INSTANCE_PARAMETER_NAMES
+        if not any(
+            EnvironmentSemanticNameAuthority.tokens(parameter_name)
+            & _ENVIRONMENT_KEY_PARAMETER_TOKENS
+            for parameter_name in dynamic_parameters
+        ):
+            return False
+        if not _annotation_is_bool(scope.node.returns) and not (
+            semantic_tokens & frozenset(("decision", "enabled"))
+        ):
+            return False
+        nodes = scope.nodes
+        return any(isinstance(node, ast.Raise) for node in nodes) or any(
+            not EnvironmentSemanticNameAuthority.tokens(ast.unparse(call.func)).isdisjoint(
+                _DECLARED_AUTHORITY_CALL_TOKENS
+            )
+            for call in nodes
+            if isinstance(call, ast.Call)
+        )
 
 
 def _native_environment_function_may_declare_authority(name: str) -> bool:
@@ -1525,7 +1506,7 @@ class EnvironmentBooleanAuthorityDriftDetector(
         for fact in facts:
             if fact.symbol in authority_symbols:
                 continue
-            authority = _authority_for_selector_chain(fact.selector_chain, authorities)
+            authority = EnvironmentBooleanAuthorityDriftDetector._authority_for_selector_chain(fact.selector_chain, authorities)
             if authority is None:
                 continue
             sites.append(
@@ -1569,6 +1550,25 @@ class EnvironmentBooleanAuthorityDriftDetector(
             summary_detail=detail,
             authority=authority,
         )
+
+    @staticmethod
+    def _authority_for_selector_chain(
+        chain: tuple[str, ...],
+        authorities: tuple[_DeclaredEnvironmentFlagAuthority, ...],
+    ) -> _DeclaredEnvironmentFlagAuthority | None:
+        qualified_selector = ".".join(chain[-2:])
+        qualified_matches = tuple(
+            authority
+            for authority in authorities
+            if qualified_selector in authority.selectors
+        )
+        qualified_match = single_item(qualified_matches)
+        if qualified_match is not None:
+            return qualified_match
+        terminal_matches = tuple(
+            authority for authority in authorities if chain[-1] in authority.selectors
+        )
+        return single_item(terminal_matches)
 
 
 __all__ = ("EnvironmentBooleanAuthorityDriftDetector",)

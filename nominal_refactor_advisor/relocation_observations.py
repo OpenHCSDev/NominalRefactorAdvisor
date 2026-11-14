@@ -197,6 +197,10 @@ class ClassBodyReading:
     answer nothing; every other declaration is computed.
     """
 
+    PURE_BUILTINS = frozenset(
+        ("all", "any", "bool", "frozenset", "isinstance", "issubclass", "len", "max", "min", "set", "sorted", "sum", "tuple")
+    )
+
     qualname: str
     node: ast.ClassDef
     bindings: ModuleNominalBindingSnapshot
@@ -309,7 +313,7 @@ class ClassBodyReading:
 
         for node in ast.walk(expression):
             match node:
-                case ast.Call(func=ast.Name(id=name)) if name in PURE_BUILTINS and (
+                case ast.Call(func=ast.Name(id=name)) if name in ClassBodyReading.PURE_BUILTINS and (
                     snapshot.resolves_unshadowed_builtin(name)
                 ):
                     pass
@@ -372,7 +376,7 @@ class ClassBodyReading:
                 case ast.Compare(
                     left=ast.Attribute(value=ast.Name(id="self")),
                     comparators=[ast.Attribute() as other],
-                ) if reads_through_self(other):
+                ) if ClassBodyReading.reads_through_self(other):
                     pass
                 case ast.Compare(
                     left=ast.Attribute(value=ast.Name(id="self")) as field,
@@ -389,6 +393,17 @@ class ClassBodyReading:
             and not variadic_parameters(arguments)
             and not arguments.kwonlyargs
         )
+
+    @staticmethod
+    def reads_through_self(expression: ast.expr) -> bool:
+        """An attribute chain whose root is `self`: another of the record's own fields."""
+
+        match expression:
+            case ast.Name(id="self"):
+                return True
+            case ast.Attribute(value=inner):
+                return ClassBodyReading.reads_through_self(inner)
+        return False
 
 
 @dataclass(frozen=True)
@@ -620,22 +635,6 @@ class LambdaFoldSiteFamily(MemberAnswerSiteFamily):
     answer = FoldDeclaration
 
 
-def reads_through_self(expression: ast.expr) -> bool:
-    """An attribute chain whose root is `self`: another of the record's own fields."""
-
-    match expression:
-        case ast.Name(id="self"):
-            return True
-        case ast.Attribute(value=inner):
-            return reads_through_self(inner)
-    return False
-
-
-PURE_BUILTINS = frozenset(
-    ("all", "any", "bool", "frozenset", "isinstance", "issubclass", "len", "max", "min", "set", "sorted", "sum", "tuple")
-)
-
-
 class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A function whose every return is `()` or a one-element tuple, with both.
 
@@ -656,13 +655,6 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 definition.node.name,
                 (),
             )
-
-
-def spells_none(node: ast.AST) -> bool:
-    match node:
-        case ast.Constant(value=None):
-            return True
-    return False
 
 
 class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
@@ -730,7 +722,7 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     def optional_annotation(annotation: ast.expr | None) -> bool:
         match annotation:
             case ast.BinOp(op=ast.BitOr()):
-                return any(spells_none(part) for part in ast.walk(annotation))
+                return any(ThreadedAbsenceSiteFamily.spells_none(part) for part in ast.walk(annotation))
             case ast.Subscript(value=wrapper) if TypeWrapper.OPTIONAL.spelled_by(
                 ExpressionReference.decoded(wrapper).terminal_name
             ):
@@ -749,3 +741,10 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             if not isinstance(default, ast.expr)
         )
         return undefaulted
+
+    @staticmethod
+    def spells_none(node: ast.AST) -> bool:
+        match node:
+            case ast.Constant(value=None):
+                return True
+        return False

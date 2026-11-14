@@ -39,10 +39,6 @@ from nominal_refactor_advisor.detectors._base import (
 
 T = TypeVar("T")
 
-# Findings list this many type sets or divergence pairs; the rest are counted.
-DIVERGENCE_LISTING_LIMIT = 8
-
-
 class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
     """Expose original decision terms, never classify a long test as debt by length."""
 
@@ -210,6 +206,9 @@ class ForeignTypeSwitchDetector(
     family, but this detector does not try to recognise decoders.
     """
 
+    # Findings list this many type sets or divergence pairs; the rest are counted.
+    DIVERGENCE_LISTING_LIMIT = 8
+
     module_projection_family = TypeTestModuleFamily
 
     finding_spec = finding_spec_template(
@@ -292,7 +291,7 @@ class ForeignTypeSwitchDetector(
     ) -> str:
         """The most frequent entries with their site counts, then how many were cut."""
 
-        shown = entries[:DIVERGENCE_LISTING_LIMIT]
+        shown = entries[:ForeignTypeSwitchDetector.DIVERGENCE_LISTING_LIMIT]
         text = "; ".join(f"{render(item)} x{count}" for item, count in shown)
         hidden = len(entries) - len(shown)
         return f"{text}; and {hidden} more {noun}" if hidden else text

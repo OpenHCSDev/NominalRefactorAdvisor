@@ -1792,7 +1792,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                     statement.name
                     for statement in FunctionDefinition.within(node.body)
                 ),
-                callable_member_declarations=_compact_callable_member_declarations(
+                callable_member_declarations=CompactModuleClassHeader._compact_callable_member_declarations(
                     node, binding_snapshots[node.lineno]
                 ),
                 abstract_method_names=sorted_tuple(
@@ -1812,15 +1812,15 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                     node,
                 ),
                 autoregister_registry_projection_names=(
-                    _autoregister_registry_projection_names(node)
+                    CompactModuleClassHeader._autoregister_registry_projection_names(node)
                     if include_body_facets
                     else ()
                 ),
                 keyed_registry_lookup_method_names=(
-                    _keyed_registry_lookup_method_names(node) if include_body_facets else ()
+                    CompactModuleClassHeader._keyed_registry_lookup_method_names(node) if include_body_facets else ()
                 ),
                 keyed_registry_reverse_lookup_method_names=(
-                    _keyed_registry_reverse_lookup_method_names(node)
+                    CompactModuleClassHeader._keyed_registry_reverse_lookup_method_names(node)
                     if include_body_facets
                     else ()
                 ),
@@ -1840,7 +1840,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 star_resolution=(
                     None
                     if star_snapshots is None
-                    else _star_resolved_facets(
+                    else CompactModuleClassHeader._star_resolved_facets(
                         node,
                         star_snapshots[node.lineno],
                         parsed_module.module_name,
@@ -1880,6 +1880,90 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 )
             )
             is not None
+        )
+
+    @staticmethod
+    def _autoregister_registry_projection_names(
+        node: ast.ClassDef,
+    ) -> tuple[str, ...]:
+        return tuple(
+            method.name
+            for method in FunctionDefinition.within(node.body)
+            if any(
+                isinstance(subnode, ast.Attribute)
+                and subnode.attr in {"__registry__", "_registry", "registry"}
+                for subnode in ast.walk(method)
+            )
+        )
+
+    @staticmethod
+    def _compact_callable_member_declarations(
+        node: ast.ClassDef, module_binding_snapshot: ModuleNominalBindingSnapshot
+    ) -> tuple[CompactCallableMemberDeclaration, ...]:
+        """Each `def` of the class body, except overload stubs and a property's
+        setter or deleter, which rebind no new member type."""
+
+        declarations: list[CompactCallableMemberDeclaration] = []
+        property_names: set[str] = set()
+        for statement in node.body:
+            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if module_binding_snapshot.decorated_by(
+                statement, (OVERLOAD_DECORATOR,)
+            ) or _redefines_property(statement, property_names):
+                continue
+            reads_as_property = module_binding_snapshot.decorated_by(
+                statement, PROPERTY_DECORATORS
+            )
+            if reads_as_property:
+                property_names.add(statement.name)
+            declared = tuple(
+                (CompactAnnotatedProperty if reads_as_property else CompactAnnotatedMethod)(
+                    statement.name, statement.lineno, ast.unparse(returns)
+                )
+                for returns in declared_annotations(statement)
+            )
+            declarations.extend(
+                declared or (CompactUnannotatedCallable(statement.name, statement.lineno),)
+            )
+        return tuple(declarations)
+
+    @staticmethod
+    def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
+        return tuple(
+            method.name
+            for method in FunctionDefinition.within(node.body)
+            if _is_classmethod(method) and _method_references_cls_registry(method)
+        )
+
+    @staticmethod
+    def _keyed_registry_reverse_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
+        return tuple(
+            method.name
+            for method in FunctionDefinition.within(node.body)
+            if _is_classmethod(method)
+            and _method_references_cls_registry(method)
+            and any(token in method.name for token in ("class", "type", "reverse"))
+        )
+
+    @staticmethod
+    def _star_resolved_facets(
+        node: ast.ClassDef,
+        star_snapshot: ModuleNominalBindingSnapshot,
+        module_name: str,
+        qualname: str,
+        *,
+        include_body_facets: bool,
+    ) -> CompactStarResolvedFacets:
+        return CompactStarResolvedFacets(
+            root_names=_class_reference_root_names(node),
+            facets=_compact_class_binding_facets(
+                node,
+                star_snapshot,
+                module_name,
+                qualname,
+                include_body_facets=include_body_facets,
+            ),
         )
 
 ClassProjectionT = TypeVar("ClassProjectionT", bound=CompactModuleClassHeader)
@@ -4540,26 +4624,6 @@ def _compact_class_binding_facets(
     )
 
 
-def _star_resolved_facets(
-    node: ast.ClassDef,
-    star_snapshot: ModuleNominalBindingSnapshot,
-    module_name: str,
-    qualname: str,
-    *,
-    include_body_facets: bool,
-) -> CompactStarResolvedFacets:
-    return CompactStarResolvedFacets(
-        root_names=_class_reference_root_names(node),
-        facets=_compact_class_binding_facets(
-            node,
-            star_snapshot,
-            module_name,
-            qualname,
-            include_body_facets=include_body_facets,
-        ),
-    )
-
-
 def star_resolved_projections(
     projections: tuple[ClassProjectionT, ...],
 ) -> tuple[ClassProjectionT, ...]:
@@ -4856,7 +4920,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 if isinstance(parent, ast.Attribute) and parent.value is node:
                     continue
                 scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-                receiver_class = _classmethod_receiver_class(
+                receiver_class = CompactModuleClassProjectionFamily._classmethod_receiver_class(
                     node, scope, nodes, parent_indices, module_bound_names
                 )
                 if receiver_class is not None:
@@ -4884,7 +4948,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     else (0, False)
                 )
                 copied = (
-                    _copied_keyword_fields(parent)
+                    CompactModuleClassProjectionFamily._copied_keyword_fields(parent)
                     if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
                     else ()
                 )
@@ -4980,95 +5044,63 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                         )
         return tuple(names)
 
+    @staticmethod
+    def _classmethod_receiver_class(
+        node: ast.AST,
+        scope: LexicalSyntaxScope,
+        nodes: Sequence[ast.AST],
+        parent_indices: Sequence[int],
+        module_bound_names: frozenset[str],
+    ) -> tuple[str, ...] | None:
+        """The class a `@classmethod`'s receiver parameter denotes, read directly in
+        that method: its class-name path, which resolves like a module-level name."""
 
-def _autoregister_registry_projection_names(
-    node: ast.ClassDef,
-) -> tuple[str, ...]:
-    return tuple(
-        method.name
-        for method in FunctionDefinition.within(node.body)
-        if any(
-            isinstance(subnode, ast.Attribute)
-            and subnode.attr in {"__registry__", "_registry", "registry"}
-            for subnode in ast.walk(method)
+        if not isinstance(node, ast.Name) or not scope.function_node_indices:
+            return None
+        function_index = scope.function_node_indices[-1]
+        function = nodes[function_index]
+        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return None
+        if not isinstance(nodes[parent_indices[function_index]], ast.ClassDef):
+            return None
+        if "classmethod" in module_bound_names or not any(
+            isinstance(decorator, ast.Name) and decorator.id == "classmethod"
+            for decorator in function.decorator_list
+        ):
+            return None
+        positional = (*function.args.posonlyargs, *function.args.args)
+        if not positional or positional[0].arg != node.id:
+            return None
+        if not scope.class_names or scope.class_names[0] not in module_bound_names:
+            return None
+        return scope.class_names
+
+    @staticmethod
+    def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
+        """The keywords one call passes as `x.<same name>`, for the value `x` that
+        supplies the most of them."""
+
+        by_root: dict[str, list[str]] = defaultdict(list)
+        for keyword in call.keywords:
+            value = keyword.value
+            if (
+                keyword.arg is not None
+                and isinstance(value, ast.Attribute)
+                and value.attr == keyword.arg
+                and isinstance(value.value, ast.Name)
+            ):
+                by_root[value.value.id].append(keyword.arg)
+        return max(
+            (tuple(sorted(names)) for names in by_root.values()),
+            key=lambda names: (len(names), names),
+            default=(),
         )
-    )
 
 
 def _method_references_cls_registry(
     method: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> bool:
     return RegistryLookupShape.references_registry(method)
-
-
-def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        method.name
-        for method in FunctionDefinition.within(node.body)
-        if _is_classmethod(method) and _method_references_cls_registry(method)
-    )
-
-
-def _keyed_registry_reverse_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        method.name
-        for method in FunctionDefinition.within(node.body)
-        if _is_classmethod(method)
-        and _method_references_cls_registry(method)
-        and any(token in method.name for token in ("class", "type", "reverse"))
-    )
-
-
-def _classmethod_receiver_class(
-    node: ast.AST,
-    scope: LexicalSyntaxScope,
-    nodes: Sequence[ast.AST],
-    parent_indices: Sequence[int],
-    module_bound_names: frozenset[str],
-) -> tuple[str, ...] | None:
-    """The class a `@classmethod`'s receiver parameter denotes, read directly in
-    that method: its class-name path, which resolves like a module-level name."""
-
-    if not isinstance(node, ast.Name) or not scope.function_node_indices:
-        return None
-    function_index = scope.function_node_indices[-1]
-    function = nodes[function_index]
-    if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return None
-    if not isinstance(nodes[parent_indices[function_index]], ast.ClassDef):
-        return None
-    if "classmethod" in module_bound_names or not any(
-        isinstance(decorator, ast.Name) and decorator.id == "classmethod"
-        for decorator in function.decorator_list
-    ):
-        return None
-    positional = (*function.args.posonlyargs, *function.args.args)
-    if not positional or positional[0].arg != node.id:
-        return None
-    if not scope.class_names or scope.class_names[0] not in module_bound_names:
-        return None
-    return scope.class_names
-
-
-def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
-    """The keywords one call passes as `x.<same name>`, for the value `x` that
-    supplies the most of them."""
-
-    by_root: dict[str, list[str]] = defaultdict(list)
-    for keyword in call.keywords:
-        value = keyword.value
-        if (
-            keyword.arg is not None
-            and isinstance(value, ast.Attribute)
-            and value.attr == keyword.arg
-            and isinstance(value.value, ast.Name)
-        ):
-            by_root[value.value.id].append(keyword.arg)
-    return max(
-        (tuple(sorted(names)) for names in by_root.values()),
-        key=lambda names: (len(names), names),
-        default=(),
-    )
 
 
 def _is_abstract_class(
@@ -5162,6 +5194,19 @@ def _dataclass_field_role(
 class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole]):
     """The role a resolved plain field's default gives it; no default stores an init field."""
 
+    _LITERAL_DEFAULT_NODES = (
+        ast.Constant,
+        ast.Tuple,
+        ast.List,
+        ast.Set,
+        ast.Dict,
+        ast.UnaryOp,
+        ast.BinOp,
+        ast.unaryop,
+        ast.operator,
+        ast.expr_context,
+    )
+
     module_binding_snapshot: ModuleNominalBindingSnapshot
     class_aliases: dict[str, str]
     preceding_class_bound_names: frozenset[str]
@@ -5217,7 +5262,7 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
         """A default built only from literals: it names nothing, so it cannot be a
         `dataclasses.Field` and the member is a plain stored field."""
 
-        return all(isinstance(node, _LITERAL_DEFAULT_NODES) for node in ast.walk(value))
+        return all(isinstance(node, DataclassFieldDefaultRole._LITERAL_DEFAULT_NODES) for node in ast.walk(value))
 
 
 def _native_qualified_name(value: object) -> str:
@@ -5633,20 +5678,6 @@ def _dataclass_role_reference(annotation: ast.expr) -> ast.expr | None:
     return annotation if isinstance(annotation, ast.Name | ast.Attribute) else None
 
 
-_LITERAL_DEFAULT_NODES = (
-    ast.Constant,
-    ast.Tuple,
-    ast.List,
-    ast.Set,
-    ast.Dict,
-    ast.UnaryOp,
-    ast.BinOp,
-    ast.unaryop,
-    ast.operator,
-    ast.expr_context,
-)
-
-
 def _dataclass_plain_annotation_is_resolved(
     module_binding_snapshot: ModuleNominalBindingSnapshot,
     class_aliases: dict[str, str],
@@ -5939,38 +5970,6 @@ TYPE_VARIABLE_CONSTRUCTORS = frozenset(
     for module in ("typing", "typing_extensions")
     for name in ("TypeVar", "ParamSpec", "TypeVarTuple")
 )
-
-
-def _compact_callable_member_declarations(
-    node: ast.ClassDef, module_binding_snapshot: ModuleNominalBindingSnapshot
-) -> tuple[CompactCallableMemberDeclaration, ...]:
-    """Each `def` of the class body, except overload stubs and a property's
-    setter or deleter, which rebind no new member type."""
-
-    declarations: list[CompactCallableMemberDeclaration] = []
-    property_names: set[str] = set()
-    for statement in node.body:
-        if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
-        if module_binding_snapshot.decorated_by(
-            statement, (OVERLOAD_DECORATOR,)
-        ) or _redefines_property(statement, property_names):
-            continue
-        reads_as_property = module_binding_snapshot.decorated_by(
-            statement, PROPERTY_DECORATORS
-        )
-        if reads_as_property:
-            property_names.add(statement.name)
-        declared = tuple(
-            (CompactAnnotatedProperty if reads_as_property else CompactAnnotatedMethod)(
-                statement.name, statement.lineno, ast.unparse(returns)
-            )
-            for returns in declared_annotations(statement)
-        )
-        declarations.extend(
-            declared or (CompactUnannotatedCallable(statement.name, statement.lineno),)
-        )
-    return tuple(declarations)
 
 
 def _redefines_property(

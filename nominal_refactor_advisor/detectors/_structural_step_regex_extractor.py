@@ -71,7 +71,7 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
         method: ast.FunctionDef,
     ) -> _AccumulatorFoldMethod | None:
         body = statements_without_docstring(method.body)
-        fold_shape = _accumulator_fold_shape(body)
+        fold_shape = AccumulatorFoldFamilyCandidate._accumulator_fold_shape(body)
         if fold_shape is None:
             return None
         accumulator_name, accumulator_type_name, loop, step_call, result_call = fold_shape
@@ -89,6 +89,53 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
             accumulator_type_name=accumulator_type_name,
             step_method_name=step_call.func.attr,
             result_method_name=result_call.func.attr,
+        )
+
+    @staticmethod
+    def _accumulator_fold_shape(
+        body: list[ast.stmt],
+    ) -> tuple[str, str, ast.For, ast.Call, ast.Call] | None:
+        return (
+            Maybe.of(tuple(body) if len(body) == 3 else None)
+            .project(
+                lambda statements: (
+                    _AccumulatorFoldStatements(
+                        assign=statements[0],
+                        loop=statements[1],
+                        returned=statements[2],
+                    )
+                    if isinstance(statements[1], ast.For)
+                    and isinstance(statements[2], ast.Return)
+                    else None
+                )
+            )
+            .combine(
+                lambda statements: _accumulator_initializer(statements.assign),
+                lambda statements, accumulator: (
+                    _AccumulatorFoldContext(
+                        statements=statements,
+                        accumulator_name=accumulator[0],
+                        accumulator_type_name=accumulator[1],
+                        step_call=_accumulator_step_call(statements.loop, accumulator[0]),
+                    )
+                    if _accumulator_step_call(statements.loop, accumulator[0]) is not None
+                    else None
+                ),
+            )
+            .combine(
+                lambda context: _accumulator_result_call(
+                    context.statements.returned,
+                    context.accumulator_name,
+                ),
+                lambda context, result_call: (
+                    context.accumulator_name,
+                    context.accumulator_type_name,
+                    context.statements.loop,
+                    context.step_call,
+                    result_call,
+                ),
+            )
+            .unwrap_or_none()
         )
 
 
@@ -204,53 +251,6 @@ class ClassMethodGroupsShapeProjector(Generic[_ParsedFamilyMethod, _ShapeKey]):
                     )
                 )
         return tuple(groups)
-
-
-def _accumulator_fold_shape(
-    body: list[ast.stmt],
-) -> tuple[str, str, ast.For, ast.Call, ast.Call] | None:
-    return (
-        Maybe.of(tuple(body) if len(body) == 3 else None)
-        .project(
-            lambda statements: (
-                _AccumulatorFoldStatements(
-                    assign=statements[0],
-                    loop=statements[1],
-                    returned=statements[2],
-                )
-                if isinstance(statements[1], ast.For)
-                and isinstance(statements[2], ast.Return)
-                else None
-            )
-        )
-        .combine(
-            lambda statements: _accumulator_initializer(statements.assign),
-            lambda statements, accumulator: (
-                _AccumulatorFoldContext(
-                    statements=statements,
-                    accumulator_name=accumulator[0],
-                    accumulator_type_name=accumulator[1],
-                    step_call=_accumulator_step_call(statements.loop, accumulator[0]),
-                )
-                if _accumulator_step_call(statements.loop, accumulator[0]) is not None
-                else None
-            ),
-        )
-        .combine(
-            lambda context: _accumulator_result_call(
-                context.statements.returned,
-                context.accumulator_name,
-            ),
-            lambda context, result_call: (
-                context.accumulator_name,
-                context.accumulator_type_name,
-                context.statements.loop,
-                context.step_call,
-                result_call,
-            ),
-        )
-        .unwrap_or_none()
-    )
 
 
 def _accumulator_initializer(statement: ast.stmt) -> tuple[str, str] | None:

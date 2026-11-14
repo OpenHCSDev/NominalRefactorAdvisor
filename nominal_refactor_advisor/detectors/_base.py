@@ -2775,6 +2775,21 @@ class CandidateStream(Generic[CandidateStreamItemT]):
 
 
 class CandidateCollectionAuthority:
+    _GENERIC_FAMILY_CLASS_TOKENS = frozenset(
+        {
+            "candidate",
+            "data",
+            "entry",
+            "group",
+            "item",
+            "profile",
+            "record",
+            "result",
+            "shape",
+            "spec",
+        }
+    )
+
     def typed_family_items(
         self,
         module: ParsedModule,
@@ -2876,7 +2891,7 @@ class CandidateCollectionAuthority:
                 for token in re.findall(
                     "[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+", class_name
                 )
-                if token.lower() not in _GENERIC_FAMILY_CLASS_TOKENS
+                if token.lower() not in CandidateCollectionAuthority._GENERIC_FAMILY_CLASS_TOKENS
             )
         )
         if not tokens:
@@ -2969,55 +2984,6 @@ class _SelectionHelperShape:
 class _SelectionLookupShape:
     function_name: str
     line: int
-
-
-_TYPE_NAME_LITERAL = "type"
-_EVAL_PARSE_MODE = "eval"
-
-
-def _selection_dict_value_field(returned: ast.DictComp, target_name: str) -> str | None:
-    key = returned.key
-    value = returned.value
-    if not (
-        isinstance(key, ast.Attribute)
-        and isinstance(key.value, ast.Name)
-        and (key.value.id == target_name)
-        and (key.attr == "key")
-    ):
-        return None
-    if not (
-        isinstance(value, ast.Attribute)
-        and isinstance(value.value, ast.Name)
-        and (value.value.id == target_name)
-    ):
-        return None
-    return value.attr
-
-
-def _single_try_statement(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> ast.Try | None:
-    return single_ast(statements_without_docstring(function.body), ast.Try)
-
-
-def _selection_lookup_returns_subscript(try_node: ast.Try) -> bool:
-    returned = as_ast(single_return_value(try_node.body), ast.Subscript)
-    return bool(
-        returned is not None
-        and name_id(returned.value) is not None
-        and (name_id(returned.slice) is not None)
-    )
-
-
-def _selection_lookup_raises_key_error(try_node: ast.Try) -> bool:
-    handler = single_item(try_node.handlers)
-    handler_type_name = name_id(handler.type) if handler is not None else None
-    raised = single_item(handler.body) if handler is not None else None
-    return bool(
-        isinstance(handler, ast.ExceptHandler)
-        and handler_type_name == "KeyError"
-        and isinstance(raised, ast.Raise)
-    )
 
 
 @dataclass(frozen=True)
@@ -3257,49 +3223,6 @@ class RegistryProjectionSurfaceKind(FieldedStrEnum):
         )
 
 
-def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
-    first_statement = body[0] if len(body) >= 2 else None
-    if not isinstance(first_statement, ast.If):
-        return None
-    membership = ClsRegistryMembership.from_node(first_statement.test)
-    if membership is None or membership.operator_type is not ast.In:
-        return None
-    return membership.key_expr
-
-
-def _manual_record_registration_constructor(
-    body: list[ast.stmt], key_expr: str
-) -> ManualRecordConstructorFieldPartition | None:
-    assignment = next(
-        (
-            statement
-            for statement in body
-            if RegistryLookupShape.key_expr_from_subscript(
-                single_assign_target(statement)
-            )
-            == key_expr
-        ),
-        None,
-    )
-    assignment_call = as_ast(assignment.value if assignment else None, ast.Call)
-    if assignment_call is None:
-        return None
-    if ExpressionReference.decoded(assignment_call.func).terminal_name != "cls":
-        return None
-    return (
-        tuple(
-            CallKeywords.of(assignment_call.keywords).names
-        ),
-        tuple(
-            (
-                keyword.name
-                for keyword in CallKeywords.of(assignment_call.keywords).named
-                if ast.unparse(keyword.value) == key_expr
-            )
-        ),
-    )
-
-
 def _flatten_union_member_type_names(node: ast.AST) -> tuple[str, ...]:
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _flatten_union_member_type_names(
@@ -3316,22 +3239,6 @@ def _self_attr_name(target: ast.AST) -> str | None:
         if target.value.id == "self":
             return target.attr
     return None
-
-
-_GENERIC_FAMILY_CLASS_TOKENS = frozenset(
-    {
-        "candidate",
-        "data",
-        "entry",
-        "group",
-        "item",
-        "profile",
-        "record",
-        "result",
-        "shape",
-        "spec",
-    }
-)
 
 
 class SupportProjectionAuthority:
@@ -3765,7 +3672,7 @@ class ModuleKeyedSelectionHelperCandidate(
                 )
             )
             .combine(
-                lambda context: _selection_dict_value_field(
+                lambda context: ModuleKeyedSelectionHelperCandidate._selection_dict_value_field(
                     context.returned, cast(ast.Name, context.generator.target).id
                 ),
                 lambda context, selected_field_name: _SelectionHelperShape(
@@ -3781,14 +3688,59 @@ class ModuleKeyedSelectionHelperCandidate(
     def _selection_lookup_shape(
         function: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> _SelectionLookupShape | None:
-        try_node = _single_try_statement(function)
+        try_node = ModuleKeyedSelectionHelperCandidate._single_try_statement(function)
         if try_node is None:
             return None
-        if not _selection_lookup_returns_subscript(try_node):
+        if not ModuleKeyedSelectionHelperCandidate._selection_lookup_returns_subscript(try_node):
             return None
-        if not _selection_lookup_raises_key_error(try_node):
+        if not ModuleKeyedSelectionHelperCandidate._selection_lookup_raises_key_error(try_node):
             return None
         return _SelectionLookupShape(function_name=function.name, line=function.lineno)
+
+    @staticmethod
+    def _selection_dict_value_field(returned: ast.DictComp, target_name: str) -> str | None:
+        key = returned.key
+        value = returned.value
+        if not (
+            isinstance(key, ast.Attribute)
+            and isinstance(key.value, ast.Name)
+            and (key.value.id == target_name)
+            and (key.attr == "key")
+        ):
+            return None
+        if not (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and (value.value.id == target_name)
+        ):
+            return None
+        return value.attr
+
+    @staticmethod
+    def _selection_lookup_raises_key_error(try_node: ast.Try) -> bool:
+        handler = single_item(try_node.handlers)
+        handler_type_name = name_id(handler.type) if handler is not None else None
+        raised = single_item(handler.body) if handler is not None else None
+        return bool(
+            isinstance(handler, ast.ExceptHandler)
+            and handler_type_name == "KeyError"
+            and isinstance(raised, ast.Raise)
+        )
+
+    @staticmethod
+    def _selection_lookup_returns_subscript(try_node: ast.Try) -> bool:
+        returned = as_ast(single_return_value(try_node.body), ast.Subscript)
+        return bool(
+            returned is not None
+            and name_id(returned.value) is not None
+            and (name_id(returned.slice) is not None)
+        )
+
+    @staticmethod
+    def _single_try_statement(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> ast.Try | None:
+        return single_ast(statements_without_docstring(function.body), ast.Try)
 
 
 @dataclass(frozen=True)
@@ -4003,14 +3955,14 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             Maybe.of(body)
             .filter(lambda _body: method.spells("classmethod"))
             .combine(
-                _manual_record_registration_key_expr,
+                ManualKeyedRecordTableGroupCandidate._manual_record_registration_key_expr,
                 lambda _body, key_expr: _ManualRecordRegistrationKeyContext(
                     body=_body,
                     key_expr=key_expr,
                 ),
             )
             .combine(
-                lambda context: _manual_record_registration_constructor(
+                lambda context: ManualKeyedRecordTableGroupCandidate._manual_record_registration_constructor(
                     context.body[1:],
                     context.key_expr,
                 ),
@@ -4032,6 +3984,49 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             )
             .unwrap_or_none()
         )
+
+    @staticmethod
+    def _manual_record_registration_constructor(
+        body: list[ast.stmt], key_expr: str
+    ) -> ManualRecordConstructorFieldPartition | None:
+        assignment = next(
+            (
+                statement
+                for statement in body
+                if RegistryLookupShape.key_expr_from_subscript(
+                    single_assign_target(statement)
+                )
+                == key_expr
+            ),
+            None,
+        )
+        assignment_call = as_ast(assignment.value if assignment else None, ast.Call)
+        if assignment_call is None:
+            return None
+        if ExpressionReference.decoded(assignment_call.func).terminal_name != "cls":
+            return None
+        return (
+            tuple(
+                CallKeywords.of(assignment_call.keywords).names
+            ),
+            tuple(
+                (
+                    keyword.name
+                    for keyword in CallKeywords.of(assignment_call.keywords).named
+                    if ast.unparse(keyword.value) == key_expr
+                )
+            ),
+        )
+
+    @staticmethod
+    def _manual_record_registration_key_expr(body: list[ast.stmt]) -> str | None:
+        first_statement = body[0] if len(body) >= 2 else None
+        if not isinstance(first_statement, ast.If):
+            return None
+        membership = ClsRegistryMembership.from_node(first_statement.test)
+        if membership is None or membership.operator_type is not ast.In:
+            return None
+        return membership.key_expr
 
 
 @dataclass(frozen=True)
@@ -4516,6 +4511,8 @@ class SemanticOverlapResidueAxisCandidate(
 class ManualFiberTagCandidate(
     ModuleCollectedLineWitnessCandidate, WitnessCarrierCandidate
 ):
+    _TYPE_NAME_LITERAL = "type"
+    _EVAL_PARSE_MODE = "eval"
     _TAG_PARAM_NAMES = frozenset({"kind", "mode", _TYPE_NAME_LITERAL, "tag", "backend"})
     init_line: int
     method_name: str
@@ -4626,7 +4623,7 @@ class ManualFiberTagCandidate(
             current_axis, case_name = dispatch_case
             if current_axis != dispatch_axis_expression:
                 return ()
-            if _constant_string(ast.parse(case_name, mode=_EVAL_PARSE_MODE).body) is None:
+            if _constant_string(ast.parse(case_name, mode=ManualFiberTagCandidate._EVAL_PARSE_MODE).body) is None:
                 return ()
             cases.append(case_name)
             if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):

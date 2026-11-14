@@ -270,64 +270,6 @@ class CompactRemainingSystemicModuleProjection(CompactModuleIdentity):
     implicit_self_mixins: tuple[CompactImplicitSelfMixinFact, ...]
 
 
-def _top_level_attribute_aliases(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for statement in statements_without_docstring(list(function.body)):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        value_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
-            statement.value
-        )
-        if value_expression is None or "." not in value_expression:
-            continue
-        aliases[statement.targets[0].id] = value_expression
-    return aliases
-
-
-def _module_union_type_aliases(
-    module: ParsedModule,
-) -> dict[str, tuple[str, ...]]:
-    aliases: dict[str, tuple[str, ...]] = {}
-    for statement in module.module.body:
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        member_names = sorted_tuple(
-            set(_flatten_union_member_type_names(statement.value))
-        )
-        if len(member_names) < 2:
-            continue
-        aliases[statement.targets[0].id] = member_names
-    return aliases
-
-
-def _attribute_family_subject_expression(
-    node: ast.AST,
-    *,
-    alias_sources: dict[str, str],
-) -> str | None:
-    if isinstance(node, ast.Name):
-        aliased = alias_sources.get(node.id)
-        if aliased is None or "." not in aliased:
-            return None
-        return aliased
-    subject_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
-        node
-    )
-    if subject_expression is None or "." not in subject_expression:
-        return None
-    return subject_expression
-
-
 def _self_cast_type_name(node: ast.AST) -> str | None:
     if not (
         isinstance(node, ast.Call)
@@ -342,26 +284,6 @@ def _self_cast_type_name(node: ast.AST) -> str | None:
     if not type_name:
         return None
     return type_name
-
-
-def _self_cast_alias_names(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> SelfCastAliasPartition:
-    aliases: set[str] = set()
-    cast_type_names: set[str] = set()
-    for statement in ast.walk(method):
-        if (
-            not isinstance(statement, ast.Assign)
-            or len(statement.targets) != 1
-            or (not isinstance(statement.targets[0], ast.Name))
-        ):
-            continue
-        cast_type_name = _self_cast_type_name(statement.value)
-        if cast_type_name is None:
-            continue
-        aliases.add(statement.targets[0].id)
-        cast_type_names.add(cast_type_name)
-    return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
 
 
 class CompactRemainingSystemicModuleProjectionFamily(
@@ -388,17 +310,17 @@ class CompactRemainingSystemicModuleProjectionFamily(
     def _compact_concrete_type_case_function_facts(
         module: ParsedModule,
     ) -> tuple[CompactConcreteTypeCaseFunctionFact, ...]:
-        union_aliases = tuple(sorted(_module_union_type_aliases(module).items()))
+        union_aliases = tuple(sorted(CompactRemainingSystemicModuleProjectionFamily._module_union_type_aliases(module).items()))
         facts: list[CompactConcreteTypeCaseFunctionFact] = []
         for qualname, function in module.syntax_index.named_functions:
-            alias_sources = _top_level_attribute_aliases(function)
+            alias_sources = CompactRemainingSystemicModuleProjectionFamily._top_level_attribute_aliases(function)
             grouped_checks: dict[str, list[tuple[str, ...]]] = defaultdict(list)
             for subnode in module.syntax_index.function_walks[function]:
                 isinstance_arguments = BuiltinCallName.isinstance_arguments(subnode)
                 if isinstance_arguments is None:
                     continue
                 subject, type_node = isinstance_arguments
-                subject_expression = _attribute_family_subject_expression(
+                subject_expression = CompactRemainingSystemicModuleProjectionFamily._attribute_family_subject_expression(
                     subject, alias_sources=alias_sources
                 )
                 if subject_expression is None:
@@ -450,7 +372,7 @@ class CompactRemainingSystemicModuleProjectionFamily(
             for method in indexed_class.methods:
                 if method.spells("abstractmethod"):
                     continue
-                alias_names, method_cast_types = _self_cast_alias_names(method.node)
+                alias_names, method_cast_types = CompactRemainingSystemicModuleProjectionFamily._self_cast_alias_names(method.node)
                 if not alias_names:
                     continue
                 method_names.append(method.name)
@@ -475,6 +397,84 @@ class CompactRemainingSystemicModuleProjectionFamily(
                 )
         return tuple(facts)
 
+    @staticmethod
+    def _attribute_family_subject_expression(
+        node: ast.AST,
+        *,
+        alias_sources: dict[str, str],
+    ) -> str | None:
+        if isinstance(node, ast.Name):
+            aliased = alias_sources.get(node.id)
+            if aliased is None or "." not in aliased:
+                return None
+            return aliased
+        subject_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
+            node
+        )
+        if subject_expression is None or "." not in subject_expression:
+            return None
+        return subject_expression
+
+    @staticmethod
+    def _module_union_type_aliases(
+        module: ParsedModule,
+    ) -> dict[str, tuple[str, ...]]:
+        aliases: dict[str, tuple[str, ...]] = {}
+        for statement in module.module.body:
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or (not isinstance(statement.targets[0], ast.Name))
+            ):
+                continue
+            member_names = sorted_tuple(
+                set(_flatten_union_member_type_names(statement.value))
+            )
+            if len(member_names) < 2:
+                continue
+            aliases[statement.targets[0].id] = member_names
+        return aliases
+
+    @staticmethod
+    def _self_cast_alias_names(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> SelfCastAliasPartition:
+        aliases: set[str] = set()
+        cast_type_names: set[str] = set()
+        for statement in ast.walk(method):
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or (not isinstance(statement.targets[0], ast.Name))
+            ):
+                continue
+            cast_type_name = _self_cast_type_name(statement.value)
+            if cast_type_name is None:
+                continue
+            aliases.add(statement.targets[0].id)
+            cast_type_names.add(cast_type_name)
+        return (sorted_tuple(aliases), sorted_tuple(cast_type_names))
+
+    @staticmethod
+    def _top_level_attribute_aliases(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> dict[str, str]:
+        aliases: dict[str, str] = {}
+        for statement in statements_without_docstring(list(function.body)):
+            if (
+                not isinstance(statement, ast.Assign)
+                or len(statement.targets) != 1
+                or (not isinstance(statement.targets[0], ast.Name))
+            ):
+                continue
+            value_expression = SUPPORT_PROJECTION_AUTHORITY.simple_name_or_attr_expression(
+                statement.value
+            )
+            if value_expression is None or "." not in value_expression:
+                continue
+            aliases[statement.targets[0].id] = value_expression
+        return aliases
+
 
 def _compact_class_for_detector_name(
     class_index: CompactClassFamilyIndex,
@@ -489,78 +489,6 @@ def _compact_class_for_detector_name(
     if len(symbols) != 1:
         return None
     return class_index.class_for(symbols[0])
-
-
-def _compact_concrete_type_function_candidates(
-    projection: CompactRemainingSystemicModuleProjection,
-    class_index: CompactClassFamilyIndex,
-) -> tuple[ConcreteTypeCaseFunctionCandidate, ...]:
-    candidates: list[ConcreteTypeCaseFunctionCandidate] = []
-    for fact in projection.concrete_type_functions:
-        concrete_class_names = sorted_tuple(
-            {
-                class_index.display_name(indexed_class)
-                for type_names in fact.type_names_by_check
-                for type_name in type_names
-                if (
-                    indexed_class := _compact_class_for_detector_name(
-                        class_index,
-                        module_name=fact.module_name,
-                        class_name=type_name,
-                    )
-                )
-                is not None
-                and not indexed_class.is_abstract
-            }
-        )
-        if len(concrete_class_names) < 2:
-            continue
-        union_alias_names = sorted_tuple(
-            alias_name
-            for alias_name, member_names in fact.union_aliases
-            if set(concrete_class_names) <= set(member_names)
-        )
-        candidates.append(
-            ConcreteTypeCaseFunctionCandidate(
-                fact=fact,
-                concrete_class_names=concrete_class_names,
-                union_alias_names=union_alias_names,
-            )
-        )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.fact.file_path, item.fact.subject_role, item.fact.line),
-    )
-
-
-def _compact_common_abstract_base_names(
-    projection: CompactRemainingSystemicModuleProjection,
-    class_index: CompactClassFamilyIndex,
-    class_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    indexed_classes = tuple(
-        indexed_class
-        for class_name in class_names
-        if (
-            indexed_class := _compact_class_for_detector_name(
-                class_index,
-                module_name=projection.module_name,
-                class_name=class_name,
-            )
-        )
-        is not None
-    )
-    if len(indexed_classes) < 2:
-        return ()
-    common_symbols = set(class_index.ancestor_symbols(indexed_classes[0].symbol))
-    for indexed_class in indexed_classes[1:]:
-        common_symbols &= set(class_index.ancestor_symbols(indexed_class.symbol))
-    return sorted_tuple(
-        class_index.display_name(indexed_class)
-        for symbol in sorted(common_symbols)
-        if (indexed_class := class_index.class_for(symbol)) is not None
-        and indexed_class.is_abstract
-    )
 
 
 @dataclass(frozen=True)
@@ -860,13 +788,30 @@ class ProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidat
         node = returned
         saw_path_part = False
         while isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
-            if not _is_path_projection_part(node.right):
+            if not ProjectionPropertyFamilyCandidate._is_path_projection_part(node.right):
                 return None
             saw_path_part = True
             node = node.left
         if not saw_path_part:
             return None
         return SELF_ATTRIBUTE_AUTHORITY.attr_name(node)
+
+    @staticmethod
+    def _is_path_projection_part(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return True
+        if isinstance(node, ast.JoinedStr):
+            return all(
+                (
+                    isinstance(value, ast.Constant)
+                    or (
+                        isinstance(value, ast.FormattedValue)
+                        and SELF_ATTRIBUTE_AUTHORITY.attr_name(value.value) is not None
+                    )
+                    for value in node.values
+                )
+            )
+        return False
 
 
 @dataclass(frozen=True)
@@ -882,23 +827,6 @@ class SelfAttributeAuthority:
 
 
 SELF_ATTRIBUTE_AUTHORITY = SelfAttributeAuthority()
-
-
-def _is_path_projection_part(node: ast.AST) -> bool:
-    if isinstance(node, ast.Constant) and isinstance(node.value, str):
-        return True
-    if isinstance(node, ast.JoinedStr):
-        return all(
-            (
-                isinstance(value, ast.Constant)
-                or (
-                    isinstance(value, ast.FormattedValue)
-                    and SELF_ATTRIBUTE_AUTHORITY.attr_name(value.value) is not None
-                )
-                for value in node.values
-            )
-        )
-    return False
 
 
 declare_candidate_rule_detector(
@@ -4038,7 +3966,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
         candidates: list[RepeatedConcreteTypeCaseAnalysisCandidate] = []
         for projection in projections:
             grouped: dict[str, list[ConcreteTypeCaseFunctionCandidate]] = defaultdict(list)
-            for function_candidate in _compact_concrete_type_function_candidates(
+            for function_candidate in RepeatedConcreteTypeCaseAnalysisDetector._compact_concrete_type_function_candidates(
                 projection, class_index
             ):
                 grouped[function_candidate.fact.subject_role].append(function_candidate)
@@ -4053,7 +3981,7 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                 concrete_class_names = sorted_tuple(set(concrete_class_names))
                 if len(concrete_class_names) < min_class_count:
                     continue
-                abstract_base_names = _compact_common_abstract_base_names(
+                abstract_base_names = RepeatedConcreteTypeCaseAnalysisDetector._compact_common_abstract_base_names(
                     projection, class_index, concrete_class_names
                 )
                 union_alias_names = sorted_tuple(
@@ -4087,6 +4015,78 @@ class RepeatedConcreteTypeCaseAnalysisDetector(
                     )
                 )
         return tuple(candidates)
+
+    @staticmethod
+    def _compact_common_abstract_base_names(
+        projection: CompactRemainingSystemicModuleProjection,
+        class_index: CompactClassFamilyIndex,
+        class_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        indexed_classes = tuple(
+            indexed_class
+            for class_name in class_names
+            if (
+                indexed_class := _compact_class_for_detector_name(
+                    class_index,
+                    module_name=projection.module_name,
+                    class_name=class_name,
+                )
+            )
+            is not None
+        )
+        if len(indexed_classes) < 2:
+            return ()
+        common_symbols = set(class_index.ancestor_symbols(indexed_classes[0].symbol))
+        for indexed_class in indexed_classes[1:]:
+            common_symbols &= set(class_index.ancestor_symbols(indexed_class.symbol))
+        return sorted_tuple(
+            class_index.display_name(indexed_class)
+            for symbol in sorted(common_symbols)
+            if (indexed_class := class_index.class_for(symbol)) is not None
+            and indexed_class.is_abstract
+        )
+
+    @staticmethod
+    def _compact_concrete_type_function_candidates(
+        projection: CompactRemainingSystemicModuleProjection,
+        class_index: CompactClassFamilyIndex,
+    ) -> tuple[ConcreteTypeCaseFunctionCandidate, ...]:
+        candidates: list[ConcreteTypeCaseFunctionCandidate] = []
+        for fact in projection.concrete_type_functions:
+            concrete_class_names = sorted_tuple(
+                {
+                    class_index.display_name(indexed_class)
+                    for type_names in fact.type_names_by_check
+                    for type_name in type_names
+                    if (
+                        indexed_class := _compact_class_for_detector_name(
+                            class_index,
+                            module_name=fact.module_name,
+                            class_name=type_name,
+                        )
+                    )
+                    is not None
+                    and not indexed_class.is_abstract
+                }
+            )
+            if len(concrete_class_names) < 2:
+                continue
+            union_alias_names = sorted_tuple(
+                alias_name
+                for alias_name, member_names in fact.union_aliases
+                if set(concrete_class_names) <= set(member_names)
+            )
+            candidates.append(
+                ConcreteTypeCaseFunctionCandidate(
+                    fact=fact,
+                    concrete_class_names=concrete_class_names,
+                    union_alias_names=union_alias_names,
+                )
+            )
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (item.fact.file_path, item.fact.subject_role, item.fact.line),
+        )
 
 
 class ImplicitSelfContractMixinDetector(

@@ -2015,11 +2015,6 @@ def mapping_value_type(annotation: ast.expr | None) -> ast.expr | None:
     return None
 
 
-TYPE_WRAPPERS = frozenset(
-    {"Annotated", "ClassVar", "Final", "Literal", "Optional", "Union", "None"}
-)
-
-
 def held_type(annotation: ast.expr) -> ast.expr:
     """The type an annotation holds: ``Annotated`` metadata and ``| None`` dropped,
     a string annotation read as its expression."""
@@ -2450,6 +2445,10 @@ class ValueReads:
     hands the read back.
     """
 
+    TYPE_WRAPPERS = frozenset(
+        {"Annotated", "ClassVar", "Final", "Literal", "Optional", "Union", "None"}
+    )
+
     MODULE_SCOPE = ModuleScope()
 
     model: CaseModel
@@ -2605,7 +2604,7 @@ class ValueReads:
         """Whether a value of this annotation may have a ``value`` attribute of its own:
         any type it names that is neither a builtin nor a typing wrapper."""
 
-        builtin = set(dir(builtins)) | TYPE_WRAPPERS
+        builtin = set(dir(builtins)) | ValueReads.TYPE_WRAPPERS
         return any(
             isinstance(node, ast.Attribute)
             and node.attr not in builtin

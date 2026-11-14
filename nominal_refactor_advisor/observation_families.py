@@ -907,30 +907,6 @@ class InlineStringLiteralDispatchObservationFamily(TypedLiteralObservationFamily
     literal_kind = spec_root.literal_kind
 
 
-def _reads_only_modules(node: ast.AST, module_names: frozenset[str]) -> bool:
-    """Whether an expression is computed from imported modules and constants only."""
-
-    match node:
-        case ast.Constant():
-            return True
-        case ast.Name(id=name, ctx=ast.Load()):
-            return name in module_names
-        case ast.Attribute(value=value, ctx=ast.Load()):
-            return _reads_only_modules(value, module_names)
-        case ast.Subscript(value=value, slice=index, ctx=ast.Load()):
-            return _reads_only_modules(value, module_names) and _is_constant_index(
-                index
-            )
-        case ast.Tuple(elts=elements, ctx=ast.Load()):
-            return all(_reads_only_modules(item, module_names) for item in elements)
-        case ast.Compare(left=left, comparators=comparators):
-            return all(
-                _reads_only_modules(item, module_names)
-                for item in (left, *comparators)
-            )
-    return False
-
-
 def _is_constant_index(index: ast.AST) -> bool:
     match index:
         case ast.Constant():
@@ -980,7 +956,7 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
             )
             if attribute_reads < (2 if isinstance(node, ast.Attribute) else 1):
                 continue
-            if not _reads_only_modules(node, module_names):
+            if not ModuleExpressionShapeFamily._reads_only_modules(node, module_names):
                 continue
             parent = index.parent_node(node_index)
             match parent:
@@ -988,7 +964,7 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
                     continue
                 case ast.Subscript(slice=argument) if argument is node:
                     continue
-            if parent is not None and _reads_only_modules(parent, module_names):
+            if parent is not None and ModuleExpressionShapeFamily._reads_only_modules(parent, module_names):
                 continue
             shapes.append(
                 ModuleExpressionShape(
@@ -1000,6 +976,30 @@ class ModuleExpressionShapeFamily(ShapeFamily[ModuleExpressionShape]):
                 )
             )
         return shapes
+
+    @staticmethod
+    def _reads_only_modules(node: ast.AST, module_names: frozenset[str]) -> bool:
+        """Whether an expression is computed from imported modules and constants only."""
+
+        match node:
+            case ast.Constant():
+                return True
+            case ast.Name(id=name, ctx=ast.Load()):
+                return name in module_names
+            case ast.Attribute(value=value, ctx=ast.Load()):
+                return ModuleExpressionShapeFamily._reads_only_modules(value, module_names)
+            case ast.Subscript(value=value, slice=index, ctx=ast.Load()):
+                return ModuleExpressionShapeFamily._reads_only_modules(value, module_names) and _is_constant_index(
+                    index
+                )
+            case ast.Tuple(elts=elements, ctx=ast.Load()):
+                return all(ModuleExpressionShapeFamily._reads_only_modules(item, module_names) for item in elements)
+            case ast.Compare(left=left, comparators=comparators):
+                return all(
+                    ModuleExpressionShapeFamily._reads_only_modules(item, module_names)
+                    for item in (left, *comparators)
+                )
+        return False
 
 
 @dataclass(frozen=True)

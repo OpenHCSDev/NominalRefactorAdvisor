@@ -60,27 +60,6 @@ class _ThreadedParameter:
     line: int
 
 
-def _keyword_forward_names(
-    func: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> set[tuple[int, int, str]]:
-    """Collect (line, col, name) of Name nodes used as same-name keyword arguments."""
-
-    forwards: set[tuple[int, int, str]] = set()
-    for node in nodes_of(ast.Call, func):
-        for keyword in node.keywords:
-            if (
-                keyword.arg is not None
-                and isinstance(keyword.value, ast.Name)
-                and keyword.value.id == keyword.arg
-            ):
-                forwards.add((
-                    keyword.value.lineno,
-                    keyword.value.col_offset,
-                    keyword.value.id,
-                ))
-    return forwards
-
-
 class CallbackThreadingDetector(PerModuleIssueDetector):
     _MIN_THREADING_FUNCTIONS = 2
     finding_spec = high_confidence_spec(
@@ -157,7 +136,7 @@ class CallbackThreadingDetector(PerModuleIssueDetector):
         if not params_with_defaults:
             return []
 
-        keyword_forwards = _keyword_forward_names(func)
+        keyword_forwards = CallbackThreadingDetector._keyword_forward_names(func)
         name_uses: dict[str, int] = defaultdict(int)
         forward_uses: dict[str, int] = defaultdict(int)
 
@@ -181,6 +160,27 @@ class CallbackThreadingDetector(PerModuleIssueDetector):
                 )
 
         return result
+
+    @staticmethod
+    def _keyword_forward_names(
+        func: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> set[tuple[int, int, str]]:
+        """Collect (line, col, name) of Name nodes used as same-name keyword arguments."""
+
+        forwards: set[tuple[int, int, str]] = set()
+        for node in nodes_of(ast.Call, func):
+            for keyword in node.keywords:
+                if (
+                    keyword.arg is not None
+                    and isinstance(keyword.value, ast.Name)
+                    and keyword.value.id == keyword.arg
+                ):
+                    forwards.add((
+                        keyword.value.lineno,
+                        keyword.value.col_offset,
+                        keyword.value.id,
+                    ))
+        return forwards
 
 
 # ---------------------------------------------------------------------------
@@ -238,71 +238,6 @@ class _LoopRelookup:
     enclosing_function: str
 
 
-def _find_relookups_in_for(
-    for_node: ast.For | ast.AsyncFor,
-    enclosing_function: str,
-) -> list[_LoopRelookup]:
-    """Find calls in a for-loop body that look up a value using element.attr.
-
-    The general pattern:
-        for element in source:
-            result = lookup(..., element.attr)
-
-    The element was yielded by the iterator. The body uses element.attr as a key
-    to recover related information. When lookup and source share a name (same
-    class, same variable, same first argument), it strongly suggests the same
-    collection is queried twice — the iterator already had what the lookup
-    re-derives.
-
-    This is not specific to any particular API. It catches any loop where:
-    1. The target binds one or more names
-    2. A call in the body takes target.attr as an argument
-    3. That call shares at least one name with the iterator expression
-       (the "same source" signal)
-    """
-
-    target_names = _for_target_names(for_node.target)
-    if not target_names:
-        return []
-
-    source_names = names_mentioned(for_node.iter)
-    if not source_names:
-        return []
-
-    iter_label = _unparse_short(for_node.iter)
-    relookups: list[_LoopRelookup] = []
-
-    for node in nodes_of(ast.Call, for_node):
-        hits = _element_attr_args(node, target_names)
-        if not hits:
-            continue
-
-        call_names = set(names_mentioned(node.func))
-        for arg in node.args:
-            if isinstance(arg, ast.Name):
-                call_names.add(arg.id)
-        for kw in node.keywords:
-            if isinstance(kw.value, ast.Name):
-                call_names.add(kw.value.id)
-
-        if not (call_names & source_names - target_names):
-            continue
-
-        call_label = _unparse_short(node.func)
-        for target_name, attr in hits:
-            relookups.append(_LoopRelookup(
-                loop_line=for_node.lineno,
-                iterator_label=iter_label,
-                call_line=node.lineno,
-                call_label=call_label,
-                element_attr=attr,
-                target_name=target_name,
-                enclosing_function=enclosing_function,
-            ))
-
-    return relookups
-
-
 # ---------------------------------------------------------------------------
 # Detector 3: linear scan by attribute where a dict lookup suffices
 # ---------------------------------------------------------------------------
@@ -316,36 +251,6 @@ class _LinearScan:
     sequence_label: str
     attribute: str
     enclosing_function: str
-
-
-def _scan_from_comprehension(
-    comp: ast.GeneratorExp | ast.ListComp,
-    label: str,
-) -> tuple[str, str] | None:
-    """Extract (sequence_label, attribute) from a comprehension that filters by attribute equality.
-
-    Matches:  x for x in SEQ if x.ATTR == KEY   (one generator, one if, equality test)
-    Returns (readable SEQ label, ATTR name) or None.
-    """
-    if len(comp.generators) != 1:
-        return None
-    gen = comp.generators[0]
-    if len(gen.ifs) != 1:
-        return None
-
-    match gen.target:
-        case ast.Name(id=var_name):
-            pass
-        case _:
-            return None
-
-    condition = gen.ifs[0]
-    attr_name = _equality_attribute_filter(condition, var_name)
-    if attr_name is None:
-        return None
-
-    seq_label = _unparse_short(gen.iter)
-    return (seq_label, attr_name)
 
 
 def _equality_attribute_filter(condition: ast.expr, var_name: str) -> str | None:
@@ -616,7 +521,7 @@ class LinearScanByNameDetector(PerModuleIssueDetector):
                     func=ast.Name(id="next"),
                     args=[ast.GeneratorExp() as genexp],
                 ):
-                    hit = _scan_from_comprehension(genexp, "next(...)")
+                    hit = LinearScanByNameDetector._scan_from_comprehension(genexp, "next(...)")
                     if hit is not None:
                         results.append(_LinearScan(
                             line=node.lineno,
@@ -630,7 +535,7 @@ class LinearScanByNameDetector(PerModuleIssueDetector):
                     value=ast.ListComp() as listcomp,
                     slice=ast.Constant(value=0),
                 ):
-                    hit = _scan_from_comprehension(listcomp, "[...][0]")
+                    hit = LinearScanByNameDetector._scan_from_comprehension(listcomp, "[...][0]")
                     if hit is not None:
                         results.append(_LinearScan(
                             line=node.lineno,
@@ -641,6 +546,36 @@ class LinearScanByNameDetector(PerModuleIssueDetector):
                         ))
 
         return results
+
+    @staticmethod
+    def _scan_from_comprehension(
+        comp: ast.GeneratorExp | ast.ListComp,
+        label: str,
+    ) -> tuple[str, str] | None:
+        """Extract (sequence_label, attribute) from a comprehension that filters by attribute equality.
+
+        Matches:  x for x in SEQ if x.ATTR == KEY   (one generator, one if, equality test)
+        Returns (readable SEQ label, ATTR name) or None.
+        """
+        if len(comp.generators) != 1:
+            return None
+        gen = comp.generators[0]
+        if len(gen.ifs) != 1:
+            return None
+
+        match gen.target:
+            case ast.Name(id=var_name):
+                pass
+            case _:
+                return None
+
+        condition = gen.ifs[0]
+        attr_name = _equality_attribute_filter(condition, var_name)
+        if attr_name is None:
+            return None
+
+        seq_label = _unparse_short(gen.iter)
+        return (seq_label, attr_name)
 
 
 class LoopRelookupDetector(PerModuleIssueDetector):
@@ -714,9 +649,74 @@ class LoopRelookupDetector(PerModuleIssueDetector):
         ):
             for node in ast.walk(func_node):
                 if isinstance(node, (ast.For, ast.AsyncFor)):
-                    results.extend(_find_relookups_in_for(node, func_node.name))
+                    results.extend(LoopRelookupDetector._find_relookups_in_for(node, func_node.name))
 
         return results
+
+    @staticmethod
+    def _find_relookups_in_for(
+        for_node: ast.For | ast.AsyncFor,
+        enclosing_function: str,
+    ) -> list[_LoopRelookup]:
+        """Find calls in a for-loop body that look up a value using element.attr.
+
+        The general pattern:
+            for element in source:
+                result = lookup(..., element.attr)
+
+        The element was yielded by the iterator. The body uses element.attr as a key
+        to recover related information. When lookup and source share a name (same
+        class, same variable, same first argument), it strongly suggests the same
+        collection is queried twice — the iterator already had what the lookup
+        re-derives.
+
+        This is not specific to any particular API. It catches any loop where:
+        1. The target binds one or more names
+        2. A call in the body takes target.attr as an argument
+        3. That call shares at least one name with the iterator expression
+           (the "same source" signal)
+        """
+
+        target_names = _for_target_names(for_node.target)
+        if not target_names:
+            return []
+
+        source_names = names_mentioned(for_node.iter)
+        if not source_names:
+            return []
+
+        iter_label = _unparse_short(for_node.iter)
+        relookups: list[_LoopRelookup] = []
+
+        for node in nodes_of(ast.Call, for_node):
+            hits = _element_attr_args(node, target_names)
+            if not hits:
+                continue
+
+            call_names = set(names_mentioned(node.func))
+            for arg in node.args:
+                if isinstance(arg, ast.Name):
+                    call_names.add(arg.id)
+            for kw in node.keywords:
+                if isinstance(kw.value, ast.Name):
+                    call_names.add(kw.value.id)
+
+            if not (call_names & source_names - target_names):
+                continue
+
+            call_label = _unparse_short(node.func)
+            for target_name, attr in hits:
+                relookups.append(_LoopRelookup(
+                    loop_line=for_node.lineno,
+                    iterator_label=iter_label,
+                    call_line=node.lineno,
+                    call_label=call_label,
+                    element_attr=attr,
+                    target_name=target_name,
+                    enclosing_function=enclosing_function,
+                ))
+
+        return relookups
 
 
 # ---------------------------------------------------------------------------

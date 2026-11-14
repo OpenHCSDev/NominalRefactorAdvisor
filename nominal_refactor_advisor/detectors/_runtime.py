@@ -453,9 +453,6 @@ class FormalBoundaryStringRegistryAuthority:
         )
 
 
-_FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES = frozenset(
-    {".json", ".lean", ".toml", ".yaml", ".yml"}
-)
 _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS = frozenset(
     {
         "artifact",
@@ -470,27 +467,6 @@ _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS = frozenset(
         "theorem",
     }
 )
-_FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES = frozenset(
-    {
-        ".git",
-        ".mypy_cache",
-        ".pytest_cache",
-        ".pytest-tmp",
-        ".ruff_cache",
-        ".venv",
-        "__pycache__",
-        "benchmark_results",
-        "build",
-        "diagnostics",
-        "dist",
-        "htmlcov",
-        "node_modules",
-        "site-packages",
-        "venv",
-    }
-)
-_FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES = 32 * 1024 * 1024
-_FORMAL_BOUNDARY_EXTERNAL_MAX_FILES = 256
 
 
 @dataclass(frozen=True)
@@ -548,54 +524,31 @@ FormalBoundaryExternalSitesByValue: TypeAlias = dict[
 ]
 
 
-def _formal_boundary_nearest_repository_root(path: Path) -> Path:
-    current = path if path.is_dir() else path.parent
-    fallback_root = current.parent if current.parent != current else current
-    temp_root = Path(tempfile.gettempdir()).resolve()
-    for candidate in (current, *current.parents):
-        if candidate.resolve() == temp_root:
-            continue
-        if (candidate / ".git").exists() or (candidate / "pyproject.toml").exists():
-            return candidate
-    return fallback_root
-
-
-def _formal_boundary_external_path_has_authority_hint(path: Path) -> bool:
-    path_tokens = frozenset(
-        token
-        for part in path.with_suffix("").parts
-        for token in SemanticIdentifierTokenProjection.project(part)
-    )
-    return bool(path_tokens & _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
-
-
-def _formal_boundary_external_string_sites(
-    path: Path,
-    values: tuple[str, ...],
-) -> tuple[FormalBoundaryExternalStringSite, ...]:
-    if not values:
-        return ()
-    ordered_values = tuple(sorted(values, key=lambda value: (-len(value), value)))
-    pattern = re.compile("|".join(re.escape(value) for value in ordered_values))
-    sites: list[FormalBoundaryExternalStringSite] = []
-    try:
-        with path.open(encoding="utf-8", errors="ignore") as source:
-            for line_number, line in enumerate(source, start=1):
-                for match in pattern.finditer(line):
-                    sites.append(
-                        FormalBoundaryExternalStringSite(
-                            target_name=match.group(0),
-                            value=match.group(0),
-                            line=line_number,
-                            path=path,
-                        )
-                    )
-    except OSError:
-        return ()
-    return tuple(sites)
-
-
 class FormalBoundaryExternalStringRegistryMirrorAuthority:
+    _FORMAL_BOUNDARY_EXTERNAL_MAX_FILES = 256
+    _FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES = 32 * 1024 * 1024
+    _FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES = frozenset(
+        {
+            ".git",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".pytest-tmp",
+            ".ruff_cache",
+            ".venv",
+            "__pycache__",
+            "benchmark_results",
+            "build",
+            "diagnostics",
+            "dist",
+            "htmlcov",
+            "node_modules",
+            "site-packages",
+            "venv",
+        }
+    )
+    _FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES = frozenset(
+        {".json", ".lean", ".toml", ".yaml", ".yml"}
+    )
     _FORMAL_BOUNDARY_LITERAL_REGISTRY_MIN_FIELDS = 3
 
     @classmethod
@@ -698,7 +651,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
                 (
                     dirname
                     for dirname in dirnames
-                    if dirname not in _FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES
+                    if dirname not in FormalBoundaryExternalStringRegistryMirrorAuthority._FORMAL_BOUNDARY_EXTERNAL_IGNORED_DIR_NAMES
                     and not dirname.startswith(".")
                     and not dirname.startswith("benchmark_results")
                     and not dirname.endswith((".egg-info", ".dist-info"))
@@ -707,17 +660,17 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
             directory_path = Path(directory)
             for filename in sorted(filenames):
                 path = directory_path / filename
-                if path.suffix not in _FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES:
+                if path.suffix not in FormalBoundaryExternalStringRegistryMirrorAuthority._FORMAL_BOUNDARY_EXTERNAL_FILE_SUFFIXES:
                     continue
-                if not _formal_boundary_external_path_has_authority_hint(path):
+                if not FormalBoundaryExternalStringRegistryMirrorAuthority._formal_boundary_external_path_has_authority_hint(path):
                     continue
                 try:
-                    if path.stat().st_size > _FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES:
+                    if path.stat().st_size > FormalBoundaryExternalStringRegistryMirrorAuthority._FORMAL_BOUNDARY_EXTERNAL_MAX_BYTES:
                         continue
                 except OSError:
                     continue
                 paths.append(path)
-                if len(paths) >= _FORMAL_BOUNDARY_EXTERNAL_MAX_FILES:
+                if len(paths) >= FormalBoundaryExternalStringRegistryMirrorAuthority._FORMAL_BOUNDARY_EXTERNAL_MAX_FILES:
                     return tuple(paths)
         return tuple(paths)
 
@@ -727,7 +680,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         values: tuple[str, ...],
     ) -> FormalBoundaryExternalSitesByValue:
         grouped: FormalBoundaryExternalSitesByValue = defaultdict(list)
-        for site in _formal_boundary_external_string_sites(path, values):
+        for site in FormalBoundaryExternalStringRegistryMirrorAuthority._formal_boundary_external_string_sites(path, values):
             grouped[site.value].append(site)
         return grouped
 
@@ -761,7 +714,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         common_path = Path(os.path.commonpath(resolved_paths))
         if common_path.is_file():
             common_path = common_path.parent
-        return _formal_boundary_nearest_repository_root(common_path)
+        return FormalBoundaryExternalStringRegistryMirrorAuthority._formal_boundary_nearest_repository_root(common_path)
 
     @staticmethod
     def _module_formal_boundary_string_constants(
@@ -775,6 +728,53 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
                 FormalBoundaryPythonStringConstantFamily,
             )
         )
+
+    @staticmethod
+    def _formal_boundary_external_path_has_authority_hint(path: Path) -> bool:
+        path_tokens = frozenset(
+            token
+            for part in path.with_suffix("").parts
+            for token in SemanticIdentifierTokenProjection.project(part)
+        )
+        return bool(path_tokens & _FORMAL_BOUNDARY_EXTERNAL_PATH_HINT_TOKENS)
+
+    @staticmethod
+    def _formal_boundary_external_string_sites(
+        path: Path,
+        values: tuple[str, ...],
+    ) -> tuple[FormalBoundaryExternalStringSite, ...]:
+        if not values:
+            return ()
+        ordered_values = tuple(sorted(values, key=lambda value: (-len(value), value)))
+        pattern = re.compile("|".join(re.escape(value) for value in ordered_values))
+        sites: list[FormalBoundaryExternalStringSite] = []
+        try:
+            with path.open(encoding="utf-8", errors="ignore") as source:
+                for line_number, line in enumerate(source, start=1):
+                    for match in pattern.finditer(line):
+                        sites.append(
+                            FormalBoundaryExternalStringSite(
+                                target_name=match.group(0),
+                                value=match.group(0),
+                                line=line_number,
+                                path=path,
+                            )
+                        )
+        except OSError:
+            return ()
+        return tuple(sites)
+
+    @staticmethod
+    def _formal_boundary_nearest_repository_root(path: Path) -> Path:
+        current = path if path.is_dir() else path.parent
+        fallback_root = current.parent if current.parent != current else current
+        temp_root = Path(tempfile.gettempdir()).resolve()
+        for candidate in (current, *current.parents):
+            if candidate.resolve() == temp_root:
+                continue
+            if (candidate / ".git").exists() or (candidate / "pyproject.toml").exists():
+                return candidate
+        return fallback_root
 
 
 class FormalBoundaryExternalStringRegistryMirrorDetector(
@@ -1121,16 +1121,6 @@ def _call_symbol(node: ast.AST) -> str:
     return ""
 
 
-def _is_globals_call(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and isinstance(BuiltinCall.decoded(node), Globals)
-
-
-def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and _call_symbol(node.func).endswith(
-        _RUNTIME_BRIDGE_NAMESPACE_NAME
-    )
-
-
 class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
@@ -1225,7 +1215,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
             return None
         if len(test.ops) != 1 or not isinstance(test.ops[0], ast.NotIn):
             return None
-        if len(test.comparators) != 1 or not _is_globals_call(test.comparators[0]):
+        if len(test.comparators) != 1 or not RuntimeNamespaceBridgeDetector._is_globals_call(test.comparators[0]):
             return None
         if isinstance(test.left, ast.Constant) and isinstance(test.left.value, str):
             return test.left.value
@@ -1238,10 +1228,10 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         if not (
             isinstance(node.func, ast.Attribute)
             and node.func.attr == "update"
-            and _is_globals_call(node.func.value)
+            and RuntimeNamespaceBridgeDetector._is_globals_call(node.func.value)
         ):
             return None
-        if any(_is_runtime_bridge_namespace_call(argument) for argument in node.args):
+        if any(RuntimeNamespaceBridgeDetector._is_runtime_bridge_namespace_call(argument) for argument in node.args):
             return RuntimeNamespaceBridgeKind.RUNTIME_BRIDGE_GLOBALS_UPDATE
         if (
             len(node.args) == 1
@@ -1256,6 +1246,16 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
         """Return whether source contains a symbol required by every bridge witness."""
 
         return BuiltinCallName.GLOBALS in source or _RUNTIME_BRIDGE_NAMESPACE_NAME in source
+
+    @staticmethod
+    def _is_globals_call(node: ast.AST) -> bool:
+        return isinstance(node, ast.Call) and isinstance(BuiltinCall.decoded(node), Globals)
+
+    @staticmethod
+    def _is_runtime_bridge_namespace_call(node: ast.AST) -> bool:
+        return isinstance(node, ast.Call) and _call_symbol(node.func).endswith(
+            _RUNTIME_BRIDGE_NAMESPACE_NAME
+        )
 
 
 def _native_call_terminal_name(

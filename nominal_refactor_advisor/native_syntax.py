@@ -13,6 +13,7 @@ from functools import lru_cache
 
 from tree_sitter import Language, Node, Parser, Query, QueryCursor, Tree
 import tree_sitter_python
+from typing import ClassVar
 
 
 @lru_cache(maxsize=1)
@@ -20,12 +21,11 @@ def _python_language() -> Language:
     return Language(tree_sitter_python.language())
 
 
-_PYTHON_QUERIES: dict[str, Query] = {}
-
-
 @dataclass(frozen=True)
 class NativePythonSyntaxIndex:
     """One native concrete-syntax tree with reusable compiled queries."""
+
+    _PYTHON_QUERIES: ClassVar[dict[str, Query]] = {}
 
     _COMMON_PROJECTION_QUERY = """
     (class_definition) @class
@@ -347,8 +347,8 @@ class NativePythonSyntaxIndex:
         declared native query for every source shard.
         """
 
-        query = _PYTHON_QUERIES.get(source)
+        query = NativePythonSyntaxIndex._PYTHON_QUERIES.get(source)
         if query is None:
             query = Query(_python_language(), source)
-            _PYTHON_QUERIES[source] = query
+            NativePythonSyntaxIndex._PYTHON_QUERIES[source] = query
         return query

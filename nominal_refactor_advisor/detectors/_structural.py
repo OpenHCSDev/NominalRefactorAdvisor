@@ -88,11 +88,6 @@ from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthorit
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.annotation_semantics import TypeWrapper
 
-_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
-    shared_objects=("nominal_attribute_contract",)
-)
-
-
 @dataclass(frozen=True)
 class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCandidate):
     attribute_name: str
@@ -496,6 +491,9 @@ declare_candidate_rule_detector(
 class ReflectiveSelfAttributeEscapeDetector(
     ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]
 ):
+    _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
+        shared_objects=("nominal_attribute_contract",)
+    )
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Reflective self-attribute access hides a nominal contract",
@@ -538,7 +536,7 @@ class ReflectiveSelfAttributeEscapeDetector(
     ) -> CompressionCertificate:
         return CompressionCertificate.from_object_family(
             manual_object_count=4,
-            replacement_shape=_REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE,
+            replacement_shape=ReflectiveSelfAttributeEscapeDetector._REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE,
             semantic_axes=(candidate.attribute_name, candidate.reflective_builtin),
         )
 

@@ -335,13 +335,6 @@ def _line_indentation(source: str, line_number: int) -> str:
     return line[: len(line) - len(line.lstrip())]
 
 
-def _indent_source(source: str, indentation: str) -> str:
-    return "".join(
-        f"{indentation}{line}" if line.strip() else line
-        for line in source.splitlines(keepends=True)
-    )
-
-
 def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
     """The comment ending a one-line statement's line: it is about that statement, so a
     rewrite of the statement keeps it there. A statement spanning lines, or sharing its line
@@ -1066,7 +1059,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             insertion_line=insertion_line,
             layer=SourceInsertionLayer.IMPORTS,
             inserted_lines=SourceTextGeometry(source).generated_lines(
-                _indent_source(inserted_source, insertion_point.indentation)
+                self._indent_source(inserted_source, insertion_point.indentation)
             ),
             rationale=self.rationale
             or f"Ensure type-checking imports exist in {self.file_path!r}.",
@@ -1117,7 +1110,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         )
         inserted_source = (
             f"{runtime_source}{separator_before_guard}if {reference_source}:\n"
-            f"{_indent_source(guarded_source, '    ')}"
+            f"{self._indent_source(guarded_source, '    ')}"
         )
         insertion_line = insertion_point.line_number
         spacing = DestinationInsertionSpacing.from_source(
@@ -1151,7 +1144,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         statement: ast.stmt,
         replacement_source: str,
     ) -> str:
-        return _indent_source(
+        return ModuleImportMutation._indent_source(
             replacement_source,
             _line_indentation(source, statement.lineno),
         )
@@ -1168,6 +1161,13 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             start_offset=0,
             end_offset=len(fragment),
         ).contains_comment(fragment)
+
+    @staticmethod
+    def _indent_source(source: str, indentation: str) -> str:
+        return "".join(
+            f"{indentation}{line}" if line.strip() else line
+            for line in source.splitlines(keepends=True)
+        )
 
 
 class ImportSourceGroup(FieldedStrEnum):

@@ -615,7 +615,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         value_kind = StatementValue.of(node).value_kind_name
         self._append_assignment_with_value_kind(
             node=node,
-            target_names=_target_names(node.target),
+            target_names=self._target_names(node.target),
             value_kind=value_kind,
         )
         self.generic_visit(node)
@@ -623,7 +623,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
     def visit_AugAssign(self, node: ast.AugAssign) -> None:
         self._append_assignment_with_value_kind(
             node=node,
-            target_names=_target_names(node.target),
+            target_names=self._target_names(node.target),
             value_kind=type(node.value).__name__,
         )
         self.generic_visit(node)
@@ -677,7 +677,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         self, node: ast.Assign, targets: Iterable[ast.expr], value: ast.expr
     ) -> None:
         target_names = tuple(
-            name for target in targets for name in _target_names(target)
+            name for target in targets for name in self._target_names(target)
         )
         self._append_assignment_with_value_kind(
             node=node,
@@ -828,10 +828,10 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         names: list[str] = []
         for statement in body:
             if isinstance(statement, ast.AnnAssign):
-                names.extend(_target_names(statement.target))
+                names.extend(_ModuleSemanticVisitor._target_names(statement.target))
             elif isinstance(statement, ast.Assign):
                 for target in statement.targets:
-                    names.extend(_target_names(target))
+                    names.extend(_ModuleSemanticVisitor._target_names(target))
         return tuple(names)
 
     @staticmethod
@@ -839,6 +839,18 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         if isinstance(node, ast.stmt):
             return node.lineno
         raise TypeError(f"expected statement node, got {type(node).__name__}")
+
+    @staticmethod
+    def _target_names(node: ast.expr) -> tuple[str, ...]:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            return (_expression_label(node),)
+        if isinstance(node, ast.Subscript):
+            return (_expression_label(node.value),)
+        if isinstance(node, (ast.Tuple, ast.List)):
+            return tuple(name for item in node.elts for name in _ModuleSemanticVisitor._target_names(item))
+        return ()
 
 
 def _decorator_names(decorators: Iterable[ast.expr]) -> tuple[str, ...]:
@@ -850,18 +862,6 @@ def _is_dataclass_decorator(decorators: tuple[str, ...]) -> bool:
         DataclassRuntimeDeclaration.dataclass_decorator_for_name(name) is not None
         for name in decorators
     )
-
-
-def _target_names(node: ast.expr) -> tuple[str, ...]:
-    if isinstance(node, ast.Name):
-        return (node.id,)
-    if isinstance(node, ast.Attribute):
-        return (_expression_label(node),)
-    if isinstance(node, ast.Subscript):
-        return (_expression_label(node.value),)
-    if isinstance(node, (ast.Tuple, ast.List)):
-        return tuple(name for item in node.elts for name in _target_names(item))
-    return ()
 
 
 def _keyword_name(keyword: ast.keyword) -> str:
