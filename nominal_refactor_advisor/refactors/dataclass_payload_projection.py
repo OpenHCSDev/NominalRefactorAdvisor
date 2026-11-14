@@ -31,9 +31,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextReplacement,
 )
-from nominal_refactor_advisor.models import (
-    RefactorFinding,
-)
 from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
 
 
@@ -218,7 +215,6 @@ class DataclassPayloadProjectionMappingRecipeBuilder(
 ):
     """Derive an exhaustive direct-instance mapping from dataclass fields."""
 
-    finding: RefactorFinding
 
     def rejection_reason(self) -> str:
         seed = SemanticMirrorRecipeSeedLocations.from_finding(self.finding)

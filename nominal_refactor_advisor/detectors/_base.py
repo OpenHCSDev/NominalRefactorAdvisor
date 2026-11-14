@@ -4385,7 +4385,6 @@ class DeclarativeDetectorClassCandidate(
 
 @dataclass(frozen=True)
 class TupleIndexSemanticOpacityCandidate(FunctionLineWitnessCandidate):
-    function_name: str
     index_expressions: tuple[str, ...]
     nested_index_count: int
     carrier_call_names: tuple[str, ...]

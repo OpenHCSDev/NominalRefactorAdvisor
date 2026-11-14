@@ -26,9 +26,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextReplacement,
     SourceTextSpan,
 )
-from nominal_refactor_advisor.models import (
-    RefactorFinding,
-)
 from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
 
 
@@ -152,7 +149,6 @@ class DataclassFieldNameCollectionProjectionMappingRecipeBuilder(
 ):
     """Derive an exhaustive local field-name collection from a dataclass."""
 
-    finding: RefactorFinding
 
     def rejection_reason(self) -> str:
         if self.parts is not None:

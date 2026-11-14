@@ -42,9 +42,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextReplacement,
     SourceTextSpan,
 )
-from nominal_refactor_advisor.models import (
-    RefactorFinding,
-)
 from nominal_refactor_advisor.refactor_concepts import (
     ConstructorKwargCarrierProjectionConcept,
 )
@@ -429,7 +426,6 @@ class DataclassConstructorProjectionMappingRecipeBuilder(
 ):
     """Derive constructor keyword mirrors through an existing dataclass method."""
 
-    finding: RefactorFinding
 
     def rejection_reason(self) -> str:
         if self.parts is not None:

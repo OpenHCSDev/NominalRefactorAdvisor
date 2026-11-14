@@ -1436,7 +1436,6 @@ class CodemodProjectedFindingReport(DataclassJsonReport):
 class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
     """Projected before/after finding-class result for one execution class plan."""
 
-    changes: tuple[CodemodFindingClassChange, ...]
     class_plan: FindingRecipeClassPlan = json_report_field(included=False)
 
     @classmethod
@@ -1478,7 +1477,6 @@ class CodemodClassPlanProjectedDelta(CodemodFindingClassDelta):
 class CodemodClassPlanSiteProjectedDelta(CodemodFindingClassDelta):
     """Projected finding-class status for one planned site inside a class plan."""
 
-    changes: tuple[CodemodFindingClassChange, ...]
     synthesis_record: FindingRecipeSynthesisRecord = json_report_field(included=False)
     expected_removed_finding_ids: tuple[str, ...] = json_report_field(
         included=False,

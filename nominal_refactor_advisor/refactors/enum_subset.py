@@ -42,7 +42,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTargetEditor,
 )
 from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
-from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.refactor_concepts import DerivedProjectionConcept
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 from nominal_refactor_advisor.source_index import AstTargetDigest
@@ -364,7 +363,6 @@ class EnumSubsetSemanticMirrorRecipeBuilder(
     )
     derivable_reason = "enum subset projection has an executable authority recipe"
 
-    finding: RefactorFinding
 
     @cached_property
     def targets(self) -> SemanticMirrorOperationTargets | None:

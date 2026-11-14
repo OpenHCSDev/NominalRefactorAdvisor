@@ -29,9 +29,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextReplacement,
     SourceTextSpan,
 )
-from nominal_refactor_advisor.models import (
-    RefactorFinding,
-)
 from nominal_refactor_advisor.refactor_concepts import DataclassPayloadProjectionConcept
 
 
@@ -232,7 +229,6 @@ class DataclassKeyValueSequenceProjectionMappingRecipeBuilder(
 ):
     """Derive returned ``("field", value)`` items from a dataclass authority."""
 
-    finding: RefactorFinding
 
     def rejection_reason(self) -> str:
         if self.parts is not None:
