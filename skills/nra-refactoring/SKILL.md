@@ -361,9 +361,11 @@ plans using existing operations.
 | `unused_method_parameter` | 54 | method param unused in the body | `factor_exact_method_role` for cross-class proof, `replace_function_signature` |
 | `phantom_family` | 55 | same name in 2+ modules, no shared ancestor | `create_mixin` + `add_class_base` + `fold_shared_declarations_into_base` |
 
-**Self-scan (2026-11-13, NRA on NRA):** 4,919 findings, 37 detectors.
-Top: `own_type_test` (1,167), `phantom_family` (858),
-`unused_method_parameter` (632), `foreign_absence_probe` (514).
+**Self-scan (2026-11-13, NRA on NRA, tests included):** 4,919 findings,
+37 detectors. Top: `own_type_test` (1,167), `phantom_family` (858),
+`unused_method_parameter` (632), `foreign_absence_probe` (514). Read the
+`phantom_family` and `unused_method_parameter` counts with the "known
+wrong" notes under Performance: neither checks what its title says.
 `_base.py` at 7,779 lines with 200 classes is AGENT-4 textbook.
 
 **The `_base.py` god file (7,779 lines, 201 classes):** 97 candidate
@@ -379,41 +381,54 @@ concept target, the single highest-leverage structural change in NRA.
 cohorts. The unused-parameter check is a special case of that traversal.
 Extending it avoids building a second cross-class walker.
 
-## Performance architecture
+## Performance: measured numbers and the two rules that keep them
 
-Cold scan of NRA itself (846 .py files): ~142s baseline → ~98s with
-`analysis_workers=0` (auto-parallel). Warm cache: 0.6s. The cache
-stores per-module collected-family items (~1.8GB pickle) and per-detector
-analysis findings.
+Cold CLI scan of NRA's own package (347 files, fresh `--cache-dir`,
+4 cores, `--json --json-payload loop`), 2026-11-14, one run each:
 
-**Where the time goes (cold, from cProfile):**
-- 62% in `family_batch` / `collect_family_items`: 42K (module × family)
-  collection operations, each walking or filtering the module's AST
-- 14% in pickle serialization: 18K cache entries written to disk
-- 8% in initial parse: reading and parsing 846 Python files
-- 7% in syntax index build: one DFS walk per module
-- 9% other: type checking, GC, sorting, cross-module aggregation
+| Code | Wall | Findings | Scan mode |
+|---|---|---|---|
+| main (`1832c42`) | 74.8s | 1,164 | `exact_compact_global` |
+| this branch, one detector keeping syntax trees | 84.1s | 2,434 | full |
+| this branch, that detector on a compact family | 73.2s | 2,413 | `exact_compact_global` |
 
-**The bottleneck is O(modules × families).** Each of ~50 CollectedFamily
-subclasses independently collects items from each of ~846 modules. The
-`family_batch` cache on ParsedModule prevents duplicate collections
-within one scan, but each unique (module, family) pair still runs its
-collector once. The collectors use the syntax index's pre-built node-type
-index (`indexed_nodes_of_type`) or `scoped_observations` (both cached
-per module), so per-family overhead is modest (~1-3ms). The cost is the
-sum of 42K modest operations.
+A warm scan is under a second. These are single runs; differences under
+a few seconds are noise.
 
-**Parallelism:** `analysis_workers=0` auto-selects process-pool workers
-for per-module detection (`_per_module_findings`) and global detector
-sharding (`_missing_global_detector_findings`). The contextual-global
-path (`_contextual_global_findings`) runs sequentially. Workers fork
-from the parent with `gc.freeze()` to avoid COW overhead; each worker
-gets its own copy of the ParsedModule family caches.
+**Rule 1: a detector that needs other modules reads a compact family.**
+`DetectorTypePartition(default_detector_types_for_analysis()).compact_global_complete`
+must stay True. One context detector that keeps syntax trees (a
+`CrossModuleCollectorCandidateDetector`) switches every scan off the
+compact path: the JSON payload loses `scan_status`, three CLI tests
+fail, and the scan slows down. Collect per module with a
+`CollectedFamily` (a `RestatingSiteFamily` when the items are sites)
+and build the detector on `CompactModuleProjectionDetectorMixin`.
+`PhantomFamilyDetector` and `PublicDefinitionSiteFamily` in
+`detectors/_efficiency.py` are the worked example.
 
-**For 10x (target ~14s), the architecture needs:**
-1. Async or batched cache writes to remove I/O from the critical path
-2. Parallel contextual-global detection
-3. Pre-computed per-module projections shared across global detectors
-4. Or: a single-pass multi-family collector that walks each module once
-   and dispatches to all interested families, replacing 42K independent
-   collections with 846 dispatched walks
+**Rule 2: something every family needs from a parse is a
+`ParsedModuleFact`, or a view on `ModuleSyntaxIndex`.** A module-level
+generator like `bound_classes(parsed_module)` runs again in every family
+that calls it. `parsed_module.fact(Kind)` derives it once per parse.
+Before writing a tree walk, look at what the index already holds:
+`scopes` (every class and def with its dotted name),
+`declarations(type)`, `lexical_symbol`, `evaluating_symbol` (who
+evaluates a node: a def's header belongs to the scope it stands in),
+`indexed_nodes_of_type`, `parent_by_node`. Existing facts:
+`ModuleScopes`, `ModuleDefinitions`, `ModuleClassReadings`,
+`ClassLineBindingSnapshots`, `ModuleImportBindings`.
+
+**Site families come in families.** When two `RestatingSiteFamily`
+members share their loop, the loop belongs to a parent and each member
+is one declaration: `FalseDistinctionSiteFamily` (`distinction = ...`),
+`MemberAnswerSiteFamily` (`answer = ...`).
+
+**Known wrong, not yet fixed:**
+- `phantom_family` says "no shared declaring ancestor" and checks no
+  ancestry. It reports every public name defined in two modules: 765
+  findings on NRA's package. A real check joins the sites with
+  `MemberFamilies.family` in `detectors/_relocations.py`.
+- `unused_method_parameter` is titled "ignored in every override" and
+  looks at one method in one module.
+- Legacy-path erasure does not count a class or function referenced by
+  bare name without a call.
