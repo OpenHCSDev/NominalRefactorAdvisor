@@ -138,7 +138,6 @@ from nominal_refactor_advisor.detectors._base import (
     _derived_wrapper_spec_shadow_candidates,
     _keyed_record_infrastructure_candidates,
     _KeyedFamilyAxisSpec,
-    _manual_fiber_tag_candidates,
     _manual_structural_record_mechanics_group_candidates,
     _module_union_type_aliases,
     _parallel_keyed_axis_family_candidates_from_specs,
@@ -3065,7 +3064,6 @@ declare_candidate_rule_detector(
         parameter_count=2 if collector.uses_config else 1,
         callee_family_count=1,
     ),
-    candidate_collector=CandidateCollectorBoilerplateCandidate.from_module,
     detector_base=CandidateCollectorBoilerplateDetectorBase,
 )
 
@@ -3131,7 +3129,6 @@ DeclarativeDetectorClassDetector = declare_candidate_rule_detector(
         field_names=candidate.assignment_names,
         source_name=candidate.base_name,
     ),
-    candidate_collector=DeclarativeDetectorClassCandidate.from_module,
     detector_base=DeclarativeDetectorClassDetectorBase,
 )
 
@@ -3367,7 +3364,6 @@ DirectBuildFindingRendererDetector = declare_candidate_rule_detector(
         mapping_name=renderer.class_name,
         field_names=("summary", "evidence", *renderer.keyword_names),
     ),
-    candidate_collector=DirectBuildFindingRendererCandidate.from_module,
     detector_base=DirectBuildFindingRendererDetectorBase,
 )
 
@@ -3474,7 +3470,6 @@ declare_candidate_rule_detector(
         dispatch_axis=f"self.{fiber_candidate.tag_name}",
         literal_cases=fiber_candidate.case_names,
     ),
-    candidate_collector=_manual_fiber_tag_candidates,
 )
 
 

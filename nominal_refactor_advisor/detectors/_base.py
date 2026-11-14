@@ -2228,12 +2228,26 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
 
     @classmethod
     def from_kwargs(
-        cls, options: DetectorDeclarationOptionKwargs[CandidateItemT]
+        cls,
+        options: DetectorDeclarationOptionKwargs[CandidateItemT],
+        candidate_type: type[CandidateItemT],
     ) -> DetectorDeclarationOptions[CandidateItemT]:
+        """The declared options. A candidate type that collects itself from a module
+        (`ModuleCollectedLineWitnessCandidate`) is the collector unless one is named."""
+
         unknown_names = set(options) - cls.field_names()
         if unknown_names:
             raise TypeError(
                 f"Unknown detector declaration option(s): {', '.join(sorted(unknown_names))}"
+            )
+        if "candidate_collector" not in options and issubclass(
+            candidate_type, ModuleCollectedLineWitnessCandidate
+        ):
+            return cls(
+                **options,
+                candidate_collector=cast(
+                    DetectorCollector[CandidateItemT], candidate_type.from_module
+                ),
             )
         return cls(**options)
 
@@ -2394,7 +2408,9 @@ def declare_module_detector(
             module_namespace.module_name,
             caller.f_code.co_filename,
             caller.f_lineno,
-            DetectorDeclarationOptions[CandidateItemT].from_kwargs(detector_options),
+            DetectorDeclarationOptions[CandidateItemT].from_kwargs(
+                detector_options, candidate_type
+            ),
         ),
     )
 
@@ -2441,7 +2457,7 @@ def declare_candidate_rule_detector(
                 helper_frame.f_code.co_filename,
                 helper_frame.f_lineno,
                 DetectorDeclarationOptions[LocatedCandidateT].from_kwargs(
-                    detector_options
+                    detector_options, candidate_type
                 ),
             ),
         )
@@ -4734,61 +4750,6 @@ def _string_dispatch_cases_from_body(
 _TAG_PARAM_NAMES = frozenset({"kind", "mode", _TYPE_NAME_LITERAL, "tag", "backend"})
 
 
-def _manual_fiber_tag_candidates(
-    module: ParsedModule,
-) -> tuple[ManualFiberTagCandidate, ...]:
-    candidates: list[ManualFiberTagCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        methods = {
-            item.name: item
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
-        init_method = methods.get("__init__")
-        if init_method is None:
-            continue
-        assigned_from_param = SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param(
-            init_method
-        )
-        tag_names = tuple(
-            (
-                attr_name
-                for attr_name, param_name in assigned_from_param.items()
-                if param_name in _TAG_PARAM_NAMES
-            )
-        )
-        if not tag_names:
-            continue
-        assigned_field_names = _assigned_self_attrs(init_method)
-        for method_name, method in methods.items():
-            if method_name == "__init__":
-                continue
-            if not method.body:
-                continue
-            for tag_name in tag_names:
-                case_names = _string_dispatch_cases_from_body(
-                    method.body, f"self.{tag_name}"
-                )
-                if len(case_names) < 2:
-                    continue
-                if len(assigned_field_names) <= len(case_names) + 1:
-                    continue
-                candidates.append(
-                    ManualFiberTagCandidate(
-                        file_path=module.file_path,
-                        line=method.lineno,
-                        subject_name=node.name,
-                        name_family=case_names,
-                        init_line=init_method.lineno,
-                        method_name=method_name,
-                        tag_name=tag_name,
-                        assigned_field_names=assigned_field_names,
-                    )
-                )
-    return tuple(candidates)
-
-
 def _shared_abstract_nominal_authority(
     classes: tuple[ClassStatement, ...],
     *,
@@ -6351,7 +6312,9 @@ class SemanticOverlapResidueAxisCandidate(
 
 
 @dataclass(frozen=True)
-class ManualFiberTagCandidate(WitnessCarrierCandidate):
+class ManualFiberTagCandidate(
+    ModuleCollectedLineWitnessCandidate, WitnessCarrierCandidate
+):
     init_line: int
     method_name: str
     tag_name: str
@@ -6371,6 +6334,60 @@ class ManualFiberTagCandidate(WitnessCarrierCandidate):
                 f"{self.class_name}.{self.method_name}",
             ),
         )
+
+    @classmethod
+    def from_class(cls, module: ParsedModule, node: ast.ClassDef) -> tuple[Self, ...]:
+        """Each method of the class that dispatches on a tag its `__init__` copies
+        from a parameter, for each such tag."""
+
+        candidates: list[Self] = []
+        methods = {
+            item.name: item
+            for item in node.body
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        init_method = methods.get("__init__")
+        if init_method is None:
+            return ()
+        assigned_from_param = SYNTAX_PROJECTION_AUTHORITY.assigned_self_attr_from_param(
+            init_method
+        )
+        tag_names = tuple(
+            (
+                attr_name
+                for attr_name, param_name in assigned_from_param.items()
+                if param_name in _TAG_PARAM_NAMES
+            )
+        )
+        if not tag_names:
+            return ()
+        assigned_field_names = _assigned_self_attrs(init_method)
+        for method_name, method in methods.items():
+            if method_name == "__init__":
+                continue
+            if not method.body:
+                continue
+            for tag_name in tag_names:
+                case_names = _string_dispatch_cases_from_body(
+                    method.body, f"self.{tag_name}"
+                )
+                if len(case_names) < 2:
+                    continue
+                if len(assigned_field_names) <= len(case_names) + 1:
+                    continue
+                candidates.append(
+                    cls(
+                        file_path=module.file_path,
+                        line=method.lineno,
+                        subject_name=node.name,
+                        name_family=case_names,
+                        init_line=init_method.lineno,
+                        method_name=method_name,
+                        tag_name=tag_name,
+                        assigned_field_names=assigned_field_names,
+                    )
+                )
+        return tuple(candidates)
 
 
 @dataclass(frozen=True)

@@ -36,7 +36,7 @@ class ExtendedDeclarationOptions(DetectorDeclarationOptions):
 def test_declaration_options_reject_non_constructor_fields(option_name: str) -> None:
     assert option_name not in ExtendedDeclarationOptions.field_names()
     with pytest.raises(TypeError, match="Unknown detector declaration option"):
-        ExtendedDeclarationOptions.from_kwargs({option_name: "invalid"})
+        ExtendedDeclarationOptions.from_kwargs({option_name: "invalid"}, object)
 
 
 _RUNTIME_SOURCE = '''
