@@ -40,7 +40,7 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndexBuilder,
     ModuleClassReferenceResolver,
 )
-from nominal_refactor_advisor.class_symbols import iter_class_definitions
+from nominal_refactor_advisor.class_symbols import ModuleClassDefinitions
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.interpreter import PythonVersion
 from nominal_refactor_advisor.assignment_projection import (
@@ -4301,9 +4301,7 @@ class CompactSemanticModuleProjectionFamily(
     ) -> tuple[SemanticClassSupplement, ...]:
         """Derive context-only supplements from the shared module event index."""
 
-        indexed_class_nodes = iter_class_definitions(
-            list(parsed_module.module.body)
-        )
+        indexed_class_nodes = parsed_module.fact(ModuleClassDefinitions).definitions
         if not indexed_class_nodes:
             return ()
         class_ids_by_direct_method_id: dict[int, tuple[int, ...]] = {}

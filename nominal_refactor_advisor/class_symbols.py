@@ -10,7 +10,7 @@ from functools import lru_cache
 from typing import ClassVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 
 
 def iter_class_definitions(
@@ -32,6 +32,18 @@ def iter_class_definitions(
             iter_class_definitions(list(statement.body), parent_qualname=qualname)
         )
     return tuple(classes)
+
+
+@dataclass(frozen=True)
+class ModuleClassDefinitions(ParsedModuleFact):
+    """The classes a module body or another class body declares, in source order,
+    each under its dotted name."""
+
+    definitions: tuple[tuple[str, ast.ClassDef], ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleClassDefinitions:
+        return cls(iter_class_definitions(list(parsed_module.module.body)))
 
 
 class _UniqueKnownSymbolSuffixIndex:

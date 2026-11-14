@@ -43,7 +43,7 @@ from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
     _referenced_bases,
     _terminal_reference_name,
-    iter_class_definitions,
+    ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import AssignmentStatement
@@ -216,9 +216,7 @@ def _class_nominal_reference_root_names(
 
     return frozenset(
         name
-        for _qualname, class_node in iter_class_definitions(
-            list(parsed_module.module.body)
-        )
+        for _qualname, class_node in parsed_module.fact(ModuleClassDefinitions).definitions
         for name in _class_reference_root_names(class_node)
     )
 

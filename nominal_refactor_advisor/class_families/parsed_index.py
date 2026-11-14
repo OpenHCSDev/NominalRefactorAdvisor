@@ -19,18 +19,17 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.class_index import (
     ModuleClassHeaderCore,
     ClassDeclaration,
+    ClassLineBindingSnapshots,
     ClassDeclarationIndex,
     ClassMethodPromotionSafeDecorator,
     ClassRegistryFacts,
     CompactClassFamilyIndexBuilder,
     CompactModuleClassProjectionFamily,
     CompactRepositoryPublicExposureIndex,
-    ModuleNominalBindingAuthority,
     ModuleNominalBindingSnapshot,
     RegisteringMetaclassAuthority,
     _class_scope_qualified_import_name,
     _dataclass_declaration,
-    _module_nominal_binding_snapshots,
     _single_assignment_target_name,
     module_import_aliases,
 )
@@ -39,7 +38,7 @@ from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
     _unique_known_symbol_by_suffix,
     _UniqueKnownSymbolSuffixIndex,
-    iter_class_definitions,
+    ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
@@ -417,12 +416,8 @@ class ModuleIndexedClasses(ParsedModuleFact):
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> ModuleIndexedClasses:
-        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
-        binding_snapshots = _module_nominal_binding_snapshots(
-            ModuleNominalBindingAuthority(parsed_module),
-            tuple(node.lineno for _qualname, node in indexed_class_nodes),
-            include_final=False,
-        )
+        indexed_class_nodes = parsed_module.fact(ModuleClassDefinitions).definitions
+        binding_snapshots = parsed_module.fact(ClassLineBindingSnapshots).snapshots
         return cls(
             tuple(
                 IndexedClass.from_parsed_class(

@@ -10,7 +10,7 @@ from enum import StrEnum
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_symbols import (
     _terminal_reference_name,
-    iter_class_definitions,
+    ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.class_syntax_facets import (
     CompactSourceLocation,
@@ -206,7 +206,7 @@ def _compact_manual_subclass_roster_roots(
 ) -> tuple[CompactManualSubclassRosterRoot, ...]:
     roots: list[CompactManualSubclassRosterRoot] = []
     file_path = parsed_module.file_path
-    for qualname, node in iter_class_definitions(list(parsed_module.module.body)):
+    for qualname, node in parsed_module.fact(ModuleClassDefinitions).definitions:
         registry_names = _compact_class_list_registry_names(node)
         if not registry_names:
             continue

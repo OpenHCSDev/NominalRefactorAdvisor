@@ -90,7 +90,7 @@ from nominal_refactor_advisor.class_symbols import (
     _referenced_bases,
     _terminal_reference_name,
     _unique_known_symbol_by_suffix,
-    iter_class_definitions,
+    ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.class_syntax_facets import (
     CompactClassMemberDeclaration,
@@ -1663,7 +1663,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
         """The module's namespace, classes and field-declaration wrappers, from one
         binding pass: each class reads the bindings before it, each wrapper the
         module's final ones."""
-        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
+        indexed_class_nodes = parsed_module.fact(ModuleClassDefinitions).definitions
         binding_snapshots = parsed_module.fact(ClassLineBindingSnapshots).snapshots
         return cls(
             module_name=parsed_module.module_name,
@@ -4168,7 +4168,7 @@ class ClassLineBindingSnapshots(ParsedModuleFact):
                 ModuleNominalBindingAuthority(parsed_module),
                 tuple(
                     node.lineno
-                    for _qualname, node in iter_class_definitions(list(parsed_module.module.body))
+                    for _qualname, node in parsed_module.fact(ModuleClassDefinitions).definitions
                 ),
                 include_final=True,
             )
@@ -4794,7 +4794,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
             if demand is None or demand.include_autoregister_references
             else ModuleClassSyntaxFacetsWithoutAutoregister
         ).facets
-        indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
+        indexed_class_nodes = parsed_module.fact(ModuleClassDefinitions).definitions
         class_methods = _compact_class_methods(
             parsed_module,
             indexed_class_nodes,
