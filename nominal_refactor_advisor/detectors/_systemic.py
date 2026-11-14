@@ -265,7 +265,7 @@ def _compact_implicit_self_mixin_facts(
     facts: list[CompactImplicitSelfMixinFact] = []
     for indexed_class in module.fact(ModuleIndexedClasses).records:
         qualname, class_node = indexed_class.qualname, indexed_class.node
-        if not class_node.name.endswith("Mixin") or indexed_class.spells_abstract:
+        if not class_node.name.endswith("Mixin") or indexed_class.is_abstract:
             continue
         method_names: list[str] = []
         method_lines: list[int] = []

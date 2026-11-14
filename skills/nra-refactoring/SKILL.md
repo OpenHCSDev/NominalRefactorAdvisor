@@ -426,17 +426,31 @@ is one declaration: `FalseDistinctionSiteFamily` (`distinction = ...`),
 **A function whose first argument is a class node is a method of
 `ClassStatement`.** `module.fact(ModuleClassStatements)` holds one record
 per class statement for the whole parse: `statements` (all, `ast.walk`
-order), `top_level`, `by_name`, `top_level_by_name`. The record answers
-`methods`, `method_named`, `direct_assignments`, `annotated_names`,
-`spelled_base_names`, `base_terminal_names`, `spells_abstract`,
-`dataclass_decorator`, `spells_dataclass` and `dataclass_flag(name)`,
-each read once. `IndexedClass` inherits it; a class the index does not
-name is an `UnindexedClassStatement`. Iterate the records, never
-`module.module.body` filtered by `isinstance(node, ast.ClassDef)`, and
-pass the record, never the node. The `spells_*` answers read names; the
-compact index's `is_abstract` and `dataclass_declaration` are the
-binding-checked ones (they agree on all 3,938 indexed classes of NRA's
-own tree, 2026-11-14).
+order), `top_level`, `by_name`, `top_level_by_name`, `descendant_names`.
+The record answers `name`, `decorator_names`, `spells(decorator)`,
+`methods` (each a `FunctionStatement` with the same decorator answers),
+`method_named`, `direct_assignments`, `annotated_names`,
+`spelled_base_names`, `base_terminal_names`, `dataclass_decorator`,
+`dataclass_flag(name)`, `is_abstract` and `is_dataclass`, each read once.
+Iterate the records, never `module.module.body` filtered by
+`isinstance(node, ast.ClassDef)`, and pass the record, never the node.
+
+`is_abstract` and `is_dataclass` are one question each, answered by the
+kind of statement: `IndexedClass` answers from the bindings in force
+where the class is declared, `UnindexedClassStatement` (a class inside a
+function, or one parsed alone) from spelling. Never pick the rigor at
+the call site. On NRA's own tree both answers agree for all 3,938
+indexed classes (2026-11-14).
+
+The readers in `refactors/` and the codemod path that require exactly
+one bare `classmethod` or an unshadowed builtin are proofs a rewrite
+depends on. Leave them stricter than the record.
+
+**A module's own facts.** `ModuleClassDefinitions` (classes under their
+dotted names), `ClassLineBindingSnapshots` (bindings in force at each
+class), `ModuleNamedValues` (the names the module body binds: `values`,
+`calls`, `sequences`, `constants`). Read these; do not call
+`iter_class_definitions` or walk `module.module.body` for them.
 
 **Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
 target and guards against its return; `remove_import_bindings` drops

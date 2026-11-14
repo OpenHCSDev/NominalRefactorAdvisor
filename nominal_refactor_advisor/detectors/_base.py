@@ -3099,7 +3099,7 @@ class CandidateCollectionAuthority:
             node = declared.node
             if not declared.dataclass_flag("frozen"):
                 continue
-            if declared.spells_abstract:
+            if declared.is_abstract:
                 continue
             field_names = declared.annotated_names
             normalized_role_fields = (
@@ -3556,7 +3556,7 @@ def _module_keyed_selection_helper_candidates(
     candidates: list[ModuleKeyedSelectionHelperCandidate] = []
     for declared in module.fact(ModuleClassStatements).top_level:
         node = declared.node
-        if not declared.spells_dataclass:
+        if not declared.is_dataclass:
             continue
         field_names = declared.annotated_names
         if len(field_names) != 2 or field_names[0] != "key":
@@ -4489,7 +4489,7 @@ def _manual_keyed_record_table_group_candidates(
     classes: list[ManualKeyedRecordTableClassCandidate] = []
     for declared in module.fact(ModuleClassStatements).top_level:
         node = declared.node
-        if not declared.spells_dataclass:
+        if not declared.is_dataclass:
             continue
         if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
             declared.direct_assignments.get("_registry")
@@ -4652,7 +4652,7 @@ def _manual_structural_record_mechanics_group_candidates(
     classes: list[ManualStructuralRecordMechanicsClassCandidate] = []
     for declared in module.fact(ModuleClassStatements).top_level:
         node = declared.node
-        if not declared.spells_dataclass or declared.spells_abstract:
+        if not declared.is_dataclass or declared.is_abstract:
             continue
         base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(declared)
         if not base_names:
@@ -4812,7 +4812,7 @@ def _resolved_isinstance_type_names(
         if indexed_class is None:
             continue
         display_name = class_index.display_name(indexed_class)
-        if indexed_class.spells_abstract:
+        if indexed_class.is_abstract:
             abstract_names.append(display_name)
         else:
             concrete_names.append(display_name)
@@ -4874,7 +4874,7 @@ def _common_abstract_base_names(
             indexed_class
             for symbol in common_symbols
             if (indexed_class := class_index.class_for(symbol)) is not None
-            and indexed_class.spells_abstract
+            and indexed_class.is_abstract
         ),
         key=lambda item: item.symbol,
     )
@@ -5056,7 +5056,7 @@ def _implicit_self_contract_mixin_candidates(
     ):
         if not indexed_class.simple_name.endswith("Mixin"):
             continue
-        if indexed_class.spells_abstract:
+        if indexed_class.is_abstract:
             continue
         consumer_classes = tuple(
             (
@@ -5064,7 +5064,7 @@ def _implicit_self_contract_mixin_candidates(
                 for descendant in class_index.descendant_classes(
                     indexed_class.symbol
                 )
-                if not descendant.spells_abstract
+                if not descendant.is_abstract
             )
         )
         if len(consumer_classes) < min_consumer_count:
@@ -5234,7 +5234,7 @@ def _shared_abstract_nominal_authority(
             current_class = class_lookup.get(current_name)
             if current_class is None:
                 continue
-            if current_class.spells_abstract:
+            if current_class.is_abstract:
                 lineage.add(current_name)
             stack.extend(
                 (

@@ -461,7 +461,7 @@ def _scope_role_name(node: ast.AST) -> str:
 def _guarded_delegator_candidates_for_class(
     module: ParsedModule, declared: ClassStatement
 ) -> Iterable[GuardedDelegatorCandidate]:
-    if not _is_observation_spec_class(declared) or declared.spells_abstract:
+    if not _is_observation_spec_class(declared) or declared.is_abstract:
         return
     node = declared.node
     guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
@@ -3371,7 +3371,7 @@ class TupleIndexSemanticOpacityCandidateCollector:
 
 
 def _dataclass_config_field_names(declared: ClassStatement) -> tuple[str, ...]:
-    return declared.annotated_names if declared.spells_dataclass else ()
+    return declared.annotated_names if declared.is_dataclass else ()
 
 
 def _from_namespace_keyword_names(

@@ -1154,7 +1154,7 @@ class EmptySubclassIndex:
 
     def abstract(self, symbol: str) -> bool:
         indexed = self.class_index.classes_by_symbol[symbol]
-        return indexed.is_abstract or bool(indexed.abstract_method_names)
+        return indexed.is_abstract
 
     def siblings(self, symbol: str) -> tuple[str, ...]:
         base = self.bases_by_symbol[symbol]

@@ -20,6 +20,7 @@ from nominal_refactor_advisor.class_index import (
     ModuleClassHeaderCore,
     ClassDeclaration,
     ClassLineBindingSnapshots,
+    _is_abstract_class,
     ClassDeclarationIndex,
     ClassMethodPromotionSafeDecorator,
     ClassRegistryFacts,
@@ -164,8 +165,8 @@ class ClassStatement(DecoratedStatement):
     def dataclass_decorator(self) -> ast.expr | None:
         """The first decorator spelled `dataclass`, bare or called, by any path.
 
-        This reads names, not bindings. `ClassDeclaration.dataclass_declaration`
-        is the binding-checked answer for a class the index names.
+        This reads names, not bindings; an indexed class answers `is_dataclass`
+        from `dataclass_declaration` instead.
         """
 
         for decorator in self.node.decorator_list:
@@ -176,10 +177,6 @@ class ClassStatement(DecoratedStatement):
                 case ast.Name(id="dataclass") | ast.Attribute(attr="dataclass"):
                     return decorator
         return None
-
-    @property
-    def spells_dataclass(self) -> bool:
-        return self.dataclass_decorator is not None
 
     def dataclass_flag(self, name: str) -> bool:
         """Whether the dataclass decorator is called with `name` set to a true constant."""
@@ -193,18 +190,11 @@ class ClassStatement(DecoratedStatement):
                         )
         return False
 
-    @cached_property
-    def spells_abstract(self) -> bool:
-        """Whether a base is spelled `ABC` or `ABCMeta`, or a direct method is
-        decorated with something spelled `abstractmethod`.
-
-        This reads names, not bindings. `ClassDeclaration.is_abstract` on the
-        compact index is the binding-checked answer for the same question.
-        """
-
-        return bool({"ABC", "ABCMeta"} & set(self.base_terminal_names)) or any(
-            method.spells("abstractmethod") for method in self.methods
-        )
+    is_abstract: bool
+    """Whether the class declares itself abstract. Each kind of statement answers
+    with what it has: an indexed class from its bindings, any other from spelling."""
+    is_dataclass: bool
+    """Whether a dataclass decorator declares the class; answered the same two ways."""
 
 
 @dataclass(frozen=True)
@@ -218,10 +208,6 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration, ClassStatement):
     @cached_property
     def namespace_execution(self) -> ClassNamespaceExecutionEvidence:
         return ClassNamespaceExecutionEvidence.from_class(self.node)
-
-    @property
-    def is_final(self) -> bool:
-        return self.spells("final")
 
     @classmethod
     def from_parsed_class(
@@ -251,6 +237,7 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration, ClassStatement):
             ),
             resolved_base_symbols=(),
             registry_facts=ClassRegistryFacts.of_class(node, module_binding_snapshot, parsed_module),
+            is_abstract=_is_abstract_class(node, module_binding_snapshot),
             dataclass_declaration=_dataclass_declaration(
                 module_binding_snapshot,
                 qualname,
@@ -436,6 +423,19 @@ class UnindexedClassStatement(ClassStatement):
     """
 
     node: ast.ClassDef
+
+    @cached_property
+    def is_abstract(self) -> bool:
+        """A base spelled `ABC` or `ABCMeta`, or a direct method decorated with
+        something spelled `abstractmethod`. No bindings are at hand to check."""
+
+        return bool({"ABC", "ABCMeta"} & set(self.base_terminal_names)) or any(
+            method.spells("abstractmethod") for method in self.methods
+        )
+
+    @property
+    def is_dataclass(self) -> bool:
+        return self.dataclass_decorator is not None
 
 
 @dataclass(frozen=True)

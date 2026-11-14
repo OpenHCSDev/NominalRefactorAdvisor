@@ -420,8 +420,17 @@ class ClassDeclaration(QualifiedDeclaration, SourceLineReference):
     )
     declares_autoregister_meta: bool = field(default=False, kw_only=True)
     """Whether its metaclass registers the classes it creates; set by the index."""
+    is_abstract: bool = field(default=False, kw_only=True)
+    """Whether a base is spelled `ABC` or `ABCMeta`, or a direct method is decorated
+    with something bound to `abc.abstractmethod` where the class is declared."""
 
     qualified_name = AliasProperty[str]("symbol")
+
+    @property
+    def is_dataclass(self) -> bool:
+        """Whether a decorator bound to a dataclass-like declaration declares the class."""
+
+        return not isinstance(self.dataclass_declaration, NoDataclassDeclaration)
 
     @property
     def member_binding_names(self) -> frozenset[str]:
@@ -1256,7 +1265,6 @@ class CompactIndexedClass(CompactClassHeader):
     type_parameter_names: tuple[str, ...] = ()
     """The class's own `class C[T]:` type parameters."""
     abstract_method_names: tuple[str, ...] = ()
-    is_abstract: bool = False
     is_registration_authority: bool = False
     """Named or configured as a registration authority; the index adds a registering metaclass."""
     autoregister_registry_key_attr_name: str | None = None
