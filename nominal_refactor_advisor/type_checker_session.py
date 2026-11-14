@@ -77,6 +77,11 @@ class TypeCheckerTimingLedger:
             cls._active.reset(token)
 
 
+class ReceiverTypingDetector:
+    """A detector that types receivers with a whole-package type-checker build:
+    the longest item of any analysis it is part of, so it is started first."""
+
+
 # Outside a scan's scope the timing is recorded into a ledger nobody reads.
 TypeCheckerTimingLedger._active = ContextVar(
     "type_checker_timing_ledger", default=TypeCheckerTimingLedger()
@@ -297,6 +302,7 @@ class BuiltTypeChecker(TypeCheckerSession):
 
 __all__ = (
     "BuiltTypeChecker",
+    "ReceiverTypingDetector",
     "SourceFiles",
     "SourceTexts",
     "TypeCheckerSession",

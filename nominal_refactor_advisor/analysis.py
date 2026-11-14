@@ -49,6 +49,7 @@ from nominal_refactor_advisor.worker_pool import (
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.type_checker_session import (
+    ReceiverTypingDetector,
     TypeCheckerTiming,
     TypeCheckerTimingLedger,
 )
@@ -1570,6 +1571,17 @@ class BoundedCompactProjectionManifest:
                             },
                         )
                     )
+                )
+            )
+            # A whole-package type-checker build is the longest group; started
+            # first, the others finish beside it instead of after it.
+            groups = tuple(
+                sorted(
+                    groups,
+                    key=lambda group: not any(
+                        issubclass(detector_type, ReceiverTypingDetector)
+                        for detector_type in group[1]
+                    ),
                 )
             )
             group_results = group_plan.map_state(

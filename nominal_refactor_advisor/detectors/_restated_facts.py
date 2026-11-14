@@ -36,6 +36,7 @@ from nominal_refactor_advisor.refactors.dispatch_polymorphism import (
     LiteralDispatchFindingRecipeSynthesizer,
 )
 from nominal_refactor_advisor.type_checker_session import (
+    ReceiverTypingDetector,
     SourceFiles,
     SourceTexts,
     TypeCheckerSession,
@@ -580,6 +581,7 @@ class ProbeOwnerQuery:
 class ForeignAbsenceProbeDetector(
     JoinedRestatedFactDetector[ProbeOwnerContext, ForeignAbsenceSite],
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
+    ReceiverTypingDetector,
 ):
     """`other.attr is None` or `is not None` on an object that is not the method's own."""
 

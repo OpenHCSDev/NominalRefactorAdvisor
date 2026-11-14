@@ -50,17 +50,14 @@ class WorkerPlan:
         items: Iterable[WorkItemT],
     ) -> list[WorkResultT]:
         """Run `state` over `items` under this plan's worker budget. Each worker
-        installs the state once; a task carries only its item."""
+        installs the state once; a task carries only its item, and a worker that
+        finishes takes the next one, so one long item never holds others back."""
         if not self.uses_process_pool:
             return [state.run(item) for item in items]
         with self.pool(PoolWorkerState.install, (state,)) as executor:
             return [
                 cast(WorkResultT, result)
-                for result in executor.map(
-                    PoolWorkerState.run_installed,
-                    items,
-                    chunksize=self.process_map_chunksize,
-                )
+                for result in executor.map(PoolWorkerState.run_installed, items)
             ]
 
     @contextmanager
@@ -126,12 +123,6 @@ class WorkerPlan:
     @property
     def uses_process_pool(self) -> bool:
         return self.effective_worker_count > 1
-
-    @property
-    def process_map_chunksize(self) -> int:
-        if not self.uses_process_pool:
-            return 1
-        return max(1, self.work_item_count // (self.effective_worker_count * 2))
 
 
 class PoolWorkerState(ABC, Generic[WorkItemT, WorkResultT]):
