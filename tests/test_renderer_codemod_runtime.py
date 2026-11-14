@@ -11,7 +11,9 @@ from typing import ClassVar
 
 import pytest
 
-from nominal_refactor_advisor.analysis import analyze_path
+from nominal_refactor_advisor.analysis import analyze_detector_types
+from nominal_refactor_advisor.detectors._base import DetectorConfig, IssueDetector
+from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodBackend,
@@ -81,6 +83,20 @@ if __name__ == "__main__":
 '''
 
 
+def _detector_findings(root: Path, detector_id: str) -> tuple[RefactorFinding, ...]:
+    """The findings of the one detector a test checks, from that detector alone."""
+
+    return tuple(
+        analyze_detector_types(
+            parse_python_modules(root),
+            DetectorConfig(),
+            detector_types=IssueDetector.registered_detector_types_with_ids(
+                frozenset({detector_id})
+            ),
+        )
+    )
+
+
 def _execute(path: Path) -> dict[str, object]:
     result = subprocess.run(
         [sys.executable, str(path)],
@@ -121,10 +137,7 @@ def test_renderer_and_detector_collapse_preserve_runtime(
     assert _execute(module_path) == expected
 
     for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
-        findings = tuple(
-            finding for finding in analyze_path(tmp_path)
-            if finding.detector_id == detector_id
-        )
+        findings = _detector_findings(tmp_path, detector_id)
         assert len(findings) == 1
         snapshot = CodemodSourceSnapshot.from_modules(
             parse_python_modules(tmp_path), findings,
@@ -167,10 +180,7 @@ def test_detector_collapse_keeps_class_dependent_renderers(
     expected = _execute(module_path)
 
     for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
-        findings = tuple(
-            finding for finding in analyze_path(tmp_path)
-            if finding.detector_id == detector_id
-        )
+        findings = _detector_findings(tmp_path, detector_id)
         assert len(findings) == 1
         snapshot = CodemodSourceSnapshot.from_modules(
             parse_python_modules(tmp_path), findings,
@@ -217,10 +227,7 @@ def test_detector_rewrites_require_nominal_base_identity(
         "print(json.dumps({'name': ProbeDetector.__name__}))\n", newline=""
     )
     assert _execute(module_path) == {"name": "ProbeDetector"}
-    findings = tuple(
-        finding for finding in analyze_path(tmp_path)
-        if finding.detector_id == detector_id
-    )
+    findings = _detector_findings(tmp_path, detector_id)
     assert len(findings) == 1
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
     plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
@@ -262,10 +269,7 @@ def test_detector_rewrites_follow_nominal_base_aliases(
     module_path.write_text(source, newline="")
     expected = _execute(module_path)
     for detector_id in ("direct_build_finding_renderer", "declarative_detector_class"):
-        findings = tuple(
-            finding for finding in analyze_path(tmp_path)
-            if finding.detector_id == detector_id
-        )
+        findings = _detector_findings(tmp_path, detector_id)
         assert len(findings) == 1
         snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
@@ -314,10 +318,7 @@ def test_detector_rewrite_retains_unresolved_binding_evidence(
         "class ProbeDetector(ModuleCollectorCandidateDetector[ProbeCandidate]):\n"
         "    finding_spec = SPEC\n    finding_renderer = RENDERER\n" + suffix, newline=""
     )
-    findings = tuple(
-        finding for finding in analyze_path(tmp_path)
-        if finding.detector_id == "declarative_detector_class"
-    )
+    findings = _detector_findings(tmp_path, "declarative_detector_class")
     assert len(findings) == 1
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
     plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
@@ -333,10 +334,7 @@ def test_saved_detector_plan_reproves_imports_on_execution(
     module_path.write_text(_RUNTIME_SOURCE.replace("PAYLOAD", "'summary', ()"), newline="")
     expected = _execute(module_path)
     for current_id in ("direct_build_finding_renderer", "declarative_detector_class"):
-        findings = tuple(
-            finding for finding in analyze_path(tmp_path)
-            if finding.detector_id == current_id
-        )
+        findings = _detector_findings(tmp_path, current_id)
         snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
         plan = snapshot.plan_from_findings(findings, detector_ids=(current_id,))
         assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
