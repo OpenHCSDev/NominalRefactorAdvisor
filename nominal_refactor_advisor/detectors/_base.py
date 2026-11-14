@@ -61,6 +61,7 @@ from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     ClassStatement,
+    FunctionStatement,
     IndexedClass,
     ModuleClassStatements,
 )
@@ -174,7 +175,6 @@ from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
-    _is_abstract_method,
     _is_upper_snake_identifier,
     ModuleNamedSequenceMap,
     ModuleNamedValues,
@@ -4016,15 +4016,6 @@ def _residual_closed_axis_branching_candidates_from_compact_specs(
     )
 
 
-def _is_classmethod(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(
-        (
-            ExpressionReference.decoded(decorator).terminal_name == "classmethod"
-            for decorator in node.decorator_list
-        )
-    )
-
-
 def _registry_maturity_missing_signals(
     *,
     registered_case_count: int,
@@ -4411,12 +4402,12 @@ _REGISTRY_PROJECTION_SURFACE_ANALYZER = _RegistryProjectionSurfaceAnalyzer()
 
 
 def _manual_record_registration_shape(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
+    method: FunctionStatement,
 ) -> ManualRecordRegistrationShape | None:
-    body = statements_without_docstring(list(method.body))
+    body = statements_without_docstring(list(method.node.body))
     return (
         Maybe.of(body)
-        .filter(lambda _body: _is_classmethod(method))
+        .filter(lambda _body: method.spells("classmethod"))
         .combine(
             _manual_record_registration_key_expr,
             lambda _body, key_expr: _ManualRecordRegistrationKeyContext(
@@ -4513,9 +4504,9 @@ def _manual_keyed_record_table_group_candidates(
         lookup_methods = [
             (method, shape)
             for method in declared.methods
-            if _is_classmethod(method)
+            if method.spells("classmethod")
             and method.name.startswith("for_")
-            and (shape := RegistryLookupShape.from_method(method)) is not None
+            and (shape := RegistryLookupShape.from_method(method.node)) is not None
         ]
         if len(lookup_methods) != 1:
             continue
@@ -4626,14 +4617,14 @@ def _same_type_constructor_method_names(
     accepted_class_names = ("cls", class_name)
     names: list[str] = []
     for method in declared.methods:
-        if _is_classmethod(method):
+        if method.spells("classmethod"):
             if include_classmethods and _returns_constructor_call(
-                method, accepted_names=accepted_class_names
+                method.node, accepted_names=accepted_class_names
             ):
                 names.append(method.name)
             continue
         if include_instance_methods and _returns_constructor_call(
-            method, accepted_names=accepted_instance_names
+            method.node, accepted_names=accepted_instance_names
         ):
             names.append(method.name)
     return sorted_tuple(set(names))
@@ -4667,13 +4658,13 @@ def _manual_structural_record_mechanics_group_candidates(
         if not base_names:
             continue
         validate_method = declared.method_named("validate")
-        if validate_method is None or _validation_guard_count(validate_method) < 3:
+        if validate_method is None or _validation_guard_count(validate_method.node) < 3:
             continue
         projection_method_names = sorted_tuple(
             (
                 method.name
                 for method in declared.methods
-                if _returns_tuple_of_self_attributes(method)
+                if _returns_tuple_of_self_attributes(method.node)
             )
         )
         if not projection_method_names:
@@ -5083,17 +5074,17 @@ def _implicit_self_contract_mixin_candidates(
         cast_type_names: set[str] = set()
         accessed_attr_names: set[str] = set()
         for method in indexed_class.methods:
-            if _is_abstract_method(method):
+            if method.spells("abstractmethod"):
                 continue
-            alias_names, method_cast_type_names = _self_cast_alias_names(method)
+            alias_names, method_cast_type_names = _self_cast_alias_names(method.node)
             if not alias_names:
                 continue
             method_names.append(method.name)
-            method_lines.append(method.lineno)
+            method_lines.append(method.node.lineno)
             cast_type_names.update(method_cast_type_names)
             accessed_attr_names.update(
                 SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
-                    method, root_names=set(alias_names)
+                    method.node, root_names=set(alias_names)
                 )
             )
         if not method_names:

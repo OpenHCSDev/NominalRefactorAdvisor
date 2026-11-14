@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Generic, TypeAlias, TypeVar
 
-from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
     ParsedModule,
@@ -62,15 +61,6 @@ def _constant_string(node: ast.AST | None) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
     return None
-
-
-def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    return any(
-        (
-            ExpressionReference.decoded(decorator).terminal_name == "abstractmethod"
-            for decorator in node.decorator_list
-        )
-    )
 
 
 _IGNORED_BASE_NAMES = frozenset({"ABC", "object"})
@@ -197,7 +187,6 @@ __all__ = (
     "_constant_string",
     "is_docstring_statement",
     "statements_without_docstring",
-    "_is_abstract_method",
     "_selector_attribute_name",
     "CLASS_NAME_ALGEBRA",
     "_IGNORED_BASE_NAMES",

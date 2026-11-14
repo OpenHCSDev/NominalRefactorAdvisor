@@ -112,7 +112,6 @@ from nominal_refactor_advisor.semantic_match import (
     single_return_value,
 )
 from nominal_refactor_advisor.detectors._base import (
-    _is_classmethod,
     _module_builder_call_shapes,
     _PIPELINE_ASSIGN_STAGE,
     _PIPELINE_RETURN_STAGE,
@@ -726,16 +725,13 @@ def _derived_query_index_candidates(
 
 
 def _structural_observation_property_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
+    module: ParsedModule, declared: ClassStatement
 ) -> Iterable[StructuralObservationPropertyCandidate]:
-    for statement in node.body:
-        if not isinstance(statement, ast.FunctionDef):
+    node = declared.node
+    for method in declared.methods:
+        if not method.spells("property"):
             continue
-        if not any(
-            ExpressionReference.decoded(decorator).terminal_name == "property"
-            for decorator in statement.decorator_list
-        ):
-            continue
+        statement = method.node
         body = statements_without_docstring(statement.body)
         if len(body) != 1 or not isinstance(body[0], ast.Return):
             continue
@@ -761,10 +757,12 @@ def _structural_observation_property_candidates_for_class(
 def _structural_observation_property_candidates(
     module: ParsedModule,
 ) -> tuple[StructuralObservationPropertyCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        ast.ClassDef,
-        _structural_observation_property_candidates_for_class,
+    return tuple(
+        candidate
+        for declared in module.fact(ModuleClassStatements).statements
+        for candidate in _structural_observation_property_candidates_for_class(
+            module, declared
+        )
     )
 
 
@@ -851,16 +849,10 @@ def _property_alias_hook_groups(
         )
         if not base_names:
             continue
-        for statement in node.body:
-            if not isinstance(statement, ast.FunctionDef):
+        for method in declared.methods:
+            if not method.spells("property"):
                 continue
-            if not any(
-                (
-                    ExpressionReference.decoded(decorator).terminal_name == "property"
-                    for decorator in statement.decorator_list
-                )
-            ):
-                continue
+            statement = method.node
             if len(statement.args.args) != 1:
                 continue
             body = statements_without_docstring(statement.body)
@@ -1148,7 +1140,7 @@ def _string_backed_reflective_nominal_lookup_candidates(
         if len(descendants) < config.min_reflective_selector_values:
             continue
         for method in declared.methods:
-            for subnode in _walk_nodes(method):
+            for subnode in _walk_nodes(method.node):
                 lookup_shape = _reflective_lookup_shape(subnode)
                 if lookup_shape is None:
                     continue
@@ -1226,9 +1218,10 @@ def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
 def _class_init_concrete_param_backed_attrs(
     declared: ClassStatement,
 ) -> dict[str, str]:
-    init_method = declared.method_named("__init__")
-    if init_method is None:
+    init_statement = declared.method_named("__init__")
+    if init_statement is None:
         return {}
+    init_method = init_statement.node
     parameter_type_names = {
         argument.arg: annotation_type_names(
             argument.annotation
@@ -1290,11 +1283,11 @@ def _concrete_config_field_probe_candidates(
         if not concrete_config_attrs:
             continue
         for method in declared.methods:
-            aliases = METHOD_PROJECTION.aliases_to_self_attrs(method)
+            aliases = METHOD_PROJECTION.aliases_to_self_attrs(method.node)
             grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
             grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
             grouped_lines: dict[tuple[str, str], int] = {}
-            for subnode in _walk_nodes(method):
+            for subnode in _walk_nodes(method.node):
                 if not isinstance(subnode, ast.Call):
                     continue
                 lookup = BuiltinCall.decoded(subnode)
@@ -1547,7 +1540,7 @@ def _registered_union_surface_candidates_for_node(
                 )
             )
             is None
-            or not _is_classmethod(method)
+            or not method.spells("classmethod")
             for root_node in root_nodes
         )
     ):
@@ -2916,7 +2909,7 @@ def _static_minimum_evidence_count(declared: ClassStatement) -> int | None:
     if minimum_method is None:
         return 1
     returns = tuple(
-        child for child in _walk_nodes(minimum_method) if isinstance(child, ast.Return)
+        child for child in _walk_nodes(minimum_method.node) if isinstance(child, ast.Return)
     )
     returned = single_item(returns)
     if returned is None:
@@ -2933,7 +2926,7 @@ def _static_summary_expression(
         .map(
             lambda summary_method: tuple(
                 child
-                for child in _walk_nodes(summary_method)
+                for child in _walk_nodes(summary_method.node)
                 if isinstance(child, ast.Return)
             )
         )
@@ -2957,9 +2950,10 @@ def _static_typed_observation_detector_candidates(
             & set(declared.base_terminal_names)
         ):
             continue
-        evidence_method = declared.method_named("_module_evidence")
-        if evidence_method is None:
+        evidence_statement = declared.method_named("_module_evidence")
+        if evidence_statement is None:
             continue
+        evidence_method = evidence_statement.node
         collection = _typed_observation_collection_call(evidence_method)
         if collection is None:
             continue
@@ -3756,7 +3750,7 @@ def _schema_accessor_family_candidates(
             defaultdict(list)
         )
         for method in declared.methods:
-            row = _schema_accessor_method_row(method)
+            row = _schema_accessor_method_row(method.node)
             if row is not None:
                 grouped_rows[row[1]].append(row)
         for enum_name, rows in grouped_rows.items():

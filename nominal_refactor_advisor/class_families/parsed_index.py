@@ -50,7 +50,46 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.native_declarations import ClassNamespaceDeclaration
 
 
-class ClassStatement:
+class DecoratedStatement:
+    """A class or def statement, read for its name and the decorators it spells."""
+
+    node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
+
+    @property
+    def name(self) -> str:
+        return self.node.name
+
+    @cached_property
+    def decorator_names(self) -> frozenset[str]:
+        """The last name of each decorator; a called one is read by what it calls.
+
+        This reads names, not bindings: `abc.abstractmethod` and a local
+        function named `abstractmethod` both read as `abstractmethod`.
+        """
+
+        names: set[str] = set()
+        for decorator in self.node.decorator_list:
+            while isinstance(decorator, ast.Call):
+                decorator = decorator.func
+            name = ExpressionReference.decoded(decorator).terminal_name
+            if name is not None:
+                names.add(name)
+        return frozenset(names)
+
+    def spells(self, decorator_name: str) -> bool:
+        """Whether a decorator of this statement is spelled `decorator_name`."""
+
+        return decorator_name in self.decorator_names
+
+
+@dataclass(frozen=True)
+class FunctionStatement(DecoratedStatement):
+    """One def statement, each answer about its own source read once."""
+
+    node: ast.FunctionDef | ast.AsyncFunctionDef
+
+
+class ClassStatement(DecoratedStatement):
     """What one class statement's own source says, each answer read once.
 
     `IndexedClass` is a statement the family index names. Any other one is an
@@ -60,23 +99,21 @@ class ClassStatement:
     node: ast.ClassDef
 
     @cached_property
-    def methods(self) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]:
+    def methods(self) -> tuple[FunctionStatement, ...]:
         """The functions the body defines directly, in source order."""
 
-        return tuple(FunctionDefinition.within(self.node.body))
+        return tuple(
+            FunctionStatement(node) for node in FunctionDefinition.within(self.node.body)
+        )
 
     @cached_property
-    def first_methods_by_name(
-        self,
-    ) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
-        found: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+    def first_methods_by_name(self) -> dict[str, FunctionStatement]:
+        found: dict[str, FunctionStatement] = {}
         for method in self.methods:
             found.setdefault(method.name, method)
         return found
 
-    def method_named(
-        self, name: str
-    ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    def method_named(self, name: str) -> FunctionStatement | None:
         """The body's first direct definition of `name`."""
 
         return self.first_methods_by_name.get(name)
@@ -167,9 +204,7 @@ class ClassStatement:
         """
 
         return bool({"ABC", "ABCMeta"} & set(self.base_terminal_names)) or any(
-            ExpressionReference.decoded(decorator).terminal_name == "abstractmethod"
-            for method in self.methods
-            for decorator in method.decorator_list
+            method.spells("abstractmethod") for method in self.methods
         )
 
 
@@ -187,11 +222,7 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration, ClassStatement):
 
     @property
     def is_final(self) -> bool:
-        return any(
-            (isinstance(decorator, ast.Name) and decorator.id == "final")
-            or (isinstance(decorator, ast.Attribute) and decorator.attr == "final")
-            for decorator in self.node.decorator_list
-        )
+        return self.spells("final")
 
     @classmethod
     def from_parsed_class(

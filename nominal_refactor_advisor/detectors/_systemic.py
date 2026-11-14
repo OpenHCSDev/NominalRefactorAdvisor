@@ -178,7 +178,6 @@ from nominal_refactor_advisor.class_families.parsed_index import (
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     _camel_case,
-    _is_abstract_method,
 )
 from nominal_refactor_advisor.detectors._finding_spec_defaults import (
     FindingSpecConstructionCandidateCollector,
@@ -273,17 +272,17 @@ def _compact_implicit_self_mixin_facts(
         cast_type_names: set[str] = set()
         accessed_attribute_names: set[str] = set()
         for method in indexed_class.methods:
-            if _is_abstract_method(method):
+            if method.spells("abstractmethod"):
                 continue
-            alias_names, method_cast_types = _self_cast_alias_names(method)
+            alias_names, method_cast_types = _self_cast_alias_names(method.node)
             if not alias_names:
                 continue
             method_names.append(method.name)
-            method_lines.append(method.lineno)
+            method_lines.append(method.node.lineno)
             cast_type_names.update(method_cast_types)
             accessed_attribute_names.update(
                 SYNTAX_PROJECTION_AUTHORITY.attribute_names_for_roots(
-                    method, root_names=set(alias_names)
+                    method.node, root_names=set(alias_names)
                 )
             )
         if method_names:
@@ -835,20 +834,13 @@ def _projection_property_family_candidates(
     module: ParsedModule,
 ) -> tuple[ProjectionPropertyFamilyCandidate, ...]:
     candidates: list[ProjectionPropertyFamilyCandidate] = []
-    for class_node in (
-        node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
-    ):
+    for declared in module.fact(ModuleClassStatements).statements:
+        class_node = declared.node
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
-        for statement in class_node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        for method in declared.methods:
+            if not method.spells("property"):
                 continue
-            if not any(
-                (
-                    ExpressionReference.decoded(decorator).terminal_name == "property"
-                    for decorator in statement.decorator_list
-                )
-            ):
-                continue
+            statement = method.node
             body = statements_without_docstring(statement.body)
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 continue
@@ -948,17 +940,6 @@ def _collection_projection_property_shape(
     )
 
 
-def _is_property_method(
-    method: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> bool:
-    return any(
-        (
-            ExpressionReference.decoded(decorator).terminal_name == "property"
-            for decorator in method.decorator_list
-        )
-    )
-
-
 def _collection_projection_property_family_candidates(
     module: ParsedModule,
 ) -> tuple[CollectionProjectionPropertyFamilyCandidate, ...]:
@@ -966,9 +947,10 @@ def _collection_projection_property_family_candidates(
     for declared in module.fact(ModuleClassStatements).statements:
         class_node = declared.node
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
-        for statement in declared.methods:
-            if not _is_property_method(statement):
+        for method in declared.methods:
+            if not method.spells("property"):
                 continue
+            statement = method.node
             body = statements_without_docstring(statement.body)
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 continue
