@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import importlib.util
 import os
+from collections.abc import Mapping
 from pathlib import Path
 import pickle
 import sys
@@ -70,7 +71,6 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisFindingCacheChunkStreamHeader,
     AnalysisFindingCacheEntryPayload,
     AnalysisFindingCache,
-    detector_implementation_module_names,
     DetectorRegistrySignature,
     GlobalDetectorAnalysisCacheIdentity,
     GlobalDetectorFamilyAnalysisCacheIdentity,
@@ -642,6 +642,7 @@ def test_module_detector_cache_reuses_unchanged_implementation_bundle(
 
 def test_detector_shard_cache_identity_ignores_orchestration_implementation(
     tmp_path: Path,
+    detector_implementation_modules: Mapping[type[IssueDetector], frozenset[str]],
 ) -> None:
     """Detector-shard identities are keyed by their detectors' own code, through
     the detector registry; only the aggregate entry also hashes orchestration and
@@ -654,12 +655,7 @@ def test_detector_shard_cache_identity_ignores_orchestration_implementation(
         "nominal_refactor_advisor.analysis",
         "nominal_refactor_advisor.analysis_cache",
     }
-    with ScanCache.scope():  # one dependency graph for every detector, as in a scan
-        detector_modules = {
-            name
-            for detector_type in IssueDetector.registered_detector_types()
-            for name in detector_implementation_module_names(detector_type)
-        }
+    detector_modules = frozenset().union(*detector_implementation_modules.values())
 
     assert not orchestration & detector_modules
     assert "nominal_refactor_advisor.detectors._base" in detector_modules
@@ -681,15 +677,13 @@ def test_detector_shard_cache_identity_ignores_orchestration_implementation(
     assert type(aggregate.engine) is analysis_cache_module.AnalysisEngineSignature
 
 
-def test_each_detector_is_keyed_on_its_own_declaration_dependencies() -> None:
+def test_each_detector_is_keyed_on_its_own_declaration_dependencies(
+    detector_implementation_modules: Mapping[type[IssueDetector], frozenset[str]],
+) -> None:
     """A detector's signature hashes its implementation closure and the projection
     families it reads, so an edit re-keys only the detectors it reaches."""
 
-    with ScanCache.scope():  # one dependency graph for every detector, as in a scan
-        closures = {
-            detector_type: frozenset(detector_implementation_module_names(detector_type))
-            for detector_type in IssueDetector.registered_detector_types()
-        }
+    closures = detector_implementation_modules
     for detector_type, module_names in closures.items():
         assert detector_type.__module__ in module_names
         if issubclass(detector_type, base_detectors.CompactModuleProjectionDetectorMixin):

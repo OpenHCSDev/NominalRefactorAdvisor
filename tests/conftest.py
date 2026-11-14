@@ -7,7 +7,7 @@ import ast
 import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 
 import pytest
 
@@ -17,7 +17,10 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSet,
     parse_python_modules,
 )
+from nominal_refactor_advisor.analysis_cache import detector_implementation_module_names
 from nominal_refactor_advisor.detectors import _base as collector_runtime
+from nominal_refactor_advisor.detectors._base import IssueDetector
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.interpreter import CompilerIdentity
 from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.source_geometry import read_source_text
@@ -103,6 +106,18 @@ def repository_modules() -> ParsedModuleSet:
     repository's source shares this parse and the facts its modules collect."""
 
     return parse_python_modules(Path(nominal_refactor_advisor.__file__).parent)
+
+
+@pytest.fixture(scope="session")
+def detector_implementation_modules() -> Mapping[type[IssueDetector], frozenset[str]]:
+    """Each registered detector's implementation closure, derived once per test
+    process under one scan scope, as a scan derives it."""
+
+    with ScanCache.scope():
+        return {
+            detector_type: frozenset(detector_implementation_module_names(detector_type))
+            for detector_type in IssueDetector.registered_detector_types()
+        }
 
 
 @pytest.fixture(scope="session")
