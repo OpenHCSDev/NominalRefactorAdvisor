@@ -10,7 +10,7 @@ from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from collections import defaultdict, Counter
 from dataclasses import dataclass
 from typing import Sequence, Self, Iterable, ClassVar, cast
-from nominal_refactor_advisor.ast_tools import ParsedModule, statements_without_docstring, ScopedAstObservation
+from nominal_refactor_advisor.ast_tools import ParsedModule, statements_without_docstring, ScopedAstObservation, BuiltinCallName
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
     FindingBuildContext,
@@ -38,7 +38,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     NamedStringSequenceSpecsByName,
     HELPER_SUPPORT_PROJECTION_AUTHORITY,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
-    _SEQUENCE_WRAPPER_CALL_NAMES,
     _call_display_name,
     _name_mentions,
     _raised_exception_name,
@@ -652,6 +651,8 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
     delegate_name: str
     scope_role: str
 
+    _SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
+
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         return tuple(
@@ -731,7 +732,7 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
     def _delegate_name_from_return(node: ast.AST) -> str | None:
         if isinstance(node, ast.Call):
             outer_name = _call_display_name(node)
-            if outer_name in _SEQUENCE_WRAPPER_CALL_NAMES and len(node.args) == 1:
+            if outer_name in GuardedDelegatorCandidate._SEQUENCE_WRAPPER_CALL_NAMES and len(node.args) == 1:
                 inner = node.args[0]
                 if isinstance(inner, ast.Call):
                     return _call_display_name(inner)

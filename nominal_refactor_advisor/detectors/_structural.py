@@ -72,11 +72,9 @@ from nominal_refactor_advisor.detectors._helpers import (
     BaseBundleClassGroups,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
     _RegisteredUnionSurfaceSource,
-    _CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES,
     _annotation_union_members,
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
     _ABC_BASE_NAME,
-    _COMPOSABLE_BASE_NAME_SUFFIXES,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
@@ -553,6 +551,15 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
     class_count: int
     line_count: int
 
+    _COMPOSABLE_BASE_NAME_SUFFIXES = (
+        _ABC_BASE_NAME,
+        "Base",
+        "Carrier",
+        "Contract",
+        "Mixin",
+        "Template",
+    )
+
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         grouped: BaseBundleClassGroups = defaultdict(list)
@@ -629,7 +636,7 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
     @staticmethod
     def _is_composable_base_name(base_name: str) -> bool:
         return base_name == _ABC_BASE_NAME or base_name.endswith(
-            _COMPOSABLE_BASE_NAME_SUFFIXES
+            RepeatedBaseBundleCandidate._COMPOSABLE_BASE_NAME_SUFFIXES
         )
 
     @staticmethod
@@ -805,6 +812,13 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
     suggested_contract_name: str
     common_base_names: tuple[str, ...]
 
+    _CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES = (
+        "build",
+        "create",
+        "from_",
+        "make",
+    )
+
     @property
     def witness_name(self) -> str:
         return f"{self.function_name}.{self.parameter_name}"
@@ -963,7 +977,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
             "Factory"
             if any(
                 (
-                    attribute_name.startswith(_CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES)
+                    attribute_name.startswith(ConcreteTypeUnionContractCandidate._CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES)
                     for attribute_name in observed_attribute_names
                 )
             )

@@ -171,12 +171,12 @@ from nominal_refactor_advisor.detectors._base import (
 )
 from nominal_refactor_advisor.detectors._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
-    METHOD_PROJECTION,
     _param_backed_name,
     HELPER_SUPPORT_PROJECTION_AUTHORITY,
     MutableNamedStringSequenceSpecs,
     NamedStringSequenceSpecs,
     _guarded_wrapper_node_types,
+    MethodProjection,
 )
 from nominal_refactor_advisor.detectors._substrate_support import _constant_string
 from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
@@ -2472,6 +2472,8 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
     missing_field_names: tuple[str, ...]
     probe_builtin_names: tuple[str, ...]
 
+    METHOD_PROJECTION = MethodProjection()
+
     @classmethod
     def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
         classes_by_name = module.fact(ModuleClassStatements).by_name
@@ -2490,7 +2492,7 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
             if not concrete_config_attrs:
                 continue
             for method in declared.methods:
-                aliases = METHOD_PROJECTION.aliases_to_self_attrs(method.node)
+                aliases = cls.METHOD_PROJECTION.aliases_to_self_attrs(method.node)
                 grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
                 grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
                 grouped_lines: dict[tuple[str, str], int] = {}

@@ -161,6 +161,7 @@ from nominal_refactor_advisor.detectors._base import (
     _is_enum_projection_table_value,
     _returns_constructor_call,
     _self_cast_type_name,
+    StaticModulePatternDetector,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
@@ -168,11 +169,6 @@ from nominal_refactor_advisor.detectors._helpers import (
     _finding_spec_build_boilerplate_candidates,
     _from_namespace_keyword_names,
     TupleIndexSemanticOpacityCandidateCollector,
-    _SCHEMA_ACCESSOR_MIN_METHODS,
-    _STATIC_OBSERVATION_DETECTOR_BASE_NAMES,
-    _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES,
-    _STATIC_OBSERVATION_CONTROL_FLOW_NODES,
-    _SCHEMA_ACCESSOR_COPY_CALL_NAMES,
     _compare_mentions_none,
     _node_mentions_name,
     _pipeline_stage,
@@ -4517,6 +4513,17 @@ class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCa
     summary_expression: str
     line_count: int
 
+    _STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({StaticModulePatternDetector.__name__})
+
+    _STATIC_OBSERVATION_CONTROL_FLOW_NODES = (
+        ast.If,
+        ast.For,
+        ast.AsyncFor,
+        ast.While,
+        ast.Try,
+        ast.Match,
+    )
+
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         candidates: list[Self] = []
@@ -4525,7 +4532,7 @@ class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCa
             if node.end_lineno is None:
                 continue
             if not (
-                _STATIC_OBSERVATION_DETECTOR_BASE_NAMES
+                cls._STATIC_OBSERVATION_DETECTOR_BASE_NAMES
                 & set(declared.base_terminal_names)
             ):
                 continue
@@ -4566,7 +4573,7 @@ class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCa
     ) -> tuple[str, str] | None:
         if any(
             (
-                isinstance(child, _STATIC_OBSERVATION_CONTROL_FLOW_NODES)
+                isinstance(child, StaticTypedObservationDetectorCandidate._STATIC_OBSERVATION_CONTROL_FLOW_NODES)
                 for child in ast.walk(method)
             )
         ):
@@ -4686,6 +4693,12 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
         ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
     )
 
+    _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
+
+    _SCHEMA_ACCESSOR_MIN_METHODS = 4
+
+    _SCHEMA_ACCESSOR_COPY_CALL_NAMES = BuiltinCallName.schema_accessor_copy_call_names()
+
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         candidates: list[Self] = []
@@ -4699,11 +4712,11 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 if row is not None:
                     grouped_rows[row[1]].append(row)
             for enum_name, rows in grouped_rows.items():
-                if len(rows) < _SCHEMA_ACCESSOR_MIN_METHODS:
+                if len(rows) < cls._SCHEMA_ACCESSOR_MIN_METHODS:
                     continue
                 ordered_rows = tuple(sorted(rows, key=lambda item: (item[5], item[0])))
                 field_names = tuple((row[2] for row in ordered_rows))
-                if len(frozenset(field_names)) < _SCHEMA_ACCESSOR_MIN_METHODS:
+                if len(frozenset(field_names)) < cls._SCHEMA_ACCESSOR_MIN_METHODS:
                     continue
                 axis_system = cls._schema_accessor_axis_system(ordered_rows)
                 if not axis_system.determines(("field",), "method"):
@@ -4752,7 +4765,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
     def _schema_accessor_method_row(
         method: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> tuple[str, str, str, str, str, int, int] | None:
-        if method.name in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES:
+        if method.name in SchemaAccessorFamilyCandidate._SCHEMA_ACCESSOR_FETCH_METHOD_NAMES:
             return None
         if _is_private_symbol_name(method.name):
             return None
@@ -4839,7 +4852,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 _schema_accessor_self_fetch_func,
                 lambda call, func: (call, func),
             )
-            .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
+            .filter(lambda context: context[1].attr in SchemaAccessorFamilyCandidate._SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
             .combine(
                 lambda context: ExpressionReference.decoded(
                     context[0].args[0]
@@ -4874,7 +4887,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 and _node_mentions_name(node.args[0], local_name)
             ):
                 kinds.add("runtime_type_guard")
-            elif call_name in _SCHEMA_ACCESSOR_COPY_CALL_NAMES and any(
+            elif call_name in SchemaAccessorFamilyCandidate._SCHEMA_ACCESSOR_COPY_CALL_NAMES and any(
                 _node_mentions_name(argument, local_name) for argument in node.args
             ):
                 kinds.add(f"{call_name}_coercion")

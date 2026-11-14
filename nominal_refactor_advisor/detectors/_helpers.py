@@ -101,7 +101,6 @@ from nominal_refactor_advisor.detectors._base import (
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
     SemanticOverlapResidueAxisCandidate,
-    StaticModulePatternDetector,
     TupleIndexSemanticOpacityCandidate,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
@@ -125,9 +124,6 @@ MethodFamilyCandidateItemT = TypeVar("MethodFamilyCandidateItemT", covariant=Tru
 
 
 _IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
-_SEQUENCE_WRAPPER_CALL_NAMES = BuiltinCallName.sequence_wrapper_names()
-
-
 class HelperSupportProjectionAuthority:
     def expression_root_names(self, node: ast.AST) -> set[str]:
         roots: set[str] = set()
@@ -234,9 +230,6 @@ class MethodProjection:
         return aliases
 
 
-METHOD_PROJECTION = MethodProjection()
-
-
 def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
@@ -277,16 +270,6 @@ def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
 
 
 _ABC_BASE_NAME = "ABC"
-_COMPOSABLE_BASE_NAME_SUFFIXES = (
-    _ABC_BASE_NAME,
-    "Base",
-    "Carrier",
-    "Contract",
-    "Mixin",
-    "Template",
-)
-
-
 @dataclass(frozen=True)
 class _RegisteredUnionSurfaceSource:
     owner_name: str
@@ -308,14 +291,6 @@ class _RegisteredUnionSurfaceSource:
         return (
             None if target_name is None else cls(target_name, node.value, node.lineno)
         )
-
-
-_CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES = (
-    "build",
-    "create",
-    "from_",
-    "make",
-)
 
 
 def _annotation_union_members(node: ast.AST) -> tuple[ast.AST, ...]:
@@ -1349,17 +1324,6 @@ def _pipeline_stage(statement: ast.stmt) -> PipelineAssemblyStage | None:
     )
 
 
-_STATIC_OBSERVATION_DETECTOR_BASE_NAMES = frozenset({StaticModulePatternDetector.__name__})
-_STATIC_OBSERVATION_CONTROL_FLOW_NODES = (
-    ast.If,
-    ast.For,
-    ast.AsyncFor,
-    ast.While,
-    ast.Try,
-    ast.Match,
-)
-
-
 def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:
     call = as_ast(node, ast.Call)
     if call is None or len(call.args) < 1:
@@ -1664,9 +1628,6 @@ def _assignment_target_arity(target: ast.AST) -> int | None:
     return None
 
 
-_SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
-_SCHEMA_ACCESSOR_MIN_METHODS = 4
-_SCHEMA_ACCESSOR_COPY_CALL_NAMES = BuiltinCallName.schema_accessor_copy_call_names()
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
 
 
