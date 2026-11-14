@@ -372,20 +372,16 @@ class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
     def rewrites(self, context, parsed, path):
         module = parsed.module
         identities = context.declared_identities
-        positions = IdentitySpelling.positions()
         found: dict[int, SpanRewrite] = {}
         imported: dict[int, dict[str, None]] = {}
         created: dict[str, dict[str, None]] = {}
-        for node, detail in IdentityPositions(parsed).spellings():
-            position = positions[detail[0]]
+        for node, site in IdentityPositions(parsed).located_sites():
             if not (
-                position.rewrite(detail, identities, path).rewritable(
-                    DeclaredInterpreter.of(Path(path))
-                )
-                and position.rewrite_kind.tag in self.position_tags
+                site.rewrite(identities).rewritable(DeclaredInterpreter.of(Path(path)))
+                and site.rewrite_kind.tag in self.position_tags
             ):
                 continue
-            named = self.named(detail, identities, path)
+            named = self.named(site, identities, path)
             if named is None:
                 continue
             replacement, how = named
@@ -416,7 +412,7 @@ class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
 
     @abstractmethod
     def named(
-        self, detail: tuple[str, ...], identities: DeclaredIdentities, path: str
+        self, site: IdentitySpelling, identities: DeclaredIdentities, path: str
     ) -> tuple[str, NameImport] | None:
         """The rewritable site's replacement source, and how the file binds the class it names."""
 
@@ -445,8 +441,8 @@ class ReferenceClassNameOperation(ReferenceNamedClassOperation):
     )
     NAME_OF_CLASS: ClassVar[str] = "__name__"
 
-    def named(self, detail, identities, path):
-        binding, holding, literal = detail[-3:]
+    def named(self, site, identities, path):
+        binding, holding, literal = site.binding, site.holding, site.literal
         reference = f"{literal}.{self.NAME_OF_CLASS}"
         if binding:
             return reference, NameImport(literal)
@@ -479,8 +475,8 @@ class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
         "see the member, not the string."
     )
 
-    def named(self, detail, identities, path):
-        _tag, _holding, name, literal = detail
+    def named(self, site, identities, path):
+        name, literal = site.name, site.literal
         member = identities.typed_member(path, name, literal)
         if member is None:
             return None

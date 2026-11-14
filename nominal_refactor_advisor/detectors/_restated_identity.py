@@ -8,7 +8,6 @@ from collections.abc import Iterable, Sequence
 from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     DeclaredIdentityFamily,
-    IdentitySpelling,
     IdentitySpellingFamily,
 )
 from nominal_refactor_advisor.refactors.declaration_reference import (
@@ -83,8 +82,7 @@ class RestatedIdentityDetector(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
     ) -> str:
         spelled = [
-            f"{IdentitySpelling.positions()[site.detail[0]].spelling(site.detail)} "
-            f"({site.detail[0]}, line {site.lineno})"
+            f"{site.spelling()} ({site.tag}, line {site.lineno})"
             for site in sites
         ]
         return (

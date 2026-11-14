@@ -20,11 +20,11 @@ import enum
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field, replace
-from functools import cache, cached_property
+from functools import cache, cached_property, partial
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar, TypeAlias
 
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
@@ -57,6 +57,7 @@ from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
+    TypedRestatingSite,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 
@@ -1001,12 +1002,13 @@ class ClassNameOwners:
         return False
 
 
-class IdentitySpelling(ABC):
-    """How a literal in one kind of position spells an identity.
+@dataclass(frozen=True)
+class IdentitySpelling(TypedRestatingSite, ABC):
+    """A literal in one kind of position spelling an identity.
 
-    Each position class declares its `tag`, which the site carries as its first
-    detail so the join can find the position again; the class alone knows
-    which declared identity its literal can spell.
+    Each position is its own site type with the fields it holds; the class
+    alone knows which declared identity its literal can spell, and its `tag`
+    names the position in reports and rewrite kinds.
     """
 
     tag: ClassVar[str]
@@ -1014,32 +1016,36 @@ class IdentitySpelling(ABC):
     """The rewrite a rewritable site of this position belongs to, one recipe per scan."""
 
     @classmethod
-    def detail(cls, *values: str) -> tuple[str, ...]:
-        return (cls.tag, *(str(value) for value in values))
+    def at(
+        cls, file_path: str, lineno: int, symbol: str, **fields: Any
+    ) -> IdentitySpelling:
+        """The site, grouped by what it spells (its last detail) until resolved."""
 
-    @classmethod
-    def rewrite(
-        cls, detail: Sequence[str], identities: DeclaredIdentities, file_path: str
-    ) -> ReferenceRewrite:
+        site = cls(file_path=file_path, lineno=lineno, symbol=symbol, group="", **fields)
+        return replace(site, group=site.detail[-1])
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.tag, *self.values())
+
+    @abstractmethod
+    def values(self) -> tuple[str, ...]:
+        """What the site holds, in report order."""
+
+        raise NotImplementedError
+
+    def rewrite(self, identities: DeclaredIdentities) -> ReferenceRewrite:
         """Where this site can be rewritten as its reference; most positions cannot."""
 
+        del identities
         return ReferenceRewrite.NONE
 
-    @classmethod
-    def spelling(cls, detail: Sequence[str]) -> str:
+    def spelling(self) -> str:
         """What the site writes: the literal, unless the position says otherwise."""
 
-        return repr(detail[-1])
+        return repr(self.detail[-1])
 
-    @classmethod
-    def positions(cls) -> dict[str, type[IdentitySpelling]]:
-        return {position.tag: position for position in cls.__subclasses__()}
-
-    @classmethod
     @abstractmethod
-    def resolve(
-        cls, site: RestatingSite, identities: DeclaredIdentities
-    ) -> ResolvedIdentity | None:
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
         """The identity this site's literal spells, if the scan declares it."""
 
         raise NotImplementedError
@@ -1052,37 +1058,44 @@ class ResolvedIdentity:
     identity: str
     declared_at: tuple[SourceLocation, ...]
 
-    def restated_by(self, site: RestatingSite) -> RestatingSite:
+    def restated_by(self, site: IdentitySpelling) -> IdentitySpelling:
         return replace(site, group=self.identity)
 
 
-class SpellsClassName:
+@dataclass(frozen=True)
+class SpellsClassName(IdentitySpelling, ABC):
     """A position whose literal is a class's name."""
 
-    @classmethod
-    def resolve(
-        cls, site: RestatingSite, identities: DeclaredIdentities
-    ) -> ResolvedIdentity | None:
-        return identities.class_named(site.detail[-1])
+    literal: str
+
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        return identities.class_named(self.literal)
 
 
-class RewrittenAsDetailedReference:
-    """A position whose site can be rewritten as the reference its detail names."""
+@dataclass(frozen=True)
+class RewrittenAsDetailedReference(IdentitySpelling, ABC):
+    """A position whose site can be rewritten as the reference it names."""
 
-    @classmethod
-    def rewrite(
-        cls, detail: Sequence[str], identities: DeclaredIdentities, file_path: str
-    ) -> ReferenceRewrite:
-        return ReferenceRewrite(detail[1])
+    reference: str
+    literal: str
+
+    def values(self) -> tuple[str, ...]:
+        return (self.reference, self.literal)
+
+    def rewrite(self, identities: DeclaredIdentities) -> ReferenceRewrite:
+        del identities
+        return ReferenceRewrite(self.reference)
 
 
-class TypeSpelling(SpellsClassName, RewrittenAsDetailedReference, IdentitySpelling):
+@dataclass(frozen=True)
+class TypeSpelling(RewrittenAsDetailedReference, SpellsClassName):
     """A class name inside a quoted annotation, base, TypeVar bound or cast type."""
 
     tag = "type"
 
 
-class LazyAnnotationSpelling(RewrittenAsDetailedReference, IdentitySpelling):
+@dataclass(frozen=True)
+class LazyAnnotationSpelling(RewrittenAsDetailedReference):
     """A class name quoted in an annotation that only an eager interpreter needs quoted.
 
     The name is not bound when the annotation would run eagerly (a later class,
@@ -1092,20 +1105,44 @@ class LazyAnnotationSpelling(RewrittenAsDetailedReference, IdentitySpelling):
 
     tag = "annotation"
 
-    @classmethod
-    def resolve(cls, site, identities):
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
         if not ReferenceRewrite.LAZY_INTERPRETER.rewritable(
-            DeclaredInterpreter.of(Path(site.file_path))
+            DeclaredInterpreter.of(Path(self.file_path))
         ):
             return None
-        return identities.class_named(site.detail[-1])
+        return identities.class_named(self.literal)
 
 
 TypeSpelling.rewrite_kind = TypeSpelling
 LazyAnnotationSpelling.rewrite_kind = TypeSpelling
 
 
-class WordSpelling(SpellsClassName, IdentitySpelling):
+@dataclass(frozen=True)
+class NamesClassWhereBound(IdentitySpelling, ABC):
+    """A value position that can hold a class name, with what the literal's name
+    is where it runs: the qualified name it is bound to (`binding`), or, where
+    the file binds the name nowhere, the index of the top-level statement
+    holding it (`holding`)."""
+
+    binding: str
+    holding: str
+    literal: str
+
+    def rewrite(self, identities: DeclaredIdentities) -> ReferenceRewrite:
+        owners = identities.class_names
+        if (self.binding and owners.references(self.binding, self.literal)) or (
+            self.holding
+            and (
+                owners.importable(self.file_path, int(self.holding), self.literal)
+                or owners.new_import(self.file_path, int(self.holding), self.literal)
+            )
+        ):
+            return ReferenceRewrite.ANY_INTERPRETER
+        return ReferenceRewrite.NONE
+
+
+@dataclass(frozen=True)
+class WordSpelling(NamesClassWhereBound, SpellsClassName):
     """A multi-word string passed or returned: a class's name there.
 
     A one-word class name (Read, Open) is also an ordinary word, so only a
@@ -1115,13 +1152,14 @@ class WordSpelling(SpellsClassName, IdentitySpelling):
     """
 
     tag = "word"
+    position: str
 
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        return ClassNameSpelling.rewrite(detail, identities, file_path)
+    def values(self) -> tuple[str, ...]:
+        return (self.position, self.binding, self.holding, self.literal)
 
 
-class ComparedWordSpelling(IdentitySpelling):
+@dataclass(frozen=True)
+class ComparedWordSpelling(NamesClassWhereBound):
     """A multi-word string compared or matched: a class's name or a family member's spelling.
 
     Comparing a value with the spelling asks which declaration it is; a
@@ -1131,17 +1169,17 @@ class ComparedWordSpelling(IdentitySpelling):
 
     tag = "compared word"
 
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        return ClassNameSpelling.rewrite(detail, identities, file_path)
+    def values(self) -> tuple[str, ...]:
+        return (self.binding, self.holding, self.literal)
 
-    @classmethod
-    def resolve(cls, site, identities):
-        literal = site.detail[-1]
-        return identities.class_named(literal) or identities.member_named(literal)
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        return identities.class_named(self.literal) or identities.member_named(
+            self.literal
+        )
 
 
-class ClassNameSpelling(SpellsClassName, IdentitySpelling):
+@dataclass(frozen=True)
+class ClassNameSpelling(NamesClassWhereBound, SpellsClassName):
     """A string compared with a `__name__` or `__qualname__`: a class name, one word or more.
 
     Every value position that can hold a class name (this one, a passed or
@@ -1157,19 +1195,8 @@ class ClassNameSpelling(SpellsClassName, IdentitySpelling):
 
     tag = "class name"
 
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        binding, holding, literal = detail[-3:]
-        owners = identities.class_names
-        if (binding and owners.references(binding, literal)) or (
-            holding
-            and (
-                owners.importable(file_path, int(holding), literal)
-                or owners.new_import(file_path, int(holding), literal)
-            )
-        ):
-            return ReferenceRewrite.ANY_INTERPRETER
-        return ReferenceRewrite.NONE
+    def values(self) -> tuple[str, ...]:
+        return (self.binding, self.holding, self.literal)
 
 
 @dataclass(frozen=True)
@@ -1189,52 +1216,55 @@ class Receiver:
     def detail(self) -> tuple[str, ...]:
         return (self.text, self.name, self.class_object, self.instance)
 
-    @classmethod
-    def from_detail(cls, detail: Sequence[str]) -> Receiver:
-        text, name, class_object, instance = detail
-        return cls(text, name, class_object, instance)
 
-
+@dataclass(frozen=True)
 class MemberSpelling(IdentitySpelling):
     """A string compared or matched with `x.attribute`, where the attribute is a family's member spelling."""
 
     tag = "member"
+    attribute: str
+    receiver: Receiver
+    literal: str
 
-    @classmethod
-    def resolve(cls, site, identities):
-        _tag, attribute, *receiver, literal = site.detail
-        found = identities.member_attribute(attribute, Receiver.from_detail(receiver))
-        return None if found is None else found.spelled(literal)
+    def values(self) -> tuple[str, ...]:
+        return (self.attribute, *self.receiver.detail(), self.literal)
+
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        found = identities.member_attribute(self.attribute, self.receiver)
+        return None if found is None else found.spelled(self.literal)
 
 
+@dataclass(frozen=True)
 class FlattenedSpelling(IdentitySpelling):
     """A family member's keyword spelling read off a class or object and passed or returned as text."""
 
     tag = "flattened"
+    attribute: str
+    receiver: Receiver
 
-    @classmethod
-    def spelling(cls, detail):
-        _tag, attribute, text, *_receiver = detail
-        return f"{text}.{attribute}"
+    def values(self) -> tuple[str, ...]:
+        return (self.attribute, *self.receiver.detail())
 
-    @classmethod
-    def resolve(cls, site, identities):
-        _tag, attribute, *receiver = site.detail
-        read = Receiver.from_detail(receiver)
-        found = identities.member_attribute(attribute, read)
+    def spelling(self) -> str:
+        return f"{self.receiver.text}.{self.attribute}"
+
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        found = identities.member_attribute(self.attribute, self.receiver)
         if found is None:
             return None
-        return found.read_off(read.text, identities.reads_any_member(read, found))
+        return found.read_off(
+            self.receiver.text, identities.reads_any_member(self.receiver, found)
+        )
 
 
-class ModuleSpelling(RewrittenAsDetailedReference, IdentitySpelling):
+@dataclass(frozen=True)
+class ModuleSpelling(RewrittenAsDetailedReference):
     """A dotted module name given to an importer, `sys.modules`, or an interpreter's `-m`."""
 
     tag = "module"
 
-    @classmethod
-    def resolve(cls, site, identities):
-        return identities.module_named(site.detail[-1])
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        return identities.module_named(self.literal)
 
 
 ModuleSpelling.rewrite_kind = ModuleSpelling
@@ -1243,17 +1273,23 @@ WordSpelling.rewrite_kind = ClassNameSpelling
 ComparedWordSpelling.rewrite_kind = ClassNameSpelling
 
 
+@dataclass(frozen=True)
 class LookupSpelling(IdentitySpelling):
     """A string passed to a family's classmethod that returns the member it names."""
 
     tag = "lookup"
+    receiver: str
+    method: str
+    literal: str
 
-    @classmethod
-    def resolve(cls, site, identities):
-        _tag, receiver, method, literal = site.detail
-        return identities.member_looked_up(receiver, method, literal)
+    def values(self) -> tuple[str, ...]:
+        return (self.receiver, self.method, self.literal)
+
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        return identities.member_looked_up(self.receiver, self.method, self.literal)
 
 
+@dataclass(frozen=True)
 class EnumValueSpelling(IdentitySpelling):
     """A string in a position a declaration types as an enum, equal to one of its members' values.
 
@@ -1267,32 +1303,38 @@ class EnumValueSpelling(IdentitySpelling):
     and no rewrite is offered. The rewrite does change `type()`, `repr()`,
     pickling and `is` on the value, to the member the declaration already says
     the position holds. Equal text in a position nothing types as the enum is
-    no site: equal values are not one owner. The detail carries the holding
+    no site: equal values are not one owner. The site carries the holding
     statement's index and the name the declaration types it by.
     """
 
     tag = "enum value"
+    holding: str
+    name: str
+    literal: str
 
-    @classmethod
-    def rewrite(cls, detail, identities, file_path):
-        _tag, holding, name, literal = detail
-        member = identities.typed_member(file_path, name, literal)
-        if not holding or member is None:
+    def values(self) -> tuple[str, ...]:
+        return (self.holding, self.name, self.literal)
+
+    def rewrite(self, identities: DeclaredIdentities) -> ReferenceRewrite:
+        member = identities.typed_member(self.file_path, self.name, self.literal)
+        if not self.holding or member is None:
             return ReferenceRewrite.NONE
         if not identities.class_names.answers_as_string(member.enum):
             return ReferenceRewrite.NONE
-        if not identities.binds(file_path, int(holding), name):
+        if not identities.binds(self.file_path, int(self.holding), self.name):
             return ReferenceRewrite.NONE
         return ReferenceRewrite.ANY_INTERPRETER
 
-    @classmethod
-    def resolve(cls, site, identities):
-        _tag, _holding, name, literal = site.detail
-        member = identities.typed_member(site.file_path, name, literal)
+    def resolve(self, identities: DeclaredIdentities) -> ResolvedIdentity | None:
+        member = identities.typed_member(self.file_path, self.name, self.literal)
         return None if member is None else member.resolved()
 
 
 EnumValueSpelling.rewrite_kind = EnumValueSpelling
+
+
+PendingSpelling: TypeAlias = tuple[ast.expr, Callable[[str, int, str], IdentitySpelling]]
+"""An identity position's node, and the site it becomes once its symbol is known."""
 
 
 @dataclass(frozen=True)
@@ -1703,9 +1745,8 @@ class DeclaredIdentities:
             self.classes[declaring][:LISTED_DECLARATIONS],
         )
 
-    def resolve(self, site: RestatingSite) -> RestatingSite | None:
-        position = IdentitySpelling.positions()[site.detail[0]]
-        resolved = position.resolve(site, self)
+    def resolve(self, site: IdentitySpelling) -> IdentitySpelling | None:
+        resolved = site.resolve(self)
         return None if resolved is None else resolved.restated_by(site)
 
     def with_carriers(self, sites: Sequence[RestatingSite]) -> DeclaredIdentities:
@@ -1717,17 +1758,15 @@ class DeclaredIdentities:
         that kind (by file, line, then identity).
         """
 
-        positions = IdentitySpelling.positions()
-        first: dict[str, RestatingSite] = {}
+        first: dict[str, IdentitySpelling] = {}
         files: dict[str, set[str]] = defaultdict(set)
         rewritable: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         for site in sites:
-            position = positions[site.detail[0]]
-            if not position.rewrite(site.detail, self, site.file_path).rewritable(
+            if not site.rewrite(self).rewritable(
                 DeclaredInterpreter.of(Path(site.file_path))
             ):
                 continue
-            kind = position.rewrite_kind.tag
+            kind = site.rewrite_kind.tag
             files[kind].add(site.file_path)
             rewritable[(site.file_path, site.symbol, site.group)].add(kind)
             current = first.get(kind)
@@ -1785,9 +1824,7 @@ class DeclaredIdentities:
     ) -> tuple[SourceLocation, ...]:
         """The declaring sites of the identity one group of resolved sites restates."""
 
-        resolved = IdentitySpelling.positions()[sites[0].detail[0]].resolve(
-            sites[0], self
-        )
+        resolved = sites[0].resolve(self)
         return () if resolved is None else resolved.declared_at
 
 
@@ -1828,19 +1865,23 @@ class IdentityPositions:
 
     @staticmethod
     def site(
-        node: ast.expr, detail: tuple[str, ...]
-    ) -> tuple[ast.expr, tuple[str, ...]]:
-        return node, detail
+        node: ast.expr, site_type: type[IdentitySpelling], **fields: Any
+    ) -> PendingSpelling:
+        return node, partial(site_type.at, **fields)
 
-    def sites(self) -> Iterator[RestatingSite]:
-        for node, detail in self.spellings():
-            yield RestatingSite(
-                file_path=self.parsed_module.file_path,
-                lineno=node.lineno,
-                symbol=self.index.lexical_symbol(self.node_indices[id(node)]),
-                group=detail[-1],
-                detail=detail,
+    def located_sites(self) -> Iterator[tuple[ast.expr, IdentitySpelling]]:
+        """Each identity position with the site it is."""
+
+        for node, pending in self.spellings():
+            yield node, pending(
+                self.parsed_module.file_path,
+                node.lineno,
+                self.index.lexical_symbol(self.node_indices[id(node)]),
             )
+
+    def sites(self) -> Iterator[IdentitySpelling]:
+        for _node, site in self.located_sites():
+            yield site
 
     @cached_property
     def statement_indices(self) -> dict[int, int]:
@@ -1879,7 +1920,7 @@ class IdentityPositions:
 
     called = staticmethod(ModuleReferenceScope.called)
 
-    def spellings(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    def spellings(self) -> Iterator[PendingSpelling]:
         yield from self.type_sites()
         for node_index, node in self.index.indexed_nodes_of_type(ast.Compare):
             yield from self.compare_sites(node_index, node)
@@ -1896,7 +1937,7 @@ class IdentityPositions:
 
     # Type positions -----------------------------------------------------------
 
-    def type_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    def type_sites(self) -> Iterator[PendingSpelling]:
         """Class names in quoted type strings: a reference wherever the name would resolve.
 
         Where it resolves on any interpreter the site is a `type` site; an
@@ -1910,17 +1951,19 @@ class IdentityPositions:
                 if self.references.resolves_eagerly(
                     root, quoted.node.lineno, quoted.annotation
                 ):
-                    yield self.site(quoted.node, TypeSpelling.detail(rewrite, name))
+                    yield self.site(
+                        quoted.node, TypeSpelling, reference=rewrite, literal=name
+                    )
                 elif quoted.annotation:
                     yield self.site(
-                        quoted.node, LazyAnnotationSpelling.detail(rewrite, name)
+                        quoted.node, LazyAnnotationSpelling, reference=rewrite, literal=name
                     )
 
     # Comparison and match positions ---------------------------------------------
 
     def compared(
         self, node_index: int, subject: ast.expr, literal_node: ast.expr
-    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    ) -> Iterator[PendingSpelling]:
         literal = self.string(literal_node)
         if literal is None or isinstance(subject, ast.Constant):
             return
@@ -1935,33 +1978,36 @@ class IdentityPositions:
             case ast.Attribute(attr=attribute) if (
                 attribute in self.CLASS_NAME_ATTRIBUTES
             ):
+                binding, holding = self.class_reference(node_index, literal)
                 yield self.site(
                     literal_node,
-                    ClassNameSpelling.detail(
-                        *self.class_reference(node_index, literal), literal
-                    ),
+                    ClassNameSpelling,
+                    binding=binding,
+                    holding=holding,
+                    literal=literal,
                 )
                 return
             case ast.Attribute(value=receiver, attr=attribute):
                 yield self.site(
                     literal_node,
-                    MemberSpelling.detail(
-                        attribute,
-                        *self.receiver(node_index, receiver).detail(),
-                        literal,
-                    ),
+                    MemberSpelling,
+                    attribute=attribute,
+                    receiver=self.receiver(node_index, receiver),
+                    literal=literal,
                 )
         if CLASS_NAME_ALGEBRA.names_several_words(literal):
+            binding, holding = self.class_reference(node_index, literal)
             yield self.site(
                 literal_node,
-                ComparedWordSpelling.detail(
-                    *self.class_reference(node_index, literal), literal
-                ),
+                ComparedWordSpelling,
+                binding=binding,
+                holding=holding,
+                literal=literal,
             )
 
     def compare_sites(
         self, node_index: int, node: ast.Compare
-    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    ) -> Iterator[PendingSpelling]:
         left = node.left
         for operator, right in zip(node.ops, node.comparators):
             match operator, right:
@@ -1977,7 +2023,7 @@ class IdentityPositions:
 
     def match_sites(
         self, node_index: int, node: ast.Match
-    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    ) -> Iterator[PendingSpelling]:
         for case in node.cases:
             for literal_node in self.pattern_literals(case.pattern):
                 yield from self.compared(node_index, node.subject, literal_node)
@@ -1995,7 +2041,7 @@ class IdentityPositions:
 
     def call_sites(
         self, node_index: int, node: ast.Call
-    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    ) -> Iterator[PendingSpelling]:
         for argument in (*node.args, *(keyword.value for keyword in node.keywords)):
             yield from self.passed_sites(node_index, argument, "argument")
         match node:
@@ -2005,20 +2051,26 @@ class IdentityPositions:
             ) if isinstance(receiver, (ast.Name, ast.Attribute)):
                 yield self.site(
                     literal_node,
-                    LookupSpelling.detail(self.called(receiver), method, literal),
+                    LookupSpelling,
+                    receiver=self.called(receiver),
+                    method=method,
+                    literal=literal,
                 )
 
     def passed_sites(
         self, node_index: int, value: ast.expr, position: str
-    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    ) -> Iterator[PendingSpelling]:
         for passed in self.passed_values(value):
             literal = self.string(passed)
             if literal is not None and CLASS_NAME_ALGEBRA.names_several_words(literal):
+                binding, holding = self.class_reference(node_index, literal)
                 yield self.site(
                     passed,
-                    WordSpelling.detail(
-                        position, *self.class_reference(node_index, literal), literal
-                    ),
+                    WordSpelling,
+                    position=position,
+                    binding=binding,
+                    holding=holding,
+                    literal=literal,
                 )
             match passed:
                 case ast.Attribute(value=receiver, attr=attribute) if not self.own(
@@ -2026,9 +2078,9 @@ class IdentityPositions:
                 ):
                     yield self.site(
                         passed,
-                        FlattenedSpelling.detail(
-                            attribute, *self.receiver(node_index, receiver).detail()
-                        ),
+                        FlattenedSpelling,
+                        attribute=attribute,
+                        receiver=self.receiver(node_index, receiver),
                     )
 
     def receiver(self, node_index: int, receiver: ast.expr) -> Receiver:
@@ -2174,13 +2226,13 @@ class IdentityPositions:
 
     # Module positions ---------------------------------------------------------
 
-    def module_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    def module_sites(self) -> Iterator[PendingSpelling]:
         for spelled in SpelledModules(self.parsed_module.module):
             yield self.site(
                 spelled.literal,
-                ModuleSpelling.detail(
-                    self.references.module_rewrite(spelled), spelled.name
-                ),
+                ModuleSpelling,
+                reference=self.references.module_rewrite(spelled),
+                literal=spelled.name,
             )
 
 
@@ -2188,7 +2240,7 @@ class IdentityPositions:
 
     def typed_site(
         self, value: ast.expr | None, annotation: ast.expr | None
-    ) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    ) -> Iterator[PendingSpelling]:
         literal = None if value is None else self.string(value)
         name = self.parsed_module.fact(QualifiedNames).declared_name(annotation)
         if literal is None or value is None or not name:
@@ -2196,12 +2248,13 @@ class IdentityPositions:
         holding = self.holding(self.node_indices[id(value)])
         yield self.site(
             value,
-            EnumValueSpelling.detail(
-                "" if holding is None else str(holding), name, literal
-            ),
+            EnumValueSpelling,
+            holding="" if holding is None else str(holding),
+            name=name,
+            literal=literal,
         )
 
-    def enum_value_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
+    def enum_value_sites(self) -> Iterator[PendingSpelling]:
         """Strings in positions a declaration types: annotated values, parameter defaults, returns.
 
         Comparisons and matches against a parameter declared as the type are
