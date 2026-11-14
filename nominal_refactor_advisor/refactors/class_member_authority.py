@@ -699,8 +699,16 @@ class DataclassFieldPromotionReplacementPlan(ClassMemberPromotionReplacementPlan
         )
 
 
+class SourceRewriteABC(ABC):
+    """A source rewrite proved on one snapshot: the edits that perform it."""
+
+    @abstractmethod
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+        raise NotImplementedError
+
+
 @dataclass(frozen=True)
-class _ExactLeafMethodAncestorPromotionSourceRewrite:
+class _ExactLeafMethodAncestorPromotionSourceRewrite(SourceRewriteABC):
     """Source edits derived from one currently proven method component."""
 
     targets: ExactLeafMethodAncestorPromotionTargets
@@ -744,7 +752,7 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite:
 
 
 @dataclass(frozen=True)
-class NamedClassMemberAuthoritySourceRewriteABC(ABC):
+class NamedClassMemberAuthoritySourceRewriteABC(SourceRewriteABC):
     """Shared claim surface for one source-proved class-member authority."""
 
     targets: ClassMemberPromotionTargets
@@ -754,10 +762,6 @@ class NamedClassMemberAuthoritySourceRewriteABC(ABC):
     @property
     def authority_claim(self) -> AuthorityClaim:
         return self.targets.new_authority_claim(self.base_name)
-
-    @abstractmethod
-    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
-        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -824,8 +828,23 @@ class _ExactDataclassFieldAuthoritySourceRewrite(
 
 
 @dataclass(frozen=True, kw_only=True)
+class SourceRewriteOperationABC(RepositorySourceReprovedOperation, ABC):
+    """An operation whose edits are the edits of the one rewrite it proves."""
+
+    @abstractmethod
+    def _source_rewrite(self, snapshot: CodemodSourceSnapshot) -> SourceRewriteABC:
+        raise NotImplementedError
+
+    def source_edits_from_snapshot(
+        self,
+        snapshot: CodemodSourceSnapshot,
+    ) -> tuple[PhysicalSourceEdit, ...]:
+        return self._source_rewrite(snapshot).source_edits()
+
+
+@dataclass(frozen=True, kw_only=True)
 class FactorNamedClassMemberAuthorityOperationABC(
-    RepositorySourceReprovedOperation,
+    SourceRewriteOperationABC,
     ABC,
 ):
     """Shared execution shell for a newly named, source-reproved member owner."""
@@ -837,12 +856,6 @@ class FactorNamedClassMemberAuthorityOperationABC(
             self.base_name
         ):
             raise ValueError("Class-member authority name must be an identifier")
-
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self._source_rewrite(snapshot).source_edits()
 
     def current_source_authority_claims(
         self,
@@ -1095,7 +1108,7 @@ class ModuleDeclarationRelocation:
 
 
 @dataclass(frozen=True)
-class _ExistingDataclassFieldAuthoritySourceRewrite:
+class _ExistingDataclassFieldAuthoritySourceRewrite(SourceRewriteABC):
     """Physical rewrite descending a field cohort from its existing owner."""
 
     targets: ExistingDataclassFieldAuthorityTargets
@@ -1118,7 +1131,7 @@ class _ExistingDataclassFieldAuthoritySourceRewrite:
 
 @dataclass(frozen=True, kw_only=True)
 class PromoteExactDataclassFieldsToExistingAuthorityOperation(
-    RepositorySourceReprovedOperation
+    SourceRewriteOperationABC
 ):
     """Re-prove repeated fields and descend their cohort from an existing owner."""
 
@@ -1126,12 +1139,6 @@ class PromoteExactDataclassFieldsToExistingAuthorityOperation(
 
     def __post_init__(self) -> None:
         ExactDataclassFieldEvidence(self.evidence_field_name)
-
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self._source_rewrite(snapshot).source_edits()
 
     def _source_rewrite(
         self,
@@ -1219,14 +1226,8 @@ class FactorExactMethodRoleOperation(FactorNamedClassMemberAuthorityOperationABC
 
 
 @dataclass(frozen=True, kw_only=True)
-class PromoteExactLeafMethodsToAncestorOperation(RepositorySourceReprovedOperation):
+class PromoteExactLeafMethodsToAncestorOperation(SourceRewriteOperationABC):
     """Re-prove and promote one authority-wide exact leaf-method component."""
-
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self._source_rewrite(snapshot).source_edits()
 
     def _source_rewrite(
         self,
@@ -1257,7 +1258,7 @@ class PromoteExactLeafMethodsToAncestorOperation(RepositorySourceReprovedOperati
 
 
 @dataclass(frozen=True)
-class _ParallelMirroredLeafFamilySourceRewrite:
+class _ParallelMirroredLeafFamilySourceRewrite(SourceRewriteABC):
     """Generic promotion plans composed for every proved role axis."""
 
     targets: ParallelMirroredLeafFamilyTargets
@@ -1281,14 +1282,8 @@ class _ParallelMirroredLeafFamilySourceRewrite:
 
 
 @dataclass(frozen=True, kw_only=True)
-class FactorParallelMirroredLeafFamilyOperation(RepositorySourceReprovedOperation):
+class FactorParallelMirroredLeafFamilyOperation(SourceRewriteOperationABC):
     """Re-prove and factor parallel leaf behavior into MI role authorities."""
-
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[PhysicalSourceEdit, ...]:
-        return self._source_rewrite(snapshot).source_edits()
 
     def current_source_authority_claims(
         self,
