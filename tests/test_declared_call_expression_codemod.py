@@ -366,7 +366,13 @@ def test_historical_member_insertion_wrapper_collapses_as_one_dsl_batch(
     )
     snapshot = CodemodSourceSnapshot.from_modules(
         ParsedModuleSet.of((
-            *parse_python_modules(root / "nominal_refactor_advisor"),
+            *(
+                module
+                for name in ("codemod_declaration_source", "codemod_source_edits")
+                for module in parse_python_modules(
+                    root / "nominal_refactor_advisor" / f"{name}.py"
+                )
+            ),
             *parse_python_modules(tmp_path),
         ))
     )

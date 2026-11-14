@@ -11,7 +11,12 @@ from collections.abc import Iterator
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
+import nominal_refactor_advisor
+from nominal_refactor_advisor.ast_tools import (
+    ParsedModule,
+    ParsedModuleSet,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.detectors import _base as collector_runtime
 from nominal_refactor_advisor.interpreter import CompilerIdentity
 from nominal_refactor_advisor.native_compilation import NativeCreationBackend
@@ -85,6 +90,14 @@ def native_collector_module() -> ParsedModule:
         module=ast.parse(source),
         source=source,
     )
+
+
+@pytest.fixture(scope="session")
+def repository_modules() -> ParsedModuleSet:
+    """NRA's own package, parsed once per test process. Every test that reads the
+    repository's source shares this parse and the facts its modules collect."""
+
+    return parse_python_modules(Path(nominal_refactor_advisor.__file__).parent)
 
 
 @pytest.fixture(scope="session")

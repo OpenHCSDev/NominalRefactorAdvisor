@@ -2,7 +2,7 @@ import ast
 from dataclasses import fields
 from pathlib import Path
 
-from nominal_refactor_advisor.ast_tools import CollectedFamily, parse_python_modules
+from nominal_refactor_advisor.ast_tools import CollectedFamily, ParsedModuleSet
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.detector_capabilities import (
     DetectorContributionRole,
@@ -26,19 +26,21 @@ from nominal_refactor_advisor.semantic_descent import (
 )
 
 
-def test_repository_has_no_external_enum_case_recovery() -> None:
-    package_root = Path(__file__).resolve().parents[1] / "nominal_refactor_advisor"
+def test_repository_has_no_external_enum_case_recovery(
+    repository_modules: ParsedModuleSet,
+) -> None:
     findings = ExternalEnumCaseRecoveryDetector().detect(
-        parse_python_modules(package_root),
+        repository_modules,
         DetectorConfig(),
     )
 
     assert findings == [], "\n".join(finding.summary for finding in findings)
 
 
-def test_repository_has_no_function_local_imports_or_ast_name_projection_duplicates() -> None:
-    package_root = Path(__file__).resolve().parents[1] / "nominal_refactor_advisor"
-    modules = parse_python_modules(package_root)
+def test_repository_has_no_function_local_imports_or_ast_name_projection_duplicates(
+    repository_modules: ParsedModuleSet,
+) -> None:
+    modules = repository_modules
     nested_imports = tuple(
         (module.file_path, nested.lineno, ast.unparse(nested))
         for module in modules
