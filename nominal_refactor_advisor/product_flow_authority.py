@@ -36,6 +36,7 @@ from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CollectedFamily,
     ParsedModule,
+    ScanContext,
     ParsedModuleFact,
     ParsedModuleSourceProjection,
 )
@@ -907,6 +908,7 @@ class ProductFlowRepository(
     CompactCallTargetResolverABC[CompactFlowContext, CompactCallTargetResolution],
     CompactMutationResolverABC[CompactFlowContext, CompactCallTargetResolution],
     CompactBindingResolverABC[CompactCallTargetResolution],
+    ScanContext,
 ):
     """Derived query authority over product flows and nominal class declarations."""
 
@@ -1394,12 +1396,6 @@ class ProductFlowRepository(
         return self._function_resolution_for_symbol(candidates[0]).through_descriptor(
             target.receiver_access(context.declaration)
         )
-
-    @classmethod
-    def require(cls, context: object | None) -> Self:
-        if not isinstance(context, cls):
-            raise TypeError("compact product-flow repository is unavailable")
-        return context
 
     @cached_property
     def class_index(self) -> CompactClassFamilyIndex:

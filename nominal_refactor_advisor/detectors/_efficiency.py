@@ -11,14 +11,19 @@ from __future__ import annotations
 import ast
 from collections import defaultdict
 from dataclasses import dataclass
+from operator import attrgetter
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
+from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.relocation_observations import (
+    ClassShapeFamily,
     ModuleClassReadings,
     declares_abstract,
 )
@@ -27,8 +32,10 @@ from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteModule,
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.detectors._relocations import MemberFamilies
 from nominal_refactor_advisor.detectors._base import (
-    CompactModuleProjectionDetectorMixin,
+    CompactMultiModuleProjectionDetectorMixin,
+    CompactProjectionGroups,
     DetectorConfig,
     IssueDetector,
     PerModuleIssueDetector,
@@ -695,34 +702,38 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for node in parsed_module.module.body:
-            match node:
-                case ast.ClassDef(name=class_name, body=body):
-                    for item in body:
-                        match item:
-                            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(
-                                name=name
-                            ) if not name.startswith("_"):
-                                yield cls.site(
-                                    parsed_module,
-                                    item,
-                                    f"{class_name}.{name}",
-                                    name,
-                                    (class_name,),
-                                )
-                case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(
-                    name=name
-                ) if not name.startswith("_"):
-                    yield cls.site(parsed_module, node, name, name, ())
+        for declared in parsed_module.fact(ModuleClassStatements).top_level:
+            for method in declared.methods:
+                if not method.name.startswith("_"):
+                    yield cls.site(
+                        parsed_module,
+                        method.node,
+                        f"{declared.name}.{method.name}",
+                        method.name,
+                        (declared.name,),
+                    )
+        for function in FunctionDefinition.within(parsed_module.module.body):
+            if not function.name.startswith("_"):
+                yield cls.site(parsed_module, function, function.name, function.name, ())
 
 
-class PhantomFamilyDetector(
-    CompactModuleProjectionDetectorMixin[RestatingSiteModule], IssueDetector
-):
-    """One name defined in several modules. The sites come from a compact
-    per-module family, so the scan keeps no syntax tree for this detector."""
+class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDetector):
+    """One public name declared by owners that share no declaring ancestor.
 
-    module_projection_family = PublicDefinitionSiteFamily
+    A method's owner is the topmost classes declaring its name above it, so an
+    override and the declaration it overrides are one owner. A module function
+    is its own owner. A class whose ancestry the scan cannot close is left out:
+    nothing is claimed about it.
+    """
+
+    module_projection_families = (
+        PublicDefinitionSiteFamily,
+        CompactModuleClassProjectionFamily,
+        ClassShapeFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(
+        MemberFamilies.from_projection_groups
+    )
     finding_spec = high_confidence_spec(
         PatternId.PHANTOM_FAMILY,
         "Same name across modules with no shared declaration",
@@ -741,37 +752,51 @@ class PhantomFamilyDetector(
         (ObservationTag.METHOD_ROLE,),
     )
 
-    def _findings_from_compact_projections(
+    def _findings_from_compact_projection_groups_context(
         self,
-        projections: Sequence[RestatingSiteModule],
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        sites_by_name: dict[str, list[RestatingSite]] = defaultdict(list)
-        for module in projections:
+        families = MemberFamilies.require(context)
+        owners_by_name: dict[str, dict[str, list[RestatingSite]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
+        for module in PublicDefinitionSiteFamily.modules_in(projections_by_family):
             for site in module.sites:
-                sites_by_name[site.group].append(site)
+                if site.group in _SKIP_COMMON_NAMES:
+                    continue
+                match site.detail:
+                    case (class_name,):
+                        symbol = f"{module.module_name}.{class_name}"
+                        if families.is_open(symbol):
+                            continue
+                        owner = families.family(symbol, site.group) or symbol
+                    case _:
+                        owner = f"{module.module_name}.{site.group}"
+                owners_by_name[site.group][owner].append(site)
         return [
-            self._finding_for_name(name, sites)
-            for name, sites in sorted(sites_by_name.items())
-            if name not in _SKIP_COMMON_NAMES
-            and len({site.file_path for site in sites}) >= _MIN_PHANTOM_MODULES
+            self._finding_for_name(name, owners)
+            for name, owners in sorted(owners_by_name.items())
+            if len(owners) >= 2
+            and len({site.file_path for sites in owners.values() for site in sites})
+            >= _MIN_PHANTOM_MODULES
         ]
 
     def _finding_for_name(
-        self, name: str, sites: Sequence[RestatingSite]
+        self, name: str, owners: dict[str, list[RestatingSite]]
     ) -> RefactorFinding:
-        module_count = len({site.file_path for site in sites})
-        classes = [class_name for site in sites for class_name in site.detail]
-        if classes:
-            owners = ", ".join(f"`{class_name}`" for class_name in classes)
-            summary = (
-                f"`{name}` defined on {owners} across "
-                f"{module_count} modules with no shared declaring ancestor"
-            )
-        else:
-            summary = (
-                f"`{name}` defined as a module function in "
-                f"{module_count} modules with no shared import"
-            )
-        return self.build_finding(summary, tuple(site.location for site in sites))
+        first_sites = sorted(
+            (min(sites, key=attrgetter("file_path", "lineno")) for sites in owners.values()),
+            key=attrgetter("file_path", "lineno"),
+        )
+        module_count = len(
+            {site.file_path for sites in owners.values() for site in sites}
+        )
+        declared_by = ", ".join(f"`{owner}`" for owner in sorted(owners))
+        summary = (
+            f"`{name}` is declared by {len(owners)} owners across {module_count} "
+            f"modules with no shared declaring ancestor: {declared_by}"
+        )
+        return self.build_finding(summary, tuple(site.location for site in first_sites))

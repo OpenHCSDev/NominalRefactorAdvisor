@@ -28081,3 +28081,51 @@ def test_detects_phantom_family(tmp_path: Path) -> None:
     finding = phantom_findings[0]
     assert finding.pattern_id == PatternId.PHANTOM_FAMILY
     assert "record_progress" in finding.summary
+
+
+def test_phantom_family_counts_an_override_with_what_it_overrides(tmp_path: Path) -> None:
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/base.py",
+        (
+            "class Tracker:\n"
+            "    def record_progress(self, progress):\n"
+            "        raise NotImplementedError\n"
+        ),
+    )
+    for module, name in (("alpha", "AlphaTracker"), ("beta", "BetaTracker")):
+        _write_module(
+            tmp_path,
+            f"pkg/{module}.py",
+            (
+                "from pkg.base import Tracker\n\n\n"
+                f"class {name}(Tracker):\n"
+                "    def record_progress(self, progress):\n"
+                "        self.log.append(progress)\n"
+            ),
+        )
+
+    def phantom_findings() -> list[RefactorFinding]:
+        return [
+            finding
+            for finding in analyze_path(tmp_path)
+            if finding.detector_id == "phantom_family"
+        ]
+
+    assert phantom_findings() == []
+
+    _write_module(
+        tmp_path,
+        "pkg/gamma.py",
+        (
+            "class Unrelated:\n"
+            "    def record_progress(self, progress):\n"
+            "        self.store.write(progress)\n"
+        ),
+    )
+    (finding,) = phantom_findings()
+    assert "2 owners" in finding.summary
+    assert "`pkg.base.Tracker`" in finding.summary
+    assert "`pkg.gamma.Unrelated`" in finding.summary
+    assert "AlphaTracker" not in finding.summary

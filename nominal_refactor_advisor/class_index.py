@@ -66,6 +66,7 @@ from nominal_refactor_advisor.ast_projection import (
 from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
+    ScanContext,
     LexicalSyntaxScope,
     ParsedModule,
     ParsedModuleFact,
@@ -2608,7 +2609,7 @@ class _ProductLineageComposer:
 
 
 @dataclass(frozen=True)
-class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
+class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanContext):
     """Repository inheritance graph reconstructed from compact declarations."""
 
     @cached_property
@@ -2710,12 +2711,6 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
         return build_compact_class_family_index(
             CompactModuleClassProjectionFamily.modules_in(projections_by_family)
         )
-
-    @classmethod
-    def require(cls, context: object | None) -> Self:
-        if not isinstance(context, cls):
-            raise TypeError("shared compact class index is unavailable")
-        return context
 
     def assignments_repeated_from_ancestors(
         self,

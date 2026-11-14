@@ -478,10 +478,15 @@ shared with a family (`_base.py:4277`). One passed and was composed:
 `ManualRecordRegistrationShape`.
 
 **Known wrong, not yet fixed:**
-- `phantom_family` says "no shared declaring ancestor" and checks no
-  ancestry. It reports every public name defined in two modules: 765
-  findings on NRA's package. A real check joins the sites with
-  `MemberFamilies.family` in `detectors/_relocations.py`.
+- `phantom_family` used to report every public name defined in two
+  modules. It now groups each method by the topmost classes that declare
+  its name (`MemberFamilies.family`), so an override and what it
+  overrides are one owner, and leaves out classes whose ancestry the
+  scan cannot close. On NRA's package: 771 findings before, 658 after,
+  each naming its unrelated owners. 658 is still a lot: `from_modules`
+  has 17 unrelated owners. Whether a shared verb is a missing contract is
+  the reader's call; the claim "no shared declaring ancestor" is now
+  true of every finding.
 - `unused_method_parameter` is titled "ignored in every override" and
   looks at one method in one module.
 - Legacy-path erasure does not count a class or function referenced by

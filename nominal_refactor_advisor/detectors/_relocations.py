@@ -41,6 +41,7 @@ from nominal_refactor_advisor.relocation_observations import (
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+from nominal_refactor_advisor.ast_tools import ScanContext
 from nominal_refactor_advisor.detectors._base import CompactProjectionGroups
 from nominal_refactor_advisor.detectors._restated_facts import (
     EVIDENCED_CONSUMERS,
@@ -93,7 +94,7 @@ class ReachingUses(Generic[UseT]):
 
 
 @dataclass
-class MemberFamilies:
+class MemberFamilies(ScanContext):
     """Which declarations of one member answer the same question.
 
     The class graph is the compact class index's: each class's bases as
@@ -105,6 +106,21 @@ class MemberFamilies:
 
     class_index: CompactClassFamilyIndex
     shapes: dict[str, ClassShape]
+
+    @classmethod
+    def from_projection_groups(
+        cls, projections_by_family: CompactProjectionGroups
+    ) -> MemberFamilies:
+        """The member families of one scan: its class graph and what each class declares."""
+
+        return cls(
+            CompactClassFamilyIndex.from_projection_groups(projections_by_family),
+            {
+                shape.symbol: shape
+                for module in ClassShapeFamily.modules_in(projections_by_family)
+                for shape in module.classes
+            },
+        )
 
     def is_open(self, symbol: str) -> bool:
         classes = self.class_index.classes_by_symbol
@@ -216,21 +232,14 @@ def _relocation_index(projections_by_family: CompactProjectionGroups) -> Relocat
             reads[read.member].append(read)
         for call in module.lambda_calls:
             calls[call.member].append(call)
-    class_index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+    families = MemberFamilies.from_projection_groups(projections_by_family)
     return RelocationIndex(
-        MemberFamilies(
-            class_index,
-            {
-                shape.symbol: shape
-                for module in ClassShapeFamily.modules_in(projections_by_family)
-                for shape in module.classes
-            },
-        ),
+        families,
         dict(reads),
         dict(calls),
         DeclaredReceiverTyping.from_projections(
             CompactModuleClassProjectionFamily.modules_in(projections_by_family),
-            class_index,
+            families.class_index,
         ),
     )
 

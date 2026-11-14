@@ -2197,6 +2197,19 @@ class AutoRegisteredModuleShapeSpec(
         )
 
 
+class ScanContext:
+    """What one scan builds once from its families and hands to the detectors
+    that join them."""
+
+    @classmethod
+    def require(cls, context: object | None) -> Self:
+        """The context a detector was handed, as this type: the one test of what it is."""
+
+        if not isinstance(context, cls):
+            raise TypeError(f"the scan built no {cls.__name__} for this detector")
+        return context
+
+
 class CollectedFamily(
     SharedRegistryRootBase,
     Generic[ShapeItemT],

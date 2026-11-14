@@ -131,7 +131,7 @@ from nominal_refactor_advisor.class_index import (
     build_compact_class_family_index,
     repository_settled_projections,
 )
-from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet, ScanContext
 from nominal_refactor_advisor.collection_algebra import (
     UniqueIdentityIndexAuthority,
     sorted_tuple,
@@ -904,7 +904,7 @@ CompactDerivedContextT = TypeVar("CompactDerivedContextT")
 
 
 @dataclass(frozen=True)
-class CompactClassRepositoryContext:
+class CompactClassRepositoryContext(ScanContext):
     """One scan-scoped inheritance graph plus lazily shared derived indexes."""
 
     projections: Sequence[CompactModuleClassProjection]
@@ -929,12 +929,6 @@ class CompactClassRepositoryContext:
             config=config,
             class_index=build_compact_class_family_index(resolved),
         )
-
-    @classmethod
-    def require(cls, context: object | None) -> CompactClassRepositoryContext:
-        if not isinstance(context, cls):
-            raise TypeError("compact class repository context is unavailable")
-        return context
 
     def cached(
         self,
