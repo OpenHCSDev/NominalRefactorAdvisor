@@ -6121,18 +6121,14 @@ def test_method_family_detectors_share_one_compact_context(
     calls = 0
     original_builder = helper_detectors.CompactMethodFamilyContext.from_projections
 
-    def counting_builder(projections, config):
+    def counting_builder(*args, **kwargs):
         nonlocal calls
-        del config
         calls += 1
-        return original_builder(projections)
+        return original_builder(*args, **kwargs)
 
-    for detector_type in detector_types:
-        monkeypatch.setattr(
-            detector_type,
-            "compact_shared_context_builder",
-            staticmethod(counting_builder),
-        )
+    monkeypatch.setattr(
+        helper_detectors.CompactMethodFamilyContext, "from_projections", counting_builder
+    )
     accumulator = accumulate_compact_global_projections_for_roots(
         (package_root,), detector_types, use_parse_cache=False
     )
