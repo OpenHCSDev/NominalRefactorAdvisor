@@ -1062,13 +1062,16 @@ class CompactCallTargetReference(ABC):
     def lexical_reference(self) -> LexicalValueReference | None:
         """Return exact lookup syntax when no receiver-type proof is required."""
 
-    @abstractmethod
     def local_candidate_symbols(
         self,
         module_name: str,
         lexical_scope_qualnames: tuple[str, ...],
     ) -> tuple[str, ...]:
-        """Return candidates provable without import or type resolution."""
+        """Return candidates provable without import or type resolution: none, unless
+        the reference names where it is declared."""
+
+        del module_name, lexical_scope_qualnames
+        return ()
 
 
 class LexicalCallTargetReference(CompactCallTargetReference, ABC):
@@ -1283,14 +1286,6 @@ class QualifiedCallTargetReference(LexicalCallTargetReference):
     def lexical_reference(self) -> LexicalValueReference:
         return self.reference
 
-    def local_candidate_symbols(
-        self,
-        module_name: str,
-        lexical_scope_qualnames: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        del module_name, lexical_scope_qualnames
-        return ()
-
 
 @dataclass(frozen=True)
 class ReceiverAttributeCallTargetReference(CompactCallTargetReference):
@@ -1323,14 +1318,6 @@ class ReceiverAttributeCallTargetReference(CompactCallTargetReference):
     def lexical_reference(self) -> None:
         return None
 
-    def local_candidate_symbols(
-        self,
-        module_name: str,
-        lexical_scope_qualnames: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        del module_name, lexical_scope_qualnames
-        return ()
-
 
 @dataclass(frozen=True)
 class DynamicCallTargetReference(CompactCallTargetReference):
@@ -1347,14 +1334,6 @@ class DynamicCallTargetReference(CompactCallTargetReference):
     @property
     def lexical_reference(self) -> None:
         return None
-
-    def local_candidate_symbols(
-        self,
-        module_name: str,
-        lexical_scope_qualnames: tuple[str, ...],
-    ) -> tuple[str, ...]:
-        del module_name, lexical_scope_qualnames
-        return ()
 
 
 @dataclass(frozen=True)
