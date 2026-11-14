@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Generic, Self, TypeVar
+from typing import Generic, Self, TypeVar, ClassVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.class_syntax_facets import (
@@ -86,6 +86,7 @@ from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
     CollectsItself,
+    ModuleCollectedLineWitnessCandidate,
     TargetClassEvidenceAnchored,
     TargetProjectionRequired,
     _REGISTRY_PROJECTION_SURFACE_ANALYZER,
@@ -93,7 +94,6 @@ from nominal_refactor_advisor.detectors._base import (
     CandidateCollectorBoilerplateCandidate,
     ClassLineWitnessCandidate,
     ClassMethodLineWitnessCandidate,
-    CollectionProjectionPropertyFamilyCandidate,
     CompactClassIndexMultiProjectionDetector,
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
@@ -107,7 +107,6 @@ from nominal_refactor_advisor.detectors._base import (
     DerivedWrapperSpecShadowCandidate,
     DetectorConfig,
     DirectBuildFindingRendererCandidate,
-    EnumMetadataTableCandidate,
     FindingSpecConstructionCandidate,
     InjectiveTypeRegistryCandidate,
     IssueDetector,
@@ -131,7 +130,6 @@ from nominal_refactor_advisor.detectors._base import (
     StaticTypedObservationDetectorCandidate,
     StructuralConfusabilityCandidate,
     TupleIndexSemanticOpacityCandidate,
-    TypedCandidateCastBoilerplateCandidate,
     WitnessCarrierFamilyCandidate,
     _attribute_family_subject_expression,
     _compact_keyed_family_axis_specs_from_index,
@@ -153,18 +151,21 @@ from nominal_refactor_advisor.detectors._base import (
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
+    ConcreteCandidateDetectorShape,
+    ZippedSourceLocationEvidenceProperty,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
     _dataclass_config_field_names,
-    _enum_metadata_table_candidates,
     _finding_spec_build_boilerplate_candidates,
     _from_namespace_keyword_names,
     _repeated_result_assembly_pipeline_candidates,
     _schema_accessor_family_candidates,
     _static_typed_observation_detector_candidates,
-    _typed_candidate_cast_boilerplate_candidates,
     TupleIndexSemanticOpacityCandidateCollector,
+    _enum_metadata_property_table,
+    _enum_metadata_table_cases,
+    _typed_candidate_cast_assignment,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
@@ -988,53 +989,63 @@ def _collection_projection_property_shape(
     )
 
 
-def _collection_projection_property_family_candidates(
-    module: ParsedModule,
-) -> tuple[CollectionProjectionPropertyFamilyCandidate, ...]:
-    candidates: list[CollectionProjectionPropertyFamilyCandidate] = []
-    for declared in module.fact(ModuleClassStatements).statements:
-        class_node = declared.node
-        properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
-        for method in declared.methods:
-            if not method.spells("property"):
-                continue
-            statement = method.node
-            body = statements_without_docstring(statement.body)
-            if len(body) != 1 or not isinstance(body[0], ast.Return):
-                continue
-            shape = _collection_projection_property_shape(body[0].value)
-            if shape is None:
-                continue
-            collection_name, projected_attribute_name = shape
-            properties.append((statement, collection_name, projected_attribute_name))
-        grouped: dict[str, list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]]] = (
-            defaultdict(list)
-        )
-        for statement, collection_name, projected_attribute_name in properties:
-            grouped[collection_name].append((statement, projected_attribute_name))
-        for collection_name, grouped_properties in grouped.items():
-            if len(grouped_properties) < 2:
-                continue
-            ordered = sorted_tuple(grouped_properties, key=lambda item: item[0].lineno)
-            candidates.append(
-                CollectionProjectionPropertyFamilyCandidate(
-                    file_path=module.file_path,
-                    line=class_node.lineno,
-                    class_name=class_node.name,
-                    property_names=tuple((statement.name for statement, _ in ordered)),
-                    line_numbers=tuple((statement.lineno for statement, _ in ordered)),
-                    collection_name=collection_name,
-                    projected_attribute_names=tuple(
-                        (attribute_name for _, attribute_name in ordered)
-                    ),
-                    line_count=(class_node.end_lineno or class_node.lineno)
-                    - class_node.lineno
-                    + 1,
-                )
-            )
-    return sorted_tuple(
-        candidates, key=lambda item: (item.file_path, item.line, item.class_name)
+@dataclass(frozen=True)
+class CollectionProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidate):
+    property_names: tuple[str, ...]
+    line_numbers: tuple[int, ...]
+    collection_name: str
+    projected_attribute_names: tuple[str, ...]
+    line_count: int
+    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
+        ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")
     )
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        candidates: list[Self] = []
+        for declared in module.fact(ModuleClassStatements).statements:
+            class_node = declared.node
+            properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str, str]] = []
+            for method in declared.methods:
+                if not method.spells("property"):
+                    continue
+                statement = method.node
+                body = statements_without_docstring(statement.body)
+                if len(body) != 1 or not isinstance(body[0], ast.Return):
+                    continue
+                shape = _collection_projection_property_shape(body[0].value)
+                if shape is None:
+                    continue
+                collection_name, projected_attribute_name = shape
+                properties.append((statement, collection_name, projected_attribute_name))
+            grouped: dict[str, list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]]] = (
+                defaultdict(list)
+            )
+            for statement, collection_name, projected_attribute_name in properties:
+                grouped[collection_name].append((statement, projected_attribute_name))
+            for collection_name, grouped_properties in grouped.items():
+                if len(grouped_properties) < 2:
+                    continue
+                ordered = sorted_tuple(grouped_properties, key=lambda item: item[0].lineno)
+                candidates.append(
+                    cls(
+                        file_path=module.file_path,
+                        line=class_node.lineno,
+                        class_name=class_node.name,
+                        property_names=tuple((statement.name for statement, _ in ordered)),
+                        line_numbers=tuple((statement.lineno for statement, _ in ordered)),
+                        collection_name=collection_name,
+                        projected_attribute_names=tuple(
+                            (attribute_name for _, attribute_name in ordered)
+                        ),
+                        line_count=(class_node.end_lineno or class_node.lineno)
+                        - class_node.lineno
+                        + 1,
+                    )
+                )
+        return sorted_tuple(
+            candidates, key=lambda item: (item.file_path, item.line, item.class_name)
+        )
 
 
 declare_candidate_rule_detector(
@@ -1066,7 +1077,6 @@ declare_candidate_rule_detector(
         mapping_name=f"{candidate.class_name}.{candidate.collection_name}",
         field_names=candidate.projected_attribute_names,
     ),
-    candidate_collector=_collection_projection_property_family_candidates,
 )
 
 
@@ -3066,6 +3076,46 @@ declare_candidate_rule_detector(
 )
 
 
+@dataclass(frozen=True)
+class TypedCandidateCastBoilerplateCandidate(
+    ModuleCollectedLineWitnessCandidate, ClassMethodLineWitnessCandidate
+):
+    parameter_name: str
+    local_name: str
+    candidate_type_name: str
+    detector_base_name: str
+
+    @classmethod
+    def from_class(cls, module: ParsedModule, node: ast.ClassDef) -> tuple[Self, ...]:
+        detector_shape = ConcreteCandidateDetectorShape.from_class(module, node)
+        if detector_shape is None:
+            return ()
+        candidates: list[Self] = []
+        for statement in node.body:
+            if not (
+                isinstance(statement, ast.FunctionDef)
+                and statement.name == "_finding_for_candidate"
+            ):
+                continue
+            cast_assignment = _typed_candidate_cast_assignment(statement)
+            if cast_assignment is None:
+                continue
+            parameter_name, local_name, candidate_type_name = cast_assignment
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    line=statement.lineno,
+                    class_name=node.name,
+                    method_name=statement.name,
+                    parameter_name=parameter_name,
+                    local_name=local_name,
+                    candidate_type_name=candidate_type_name,
+                    detector_base_name=detector_shape.base_name,
+                )
+            )
+        return tuple(candidates)
+
+
 declare_candidate_rule_detector(
     TypedCandidateCastBoilerplateCandidate,
     high_confidence_spec(
@@ -3088,7 +3138,6 @@ declare_candidate_rule_detector(
         f"`{candidate.class_name}.{candidate.method_name}` casts `{candidate.parameter_name}` to `{candidate.candidate_type_name}` before doing real work; parameterize `{candidate.detector_base_name}` and receive `{candidate.local_name}` as that type."
     ),
     metrics=lambda candidate: _SINGLE_TEMPLATE_CALL_METRICS,
-    candidate_collector=_typed_candidate_cast_boilerplate_candidates,
 )
 
 
@@ -3366,6 +3415,40 @@ DirectBuildFindingRendererDetector = declare_candidate_rule_detector(
 )
 
 
+@dataclass(frozen=True)
+class EnumMetadataTableCandidate(CollectsItself, ClassLineWitnessCandidate):
+    table_name: str
+    property_names: tuple[str, ...]
+    case_count: int
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        table_cases = _enum_metadata_table_cases(module)
+        candidates: list[Self] = []
+        for declared in module.fact(ModuleClassStatements).top_level:
+            statement = declared.node
+            property_tables: dict[str, list[str]] = defaultdict(list)
+            for item in statement.body:
+                if isinstance(item, ast.FunctionDef):
+                    table_name = _enum_metadata_property_table(item)
+                    if table_name is not None:
+                        property_tables[table_name].append(item.name)
+            for table_name, property_names in property_tables.items():
+                enum_name, case_count = table_cases.get(table_name, (None, 0))
+                if enum_name == statement.name:
+                    candidates.append(
+                        cls(
+                            file_path=module.file_path,
+                            line=statement.lineno,
+                            class_name=statement.name,
+                            table_name=table_name,
+                            property_names=tuple(property_names),
+                            case_count=case_count,
+                        )
+                    )
+        return tuple(candidates)
+
+
 declare_candidate_rule_detector(
     EnumMetadataTableCandidate,
     high_confidence_certified_spec(
@@ -3393,7 +3476,6 @@ declare_candidate_rule_detector(
         field_names=candidate.property_names,
         source_name=candidate.class_name,
     ),
-    candidate_collector=_enum_metadata_table_candidates,
 )
 
 

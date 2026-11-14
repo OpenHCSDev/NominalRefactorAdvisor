@@ -117,10 +117,8 @@ from nominal_refactor_advisor.detectors._base import (
     CANDIDATE_COLLECTION_AUTHORITY,
     ClassFamilyWitnessCarrier,
     ClassMethodLineWitnessCandidate,
-    ConcreteCandidateDetectorShape,
     ConcreteConfigFieldProbeCandidate,
     DetectorConfig,
-    EnumMetadataTableCandidate,
     FindingAssemblyPipelineCandidate,
     GuardedDelegatorCandidate,
     GuardedWrapperSpecPair,
@@ -140,7 +138,6 @@ from nominal_refactor_advisor.detectors._base import (
     StringBackedReflectiveNominalLookupCandidate,
     StructuralObservationPropertyCandidate,
     TupleIndexSemanticOpacityCandidate,
-    TypedCandidateCastBoilerplateCandidate,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassStatement,
@@ -2661,40 +2658,6 @@ def _typed_candidate_cast_assignment(
     return (parameter_name, call_assignment.target_name, ast.unparse(cast_call.args[0]))
 
 
-def _typed_candidate_cast_boilerplate_candidates(
-    module: ParsedModule,
-) -> tuple[TypedCandidateCastBoilerplateCandidate, ...]:
-    candidates: list[TypedCandidateCastBoilerplateCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        detector_shape = ConcreteCandidateDetectorShape.from_class(module, node)
-        if detector_shape is None:
-            continue
-        for statement in node.body:
-            if not (
-                isinstance(statement, ast.FunctionDef)
-                and statement.name == "_finding_for_candidate"
-            ):
-                continue
-            cast_assignment = _typed_candidate_cast_assignment(statement)
-            if cast_assignment is None:
-                continue
-            parameter_name, local_name, candidate_type_name = cast_assignment
-            candidates.append(
-                TypedCandidateCastBoilerplateCandidate(
-                    file_path=module.file_path,
-                    line=statement.lineno,
-                    class_name=node.name,
-                    method_name=statement.name,
-                    parameter_name=parameter_name,
-                    local_name=local_name,
-                    candidate_type_name=candidate_type_name,
-                    detector_base_name=detector_shape.base_name,
-                )
-            )
-    return tuple(candidates)
-
-
 def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:
     call = as_ast(node, ast.Call)
     if call is None or len(call.args) < 1:
@@ -2866,35 +2829,6 @@ def _enum_metadata_property_table(method: ast.FunctionDef) -> str | None:
         if property_method and lookup is not None and (name_id(lookup.slice) == "self")
         else None
     )
-
-
-def _enum_metadata_table_candidates(
-    module: ParsedModule,
-) -> tuple[EnumMetadataTableCandidate, ...]:
-    table_cases = _enum_metadata_table_cases(module)
-    candidates: list[EnumMetadataTableCandidate] = []
-    for declared in module.fact(ModuleClassStatements).top_level:
-        statement = declared.node
-        property_tables: dict[str, list[str]] = defaultdict(list)
-        for item in statement.body:
-            if isinstance(item, ast.FunctionDef):
-                table_name = _enum_metadata_property_table(item)
-                if table_name is not None:
-                    property_tables[table_name].append(item.name)
-        for table_name, property_names in property_tables.items():
-            enum_name, case_count = table_cases.get(table_name, (None, 0))
-            if enum_name == statement.name:
-                candidates.append(
-                    EnumMetadataTableCandidate(
-                        file_path=module.file_path,
-                        line=statement.lineno,
-                        class_name=statement.name,
-                        table_name=table_name,
-                        property_names=tuple(property_names),
-                        case_count=case_count,
-                    )
-                )
-    return tuple(candidates)
 
 
 class TupleIndexSemanticOpacityCandidateCollector:

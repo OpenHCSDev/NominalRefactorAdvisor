@@ -5897,14 +5897,6 @@ class CandidateCollectorBoilerplateCandidate(
 
 
 @dataclass(frozen=True)
-class TypedCandidateCastBoilerplateCandidate(ClassMethodLineWitnessCandidate):
-    parameter_name: str
-    local_name: str
-    candidate_type_name: str
-    detector_base_name: str
-
-
-@dataclass(frozen=True)
 class FindingSpecConstructionCandidate(LineWitnessCandidate):
     constructor_name: str
     recommended_builder_name: str
@@ -6091,25 +6083,6 @@ class StaticTypedObservationDetectorCandidate(ClassLineWitnessCandidate):
     minimum_evidence_count: int
     summary_expression: str
     line_count: int
-
-
-@dataclass(frozen=True)
-class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
-    property_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-    collection_name: str
-    projected_attribute_names: tuple[str, ...]
-    line_count: int
-    evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")
-    )
-
-
-@dataclass(frozen=True)
-class EnumMetadataTableCandidate(ClassLineWitnessCandidate):
-    table_name: str
-    property_names: tuple[str, ...]
-    case_count: int
 
 
 @dataclass(frozen=True)
