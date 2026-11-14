@@ -939,11 +939,36 @@ class TopLevelClassShape(ABC):
     def name(self) -> str:
         return self.node.name
 
-    @property
-    def detail(self) -> tuple[str, ...]:
-        """What a site says about the class beyond its qualified name."""
+    def site(self, file_path: str, declared_symbol: str) -> SpelledClassSite:
+        """The site this class is: its qualified name, and what the shape adds."""
 
-        return ()
+        return SpelledClassSite(
+            file_path=file_path,
+            lineno=self.node.lineno,
+            symbol=self.name,
+            group=self.name,
+            declared_symbol=declared_symbol,
+        )
+
+
+@dataclass(frozen=True)
+class SpelledClassSite(TypedRestatingSite):
+    """A top-level class of one shape, by its qualified name."""
+
+    declared_symbol: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.declared_symbol,)
+
+
+@dataclass(frozen=True)
+class EmptySubclassSite(SpelledClassSite):
+    """An empty subclass, with the one base it adds nothing to."""
+
+    base: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.declared_symbol, self.base)
 
 
 @dataclass(frozen=True)
@@ -991,17 +1016,13 @@ class SpelledClassSiteFamily(
         ]
 
     @classmethod
-    def class_sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+    def class_sites(cls, parsed_module: ParsedModule) -> Iterator[SpelledClassSite]:
         if SiblingTestModules.holds(parsed_module):
             return
         for statement in parsed_module.module.body:
             for found in cls.shape.decoded(statement):
-                yield RestatingSite(
-                    parsed_module.file_path,
-                    found.node.lineno,
-                    found.name,
-                    found.name,
-                    (f"{parsed_module.module_name}.{found.name}", *found.detail),
+                yield found.site(
+                    parsed_module.file_path, f"{parsed_module.module_name}.{found.name}"
                 )
 
     @classmethod
@@ -1045,9 +1066,15 @@ class EmptySubclass(TopLevelClassShape):
                 return True
         return False
 
-    @property
-    def detail(self) -> tuple[str, ...]:
-        return (self.base.id,)
+    def site(self, file_path: str, declared_symbol: str) -> SpelledClassSite:
+        return EmptySubclassSite(
+            file_path=file_path,
+            lineno=self.node.lineno,
+            symbol=self.name,
+            group=self.name,
+            declared_symbol=declared_symbol,
+            base=self.base.id,
+        )
 
 
 class EmptySubclassSiteFamily(SpelledClassSiteFamily[tuple[NameUse, ...]]):
@@ -1093,10 +1120,10 @@ class EmptySubclassIndex:
         return replace(
             index,
             bases_by_symbol={
-                site.detail[0]: base
+                site.declared_symbol: base
                 for module in modules
                 for site in module.sites
-                for base in index.undistinguished_base(site.detail[0], site.group)
+                for base in index.undistinguished_base(site.declared_symbol, site.group)
             },
         )
 
@@ -1567,10 +1594,10 @@ class EnumMemberIndex:
             for class_use in module_class_uses:
                 class_kinds[class_use.owner].add(class_use.kind)
         folds = {
-            site.detail[0]: found
+            site.declared_symbol: found
             for module in modules
             for site in module.sites
-            if cls.plain_enum(class_index, site.detail[0], site.group)
+            if cls.plain_enum(class_index, site.declared_symbol, site.group)
             and class_kinds.get(site.group, set()) <= {EnumUseKind.MEMBER, EnumUseKind.TYPE}
             for found in [cls.undistinguished(member_uses.get(site.group, []))]
             if found

@@ -125,10 +125,10 @@ class NameOnlySubclassDetector(
     )
 
     def admits(self, sites: Sequence[RestatingSite], context: EmptySubclassIndex) -> bool:
-        return sites[0].detail[0] in context.bases_by_symbol
+        return sites[0].declared_symbol in context.bases_by_symbol
 
     def describe(self, sites: Sequence[RestatingSite], context: EmptySubclassIndex) -> str:
-        symbol, base = sites[0].detail
+        symbol, base = sites[0].declared_symbol, sites[0].base
         siblings = context.siblings(symbol)
         named = ", ".join(f"`{name}`" for name in siblings)
         alongside = {
@@ -167,12 +167,12 @@ class UndistinguishedEnumMembersDetector(
     )
 
     def admits(self, sites: Sequence[RestatingSite], context: EnumMemberIndex) -> bool:
-        return sites[0].detail[0] in context.folds
+        return sites[0].declared_symbol in context.folds
 
     def describe(self, sites: Sequence[RestatingSite], context: EnumMemberIndex) -> str:
         folds = "; ".join(
             ", ".join(f"`{sites[0].symbol}.{member}`" for member in members)
-            for members in context.folds[sites[0].detail[0]]
+            for members in context.folds[sites[0].declared_symbol]
         )
         return f"`{sites[0].symbol}` has members that every spelling names together: {folds}."
 
