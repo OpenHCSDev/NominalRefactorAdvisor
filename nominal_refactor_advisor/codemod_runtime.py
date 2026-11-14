@@ -2688,21 +2688,14 @@ class RejectedRecipeProposalEvaluation(DeclaredRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
-    """Declaration-owned safety outcome with exactly one executable recipe."""
+class RecipeBearingEvaluation(DeclaredRecipeEvaluation, ABC):
+    """Declaration-owned outcome that holds exactly one executable recipe.
 
-    status = FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    Whether the recipe is still a candidate for the plan is the member's answer: a
+    candidate is gated, and a recipe already excluded from the plan is not.
+    """
+
     executable_recipe: RefactorRecipe
-
-    def rejected_by_preflight(
-        self, preflight: CodemodPlanPreflightReport
-    ) -> RejectedRecipeProposalEvaluation:
-        """Retain this proposal and its actual evidence without planning it."""
-        return RejectedRecipeProposalEvaluation(
-            evaluation_declaration_type=self.evaluation_declaration_type,
-            proposed_recipe=self.executable_recipe,
-            preflight=preflight,
-        )
 
     @property
     def required_recipe(self) -> RefactorRecipe:
@@ -2720,12 +2713,29 @@ class ExecutableRecipeEvaluation(DeclaredRecipeEvaluation):
     def recipe(self) -> RefactorRecipe:
         return self.executable_recipe
 
+    def with_recipe(self, recipe: RefactorRecipe) -> Self:
+        return replace(self, executable_recipe=recipe)
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExecutableRecipeEvaluation(RecipeBearingEvaluation):
+    """Declaration-owned safety outcome with exactly one executable recipe."""
+
+    status = FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+
+    def rejected_by_preflight(
+        self, preflight: CodemodPlanPreflightReport
+    ) -> RejectedRecipeProposalEvaluation:
+        """Retain this proposal and its actual evidence without planning it."""
+        return RejectedRecipeProposalEvaluation(
+            evaluation_declaration_type=self.evaluation_declaration_type,
+            proposed_recipe=self.executable_recipe,
+            preflight=preflight,
+        )
+
     @property
     def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
         return (self.executable_recipe,)
-
-    def with_recipe(self, recipe: RefactorRecipe) -> Self:
-        return replace(self, executable_recipe=recipe)
 
     def gated_by_action_keys(
         self,
@@ -2801,39 +2811,13 @@ class CurrentSnapshotBatchCandidateEvaluation(ExecutableRecipeEvaluation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class NonPlanningExecutableRecipeEvaluation(ExecutableRecipeEvaluation, ABC):
+class NonPlanningExecutableRecipeEvaluation(RecipeBearingEvaluation, ABC):
     """Evaluated executable recipe excluded from the emitted plan."""
 
     @property
     @abstractmethod
     def status(self) -> FindingRecipeSynthesisStatus:
         raise NotImplementedError
-
-    @property
-    def candidate_recipes(self) -> tuple[RefactorRecipe, ...]:
-        return ()
-
-    def gated_by_action_keys(
-        self,
-        action_keys: tuple[FindingRecipeActionKey, ...],
-    ) -> FindingRecipeEvaluation:
-        del action_keys
-        return self
-
-    def gated_by_authority_claim(
-        self,
-        context: CodemodSelectorContext | None,
-        finding: RefactorFinding,
-    ) -> FindingRecipeEvaluation:
-        del context, finding
-        return self
-
-    def terminal_evaluation(
-        self,
-        context: CodemodSelectorContext | None,
-    ) -> FindingRecipeEvaluation:
-        del context
-        return self
 
 
 @dataclass(frozen=True, kw_only=True)
