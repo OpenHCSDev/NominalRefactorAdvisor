@@ -79,7 +79,27 @@ class DerivationSetting(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class AnalyzerConfiguration(SemanticRecord):
+class CanonicalJsonRecord(SemanticRecord):
+    """A record identified by the SHA-256 of its canonical JSON."""
+
+    @property
+    def canonical_json(self) -> str:
+        """Deterministic UTF-8 JSON: sorted keys, no padding."""
+
+        return json.dumps(
+            json_report_object(self),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    @property
+    def canonical_digest(self) -> str:
+        return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class AnalyzerConfiguration(CanonicalJsonRecord):
     """Single boundary-owned authority for analyzer identity and settings."""
 
     analyzer_name: str
@@ -104,17 +124,8 @@ class AnalyzerConfiguration(SemanticRecord):
             )
 
     @property
-    def canonical_json(self) -> str:
-        return json.dumps(
-            json_report_object(self),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-
-    @property
     def configuration_digest(self) -> str:
-        return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+        return self.canonical_digest
 
 
 class DynamicBoundaryKind(StrEnum):
@@ -140,7 +151,7 @@ class KnownDynamicBoundary(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class DerivationRunBoundary(SemanticRecord):
+class DerivationRunBoundary(CanonicalJsonRecord):
     """Fixed repository, scope, policy, and runtime boundary for one run."""
 
     repository: str
@@ -398,7 +409,7 @@ class RelationCoverageVerdict(StrEnum):
 
 
 @dataclass(frozen=True)
-class RequiredRelationBindingReceipt(SemanticRecord):
+class RequiredRelationBindingReceipt(CanonicalJsonRecord):
     """Reference-only deterministic contents of ``relation-binding.json``."""
 
     run_id: str
@@ -513,21 +524,10 @@ class RequiredRelationBindingReceipt(SemanticRecord):
         )
 
     @property
-    def canonical_json(self) -> str:
-        """Return deterministic JSON for the machine-readable artifact."""
-
-        return json.dumps(
-            json_report_object(self),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-
-    @property
     def content_digest(self) -> str:
         """Return the SHA-256 identity of ``relation-binding.json``."""
 
-        return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+        return self.canonical_digest
 
 
 @dataclass(frozen=True, order=True)
@@ -665,7 +665,7 @@ class EnumerationDecision(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class DerivationRunManifest(SemanticRecord):
+class DerivationRunManifest(CanonicalJsonRecord):
     """Canonical authored inputs for one bounded semantic derivation run."""
 
     run_id: str
@@ -808,36 +808,18 @@ class DerivationRunManifest(SemanticRecord):
             )
 
     @property
-    def canonical_json(self) -> str:
-        """Return deterministic UTF-8 JSON for analyzer input hashing."""
-
-        return json.dumps(
-            json_report_object(self),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-
-    @property
     def input_digest(self) -> str:
         """Return the SHA-256 identity of the canonical authored inputs."""
 
-        return hashlib.sha256(self.canonical_json.encode("utf-8")).hexdigest()
+        return self.canonical_digest
 
     @property
     def required_relation_binding_receipt(self) -> RequiredRelationBindingReceipt:
         """Derive the standalone ``relation-binding.json`` authority."""
 
-        boundary_json = json.dumps(
-            json_report_object(self.boundary),
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-        )
-        boundary_digest = hashlib.sha256(boundary_json.encode("utf-8")).hexdigest()
         return RequiredRelationBindingReceipt(
             run_id=self.run_id,
-            boundary_digest=boundary_digest,
+            boundary_digest=self.boundary.canonical_digest,
             repository_revision=self.boundary.repository_revision,
             relation_row_ids=tuple(row.row_id for row in self.required_relation),
             evidence_record_ids=tuple(
