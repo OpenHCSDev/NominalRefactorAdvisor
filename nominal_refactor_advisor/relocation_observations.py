@@ -18,7 +18,7 @@ from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import ClassVar, Self
+from typing import ClassVar, Generic, Self, TypeVar
 
 from nominal_refactor_advisor.annotation_semantics import TypeWrapper
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
@@ -41,6 +41,7 @@ from nominal_refactor_advisor.probe_owner import (
 from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
+    TypedRestatingSite,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite, SymbolSite
 
@@ -185,6 +186,36 @@ class OwnStateAnswer(MemberAnswer):
     @property
     def detail(self) -> tuple[str, ...]:
         return (self.accessed, self.probe)
+
+    @property
+    def called(self) -> bool:
+        """Whether a reader calls the member (a method) rather than reads it (a property)."""
+
+        return self.accessed == "method"
+
+
+MemberAnswerT = TypeVar("MemberAnswerT", bound=MemberAnswer)
+
+
+@dataclass(frozen=True)
+class MemberAnswerSite(TypedRestatingSite, Generic[MemberAnswerT]):
+    """A member declaration of a class, with how it answers."""
+
+    declaring_class: str
+    answer: MemberAnswerT
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.declaring_class, *self.answer.detail)
+
+
+@dataclass(frozen=True)
+class ThreadedAbsenceSite(TypedRestatingSite):
+    """One `is None` / `is not None` test of an optional parameter."""
+
+    test: str
+
+    def spelled(self) -> tuple[str, ...]:
+        return (self.test,)
 
 
 @dataclass
@@ -605,15 +636,16 @@ class MemberAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
     answer: ClassVar[type[MemberAnswer]]
 
     @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[MemberAnswerSite[MemberAnswer]]:
         for reading in parsed_module.fact(ModuleClassReadings).classes:
             for answer in reading.answers.get(cls.answer, ()):
-                yield RestatingSite(
-                    parsed_module.file_path,
-                    answer.lineno,
-                    f"{reading.qualname}.{answer.member}",
-                    answer.member,
-                    (f"{parsed_module.module_name}.{reading.qualname}", *answer.detail),
+                yield MemberAnswerSite(
+                    file_path=parsed_module.file_path,
+                    lineno=answer.lineno,
+                    symbol=f"{reading.qualname}.{answer.member}",
+                    group=answer.member,
+                    declaring_class=f"{parsed_module.module_name}.{reading.qualname}",
+                    answer=answer,
                 )
 
 
@@ -706,16 +738,12 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         ops=[ast.Is() | ast.IsNot() as operator],
                         comparators=[ast.Constant(value=None)],
                     ) if name in optional and id(node) not in deciding:
-                        yield RestatingSite(
-                            parsed_module.file_path,
-                            node.lineno,
-                            definition.qualname,
-                            name,
-                            (
-                                "is None"
-                                if isinstance(operator, ast.Is)
-                                else "is not None",
-                            ),
+                        yield ThreadedAbsenceSite(
+                            file_path=parsed_module.file_path,
+                            lineno=node.lineno,
+                            symbol=definition.qualname,
+                            group=name,
+                            test="is None" if isinstance(operator, ast.Is) else "is not None",
                         )
 
     @staticmethod
