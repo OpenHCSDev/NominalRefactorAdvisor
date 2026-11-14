@@ -16,7 +16,7 @@ import re
 import tokenize
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
@@ -24,7 +24,7 @@ from itertools import groupby
 from operator import attrgetter
 from pathlib import Path
 from types import EllipsisType
-from typing import Any, ClassVar, Self, cast
+from typing import Any, ClassVar, Generic, Self, TypeVar, cast
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
@@ -61,9 +61,11 @@ from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteModule,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 StatementList = Sequence[ast.stmt]
 ScopeNode = ast.Module | ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+SpellingsT = TypeVar("SpellingsT")
 
 
 def same_code(left: Sequence[ast.AST], right: Sequence[ast.AST]) -> bool:
@@ -851,12 +853,14 @@ class SiblingTestModules(ParsedModuleSetFact):
     modules: tuple[ParsedModule, ...]
 
     @classmethod
+    @ScanCache.cached
     def under(
         cls,
-        import_roots: Iterable[str],
+        import_roots: frozenset[str],
         held: frozenset[Path] = frozenset(),
     ) -> SiblingTestModules:
-        """The test modules under each import root that the scan does not hold.
+        """The test modules under each import root that the scan does not hold,
+        discovered and parsed once per scan for every join that reads them.
 
         `held` is the scanned files, resolved. Their uses are already in the
         scan's own projections, and one file can sit under several import roots,
@@ -865,7 +869,7 @@ class SiblingTestModules(ParsedModuleSetFact):
 
         policy = PythonSourcePathPolicy(include_tests=True)
         modules: list[ParsedModule] = []
-        for root in map(Path, sorted(set(import_roots))):
+        for root in map(Path, sorted(import_roots)):
             paths = tuple(
                 path
                 for path in PythonSourcePathDiscovery(root, policy).paths()
@@ -897,7 +901,9 @@ class SiblingTestModules(ParsedModuleSetFact):
 
         held_tests = tuple(module for module in modules if cls.holds(module))
         unheld = cls.under(
-            (str(module.module_path_identity.declared_import_root) for module in modules),
+            frozenset(
+                str(module.module_path_identity.declared_import_root) for module in modules
+            ),
             frozenset(Path(module.file_path).resolve() for module in modules),
         )
         return cls((*held_tests, *unheld.modules))
@@ -907,14 +913,112 @@ SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
 
 
 @dataclass(frozen=True)
-class EmptySubclass:
+class TopLevelClassShape(ABC):
+    """A top-level class of one shape, decoded from its statement."""
+
+    node: ast.ClassDef
+
+    @classmethod
+    @abstractmethod
+    def decoded(cls, node: ast.AST) -> Iterator[Self]:
+        """The shape when `node` has it."""
+
+        raise NotImplementedError
+
+    @property
+    def name(self) -> str:
+        return self.node.name
+
+    @property
+    def detail(self) -> tuple[str, ...]:
+        """What a site says about the class beyond its qualified name."""
+
+        return ()
+
+
+@dataclass(frozen=True)
+class SpelledClassSiteModule(RestatingSiteModule, Generic[SpellingsT]):
+    """One module's top-level classes of one shape as sites, where the module
+    sits, and what it spells that decides them."""
+
+    import_root: str
+    file_path: str
+    spellings: SpellingsT
+
+
+class SpelledClassSiteFamily(
+    ShapeFamily[SpelledClassSiteModule[SpellingsT]], Generic[SpellingsT], ABC
+):
+    """Top-level classes of one shape, one site each, with the module's spellings.
+
+    Whether such a class is a false distinction is decided by every spelling
+    of its name: the scanned modules' and the sibling tests'. A test module
+    holds evidence only, so it has spellings and no sites.
+    """
+
+    _registry_skip = True
+    item_type = SpelledClassSiteModule
+    shape: ClassVar[type[TopLevelClassShape]]
+
+    @classmethod
+    @abstractmethod
+    def spellings(cls, parsed_module: ParsedModule) -> SpellingsT:
+        """What one module spells, read the same way from a scanned module and a test."""
+
+        raise NotImplementedError
+
+    @classmethod
+    def collect(
+        cls, parsed_module: ParsedModule
+    ) -> list[SpelledClassSiteModule[SpellingsT]]:
+        return [
+            SpelledClassSiteModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(cls.class_sites(parsed_module)),
+                import_root=str(parsed_module.module_path_identity.declared_import_root),
+                file_path=parsed_module.file_path,
+                spellings=cls.spellings(parsed_module),
+            )
+        ]
+
+    @classmethod
+    def class_sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        if SiblingTestModules.holds(parsed_module):
+            return
+        for statement in parsed_module.module.body:
+            for found in cls.shape.decoded(statement):
+                yield RestatingSite(
+                    parsed_module.file_path,
+                    found.node.lineno,
+                    found.name,
+                    found.name,
+                    (f"{parsed_module.module_name}.{found.name}", *found.detail),
+                )
+
+    @classmethod
+    def evidence(
+        cls, projections_by_family: Mapping[type[CollectedFamily[Any]], Sequence[object]]
+    ) -> Iterator[SpellingsT]:
+        """Every scanned module's spellings, then every sibling test's."""
+
+        modules = cls.modules_in(projections_by_family)
+        for module in modules:
+            yield module.spellings
+        for test_module in SiblingTestModules.under(
+            frozenset(module.import_root for module in modules),
+            frozenset(Path(module.file_path).resolve() for module in modules),
+        ).modules:
+            yield cls.spellings(test_module)
+
+
+@dataclass(frozen=True)
+class EmptySubclass(TopLevelClassShape):
     """A top-level class with one base, spelled as a bare name, and no body.
 
     It has no decorators and no class keywords; its body is at most a
     docstring, `pass` or `...`.
     """
 
-    node: ast.ClassDef
     base: ast.Name
 
     @classmethod
@@ -933,48 +1037,20 @@ class EmptySubclass:
         return False
 
     @property
-    def name(self) -> str:
-        return self.node.name
+    def detail(self) -> tuple[str, ...]:
+        return (self.base.id,)
 
 
-@dataclass(frozen=True)
-class EmptySubclassSiteModule(RestatingSiteModule):
-    """One module's empty subclasses as sites, and every name it spells."""
-
-    import_root: str
-    file_path: str
-    uses: tuple[NameUse, ...] = ()
-
-
-class EmptySubclassSiteFamily(ShapeFamily[EmptySubclassSiteModule]):
+class EmptySubclassSiteFamily(SpelledClassSiteFamily[tuple[NameUse, ...]]):
     """Top-level empty subclasses, one site each, with the module's name uses."""
 
-    item_type = EmptySubclassSiteModule
+    shape = EmptySubclass
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[EmptySubclassSiteModule]:
-        return [
-            EmptySubclassSiteModule(
-                module_name=parsed_module.module_name,
-                sites=tuple(
-                    RestatingSite(
-                        parsed_module.file_path,
-                        subclass.node.lineno,
-                        subclass.name,
-                        subclass.name,
-                        (f"{parsed_module.module_name}.{subclass.name}", subclass.base.id),
-                    )
-                    for statement in parsed_module.module.body
-                    if not SiblingTestModules.holds(parsed_module)
-                    for subclass in EmptySubclass.decoded(statement)
-                ),
-                uses=tuple(
-                    sorted(NameUse.in_module(parsed_module), key=attrgetter("name", "kind"))
-                ),
-                import_root=str(parsed_module.module_path_identity.declared_import_root),
-                file_path=parsed_module.file_path,
-            )
-        ]
+    def spellings(cls, parsed_module: ParsedModule) -> tuple[NameUse, ...]:
+        return tuple(
+            sorted(NameUse.in_module(parsed_module), key=attrgetter("name", "kind"))
+        )
 
 
 @dataclass(frozen=True)
@@ -1001,14 +1077,8 @@ class EmptySubclassIndex:
         class_index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
         modules = EmptySubclassSiteFamily.modules_in(projections_by_family)
         kinds: dict[str, set[NameUseKind]] = defaultdict(set)
-        for module in modules:
-            for use in module.uses:
-                kinds[use.name].add(use.kind)
-        for test_module in SiblingTestModules.under(
-            (module.import_root for module in modules),
-            frozenset(Path(module.file_path).resolve() for module in modules),
-        ).modules:
-            for use in NameUse.in_module(test_module):
+        for uses in EmptySubclassSiteFamily.evidence(projections_by_family):
+            for use in uses:
                 kinds[use.name].add(use.kind)
         index = cls(class_index, {name: frozenset(found) for name, found in kinds.items()}, {})
         return replace(
@@ -1379,10 +1449,8 @@ class EnumClassUse:
 
 
 @dataclass(frozen=True)
-class EnumMembers:
+class EnumMembers(TopLevelClassShape):
     """A top-level class whose body only binds names to constants."""
-
-    node: ast.ClassDef
 
     @classmethod
     def decoded(cls, node: ast.AST) -> Iterator[EnumMembers]:
@@ -1411,16 +1479,6 @@ class EnumMembers:
         }
 
 
-@dataclass(frozen=True)
-class EnumUseModule(RestatingSiteModule):
-    """One module's literal-valued classes as sites, and every enum-shaped spelling."""
-
-    import_root: str
-    file_path: str
-    member_uses: tuple[EnumMemberUse, ...] = ()
-    class_uses: tuple[EnumClassUse, ...] = ()
-
-
 def enum_uses(
     parsed: ParsedModule, owners: Callable[[str], bool]
 ) -> tuple[list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]]:
@@ -1446,41 +1504,25 @@ def enum_uses(
     return member_uses, class_uses, groups
 
 
-class EnumUseSiteFamily(ShapeFamily[EnumUseModule]):
+class EnumUseSiteFamily(
+    SpelledClassSiteFamily[tuple[tuple[EnumMemberUse, ...], tuple[EnumClassUse, ...]]]
+):
     """Literal-valued classes, one site each, and the module's enum-shaped spellings.
 
     Owners are spelled names that some scanned class could be: capitalised,
     the shape a class name takes. The join keeps only plain Enum classes.
     """
 
-    item_type = EnumUseModule
+    shape = EnumMembers
 
     @classmethod
-    def collect(cls, parsed_module: ParsedModule) -> list[EnumUseModule]:
+    def spellings(
+        cls, parsed_module: ParsedModule
+    ) -> tuple[tuple[EnumMemberUse, ...], tuple[EnumClassUse, ...]]:
         member_uses, class_uses, _groups = enum_uses(
             parsed_module, cls.spelled_like_a_class
         )
-        return [
-            EnumUseModule(
-                module_name=parsed_module.module_name,
-                sites=tuple(
-                    RestatingSite(
-                        parsed_module.file_path,
-                        members.node.lineno,
-                        members.node.name,
-                        members.node.name,
-                        (f"{parsed_module.module_name}.{members.node.name}",),
-                    )
-                    for statement in parsed_module.module.body
-                    if not SiblingTestModules.holds(parsed_module)
-                    for members in EnumMembers.decoded(statement)
-                ),
-                member_uses=tuple(dict.fromkeys(member_uses)),
-                class_uses=tuple(dict.fromkeys(class_uses)),
-                import_root=str(parsed_module.module_path_identity.declared_import_root),
-                file_path=parsed_module.file_path,
-            )
-        ]
+        return tuple(dict.fromkeys(member_uses)), tuple(dict.fromkeys(class_uses))
 
     @staticmethod
     def spelled_like_a_class(name: str) -> bool:
@@ -1508,18 +1550,9 @@ class EnumMemberIndex:
         modules = EnumUseSiteFamily.modules_in(projections_by_family)
         member_uses: dict[str, list[EnumMemberUse]] = defaultdict(list)
         class_kinds: dict[str, set[EnumUseKind]] = defaultdict(set)
-        tests = SiblingTestModules.under(
-            (module.import_root for module in modules),
-            frozenset(Path(module.file_path).resolve() for module in modules),
-        )
-        evidence = (
-            *((module.member_uses, module.class_uses) for module in modules),
-            *(
-                enum_uses(test, EnumUseSiteFamily.spelled_like_a_class)[:2]
-                for test in tests.modules
-            ),
-        )
-        for module_member_uses, module_class_uses in evidence:
+        for module_member_uses, module_class_uses in EnumUseSiteFamily.evidence(
+            projections_by_family
+        ):
             for use in module_member_uses:
                 member_uses[use.owner].append(use)
             for class_use in module_class_uses:
