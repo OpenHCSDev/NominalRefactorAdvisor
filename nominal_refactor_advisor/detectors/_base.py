@@ -6771,21 +6771,21 @@ class _ManualRecordRegistrationConstructorContext:
     key_field_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ManualRecordRegistrationShape:
     key_expr: str
     key_field_name: str
     constructor_field_names: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class ManualKeyedRecordTableClassCandidate(ClassLineWitnessCandidate):
+@dataclass(frozen=True, kw_only=True)
+class ManualKeyedRecordTableClassCandidate(
+    ManualRecordRegistrationShape,
+    ClassLineWitnessCandidate,
+):
     register_method_name: str
     lookup_method_name: str
     lookup_style: RegistryLookupStyle
-    key_field_name: str
-    key_expr: str
-    constructor_field_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
