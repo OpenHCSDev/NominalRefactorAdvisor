@@ -684,10 +684,11 @@ def test_each_detector_is_keyed_on_its_own_declaration_dependencies() -> None:
     """A detector's signature hashes its implementation closure and the projection
     families it reads, so an edit re-keys only the detectors it reaches."""
 
-    closures = {
-        detector_type: frozenset(detector_implementation_module_names(detector_type))
-        for detector_type in IssueDetector.registered_detector_types()
-    }
+    with ScanCache.scope():  # one dependency graph for every detector, as in a scan
+        closures = {
+            detector_type: frozenset(detector_implementation_module_names(detector_type))
+            for detector_type in IssueDetector.registered_detector_types()
+        }
     for detector_type, module_names in closures.items():
         assert detector_type.__module__ in module_names
         if issubclass(detector_type, base_detectors.CompactModuleProjectionDetectorMixin):
