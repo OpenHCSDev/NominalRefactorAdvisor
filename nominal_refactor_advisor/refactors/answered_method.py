@@ -19,10 +19,6 @@ from nominal_refactor_advisor.probe_owner import (
     ProbeOwnerResolver,
     ReceiverSpan,
 )
-from nominal_refactor_advisor.type_checker_session import (
-    SourceTexts,
-    TypeCheckerSession,
-)
 
 
 @dataclass(frozen=True)
@@ -175,13 +171,11 @@ class AnsweredMethod:
         self.admits(binding, site.where)
         return MethodCall(site.file_path, site.attribute, site.call)
 
-    def answering_calls(
-        self, session: TypeCheckerSession | None = None
-    ) -> tuple[AnsweredUse, ...]:
+    def answering_calls(self) -> tuple[AnsweredUse, ...]:
         """The uses the member answers, each receiver typed by the class binding, the
         declarations or the checker."""
 
-        return self.answered_uses(self.reaching(self.references(), session))
+        return self.answered_uses(self.reaching(self.references()))
 
     def answered_uses(
         self, reached: Sequence[tuple[TypedReceiver, ReceiverBinding]]
@@ -236,7 +230,6 @@ class AnsweredMethod:
     def reaching(
         self,
         receivers: Sequence[TypedReceiver],
-        session: TypeCheckerSession | None = None,
     ) -> list[tuple[TypedReceiver, ReceiverBinding]]:
         """The receivers that are the family, each with what binds it: by the class
         binding, the declarations, then one type-checker session for the rest. A
@@ -265,21 +258,14 @@ class AnsweredMethod:
                 if bound.reaches_family():
                     reached.append((receiver, bound))
                 continue
-            owner = ProbeOwnerResolver.of(receiver.parsed).owner(receiver.expression).resolved(typing)
+            owner = receiver.parsed.fact(ProbeOwnerResolver).owner(receiver.expression).resolved(typing)
             spans = owner.type_checker_spans()
             if spans:
                 undeclared[spans[0]] = receiver
             elif self.answers(owner.class_symbols(), receiver.where):
                 reached.append((receiver, ReceiverBinding(self.symbol)))
         if undeclared:
-            owned_session = session is None
-            if owned_session:
-                session = TypeCheckerSession.started(SourceTexts(snapshot.parsed_modules))
-            try:
-                answers = session.receiver_types(undeclared)
-            finally:
-                if owned_session:
-                    session.stop()
+            answers = snapshot.type_checker.receiver_types(undeclared)
             for span, receiver in undeclared.items():
                 answer = answers.get(span)
                 if not isinstance(answer, InferredReceiverType):
@@ -288,9 +274,7 @@ class AnsweredMethod:
                     reached.append((receiver, ReceiverBinding(self.symbol)))
         return reached
 
-    def lookup_reaching_family(
-        self, session: TypeCheckerSession | None = None
-    ) -> str | None:
+    def lookup_reaching_family(self) -> str | None:
         """Where an attribute lookup by a name that is not a constant may run on a
         family receiver; such a lookup can reach the member through any string that
         spells it. A lookup that only takes names, or whose receiver this proof
@@ -319,9 +303,9 @@ class AnsweredMethod:
                 for receiver in self._literal_loop_values(node.args[0], index.parents) or (node.args[0],):
                     receivers.append(TypedReceiver(parsed, receiver, node, where, None))
         try:
-            reached = self.reaching(receivers, session)
+            reached = self.reaching(receivers)
             classes = [
-                receiver for receiver, binding in self.reaching(namespaces, session)
+                receiver for receiver, binding in self.reaching(namespaces)
                 if isinstance(binding, ClassBinding)
             ]
         except ValueError as error:

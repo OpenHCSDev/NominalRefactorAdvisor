@@ -49,6 +49,7 @@ from nominal_refactor_advisor.class_index import (
     build_compact_class_family_index,
 )
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
 from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.codemod_architecture_guards import (
     ArchitectureGuardReport,
@@ -243,6 +244,13 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             return SourceProductFlowRepository.from_modules(self.parsed_modules)
         repository.require_module_owners(self.parsed_modules)
         return repository
+
+    @cached_property
+    def type_checker(self) -> TypeCheckerSession:
+        """One build of this state's sources; every proof that types a receiver
+        in this state reads it."""
+
+        return TypeCheckerSession.started(SourceTexts(self.parsed_modules))
 
     @cached_property
     def exact_dataclass_field_authority_component_builder(

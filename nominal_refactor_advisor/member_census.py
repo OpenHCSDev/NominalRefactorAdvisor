@@ -699,10 +699,11 @@ class MemberAwarenessCensusBuilder:
         )
 
     def inherited(self) -> InheritanceAmortization:
-        with TypeCheckerSession.session(SourceTexts(self.corpus.modules)) as session:
-            return MemberAwarenessCensusBuilder.inheritance_amortization(
-                self.corpus.modules, self.corpus.class_index, session
-            )
+        return MemberAwarenessCensusBuilder.inheritance_amortization(
+            self.corpus.modules,
+            self.corpus.class_index,
+            TypeCheckerSession.started(SourceTexts(self.corpus.modules)),
+        )
 
     @staticmethod
     def inheritance_amortization(

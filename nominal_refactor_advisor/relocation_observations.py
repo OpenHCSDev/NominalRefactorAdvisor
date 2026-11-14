@@ -561,7 +561,7 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
         index = parsed_module.syntax_index
-        resolver = ProbeOwnerResolver.of(parsed_module)
+        resolver = parsed_module.fact(ProbeOwnerResolver)
         reads = []
         calls = []
         for node_index, node in enumerate(index.depth_first_nodes):

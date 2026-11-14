@@ -181,9 +181,8 @@ class PreflightByReproof(SourceReprovedOperation, ABC):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[CodemodOperationPreflightReport, ...]:
-        snapshot = context.execution_snapshot()
         try:
-            self.required_reproof(lambda: self.source_edits_from_snapshot(snapshot))
+            self.source_edits(context)
         except CodemodOperationPreflightError as error:
             return (error.report,)
         return (

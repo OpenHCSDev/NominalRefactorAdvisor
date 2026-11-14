@@ -568,7 +568,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
     def sites(cls, parsed_module: ParsedModule) -> Iterator[ForeignAbsenceSite]:
         index = parsed_module.syntax_index
         modules = imported_module_names(parsed_module)
-        resolver = ProbeOwnerResolver.of(parsed_module)
+        resolver = parsed_module.fact(ProbeOwnerResolver)
         for node_index, node in index.indexed_nodes_of_type(ast.Compare):
             match node:
                 case ast.Compare(

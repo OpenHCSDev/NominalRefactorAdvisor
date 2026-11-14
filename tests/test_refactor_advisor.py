@@ -20213,7 +20213,7 @@ def test_module_cli_json_smoke_imports_registered_detectors(tmp_path: Path) -> N
     assert "findings" in payload
     assert "source_index" in payload
     assert "finding_recipe_plan" in payload
-    assert "payload_timing" not in payload
+    assert "payload_timing" in payload
     assert "observations" in payload
     assert "fibers" in payload
 

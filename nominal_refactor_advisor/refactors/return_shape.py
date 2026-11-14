@@ -28,8 +28,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, AnsweredUse
-from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
-from typing import ClassVar
 
 @dataclass(frozen=True, kw_only=True)
 class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
@@ -42,14 +40,12 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
     rewritten to test ``None``.  An override or reader this proof cannot
     rewrite refuses, naming the site."""
 
-    _shared_type_checker_session: ClassVar[TypeCheckerSession | None] = None
-
     method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
-        source_path = self.required_source_path(snapshot, self.operation_key())
+        self.required_source_path(snapshot, self.operation_key())
         qualname = self.target.qualname
         if qualname is None:
             raise ValueError("flatten_tuple_return requires a class target")
@@ -116,19 +112,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                 if new_annotation != annotation_src:
                     add(resolved_class.file_path, start, end, new_annotation)
 
-        answered = AnsweredMethod(snapshot, base, function)
-        shared = self._shared_type_checker_session
-        owned_session = shared is None
-        session = shared or TypeCheckerSession.started(
-            SourceTexts(snapshot.parsed_modules)
-        )
-        try:
-            calls = answered.answering_calls(session)
-        finally:
-            if owned_session:
-                session.stop()
-
-        for use in calls:
+        for use in AnsweredMethod(snapshot, base, function).answering_calls():
             geo = geometry(use.file_path)
             self._rewrite_reader(use, snapshot, geo, replacements)
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path
 from time import perf_counter
 from typing import Iterable
@@ -33,18 +33,37 @@ class ScanTiming(DataclassJsonReport):
     analysis_seconds: float = 0.0
     planning_seconds: float = 0.0
     source_index_seconds: float = 0.0
+    payload_seconds: float = 0.0
+    """Building the JSON payload: its graphs, gate and recipe plans."""
     analysis_cache_status: type[AnalysisCacheStatus] | None = None
     type_checker: TypeCheckerTiming = TypeCheckerTiming()
-    """Part of analysis: the mypy daemon a probe detector starts for unannotated receivers."""
+    """Every type-checker build and lookup the scan ran, in whichever stage ran it."""
+
+    def stages(self) -> tuple[tuple[str, float], ...]:
+        """Each stage this timing declares, by its name, with its seconds."""
+
+        return tuple(
+            (stage.name.removesuffix("_seconds"), getattr(self, stage.name))
+            for stage in fields(self)
+            if stage.name.endswith("_seconds")
+        )
 
     @json_report_property()
     def total_seconds(self) -> float:
-        return round(
-            self.parse_seconds
-            + self.analysis_seconds
-            + self.planning_seconds
-            + self.source_index_seconds,
-            3,
+        return round(sum(seconds for _stage, seconds in self.stages()), 3)
+
+    def markdown(self) -> str:
+        """One line per stage, then the total."""
+
+        return "\n".join(
+            (
+                "Timing:",
+                *(
+                    f"   - {stage.replace('_', ' ').capitalize()}: {seconds:.3f}s"
+                    for stage, seconds in self.stages()
+                ),
+                f"   - Total: {self.total_seconds:.3f}s",
+            )
         )
 
 @dataclass(frozen=True, kw_only=True)

@@ -832,7 +832,6 @@ class JsonPayloadSections:
     semantic_descent_graph: bool = True
     semantic_refactor_gate: bool = True
     finding_recipe_plan: bool = True
-    payload_timing: bool = False
     default_structural_overlap: bool = False
     execution_plan_payload_mode: JsonExecutionPlanPayloadMode = (
         JsonExecutionPlanPayloadMode.FULL
@@ -884,7 +883,6 @@ class JsonPayloadProfile(Enum):
         observation_graph=False,
         observation_fibers=False,
         finding_recipe_plan=False,
-        payload_timing=True,
         default_structural_overlap=False,
         execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
@@ -895,7 +893,6 @@ class JsonPayloadProfile(Enum):
         semantic_descent_graph=False,
         semantic_refactor_gate=False,
         finding_recipe_plan=False,
-        payload_timing=True,
         default_structural_overlap=False,
         execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
@@ -907,7 +904,6 @@ class JsonPayloadProfile(Enum):
         semantic_descent_graph=False,
         semantic_refactor_gate=False,
         finding_recipe_plan=False,
-        payload_timing=True,
         default_structural_overlap=False,
         execution_plan_payload_mode=JsonExecutionPlanPayloadMode.COUNT_ONLY,
     )
@@ -1425,18 +1421,6 @@ class JsonPayloadBuilder:
             started = perf_counter()
             payload["source_index"] = json_report_object(source_snapshot.source_index)
             source_index_payload_seconds = round(perf_counter() - started, 3)
-        timing = self.timing
-        if timing is not None and built_source_index_seconds:
-            timing = ScanTiming(
-                parse_seconds=timing.parse_seconds,
-                analysis_seconds=timing.analysis_seconds,
-                planning_seconds=timing.planning_seconds,
-                source_index_seconds=built_source_index_seconds,
-                analysis_cache_status=timing.analysis_cache_status,
-                type_checker=timing.type_checker,
-            )
-        if timing is not None:
-            payload["timing"] = json_report_object(timing)
         if self.economics is not None:
             payload["economics"] = json_report_object(self.economics)
         if self.change_budget is not None:
@@ -1488,18 +1472,29 @@ class JsonPayloadBuilder:
             payload["architecture_guard_report"] = json_report_object(
                 self.scan_guard_report
             )
-        if sections.payload_timing:
-            payload["payload_timing"] = json_report_object(
-                JsonPayloadBuildTiming(
-                    observation_graph_seconds=observation_graph_seconds,
-                    semantic_descent_graph_seconds=semantic_descent_graph_seconds,
-                    source_snapshot_seconds=built_source_index_seconds,
-                    source_index_payload_seconds=source_index_payload_seconds,
-                    semantic_refactor_gate_seconds=semantic_refactor_gate_seconds,
-                    finding_recipe_plan_seconds=finding_recipe_plan_seconds,
-                    total_seconds=round(perf_counter() - payload_started, 3),
+        if self.timing is not None:
+            payload["timing"] = json_report_object(
+                replace(
+                    self.timing,
+                    source_index_seconds=built_source_index_seconds
+                    or self.timing.source_index_seconds,
+                    payload_seconds=round(
+                        perf_counter() - payload_started - built_source_index_seconds, 3
+                    ),
+                    type_checker=TypeCheckerTimingLedger.active().timing,
                 )
             )
+        payload["payload_timing"] = json_report_object(
+            JsonPayloadBuildTiming(
+                observation_graph_seconds=observation_graph_seconds,
+                semantic_descent_graph_seconds=semantic_descent_graph_seconds,
+                source_snapshot_seconds=built_source_index_seconds,
+                source_index_payload_seconds=source_index_payload_seconds,
+                semantic_refactor_gate_seconds=semantic_refactor_gate_seconds,
+                finding_recipe_plan_seconds=finding_recipe_plan_seconds,
+                total_seconds=round(perf_counter() - payload_started, 3),
+            )
+        )
         return payload
 
 
@@ -1812,19 +1807,6 @@ def _format_change_budget_item(name: str, budget: LineChangeBudget) -> str:
     return f"{name} +{budget.added}/-{budget.deleted} (net {budget.net_added:+d})"
 
 
-def format_timing_markdown(timing: ScanTiming) -> str:
-    return "\n".join(
-        (
-            "Timing:",
-            f"   - Parse: {timing.parse_seconds:.3f}s",
-            f"   - Analysis: {timing.analysis_seconds:.3f}s",
-            f"   - Planning: {timing.planning_seconds:.3f}s",
-            f"   - Source index: {timing.source_index_seconds:.3f}s",
-            f"   - Total: {timing.total_seconds:.3f}s",
-        )
-    )
-
-
 def format_economics_markdown(
     economics: RefactorEvidenceEconomics,
     change_budget: RepositoryChangeBudget | None = None,
@@ -1963,7 +1945,7 @@ class MarkdownReportRenderer(ABC):
             elif findings:
                 sections.append(self.format_raw_findings_suppressed_markdown(findings))
         if timing is not None:
-            sections.append(format_timing_markdown(timing))
+            sections.append(timing.markdown())
         return self.join_sections(sections)
 
     def findings(self, findings: list[RefactorFinding]) -> str:
@@ -4834,7 +4816,7 @@ def _scan_main(
                 sections.append(
                     format_architecture_guard_markdown(architecture_guard_report)
                 )
-            sections.append(format_timing_markdown(timing))
+            sections.append(timing.markdown())
             print("\n\n".join(sections))
         else:
             print(
@@ -4930,9 +4912,16 @@ def main(*, hard_exit_on_deadline: bool = False) -> int:
 
 
 def process_main() -> int:
-    """Run the installed command with prompt deadline termination semantics."""
+    """Run the installed command with prompt deadline termination semantics.
 
-    return main(hard_exit_on_deadline=True)
+    Once the result is written the process ends at once: freeing a whole
+    scan's syntax trees and type maps one object at a time took a quarter of
+    a full self-scan's wall clock, and nothing reads that memory again."""
+
+    code = main(hard_exit_on_deadline=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(code)
 
 
 if __name__ == "__main__":

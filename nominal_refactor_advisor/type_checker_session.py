@@ -139,10 +139,6 @@ class TypeCheckerSession(ABC):
     ) -> Mapping[ReceiverSpan, ReceiverType]:
         raise NotImplementedError
 
-    @abstractmethod
-    def stop(self) -> None:
-        raise NotImplementedError
-
     @property
     @abstractmethod
     def status(self) -> str:
@@ -195,15 +191,6 @@ class TypeCheckerSession(ABC):
         )
         return session
 
-    @staticmethod
-    @contextmanager
-    def session(sources: TypeCheckerSources) -> Iterator[TypeCheckerSession]:
-        session = TypeCheckerSession.started(sources)
-        try:
-            yield session
-        finally:
-            session.stop()
-
 
 @dataclass(frozen=True)
 class UnavailableTypeChecker(TypeCheckerSession):
@@ -215,9 +202,6 @@ class UnavailableTypeChecker(TypeCheckerSession):
         self, spans: Iterable[ReceiverSpan]
     ) -> Mapping[ReceiverSpan, ReceiverType]:
         return {span: FailedReceiverType(self.reason) for span in spans}
-
-    def stop(self) -> None:
-        """Nothing was started."""
 
     @property
     def status(self) -> str:
@@ -279,9 +263,6 @@ class BuiltTypeChecker(TypeCheckerSession):
         if span.file_path in self.shared:
             return FailedReceiverType(self.shared[span.file_path])
         return FailedReceiverType(f"the build exported no type at {span.location}")
-
-    def stop(self) -> None:
-        """The build holds no process or files."""
 
     @property
     def status(self) -> str:
