@@ -49,19 +49,7 @@ class _SelectorAttributeProjection(_AstNodeProjection[str | None]):
         return None
 
 
-class _DataclassDecoratorProjection(_AstNodeProjection[bool]):
-    def __call__(self, node: ast.AST) -> bool:
-        if isinstance(node, ast.Name):
-            return node.id == "dataclass"
-        if isinstance(node, ast.Call):
-            return self(node.func)
-        if isinstance(node, ast.Attribute):
-            return node.attr == "dataclass"
-        return False
-
-
 _selector_attribute_name = _SelectorAttributeProjection()
-_dataclass_decorator_projection = _DataclassDecoratorProjection()
 
 
 def _camel_case(value: str) -> str:
@@ -83,15 +71,6 @@ def _is_abstract_method(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     return any(
         (
             ExpressionReference.decoded(decorator).terminal_name == "abstractmethod"
-            for decorator in node.decorator_list
-        )
-    )
-
-
-def _is_dataclass_class(node: ast.ClassDef) -> bool:
-    return any(
-        (
-            _dataclass_decorator_projection(decorator)
             for decorator in node.decorator_list
         )
     )
@@ -201,9 +180,7 @@ __all__ = (
     "_constant_string",
     "is_docstring_statement",
     "statements_without_docstring",
-    "_dataclass_decorator_projection",
     "_is_abstract_method",
-    "_is_dataclass_class",
     "_selector_attribute_name",
     "CLASS_NAME_ALGEBRA",
     "_IGNORED_BASE_NAMES",

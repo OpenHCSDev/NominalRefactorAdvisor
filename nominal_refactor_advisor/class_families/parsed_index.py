@@ -52,9 +52,8 @@ from nominal_refactor_advisor.native_declarations import ClassNamespaceDeclarati
 class ClassStatement:
     """What one class statement's own source says, each answer read once.
 
-    `IndexedClass` is a statement the family index names. A class written inside
-    a function is a `LocalClassStatement`: the index does not name it, and its
-    source answers the same questions.
+    `IndexedClass` is a statement the family index names. Any other one is an
+    `UnindexedClassStatement`, and its source answers the same questions.
     """
 
     node: ast.ClassDef
@@ -98,17 +97,64 @@ class ClassStatement:
         return assignments
 
     @cached_property
-    def base_terminal_names(self) -> tuple[str, ...]:
-        """The last name of each spelled base, sorted, each once."""
+    def annotated_names(self) -> tuple[str, ...]:
+        """Each name the body annotates directly, in source order."""
 
-        return sorted_tuple(
-            {
-                name
-                for base in self.node.bases
-                if (name := ExpressionReference.decoded(base).terminal_name)
-                is not None
-            }
+        return tuple(
+            statement.target.id
+            for statement in self.node.body
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
         )
+
+    @cached_property
+    def spelled_base_names(self) -> tuple[str, ...]:
+        """The last name of each spelled base, in source order."""
+
+        return tuple(
+            name
+            for base in self.node.bases
+            if (name := ExpressionReference.decoded(base).terminal_name) is not None
+        )
+
+    @cached_property
+    def base_terminal_names(self) -> tuple[str, ...]:
+        """The spelled base names, sorted, each once."""
+
+        return sorted_tuple(set(self.spelled_base_names))
+
+    @cached_property
+    def dataclass_decorator(self) -> ast.expr | None:
+        """The first decorator spelled `dataclass`, bare or called, by any path.
+
+        This reads names, not bindings. `ClassDeclaration.dataclass_declaration`
+        is the binding-checked answer for a class the index names.
+        """
+
+        for decorator in self.node.decorator_list:
+            spelled = decorator
+            while isinstance(spelled, ast.Call):
+                spelled = spelled.func
+            match spelled:
+                case ast.Name(id="dataclass") | ast.Attribute(attr="dataclass"):
+                    return decorator
+        return None
+
+    @property
+    def spells_dataclass(self) -> bool:
+        return self.dataclass_decorator is not None
+
+    def dataclass_flag(self, name: str) -> bool:
+        """Whether the dataclass decorator is called with `name` set to a true constant."""
+
+        match self.dataclass_decorator:
+            case ast.Call(keywords=keywords):
+                for keyword in keywords:
+                    if keyword.arg == name:
+                        return isinstance(keyword.value, ast.Constant) and bool(
+                            keyword.value.value
+                        )
+        return False
 
     @cached_property
     def spells_abstract(self) -> bool:
@@ -356,8 +402,11 @@ class ModuleIndexedClasses(ParsedModuleFact):
 
 
 @dataclass(frozen=True)
-class LocalClassStatement(ClassStatement):
-    """A class statement the family index does not name: one inside a function."""
+class UnindexedClassStatement(ClassStatement):
+    """A class statement the family index does not name.
+
+    One written inside a function, or one a native syntax index parsed alone.
+    """
 
     node: ast.ClassDef
 
@@ -378,7 +427,7 @@ class ModuleClassStatements(ParsedModuleFact):
             for record in parsed_module.fact(ModuleIndexedClasses).records
         }
         statements = tuple(
-            indexed.get(node) or LocalClassStatement(node)
+            indexed.get(node) or UnindexedClassStatement(node)
             for node in parsed_module.syntax_index.instances_of(ast.ClassDef)
         )
         by_node = {statement.node: statement for statement in statements}

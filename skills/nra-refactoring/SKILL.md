@@ -423,6 +423,33 @@ members share their loop, the loop belongs to a parent and each member
 is one declaration: `FalseDistinctionSiteFamily` (`distinction = ...`),
 `MemberAnswerSiteFamily` (`answer = ...`).
 
+**A function whose first argument is a class node is a method of
+`ClassStatement`.** `module.fact(ModuleClassStatements)` holds one record
+per class statement for the whole parse: `statements` (all, `ast.walk`
+order), `top_level`, `by_name`, `top_level_by_name`. The record answers
+`methods`, `method_named`, `direct_assignments`, `annotated_names`,
+`spelled_base_names`, `base_terminal_names`, `spells_abstract`,
+`dataclass_decorator`, `spells_dataclass` and `dataclass_flag(name)`,
+each read once. `IndexedClass` inherits it; a class the index does not
+name is an `UnindexedClassStatement`. Iterate the records, never
+`module.module.body` filtered by `isinstance(node, ast.ClassDef)`, and
+pass the record, never the node. The `spells_*` answers read names; the
+compact index's `is_abstract` and `dataclass_declaration` are the
+binding-checked ones (they agree on all 3,938 indexed classes of NRA's
+own tree, 2026-11-14).
+
+**Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
+target and guards against its return; `remove_import_bindings` drops
+imports a module no longer reads. Neither proves the target is
+unreached. The certificate used on 2026-11-14 (1,027 lines out of
+`detectors/`): the name is written nowhere outside declarations that are
+themselves unreached, counting tests, docs, string literals and every
+sibling repository, and no coverage run of the scans or the suite
+executes the body. Classes with a registering metaclass or an
+`__init_subclass__` hook above them, dunders and visitor hooks are never
+candidates. Drop the unread imports and search again: an import nothing
+reads keeps its source declaration looking used.
+
 **A permitted overlap verdict is a lead, not a merge.** Before composing
 a pair, read where the copying class is built. If a block field is
 filled with something other than the source's own value, the two

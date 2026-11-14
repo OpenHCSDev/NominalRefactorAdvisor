@@ -176,8 +176,6 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _IGNORED_ANCESTOR_NAMES,
     _is_abstract_method,
-    _dataclass_decorator_projection,
-    _is_dataclass_class,
     CLASS_INDEX_PROJECTION,
 )
 
@@ -3099,11 +3097,11 @@ class CandidateCollectionAuthority:
         candidates: list[WitnessCarrierClassCandidate] = []
         for declared in module.fact(ModuleClassStatements).top_level:
             node = declared.node
-            if not _is_frozen_dataclass(node):
+            if not declared.dataclass_flag("frozen"):
                 continue
             if declared.spells_abstract:
                 continue
-            field_names = _annassign_field_names(node)
+            field_names = declared.annotated_names
             normalized_role_fields = (
                 SUPPORT_PROJECTION_AUTHORITY.normalized_semantic_role_fields(
                     field_names
@@ -3145,15 +3143,6 @@ witness_carrier_class_candidates = (
 
 
 class SyntaxProjectionAuthority:
-    def class_annassign_target_names(self, node: ast.ClassDef) -> tuple[str, ...]:
-        field_names: list[str] = []
-        for statement in node.body:
-            if isinstance(statement, ast.AnnAssign) and isinstance(
-                statement.target, ast.Name
-            ):
-                field_names.append(statement.target.id)
-        return tuple(field_names)
-
     def attribute_names_for_roots(
         self, node: ast.AST, *, root_names: set[str]
     ) -> tuple[str, ...]:
@@ -3200,15 +3189,6 @@ class SyntaxProjectionAuthority:
         if len(symbols) != 1:
             return None
         return class_index.class_for(symbols[0])
-
-    def method_names(self, node: ast.ClassDef) -> frozenset[str]:
-        return frozenset(
-            (
-                item.name
-                for item in node.body
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-            )
-        )
 
 SYNTAX_PROJECTION_AUTHORITY = SyntaxProjectionAuthority()
 
@@ -3473,10 +3453,6 @@ def _derived_wrapper_spec_shadow_candidates(
     )
 
 
-def _dataclass_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
-
-
 def _selection_helper_shape(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> _SelectionHelperShape | None:
@@ -3593,10 +3569,11 @@ def _module_keyed_selection_helper_candidates(
     named_sequences = SUPPORT_PROJECTION_AUTHORITY.module_level_named_sequences(module)
     named_calls = _module_level_named_calls(module)
     candidates: list[ModuleKeyedSelectionHelperCandidate] = []
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef) or not _is_dataclass_class(node):
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
+        if not declared.spells_dataclass:
             continue
-        field_names = _dataclass_field_names(node)
+        field_names = declared.annotated_names
         if len(field_names) != 2 or field_names[0] != "key":
             continue
         selected_field_name = field_names[1]
@@ -4536,7 +4513,7 @@ def _manual_keyed_record_table_group_candidates(
     classes: list[ManualKeyedRecordTableClassCandidate] = []
     for declared in module.fact(ModuleClassStatements).top_level:
         node = declared.node
-        if not _is_dataclass_class(node):
+        if not declared.spells_dataclass:
             continue
         if not SUPPORT_PROJECTION_AUTHORITY.is_empty_dict_expr(
             declared.direct_assignments.get("_registry")
@@ -4699,7 +4676,7 @@ def _manual_structural_record_mechanics_group_candidates(
     classes: list[ManualStructuralRecordMechanicsClassCandidate] = []
     for declared in module.fact(ModuleClassStatements).top_level:
         node = declared.node
-        if not _is_dataclass_class(node) or declared.spells_abstract:
+        if not declared.spells_dataclass or declared.spells_abstract:
             continue
         base_names = SUPPORT_PROJECTION_AUTHORITY.shared_record_base_names(declared)
         if not base_names:
@@ -5331,7 +5308,7 @@ def _structural_confusability_candidates_for_function(
             declared
             for declared in classes
             if set(observed_method_names)
-            <= SYNTAX_PROJECTION_AUTHORITY.method_names(declared.node)
+            <= declared.first_methods_by_name.keys()
         )
         if len(confusable_classes) < 2:
             continue
@@ -5359,26 +5336,6 @@ def _structural_confusability_candidates(
         statements.top_level,
         statements.top_level_by_name,
     )
-
-
-def _is_frozen_dataclass(node: ast.ClassDef) -> bool:
-    for decorator in node.decorator_list:
-        if isinstance(
-            decorator, ast.Call
-        ) and _dataclass_decorator_projection(decorator.func):
-            for keyword in decorator.keywords:
-                if keyword.arg == "frozen":
-                    return isinstance(keyword.value, ast.Constant) and bool(
-                        keyword.value.value
-                    )
-            return False
-        if _dataclass_decorator_projection(decorator):
-            return False
-    return False
-
-
-def _annassign_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return SYNTAX_PROJECTION_AUTHORITY.class_annassign_target_names(node)
 
 
 _GENERIC_FAMILY_CLASS_TOKENS = frozenset(
@@ -6948,80 +6905,6 @@ class CollectionProjectionPropertyFamilyCandidate(ClassLineWitnessCandidate):
     evidence_locations: ClassVar[ZippedSourceLocationEvidenceProperty] = (
         ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")
     )
-
-
-@dataclass(frozen=True)
-class FieldOnlyFrozenDataclassCandidate(ClassLineWitnessCandidate):
-    base_names: tuple[str, ...]
-    field_specs: tuple[tuple[str, str], ...]
-    default_specs: tuple[tuple[str, str], ...]
-    docstring: str | None
-    kw_only: bool
-    line_count: int
-
-    @staticmethod
-    def _dataclass_keyword_bool(node: ast.ClassDef, keyword_name: str) -> bool:
-        for decorator in node.decorator_list:
-            call = as_ast(decorator, ast.Call)
-            if call is None or name_id(call.func) != "dataclass":
-                continue
-            for keyword in call.keywords:
-                if (
-                    keyword.arg == keyword_name
-                    and isinstance(keyword.value, ast.Constant)
-                    and isinstance(keyword.value.value, bool)
-                ):
-                    return keyword.value.value
-        return False
-
-    @classmethod
-    def from_class(
-        cls,
-        module: ParsedModule,
-        node: ast.ClassDef,
-    ) -> FieldOnlyFrozenDataclassCandidate | None:
-        if not _is_frozen_dataclass(node):
-            return None
-        product_fields: list[tuple[str, str, str | None]] = []
-        for statement in statements_without_docstring(node.body):
-            if isinstance(statement, ast.Pass):
-                continue
-            assignment = as_ast(statement, ast.AnnAssign)
-            target = (
-                as_ast(assignment.target, ast.Name) if assignment is not None else None
-            )
-            if assignment is None or target is None:
-                return None
-            product_fields.append(
-                (
-                    target.id,
-                    ast.unparse(assignment.annotation),
-                    (
-                        ast.unparse(assignment.value)
-                        if assignment.value is not None
-                        else None
-                    ),
-                )
-            )
-        if not product_fields:
-            return None
-        return cls(
-            file_path=module.file_path,
-            line=node.lineno,
-            class_name=node.name,
-            base_names=tuple(ast.unparse(base) for base in node.bases),
-            field_specs=tuple(
-                (name, annotation) for name, annotation, _ in product_fields
-            ),
-            default_specs=tuple(
-                (name, default)
-                for name, _, default in product_fields
-                if default is not None
-            ),
-            docstring=ast.get_docstring(node),
-            kw_only=cls._dataclass_keyword_bool(node, "kw_only"),
-            line_count=(node.end_lineno or node.lineno) - node.lineno + 1,
-        )
 
 
 @dataclass(frozen=True)

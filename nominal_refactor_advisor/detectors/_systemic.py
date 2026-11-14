@@ -174,6 +174,7 @@ from nominal_refactor_advisor.detectors._helpers import (
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
     ModuleIndexedClasses,
+    UnindexedClassStatement,
 )
 from nominal_refactor_advisor.detectors._substrate_support import (
     _camel_case,
@@ -603,10 +604,9 @@ class _DataclassNamespaceCliModuleProjectionFamily(
         del cls
         file_path = parsed_module.file_path
         dataclasses: list[_DataclassNamespaceProjection] = []
-        for node in parsed_module.module.body:
-            if not isinstance(node, ast.ClassDef):
-                continue
-            field_names = _dataclass_config_field_names(node)
+        for declared in parsed_module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            field_names = _dataclass_config_field_names(declared)
             if not field_names:
                 continue
             namespace_assignment = _from_namespace_keyword_names(node)
@@ -666,7 +666,9 @@ def _native_dataclass_namespace_cli_projections(
             ):
                 continue
             parsed_class = syntax_index.class_for(class_node)
-            field_names = _dataclass_config_field_names(parsed_class)
+            field_names = _dataclass_config_field_names(
+                UnindexedClassStatement(parsed_class)
+            )
             if not field_names:
                 continue
             namespace_assignment = _from_namespace_keyword_names(parsed_class)

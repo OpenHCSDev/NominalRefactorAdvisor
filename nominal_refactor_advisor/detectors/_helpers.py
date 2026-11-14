@@ -1103,16 +1103,6 @@ def _dynamic_self_field_selection_candidates(
     )
 
 
-def _is_dataclass_class(node: ast.ClassDef) -> bool:
-    for decorator in node.decorator_list:
-        if name_id(decorator) == "dataclass":
-            return True
-        call = as_ast(decorator, ast.Call)
-        if call is not None and name_id(call.func) == "dataclass":
-            return True
-    return False
-
-
 def _reflective_lookup_shape(
     node: ast.AST,
 ) -> tuple[str, str, ast.AST] | None:
@@ -1392,18 +1382,6 @@ def _is_composable_base_name(base_name: str) -> bool:
     )
 
 
-def _declared_base_name_sequence(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        (
-            base_name
-            for base_name in (
-                ExpressionReference.decoded(base).terminal_name for base in node.bases
-            )
-            if base_name is not None
-        )
-    )
-
-
 def _contiguous_base_bundles(
     base_names: tuple[str, ...],
     *,
@@ -1460,10 +1438,11 @@ def _repeated_base_bundle_candidates(
     module: ParsedModule,
 ) -> tuple[RepeatedBaseBundleCandidate, ...]:
     grouped: BaseBundleClassGroups = defaultdict(list)
-    for node in module.module.body:
-        if not isinstance(node, ast.ClassDef) or node.end_lineno is None:
+    for declared in module.fact(ModuleClassStatements).top_level:
+        node = declared.node
+        if node.end_lineno is None:
             continue
-        for bundle in _contiguous_base_bundles(_declared_base_name_sequence(node)):
+        for bundle in _contiguous_base_bundles(declared.spelled_base_names):
             grouped[bundle].append(node)
     candidates: list[RepeatedBaseBundleCandidate] = []
     for bundle, nodes in _maximal_repeated_base_bundle_items(grouped):
@@ -3400,26 +3379,8 @@ class TupleIndexSemanticOpacityCandidateCollector:
         return root_name, tuple(reversed(indexes))
 
 
-def _dataclass_config_field_names(node: ast.ClassDef) -> tuple[str, ...]:
-    if not any(
-        (
-            name_id(decorator) == "dataclass"
-            or (
-                isinstance(decorator, ast.Call)
-                and name_id(decorator.func) == "dataclass"
-            )
-            for decorator in node.decorator_list
-        )
-    ):
-        return ()
-    return tuple(
-        (
-            statement.target.id
-            for statement in node.body
-            if isinstance(statement, ast.AnnAssign)
-            and isinstance(statement.target, ast.Name)
-        )
-    )
+def _dataclass_config_field_names(declared: ClassStatement) -> tuple[str, ...]:
+    return declared.annotated_names if declared.spells_dataclass else ()
 
 
 def _from_namespace_keyword_names(
