@@ -1174,7 +1174,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 self.generic_visit(node)
 
             def visit_Call(self, node: ast.Call) -> None:
-                bridge_kind = self._runtime_namespace_bridge_kind_for_call(node)
+                bridge_kind = RuntimeNamespaceBridgeDetector._runtime_namespace_bridge_kind_for_call(node)
                 if bridge_kind is not None:
                     sites.append(
                         RuntimeNamespaceBridgeSite(
@@ -1186,7 +1186,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 self.generic_visit(node)
 
             def visit_If(self, node: ast.If) -> None:
-                guarded_symbol = self._globals_guard_symbol(node)
+                guarded_symbol = RuntimeNamespaceBridgeDetector._globals_guard_symbol(node)
                 if guarded_symbol is not None:
                     sites.append(
                         RuntimeNamespaceBridgeSite(
