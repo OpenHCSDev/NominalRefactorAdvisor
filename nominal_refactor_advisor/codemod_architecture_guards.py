@@ -26,7 +26,10 @@ from typing import (
 from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.value_expression import CompactValueExpression
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    name_nodes,
+)
 from nominal_refactor_advisor.ast_tools import BuiltinCallName
 from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
@@ -178,9 +181,8 @@ class ForbiddenReferenceArchitectureGuardConstraint(
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         return tuple(
             self.match(node, node.id, f"Forbidden reference {node.id!r}")
-            for node in ast.walk(module)
-            if isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
+            for node in name_nodes(module)
+            if isinstance(node.ctx, ast.Load)
             and node.id in self.names
         )
 

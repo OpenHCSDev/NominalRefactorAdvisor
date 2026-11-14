@@ -31,6 +31,7 @@ from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     ExpressionReference,
+    name_nodes,
 )
 from nominal_refactor_advisor.ast_tools import (
     ROOT_NAME_PROJECTION,
@@ -434,8 +435,8 @@ class ExistingMethodOwner(OwnerCandidate):
         parameter_occurrences = tuple(
             node.id
             for keyword in self.constructor.keyword_arguments
-            for node in ast.walk(keyword.value)
-            if isinstance(node, ast.Name) and node.id in parameter_names
+            for node in name_nodes(keyword.value)
+            if node.id in parameter_names
         )
         if parameter_occurrences != parameter_names:
             return None
@@ -461,8 +462,8 @@ class ExistingMethodOwner(OwnerCandidate):
     ) -> bool:
         referenced_parameters = frozenset(
             node.id
-            for node in ast.walk(expression)
-            if isinstance(node, ast.Name) and node.id in parameter_names
+            for node in name_nodes(expression)
+            if node.id in parameter_names
         )
         if referenced_parameters:
             return len(referenced_parameters) == 1

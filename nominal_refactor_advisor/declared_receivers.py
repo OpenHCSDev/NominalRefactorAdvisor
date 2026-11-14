@@ -36,6 +36,7 @@ from dataclasses import dataclass, field
 from functools import cache, cached_property
 from typing import ClassVar
 
+from nominal_refactor_advisor.ast_projection import names_mentioned
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     variadic_parameters,
@@ -1793,7 +1794,7 @@ class ReceiverPathBuilder:
                 ) | ast.ClassDef(name=name):
                     names.add(name)
                 case ast.Assign(targets=targets):
-                    names.update(_target_names(targets))
+                    names.update(names_mentioned(*targets))
                 case ast.AnnAssign(target=ast.Name(id=name)):
                     names.add(name)
         return frozenset(names)
@@ -2070,9 +2071,7 @@ class ReceiverPathBuilder:
                 )
             case ast.AugAssign(target=ast.Name(id=bound)) if bound == name:
                 yield unresolved(f"`{name}` is rebound by augmented assignment")
-            case ast.withitem(optional_vars=ast.expr() as target) if name in _target_names(
-                [target]
-            ):
+            case ast.withitem(optional_vars=ast.expr() as target) if name in names_mentioned(target):
                 yield unresolved(f"`{name}` is bound by a `with` statement")
             case ast.ExceptHandler(name=str() as bound) if bound == name:
                 yield unresolved(f"`{name}` is bound by an `except` clause")
@@ -2084,7 +2083,7 @@ class ReceiverPathBuilder:
                 name=bound
             ) | ast.ClassDef(name=bound) if bound == name:
                 yield unresolved(f"`{name}` is bound by a nested definition")
-            case ast.Delete(targets=targets) if name in _target_names(targets):
+            case ast.Delete(targets=targets) if name in names_mentioned(*targets):
                 yield unresolved(f"`{name}` is deleted in its function")
             case ast.MatchAs(name=str() as bound) | ast.MatchStar(
                 name=str() as bound
@@ -2105,7 +2104,7 @@ class ReceiverPathBuilder:
                 for index, item in enumerate(items):
                     match item:
                         case ast.Starred(value=starred):
-                            if name in _target_names([starred]):
+                            if name in names_mentioned(starred):
                                 return [unresolved(f"`{name}` is a starred target")]
                             continue
                     found = self._target_path(item, name, _index_thunk(value, index))
@@ -2238,15 +2237,6 @@ def _declared_global_or_nonlocal(function: FunctionNode) -> frozenset[str]:
         for node in _own_nodes(function)
         if isinstance(node, ast.Global | ast.Nonlocal)
         for name in node.names
-    )
-
-
-def _target_names(targets: Sequence[ast.expr]) -> frozenset[str]:
-    return frozenset(
-        node.id
-        for target in targets
-        for node in ast.walk(target)
-        if isinstance(node, ast.Name)
     )
 
 

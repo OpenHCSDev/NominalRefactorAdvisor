@@ -14,6 +14,7 @@ from dataclasses import (
 from functools import cached_property
 from typing import Self
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.annotation_semantics import StringizedAnnotationSurface
 from nominal_refactor_advisor.ast_tools import (
     EagerNameLoadCollector,
@@ -1510,9 +1511,8 @@ class ClassDeclarationPromotionStatement(ClassMemberPromotionStatement):
             )
         class_local_references = frozenset(
             node.id
-            for node in ast.walk(self.statement)
-            if isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
+            for node in name_nodes(self.statement)
+            if isinstance(node.ctx, ast.Load)
             and node.id in context.class_bound_names
         ) | frozenset(
             name

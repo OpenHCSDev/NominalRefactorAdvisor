@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
@@ -461,8 +462,8 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
         map_receiver = generator.iter.func.value.func.value
         if tuple(
             node
-            for node in ast.walk(method)
-            if isinstance(node, ast.Name) and node.id == "cls"
+            for node in name_nodes(method)
+            if node.id == "cls"
         ) != (map_receiver,) or any(
             isinstance(node, ast.Name)
             and node.id == "__class__"

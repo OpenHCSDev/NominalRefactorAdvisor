@@ -13,7 +13,10 @@ from nominal_refactor_advisor.assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    names_mentioned,
+)
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
     ClassMemberPromotionTargets,
@@ -1085,9 +1088,7 @@ class AutoRegisterMroOrderingDerivation:
         )
         if len(annotations) != 1:
             return None
-        annotation_names = frozenset(
-            node.id for node in ast.walk(annotations[0]) if isinstance(node, ast.Name)
-        )
+        annotation_names = names_mentioned(annotations[0])
         enum_declarations = tuple(
             (class_name, target.node)
             for class_name, target in class_nodes_by_name.items()

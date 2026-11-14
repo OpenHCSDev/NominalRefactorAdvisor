@@ -22,7 +22,12 @@ from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
 
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    name_nodes,
+    names_mentioned,
+    names_read,
+)
 from nominal_refactor_advisor.declared_family import ForeignAdapter
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
@@ -3057,8 +3062,8 @@ class _SiblingFileReads:
         parents = parsed.syntax_index.parent_by_node
         return tuple(
             _SiblingFileReads._read(node, parents)
-            for node in ast.walk(parsed.module)
-            if isinstance(node, ast.Name) and node.id == "__file__"
+            for node in name_nodes(parsed.module)
+            if node.id == "__file__"
         )
 
     @staticmethod
@@ -3250,7 +3255,7 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
         ):
             raise ValueError("Whole-module placement across packages requires resolved relative imports")
         sibling = _ModuleSiblingData.of(context, source_path, self.destination_path)
-        reads = {node.id for node in ast.walk(module) if isinstance(node, ast.Name)}
+        reads = names_mentioned(module)
         blocked = sorted(reads & sibling.stays.keys())
         if blocked:
             raise ValueError(
@@ -3499,13 +3504,13 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
         )
         read_back = tuple(
             sorted(
-                {
-                    node.id
-                    for name in moved_symbol_names
-                    for statement in source_table.binding_statements(name)
-                    for node in ast.walk(statement)
-                    if isinstance(node, ast.Name)
-                }
+                names_mentioned(
+                    *(
+                        statement
+                        for name in moved_symbol_names
+                        for statement in source_table.binding_statements(name)
+                    )
+                )
                 & defined_in_source
             )
         )
@@ -3847,11 +3852,7 @@ class _ScriptEntry:
         """The names the block reads from the module: its loads, less the names it
         binds itself and the builtins the module does not shadow."""
 
-        loads = {
-            node.id
-            for node in ast.walk(self.statement)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        }
+        loads = names_read(self.statement)
         bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(self.statement.body)
         module_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
         builtin = frozenset(dir(builtins)) - module_bound

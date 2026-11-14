@@ -6,7 +6,10 @@ import ast
 import builtins
 from dataclasses import dataclass, field
 
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    name_nodes,
+)
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
@@ -331,9 +334,8 @@ class ClassAuthorityCollapseProofContext:
         )
         remaining_loaded_names = frozenset(
             node.id
-            for node in ast.walk(parsed_module.module)
+            for node in name_nodes(parsed_module.module)
             if id(node) not in displaced_node_ids
-            and isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
         )
         deleted_only_names = displaced_loaded_names - remaining_loaded_names

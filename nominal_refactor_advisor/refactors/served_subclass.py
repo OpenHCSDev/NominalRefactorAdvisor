@@ -18,6 +18,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_projection import (
+    name_nodes,
+    names_read,
+)
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
@@ -100,9 +104,8 @@ class ServedClass(CodemodPayloadRecord):
         return frozenset(
             name.id
             for part in (*node.bases, *(keyword.value for keyword in node.keywords))
-            for name in ast.walk(part)
-            if isinstance(name, ast.Name)
-            and name.id not in parameters
+            for name in name_nodes(part)
+            if name.id not in parameters
             and not hasattr(builtins, name.id)
         )
 
@@ -367,12 +370,7 @@ def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
         )
     else:
         evaluated = (statement,)
-    return frozenset(
-        node.id
-        for part in evaluated
-        for node in ast.walk(part)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    )
+    return names_read(*evaluated)
 
 
 @dataclass(frozen=True)

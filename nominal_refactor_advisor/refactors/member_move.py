@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar, NamedTuple
 
+from nominal_refactor_advisor.ast_projection import name_nodes, names_read
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod as AnsweredMethod,
     ClassBinding as ClassBinding,
@@ -171,8 +172,8 @@ class MovedMethod(AnsweredMethod):
 
     def body_reads(self, name: str) -> tuple[ast.Name, ...]:
         return tuple(
-            node for statement in self.method.body for node in ast.walk(statement)
-            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Load)
+            node for statement in self.method.body for node in name_nodes(statement)
+            if node.id == name and isinstance(node.ctx, ast.Load)
         )
 
     def destination_source(self) -> str:
@@ -264,17 +265,14 @@ class MovedMethod(AnsweredMethod):
         )
         annotated = frozenset(id(node) for annotation in annotations for node in ast.walk(annotation))
         return frozenset(
-            node.id for node in ast.walk(self.method)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) not in annotated
+            node.id for node in name_nodes(self.method)
+            if isinstance(node.ctx, ast.Load) and id(node) not in annotated
         )
 
     def free_names(self) -> frozenset[str]:
         """Module-level names of the source the method reads, which its new module must bind."""
 
-        reads = frozenset(
-            node.id for node in ast.walk(self.method)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        )
+        reads = names_read(self.method)
         return frozenset(
             name for name in (reads - self.locals - {self.destination.name}) | self.source.free_names()
             if not hasattr(builtins, name)

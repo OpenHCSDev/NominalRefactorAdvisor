@@ -33,6 +33,7 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValue,
     StatementValues,
     single_name_targets,
+    names_read,
 )
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -235,12 +236,7 @@ def _class_reference_root_names(class_node: ast.ClassDef) -> frozenset[str]:
                 reference_nodes.extend(StatementValue.of(statement).walk())
             elif isinstance(statement, ast.Assign):
                 reference_nodes.append(statement.value)
-    return frozenset(
-        node.id
-        for reference_node in reference_nodes
-        for node in ast.walk(reference_node)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    )
+    return names_read(*reference_nodes)
 
 
 def _trim_leading_docstring(body: list[ast.stmt]) -> list[ast.stmt]:

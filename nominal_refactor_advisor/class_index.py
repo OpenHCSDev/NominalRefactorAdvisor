@@ -52,7 +52,11 @@ from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     variadic_parameters,
 )
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    name_nodes,
+    names_read,
+)
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     KeyT,
@@ -71,7 +75,6 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleFact,
     SourceModule,
-    _walk_nodes,
     collect_family_items,
     statements_without_docstring,
 )
@@ -3989,8 +3992,8 @@ class ClassBodyNormalForm:
         alias_name = alias_declaration.target.id
         alias_references = tuple(
             node
-            for node in ast.walk(remaining_statement)
-            if isinstance(node, ast.Name) and node.id == alias_name
+            for node in name_nodes(remaining_statement)
+            if node.id == alias_name
         )
         if not alias_references or any(
             not isinstance(reference.ctx, ast.Load) for reference in alias_references
@@ -5725,11 +5728,7 @@ def _dataclass_plain_annotation_is_resolved(
             annotation = ast.parse(annotation.value, mode="eval").body
         except SyntaxError:
             return False
-    root_names = frozenset(
-        node.id
-        for node in ast.walk(annotation)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    )
+    root_names = names_read(annotation)
     return all(
         root_name in class_aliases
         or module_binding_snapshot.binding_for(root_name) is not None

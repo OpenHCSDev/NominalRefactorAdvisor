@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from functools import cache, cached_property
 from typing import Self
 
+from nominal_refactor_advisor.ast_projection import names_mentioned
 from nominal_refactor_advisor.ast_tools import BuiltinCallName, ParsedModule
 from nominal_refactor_advisor.refactors.cases_family import body_without_docstring
 from nominal_refactor_advisor.codemod_foreign_family_source import (
@@ -322,9 +323,7 @@ class FreshNames:
 
     @classmethod
     def around(cls, function: FunctionNode, parsed_module: ParsedModule) -> Self:
-        read = {
-            node.id for node in ast.walk(function) if isinstance(node, ast.Name)
-        }
+        read = names_mentioned(function)
         return cls(
             frozenset(
                 read

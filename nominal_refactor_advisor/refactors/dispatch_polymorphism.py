@@ -21,6 +21,10 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from nominal_refactor_advisor.ast_projection import (
+    names_mentioned,
+    names_read,
+)
 from nominal_refactor_advisor.ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
@@ -462,12 +466,7 @@ class DispatchPolymorphismFunction:
 
         statements = tuple(statements)
         bound_here = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(statements)
-        loaded = frozenset(
-            node.id
-            for statement in statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        )
+        loaded = names_read(*statements)
         return self.axis.root_name not in bound_here and not (
             loaded & (self.function_locals - bound_here)
         )
@@ -727,13 +726,9 @@ class DispatchPolymorphismSource:
         strategy method that took it would ignore it in every case.
         """
 
-        read = {
-            node.id
-            for arm in self.extraction.arms
-            for statement in arm.statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name)
-        }
+        read = names_mentioned(
+            *(statement for arm in self.extraction.arms for statement in arm.statements)
+        )
         return tuple(
             name for name in self.dispatch_function.parameter_names if name in read
         )

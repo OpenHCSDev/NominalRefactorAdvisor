@@ -32,6 +32,7 @@ from metaclass_registry import (
     extract_key_from_class_name,
 )
 
+from nominal_refactor_advisor.ast_projection import name_nodes, names_mentioned
 from nominal_refactor_advisor.refactors.cases_family import handback
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
@@ -646,9 +647,7 @@ class IfPresentProbeSite(SingleNodeProbeSite):
             raise authority.refusal(statement, "the body shares the `if` line")
         for node in authority.escaping_loop_jumps(statement.body):
             raise authority.refusal(node, "the body jumps an enclosing loop")
-        probed_names = {
-            part.id for part in ast.walk(self.subject) if isinstance(part, ast.Name)
-        }
+        probed_names = names_mentioned(self.subject)
         for node in ast.walk(statement):
             match node:
                 case ast.Name(id=bound, ctx=ast.Store() | ast.Del()) if (
@@ -1433,8 +1432,8 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
     def bound_names(self) -> frozenset[str]:
         return frozenset(
             node.id
-            for node in ast.walk(self.function)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+            for node in name_nodes(self.function)
+            if isinstance(node.ctx, ast.Store)
         ) | frozenset(
             argument.arg
             for argument in ast.walk(self.function.args)
@@ -1601,9 +1600,8 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
 
         bindings = [
             node
-            for node in ast.walk(self.function)
-            if isinstance(node, ast.Name)
-            and node.id == name
+            for node in name_nodes(self.function)
+            if node.id == name
             and isinstance(node.ctx, ast.Store)
         ]
         if len(bindings) != 1:

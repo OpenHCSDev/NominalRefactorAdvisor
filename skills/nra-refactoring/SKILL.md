@@ -507,6 +507,16 @@ class supplies `_collect_findings`, `context_signature` and
 `_candidate_items`; a compact owner for the first with a collector
 owner for the last is that split.
 
+**The names in a subtree.** `ast_projection.name_nodes(*roots)` yields
+the bare-name nodes of any subtrees, in walk order. `names_mentioned`,
+`names_read` and `names_bound` give the set of ids for every name, the
+loaded ones, and the stored or deleted ones. Don't write
+`for n in ast.walk(x) if isinstance(n, ast.Name)` again: 56 places did,
+plus six private helpers, before 2026-11-14. A site keeps only its own
+extra condition (`for n in name_nodes(x) if n.id in wanted`). The
+ordered names of an assignment target (`a, (b, *c) = ...`) are a
+different question.
+
 **Deleting what nothing reaches.** `erase_dead_compatibility` deletes a
 target and guards against its return; `remove_import_bindings` drops
 imports a module no longer reads. Neither proves the target is

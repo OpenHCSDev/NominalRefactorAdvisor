@@ -15,6 +15,7 @@ from operator import attrgetter
 
 from collections.abc import Iterator
 
+from nominal_refactor_advisor.ast_projection import name_nodes, names_mentioned
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
 from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
@@ -83,8 +84,8 @@ def _forwarded_only_params(
     name_uses: dict[str, int] = defaultdict(int)
     forward_uses: dict[str, int] = defaultdict(int)
 
-    for node in ast.walk(func):
-        if isinstance(node, ast.Name) and node.id in params_with_defaults:
+    for node in name_nodes(func):
+        if node.id in params_with_defaults:
             name_uses[node.id] += 1
             if (node.lineno, node.col_offset, node.id) in keyword_forwards:
                 forward_uses[node.id] += 1
@@ -213,11 +214,6 @@ def _unparse_short(node: ast.expr) -> str:
     return "?"
 
 
-def _names_in(node: ast.AST) -> set[str]:
-    """All Name.id values reachable from a node."""
-    return {child.id for child in ast.walk(node) if isinstance(child, ast.Name)}
-
-
 def _element_attr_args(
     call: ast.Call, target_names: set[str],
 ) -> list[tuple[str, str]]:
@@ -269,7 +265,7 @@ def _find_relookups_in_for(
     if not target_names:
         return []
 
-    source_names = _names_in(for_node.iter)
+    source_names = names_mentioned(for_node.iter)
     if not source_names:
         return []
 
@@ -284,7 +280,7 @@ def _find_relookups_in_for(
         if not hits:
             continue
 
-        call_names = _names_in(node.func)
+        call_names = set(names_mentioned(node.func))
         for arg in node.args:
             if isinstance(arg, ast.Name):
                 call_names.add(arg.id)
@@ -506,12 +502,7 @@ class MethodParameterFamily(ShapeFamily[MethodParametersModule]):
                 candidates = _candidate_parameters(member)
                 if not candidates or declares_abstract(member, reading.bindings):
                     continue
-                named = {
-                    node.id
-                    for statement in member.body
-                    for node in ast.walk(statement)
-                    if isinstance(node, ast.Name)
-                }
+                named = names_mentioned(*member.body)
                 methods.append(
                     MethodParameterReading(
                         file_path=parsed_module.file_path,

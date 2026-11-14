@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import cast
 
+from nominal_refactor_advisor.ast_projection import name_nodes, names_read
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     ParsedModule,
@@ -315,8 +316,8 @@ class _TypeKeyedBehaviorMethodDescent:
                 replacement_source="self",
             )
             for statement in self.projection_method.body
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name) and node.id == subject_name
+            for node in name_nodes(statement)
+            if node.id == subject_name
             for start_offset, end_offset in (geometry.required_node_offsets(node),)
             if removed_guard_span is None
             or not (
@@ -1112,8 +1113,8 @@ class _TypeKeyedBehaviorSourceDerivation:
             geometry = SourceTextGeometry(module.source)
             deleted_names = frozenset(
                 node.id
-                for node in ast.walk(module.module)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+                for node in name_nodes(module.module)
+                if isinstance(node.ctx, ast.Load)
                 if self._offsets_within_any(
                     geometry.required_node_offsets(node),
                     deleted_spans_by_path.get(module.file_path, ()),
@@ -1138,11 +1139,7 @@ class _TypeKeyedBehaviorSourceDerivation:
             intermediate_module = ast.parse(
                 intermediate_source, filename=module.file_path
             )
-            remaining_loaded_names = frozenset(
-                node.id
-                for node in ast.walk(intermediate_module)
-                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-            )
+            remaining_loaded_names = names_read(intermediate_module)
             removable_names = candidate_names - remaining_loaded_names
             for statement in module.module.body:
                 if not isinstance(statement, ast.ImportFrom):

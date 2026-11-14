@@ -6,6 +6,7 @@ import ast
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.ast_projection import names_mentioned
 from nominal_refactor_advisor.ast_tools import statements_without_docstring
 from nominal_refactor_advisor.call_binding import CompactFunctionSignature
 from nominal_refactor_advisor.lexical_bindings import CompactParameterKind
@@ -66,9 +67,7 @@ class PositionalForwardingCall:
             if any(not isinstance(target, ast.Name) for target in targets):
                 return None
             deleted_names = tuple(target.id for target in targets)
-            callable_names = {
-                name.id for name in ast.walk(call.func) if isinstance(name, ast.Name)
-            }
+            callable_names = names_mentioned(call.func)
             unused_parameters = (
                 set(parameter_names) - set(argument_names) - callable_names
             )

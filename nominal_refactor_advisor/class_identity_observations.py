@@ -31,7 +31,10 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
-from nominal_refactor_advisor.ast_projection import StatementValues
+from nominal_refactor_advisor.ast_projection import (
+    StatementValues,
+    names_mentioned,
+)
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
@@ -2059,7 +2062,7 @@ class IdentityPositions:
 
         for ancestor in reversed(self.index.ancestor_nodes(node_index)):
             for target, iterated in self.loops(ancestor):
-                if name in self.target_names(target):
+                if name in names_mentioned(target):
                     return self.unpacked(
                         target,
                         self.elements(self.node_indices[id(ancestor)], iterated),
@@ -2093,12 +2096,6 @@ class IdentityPositions:
             ):
                 for generator in generators:
                     yield generator.target, generator.iter
-
-    @staticmethod
-    def target_names(target: ast.expr) -> frozenset[str]:
-        return frozenset(
-            node.id for node in ast.walk(target) if isinstance(node, ast.Name)
-        )
 
     def elements(self, node_index: int, iterated: ast.expr) -> ast.expr | None:
         """The element type of an iterated parameter, or a tuple of them for `zip`."""
@@ -2143,7 +2140,7 @@ class IdentityPositions:
                 value=ast.Name(id="tuple"), slice=ast.Tuple(elts=elements)
             ) if len(targets) == len(elements):
                 for inner, inner_element in zip(targets, elements):
-                    if name in cls.target_names(inner):
+                    if name in names_mentioned(inner):
                         return cls.unpacked(inner, inner_element, name)
         return None
 

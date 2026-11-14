@@ -22,7 +22,10 @@ from typing import (
 )
 
 from nominal_refactor_advisor.assignment_projection import NamedAssignmentSelection
-from nominal_refactor_advisor.ast_projection import CallKeyword
+from nominal_refactor_advisor.ast_projection import (
+    CallKeyword,
+    name_nodes,
+)
 from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
     FunctionDefinitionNode,
@@ -1062,8 +1065,7 @@ class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority):
         projected_roots = tuple(
             node
             for expression in expressions
-            for node in ast.walk(expression)
-            if isinstance(node, ast.Name)
+            for node in name_nodes(expression)
         )
         if not all(root in carrier_reads for root in projected_roots):
             raise ValueError(

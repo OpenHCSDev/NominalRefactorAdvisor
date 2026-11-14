@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import Self
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
@@ -29,7 +30,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
 from nominal_refactor_advisor.declared_family import ForeignAdapter
 from nominal_refactor_advisor.observation_families import (
     ShapeFamily,
-    TypeArgumentResolver,
 )
 from nominal_refactor_advisor.observation_shapes import (
     ForeignFamilySiteModule,
@@ -204,8 +204,8 @@ class StaticProjectionSites:
         rewritten = {id(site.call.func.value) for site in self.sites}
         read = {
             node.id
-            for node in ast.walk(self.parsed_module.module)
-            if isinstance(node, ast.Name) and id(node) not in rewritten
+            for node in name_nodes(self.parsed_module.module)
+            if id(node) not in rewritten
         }
         return tuple(sorted((self.bound_names - read) & self.import_statements.keys()))
 
@@ -354,8 +354,8 @@ class StaticProjectionAuthority(SourceRewriteAuthority):
             node.id
             for other in self.other_modules
             if self.parsed_module.module_name in star_imported_modules(other)
-            for node in ast.walk(other.module)
-            if isinstance(node, ast.Name) and node.id in self.found.retired_names
+            for node in name_nodes(other.module)
+            if node.id in self.found.retired_names
         }
         return frozenset(named | starred)
 

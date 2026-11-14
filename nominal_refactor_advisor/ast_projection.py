@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Iterator, Mapping
+from dataclasses import dataclass
 from typing import Generic, Self, TypeVar, cast
 
 from nominal_refactor_advisor.declared_family import ForeignAdapter
@@ -14,6 +14,38 @@ from nominal_refactor_advisor.value_expression import (
     UnassignedValueExpression,
 )
 
+
+
+def name_nodes(*roots: ast.AST) -> Iterator[ast.Name]:
+    """Every bare-name node in these subtrees, in walk order."""
+
+    return (
+        node for root in roots for node in ast.walk(root) if isinstance(node, ast.Name)
+    )
+
+
+def names_mentioned(*roots: ast.AST) -> frozenset[str]:
+    """The bare names these subtrees spell, whatever they do with them."""
+
+    return frozenset(node.id for node in name_nodes(*roots))
+
+
+def names_read(*roots: ast.AST) -> frozenset[str]:
+    """The bare names these subtrees load."""
+
+    return frozenset(
+        node.id for node in name_nodes(*roots) if isinstance(node.ctx, ast.Load)
+    )
+
+
+def names_bound(*roots: ast.AST) -> frozenset[str]:
+    """The bare names these subtrees store to or delete."""
+
+    return frozenset(
+        node.id
+        for node in name_nodes(*roots)
+        if isinstance(node.ctx, ast.Store | ast.Del)
+    )
 
 
 class ExpressionReference(ForeignAdapter):

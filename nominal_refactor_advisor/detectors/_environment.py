@@ -15,7 +15,10 @@ from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    name_nodes,
+)
 from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValues
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
@@ -694,8 +697,8 @@ class _EnvironmentReadAuthority:
                 *self.in_expression(source_value),
                 *(
                     lineage[name.id]
-                    for name in ast.walk(source_value)
-                    if isinstance(name, ast.Name) and name.id in lineage
+                    for name in name_nodes(source_value)
+                    if name.id in lineage
                 ),
             )
             if not any(source.identity == read.identity for source in source_reads):
@@ -721,8 +724,8 @@ class _EnvironmentReadAuthority:
                     *self.in_expression(value),
                     *(
                         lineage[name.id]
-                        for name in ast.walk(value)
-                        if isinstance(name, ast.Name) and name.id in lineage
+                        for name in name_nodes(value)
+                        if name.id in lineage
                     ),
                 )
             )
@@ -747,8 +750,8 @@ class _EnvironmentReadAuthority:
                 *self.in_expression(node),
                 *(
                     lineage[name.id]
-                    for name in ast.walk(node)
-                    if isinstance(name, ast.Name) and name.id in lineage
+                    for name in name_nodes(node)
+                    if name.id in lineage
                 ),
             )
         )
@@ -765,9 +768,8 @@ def _expression_lineage_names(
     return tuple(
         dict.fromkeys(
             name.id
-            for name in ast.walk(node)
-            if isinstance(name, ast.Name)
-            and name.id in lineage
+            for name in name_nodes(node)
+            if name.id in lineage
             and lineage[name.id].identity == read.identity
         )
     )

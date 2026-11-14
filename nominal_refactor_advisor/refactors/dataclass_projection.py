@@ -25,7 +25,10 @@ from nominal_refactor_advisor.refactors.function_projection_targets import (
 from nominal_refactor_advisor.assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    names_mentioned,
+)
 from nominal_refactor_advisor.ast_tools import (
     ROOT_NAME_PROJECTION,
     walk_function_body_nodes,
@@ -136,11 +139,7 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
             for statement in node.body
             if isinstance(statement, ast.AnnAssign)
             and isinstance(statement.target, ast.Name)
-            and excluded_annotation_names.isdisjoint(
-                child.id
-                for child in ast.walk(statement.annotation)
-                if isinstance(child, ast.Name)
-            )
+            and excluded_annotation_names.isdisjoint(names_mentioned(statement.annotation))
         )
 
     def family_defines_method(

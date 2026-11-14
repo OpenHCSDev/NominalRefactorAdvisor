@@ -14,6 +14,8 @@ from metaclass_registry.mro_dispatch import (
     handles,
 )
 
+from nominal_refactor_advisor.ast_projection import names_mentioned
+
 
 class Untyped:
     """What a name stands for when it is bound to no typing declaration; TypingImports.declares
@@ -68,9 +70,7 @@ class TypingImports(MroDispatch):
     @handles(ast.Attribute)
     def mutation(self, node: ast.Attribute) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            for descendant in ast.walk(node.value):
-                if isinstance(descendant, ast.Name):
-                    self.shadowed.add(descendant.id)
+            self.shadowed.update(names_mentioned(node.value))
 
     @handles(ast.arg)
     def parameter(self, node: ast.arg) -> None:

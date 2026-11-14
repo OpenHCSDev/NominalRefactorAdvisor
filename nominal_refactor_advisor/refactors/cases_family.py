@@ -33,6 +33,9 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValueQuestion,
     StatementValues,
     SuppliedValue,
+    name_nodes,
+    names_read,
+    names_bound,
 )
 from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
@@ -260,24 +263,6 @@ def is_name(node: ast.AST | None, names: Iterable[str]) -> bool:
     return isinstance(node, ast.Name) and node.id in set(names)
 
 
-def loaded_names(nodes: Iterable[ast.AST]) -> frozenset[str]:
-    return frozenset(
-        node.id
-        for root in nodes
-        for node in ast.walk(root)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    )
-
-
-def stored_names(nodes: Iterable[ast.AST]) -> frozenset[str]:
-    return frozenset(
-        node.id
-        for root in nodes
-        for node in ast.walk(root)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store | ast.Del)
-    )
-
-
 def module_bound_names(module: ast.Module) -> frozenset[str]:
     """Names one module binds at top level: definitions, imports and assignments."""
 
@@ -290,7 +275,7 @@ def module_bound_names(module: ast.Module) -> frozenset[str]:
         elif isinstance(statement, ast.If):
             names.update(module_bound_names(ast.Module(statement.body, [])))
         else:
-            names.update(stored_names([statement]))
+            names.update(names_bound(statement))
     return frozenset(names)
 
 
@@ -367,8 +352,8 @@ def applied(function: ast.Lambda, arguments: list[str]) -> str:
         function.body,
         {
             id(node): bound[node.id]
-            for node in ast.walk(function.body)
-            if isinstance(node, ast.Name) and node.id in bound
+            for node in name_nodes(function.body)
+            if node.id in bound
         },
     )
     assert isinstance(body, ast.expr)
@@ -1947,7 +1932,7 @@ class CasesFamily(Cases, Descent):
                         isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
                         and statement.name in model.called
                         or isinstance(statement, ast.AnnAssign | ast.Assign)
-                        and stored_names([statement]) & model.called
+                        and names_bound(statement) & model.called
                         for statement in node.body
                     )
                 ):
@@ -2301,10 +2286,12 @@ class FunctionScope(Scope):
             binding
             for binding in scope_walk(function)
             if node.id
-            in stored_names(
-                [binding.target]
-                if isinstance(binding, ast.For | ast.comprehension | ast.AnnAssign)
-                else binding.targets if isinstance(binding, ast.Assign) else []
+            in names_bound(
+                *(
+                    [binding.target]
+                    if isinstance(binding, ast.For | ast.comprehension | ast.AnnAssign)
+                    else binding.targets if isinstance(binding, ast.Assign) else []
+                )
             )
         ]
         if len(bindings) != 1:
@@ -2799,7 +2786,7 @@ class Site:
             | {model.root}
             | set(dir(builtins))
         )
-        missing = sorted(loaded_names([ast.parse(annotation, mode="eval")]) - bound)
+        missing = sorted(names_read(ast.parse(annotation, mode="eval")) - bound)
         if missing:
             raise handback(
                 self.module,
@@ -2869,7 +2856,7 @@ class Block(Site):
             for statement in statements
             for node in ast.walk(statement)
         )
-        if stored_names(statements) & loaded_names(self.body[self.end :]):
+        if names_bound(*statements) & names_read(*self.body[self.end :]):
             raise handback(
                 module, self.node, "branch binds a name the function reads after it"
             )
@@ -2877,7 +2864,7 @@ class Block(Site):
         parameters: dict[str, str] = {}
         arguments: dict[str, str] = {}
         prefix = self.body[: self.start]
-        bound_before = stored_names(prefix) | {
+        bound_before = names_bound(*prefix) | {
             argument.arg
             for argument in (
                 *self.function.args.args[1:],
@@ -2949,8 +2936,8 @@ class Block(Site):
                     arguments.setdefault(node.id, node.id)
         family_bound = module_bound_names(model.enum.module.module) | set(dir(builtins))
         free = (
-            loaded_names(statements)
-            - stored_names(statements)
+            names_read(*statements)
+            - names_bound(*statements)
             - set(parameters)
             - {self.receiver}
             - family_bound
@@ -3042,11 +3029,11 @@ class Guard(Site):
                 guard,
                 "guarded function takes parameters; the tail callback would need them",
             )
-        if stored_names(self.body[: self.start]) & loaded_names(rest):
+        if names_bound(*self.body[: self.start]) & names_read(*rest):
             raise handback(
                 module, guard, "the rest reads a local bound before the guard"
             )
-        if model.root in loaded_names(rest):
+        if model.root in names_read(*rest):
             raise handback(module, guard, "the rest reads the enum itself")
         if any(
             statement.name == self.tail

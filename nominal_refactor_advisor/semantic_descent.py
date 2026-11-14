@@ -33,7 +33,10 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar
 from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import (
+    ExpressionReference,
+    names_read,
+)
 from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndex,
     IndexedClass,
@@ -4801,11 +4804,7 @@ class ProjectionTypeScope:
         *,
         include_return: bool = False,
     ) -> tuple[str, ...]:
-        referenced_names = frozenset(
-            child.id
-            for child in ast.walk(node)
-            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
-        )
+        referenced_names = names_read(node)
         return sorted_tuple(
             {
                 type_name

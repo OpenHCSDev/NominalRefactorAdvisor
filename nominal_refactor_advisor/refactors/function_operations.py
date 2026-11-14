@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
 
+from nominal_refactor_advisor.ast_projection import name_nodes, names_mentioned, names_read
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod,
     AnsweredProperty,
@@ -24,7 +25,6 @@ from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC,
 )
-from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_call_source import (
     DeclaredCallArgumentsRewrite,
     DeclaredCallExpressionRewrite,
@@ -580,11 +580,7 @@ class _ForwarderBody(_Forwarder):
     def free_names(self) -> frozenset[str]:
         """The names the forwarded call reads besides the forwarder's parameters."""
 
-        return frozenset(
-            node.id
-            for node in ast.walk(self.call)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        ) - frozenset(self.parameter_names)
+        return names_read(self.call) - frozenset(self.parameter_names)
 
     def value_used(self, call: ast.Call, parents: Mapping[ast.AST, ast.AST]) -> bool:
         """Whether the call site reads the value of the call (or of its await)."""
@@ -621,8 +617,8 @@ class _ForwarderBody(_Forwarder):
             )
         uses = [
             node.id
-            for node in ast.walk(self.call)
-            if isinstance(node, ast.Name) and node.id in bound
+            for node in name_nodes(self.call)
+            if node.id in bound
         ]
         unbalanced = tuple(name for name in self.parameter_names if uses.count(name) != 1)
         if unbalanced:
@@ -938,11 +934,11 @@ def imports_only_read_by(
 ) -> Iterator[ModuleImportMutation]:
     """Removals of the module's import bindings that only this node reads: they leave with it."""
 
-    used_by_node = {name.id for name in ast.walk(node) if isinstance(name, ast.Name)}
+    used_by_node = names_mentioned(node)
     used_elsewhere = {
         name.id
-        for name in ast.walk(module)
-        if isinstance(name, ast.Name) and not _within(name, node)
+        for name in name_nodes(module)
+        if not _within(name, node)
     }
     for scope, names in ModuleImportScope.bound_in(module, used_by_node - used_elsewhere):
         yield ModuleImportMutation.remove_bound_names(
@@ -955,8 +951,8 @@ def imports_only_read_by(
 def _source_position(call: ast.Call, name: str) -> tuple[int, int]:
     return next(
         (node.lineno, node.col_offset)
-        for node in ast.walk(call)
-        if isinstance(node, ast.Name) and node.id == name
+        for node in name_nodes(call)
+        if node.id == name
     )
 
 

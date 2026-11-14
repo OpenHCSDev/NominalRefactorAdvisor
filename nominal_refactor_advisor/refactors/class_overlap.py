@@ -29,7 +29,11 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
 )
-from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_projection import (
+    CallKeywords,
+    name_nodes,
+    names_read,
+)
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     is_docstring_statement,
@@ -766,8 +770,8 @@ def obsolete_import_edits(
     )
     loads = tuple(
         node
-        for node in ast.walk(parsed_module.module)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
+        for node in name_nodes(parsed_module.module)
+        if isinstance(node.ctx, ast.Load)
     )
     read_by_deleted = frozenset(node.id for node in loads if id(node) in deleted_nodes)
     still_read = frozenset(node.id for node in loads if id(node) not in deleted_nodes)
@@ -832,14 +836,7 @@ def required_name_imports(
     source_module = snapshot.parsed_module_for_source_path(source.file_path)
     destination_module = snapshot.parsed_module_for_source_path(destination.file_path)
     imports: list[ModuleImportMutation] = []
-    names = sorted(
-        {
-            node.id
-            for statement in statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-        }
-    )
+    names = sorted(names_read(*statements))
     for name in names:
         reference = ast.Name(id=name, ctx=ast.Load())
         expected = bindings.reference_or_builtin_witness_at(

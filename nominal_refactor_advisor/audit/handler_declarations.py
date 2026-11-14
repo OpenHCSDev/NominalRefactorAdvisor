@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.audit.measures import MechanismOwners
 
 
@@ -37,9 +38,8 @@ class BuiltinHandlerDeclarations:
                     bindings[name] = ""
                 case ast.Assign(targets=targets) | ast.AnnAssign(target=targets):
                     for target in targets if isinstance(targets, list) else (targets,):
-                        for child in ast.walk(target):
-                            if isinstance(child, ast.Name):
-                                bindings[child.id] = ""
+                        for child in name_nodes(target):
+                            bindings[child.id] = ""
 
         def qualified(expression: ast.AST) -> str:
             match expression:

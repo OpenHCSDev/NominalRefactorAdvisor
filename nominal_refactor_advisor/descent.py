@@ -23,7 +23,11 @@ from dataclasses import dataclass, field
 from functools import cached_property
 
 from nominal_refactor_advisor.ast_field_decoders import declared_annotations
-from nominal_refactor_advisor.ast_projection import StatementValue
+from nominal_refactor_advisor.ast_projection import (
+    StatementValue,
+    name_nodes,
+    names_read,
+)
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
@@ -765,8 +769,8 @@ class Rewrite:
         """Rewrite from-imports: ``replaced`` aliases expand, names this rewrite unused
         go, except ``exported`` names other modules import through this one."""
 
-        original = _loaded_names(module.module)
-        remaining = _loaded_names(ast.parse(self.rewritten_source(module))) | exported
+        original = names_read(module.module)
+        remaining = names_read(ast.parse(self.rewritten_source(module))) | exported
         for statement in module.module.body:
             if not isinstance(statement, ast.ImportFrom):
                 continue
@@ -852,14 +856,6 @@ class Rewrite:
             if module.file_path == file_path:
                 return module
         raise ValueError(f"{file_path} is not in the snapshot")
-
-
-def _loaded_names(tree: ast.AST) -> frozenset[str]:
-    return frozenset(
-        node.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load)
-    )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1099,8 +1095,8 @@ class Enumerated(Rewritten, ABC):
             for scope in ast.walk(module.module)
             if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
             and names & _scope_names(scope)
-            for node in ast.walk(scope)
-            if isinstance(node, ast.Name) and node.id in names
+            for node in name_nodes(scope)
+            if node.id in names
         )
 
     def rebind_imports(
@@ -1122,8 +1118,8 @@ class Enumerated(Rewritten, ABC):
             if isinstance(statement, ast.ClassDef)
         }
         for module, names in aliases.items():
-            loaded = _loaded_names(ast.parse(rewrite.rewritten_source(module)))
-            added = tuple(sorted(declared & loaded - _loaded_names(module.module)))
+            loaded = names_read(ast.parse(rewrite.rewritten_source(module)))
+            added = tuple(sorted(declared & loaded - names_read(module.module)))
             replaced = {
                 local: tuple(sorted({local, *added}))
                 for local in names.direct
@@ -1324,9 +1320,8 @@ class External(Branch):
         return [
             (node, names[node.id])
             for statement in statements
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Name)
-            and node.id in names
+            for node in name_nodes(statement)
+            if node.id in names
             and id(node) not in renamed
         ]
 
@@ -1532,7 +1527,7 @@ class Fold(Cases, ABC):
         subject = prelude.targets[0].id
         root = self.subject_type(owner, prelude.value, family, site)
         arms = self.arms(site, function, body, subject, holder, enum)
-        if subject in _loaded_names(ast.Module(body=body, type_ignores=[])):
+        if subject in names_read(ast.Module(body=body, type_ignores=[])):
             raise ValueError(f"handback: {site}: fall-through reads the branch subject")
         return External(
             module,
@@ -1573,7 +1568,7 @@ class Fold(Cases, ABC):
                 f"handback: {site}: branch is not arms then a returning tail"
             )
         bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body) - {subject}
-        if any(bound & _loaded_names(arm.node) for arm in arms):
+        if any(bound & names_read(arm.node) for arm in arms):
             raise ValueError(
                 f"handback: {site}: arm reads a local bound in the function"
             )

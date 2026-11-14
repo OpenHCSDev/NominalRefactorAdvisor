@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_projection import name_nodes
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassReferenceResolver,
 )
@@ -192,8 +193,7 @@ class ModuleTypeArguments:
             id(name)
             for argument in self.arguments
             for removed in argument.removed
-            for name in ast.walk(removed)
-            if isinstance(name, ast.Name)
+            for name in name_nodes(removed)
         )
 
     def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
@@ -270,8 +270,8 @@ class DropTypeParametersOperation(RepositorySourceReprovedOperation):
                 *declaration.source_class.node.keywords,
                 *declaration.source_class.node.body,
             )
-            for name in ast.walk(part)
-            if isinstance(name, ast.Name) and name.id in declaration.dropped
+            for name in name_nodes(part)
+            if name.id in declaration.dropped
             and id(name) not in removed
         )
         if failures:
