@@ -22,7 +22,6 @@ from typing import (
 
 from nominal_refactor_advisor.ast_field_decoders import (
     ParameterAnnotations,
-    variadic_parameters,
 )
 from nominal_refactor_advisor.class_method_facets import (
     CompactClassMethod,
@@ -35,13 +34,11 @@ from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthorit
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
-    TypeWrapper,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     StatementValue,
-    StatementValues,
 )
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
@@ -76,20 +73,16 @@ from nominal_refactor_advisor.semantic_description_length import (
 import ast
 from typing import Iterable
 from nominal_refactor_advisor.ast_tools import (
-    is_docstring_statement,
     ParsedModule,
     statements_without_docstring,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
-from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 from nominal_refactor_advisor.semantic_match import (
     as_ast,
     constant_value,
     Maybe,
     name_id,
-    named_call_assignment,
     named_value_binding,
-    NamedCallAssignment,
     return_call,
     single_assign_target,
     single_item,
@@ -117,7 +110,6 @@ from nominal_refactor_advisor.class_families.parsed_index import (
 from nominal_refactor_advisor.detectors._substrate_support import (
     ModuleNamedValues,
 )
-from nominal_refactor_advisor.ast_projection import nodes_of
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
@@ -221,75 +213,6 @@ def _raised_exception_name(
     return None
 
 
-def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
-    if len(body) < 2:
-        return None
-    loop = next(
-        (statement for statement in body if isinstance(statement, ast.For)), None
-    )
-    if loop is None or not isinstance(loop.target, ast.Name):
-        return None
-    return loop
-
-
-def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
-    return_exprs = StatementValues.of(nodes_of(ast.Return, loop)).values
-    if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
-        return None
-    return return_exprs[0]
-
-
-def _linear_query_raised_exception(
-    body: list[ast.stmt],
-) -> tuple[str, tuple[str, ...]] | None:
-    raised = next(
-        (
-            _raised_exception_name(statement)
-            for statement in body
-            if _raised_exception_name(statement) is not None
-        ),
-        None,
-    )
-    if raised is None:
-        return None
-    exception_name, exception_names = raised
-    if exception_name not in {"KeyError", "LookupError", "ValueError"}:
-        return None
-    return exception_name, exception_names
-
-
-def _linear_query_key_names(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    loop: ast.For,
-    return_expr: ast.AST,
-    exception_names: tuple[str, ...],
-) -> tuple[str, ...]:
-    parameter_names = tuple(
-        (
-            arg.arg
-            for arg in tuple(node.args.posonlyargs)
-            + tuple(node.args.args)
-            + tuple(node.args.kwonlyargs)
-            if arg.arg not in {"self", "cls"}
-        )
-    )
-    query_key_names = sorted_tuple(
-        (
-            name
-            for name in parameter_names
-            if _name_mentions(return_expr, name)
-            or name in exception_names
-            or any(
-                (
-                    isinstance(current, ast.If) and _name_mentions(current.test, name)
-                    for current in ast.walk(loop)
-                )
-            )
-        )
-    )
-    return query_key_names
-
-
 class MethodProjection:
     def aliases_to_self_attrs(
         self, method: ast.FunctionDef | ast.AsyncFunctionDef
@@ -314,10 +237,6 @@ class MethodProjection:
 METHOD_PROJECTION = MethodProjection()
 
 
-def _is_projection_like_builder_value(value_fingerprint: str) -> bool:
-    return value_fingerprint.startswith(("Name(", "Attribute(", "IfExp(", "Constant("))
-
-
 def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
@@ -331,41 +250,6 @@ def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     else:
         node_types = (ast.unparse(type_node),)
     return tuple(item for item in node_types if item)
-
-
-def _guarded_wrapper_function_candidates(
-    module: ParsedModule,
-) -> NamedStringSequenceSpecs:
-    candidates: MutableNamedStringSequenceSpecs = []
-    guarded_returns: list[tuple[tuple[ast.FunctionDef, ast.If], ast.Return]] = []
-    for statement in module.module.body:
-        if not isinstance(statement, ast.FunctionDef):
-            continue
-        body = statements_without_docstring(statement.body)
-        while (
-            body
-            and isinstance(body[0], ast.Assign)
-            and (len(body[0].targets) == 1)
-            and isinstance(body[0].targets[0], ast.Name)
-        ):
-            body = body[1:]
-        if len(body) != 2:
-            continue
-        guard, return_stmt = body
-        if not isinstance(
-            guard, ast.If
-        ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
-            continue
-        if not isinstance(return_stmt, ast.Return):
-            continue
-        guarded_returns.append(((statement, guard), return_stmt))
-    # A wrapper whose return is bare wraps nothing.
-    for (statement, guard), _returned in StatementValues.keyed(guarded_returns).supplied:
-        node_types = _guarded_wrapper_node_types(guard)
-        if not node_types:
-            continue
-        candidates.append((statement.name, statement.lineno, node_types))
-    return tuple(candidates)
 
 
 def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
@@ -401,21 +285,6 @@ _COMPOSABLE_BASE_NAME_SUFFIXES = (
     "Mixin",
     "Template",
 )
-
-
-def _is_composable_base_name(base_name: str) -> bool:
-    return base_name == _ABC_BASE_NAME or base_name.endswith(
-        _COMPOSABLE_BASE_NAME_SUFFIXES
-    )
-
-
-def _is_contiguous_subtuple(needle: tuple[str, ...], haystack: tuple[str, ...]) -> bool:
-    if len(needle) > len(haystack):
-        return False
-    return any(
-        haystack[start : start + len(needle)] == needle
-        for start in range(len(haystack) - len(needle) + 1)
-    )
 
 
 @dataclass(frozen=True)
@@ -464,64 +333,6 @@ def _annotation_union_members(node: ast.AST) -> tuple[ast.AST, ...]:
         if isinstance(node.slice, ast.List):
             return tuple(node.slice.elts)
     return (node,)
-
-
-def _class_object_type_argument_name(node: ast.AST) -> str | None:
-    if not isinstance(node, ast.Subscript):
-        return None
-    root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
-    if not TypeWrapper.CLASS_OBJECT.spelled_by(root_name):
-        return None
-    return HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.slice)
-
-
-def _class_def_declared_and_ancestor_names(
-    classes_by_name: dict[str, ClassStatement],
-    ancestor_names_by_class: dict[str, tuple[str, ...]],
-    class_name: str,
-) -> set[str]:
-    return set(classes_by_name[class_name].base_terminal_names) | set(
-        ancestor_names_by_class[class_name]
-    )
-
-
-def _base_defines_contract_attributes(
-    classes_by_name: dict[str, ClassStatement],
-    base_name: str,
-    observed_attribute_names: tuple[str, ...],
-) -> bool:
-    base_class = classes_by_name.get(base_name)
-    if base_class is None:
-        return False
-    return all(
-        (
-            base_class.method_named(attribute_name) is not None
-            for attribute_name in observed_attribute_names
-        )
-    )
-
-
-def _shared_edge_tokens(member_type_names: tuple[str, ...]) -> tuple[str, ...]:
-    token_rows = tuple(
-        (
-            CLASS_NAME_ALGEBRA.ordered_tokens(member_type_name)
-            for member_type_name in member_type_names
-        )
-    )
-    if not token_rows or not all(token_rows):
-        return ()
-    prefix_tokens: list[str] = []
-    for column in zip(*token_rows, strict=False):
-        if len(set(column)) != 1:
-            break
-        prefix_tokens.append(column[0])
-    suffix_tokens: list[str] = []
-    reversed_rows = tuple(tuple(reversed(row)) for row in token_rows)
-    for column in zip(*reversed_rows, strict=False):
-        if len(set(column)) != 1:
-            break
-        suffix_tokens.append(column[0])
-    return (*prefix_tokens, *tuple(reversed(suffix_tokens)))
 
 
 _MethodFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
@@ -1498,25 +1309,6 @@ class CompactMethodFamilyContext:
         )
 
 
-def _pipeline_body_stages(
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-) -> tuple[PipelineAssemblyStage, ...] | None:
-    body = list(function.body)
-    if body and is_docstring_statement(body[0]):
-        body = body[1:]
-    if len(body) < 2:
-        return None
-    stages: list[PipelineAssemblyStage] = []
-    for statement in body:
-        stage = _pipeline_stage(statement)
-        if stage is None:
-            return None
-        stages.append(stage)
-    if not stages or stages[-1].kind != _PIPELINE_RETURN_STAGE:
-        return None
-    return tuple(stages)
-
-
 @dataclass(frozen=True)
 class _PipelineStageSource:
     kind: str
@@ -1566,44 +1358,6 @@ _STATIC_OBSERVATION_CONTROL_FLOW_NODES = (
     ast.Try,
     ast.Match,
 )
-
-
-def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
-    positional = (*method.args.posonlyargs, *method.args.args)
-    payload_names = tuple(
-        (argument.arg for argument in positional if argument.arg not in {"self", "cls"})
-    )
-    if variadic_parameters(method.args):
-        return None
-    return single_item(payload_names) if len(payload_names) == 1 else None
-
-
-def _parameter_name_is_reused(
-    statements: Sequence[ast.stmt], parameter_name: str
-) -> bool:
-    return any(
-        (
-            isinstance(node, ast.Name) and node.id == parameter_name
-            for statement in statements
-            for node in ast.walk(statement)
-        )
-    )
-
-
-def _first_named_call_assignment(
-    statements: Sequence[ast.stmt],
-) -> NamedCallAssignment | None:
-    first_statement = single_item(statements[:1])
-    assignment = as_ast(first_statement, ast.Assign)
-    return named_call_assignment(assignment) if assignment is not None else None
-
-
-def _call_is_cast_of_parameter(call: ast.Call, parameter_name: str) -> bool:
-    return (
-        ExpressionReference.decoded(call.func).terminal_name == "cast"
-        and len(call.args) == 2
-        and (name_id(call.args[1]) == parameter_name)
-    )
 
 
 def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:
@@ -1677,10 +1431,6 @@ def _finding_spec_build_boilerplate_candidates(
         ast.ClassDef,
         _finding_spec_build_boilerplate_class_candidates,
     )
-
-
-def _source_segment(module: ParsedModule, node: ast.expr) -> str:
-    return module.source_segments.segment_for_node(node) or ast.unparse(node)
 
 
 class HelperSyntaxProjectionAuthority:
@@ -1933,33 +1683,6 @@ def _schema_accessor_self_fetch_func(call: ast.Call) -> ast.Attribute | None:
     )
 
 
-def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
-    return (
-        Maybe.of(as_ast(value, ast.Call))
-        .filter(lambda call: len(call.args) == 1 and not call.keywords)
-        .combine(
-            _schema_accessor_self_fetch_func,
-            lambda call, func: (call, func),
-        )
-        .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
-        .combine(
-            lambda context: ExpressionReference.decoded(
-                context[0].args[0]
-            ).attribute_chain,
-            lambda context, field_chain: (context[1], field_chain),
-        )
-        .filter(lambda context: len(context[1]) >= 2)
-        .map(
-            lambda context: (
-                context[0].attr,
-                ".".join(context[1][:-1]),
-                context[1][-1],
-            )
-        )
-        .unwrap_or_none()
-    )
-
-
 def _node_mentions_name(node: ast.AST, local_name: str) -> bool:
     return any(
         isinstance(item, ast.Name) and item.id == local_name
@@ -1972,44 +1695,6 @@ def _compare_mentions_none(node: ast.Compare, local_name: str) -> bool:
     return _node_mentions_name(node, local_name) and any(
         CompactValueExpression.project(operand).value_is_none_literal
         for operand in operands
-    )
-
-
-def _schema_accessor_coercion_kinds(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
-) -> tuple[str, ...]:
-    kinds: set[str] = set()
-    for node in ast.walk(function):
-        if isinstance(node, ast.Compare) and _compare_mentions_none(node, local_name):
-            kinds.add("none_guard")
-        if not isinstance(node, ast.Call):
-            continue
-        call_name = ExpressionReference.decoded(node.func).terminal_name
-        if (
-            BuiltinCallName.is_isinstance_name(call_name)
-            and node.args
-            and _node_mentions_name(node.args[0], local_name)
-        ):
-            kinds.add("runtime_type_guard")
-        elif call_name in _SCHEMA_ACCESSOR_COPY_CALL_NAMES and any(
-            _node_mentions_name(argument, local_name) for argument in node.args
-        ):
-            kinds.add(f"{call_name}_coercion")
-        elif (
-            isinstance(node.func, ast.Attribute)
-            and node.func.attr.startswith("from_")
-            and any(_node_mentions_name(argument, local_name) for argument in node.args)
-        ):
-            kinds.add(node.func.attr)
-    return tuple(sorted(kinds))
-
-
-def _schema_accessor_returns_local(
-    function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
-) -> bool:
-    return any(
-        _node_mentions_name(returned, local_name)
-        for returned in StatementValues.of(nodes_of(ast.Return, function)).values
     )
 
 

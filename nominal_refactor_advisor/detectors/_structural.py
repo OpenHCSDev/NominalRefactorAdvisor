@@ -74,12 +74,9 @@ from nominal_refactor_advisor.detectors._helpers import (
     _RegisteredUnionSurfaceSource,
     _CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES,
     _annotation_union_members,
-    _base_defines_contract_attributes,
-    _class_def_declared_and_ancestor_names,
-    _class_object_type_argument_name,
-    _is_composable_base_name,
-    _is_contiguous_subtuple,
-    _shared_edge_tokens,
+    HELPER_SYNTAX_PROJECTION_AUTHORITY,
+    _ABC_BASE_NAME,
+    _COMPOSABLE_BASE_NAME_SUFFIXES,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
@@ -91,6 +88,8 @@ from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
 from nominal_refactor_advisor.detectors._substrate_support import _class_ancestor_name_map, _constant_string, _selector_attribute_name
 from collections import defaultdict
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
+from nominal_refactor_advisor.annotation_semantics import TypeWrapper
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
@@ -595,7 +594,7 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
                 base_names[start:end]
                 for start in range(len(base_names))
                 for end in range(start + minimum_width, len(base_names) + 1)
-                if all(_is_composable_base_name(name) for name in base_names[start:end])
+                if all(RepeatedBaseBundleCandidate._is_composable_base_name(name) for name in base_names[start:end])
             )
         )
 
@@ -619,13 +618,28 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
             if any(
                 (
                     class_names <= {node.name for node in existing_nodes}
-                    and _is_contiguous_subtuple(bundle, existing_bundle)
+                    and RepeatedBaseBundleCandidate._is_contiguous_subtuple(bundle, existing_bundle)
                     for existing_bundle, existing_nodes in maximal
                 )
             ):
                 continue
             maximal.append((bundle, nodes))
         return tuple(maximal)
+
+    @staticmethod
+    def _is_composable_base_name(base_name: str) -> bool:
+        return base_name == _ABC_BASE_NAME or base_name.endswith(
+            _COMPOSABLE_BASE_NAME_SUFFIXES
+        )
+
+    @staticmethod
+    def _is_contiguous_subtuple(needle: tuple[str, ...], haystack: tuple[str, ...]) -> bool:
+        if len(needle) > len(haystack):
+            return False
+        return any(
+            haystack[start : start + len(needle)] == needle
+            for start in range(len(haystack) - len(needle) + 1)
+        )
 
 
 declare_candidate_rule_detector(
@@ -875,7 +889,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
             (
                 member_name
                 for member in union_members
-                if (member_name := _class_object_type_argument_name(member)) is not None
+                if (member_name := ConcreteTypeUnionContractCandidate._class_object_type_argument_name(member)) is not None
             )
         )
         if len(member_names) != len(union_members):
@@ -913,7 +927,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
     ) -> tuple[str, ...]:
         base_sets = tuple(
             (
-                _class_def_declared_and_ancestor_names(
+                ConcreteTypeUnionContractCandidate._class_def_declared_and_ancestor_names(
                     classes_by_name, ancestor_names_by_class, member_type_name
                 )
                 for member_type_name in member_type_names
@@ -928,7 +942,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
             (
                 base_name
                 for base_name in common_base_names
-                if _base_defines_contract_attributes(
+                if ConcreteTypeUnionContractCandidate._base_defines_contract_attributes(
                     classes_by_name, base_name, observed_attribute_names
                 )
             )
@@ -939,7 +953,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
         member_type_names: tuple[str, ...],
         observed_attribute_names: tuple[str, ...],
     ) -> str:
-        edge_tokens = _shared_edge_tokens(member_type_names)
+        edge_tokens = ConcreteTypeUnionContractCandidate._shared_edge_tokens(member_type_names)
         base_name = (
             "".join((token.title() for token in edge_tokens))
             if edge_tokens
@@ -956,6 +970,64 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
             else "Contract"
         )
         return base_name if base_name.endswith(role_suffix) else f"{base_name}{role_suffix}"
+
+    @staticmethod
+    def _class_object_type_argument_name(node: ast.AST) -> str | None:
+        if not isinstance(node, ast.Subscript):
+            return None
+        root_name = HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.value)
+        if not TypeWrapper.CLASS_OBJECT.spelled_by(root_name):
+            return None
+        return HELPER_SYNTAX_PROJECTION_AUTHORITY.annotation_root_name(node.slice)
+
+    @staticmethod
+    def _class_def_declared_and_ancestor_names(
+        classes_by_name: dict[str, ClassStatement],
+        ancestor_names_by_class: dict[str, tuple[str, ...]],
+        class_name: str,
+    ) -> set[str]:
+        return set(classes_by_name[class_name].base_terminal_names) | set(
+            ancestor_names_by_class[class_name]
+        )
+
+    @staticmethod
+    def _base_defines_contract_attributes(
+        classes_by_name: dict[str, ClassStatement],
+        base_name: str,
+        observed_attribute_names: tuple[str, ...],
+    ) -> bool:
+        base_class = classes_by_name.get(base_name)
+        if base_class is None:
+            return False
+        return all(
+            (
+                base_class.method_named(attribute_name) is not None
+                for attribute_name in observed_attribute_names
+            )
+        )
+
+    @staticmethod
+    def _shared_edge_tokens(member_type_names: tuple[str, ...]) -> tuple[str, ...]:
+        token_rows = tuple(
+            (
+                CLASS_NAME_ALGEBRA.ordered_tokens(member_type_name)
+                for member_type_name in member_type_names
+            )
+        )
+        if not token_rows or not all(token_rows):
+            return ()
+        prefix_tokens: list[str] = []
+        for column in zip(*token_rows, strict=False):
+            if len(set(column)) != 1:
+                break
+            prefix_tokens.append(column[0])
+        suffix_tokens: list[str] = []
+        reversed_rows = tuple(tuple(reversed(row)) for row in token_rows)
+        for column in zip(*reversed_rows, strict=False):
+            if len(set(column)) != 1:
+                break
+            suffix_tokens.append(column[0])
+        return (*prefix_tokens, *tuple(reversed(suffix_tokens)))
 
 
 declare_candidate_rule_detector(

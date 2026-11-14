@@ -40,6 +40,7 @@ from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     PythonSourcePathPolicy,
     SourceModule,
+    is_docstring_statement,
 )
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
@@ -88,7 +89,7 @@ from nominal_refactor_advisor.models import (
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, overlap_coefficient
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id, constant_value, single_item, single_return_value
+from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id, constant_value, single_item, single_return_value, NamedCallAssignment, named_call_assignment
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
     KeyedRecordInfrastructureCandidate,
@@ -171,15 +172,11 @@ from nominal_refactor_advisor.detectors._helpers import (
     _STATIC_OBSERVATION_DETECTOR_BASE_NAMES,
     _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES,
     _STATIC_OBSERVATION_CONTROL_FLOW_NODES,
-    _call_is_cast_of_parameter,
-    _first_named_call_assignment,
-    _parameter_name_is_reused,
-    _pipeline_body_stages,
-    _schema_accessor_coercion_kinds,
-    _schema_accessor_fetch_call,
-    _schema_accessor_returns_local,
-    _single_payload_parameter_name,
-    _source_segment,
+    _SCHEMA_ACCESSOR_COPY_CALL_NAMES,
+    _compare_mentions_none,
+    _node_mentions_name,
+    _pipeline_stage,
+    _schema_accessor_self_fetch_func,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
@@ -201,6 +198,7 @@ from itertools import combinations
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.registration_facets import CompactManualSelectorAxis
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 
 
 @dataclass(frozen=True)
@@ -3418,7 +3416,7 @@ class _CompactKeyedRegistryCandidateDetectorBase(
         super().__init_subclass__(**kwargs)
         cls._require_candidate_source(
             cls._candidates_from_registry_facts,
-            _CompactKeyedRegistryCandidateDetectorBase._candidates_from_registry_facts,
+            cls._candidates_from_registry_facts,
             CollectsItselfFromRegistryFacts.subscripted_in(cls),
         )
 
@@ -4210,7 +4208,7 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
     ) -> tuple[ResultAssemblyPipelineFunction, ...]:
         functions: list[ResultAssemblyPipelineFunction] = []
         for qualname, function in module.syntax_index.named_functions:
-            stages = _pipeline_body_stages(function)
+            stages = RepeatedResultAssemblyPipelineCandidate._pipeline_body_stages(function)
             if stages is None:
                 continue
             functions.append(
@@ -4240,6 +4238,25 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
             left_index -= 1
             right_index -= 1
         return tuple(reversed(shared))
+
+    @staticmethod
+    def _pipeline_body_stages(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[PipelineAssemblyStage, ...] | None:
+        body = list(function.body)
+        if body and is_docstring_statement(body[0]):
+            body = body[1:]
+        if len(body) < 2:
+            return None
+        stages: list[PipelineAssemblyStage] = []
+        for statement in body:
+            stage = _pipeline_stage(statement)
+            if stage is None:
+                return None
+            stages.append(stage)
+        if not stages or stages[-1].kind != _PIPELINE_RETURN_STAGE:
+            return None
+        return tuple(stages)
 
 
 class RepeatedResultAssemblyPipelineDetector(
@@ -4377,17 +4394,55 @@ class TypedCandidateCastBoilerplateCandidate(
     def _typed_candidate_cast_assignment(
         method: ast.FunctionDef,
     ) -> tuple[str, str, str] | None:
-        parameter_name = _single_payload_parameter_name(method)
+        parameter_name = TypedCandidateCastBoilerplateCandidate._single_payload_parameter_name(method)
         body = statements_without_docstring(method.body)
-        call_assignment = _first_named_call_assignment(body)
+        call_assignment = TypedCandidateCastBoilerplateCandidate._first_named_call_assignment(body)
         if parameter_name is None or call_assignment is None:
             return None
         cast_call = call_assignment.call
-        if not _call_is_cast_of_parameter(cast_call, parameter_name):
+        if not TypedCandidateCastBoilerplateCandidate._call_is_cast_of_parameter(cast_call, parameter_name):
             return None
-        if _parameter_name_is_reused(body[1:], parameter_name):
+        if TypedCandidateCastBoilerplateCandidate._parameter_name_is_reused(body[1:], parameter_name):
             return None
         return (parameter_name, call_assignment.target_name, ast.unparse(cast_call.args[0]))
+
+    @staticmethod
+    def _single_payload_parameter_name(method: ast.FunctionDef) -> str | None:
+        positional = (*method.args.posonlyargs, *method.args.args)
+        payload_names = tuple(
+            (argument.arg for argument in positional if argument.arg not in {"self", "cls"})
+        )
+        if variadic_parameters(method.args):
+            return None
+        return single_item(payload_names) if len(payload_names) == 1 else None
+
+    @staticmethod
+    def _parameter_name_is_reused(
+        statements: Sequence[ast.stmt], parameter_name: str
+    ) -> bool:
+        return any(
+            (
+                isinstance(node, ast.Name) and node.id == parameter_name
+                for statement in statements
+                for node in ast.walk(statement)
+            )
+        )
+
+    @staticmethod
+    def _first_named_call_assignment(
+        statements: Sequence[ast.stmt],
+    ) -> NamedCallAssignment | None:
+        first_statement = single_item(statements[:1])
+        assignment = as_ast(first_statement, ast.Assign)
+        return named_call_assignment(assignment) if assignment is not None else None
+
+    @staticmethod
+    def _call_is_cast_of_parameter(call: ast.Call, parameter_name: str) -> bool:
+        return (
+            ExpressionReference.decoded(call.func).terminal_name == "cast"
+            and len(call.args) == 2
+            and (name_id(call.args[1]) == parameter_name)
+        )
 
 
 declare_candidate_rule_detector(
@@ -4574,9 +4629,13 @@ class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCa
             )
             .project(single_item)
             .project(lambda returned: returned.value)
-            .project(lambda value: _source_segment(module, value))
+            .project(lambda value: StaticTypedObservationDetectorCandidate._source_segment(module, value))
             .unwrap_or_none()
         )
+
+    @staticmethod
+    def _source_segment(module: ParsedModule, node: ast.expr) -> str:
+        return module.source_segments.segment_for_node(node) or ast.unparse(node)
 
 
 declare_candidate_rule_detector(
@@ -4706,13 +4765,13 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 if isinstance(statement, ast.Assign | ast.AnnAssign)
                 for target in single_name_targets(statement)
             ).supplied
-            if (fetch := _schema_accessor_fetch_call(assigned.value)) is not None
+            if (fetch := SchemaAccessorFamilyCandidate._schema_accessor_fetch_call(assigned.value)) is not None
         )
         if len(fetches) != 1:
             return None
         local_name, fetch_mode, enum_name, field_name = fetches[0]
-        coercion_kinds = _schema_accessor_coercion_kinds(method, local_name)
-        if not coercion_kinds or not _schema_accessor_returns_local(method, local_name):
+        coercion_kinds = SchemaAccessorFamilyCandidate._schema_accessor_coercion_kinds(method, local_name)
+        if not coercion_kinds or not SchemaAccessorFamilyCandidate._schema_accessor_returns_local(method, local_name):
             return None
         line_count = max(1, (method.end_lineno or method.lineno) - method.lineno + 1)
         return (
@@ -4769,6 +4828,71 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
             ),
             semantic_axes=field_axes,
             residual_object_count=coercion_kind_count,
+        )
+
+    @staticmethod
+    def _schema_accessor_fetch_call(value: ast.AST) -> tuple[str, str, str] | None:
+        return (
+            Maybe.of(as_ast(value, ast.Call))
+            .filter(lambda call: len(call.args) == 1 and not call.keywords)
+            .combine(
+                _schema_accessor_self_fetch_func,
+                lambda call, func: (call, func),
+            )
+            .filter(lambda context: context[1].attr in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES)
+            .combine(
+                lambda context: ExpressionReference.decoded(
+                    context[0].args[0]
+                ).attribute_chain,
+                lambda context, field_chain: (context[1], field_chain),
+            )
+            .filter(lambda context: len(context[1]) >= 2)
+            .map(
+                lambda context: (
+                    context[0].attr,
+                    ".".join(context[1][:-1]),
+                    context[1][-1],
+                )
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def _schema_accessor_coercion_kinds(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
+    ) -> tuple[str, ...]:
+        kinds: set[str] = set()
+        for node in ast.walk(function):
+            if isinstance(node, ast.Compare) and _compare_mentions_none(node, local_name):
+                kinds.add("none_guard")
+            if not isinstance(node, ast.Call):
+                continue
+            call_name = ExpressionReference.decoded(node.func).terminal_name
+            if (
+                BuiltinCallName.is_isinstance_name(call_name)
+                and node.args
+                and _node_mentions_name(node.args[0], local_name)
+            ):
+                kinds.add("runtime_type_guard")
+            elif call_name in _SCHEMA_ACCESSOR_COPY_CALL_NAMES and any(
+                _node_mentions_name(argument, local_name) for argument in node.args
+            ):
+                kinds.add(f"{call_name}_coercion")
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr.startswith("from_")
+                and any(_node_mentions_name(argument, local_name) for argument in node.args)
+            ):
+                kinds.add(node.func.attr)
+        return tuple(sorted(kinds))
+
+    @staticmethod
+    def _schema_accessor_returns_local(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, local_name: str
+    ) -> bool:
+        return any(
+            _node_mentions_name(returned, local_name)
+            for returned in StatementValues.of(nodes_of(ast.Return, function)).values
         )
 
 

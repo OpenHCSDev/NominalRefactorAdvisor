@@ -19,7 +19,7 @@ from typing import cast, Generic, Self, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
-from nominal_refactor_advisor.ast_projection import names_mentioned, CallKeywords, ExpressionReference
+from nominal_refactor_advisor.ast_projection import names_mentioned, CallKeywords, ExpressionReference, StatementValues
 from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
 from nominal_refactor_advisor.detectors._regex_bundle import (
     RepeatedLocalRegexBundleDetector,
@@ -172,8 +172,11 @@ from nominal_refactor_advisor.detectors._base import (
 from nominal_refactor_advisor.detectors._helpers import (
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
     METHOD_PROJECTION,
-    _guarded_wrapper_function_candidates,
     _param_backed_name,
+    HELPER_SUPPORT_PROJECTION_AUTHORITY,
+    MutableNamedStringSequenceSpecs,
+    NamedStringSequenceSpecs,
+    _guarded_wrapper_node_types,
 )
 from nominal_refactor_advisor.detectors._substrate_support import _constant_string
 from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
@@ -3206,7 +3209,7 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
     ) -> tuple[GuardedWrapperSpecPair, ...]:
         wrapper_functions = {
             function_name: (lineno, node_types)
-            for function_name, lineno, node_types in _guarded_wrapper_function_candidates(
+            for function_name, lineno, node_types in ScopedShapeWrapperDetector._guarded_wrapper_function_candidates(
                 module
             )
         }
@@ -3265,6 +3268,41 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
                 )
             )
         return tuple(pairs)
+
+    @staticmethod
+    def _guarded_wrapper_function_candidates(
+        module: ParsedModule,
+    ) -> NamedStringSequenceSpecs:
+        candidates: MutableNamedStringSequenceSpecs = []
+        guarded_returns: list[tuple[tuple[ast.FunctionDef, ast.If], ast.Return]] = []
+        for statement in module.module.body:
+            if not isinstance(statement, ast.FunctionDef):
+                continue
+            body = statements_without_docstring(statement.body)
+            while (
+                body
+                and isinstance(body[0], ast.Assign)
+                and (len(body[0].targets) == 1)
+                and isinstance(body[0].targets[0], ast.Name)
+            ):
+                body = body[1:]
+            if len(body) != 2:
+                continue
+            guard, return_stmt = body
+            if not isinstance(
+                guard, ast.If
+            ) or not HELPER_SUPPORT_PROJECTION_AUTHORITY.if_returns_none_only(guard):
+                continue
+            if not isinstance(return_stmt, ast.Return):
+                continue
+            guarded_returns.append(((statement, guard), return_stmt))
+        # A wrapper whose return is bare wraps nothing.
+        for (statement, guard), _returned in StatementValues.keyed(guarded_returns).supplied:
+            node_types = _guarded_wrapper_node_types(guard)
+            if not node_types:
+                continue
+            candidates.append((statement.name, statement.lineno, node_types))
+        return tuple(candidates)
 
 
 class ForeignFamilySiteDetector(

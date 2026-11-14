@@ -15363,8 +15363,8 @@ def test_source_segment_projection_reuses_cached_geometry(
     source_segments = module.source_segments
     source_lines = source_segments.lines
 
-    first_segment = helper_detectors._source_segment(module, summary_value)
-    second_segment = helper_detectors._source_segment(module, summary_value)
+    first_segment = systemic_detectors.StaticTypedObservationDetectorCandidate._source_segment(module, summary_value)
+    second_segment = systemic_detectors.StaticTypedObservationDetectorCandidate._source_segment(module, summary_value)
 
     assert first_segment == second_segment
     assert module.source_segments is source_segments

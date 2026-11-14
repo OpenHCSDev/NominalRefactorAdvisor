@@ -40,16 +40,13 @@ from nominal_refactor_advisor.detectors._helpers import (
     _IMPLICIT_METHOD_PARAMETER_NAMES,
     _SEQUENCE_WRAPPER_CALL_NAMES,
     _call_display_name,
-    _is_projection_like_builder_value,
-    _linear_query_key_names,
-    _linear_query_loop,
-    _linear_query_raised_exception,
-    _linear_query_return_expr,
+    _name_mentions,
+    _raised_exception_name,
 )
 from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
 import ast
 from nominal_refactor_advisor.class_families.parsed_index import ClassStatement, ModuleClassStatements
-from nominal_refactor_advisor.ast_projection import StatementValues, CallKeywords, ExpressionReference
+from nominal_refactor_advisor.ast_projection import StatementValues, CallKeywords, ExpressionReference, nodes_of
 from nominal_refactor_advisor.detectors._candidates import WitnessCarrierCandidate
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.observation_shapes import BuilderCallShape
@@ -237,19 +234,19 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
     ) -> tuple[str, tuple[str, ...], str, str] | None:
         body = statements_without_docstring(node.body)
         return (
-            Maybe.of(_linear_query_loop(body))
+            Maybe.of(DerivedQueryIndexCandidate._linear_query_loop(body))
             .combine(
-                lambda loop: _linear_query_return_expr(
+                lambda loop: DerivedQueryIndexCandidate._linear_query_return_expr(
                     loop, cast(ast.Name, loop.target).id
                 ),
                 lambda loop, return_expr: (loop, return_expr),
             )
             .combine(
-                lambda _context: _linear_query_raised_exception(body),
+                lambda _context: DerivedQueryIndexCandidate._linear_query_raised_exception(body),
                 lambda context, raised: (context[0], context[1], raised),
             )
             .combine(
-                lambda context: _linear_query_key_names(
+                lambda context: DerivedQueryIndexCandidate._linear_query_key_names(
                     node, context[0], context[1], context[2][1]
                 ),
                 lambda context, query_key_names: (
@@ -279,6 +276,75 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
             return None
         owner_name, separator, _method_name = qualname.rpartition(".")
         return owner_name if separator else qualname
+
+    @staticmethod
+    def _linear_query_loop(body: list[ast.stmt]) -> ast.For | None:
+        if len(body) < 2:
+            return None
+        loop = next(
+            (statement for statement in body if isinstance(statement, ast.For)), None
+        )
+        if loop is None or not isinstance(loop.target, ast.Name):
+            return None
+        return loop
+
+    @staticmethod
+    def _linear_query_return_expr(loop: ast.For, result_name: str) -> ast.AST | None:
+        return_exprs = StatementValues.of(nodes_of(ast.Return, loop)).values
+        if len(return_exprs) != 1 or not _name_mentions(return_exprs[0], result_name):
+            return None
+        return return_exprs[0]
+
+    @staticmethod
+    def _linear_query_raised_exception(
+        body: list[ast.stmt],
+    ) -> tuple[str, tuple[str, ...]] | None:
+        raised = next(
+            (
+                _raised_exception_name(statement)
+                for statement in body
+                if _raised_exception_name(statement) is not None
+            ),
+            None,
+        )
+        if raised is None:
+            return None
+        exception_name, exception_names = raised
+        if exception_name not in {"KeyError", "LookupError", "ValueError"}:
+            return None
+        return exception_name, exception_names
+
+    @staticmethod
+    def _linear_query_key_names(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+        loop: ast.For,
+        return_expr: ast.AST,
+        exception_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        parameter_names = tuple(
+            (
+                arg.arg
+                for arg in tuple(node.args.posonlyargs)
+                + tuple(node.args.args)
+                + tuple(node.args.kwonlyargs)
+                if arg.arg not in {"self", "cls"}
+            )
+        )
+        query_key_names = sorted_tuple(
+            (
+                name
+                for name in parameter_names
+                if _name_mentions(return_expr, name)
+                or name in exception_names
+                or any(
+                    (
+                        isinstance(current, ast.If) and _name_mentions(current.test, name)
+                        for current in ast.walk(loop)
+                    )
+                )
+            )
+        )
+        return query_key_names
 
 
 declare_candidate_rule_detector(
@@ -549,7 +615,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
                 continue
             if not all(
                 (
-                    _is_projection_like_builder_value(value)
+                    ProjectionBuilderAuthorityDetector._is_projection_like_builder_value(value)
                     for value in builder.value_fingerprint
                 )
             ):
@@ -573,6 +639,10 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
             candidates,
             key=lambda group: (group[0].file_path, group[0].lineno, group[0].callee_name),
         )
+
+    @staticmethod
+    def _is_projection_like_builder_value(value_fingerprint: str) -> bool:
+        return value_fingerprint.startswith(("Name(", "Attribute(", "IfExp(", "Constant("))
 
 
 @dataclass(frozen=True)
