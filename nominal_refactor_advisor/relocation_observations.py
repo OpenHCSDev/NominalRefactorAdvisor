@@ -194,7 +194,7 @@ class OwnStateAnswer(MemberAnswer):
         return self.accessed == "method"
 
 
-MemberAnswerT = TypeVar("MemberAnswerT", bound=MemberAnswer)
+MemberAnswerT = TypeVar("MemberAnswerT", bound=MemberAnswer, covariant=True)
 
 
 @dataclass(frozen=True)
@@ -629,7 +629,9 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 # ---- site families, one per relocation detector
 
 
-class MemberAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
+class MemberAnswerSiteFamily(
+    RestatingSiteFamily[RestatingSiteModule[MemberAnswerSite[MemberAnswer]]], ABC
+):
     """Members of the module's classes that answer one way: `group` is the member."""
 
     _registry_skip = True
@@ -667,7 +669,7 @@ class LambdaFoldSiteFamily(MemberAnswerSiteFamily):
     answer = FoldDeclaration
 
 
-class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule[RestatingSite]]):
     """A function whose every return is `()` or a one-element tuple, with both.
 
     Overrides that each return one arity are left out: a family whose members
@@ -689,7 +691,7 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             )
 
 
-class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule[ThreadedAbsenceSite]]):
     """An undefaulted `X | None` parameter that its own body compares with None.
 
     A probe choosing between the parameter itself and a replacement

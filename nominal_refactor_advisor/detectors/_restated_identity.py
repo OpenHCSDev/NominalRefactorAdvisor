@@ -8,6 +8,7 @@ from collections.abc import Iterable, Sequence
 from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     DeclaredIdentityFamily,
+    IdentitySpelling,
     IdentitySpellingFamily,
 )
 from nominal_refactor_advisor.refactors.declaration_reference import (
@@ -25,7 +26,6 @@ from nominal_refactor_advisor.models import (
     SourceLocation,
 )
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import CompactProjectionGroups
 from nominal_refactor_advisor.detectors._restated_facts import (
@@ -36,7 +36,7 @@ from nominal_refactor_advisor.detectors._restated_facts import (
 
 
 class RestatedIdentityDetector(
-    JoinedRestatedFactDetector[DeclaredIdentities, RestatingSite],
+    JoinedRestatedFactDetector[DeclaredIdentities, IdentitySpelling],
     DeclarationReferenceFindingRecipeSynthesizer,
 ):
     """A string literal that spells a declared class, module, family member or enum value in a position that uses it."""
@@ -71,7 +71,7 @@ class RestatedIdentityDetector(
         )
 
     def findings_from_sites(
-        self, sites: Iterable[RestatingSite], context: DeclaredIdentities
+        self, sites: Iterable[IdentitySpelling], context: DeclaredIdentities
     ) -> list[RefactorFinding]:
         resolved = [
             found for site in sites if (found := context.resolve(site)) is not None
@@ -79,7 +79,7 @@ class RestatedIdentityDetector(
         return super().findings_from_sites(resolved, context.with_carriers(resolved))
 
     def describe(
-        self, sites: Sequence[RestatingSite], context: DeclaredIdentities
+        self, sites: Sequence[IdentitySpelling], context: DeclaredIdentities
     ) -> str:
         spelled = [
             f"{site.spelling()} ({site.tag}, line {site.lineno})"
@@ -90,18 +90,18 @@ class RestatedIdentityDetector(
             f"{_listed(spelled)}."
         )
 
-    def owner(self, sites: Sequence[RestatingSite], context: DeclaredIdentities) -> str:
+    def owner(self, sites: Sequence[IdentitySpelling], context: DeclaredIdentities) -> str:
         declared = context.declarations_of(sites)
         where = _listed(f"`{location.symbol}` ({location.where})" for location in declared)
         return f"{self.restated.owner} Declared at {where}."
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: DeclaredIdentities
+        self, sites: Sequence[IdentitySpelling], context: DeclaredIdentities
     ) -> tuple[SourceLocation, ...]:
         return (*super().evidence(sites, context), *context.declarations_of(sites))
 
     def metrics(
-        self, sites: Sequence[RestatingSite], context: DeclaredIdentities
+        self, sites: Sequence[IdentitySpelling], context: DeclaredIdentities
     ) -> DeclarationReferenceMetrics:
         restater = self.restater(sites, context)
         carried = context.carried_rewrites(sites)

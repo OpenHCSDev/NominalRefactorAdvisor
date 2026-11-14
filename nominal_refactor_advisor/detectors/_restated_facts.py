@@ -267,8 +267,9 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
 
 
 class SingleFamilyRestatedFactDetector(
-    CompactModuleProjectionDetectorMixin[RestatingSiteModule],
-    RestatedFactDetector[None, RestatingSite],
+    CompactModuleProjectionDetectorMixin[RestatingSiteModule[SiteT]],
+    RestatedFactDetector[None, SiteT],
+    Generic[SiteT],
     ABC,
 ):
     """A restated-fact detector whose sites come from one family alone."""
@@ -277,7 +278,7 @@ class SingleFamilyRestatedFactDetector(
 
     def _findings_from_compact_projections(
         self,
-        projections: Sequence[RestatingSiteModule],
+        projections: Sequence[RestatingSiteModule[SiteT]],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
@@ -377,7 +378,7 @@ class OwnTypeTestDetector(
 
 
 class StringKindDispatchDetector(
-    SingleFamilyRestatedFactDetector, LiteralDispatchFindingRecipeSynthesizer
+    SingleFamilyRestatedFactDetector[StringDispatchSite], LiteralDispatchFindingRecipeSynthesizer
 ):
     """One subject compared with three or more string literals in one function."""
 
@@ -410,7 +411,7 @@ class StringKindDispatchDetector(
         return DispatchCountMetrics.from_literal_family(sites[0].group, arms)
 
 
-class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
+class NamedAttributeDetector(SingleFamilyRestatedFactDetector[NamedAttributeSite]):
     """getattr, hasattr, setattr or delattr by a literal name, and getattr with a default."""
 
     module_projection_family = NamedAttributeSiteFamily
@@ -470,7 +471,7 @@ def _reference_index(projections_by_family: CompactProjectionGroups) -> Referenc
     return ReferenceIndex.from_facts(_reference_facts(projections_by_family))
 
 
-class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingSite]):
+class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, ExactKeySetSite]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
 
     module_projection_families = (ExactKeySetSiteFamily, FieldObservationFamily)
@@ -510,7 +511,7 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
     ) -> tuple[SourceLocation, ...]:
         return context.owners_by_fields.get(frozenset(sites[0].keys), ())
 
-    def owner(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
+    def owner(self, sites: Sequence[ExactKeySetSite], context: DeclaredRecords) -> str:
         declared = self.declared(sites, context)
         if not declared:
             return self.restated.owner
@@ -518,12 +519,12 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
         return f"{names} already declares exactly these fields."
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: DeclaredRecords
+        self, sites: Sequence[ExactKeySetSite], context: DeclaredRecords
     ) -> tuple[SourceLocation, ...]:
         return (*super().evidence(sites, context), *self.declared(sites, context))
 
     def finding_context(
-        self, sites: Sequence[RestatingSite], context: DeclaredRecords
+        self, sites: Sequence[ExactKeySetSite], context: DeclaredRecords
     ) -> dict[str, object]:
         declared = self.declared(sites, context)
         return {} if not declared else {"authority_evidence": declared[0]}
@@ -646,7 +647,7 @@ class ForeignAbsenceProbeDetector(
 
 
 class LegacyPathMarkerDetector(
-    JoinedRestatedFactDetector[ReferenceIndex, RestatingSite],
+    JoinedRestatedFactDetector[ReferenceIndex, LegacyMarkerSite],
     LegacyPathErasureFindingRecipeSynthesizer,
 ):
     """A declaration, parameter, import alias or warning that says it is the old path."""
@@ -670,7 +671,7 @@ class LegacyPathMarkerDetector(
     compact_projection_group_context = staticmethod(_reference_index)
 
     def consumers(
-        self, sites: Sequence[RestatingSite], context: ReferenceIndex
+        self, sites: Sequence[LegacyMarkerSite], context: ReferenceIndex
     ) -> tuple[tuple[str, int], ...]:
         site = sites[0]
         return context.consumers_of(site.group, (site.file_path, site.lineno))
@@ -688,7 +689,7 @@ class LegacyPathMarkerDetector(
         return f"`{site.symbol}` ({kind}, {why}) is the old path; {still}"
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: ReferenceIndex
+        self, sites: Sequence[LegacyMarkerSite], context: ReferenceIndex
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
@@ -706,7 +707,7 @@ def _class_family_index(
 
 
 class ForwardingFacadeDetector(
-    JoinedRestatedFactDetector[CompactClassFamilyIndex, RestatingSite],
+    JoinedRestatedFactDetector[CompactClassFamilyIndex, FacadeSite],
     ForwarderInlineFindingRecipeSynthesizer,
 ):
     """A class holding an object in an attribute, with members that only forward to it.
@@ -772,7 +773,7 @@ class ForwardingFacadeDetector(
         )
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
+        self, sites: Sequence[FacadeSite], context: CompactClassFamilyIndex
     ) -> tuple[SourceLocation, ...]:
         facade = sites[0]
         return (
@@ -784,7 +785,7 @@ class ForwardingFacadeDetector(
         )
 
     def metrics(
-        self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
+        self, sites: Sequence[FacadeSite], context: CompactClassFamilyIndex
     ) -> FindingMetrics:
         return ForwardingFacadeMetrics(
             len(self.forwards(sites)), restater=self.restater(sites, context)

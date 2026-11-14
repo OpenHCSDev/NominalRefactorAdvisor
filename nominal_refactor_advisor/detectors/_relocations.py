@@ -27,16 +27,20 @@ from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.relocation_observations import (
     BranchRead,
-    MemberAnswer,
-    MemberAnswerSite,
     ClassShape,
     ClassShapeFamily,
+    ConstantAnswer,
     ConstantAnswerSiteFamily,
     ConsumerShapeFamily,
+    FoldDeclaration,
     LambdaCall,
     LambdaFoldSiteFamily,
+    MemberAnswer,
+    MemberAnswerSite,
     MemberUse,
+    OwnStateAnswer,
     OwnStateBoolSiteFamily,
+    ThreadedAbsenceSite,
     ThreadedAbsenceSiteFamily,
     ZeroOneTupleSiteFamily,
 )
@@ -243,8 +247,13 @@ class RelocationIndex:
         )
 
 
+AnswerT = TypeVar("AnswerT", bound=MemberAnswer)
+
+
 class RelocationDetector(
-    JoinedRestatedFactDetector[RelocationIndex, RestatingSite], ABC
+    JoinedRestatedFactDetector[RelocationIndex, MemberAnswerSite[AnswerT]],
+    Generic[AnswerT],
+    ABC,
 ):
     """A relocation joined with the scan's class families and branch consumers."""
 
@@ -268,22 +277,22 @@ class RelocationDetector(
             ),
         )
 
-    def site_order(self, site: RestatingSite) -> tuple[object, ...]:
+    def site_order(self, site: MemberAnswerSite[AnswerT]) -> tuple[object, ...]:
         return (site.file_path, site.lineno)
 
 
-class FamilyMemberRelocationDetector(RelocationDetector, ABC):
+class FamilyMemberRelocationDetector(RelocationDetector[AnswerT], Generic[AnswerT], ABC):
     """One finding per (member family, member): the sites are its declarations."""
 
-    def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
+    def group_of(self, site: MemberAnswerSite[AnswerT], context: RelocationIndex) -> tuple[str, str, str]:
         return (context.families.family(site.declaring_class, site.group), site.group, "")
 
-    def owner(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
+    def owner(self, sites: Sequence[MemberAnswerSite[AnswerT]], context: RelocationIndex) -> str:
         family = context.families.family(sites[0].declaring_class, sites[0].group)
         return f"{self.restated.owner} Declared first by: {family}."
 
 
-class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
+class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector[ConstantAnswer]):
     """Every member of a family answers one zero-argument question with a constant."""
 
     module_projection_families = (
@@ -307,13 +316,13 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
     )
 
     def computed_elsewhere(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[ConstantAnswer]], context: RelocationIndex
     ) -> list[str]:
         member = sites[0].group
         family = context.families.family(sites[0].declaring_class, member)
         return context.families.computed_by_family.get((family, member), [])
 
-    def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
+    def admits(self, sites: Sequence[MemberAnswerSite[ConstantAnswer]], context: RelocationIndex) -> bool:
         return (
             len(sites) >= 2
             and not self.computed_elsewhere(sites, context)
@@ -321,11 +330,11 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         )
 
     def consumers(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[ConstantAnswer]], context: RelocationIndex
     ) -> ReachingUses[BranchRead]:
         return context.reaching(context.branch_reads.get(sites[0].group, ()), sites)
 
-    def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
+    def describe(self, sites: Sequence[MemberAnswerSite[ConstantAnswer]], context: RelocationIndex) -> str:
         answers = _listed(
             f"{site.declaring_class.rsplit('.', 1)[-1]}={site.answer.value}" for site in sites
         )
@@ -336,7 +345,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         )
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[ConstantAnswer]], context: RelocationIndex
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
@@ -344,7 +353,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         )
 
 
-class OwnStateBranchAnswerDetector(RelocationDetector):
+class OwnStateBranchAnswerDetector(RelocationDetector[OwnStateAnswer]):
     """A frozen record's `-> bool` derived from its own state, and branches on it."""
 
     module_projection_families = (
@@ -368,7 +377,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
     )
 
     def consumers(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[OwnStateAnswer]], context: RelocationIndex
     ) -> ReachingUses[BranchRead]:
         called = sites[0].answer.called
         return context.reaching(
@@ -380,10 +389,10 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
             sites,
         )
 
-    def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
+    def admits(self, sites: Sequence[MemberAnswerSite[OwnStateAnswer]], context: RelocationIndex) -> bool:
         return bool(self.consumers(sites, context).counted)
 
-    def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
+    def describe(self, sites: Sequence[MemberAnswerSite[OwnStateAnswer]], context: RelocationIndex) -> str:
         site = sites[0]
         return (
             f"`{site.symbol}` ({site.answer.accessed}) {site.answer.probe}; "
@@ -391,7 +400,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         )
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[OwnStateAnswer]], context: RelocationIndex
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
@@ -399,7 +408,7 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         )
 
 
-class LambdaFoldDetector(FamilyMemberRelocationDetector):
+class LambdaFoldDetector(FamilyMemberRelocationDetector[FoldDeclaration]):
     """Each override calls exactly one callable parameter and callers pass lambdas."""
 
     module_projection_families = (
@@ -423,16 +432,16 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
     )
 
     def calls(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[FoldDeclaration]], context: RelocationIndex
     ) -> ReachingUses[LambdaCall]:
         return context.reaching(context.lambda_calls.get(sites[0].group, ()), sites)
 
-    def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
+    def admits(self, sites: Sequence[MemberAnswerSite[FoldDeclaration]], context: RelocationIndex) -> bool:
         return len({site.answer.called_parameter for site in sites}) >= 2 and bool(
             self.calls(sites, context).counted
         )
 
-    def describe(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> str:
+    def describe(self, sites: Sequence[MemberAnswerSite[FoldDeclaration]], context: RelocationIndex) -> str:
         overrides = _listed(
             f"{site.declaring_class.rsplit('.', 1)[-1]} calls `{site.answer.called_parameter}`"
             for site in sites
@@ -443,7 +452,7 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
         )
 
     def evidence(
-        self, sites: Sequence[RestatingSite], context: RelocationIndex
+        self, sites: Sequence[MemberAnswerSite[FoldDeclaration]], context: RelocationIndex
     ) -> tuple[SourceLocation, ...]:
         return (
             *super().evidence(sites, context),
@@ -451,7 +460,7 @@ class LambdaFoldDetector(FamilyMemberRelocationDetector):
         )
 
 
-class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
+class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector[RestatingSite]):
     """A function whose returns are all `()` or `(x,)`, with both."""
 
     module_projection_family = ZeroOneTupleSiteFamily
@@ -473,7 +482,7 @@ class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
         return f"`{sites[0].symbol}` encodes absence as a 0/1 tuple: it returns `()` on one path and `(x,)` on another."
 
 
-class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
+class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector[ThreadedAbsenceSite]):
     """An undefaulted `X | None` parameter compared with None in its own body."""
 
     module_projection_family = ThreadedAbsenceSiteFamily
@@ -491,7 +500,7 @@ class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def describe(self, sites: Sequence[ThreadedAbsenceSite], context: None) -> str:
         probes = _listed(f"line {site.lineno} `{site.group} {site.test}`" for site in sites)
         return (
             f"{sites[0].symbol} takes `{sites[0].group}` as `X | None` and probes it "

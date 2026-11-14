@@ -21,14 +21,16 @@ from nominal_refactor_advisor.refactors.false_distinctions import (
 )
 from nominal_refactor_advisor.false_distinction_observations import (
     EmptySubclassIndex,
+    EmptySubclassSite,
+    EmptySubclassSiteFamily,
     EnumMemberIndex,
     EnumUseSiteFamily,
-    EmptySubclassSiteFamily,
+    FalseDistinctionSite,
     IdenticalArmsSiteFamily,
+    SpelledClassSite,
     UndistinguishedTypeArmsSiteFamily,
 )
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.taxonomy import ObservationTag
 from nominal_refactor_advisor.detectors._restated_facts import (
     JoinedRestatedFactDetector,
@@ -39,7 +41,7 @@ from nominal_refactor_advisor.detectors._restated_facts import (
 
 
 class IdenticalArmsDetector(
-    SingleFamilyRestatedFactDetector, IdenticalArmsFindingRecipeSynthesizer
+    SingleFamilyRestatedFactDetector[FalseDistinctionSite], IdenticalArmsFindingRecipeSynthesizer
 ):
     """A branch whose every arm is the same code."""
 
@@ -59,7 +61,7 @@ class IdenticalArmsDetector(
         (ObservationTag.BRANCH_DISPATCH,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def describe(self, sites: Sequence[FalseDistinctionSite], context: None) -> str:
         branches = _listed(
             f"line {site.lineno} on {' / '.join(f'`{test}`' for test in site.named)}"
             for site in sites
@@ -68,7 +70,8 @@ class IdenticalArmsDetector(
 
 
 class UndistinguishedTypeTestDetector(
-    SingleFamilyRestatedFactDetector, UndistinguishedTypeTestFindingRecipeSynthesizer
+    SingleFamilyRestatedFactDetector[FalseDistinctionSite],
+    UndistinguishedTypeTestFindingRecipeSynthesizer,
 ):
     """`isinstance` rungs that run the same code as their neighbour or as the else."""
 
@@ -88,7 +91,7 @@ class UndistinguishedTypeTestDetector(
         (ObservationTag.BRANCH_DISPATCH,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def describe(self, sites: Sequence[FalseDistinctionSite], context: None) -> str:
         groups = _listed(
             f"line {site.lineno} on {', '.join(f'`{name}`' for name in site.named)}"
             for site in sites
@@ -97,7 +100,7 @@ class UndistinguishedTypeTestDetector(
 
 
 class NameOnlySubclassDetector(
-    JoinedRestatedFactDetector[EmptySubclassIndex, RestatingSite],
+    JoinedRestatedFactDetector[EmptySubclassIndex, EmptySubclassSite],
     EmptySubclassFindingRecipeSynthesizer,
 ):
     """An empty subclass that every spelling only constructs or raises."""
@@ -124,10 +127,10 @@ class NameOnlySubclassDetector(
         (ObservationTag.CLASS_FAMILY,),
     )
 
-    def admits(self, sites: Sequence[RestatingSite], context: EmptySubclassIndex) -> bool:
+    def admits(self, sites: Sequence[EmptySubclassSite], context: EmptySubclassIndex) -> bool:
         return sites[0].declared_symbol in context.bases_by_symbol
 
-    def describe(self, sites: Sequence[RestatingSite], context: EmptySubclassIndex) -> str:
+    def describe(self, sites: Sequence[EmptySubclassSite], context: EmptySubclassIndex) -> str:
         symbol, base = sites[0].declared_symbol, sites[0].base
         siblings = context.siblings(symbol)
         named = ", ".join(f"`{name}`" for name in siblings)
@@ -142,7 +145,7 @@ class NameOnlySubclassDetector(
 
 
 class UndistinguishedEnumMembersDetector(
-    JoinedRestatedFactDetector[EnumMemberIndex, RestatingSite],
+    JoinedRestatedFactDetector[EnumMemberIndex, SpelledClassSite],
     EnumFoldFindingRecipeSynthesizer,
 ):
     """Plain-Enum members that every spelling names together."""
@@ -166,10 +169,10 @@ class UndistinguishedEnumMembersDetector(
         (ObservationTag.CLOSED_FAMILY_CASES,),
     )
 
-    def admits(self, sites: Sequence[RestatingSite], context: EnumMemberIndex) -> bool:
+    def admits(self, sites: Sequence[SpelledClassSite], context: EnumMemberIndex) -> bool:
         return sites[0].declared_symbol in context.folds
 
-    def describe(self, sites: Sequence[RestatingSite], context: EnumMemberIndex) -> str:
+    def describe(self, sites: Sequence[SpelledClassSite], context: EnumMemberIndex) -> str:
         folds = "; ".join(
             ", ".join(f"`{sites[0].symbol}.{member}`" for member in members)
             for members in context.folds[sites[0].declared_symbol]

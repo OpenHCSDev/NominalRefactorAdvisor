@@ -762,7 +762,7 @@ class PublicFunctionSite(PublicDefinitionSite):
         return f"{module_name}.{self.group}"
 
 
-class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicDefinitionSite]]):
     """Each public top-level function and each public method of a top-level
     class, one site per def."""
 
@@ -858,7 +858,7 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
         ]
 
     def _finding_for_name(
-        self, name: str, owners: dict[str, list[RestatingSite]]
+        self, name: str, owners: dict[str, list[PublicDefinitionSite]]
     ) -> RefactorFinding:
         first_sites = sorted(
             (min(sites, key=attrgetter("file_path", "lineno")) for sites in owners.values()),

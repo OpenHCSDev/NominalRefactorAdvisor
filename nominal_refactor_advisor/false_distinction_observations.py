@@ -257,7 +257,9 @@ class FalseDistinctionSite(TypedRestatingSite):
         return self.named
 
 
-class FalseDistinctionSiteFamily(RestatingSiteFamily[RestatingSiteModule], ABC):
+class FalseDistinctionSiteFamily(
+    RestatingSiteFamily[RestatingSiteModule[FalseDistinctionSite]], ABC
+):
     """One kind of false distinction, a site for each one in the module's scopes."""
 
     _registry_skip = True
@@ -972,7 +974,7 @@ class EmptySubclassSite(SpelledClassSite):
 
 
 @dataclass(frozen=True)
-class SpelledClassSiteModule(RestatingSiteModule, Generic[SpellingsT]):
+class SpelledClassSiteModule(RestatingSiteModule[SpelledClassSite], Generic[SpellingsT]):
     """One module's top-level classes of one shape as sites, where the module
     sits, and what it spells that decides them."""
 

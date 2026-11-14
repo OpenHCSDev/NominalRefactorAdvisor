@@ -1750,7 +1750,7 @@ class DeclaredIdentities:
         resolved = site.resolve(self)
         return None if resolved is None else resolved.restated_by(site)
 
-    def with_carriers(self, sites: Sequence[RestatingSite]) -> DeclaredIdentities:
+    def with_carriers(self, sites: Sequence[IdentitySpelling]) -> DeclaredIdentities:
         """Name, per rewrite, the one finding that carries it for the whole scan, and the files it rewrites.
 
         A rewrite is one proved operation per file; the scan's rewrite of one kind
@@ -1800,7 +1800,7 @@ class DeclaredIdentities:
         )
 
     def covering_rewrites(
-        self, sites: Sequence[RestatingSite]
+        self, sites: Sequence[IdentitySpelling]
     ) -> tuple[tuple[str, str], ...]:
         """The rewrites another finding carries that rewrite this finding's sites, with where it stands."""
 
@@ -1809,7 +1809,7 @@ class DeclaredIdentities:
         )
 
     def carried_rewrites(
-        self, sites: Sequence[RestatingSite]
+        self, sites: Sequence[IdentitySpelling]
     ) -> tuple[tuple[str, tuple[str, ...]], ...]:
         """The rewrites this finding carries, each with the files it rewrites."""
 
@@ -1821,7 +1821,7 @@ class DeclaredIdentities:
         )
 
     def declarations_of(
-        self, sites: Sequence[RestatingSite]
+        self, sites: Sequence[IdentitySpelling]
     ) -> tuple[SourceLocation, ...]:
         """The declaring sites of the identity one group of resolved sites restates."""
 
@@ -2283,7 +2283,7 @@ class IdentityPositions:
                 yield from self.typed_site(returned.value, function.returns)
 
 
-class IdentitySpellingFamily(RestatingSiteFamily[RestatingSiteModule]):
+class IdentitySpellingFamily(RestatingSiteFamily[RestatingSiteModule[IdentitySpelling]]):
     """Literals in positions where a string can stand for a declared identity."""
 
 

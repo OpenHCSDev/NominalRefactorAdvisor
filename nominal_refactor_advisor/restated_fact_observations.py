@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Generic, TypeVar
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.lexical_bindings import (
@@ -40,15 +40,18 @@ from nominal_refactor_advisor.registration_facets import (
     registry_config_walk_root,
 )
 
+RestatingSiteT = TypeVar("RestatingSiteT", bound=RestatingSite, covariant=True)
+
+
 @dataclass(frozen=True)
-class RestatingSiteModule:
+class RestatingSiteModule(Generic[RestatingSiteT]):
     """One module's restating sites, kept even when empty so a scan knows its modules."""
 
     module_name: str
-    sites: tuple[RestatingSite, ...]
+    sites: tuple[RestatingSiteT, ...]
 
 
-RestatingSiteModuleT = TypeVar("RestatingSiteModuleT", bound=RestatingSiteModule)
+RestatingSiteModuleT = TypeVar("RestatingSiteModuleT", bound="RestatingSiteModule[RestatingSite]")
 
 
 class RestatingSiteFamily(ShapeFamily[RestatingSiteModuleT], ABC):
@@ -213,7 +216,7 @@ def _string_constants(elements: list[ast.expr]) -> tuple[str, ...] | None:
     return values if len(values) == len(elements) else None
 
 
-class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule[StringDispatchSite]]):
     """One subject compared against several string literals inside one function."""
 
     # A subject needs this many distinct string arms before it is a family spelled out.
@@ -306,7 +309,7 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     )
 
 
-class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule[NamedAttributeSite]]):
     """getattr/hasattr/setattr/delattr by a literal name, or by a module constant holding one.
 
     A name computed at run time (read from `_fields`, a loop variable) restates
@@ -431,7 +434,7 @@ class _KeyViewSyntax:
         return None
 
 
-class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule[ExactKeySetSite]]):
     """A literal key collection compared with, or subtracted from, a mapping's keys."""
 
 
@@ -551,7 +554,7 @@ class ForeignAbsenceSite(TypedRestatingSite):
 
 
 @dataclass(frozen=True)
-class ForeignAbsenceSiteModule(RestatingSiteModule):
+class ForeignAbsenceSiteModule(RestatingSiteModule[ForeignAbsenceSite]):
     """One module's foreign absence probes, each with its owner."""
 
     sites: tuple[ForeignAbsenceSite, ...]
@@ -612,7 +615,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
         )
 
 
-class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule[FacadeSite]]):
     """A class whose members only forward to an object it holds in an attribute.
 
     The first site of a facade is the class itself (FacadeClassSite, its held
@@ -852,7 +855,7 @@ class LegacyWord(StrEnum):
         ) or bool(re.search(r"backwards?[ -]compatib", lowered))
 
 
-class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule[LegacyMarkerSite]]):
     """A path that says it is the old one, beside what replaces it.
 
     Three self-declarations count: a deprecation mechanism (a `warn` of a
@@ -1297,7 +1300,7 @@ class ReferenceIndex:
         )
 
 
-class DeadModuleSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+class DeadModuleSiteFamily(RestatingSiteFamily[RestatingSiteModule[RestatingSite]]):
     """A module's own site, so that a finding can point at the module file."""
 
 
