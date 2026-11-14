@@ -340,6 +340,69 @@ class EconomicsProofReport(DataclassJsonReport):
             reasons.append("change_budget_unavailable")
         return tuple(reasons)
 
+    @classmethod
+    def from_root(
+        cls,
+        root: Path,
+        *,
+        config: DetectorConfig | None = None,
+        compare_ref: str = "HEAD",
+        scan_budget_seconds: float | None = None,
+        cache_dir: Path | None = None,
+        use_parse_cache: bool = True,
+    ) -> EconomicsProofReport:
+        """Run the standard proof scans for long-term advisor economics.
+
+        Each scan is judged against `scan_budget_seconds`, the proof's own default
+        when the caller gives none."""
+
+        if scan_budget_seconds is None:
+            scan_budget_seconds = _DEFAULT_SCAN_BUDGET_SECONDS
+
+        config = config or DetectorConfig()
+        repo_root = _git_root(root)
+        package_path = repo_root / "nominal_refactor_advisor"
+        if not package_path.exists():
+            package_path = root
+            parsed_modules = parse_python_modules(
+                root,
+                cache_dir=cache_dir,
+                use_parse_cache=use_parse_cache,
+            )
+        else:
+            parsed_modules = parse_python_modules(
+                repo_root,
+                cache_dir=cache_dir,
+                use_parse_cache=use_parse_cache,
+            )
+        package_root = package_path.resolve()
+        package_modules = ParsedModuleSet.of(
+            module
+            for module in parsed_modules
+            if module.path.resolve().is_relative_to(package_root)
+        )
+        package_scan = _scan_modules_for_proof(
+            "package",
+            package_path,
+            package_modules,
+            config,
+            scan_budget_seconds,
+        )
+        repository_scan = _scan_modules_for_proof(
+            "repository",
+            repo_root,
+            parsed_modules,
+            config,
+            scan_budget_seconds,
+        )
+        return cls(
+            package_scan=package_scan,
+            repository_scan=repository_scan,
+            change_budget=RepositoryChangeBudget.from_git_diff(
+                repo_root, compare_ref=compare_ref
+            ),
+        )
+
 @dataclass(frozen=True)
 class LineChangeBudget(DataclassJsonReport):
     """Added/deleted line budget for one repository category."""
@@ -473,64 +536,3 @@ def _scan_modules_for_proof(
         plans=plans,
     )
 
-
-def build_economics_proof_report(
-    root: Path,
-    *,
-    config: DetectorConfig | None = None,
-    compare_ref: str = "HEAD",
-    scan_budget_seconds: float | None = None,
-    cache_dir: Path | None = None,
-    use_parse_cache: bool = True,
-) -> EconomicsProofReport:
-    """Run the standard proof scans for long-term advisor economics.
-
-    Each scan is judged against `scan_budget_seconds`, the proof's own default
-    when the caller gives none."""
-
-    if scan_budget_seconds is None:
-        scan_budget_seconds = _DEFAULT_SCAN_BUDGET_SECONDS
-
-    config = config or DetectorConfig()
-    repo_root = _git_root(root)
-    package_path = repo_root / "nominal_refactor_advisor"
-    if not package_path.exists():
-        package_path = root
-        parsed_modules = parse_python_modules(
-            root,
-            cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-        )
-    else:
-        parsed_modules = parse_python_modules(
-            repo_root,
-            cache_dir=cache_dir,
-            use_parse_cache=use_parse_cache,
-        )
-    package_root = package_path.resolve()
-    package_modules = ParsedModuleSet.of(
-        module
-        for module in parsed_modules
-        if module.path.resolve().is_relative_to(package_root)
-    )
-    package_scan = _scan_modules_for_proof(
-        "package",
-        package_path,
-        package_modules,
-        config,
-        scan_budget_seconds,
-    )
-    repository_scan = _scan_modules_for_proof(
-        "repository",
-        repo_root,
-        parsed_modules,
-        config,
-        scan_budget_seconds,
-    )
-    return EconomicsProofReport(
-        package_scan=package_scan,
-        repository_scan=repository_scan,
-        change_budget=RepositoryChangeBudget.from_git_diff(
-            repo_root, compare_ref=compare_ref
-        ),
-    )

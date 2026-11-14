@@ -318,23 +318,20 @@ class RefactorSearch:
             end=end,
         )
 
+    def first_turn(
+        self,
+        *,
+        cache_dir: Path | None = None,
+        use_parse_cache: bool = True,
+    ) -> SearchTurn:
+        """Search the roots for the refactors that remove the most slop and derive
+        the most."""
 
-def build_refactor_search(
-    root: Path,
-    *,
-    config: DetectorConfig,
-    cache_dir: Path | None = None,
-    use_parse_cache: bool = True,
-    budget: SearchBudget = SearchBudget(),
-    introspection: IntrospectionSource = NoTrace(),
-) -> SearchTurn:
-    """Search ``root`` for the refactors that remove the most slop and derive the most."""
+        scan = CodemodWorkflowScan.parsed(
+            self.roots,
+            self.config,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+        )
+        return self.turn(scan, self.score(scan), self.budget.depth)
 
-    search = RefactorSearch((root,), config, budget, introspection)
-    scan = CodemodWorkflowScan.parsed(
-        (root,),
-        config,
-        cache_dir=cache_dir,
-        use_parse_cache=use_parse_cache,
-    )
-    return search.turn(scan, search.score(scan), budget.depth)

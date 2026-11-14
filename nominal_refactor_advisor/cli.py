@@ -157,7 +157,6 @@ from nominal_refactor_advisor.economics import (
     RefactorEvidenceEconomics,
     RepositoryChangeBudget,
     ScanEconomicsProof,
-    build_economics_proof_report,
 )
 from nominal_refactor_advisor.finding_counts import (
     FindingDetectorCount,
@@ -207,10 +206,10 @@ from nominal_refactor_advisor.member_census import (
     build_member_awareness_census,
 )
 from nominal_refactor_advisor.refactor_search import (
+    RefactorSearch,
     ScoredMove,
     SearchBudget,
     SearchTurn,
-    build_refactor_search,
 )
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
@@ -2546,13 +2545,14 @@ class RefactorSearchCliCommand(SingleRootReportCliCommand):
 
     @cached_property
     def report(self) -> SearchTurn:
-        return build_refactor_search(
-            self.root,
-            config=self.detector_config,
+        return RefactorSearch(
+            (self.root,),
+            self.detector_config,
+            SearchBudgetArguments.budget(self.args),
+            IntrospectionSource.from_argument(self.args.introspection_trace),
+        ).first_turn(
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
-            budget=SearchBudgetArguments.budget(self.args),
-            introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
         )
 
     @property
@@ -2569,7 +2569,7 @@ class EconomicsProofCliCommand(SingleRootReportCliCommand):
 
     @cached_property
     def report(self) -> EconomicsProofReport:
-        return build_economics_proof_report(
+        return EconomicsProofReport.from_root(
             self.root,
             config=self.detector_config,
             compare_ref=self.args.compare_ref,
