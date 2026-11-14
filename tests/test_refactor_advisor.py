@@ -20020,6 +20020,71 @@ def test_erase_dead_compatibility_operation_rejects_attribute_uses(
     assert "ligand_coords" in violation.detail
 
 
+def test_cli_reports_the_guard_an_erasure_declares_when_a_use_remains(
+    tmp_path: Path,
+) -> None:
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "\nclass PreparedComplex:\n"
+        "    def __init__(self, ligand):\n"
+        "        self.ligand = ligand\n\n"
+        "    @property\n"
+        "    def ligand_coords(self):\n"
+        "        return self.ligand.coords\n\n\n"
+        "def caller(complex):\n"
+        "    return complex.ligand_coords\n",
+    )
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps(
+            {
+                "recipes": [
+                    {
+                        "recipe_id": "erase-used-property",
+                        "reason": "the plan itself names no guard",
+                        "operations": [
+                            {
+                                "operation": "erase_dead_compatibility",
+                                "file_path": module_path.as_posix(),
+                                "target_qualname": "PreparedComplex.ligand_coords",
+                                "forbidden_attribute_names": ["ligand_coords"],
+                                "rationale": "the plan itself names no guard",
+                            }
+                        ],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+        newline="",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(tmp_path),
+            "--codemod-plan",
+            str(plan_path),
+            "--codemod-simulate",
+            "--json",
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 1, result.stderr
+    payload = json.loads(result.stdout)
+    report = cast(dict[str, object], payload["architecture_guard_report"])
+    assert report["violation_count"] == 1
+    assert "ligand_coords" in module_path.read_text()
+
+
 def test_delete_selected_targets_rejects_selection_count_overflow(
     tmp_path: Path,
 ) -> None:

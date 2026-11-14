@@ -3061,7 +3061,7 @@ class CodemodCliExecution(
         snapshot = self.required_source_snapshot()
         architecture_guard_report = (
             sequence_simulation.architecture_guard_report
-            if self.execution_request.sequence.has_architecture_guards
+            if sequence_simulation.sequence.has_architecture_guards
             else None
         )
         if not sequence_simulation.is_clean:
