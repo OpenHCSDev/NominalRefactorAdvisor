@@ -423,6 +423,19 @@ members share their loop, the loop belongs to a parent and each member
 is one declaration: `FalseDistinctionSiteFamily` (`distinction = ...`),
 `MemberAnswerSiteFamily` (`answer = ...`).
 
+**A permitted overlap verdict is a lead, not a merge.** Before composing
+a pair, read where the copying class is built. If a block field is
+filled with something other than the source's own value, the two
+classes use one name for two facts and stay apart (paper1 §2: identical
+fields today do not justify merging declarations). Two permitted
+verdicts on `detectors/_base.py` failed that read on 2026-11-14:
+`DataclassNamespaceCliMirrorCandidate.field_names` holds only the
+mirrored fields (`_systemic.py:759`), and
+`ResidualClosedAxisBranchingCandidate.case_names` holds only the cases
+shared with a family (`_base.py:4277`). One passed and was composed:
+`ManualKeyedRecordTableClassCandidate` copied all three fields from its
+`ManualRecordRegistrationShape`.
+
 **Known wrong, not yet fixed:**
 - `phantom_family` says "no shared declaring ancestor" and checks no
   ancestry. It reports every public name defined in two modules: 765
