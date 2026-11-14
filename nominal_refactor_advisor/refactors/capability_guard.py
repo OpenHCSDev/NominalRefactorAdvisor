@@ -11,21 +11,13 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from nominal_refactor_advisor.codemod_preflight import (
-    CodemodOperationPreflightError,
-    CodemodOperationPreflightReport,
-)
 from nominal_refactor_advisor.codemod_reproof import (
+    PreflightByReproof,
     RepositorySourceReprovedOperation,
-    SourceReproofDiagnostic,
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
-from nominal_refactor_advisor.codemod_selection_context import (
-    CodemodSelectorContext,
-    ResolvedClassTarget,
-)
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
-from nominal_refactor_advisor.codemod_semantics import CodemodPreflightStatus
 from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
@@ -97,7 +89,9 @@ class CapabilityGuard:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
+class CapabilityGuardToOverrideOperation(
+    PreflightByReproof, RepositorySourceReprovedOperation
+):
     """Turn a guard that refuses every value lacking a capability into a method the
     capability answers (IMPL-3: the test re-derives at the consumer what the class
     already is).
@@ -119,21 +113,9 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
     base: SourceRewriteTarget = codemod_payload_field(PayloadRecordValueCodec(SourceRewriteTarget))
     method_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
-    def preflight_reports(
-        self, context: CodemodSelectorContext
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return (
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.PASSED,
-                message="Every class the subject can be dispatches to the capability's answer",
-                detail=SourceReproofDiagnostic(self.target, ()),
-            ),
-        )
+    preflight_passed_message = (
+        "Every class the subject can be dispatches to the capability's answer"
+    )
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot

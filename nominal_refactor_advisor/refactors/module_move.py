@@ -88,7 +88,10 @@ from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_reproof import (
+    PreflightByReproof,
+    RepositorySourceReprovedOperation,
+)
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_selector_models import SourcePathPayloadValueCodec
@@ -4912,7 +4915,7 @@ class DissolveModuleOperation(RetainedCallOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
-class RetargetModuleMentionsOperation(RetainedCallOperation):
+class RetargetModuleMentionsOperation(PreflightByReproof, RetainedCallOperation):
     """Point every string mention of a module that no longer exists at its
     successor: the cleanup a dissolve does, for a module removed before the
     dissolve could see the mention (prose, embedded program text)."""
@@ -4921,22 +4924,10 @@ class RetargetModuleMentionsOperation(RetainedCallOperation):
     retired_path: str = codemod_payload_field(RequiredStringPayloadValueCodec())
     successor_path: str = codemod_payload_field(SourcePathPayloadValueCodec())
 
-    def preflight_reports(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return (
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.PASSED,
-                message="Every mention of the retired module names its successor",
-                detail=DissolvedModuleReport(deleted_path=self.retired_path, owner_paths_by_name=()),
-            ),
-        )
+    preflight_passed_message = "Every mention of the retired module names its successor"
+
+    def preflight_passed_detail(self) -> DissolvedModuleReport:
+        return DissolvedModuleReport(deleted_path=self.retired_path, owner_paths_by_name=())
 
     def source_edits_from_snapshot(
         self,

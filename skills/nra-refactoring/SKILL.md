@@ -681,6 +681,42 @@ enum with fields is now its members and its annotations:
   every value it carries (functions by their code); run it before and
   after and the two files must be equal. 849 members were.
 
+**A callback slot on a base is an override nobody wrote.** Thirteen
+detectors held `compact_report_context_promotion_predicate =
+staticmethod(_target_has_X)`, the base tested the slot for None, and
+thirteen module functions each walked the target's class projections
+asking one thing of each. The repair, in one change:
+
+- The walk goes to a mixin with one abstract hook
+  (`TargetClassEvidenceAnchored.anchors_report(projection)`); each
+  detector lists the mixin first and answers the hook.
+- Evidence several detectors share is a parent they share
+  (`KeyedFamilyAxisRootAnchored`); a detector that adds its own says
+  `super().anchors_report(p) or ...`.
+- A class-level flag the base branches on is a mixin that calls
+  `super()` (`TargetProjectionRequired`).
+- A question that is not per item (two things anywhere in the target)
+  overrides the whole question, not the hook.
+- `getattr(cls, "name", ())` where the repository declares `name`
+  nowhere is a dead loop. One occurrence in `git grep` is the
+  certificate; delete it.
+
+The detector and operation registries register every concrete class.
+A new parent that implements the family's abstract method must keep
+something abstract (`ClassAuthorityCollapseOperationABC.collapse_proof`)
+or it becomes a registered member. Compare the registry's names before
+and after: 116 detectors both times.
+
+**Copies that differ only in a class they name.** Two collapse
+operations differed in the proof class and two sentences. The parent
+needs only what every proof answers (`obsolete_imports`), so it asks
+the member for the proof class and types it by the proofs' own parent
+(`ClassAuthorityCollapseProof`). The four `Derive...ProjectionOperation`
+classes and their recipe builders look the same and stay: there the
+parent would have to return the named class's own type, a class-level
+attribute cannot carry a type parameter, and a cast in the parent
+untypes the result for every consumer.
+
 **A branch the dispatch already took.** A class that only one dispatcher
 builds knows what the dispatcher tested. The mapping recipe builders are
 built only by the strategy registered for `MappingMetrics`, so their

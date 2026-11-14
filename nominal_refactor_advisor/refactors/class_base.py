@@ -6,9 +6,11 @@ from abc import (
     abstractmethod,
 )
 from dataclasses import dataclass
+from typing import ClassVar
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_authority_collapse import (
+    ClassAuthorityCollapseProof,
     IntermediateClassAuthorityCollapseProof,
     RedundantClassAuthorityCollapseProof,
 )
@@ -406,8 +408,20 @@ class ReplaceDirectClassBaseOperation(DirectClassBaseReplacementOperationABC):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CollapseRedundantClassAuthorityOperation(DirectClassBaseReplacementOperationABC):
-    """Replace and delete one behaviorally redundant local class authority."""
+class ClassAuthorityCollapseOperationABC(DirectClassBaseReplacementOperationABC, ABC):
+    """Replace a displaced class authority at its children and delete it, under a proof.
+
+    A member names the proof its kind of collapse requires and the two sentences that say
+    why an import and the class go.
+    """
+
+    obsolete_import_reason: ClassVar[str]
+    deletion_reason: ClassVar[str]
+
+    @classmethod
+    @abstractmethod
+    def collapse_proof(cls) -> type[ClassAuthorityCollapseProof]:
+        raise NotImplementedError
 
     def source_edits_from_snapshot(
         self,
@@ -418,7 +432,7 @@ class CollapseRedundantClassAuthorityOperation(DirectClassBaseReplacementOperati
             snapshot,
             self.replacement_base,
         )
-        proof = RedundantClassAuthorityCollapseProof.require(
+        proof = type(self).collapse_proof().require(
             snapshot.parsed_modules,
             snapshot.required_class_family_index,
             displaced_symbol=displaced.required_symbol(snapshot),
@@ -431,59 +445,36 @@ class CollapseRedundantClassAuthorityOperation(DirectClassBaseReplacementOperati
                     file_path=displaced.file_path,
                     module_name=obsolete_import.module_name,
                     names=(obsolete_import.imported_name,),
-                    rationale=self.rationale_text(
-                        "Remove an import used only by the displaced class authority."
-                    ),
+                    rationale=self.rationale_text(type(self).obsolete_import_reason),
                 )
                 for obsolete_import in proof.obsolete_imports
             ),
             *DeleteTargetOperation(
                 target=self.target,
-                rationale=self.rationale_text(
-                    "Delete the displaced redundant class authority."
-                ),
+                rationale=self.rationale_text(type(self).deletion_reason),
             ).source_edits(snapshot),
         )
 
 
 @dataclass(frozen=True, kw_only=True)
-class CollapseIntermediateClassAuthorityOperation(
-    DirectClassBaseReplacementOperationABC
-):
+class CollapseRedundantClassAuthorityOperation(ClassAuthorityCollapseOperationABC):
+    """Replace and delete one behaviorally redundant local class authority."""
+
+    obsolete_import_reason = "Remove an import used only by the displaced class authority."
+    deletion_reason = "Delete the displaced redundant class authority."
+
+    @classmethod
+    def collapse_proof(cls) -> type[ClassAuthorityCollapseProof]:
+        return RedundantClassAuthorityCollapseProof
+
+
+@dataclass(frozen=True, kw_only=True)
+class CollapseIntermediateClassAuthorityOperation(ClassAuthorityCollapseOperationABC):
     """Delete one behavior-free class between its children and direct ancestor."""
 
-    def source_edits_from_snapshot(
-        self,
-        snapshot: CodemodSourceSnapshot,
-    ) -> tuple[NominalSourceEdit, ...]:
-        displaced = ResolvedClassTarget.from_rewrite_target(snapshot, self.target)
-        replacement = ResolvedClassTarget.from_rewrite_target(
-            snapshot,
-            self.replacement_base,
-        )
-        proof = IntermediateClassAuthorityCollapseProof.require(
-            snapshot.parsed_modules,
-            snapshot.required_class_family_index,
-            displaced_symbol=displaced.required_symbol(snapshot),
-            replacement_symbol=replacement.required_symbol(snapshot),
-        )
-        return (
-            *self.direct_class_base_source_edits(snapshot),
-            *(
-                ModuleImportMutation.remove_names(
-                    file_path=displaced.file_path,
-                    module_name=obsolete_import.module_name,
-                    names=(obsolete_import.imported_name,),
-                    rationale=self.rationale_text(
-                        "Remove an import used only by the displaced intermediary."
-                    ),
-                )
-                for obsolete_import in proof.obsolete_imports
-            ),
-            *DeleteTargetOperation(
-                target=self.target,
-                rationale=self.rationale_text(
-                    "Delete the behavior-free intermediate class authority."
-                ),
-            ).source_edits(snapshot),
-        )
+    obsolete_import_reason = "Remove an import used only by the displaced intermediary."
+    deletion_reason = "Delete the behavior-free intermediate class authority."
+
+    @classmethod
+    def collapse_proof(cls) -> type[ClassAuthorityCollapseProof]:
+        return IntermediateClassAuthorityCollapseProof

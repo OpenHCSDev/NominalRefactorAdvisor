@@ -11,21 +11,13 @@ from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     codemod_payload_field,
 )
-from nominal_refactor_advisor.codemod_preflight import (
-    CodemodOperationPreflightError,
-    CodemodOperationPreflightReport,
-)
 from nominal_refactor_advisor.codemod_reproof import (
+    PreflightByReproof,
     RepositorySourceReprovedOperation,
-    SourceReproofDiagnostic,
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
-from nominal_refactor_advisor.codemod_selection_context import (
-    CodemodSelectorContext,
-    ResolvedClassTarget,
-)
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
-from nominal_refactor_advisor.codemod_semantics import CodemodPreflightStatus
 from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     SourceTextGeometry,
@@ -105,7 +97,9 @@ class CarrierField:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CarrierFieldBecomesMemberOperation(RepositorySourceReprovedOperation):
+class CarrierFieldBecomesMemberOperation(
+    PreflightByReproof, RepositorySourceReprovedOperation
+):
     """Retype a text field that only ever carries a family member's declared name
     to the member class itself, so consumers ask the member instead of comparing
     its spelling (BOUND-8).
@@ -134,21 +128,9 @@ class CarrierFieldBecomesMemberOperation(RepositorySourceReprovedOperation):
         PayloadRecordValueCodec(SourceRewriteTarget)
     )
 
-    def preflight_reports(
-        self, context: CodemodSelectorContext
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return (
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.PASSED,
-                message="Every write carries a family member and every read is rewritten",
-                detail=SourceReproofDiagnostic(self.target, ()),
-            ),
-        )
+    preflight_passed_message = (
+        "Every write carries a family member and every read is rewritten"
+    )
 
     def carrier(self, snapshot: CodemodSourceSnapshot) -> CarrierField:
         source_path = self.required_source_path(snapshot, self.operation_key())

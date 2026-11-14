@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import builtins
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Self
 
 from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
@@ -373,8 +375,13 @@ class ClassAuthorityCollapseProofContext:
 
 
 @dataclass(frozen=True)
-class RedundantClassAuthorityCollapseProof:
-    """Closed repository proof for merging unrelated equivalent authorities."""
+class ClassAuthorityCollapseProof(ABC):
+    """Closed repository proof that one class authority can be replaced and deleted.
+
+    Every kind of collapse proves the same closure over the displaced class's children and
+    references, then its own condition on the two classes, and yields the imports the
+    displaced class alone kept alive.
+    """
 
     obsolete_imports: tuple[ObsoleteClassAuthorityImport, ...]
 
@@ -386,13 +393,47 @@ class RedundantClassAuthorityCollapseProof:
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> RedundantClassAuthorityCollapseProof:
+    ) -> Self:
         context = ClassAuthorityCollapseProofContext.require(
             parsed_modules,
             class_index,
             displaced_symbol=displaced_symbol,
             replacement_symbol=replacement_symbol,
         )
+        cls.require_admissible(
+            context,
+            displaced_symbol=displaced_symbol,
+            replacement_symbol=replacement_symbol,
+        )
+        return cls(obsolete_imports=context.obsolete_imports())
+
+    @classmethod
+    @abstractmethod
+    def require_admissible(
+        cls,
+        context: ClassAuthorityCollapseProofContext,
+        *,
+        displaced_symbol: str,
+        replacement_symbol: str,
+    ) -> None:
+        """Refuse unless this kind of collapse holds for the two classes."""
+
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class RedundantClassAuthorityCollapseProof(ClassAuthorityCollapseProof):
+    """Closed repository proof for merging unrelated equivalent authorities."""
+
+    @classmethod
+    def require_admissible(
+        cls,
+        context: ClassAuthorityCollapseProofContext,
+        *,
+        displaced_symbol: str,
+        replacement_symbol: str,
+    ) -> None:
+        class_index = context.class_index
         displaced = context.displaced
         replacement = context.replacement
         related_symbols = frozenset(
@@ -425,7 +466,6 @@ class RedundantClassAuthorityCollapseProof:
             displaced_context,
             replacement_context,
         )
-        return cls(obsolete_imports=context.obsolete_imports())
 
     @staticmethod
     def _require_standalone_authority(indexed_class: IndexedClass) -> None:
@@ -505,26 +545,17 @@ class RedundantClassAuthorityCollapseProof:
 
 
 @dataclass(frozen=True)
-class IntermediateClassAuthorityCollapseProof:
+class IntermediateClassAuthorityCollapseProof(ClassAuthorityCollapseProof):
     """Closed proof for deleting a behavior-free direct intermediary."""
 
-    obsolete_imports: tuple[ObsoleteClassAuthorityImport, ...]
-
     @classmethod
-    def require(
+    def require_admissible(
         cls,
-        parsed_modules: tuple[ParsedModule, ...],
-        class_index: ClassFamilyIndex,
+        context: ClassAuthorityCollapseProofContext,
         *,
         displaced_symbol: str,
         replacement_symbol: str,
-    ) -> IntermediateClassAuthorityCollapseProof:
-        context = ClassAuthorityCollapseProofContext.require(
-            parsed_modules,
-            class_index,
-            displaced_symbol=displaced_symbol,
-            replacement_symbol=replacement_symbol,
-        )
+    ) -> None:
         displaced = context.displaced
         replacement = context.replacement
         if displaced.file_path != replacement.file_path:
@@ -579,4 +610,3 @@ class IntermediateClassAuthorityCollapseProof:
                 "Intermediate class authority has non-neutral external bases "
                 f"{unsupported_bases!r}"
             )
-        return cls(obsolete_imports=context.obsolete_imports())

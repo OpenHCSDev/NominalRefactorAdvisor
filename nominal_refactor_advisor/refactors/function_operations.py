@@ -57,27 +57,19 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from nominal_refactor_advisor.codemod_preflight import (
-    CodemodOperationPreflightError,
-    CodemodOperationPreflightReport,
-)
 from nominal_refactor_advisor.codemod_reproof import (
+    PreflightByReproof,
     RepositorySourceReprovedOperation,
-    SourceReproofDiagnostic,
     SourceReprovedOperation,
 )
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
 from nominal_refactor_advisor.codemod_module_declarations import ModuleSymbolTable
-from nominal_refactor_advisor.codemod_selection_context import (
-    CodemodSelectorContext,
-    ResolvedClassTarget,
-)
+from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import (
     DeclaredCallSelection,
     SourceRewriteTarget,
 )
-from nominal_refactor_advisor.codemod_semantics import CodemodPreflightStatus
 from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
     PhysicalSourceEdit,
@@ -710,7 +702,7 @@ class _PropertyForwarderBody(_Forwarder):
 
 
 @dataclass(frozen=True, kw_only=True)
-class InlineForwarderOperation(RepositorySourceReprovedOperation):
+class InlineForwarderOperation(PreflightByReproof, RepositorySourceReprovedOperation):
     """Inline a method whose body only forwards one call, at every call site, and
     delete it (paper1 Thm 4.6: a forwarder supplies a pair outside the lattice).
 
@@ -720,22 +712,7 @@ class InlineForwarderOperation(RepositorySourceReprovedOperation):
     the forwarded call with self and the parameters replaced by the receiver and
     arguments; imports only the method used leave its module."""
 
-    def preflight_reports(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[CodemodOperationPreflightReport, ...]:
-        try:
-            self.required_reproof(lambda: self.source_edits_from_snapshot(context))
-        except CodemodOperationPreflightError as error:
-            return (error.report,)
-        return (
-            CodemodOperationPreflightReport(
-                operation=self.operation_key(),
-                status=CodemodPreflightStatus.PASSED,
-                message="Every use of the forwarder is a call that inlines",
-                detail=SourceReproofDiagnostic(self.target, ()),
-            ),
-        )
+    preflight_passed_message = "Every use of the forwarder is a call that inlines"
 
     def source_edits_from_snapshot(
         self,

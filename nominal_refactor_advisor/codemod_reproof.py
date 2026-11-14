@@ -42,6 +42,7 @@ from nominal_refactor_advisor.codemod_semantics import (
     CodemodSourceDependencyScope,
 )
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
+from nominal_refactor_advisor.json_reports import JsonReport
 from nominal_refactor_advisor.semantic_descent import AuthorityClaim
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
@@ -165,6 +166,39 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
+
+
+class PreflightByReproof(SourceReprovedOperation, ABC):
+    """An operation whose preflight is deriving its own edits from the current source.
+
+    It fails with the derivation's refusal and passes with the sentence the derivation
+    proves, which each operation declares.
+    """
+
+    preflight_passed_message: ClassVar[str]
+
+    def preflight_reports(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[CodemodOperationPreflightReport, ...]:
+        snapshot = context.execution_snapshot()
+        try:
+            self.required_reproof(lambda: self.source_edits_from_snapshot(snapshot))
+        except CodemodOperationPreflightError as error:
+            return (error.report,)
+        return (
+            CodemodOperationPreflightReport(
+                operation=self.operation_key(),
+                status=CodemodPreflightStatus.PASSED,
+                message=type(self).preflight_passed_message,
+                detail=self.preflight_passed_detail(),
+            ),
+        )
+
+    def preflight_passed_detail(self) -> JsonReport:
+        """What a passed preflight shows beside its sentence: the target, with no refusal."""
+
+        return SourceReproofDiagnostic(self.target, ())
 
 
 @dataclass(frozen=True, kw_only=True)
