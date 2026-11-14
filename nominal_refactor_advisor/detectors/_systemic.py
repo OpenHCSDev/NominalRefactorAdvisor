@@ -153,7 +153,6 @@ from nominal_refactor_advisor.detectors._base import (
     FieldFamilyCompressionSurface,
     ManualStructuralRecordMechanicsClassCandidate,
     WitnessCarrierClassCandidate,
-    witness_carrier_class_candidates,
     DISPATCH_ALGEBRA_AUTHORITY,
     SelfCastAliasPartition,
     StaticModulePatternDetector,
@@ -5568,7 +5567,7 @@ class WitnessCarrierFamilyCandidate(CollectsItself, ClassLineNumbersGroup):
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
-        classes = witness_carrier_class_candidates(module)
+        classes = CANDIDATE_COLLECTION_AUTHORITY.witness_carrier_class_candidates(module)
         if len(classes) < 2:
             return ()
         grouped: dict[str, list[WitnessCarrierClassCandidate]] = defaultdict(list)

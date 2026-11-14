@@ -2916,9 +2916,6 @@ class CandidateCollectionAuthority:
 
 
 CANDIDATE_COLLECTION_AUTHORITY = CandidateCollectionAuthority()
-witness_carrier_class_candidates = (
-    CANDIDATE_COLLECTION_AUTHORITY.witness_carrier_class_candidates
-)
 
 
 class SyntaxProjectionAuthority:
