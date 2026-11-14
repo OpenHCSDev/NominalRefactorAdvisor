@@ -3428,11 +3428,24 @@ class LexicalSyntaxScope:
     function_node_indices: tuple[int, ...] = ()
     executable_function_index: int = -1
 
+    MODULE_SYMBOL: ClassVar[str] = "<module>"
+
     @cached_property
     def symbol(self) -> str:
         """Dotted class and function owners of this scope's code, or `<module>`."""
 
-        return ".".join(self.names) or "<module>"
+        return ".".join(self.names) or self.MODULE_SYMBOL
+
+    @property
+    def name(self) -> str:
+        """The innermost class or function owning this scope's code, or `<module>`."""
+
+        return self.names[-1] if self.names else self.MODULE_SYMBOL
+
+    def declared(self, name: str) -> str:
+        """The dotted symbol of a name declared in this scope."""
+
+        return ".".join((*self.names, name))
 
 
 @dataclass(frozen=True)
@@ -3540,12 +3553,15 @@ class ModuleSyntaxIndex:
             return None
         return self.depth_first_nodes[parent_index]
 
+    def scope_of(self, node_index: int) -> LexicalSyntaxScope:
+        """The scope whose code holds one indexed node."""
+
+        return self.scopes[self.scope_ids[node_index]]
+
     def enclosing_function_name(self, node_index: int) -> str | None:
         """Return the nearest executable function owner for one indexed node."""
 
-        function_index = self.scopes[
-            self.scope_ids[node_index]
-        ].executable_function_index
+        function_index = self.scope_of(node_index).executable_function_index
         if function_index < 0:
             return None
         function = self.depth_first_nodes[function_index]
@@ -3567,7 +3583,7 @@ class ModuleSyntaxIndex:
     def lexical_symbol(self, node_index: int) -> str:
         """Dotted class and function owners of one indexed node, or `<module>`."""
 
-        return self.scopes[self.scope_ids[node_index]].symbol
+        return self.scope_of(node_index).symbol
 
     @cached_property
     def evaluating_scope_ids(self) -> array:

@@ -17,7 +17,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import LexicalSyntaxScope, ParsedModule
 from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
 from nominal_refactor_advisor.codemod import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_foreign_family_source import RewrittenLineFit
@@ -144,7 +144,7 @@ class ScopeBranchFindingRecipeSynthesizer(
             SourceIndexTargetSelector(
                 node_kinds=(AstTargetNodeKind.MODULE,), file_paths=(evidence.file_path,)
             )
-            if evidence.symbol == "<module>"
+            if evidence.symbol == LexicalSyntaxScope.MODULE_SYMBOL
             else SourceIndexTargetSelector.for_function_or_method(
                 evidence.file_path, evidence.symbol
             )

@@ -138,16 +138,13 @@ class StringDispatchSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             *index.indexed_nodes_of_type(ast.Compare),
             *index.indexed_nodes_of_type(ast.Match),
         ):
-            function = index.scopes[
-                index.scope_ids[node_index]
-            ].executable_function_index
-            if function < 0:
+            scope = index.scope_of(node_index)
+            if scope.executable_function_index < 0:
                 continue
-            symbol = index.lexical_symbol(node_index)
             for subject, literal in cls.arms(node):
-                _symbol, literals = arms[(function, subject)].setdefault(
-                    node, (symbol, set())
-                )
+                _symbol, literals = arms[
+                    (scope.executable_function_index, subject)
+                ].setdefault(node, (scope.symbol, set()))
                 literals.add(literal)
         for (_function, subject), nodes in arms.items():
             if (
@@ -325,14 +322,14 @@ class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             *index.indexed_nodes_of_type(ast.Call),
             *index.indexed_nodes_of_type(ast.GeneratorExp),
         ):
-            function = index.scopes[
-                index.scope_ids[node_index]
-            ].executable_function_index
-            for mapping, keys in cls.restatements(node, keyed[function]):
+            scope = index.scope_of(node_index)
+            for mapping, keys in cls.restatements(
+                node, keyed[scope.executable_function_index]
+            ):
                 yield cls.site(
                     parsed_module,
                     node,
-                    index.lexical_symbol(node_index),
+                    scope.symbol,
                     f"{node.lineno}:{node.col_offset}",
                     (ast.unparse(mapping), *keys),
                 )
@@ -346,10 +343,9 @@ class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             if isinstance(node.slice, ast.Constant) and isinstance(
                 node.slice.value, str
             ):
-                function = index.scopes[
-                    index.scope_ids[node_index]
-                ].executable_function_index
-                keyed[function].add(ast.unparse(node.value))
+                keyed[index.scope_of(node_index).executable_function_index].add(
+                    ast.unparse(node.value)
+                )
         for node_index, node in index.indexed_nodes_of_type(ast.Call):
             match node:
                 case ast.Call(
@@ -358,10 +354,9 @@ class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     ),
                     args=[ast.Constant(value=str()), *_],
                 ):
-                    function = index.scopes[
-                        index.scope_ids[node_index]
-                    ].executable_function_index
-                    keyed[function].add(ast.unparse(receiver))
+                    keyed[index.scope_of(node_index).executable_function_index].add(
+                        ast.unparse(receiver)
+                    )
         return keyed
 
     @classmethod
@@ -477,7 +472,7 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
             return False
         if root.id in modules and root is receiver:
             return True
-        function = index.scopes[index.scope_ids[node_index]].executable_function_index
+        function = index.scope_of(node_index).executable_function_index
         if function < 0:
             return False
         method = index.depth_first_nodes[function]
@@ -518,8 +513,7 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         forwards[forwarded[0]].append(
                             (member, forwarded[1], forwarded[2])
                         )
-            outer = index.lexical_symbol(node_index)
-            symbol = node.name if outer == "<module>" else f"{outer}.{node.name}"
+            symbol = index.scope_of(node_index).declared(node.name)
             for attribute, members in forwards.items():
                 if len(members) < cls.MIN_FORWARDS:
                     continue
@@ -772,7 +766,7 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     yield cls.site(
                         parsed_module,
                         argument_node,
-                        cls.declared_symbol(index.lexical_symbol(node_index), argument),
+                        index.scope_of(node_index).declared(argument),
                         argument,
                         ("parameter", "beside its replacement"),
                     )
@@ -790,9 +784,7 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     yield cls.site(
                         parsed_module,
                         node,
-                        cls.declared_symbol(
-                            index.lexical_symbol(node_index), target
-                        ),
+                        index.scope_of(node_index).declared(target),
                         target,
                         ("alias", f"of {replacement}"),
                     )
@@ -805,19 +797,19 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     yield cls.site(
                         parsed_module,
                         node,
-                        cls.declared_symbol(index.lexical_symbol(node_index), bound),
+                        index.scope_of(node_index).declared(bound),
                         bound,
                         ("import alias", f"of {node.name}"),
                     )
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             warned = cls.warned_legacy_class(call)
             if warned is not None:
-                symbol = index.lexical_symbol(node_index)
+                scope = index.scope_of(node_index)
                 yield cls.site(
                     parsed_module,
                     call,
-                    symbol,
-                    symbol.rpartition(".")[2],
+                    scope.symbol,
+                    scope.name,
                     ("warning", warned),
                 )
 
@@ -839,16 +831,13 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         why = cls.reason(node, siblings)
         if why is None:
             return
-        symbol = cls.declared_symbol(index.lexical_symbol(node_index), node.name)
         yield cls.site(
-            parsed_module, node, symbol, node.name, (type(node).__name__, why)
+            parsed_module,
+            node,
+            index.scope_of(node_index).declared(node.name),
+            node.name,
+            (type(node).__name__, why),
         )
-
-    @staticmethod
-    def declared_symbol(owner: str, name: str) -> str:
-        """The dotted symbol of a name declared inside `owner`."""
-
-        return name if owner == "<module>" else f"{owner}.{name}"
 
     @staticmethod
     def has_replacement(name: str, siblings: set[str]) -> bool:
