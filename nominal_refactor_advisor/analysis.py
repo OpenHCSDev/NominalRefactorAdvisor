@@ -731,13 +731,6 @@ class CompactGlobalProjectionAccumulator:
             )
         )
 
-    def add_module(self, module: ParsedModule) -> None:
-        """Project one module, after which its AST may be safely released."""
-
-        for family in self.projection_families:
-            projections = tuple(collect_family_items(module, family))
-            self.add_family_projections(family, projections)
-
     @property
     def detector_types_by_family(
         self,
@@ -2865,15 +2858,6 @@ class EvidenceLocalFindingReuseAuthority:
     """Reuse cached findings whose evidence does not touch changed files."""
 
     rerun_detector_types: tuple[type[IssueDetector], ...] = ()
-
-    @property
-    def rerun_detector_ids(self) -> frozenset[str]:
-        return frozenset(
-            detector_id
-            for detector_type in self.rerun_detector_types
-            for detector_id in (detector_type.effective_detector_id(),)
-            if detector_id is not None
-        )
 
     @staticmethod
     def finding_touches_any_path(

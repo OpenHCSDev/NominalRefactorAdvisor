@@ -2470,9 +2470,6 @@ class SourceLineSpan:
     def overlaps(self, other: SourceLineSpan) -> bool:
         return self.start_line <= other.end_line and other.start_line <= self.end_line
 
-    def overlaps_any(self, spans: Iterable[SourceLineSpan]) -> bool:
-        return any(self.overlaps(span) for span in spans)
-
     def source_from(self, source: str) -> str:
         source_lines = source.splitlines(keepends=True)
         return "".join(source_lines[self.start_line - 1 : self.end_line])

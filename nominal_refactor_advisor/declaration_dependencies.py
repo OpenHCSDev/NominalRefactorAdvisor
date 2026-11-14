@@ -233,11 +233,6 @@ class DeclarationDependencyProjection:
     def names(self) -> frozenset[str]:
         return self.execution_names | self.annotation_names
 
-    @property
-    def annotation_only_names(self) -> frozenset[str]:
-        return self.annotation_names - self.execution_names
-
-
 @dataclass(frozen=True)
 class ModuleLexicalDependencyProjection:
     """Reference-bearing dependency surfaces from one lexical traversal."""

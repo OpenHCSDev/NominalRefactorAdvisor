@@ -475,20 +475,6 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         )
 
     @staticmethod
-    def import_source_for_path(
-        context: CodemodSelectorContext,
-        *,
-        projection_path: str,
-        authority_path: str,
-        authority_name: str,
-    ) -> str | None:
-        return context.module_import_graph.import_source(
-            importing_file_path=projection_path,
-            imported_file_path=authority_path,
-            imported_name=authority_name,
-        )
-
-    @staticmethod
     def authority_class_target(
         context: CodemodSelectorContext,
         authority_location: SourceLocation,

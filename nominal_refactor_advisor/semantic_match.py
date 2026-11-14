@@ -149,20 +149,6 @@ class AstPredicateRule(ABC, Generic[ContextT, AstT, U]):
             for rule_type in loaded_concrete_nominal_descendants(cls)
         )
 
-    @classmethod
-    def matches_anywhere(cls, root: ast.AST, context: ContextT) -> tuple[U, ...]:
-        matches: list[U] = []
-        for node in ast.walk(root):
-            for rule in cls.rules():
-                if (match := rule.apply(node, context)) is not None:
-                    matches.append(match)
-        return tuple(matches)
-
-    @classmethod
-    def first_match_anywhere(cls, root: ast.AST, context: ContextT) -> U | None:
-        return single_item(cls.matches_anywhere(root, context))
-
-
 @dataclass(frozen=True)
 class SingleCompareMatch:
     left: ast.AST
@@ -602,21 +588,6 @@ def single_call_arg(node: ast.AST) -> ast.AST | None:
     return None if call is None else single_item(call.args)
 
 
-def single_named_call_argument(
-    node: ast.AST, *, call_name: str, argument_type: type[AstT]
-) -> AstT | None:
-    call = as_ast(node, ast.Call)
-    argument = single_item(call.args) if call is not None else None
-    if (
-        call is None
-        or name_id(call.func) != call_name
-        or call.keywords
-        or (argument is None)
-    ):
-        return None
-    return as_ast(argument, argument_type)
-
-
 def call_argument_match(
     call: ast.Call,
     *,
@@ -695,13 +666,6 @@ def attribute_method_names(
     return None if method_name is None else frozenset({method_name})
 
 
-def call_attribute_name(
-    node: ast.AST | None, *, owner_name: str | None = None
-) -> str | None:
-    call = as_ast(node, ast.Call)
-    return None if call is None else attribute_name(call.func, owner_name=owner_name)
-
-
 def attribute_call_match(
     call: ast.Call,
     *,
@@ -730,11 +694,6 @@ def attribute_call_match(
         )
         .unwrap_or_none()
     )
-
-
-def single_call_arg_name(node: ast.AST | None) -> str | None:
-    call = as_ast(node, ast.Call)
-    return None if call is None else name_id(single_item(call.args))
 
 
 def single_assign_target(node: ast.stmt) -> ast.AST | None:

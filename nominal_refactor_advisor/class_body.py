@@ -460,14 +460,6 @@ class ClassBodyIndex:
             pairs.update(combinations(sorted(symbols), 2))
         return tuple(self.overlap(first, second) for first, second in sorted(pairs))
 
-    def overlaps_among(self, symbols: Iterable[str]) -> tuple[ClassBodyOverlap, ...]:
-        wanted = frozenset(symbols)
-        return tuple(
-            overlap
-            for overlap in self.overlaps
-            if overlap.first.symbol in wanted and overlap.second.symbol in wanted
-        )
-
     def _declaration(
         self, module_name: str, declaration: ClassBodyDeclarationDigest
     ) -> ClassBodyDeclaration:

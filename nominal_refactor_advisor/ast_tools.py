@@ -73,11 +73,7 @@ from nominal_refactor_advisor.native_compilation import (
 from nominal_refactor_advisor.native_declarations import NativeLanguageFeature
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.observation_graph import (
-    NominalWitnessGroup,
-    ObservationCohort,
-    ObservationFiber,
     ObservationGraph,
-    ObservationKind,
     StructuralExecutionLevel,
     StructuralObservation,
     StructuralObservationCarrier,
@@ -90,7 +86,6 @@ from nominal_refactor_advisor.observation_shapes import (
     FieldOriginKind,
     LiteralDispatchObservation,
     LiteralKind,
-    RegistrationShape,
     SentinelTypeObservation,
 )
 from nominal_refactor_advisor.python_module_identity import (
@@ -115,10 +110,7 @@ from nominal_refactor_advisor.semantic_match import (
     SingleCompareEffectStep,
     as_ast,
     named_value_binding,
-    single_assign_target,
-    single_call_arg,
     single_item,
-    single_return_call,
 )
 from nominal_refactor_advisor.value_graph import (
     CachedDataclassRepresentation,
@@ -2183,17 +2175,6 @@ class AutoRegisteredModuleShapeSpec(
             )
         )
 
-    @classmethod
-    def all_registered_specs(cls) -> tuple[AutoRegisteredModuleShapeSpec, ...]:
-        """Return all concrete specs reachable from descendant registry roots."""
-        return tuple(
-            (
-                spec_type()
-                for spec_type in REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
-            )
-        )
-
-
 class ScanContext:
     """What one scan builds once from its families and hands to the detectors
     that join them."""
@@ -2250,22 +2231,9 @@ class CollectedFamily(
         return cast(Sequence[ShapeItemT], groups[cls])
 
     @classmethod
-    def registered_families(cls) -> CollectedFamilyTypes:
-        """Return concrete families registered directly under this root."""
-        return REGISTERED_TYPE_LINEAGE.direct_registered_types(
-            cls, registry_base=CollectedFamily
-        )
-
-    @classmethod
     def all_registered_families(cls) -> CollectedFamilyTypes:
         """Return all concrete families reachable from descendant registry roots."""
         return REGISTERED_TYPE_LINEAGE.ordered_registered_types(cls)
-
-    @classmethod
-    def registered_implementation_module_names(cls) -> tuple[str, ...]:
-        """Project every family producer dependency through registered leaves."""
-
-        return declaration_implementation_module_names(cls.all_registered_families())
 
     @classmethod
     @ScanCache.cached
@@ -3507,23 +3475,6 @@ class ModuleSyntaxIndex:
         """Actual nodes of this tree, shared by source-ownership checks."""
         return frozenset(self.depth_first_nodes)
 
-    @cached_property
-    def named_scope_children(
-        self,
-    ) -> dict[ast.AST, tuple[ast.ClassDef | FunctionDefinitionNode, ...]]:
-        """Immediate named declarations in original order, including declarations in blocks."""
-        nodes = self.depth_first_nodes
-        children: dict[ast.AST, list[ast.ClassDef | FunctionDefinitionNode]] = {
-            nodes[scope.owner_node_index]: [] for scope in self.scopes
-        }
-        for scope in self.scopes[1:]:
-            node_index = scope.owner_node_index
-            parent = self.scopes[self.scope_ids[node_index]]
-            children[nodes[parent.owner_node_index]].append(
-                cast(ast.ClassDef | FunctionDefinitionNode, nodes[node_index])
-            )
-        return {owner: tuple(declarations) for owner, declarations in children.items()}
-
     def instances_of(self, node_type: type[SyntaxNodeT]) -> tuple[SyntaxNodeT, ...]:
         """Nodes that are instances of ``node_type``, in ``ast.walk`` order."""
 
@@ -3736,18 +3687,6 @@ def walk_function_body_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
     return tuple(nodes)
 
 
-def active_path_descends_through(
-    parents: Sequence[ast.AST],
-    parent_index: int,
-    child_root: ast.AST,
-    target: ast.AST,
-) -> bool:
-    """Check an ancestor field from a visitor's already-known active path."""
-
-    next_node = parents[parent_index + 1] if parent_index + 1 < len(parents) else target
-    return next_node is child_root
-
-
 def _iter_attribute_family_calls(
     parsed_module: ParsedModule, family: AstNameFamily
 ) -> tuple[AstCallObservation, ...]:
@@ -3785,10 +3724,6 @@ def _iter_class_decorator_family_calls(
     return sorted_tuple(observations, key=lambda item: item[0].lineno)
 
 
-def _node_display_name(node: ast.AST) -> str:
-    return ExpressionReference.decoded(node).terminal_name or node.__class__.__name__
-
-
 def collect_scoped_observations(
     parsed_module: ParsedModule, node_types: tuple[type[ast.AST], ...]
 ) -> tuple[ScopedAstObservation, ...]:
@@ -3797,12 +3732,6 @@ def collect_scoped_observations(
         for observation in parsed_module.scoped_observations
         if isinstance(observation.node, node_types)
     )
-
-
-def collect_scoped_shapes(
-    parsed_module: ParsedModule, spec: ScopedShapeSpec[ShapeItemT]
-) -> list[ShapeEmission[ShapeItemT]]:
-    return spec.collect(parsed_module)
 
 
 class CollectedItemProjection:
@@ -4359,12 +4288,6 @@ def _dynamic_method_injection_observations(
                     )
                 )
     return sorted_tuple(observations, key=lambda item: item.line)
-
-
-def _literal_dispatch_value(node: ast.AST) -> LiteralConstantValue:
-    if isinstance(node, ast.Constant) and isinstance(node.value, (str, int, bool)):
-        return node.value
-    return None
 
 
 def _builder_call_shape(

@@ -33,7 +33,6 @@ from nominal_refactor_advisor.class_method_facets import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
 )
-from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_declaration_source import (
     ClassBodySourceAuthority,
@@ -192,26 +191,6 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
             targets=tuple(targets),
         )
 
-    @classmethod
-    def unresolved_class_target_reason(
-        cls,
-        context: CodemodSelectorContext,
-        *,
-        source_path: str | None,
-        class_names: tuple[str, ...],
-    ) -> str:
-        nodes_by_target_id = context.ast_target_nodes_by_id
-        for class_name in class_names:
-            reason = cls.optional_class_target_rejection_reason(
-                context.source_index,
-                nodes_by_target_id,
-                source_path=source_path,
-                class_name=class_name,
-            )
-            if reason is not None:
-                return reason
-        return "class targets are unresolved"
-
     @staticmethod
     def class_target(
         source_index: SourceIndex,
@@ -253,27 +232,6 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         if not isinstance(node, ast.ClassDef):
             return None
         return ResolvedClassTarget(target=target, node=node)
-
-    @staticmethod
-    def optional_class_target_rejection_reason(
-        source_index: SourceIndex,
-        nodes_by_target_id: Mapping[str, AstTargetNode],
-        *,
-        source_path: str | None,
-        class_name: str,
-    ) -> str | None:
-        matches = ClassMemberPromotionTargets.matching_class_targets(
-            source_index,
-            source_path=source_path,
-            class_name=class_name,
-        )
-        if len(matches) != 1:
-            return f"Expected one class target for {class_name!r}"
-        target = matches[0]
-        node = nodes_by_target_id[target.target_id]
-        if not isinstance(node, ast.ClassDef):
-            return f"Target {target.qualname!r} is not a class definition"
-        return None
 
     @staticmethod
     def matching_class_targets(
@@ -341,30 +299,6 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
             for indexed_class in indexed_classes
             if indexed_class is not None
         )
-
-    @cached_property
-    def shared_resolved_ancestor_symbols(self) -> frozenset[str]:
-        ancestor_sets = tuple(
-            set(self.required_class_family_index.ancestor_symbols(symbol))
-            for symbol in self.required_class_symbols
-        )
-        if not ancestor_sets:
-            return frozenset()
-        return frozenset(set.intersection(*ancestor_sets))
-
-    @cached_property
-    def shared_declared_nominal_base_names(self) -> frozenset[str]:
-        base_name_sets = tuple(
-            {
-                base_name
-                for base_name in indexed_class.declared_base_names
-                if ClassSymbolResolutionAuthority.establishes_nominal_family(base_name)
-            }
-            for indexed_class in self.indexed_classes
-        )
-        if not base_name_sets:
-            return frozenset()
-        return frozenset(set.intersection(*base_name_sets))
 
     def exact_method_declaration_failure(
         self,

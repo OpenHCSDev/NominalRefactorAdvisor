@@ -20,9 +20,6 @@ from dataclasses import (
 from functools import cached_property
 from typing import TYPE_CHECKING, Self
 
-from nominal_refactor_advisor.assignment_projection import (
-    AssignmentStatementNameProjection,
-)
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -36,9 +33,6 @@ from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     DeclaredIdentityFamily,
 )
-from nominal_refactor_advisor.codemod_declaration_source import (
-    DirectClassDeclarationAuthority,
-)
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
 from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
@@ -50,7 +44,6 @@ from nominal_refactor_advisor.declaration_dependencies import (
 )
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.models import SourceLocation
-from nominal_refactor_advisor.source_geometry import SourceLineSegmentAuthority
 from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
@@ -200,27 +193,6 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
             )
         )
 
-    def direct_class_declaration_index_for_file(
-        self,
-        file_path: str,
-    ) -> ClassDirectDeclarationIndex:
-        cache = self._direct_class_declaration_indexes_by_file_path
-        if file_path not in cache:
-            cache[file_path] = ClassDirectDeclarationIndex.from_context_file(
-                self,
-                file_path,
-            )
-        return cache[file_path]
-
-    def module_node_for_source_path(self, source_path: str) -> ast.Module | None:
-        resolved_path = SourcePathResolutionAuthority.from_source_index(
-            source_path,
-            self.source_index,
-        ).optional_path()
-        if resolved_path is None:
-            return None
-        return self.module_nodes_by_file_path.get(resolved_path)
-
     def parsed_module_for_source_path(self, source_path: str) -> ParsedModule:
         """Resolve one current module with its canonical source identity."""
 
@@ -256,26 +228,6 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
                 self.required_class_family_index,
             )
         return cache[parsed_module.file_path]
-
-    def module_assignment_statement(
-        self,
-        source_path: str,
-        assignment_name: str,
-    ) -> ast.Assign | ast.AnnAssign | None:
-        module = self.module_node_for_source_path(source_path)
-        if module is None:
-            return None
-        matching_statements = tuple(
-            statement
-            for statement in module.body
-            if assignment_name in AssignmentStatementNameProjection(statement).names
-        )
-        if len(matching_statements) != 1:
-            return None
-        statement = matching_statements[0]
-        if isinstance(statement, ast.Assign | ast.AnnAssign):
-            return statement
-        return None
 
     def target_node_for_rewrite_target(
         self,
@@ -419,32 +371,3 @@ class ClassDirectDeclarationIndex:
     """Direct class field declarations keyed by source-index target id."""
 
     declarations_by_target_id: Mapping[str, Mapping[str, str]]
-
-    @classmethod
-    def from_context_file(
-        cls,
-        context: CodemodSelectorContext,
-        file_path: str,
-    ) -> ClassDirectDeclarationIndex:
-        targets_by_file = context.source_index.targets_by_file
-        if not targets_by_file.contains_file(file_path):
-            return cls(declarations_by_target_id={})
-        source = context.sources_by_file_path.get(file_path)
-        if source is None:
-            return cls(declarations_by_target_id={})
-        source_segments = SourceLineSegmentAuthority(source)
-        declarations_by_target_id: dict[str, Mapping[str, str]] = {}
-        nodes_by_target_id = context.ast_target_nodes_by_id
-        for target in targets_by_file[file_path]:
-            if not target.is_class:
-                continue
-            node = nodes_by_target_id.get(target.target_id)
-            if not isinstance(node, ast.ClassDef):
-                continue
-            declarations_by_target_id[target.target_id] = (
-                DirectClassDeclarationAuthority(
-                    source_segments=source_segments,
-                    node=node,
-                ).declarations_by_name()
-            )
-        return cls(declarations_by_target_id=declarations_by_target_id)

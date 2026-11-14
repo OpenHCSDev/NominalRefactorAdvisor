@@ -16,7 +16,6 @@ from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
 from nominal_refactor_advisor.interpreter import PythonVersion
 from nominal_refactor_advisor.ast_tools import (
-    CollectedFamily,
     FileStat,
     ParsedModule,
     PythonSourcePathPolicy,
@@ -467,21 +466,6 @@ class SourceFileSignature:
                 digest_size=16,
             ).hexdigest(),
         )
-
-    @classmethod
-    def from_path_in_roots(
-        cls,
-        path: Path,
-        roots: tuple[Path | str, ...],
-    ) -> SourceFileSignature:
-        return cls(
-            path=checkout_relative_path(path, roots),
-            source_hash=hashlib.blake2s(
-                path.read_bytes(),
-                digest_size=16,
-            ).hexdigest(),
-        )
-
 
 @dataclass(frozen=True)
 class AnalysisEngineSignature:

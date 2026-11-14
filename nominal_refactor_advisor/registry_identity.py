@@ -254,13 +254,6 @@ class AutoRegisterClassAuthority:
     def declares_registry(self) -> bool:
         return any(name == REGISTRY_ATTRIBUTE_NAME for name, _ in self.assignment_pairs)
 
-    def declares_method(self, method_name: str) -> bool:
-        return any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
-            and statement.name == method_name
-            for statement in self.node.body
-        )
-
     def assignment_value(self, assignment_name: str) -> ast.AST | None:
         values = tuple(
             value for name, value in self.assignment_pairs if name == assignment_name

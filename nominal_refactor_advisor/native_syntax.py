@@ -188,55 +188,6 @@ class NativePythonSyntaxIndex:
             current = current.parent
         return tuple(reversed(scopes))
 
-    def enclosing_function_nodes(self, node: Node) -> tuple[Node, ...]:
-        """Return every function whose Python AST transitively contains a node."""
-
-        functions: list[Node] = []
-        seen: set[Node] = set()
-        current = node.parent
-        while current is not None:
-            if current.type == "function_definition" and current not in seen:
-                functions.append(current)
-                seen.add(current)
-            if current.type == "decorator":
-                decorated = current.parent
-                if decorated is not None and decorated.type == "decorated_definition":
-                    definition = next(
-                        (
-                            child
-                            for child in decorated.named_children
-                            if child.type == "function_definition"
-                        ),
-                        None,
-                    )
-                    if definition is not None and definition not in seen:
-                        functions.append(definition)
-                        seen.add(definition)
-            current = current.parent
-        return tuple(functions)
-
-    def nearest_scope_name(self, node: Node, scope_type: str) -> str | None:
-        """Return the nearest enclosing name for one native scope type."""
-
-        return next(
-            (
-                self.declared_name(scope)
-                for scope in reversed(self.named_scope_nodes(node))
-                if scope.type == scope_type
-            ),
-            None,
-        )
-
-    def fully_qualified_function_name(self, node: Node) -> str:
-        """Return the class/function-qualified source-index name for a function."""
-
-        return ".".join(
-            (
-                *(self.declared_name(scope) for scope in self.named_scope_nodes(node)),
-                self.declared_name(node),
-            )
-        )
-
     def statement_for(self, node: Node, *, elif_as_if: bool = False) -> ast.stmt:
         """Parse one native statement fragment with original source lines."""
 
@@ -291,22 +242,6 @@ class NativePythonSyntaxIndex:
         if not isinstance(statement, ast.ClassDef):
             raise TypeError(f"{node.type} did not parse as a Python class")
         return statement
-
-    def arguments_for(self, node: Node) -> ast.arguments:
-        """Parse only one function signature into its canonical AST arguments."""
-
-        cached = self._arguments_by_node.get(node)
-        if cached is not None:
-            return cached
-        parameters = node.child_by_field_name("parameters")
-        if parameters is None:
-            raise ValueError("function definition has no parameters")
-        source = self.source_for(parameters).decode("utf-8")
-        function = ast.parse(f"def _native_signature{source}: pass").body[0]
-        if not isinstance(function, ast.FunctionDef):
-            raise TypeError("function signature did not parse as a function")
-        self._arguments_by_node[node] = function.args
-        return function.args
 
     def class_header_for(self, node: Node) -> ast.ClassDef:
         """Parse one class header without reparsing its potentially large body."""

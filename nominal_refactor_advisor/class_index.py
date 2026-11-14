@@ -2481,10 +2481,6 @@ class ClassDeclarationIndex(Generic[ClassDeclarationT]):
             return record.simple_name
         return record.symbol
 
-    def display_names(self, records: Iterable[ClassDeclaration]) -> tuple[str, ...]:
-        return sorted_tuple(self.display_name(record) for record in records)
-
-
 @dataclass
 class _ProductLineageComposer:
     """Compose dataclass products through their exact direct-base chains, memoized."""
@@ -3727,12 +3723,6 @@ class ClassBodyNormalForm:
     deferred_names: tuple[StarDeferredName, ...]
     unresolved_names: tuple[str, ...]
     field_declaration: CompactFieldFact = NoFieldFact()
-
-    @property
-    def is_resolved(self) -> bool:
-        """Every free name is bound inside the module, star imports aside."""
-
-        return not self.unresolved_names and not self.deferred_names
 
     @cached_property
     def digest(self) -> str:

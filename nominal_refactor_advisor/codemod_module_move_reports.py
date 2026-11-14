@@ -288,12 +288,6 @@ class ModuleMoveDependencyReport(DataclassJsonReport):
             )
         )
 
-    @property
-    def has_destination_imports(self) -> bool:
-        return bool(
-            self.destination_import_dependencies or self.source_local_dependencies
-        )
-
     @json_report_property()
     def source_import_removal_names(self) -> tuple[str, ...]:
         return tuple(dependency.name for dependency in self.source_removal_dependencies)

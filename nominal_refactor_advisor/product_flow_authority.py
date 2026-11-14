@@ -2431,19 +2431,6 @@ class CompactProductFlowRepository(ProductFlowRepository):
             class_projections=CompactModuleClassProjectionFamily.modules_in(projections_by_family),
         )
 
-    @classmethod
-    def from_source_projections(
-        cls, sources: tuple[SourceProductFlowProjection, ...]
-    ) -> Self:
-        """Join the exact observed events without recollecting equal-looking flows."""
-        return cls(
-            tuple(source.compact for source in sources),
-            CompactModuleClassProjectionFamily.collect_modules(
-                tuple(source.module for source in sources)
-            ),
-        )
-
-
 @dataclass(frozen=True)
 class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepository):
     """Derive flow queries and runtime capture from the same original source task."""

@@ -1264,17 +1264,6 @@ class ProjectionOwnerSymbol:
     module_owner_value: ClassVar[str] = "<module>"
     value: str
 
-    @property
-    def module_level(self) -> bool:
-        return self.value == self.module_owner_value
-
-    @property
-    def qualname_parts(self) -> tuple[str, ...]:
-        if self.module_level:
-            return ()
-        return tuple(self.value.split("."))
-
-
 ConstructionAuthorityPredicate: TypeAlias = Callable[
     [PresentationAuthorityConstruction, SemanticAuthority],
     bool,
@@ -1953,15 +1942,6 @@ class SemanticMirrorEdgeCandidate:
         return self.projection.kind.is_branch_like
 
     @cached_property
-    def authority_affinity(self) -> SemanticAuthorityAffinityPolicy:
-        return SemanticAuthorityAffinityPolicy(
-            authority_name=self.authority.name,
-            projection_label=self.projection.label,
-            projection_owner_symbol=self.projection.owner_symbol,
-            projection_location_symbol=self.projection.location.symbol,
-        )
-
-    @cached_property
     def missing_derivation_path(self) -> str:
         return (
             f"{self.projection.kind.surface_label} `{self.projection.label}` "
@@ -2525,9 +2505,6 @@ class SemanticFactTokenIndex:
             ordered_refs[token] = tuple(refs_by_token.pop(token))
         return ordered_refs
 
-    def contains_token(self, token: str) -> bool:
-        return token in self.by_token
-
     def refs_for_token(self, token: str) -> tuple[SemanticFact, ...]:
         return self.by_token[token]
 
@@ -2537,39 +2514,6 @@ class SemanticFactTokenMatch(SemanticFactReference):
     """One presentation-token match against one authority-owned fact."""
 
     token_value: str
-
-
-@dataclass(frozen=True)
-class SemanticFactMatchIndex:
-    """Projection matches grouped by authority and fact."""
-
-    matches: tuple[SemanticFactTokenMatch, ...]
-
-    @cached_property
-    def by_authority(self) -> FactMatchesByAuthority:
-        ordered_matches = sorted_tuple(
-            self.matches,
-            key=lambda match: (match.authority_id, match.fact_id, match.token_value),
-        )
-        return {
-            authority_id: self._fact_matches(tuple(authority_matches))
-            for authority_id, authority_matches in groupby(
-                ordered_matches,
-                key=lambda match: match.authority_id,
-            )
-        }
-
-    @staticmethod
-    def _fact_matches(
-        matches: tuple[SemanticFactTokenMatch, ...],
-    ) -> dict[str, set[str]]:
-        return {
-            fact_id: {match.token_value for match in fact_matches}
-            for fact_id, fact_matches in groupby(
-                matches,
-                key=lambda match: match.fact_id,
-            )
-        }
 
 
 @dataclass(frozen=True)
@@ -2699,11 +2643,6 @@ class SemanticDescentGraphSpace(SemanticAuthorityInventory):
     @cached_property
     def fact_specificity_index(self) -> SemanticFactSpecificityIndex:
         return SemanticFactSpecificityIndex(self.facts)
-
-    @cached_property
-    def facts_by_authority_id(self) -> FactsByAuthorityId:
-        return self.fact_authority_index.by_authority_id
-
 
 @dataclass(frozen=True)
 class ResolvedDescentCertificate:
@@ -3941,44 +3880,6 @@ def build_semantic_descent_graph(
         cache.store(identity, graph)
         return graph
     return request.graph
-
-
-def load_cached_semantic_descent_graph_for_roots(
-    roots: tuple[Path, ...],
-    *,
-    cache_dir: Path | None,
-    source_policy: PythonSourcePathPolicy | None = None,
-) -> SemanticDescentGraph | None:
-    """Load a semantic-descent graph cache entry addressable before AST parsing."""
-
-    identities = python_module_path_identities_for_roots(
-        roots,
-        source_policy=source_policy,
-    )
-    identity = SemanticDescentGraphCacheIdentity.from_path_identities(
-        identities,
-        roots=roots,
-    )
-    return SemanticDescentGraphCache(cache_dir).load(identity).graph
-
-
-def load_latest_semantic_descent_graph_for_roots(
-    roots: tuple[Path, ...],
-    *,
-    cache_dir: Path | None,
-    source_policy: PythonSourcePathPolicy | None = None,
-) -> SemanticDescentGraph | None:
-    """Load the latest graph for a source-set family before AST parsing."""
-
-    identities = python_module_path_identities_for_roots(
-        roots,
-        source_policy=source_policy,
-    )
-    family_identity = SemanticDescentGraphCacheFamilyIdentity.from_path_identities(
-        identities,
-        roots=roots,
-    )
-    return SemanticDescentGraphCache(cache_dir).load_latest(family_identity).graph
 
 
 @dataclass(frozen=True)
@@ -6901,20 +6802,6 @@ class MatchOrPresentationTokenProjector(
 
 class PresentationAuthorityConstructionCollector:
     """Collect nominal authority construction evidence inside one owner function."""
-
-    @classmethod
-    def constructions_for_function(
-        cls,
-        node: ast.FunctionDef | ast.AsyncFunctionDef,
-    ) -> tuple[PresentationAuthorityConstruction, ...]:
-        return cls.constructions_for_node(node)
-
-    @classmethod
-    def constructions_for_node(
-        cls,
-        node: ast.AST,
-    ) -> tuple[PresentationAuthorityConstruction, ...]:
-        return cls._constructions_for_node(node, minimum_field_count=2)
 
     @classmethod
     def constructions_for_projection(

@@ -114,7 +114,6 @@ from nominal_refactor_advisor.codemod_target_selectors import (
     CodemodSelectorResolutionReport,
     CodemodTargetSelector,
     CodemodTargetSourceReport,
-    FindingEvidenceTargetSelector,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.descriptor_algebra import (
@@ -594,12 +593,6 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             backend=backend,
         )
 
-    def preflight_document(
-        self,
-        document: CodemodPlanDocument,
-    ) -> CodemodPlanPreflightReport:
-        return document.preflight_snapshot(self)
-
     def evaluate_guard_suite(
         self,
         guard_suite: ArchitectureGuardSuite,
@@ -897,12 +890,6 @@ class RefactorRecipe(SourceRewriteReferences):
         ):
             return True
         return bool(self.source_rewrite_batch(selector_context.execution_snapshot()))
-
-    def with_architecture_guard(
-        self,
-        rule: ArchitectureGuardRule,
-    ) -> RefactorRecipe:
-        return replace(self, guard_suite=self.guard_suite.with_rule(rule))
 
     def with_authority_claim(self, claim: AuthorityClaim) -> RefactorRecipe:
         return replace(self, authority_claims=(*self.authority_claims, claim))
@@ -2339,10 +2326,6 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
     @json_report_property()
     def reason(self) -> str:
         return self.evaluation.rejection_reason or self.status.default_reason
-
-    @property
-    def evidence_selector(self) -> FindingEvidenceTargetSelector:
-        return FindingEvidenceTargetSelector(finding_ids=(self.finding_id,))
 
     @json_report_property()
     def recipe_id(self) -> str:

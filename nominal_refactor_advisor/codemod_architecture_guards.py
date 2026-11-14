@@ -594,9 +594,6 @@ class ArchitectureGuardSuite:
     def is_empty(self) -> bool:
         return not self.rules
 
-    def with_rule(self, rule: ArchitectureGuardRule) -> ArchitectureGuardSuite:
-        return replace(self, rules=(*self.rules, rule))
-
     def merge(self, *suites: ArchitectureGuardSuite) -> ArchitectureGuardSuite:
         return replace(
             self,

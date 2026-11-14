@@ -144,34 +144,6 @@ class FindingProjection:
                     names.append(head)
         return tuple(self.dedupe_preserve_order(names))
 
-    def class_list(self, findings: tuple[RefactorFinding, ...]) -> str:
-        class_names = self.class_names(findings)
-        if not class_names:
-            return "the family"
-        return self.human_join(list(class_names))
-
-    def registry_hook_examples(self, findings: tuple[RefactorFinding, ...]) -> str:
-        for finding in findings:
-            pairs = finding.metrics.plan_class_key_pairs
-            if pairs:
-                return self.human_join(list(pairs))
-        class_names = self.class_names(findings)
-        if class_names:
-            return self.human_join(list(class_names))
-        return "the participating classes"
-
-    def field_execution_level(self, findings: tuple[RefactorFinding, ...]) -> str:
-        levels = {
-            level
-            for finding in findings
-            if (level := finding.metrics.plan_field_execution_level) is not None
-        }
-        if not levels:
-            return "unknown_level"
-        if len(levels) == 1:
-            return next(iter(levels))
-        return "mixed_levels"
-
     def first_metric_value(
         self,
         findings: tuple[RefactorFinding, ...],
@@ -189,20 +161,6 @@ class FindingProjection:
             findings, lambda metrics: metrics.plan_registry_name, "Registry"
         )
         return _safe_identifier(registry_name)
-
-    def dispatch_symbol(self, findings: tuple[RefactorFinding, ...]) -> str:
-        dispatch_axis = self.dispatch_axis(findings)
-        if dispatch_axis != "the dispatch axis":
-            identifier = _safe_identifier(dispatch_axis)
-            if identifier:
-                return f"dispatch_{identifier}"
-        symbols = self.evidence_symbols(findings)
-        if symbols:
-            root = symbols[0].split(":", 1)[0].split(".", 1)[0]
-            identifier = _safe_identifier(root)
-            if identifier:
-                return f"dispatch_{identifier}"
-        return "dispatch_by_kind"
 
     def dispatch_axis(self, findings: tuple[RefactorFinding, ...]) -> str:
         axes = {
@@ -775,22 +733,6 @@ class ExecutionPartitionPlanner(SemanticRecord):
                 for axis, group_findings in grouped.items()
             ),
             key=lambda cluster: (cluster.subsystem, len(cluster.findings)),
-        )
-
-    def partition_cluster(
-        self, cluster: _FindingCluster
-    ) -> tuple[_FindingCluster, ...]:
-        grouped: dict[ExecutionPartitionAxis, list[RefactorFinding]] = defaultdict(list)
-        for finding in cluster.findings:
-            grouped[self.axis_for(finding)].append(finding)
-        if len(grouped) <= 1:
-            return (cluster,)
-        return tuple(
-            self.cluster_for_axis(axis, group_findings)
-            for axis, group_findings in sorted(
-                grouped.items(),
-                key=lambda item: item[0].sort_key,
-            )
         )
 
     @staticmethod
