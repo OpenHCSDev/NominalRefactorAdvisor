@@ -83,6 +83,19 @@ class ModuleImportBindingIdentity(DataclassJsonReport, ABC):
 
         raise NotImplementedError
 
+    @property
+    def runtime_origin(self) -> tuple[str, str] | None:
+        """The class a deprecated `typing` alias stands for (`typing.Iterable` is
+        `collections.abc.Iterable`), as (module, qualname); None for anything else."""
+
+        if self.module_name != "typing" or self.imported_name is None:
+            return None
+        origin = getattr(typing, self.imported_name, None)
+        origin = getattr(origin, "__origin__", None)
+        if not isinstance(origin, type):
+            return None
+        return (origin.__module__, origin.__qualname__)
+
     def means_same_object(self, other: ModuleImportBindingIdentity) -> bool:
         """Whether two imports bind the same runtime object: the same import, or a
         `typing` alias and the class it stands for."""
