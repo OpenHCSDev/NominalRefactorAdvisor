@@ -681,20 +681,45 @@ class FamilyFlattened(PerFileModuleMeasure):
 
     @classmethod
     def module_occurrences(cls, module: ast.Module) -> int:
-        # The projection rewrites the module it reads, and the census and the syntax passes
-        # share one parsed tree, so it reads a copy.
         projection = FlatteningProjection()
-        return len(cls.flattened(projection.visit(copy.deepcopy(module)))) + projection.round_trips
+        return len(cls.flattened(projection.visit(module))) + projection.round_trips
 
 
-class FlatteningProjection(ast.NodeTransformer):
+class FlatteningProjection(ast.NodeVisitor):
     """A module as FamilyFlattened reads it. A declaration's own identity name read on itself
     is identity, not transport; the interpreter's entry guard names no family; and a codec's
-    decode of its own encode is a detour, counted once and removed."""
+    decode of its own encode is a detour, counted once and removed.
+
+    The census and the syntax passes share one parsed tree, so the projection never writes
+    it: a node under which nothing changes is the tree's own node, and one that changes is
+    a shallow copy carrying its changed children."""
 
     def __init__(self) -> None:
         self.owners: list[str] = []
         self.round_trips = 0
+
+    def generic_visit[Node: ast.AST](self, node: Node) -> Node:
+        changed: dict[str, object] = {}
+        for name, value in ast.iter_fields(node):
+            if isinstance(value, list):
+                projected = [self.visit(item) if isinstance(item, ast.AST) else item for item in value]
+                if any(new is not old for new, old in zip(projected, value, strict=True)):
+                    changed[name] = projected
+            elif isinstance(value, ast.AST):
+                child = self.visit(value)
+                if child is not value:
+                    changed[name] = child
+        return self.carrying(node, changed)
+
+    @staticmethod
+    def carrying[Node: ast.AST](node: Node, changed: dict[str, object]) -> Node:
+        """`node` itself when nothing changes, else a shallow copy with the changed fields."""
+        if not changed:
+            return node
+        rebuilt = copy.copy(node)
+        for name, value in changed.items():
+            setattr(rebuilt, name, value)
+        return rebuilt
 
     def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
         self.owners.append(node.name)
@@ -710,13 +735,20 @@ class FlatteningProjection(ast.NodeTransformer):
         return self.generic_visit(node)
 
     def visit_Module(self, node: ast.Module) -> ast.AST:
+        projected = self.generic_visit(node)
+        body = [self.without_entry_guard(statement) for statement in projected.body]
+        if all(new is old for new, old in zip(body, projected.body, strict=True)):
+            return projected
+        return self.carrying(projected, {"body": body})
+
+    @classmethod
+    def without_entry_guard(cls, statement: ast.stmt) -> ast.stmt:
         # `python -m` runs a module through this guard; it names the interpreter, not a family.
-        for statement in node.body:
-            match statement:
-                case ast.If(test=ast.Compare(left=ast.Name(id="__name__"), ops=[ast.Eq()],
-                                             comparators=[ast.Constant(value="__main__")])):
-                    statement.test = ast.copy_location(ast.Constant(value=None), statement.test)
-        return self.generic_visit(node)
+        match statement:
+            case ast.If(test=ast.Compare(left=ast.Name(id="__name__"), ops=[ast.Eq()],
+                                         comparators=[ast.Constant(value="__main__")]) as test):
+                return cls.carrying(statement, {"test": ast.copy_location(ast.Constant(value=None), test)})
+        return statement
 
     def visit_Call(self, node: ast.Call) -> ast.AST:
         match node:
