@@ -173,12 +173,6 @@ from nominal_refactor_advisor.detectors._substrate_support import _constant_stri
 from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
 
 
-def _literal_dispatch_authority_patch(
-    observation: LiteralDispatchObservation,
-) -> str:
-    return f"# Replace the repeated `{observation.dispatch_axis_expression} == literal` branches with one AutoRegisterMeta-backed case family.\n# Move per-case behavior into `DispatchCase` subclasses keyed by the same axis.\n# Dispatch through `DispatchCase.for_case(...)` / `DispatchCase.__registry__` instead of if/elif or match/case."
-
-
 class LiteralDispatchFindingFactory:
     def finding(
         self,
@@ -1263,10 +1257,6 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
                 capability_gap="no runtime namespace bridge or guarded globals definition remains",
             )
         ]
-
-
-def _stable_text_digest(value: str) -> str:
-    return hashlib.blake2s(value.encode("utf-8"), digest_size=16).hexdigest()
 
 
 def _native_call_terminal_name(

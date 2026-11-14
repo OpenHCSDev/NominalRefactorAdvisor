@@ -1365,12 +1365,6 @@ class CandidateFindingRenderer(CandidateFindingRendererABC[CandidateItemT]):
         SourceLocation,
     ] = None
 
-    @classmethod
-    def presentation_context_tokens(cls) -> frozenset[str]:
-        return frozenset(
-            token for field_item in fields(cls) for token in field_item.name.split("_")
-        )
-
     def _optional_value(
         self,
         candidate: CandidateItemT,
@@ -1471,7 +1465,6 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
         )
 
 
-_LINE_SYMBOL_EVIDENCE = SourceLocationEvidenceProperty()
 _LINENO_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
     line_attribute_name="lineno", symbol_attribute_name="qualname"
 )
@@ -3238,27 +3231,6 @@ witness_carrier_class_candidates = (
 
 
 class SyntaxProjectionAuthority:
-    def non_nested_subnodes(
-        self,
-        statements: Sequence[ast.stmt],
-    ) -> tuple[ast.AST, ...]:
-        nodes: list[ast.AST] = []
-
-        class Visitor(ast.NodeVisitor):
-            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-                return
-
-            visit_AsyncFunctionDef = visit_FunctionDef
-
-            def generic_visit(self, node: ast.AST) -> None:
-                nodes.append(node)
-                super().generic_visit(node)
-
-        visitor = Visitor()
-        for statement in statements:
-            visitor.visit(statement)
-        return tuple(nodes)
-
     def class_annassign_target_names(self, node: ast.ClassDef) -> tuple[str, ...]:
         field_names: list[str] = []
         for statement in node.body:
@@ -3267,19 +3239,6 @@ class SyntaxProjectionAuthority:
             ):
                 field_names.append(statement.target.id)
         return tuple(field_names)
-
-    def concrete_indexed_descendant_classes(
-        self, class_index: ClassFamilyIndex, indexed_class: IndexedClass
-    ) -> tuple[IndexedClass, ...]:
-        return tuple(
-            (
-                descendant
-                for descendant in CLASS_INDEX_PROJECTION.descendant_classes(
-                    class_index, indexed_class.symbol
-                )
-                if not CLASS_NODE_AUTHORITY.is_abstract(descendant.node)
-            )
-        )
 
     def attribute_names_for_roots(
         self, node: ast.AST, *, root_names: set[str]
@@ -3312,23 +3271,6 @@ class SyntaxProjectionAuthority:
             if value_name in param_names:
                 assigned[attr_name] = value_name
         return assigned
-
-    def enum_member_refs_for_known_key_types(
-        self, node: ast.AST, *, key_type_names: frozenset[str]
-    ) -> dict[str, tuple[str, ...]]:
-        refs: dict[str, set[str]] = defaultdict(set)
-        for subnode in _walk_nodes(node):
-            parts = ExpressionReference.decoded(subnode).attribute_chain
-            if parts is None or len(parts) < 2:
-                continue
-            key_type_name = parts[-2]
-            if key_type_name not in key_type_names:
-                continue
-            refs[key_type_name].add(f"{key_type_name}.{parts[-1]}")
-        return {
-            key_type_name: sorted_tuple(case_names)
-            for key_type_name, case_names in refs.items()
-        }
 
     def indexed_class_for_simple_name(
         self,
@@ -3395,74 +3337,6 @@ class DispatchAlgebraAuthority:
             min(len(left_case_names), len(right_case_names))
         )
 
-    def derivable_registry_key_suffix(
-        self,
-        class_names: Sequence[str],
-        explicit_key_values: Sequence[str] | None = None,
-    ) -> str | None:
-        if not class_names:
-            return None
-        normalized_names = tuple(class_names)
-        suffix_candidates = []
-        shared_suffix = _shared_registry_key_suffix(normalized_names)
-        if shared_suffix and all(
-            (name.removesuffix(shared_suffix) for name in normalized_names)
-        ):
-            suffix_candidates.append(shared_suffix)
-        suffix_candidates.append("")
-        if explicit_key_values is None:
-            return suffix_candidates[0]
-        for suffix in suffix_candidates:
-            stripped_suffix = suffix or None
-            derived_values = tuple(
-                (
-                    _normalized_registry_key_from_class_name(
-                        class_name, stripped_suffix=stripped_suffix
-                    )
-                    for class_name in normalized_names
-                )
-            )
-            if tuple(explicit_key_values) == derived_values:
-                return stripped_suffix
-        return None
-
-    def derived_registry_key_block(
-        self,
-        class_names: Sequence[str],
-        *,
-        registry_key_attr_name: str = DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-    ) -> str:
-        stripped_suffix = self.derivable_registry_key_suffix(class_names)
-        source_name = _NAME_LITERAL
-        if stripped_suffix:
-            source_name = f'name.removesuffix("{stripped_suffix}")'
-        return "\n".join(
-            (
-                f'    __registry_key__ = "{registry_key_attr_name}"',
-                "    __skip_if_no_key__ = True",
-                "",
-                "    @staticmethod",
-                "    def _registry_key(name: str, cls):",
-                "        del cls",
-                f'        tokens = re.findall(r"{_CLASS_NAME_TOKEN_PATTERN}", {source_name})',
-                '        return "_".join(token.lower() for token in tokens)',
-                "",
-                "    __key_extractor__ = _registry_key",
-            )
-        )
-
-    def declared_registry_key_block(
-        self, key_attr_name: str, *, key_type_name: str | None = None
-    ) -> str:
-        type_suffix = f": ClassVar[{key_type_name} | None]" if key_type_name else ""
-        return "\n".join(
-            (
-                f'    __registry_key__ = "{key_attr_name}"',
-                "    __skip_if_no_key__ = True",
-                f"    {key_attr_name}{type_suffix} = None",
-            )
-        )
-
     def axis_dispatch_metrics(
         self,
         literal_cases: tuple[str, ...],
@@ -3479,15 +3353,6 @@ class DispatchAlgebraAuthority:
 
 
 DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
-
-
-def _enum_family_name(case_names: tuple[str, ...]) -> str | None:
-    family_names = {
-        case_name.split(".", 1)[0] for case_name in case_names if "." in case_name
-    }
-    if len(family_names) != 1:
-        return None
-    return next(iter(family_names))
 
 
 @dataclass(frozen=True)
@@ -3535,18 +3400,8 @@ def _is_upper_snake_identifier(name: str) -> bool:
 _AstValueT = TypeVar("_AstValueT", bound=ast.AST)
 
 
-def _module_level_named_values(
-    module: ParsedModule,
-) -> dict[str, tuple[int, ast.AST]]:
-    return SUPPORT_PROJECTION_AUTHORITY.module_level_named_values(module)
-
-
 def _module_level_named_calls(module: ParsedModule) -> dict[str, tuple[int, ast.Call]]:
     return SUPPORT_PROJECTION_AUTHORITY.module_level_named_instances(module, ast.Call)
-
-
-def _module_level_named_dicts(module: ParsedModule) -> dict[str, tuple[int, ast.Dict]]:
-    return SUPPORT_PROJECTION_AUTHORITY.module_level_named_instances(module, ast.Dict)
 
 
 def _call_uses_iteration_variable(node: ast.AST, iteration_variable_name: str) -> bool:
@@ -5008,23 +4863,6 @@ def _manual_structural_record_mechanics_group_candidates(
     )
 
 
-def _simple_param_alias_from_attr(
-    statement: ast.stmt,
-    *,
-    param_name: str,
-) -> tuple[str, str] | None:
-    if (
-        not isinstance(statement, ast.Assign)
-        or len(statement.targets) != 1
-        or (not isinstance(statement.targets[0], ast.Name))
-        or (not isinstance(statement.value, ast.Attribute))
-        or (not isinstance(statement.value.value, ast.Name))
-        or (statement.value.value.id != param_name)
-    ):
-        return None
-    return (statement.targets[0].id, statement.value.attr)
-
-
 def _top_level_attribute_aliases(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> dict[str, str]:
@@ -5737,14 +5575,6 @@ def _witness_carrier_family_candidates(
     return tuple(findings)
 
 
-def _manual_fiber_tag_patch(candidate: ManualFiberTagCandidate) -> str:
-    return (
-        f"# Remove the manual fiber tag `{candidate.tag_name}` from `{candidate.class_name}`\n"
-        f"# Split `{candidate.class_name}` into one ABC root plus one subclass per fiber case.\n"
-        f"# Keep only case-relevant fields in each subclass constructor."
-    )
-
-
 _CLASS_NAME_TOKEN_PATTERN = r"[A-Z]+(?=[A-Z][a-z0-9]|$)|[A-Z]?[a-z0-9]+"
 
 
@@ -5754,60 +5584,6 @@ def _string_constant_expression(expression: str) -> str | None:
     except SyntaxError:
         return None
     return _constant_string(node)
-
-
-def _normalized_registry_key_from_class_name(
-    class_name: str,
-    *,
-    stripped_suffix: str | None = None,
-) -> str:
-    source_name = (
-        class_name.removesuffix(stripped_suffix) if stripped_suffix else class_name
-    )
-    tokens = CLASS_NAME_ALGEBRA.ordered_tokens(source_name)
-    if tokens:
-        return "_".join(tokens)
-    return source_name.lower()
-
-
-def _raw_class_name_tokens(name: str) -> tuple[str, ...]:
-    return tuple(re.findall(_CLASS_NAME_TOKEN_PATTERN, name.lstrip("_")))
-
-
-def _shared_registry_key_suffix(class_names: Sequence[str]) -> str | None:
-    if len(class_names) < 2:
-        return None
-    raw_token_lists = tuple(_raw_class_name_tokens(name) for name in class_names)
-    lower_token_lists = tuple(
-        (
-            tuple((token.lower() for token in token_list))
-            for token_list in raw_token_lists
-        )
-    )
-    if not all((token_list for token_list in lower_token_lists)):
-        return None
-    shared_suffix = SUPPORT_PROJECTION_AUTHORITY.shared_reversed_token_suffix(
-        lower_token_lists
-    )
-    if not shared_suffix:
-        return None
-    shared_count = len(shared_suffix)
-    if len(lower_token_lists[0]) <= shared_count:
-        return None
-    return "".join(raw_token_lists[0][-shared_count:])
-
-
-def _structural_confusability_patch(candidate: StructuralConfusabilityCandidate) -> str:
-    return (
-        f"# The consumer `{candidate.function_name}` only observes `{candidate.parameter_name}` through methods {candidate.observed_method_names}.\n"
-        f"# Introduce an ABC witness for that view and type the consumer against it instead of duck-typed coincidence."
-    )
-
-
-def _as_builder_shape(shape: object) -> BuilderCallShape:
-    if not isinstance(shape, BuilderCallShape):
-        raise TypeError(f"Expected BuilderCallShape, got {type(shape)!r}")
-    return shape
 
 
 def _carrier_identity(carrier: object) -> tuple[str, int, str]:
@@ -5850,18 +5626,6 @@ class SupportProjectionAuthority:
             if parameter.arg not in {"self", "cls"}
         )
 
-    def shared_reversed_token_suffix(
-        self, token_lists: tuple[tuple[str, ...], ...]
-    ) -> tuple[str, ...]:
-        reversed_suffix: list[str] = []
-        for shared_tokens in zip(
-            *(reversed(tokens) for tokens in token_lists), strict=False
-        ):
-            if len(set(shared_tokens)) != 1:
-                break
-            reversed_suffix.append(shared_tokens[0])
-        return tuple(reversed(reversed_suffix))
-
     def shared_record_base_names(self, node: ast.ClassDef) -> tuple[str, ...]:
         return tuple(
             (
@@ -5880,17 +5644,6 @@ class SupportProjectionAuthority:
                 return None
             return f"{parent}.{node.attr}"
         return None
-
-    def enum_member_ref(self, node: ast.AST) -> tuple[str, str] | None:
-        if not isinstance(node, ast.Attribute):
-            return None
-        enum_expression = ast.unparse(node.value)
-        if not enum_expression:
-            return None
-        enum_name = enum_expression.rsplit(".", 1)[-1]
-        if not enum_name[:1].isupper():
-            return None
-        return (enum_expression, node.attr)
 
     def module_named_value_bindings(
         self, module: ParsedModule
@@ -6273,15 +6026,6 @@ class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
 class KeywordMethodFamilyCandidate(ClassMethodFamilyCandidate):
     keyword_names: tuple[str, ...]
 
-    @property
-    def mapping_metrics(self) -> MappingMetrics:
-        return MappingMetrics.from_field_names(
-            mapping_site_count=len(self.method_names),
-            mapping_name=self.class_name,
-            field_names=self.keyword_names,
-        )
-
-
 @dataclass(frozen=True)
 class PropertyHookGroup(ClassLineNumbersGroup):
     base_name: str
@@ -6313,12 +6057,6 @@ class GuardedWrapperSpecPair:
     function_line: int
     constructor_name: str
     node_types: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class BuilderKeywordSurface:
-    builder_name: str
-    keyword_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -6682,14 +6420,6 @@ class RegistryProjectionSurfaceCandidate(LineWitnessCandidate):
         return self.surface_evidence.shared_type_names
 
     @property
-    def registry_key_count(self) -> int:
-        return len(self.injectivity_proof.key_names)
-
-    @property
-    def registry_type_count(self) -> int:
-        return len(self.injectivity_proof.registered_type_names)
-
-    @property
     def projection_coverage_ratio(self) -> float:
         denominator, numerator = self.surface_kind.coverage_coordinates(
             self.injectivity_proof,
@@ -6821,12 +6551,6 @@ class ManualKeyedRecordTableGroupCandidate(KeyedRecordInfrastructureCandidate):
             field_names=field_names,
             identity_field_names=field_names,
         )
-
-
-@dataclass(frozen=True)
-class CalleeLineSurface:
-    callee_name: str
-    line_count: int
 
 
 @dataclass(frozen=True)
