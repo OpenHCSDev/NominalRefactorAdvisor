@@ -26,10 +26,14 @@ from nominal_refactor_advisor.semantic_match import (
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from dataclasses import dataclass
-from typing import Generic, Self, TypeVar
+from typing import Generic, Self, TypeVar, Iterable, cast
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     statements_without_docstring,
+    AttributeAccessCall,
+    BuiltinCall,
+    Getattr,
+    _walk_nodes,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
@@ -48,41 +52,94 @@ from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryContext,
     CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector,
-    ConcreteTypeUnionContractCandidate,
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
-    DynamicSelfFieldSelectionCandidate,
     ModuleCollectorCandidateDetector,
     OverlappingInheritanceFamiliesCandidate,
     PropertyAliasHookGroup,
-    ReflectiveSelfAttributeCandidate,
-    RegisteredUnionSurfaceCandidate,
-    RepeatedBaseBundleCandidate,
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
     StringBackedReflectiveNominalLookupCandidate,
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
+    CANDIDATE_COLLECTION_AUTHORITY,
+    SelfReflectiveBuiltinCandidate,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    _concrete_type_union_contract_candidates,
-    _dynamic_self_field_selection_candidates,
-    _reflective_self_attribute_candidates,
-    _registered_union_surface_candidates,
-    _repeated_base_bundle_candidates,
     _string_backed_reflective_nominal_lookup_candidates,
     CompactMethodFamilyContext,
+    BaseBundleClassGroups,
+    _IMPLICIT_METHOD_PARAMETER_NAMES,
+    _RegisteredUnionSurfaceSource,
+    _common_contract_base_names,
+    _concrete_class_object_union_member_names,
+    _concrete_union_contract_name,
+    _contiguous_base_bundles,
+    _maximal_repeated_base_bundle_items,
+    _parameter_class_call_attribute_names,
+    _registered_surface_roots,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
     RegexGroupExtractorFamilyCandidate,
 )
 from nominal_refactor_advisor.detectors._helpers import _property_alias_hook_groups
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.class_families.parsed_index import ClassStatement, ModuleClassStatements
+from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
+from nominal_refactor_advisor.detectors._substrate_support import _class_ancestor_name_map, _constant_string
+from collections import defaultdict
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
 )
+
+
+@dataclass(frozen=True)
+class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCandidate):
+    attribute_name: str
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
+            module,
+            ast.ClassDef,
+            cls._for_class,
+        )
+
+    @classmethod
+    def _for_class(cls, module: ParsedModule, node: ast.ClassDef) -> Iterable[Self]:
+        for statement in node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for subnode in _walk_nodes(statement):
+                if not isinstance(subnode, ast.Call):
+                    continue
+                match BuiltinCall.decoded(subnode):
+                    case Getattr(carries_default=False) as call:
+                        receiver, attribute_name_node = (
+                            call.object_argument,
+                            call.name_argument,
+                        )
+                    case _:
+                        continue
+                attribute_name = _constant_string(attribute_name_node)
+                if not (
+                    isinstance(receiver, ast.Name)
+                    and receiver.id == "self"
+                    and (attribute_name is not None)
+                ):
+                    continue
+                yield cls(
+                    file_path=module.file_path,
+                    line=subnode.lineno,
+                    subject_name=node.name,
+                    name_family=(attribute_name,),
+                    method_name=statement.name,
+                    reflective_builtin=call.builtin,
+                    attribute_name=attribute_name,
+                )
 
 
 def _reflective_self_attribute_compression_certificate(
@@ -404,7 +461,7 @@ declare_candidate_rule_detector(
 class ReflectiveSelfAttributeEscapeDetector(
     ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]
 ):
-    candidate_collector = _reflective_self_attribute_candidates
+    candidate_collector = ReflectiveSelfAttributeCandidate.from_module
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Reflective self-attribute access hides a nominal contract",
@@ -442,6 +499,44 @@ class ReflectiveSelfAttributeEscapeDetector(
         )
 
 
+@dataclass(frozen=True)
+class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
+    base_names: tuple[str, ...]
+    bundle_width: int
+    class_count: int
+    line_count: int
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        grouped: BaseBundleClassGroups = defaultdict(list)
+        for declared in module.fact(ModuleClassStatements).top_level:
+            node = declared.node
+            if node.end_lineno is None:
+                continue
+            for bundle in _contiguous_base_bundles(declared.spelled_base_names):
+                grouped[bundle].append(node)
+        candidates: list[Self] = []
+        for bundle, nodes in _maximal_repeated_base_bundle_items(grouped):
+            line_numbers = tuple((node.lineno for node in nodes))
+            candidates.append(
+                cls(
+                    file_path=module.file_path,
+                    class_names=tuple((node.name for node in nodes)),
+                    line_numbers=line_numbers,
+                    base_names=bundle,
+                    bundle_width=len(bundle),
+                    class_count=len(nodes),
+                    line_count=sum(
+                        (
+                            (node.end_lineno or node.lineno) - node.lineno + 1
+                            for node in nodes
+                        )
+                    ),
+                )
+            )
+        return tuple(candidates)
+
+
 declare_candidate_rule_detector(
     RepeatedBaseBundleCandidate,
     high_confidence_spec(
@@ -470,8 +565,70 @@ declare_candidate_rule_detector(
         field_names=candidate.base_names,
     ),
     detector_name="RepeatedBaseBundleDetector",
-    candidate_collector=_repeated_base_bundle_candidates,
 )
+
+
+@dataclass(frozen=True)
+class RegisteredUnionSurfaceCandidate(CollectsItself, LineWitnessCandidate):
+    owner_name: str
+    accessor_name: str
+    root_names: tuple[str, ...]
+    witness_name = AliasProperty[str]("owner_name")
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        classes_by_name = module.fact(ModuleClassStatements).top_level_by_name
+        source_nodes: tuple[ast.AST, ...] = (
+            *(function for _, function in module.syntax_index.named_functions),
+            *module.syntax_index.instances_of(ast.Assign),
+        )
+        return tuple(
+            candidate
+            for node in source_nodes
+            for candidate in cls._for_node(
+                module, node, classes_by_name
+            )
+        )
+
+    @classmethod
+    def _for_node(
+        cls,
+        module: ParsedModule,
+        node: ast.AST,
+        classes_by_name: dict[str, ClassStatement],
+    ) -> Iterable[Self]:
+        source = _RegisteredUnionSurfaceSource.from_node(node)
+        if source is None:
+            return
+        registered_surface = _registered_surface_roots(source.value)
+        if registered_surface is None:
+            return
+        accessor_name, root_names = registered_surface
+        if len(root_names) < 2:
+            return
+        root_nodes = [classes_by_name.get(root_name) for root_name in root_names]
+        if any((root_node is None for root_node in root_nodes)):
+            return
+        if any(
+            (
+                (
+                    method := cast(ClassStatement, root_node).method_named(
+                        accessor_name
+                    )
+                )
+                is None
+                or not method.spells("classmethod")
+                for root_node in root_nodes
+            )
+        ):
+            return
+        yield cls(
+            file_path=module.file_path,
+            line=source.line,
+            owner_name=source.owner_name,
+            accessor_name=accessor_name,
+            root_names=root_names,
+        )
 
 
 declare_candidate_rule_detector(
@@ -496,8 +653,90 @@ declare_candidate_rule_detector(
         registry_name=union_candidate.accessor_name,
         class_names=union_candidate.root_names,
     ),
-    candidate_collector=_registered_union_surface_candidates,
 )
+
+
+@dataclass(frozen=True)
+class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
+    function_name: str
+    parameter_name: str
+    member_type_names: tuple[str, ...]
+    observed_attribute_names: tuple[str, ...]
+    suggested_contract_name: str
+    common_base_names: tuple[str, ...]
+
+    @property
+    def witness_name(self) -> str:
+        return f"{self.function_name}.{self.parameter_name}"
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        classes_by_name = module.fact(ModuleClassStatements).by_name
+        base_lookup = {
+            class_name: set(declared.base_terminal_names)
+            for class_name, declared in classes_by_name.items()
+        }
+        ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
+        return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
+            module,
+            cls._for_function,
+            classes_by_name,
+            ancestor_names_by_class,
+            sort_key=lambda item: (item.file_path, item.line, item.function_name),
+        )
+
+    @classmethod
+    def _for_function(
+        cls,
+        module: ParsedModule,
+        function_name: str,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        classes_by_name: dict[str, ClassStatement],
+        ancestor_names_by_class: dict[str, tuple[str, ...]],
+    ) -> Iterable[Self]:
+        arguments = (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+        for argument in arguments:
+            if argument.arg in _IMPLICIT_METHOD_PARAMETER_NAMES:
+                continue
+            member_type_names = _concrete_class_object_union_member_names(
+                argument.annotation
+            )
+            if len(member_type_names) < 2 or any(
+                member_type_name not in classes_by_name
+                for member_type_name in member_type_names
+            ):
+                continue
+            observed_attribute_names = _parameter_class_call_attribute_names(
+                function, argument.arg
+            )
+            if not observed_attribute_names:
+                continue
+            common_base_names = _common_contract_base_names(
+                classes_by_name,
+                ancestor_names_by_class,
+                member_type_names,
+                observed_attribute_names,
+            )
+            yield cls(
+                file_path=module.file_path,
+                line=argument.lineno,
+                function_name=function_name,
+                parameter_name=argument.arg,
+                member_type_names=member_type_names,
+                observed_attribute_names=observed_attribute_names,
+                suggested_contract_name=(
+                    common_base_names[0]
+                    if common_base_names
+                    else _concrete_union_contract_name(
+                        member_type_names, observed_attribute_names
+                    )
+                ),
+                common_base_names=common_base_names,
+            )
 
 
 declare_candidate_rule_detector(
@@ -519,7 +758,6 @@ declare_candidate_rule_detector(
         f"{candidate.member_type_names}, but the function only uses class-level operations "
         f"{candidate.observed_attribute_names}. Type it as `type[{candidate.suggested_contract_name}]` instead."
     ),
-    candidate_collector=_concrete_type_union_contract_candidates,
 )
 
 
@@ -713,6 +951,52 @@ declare_candidate_rule_detector(
 )
 
 
+@dataclass(frozen=True)
+class DynamicSelfFieldSelectionCandidate(CollectsItself, SelfReflectiveBuiltinCandidate):
+    selector_expression: str
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
+            module,
+            ast.ClassDef,
+            cls._for_class,
+        )
+
+    @classmethod
+    def _for_class(cls, module: ParsedModule, node: ast.ClassDef) -> Iterable[Self]:
+        for statement in node.body:
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            for subnode in module.syntax_index.function_walks[statement]:
+                if not isinstance(subnode, ast.Call):
+                    continue
+                match BuiltinCall.decoded(subnode):
+                    case AttributeAccessCall() as call:
+                        receiver, selector_node = call.object_argument, call.name_argument
+                    case _:
+                        continue
+                if not isinstance(receiver, ast.Name) or receiver.id != "self":
+                    continue
+                if _constant_string(selector_node) is not None:
+                    continue
+                selector_expression = ast.unparse(selector_node)
+                if not any(
+                    token in selector_expression
+                    for token in ("self.", "type(self).", "cls.")
+                ):
+                    continue
+                yield cls(
+                    file_path=module.file_path,
+                    line=subnode.lineno,
+                    subject_name=node.name,
+                    name_family=(selector_expression,),
+                    method_name=statement.name,
+                    reflective_builtin=call.builtin,
+                    selector_expression=selector_expression,
+                )
+
+
 declare_candidate_rule_detector(
     DynamicSelfFieldSelectionCandidate,
     high_confidence_spec(
@@ -730,7 +1014,6 @@ declare_candidate_rule_detector(
     summary=lambda dynamic_candidate: (
         f"`{dynamic_candidate.class_name}.{dynamic_candidate.method_name}` uses `{dynamic_candidate.reflective_builtin}(self, {dynamic_candidate.selector_expression})` instead of one declared nominal value."
     ),
-    candidate_collector=_dynamic_self_field_selection_candidates,
 )
 
 declare_candidate_rule_detector(

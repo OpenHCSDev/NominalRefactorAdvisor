@@ -5304,55 +5304,15 @@ class PositionalKeywordCallSurface:
 
 
 @dataclass(frozen=True)
-class RepeatedBaseBundleCandidate(ClassLineNumbersGroup):
-    base_names: tuple[str, ...]
-    bundle_width: int
-    class_count: int
-    line_count: int
-
-
-@dataclass(frozen=True)
 class ExportSurfaceCandidate(LineWitnessCandidate):
     export_symbol: str
     exported_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
-class RegisteredUnionSurfaceCandidate(LineWitnessCandidate):
-    owner_name: str
-    accessor_name: str
-    root_names: tuple[str, ...]
-    witness_name = AliasProperty[str]("owner_name")
-
-
-@dataclass(frozen=True)
-class ConcreteTypeUnionContractCandidate(LineWitnessCandidate):
-    function_name: str
-    parameter_name: str
-    member_type_names: tuple[str, ...]
-    observed_attribute_names: tuple[str, ...]
-    suggested_contract_name: str
-    common_base_names: tuple[str, ...]
-
-    @property
-    def witness_name(self) -> str:
-        return f"{self.function_name}.{self.parameter_name}"
-
-
-@dataclass(frozen=True)
 class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
     method_name: str
     reflective_builtin: str
-
-
-@dataclass(frozen=True)
-class ReflectiveSelfAttributeCandidate(SelfReflectiveBuiltinCandidate):
-    attribute_name: str
-
-
-@dataclass(frozen=True)
-class DynamicSelfFieldSelectionCandidate(SelfReflectiveBuiltinCandidate):
-    selector_expression: str
 
 
 @dataclass(frozen=True)

@@ -48,7 +48,6 @@ from nominal_refactor_advisor.ast_projection import (
     single_name_targets,
 )
 from nominal_refactor_advisor.ast_tools import (
-    AttributeAccessCall,
     AttributeLookup,
     BuiltinCall,
     BuiltinCallName,
@@ -120,9 +119,7 @@ from nominal_refactor_advisor.detectors._base import (
     ClassMethodLineWitnessCandidate,
     ConcreteCandidateDetectorShape,
     ConcreteConfigFieldProbeCandidate,
-    ConcreteTypeUnionContractCandidate,
     DetectorConfig,
-    DynamicSelfFieldSelectionCandidate,
     EnumMetadataTableCandidate,
     FindingAssemblyPipelineCandidate,
     GuardedDelegatorCandidate,
@@ -132,9 +129,6 @@ from nominal_refactor_advisor.detectors._base import (
     OverlappingInheritanceFamiliesCandidate,
     PipelineAssemblyStage,
     PropertyAliasHookGroup,
-    ReflectiveSelfAttributeCandidate,
-    RegisteredUnionSurfaceCandidate,
-    RepeatedBaseBundleCandidate,
     RepeatedResultAssemblyPipelineCandidate,
     ResultAssemblyPipelineFunction,
     SchemaAccessorFamilyCandidate,
@@ -157,9 +151,6 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     _constant_string,
     _is_private_symbol_name,
     _selector_attribute_name,
-)
-from nominal_refactor_advisor.detectors._substrate_support import (
-    _class_ancestor_name_map,
 )
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -771,51 +762,6 @@ def _property_alias_hook_groups(
     )
 
 
-def _reflective_self_attribute_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
-) -> Iterable[ReflectiveSelfAttributeCandidate]:
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for subnode in _walk_nodes(statement):
-            if not isinstance(subnode, ast.Call):
-                continue
-            match BuiltinCall.decoded(subnode):
-                case Getattr(carries_default=False) as call:
-                    receiver, attribute_name_node = (
-                        call.object_argument,
-                        call.name_argument,
-                    )
-                case _:
-                    continue
-            attribute_name = _constant_string(attribute_name_node)
-            if not (
-                isinstance(receiver, ast.Name)
-                and receiver.id == "self"
-                and (attribute_name is not None)
-            ):
-                continue
-            yield ReflectiveSelfAttributeCandidate(
-                file_path=module.file_path,
-                line=subnode.lineno,
-                subject_name=node.name,
-                name_family=(attribute_name,),
-                method_name=statement.name,
-                reflective_builtin=call.builtin,
-                attribute_name=attribute_name,
-            )
-
-
-def _reflective_self_attribute_candidates(
-    module: ParsedModule,
-) -> tuple[ReflectiveSelfAttributeCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        ast.ClassDef,
-        _reflective_self_attribute_candidates_for_class,
-    )
-
-
 def _guarded_wrapper_node_types(node: ast.If) -> tuple[str, ...] | None:
     test = node.test
     if not isinstance(test, ast.UnaryOp) or not isinstance(test.op, ast.Not):
@@ -930,51 +876,6 @@ def _guarded_wrapper_spec_pairs(
             )
         )
     return tuple(pairs)
-
-
-def _dynamic_self_field_selection_candidates_for_class(
-    module: ParsedModule, node: ast.ClassDef
-) -> Iterable[DynamicSelfFieldSelectionCandidate]:
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        for subnode in module.syntax_index.function_walks[statement]:
-            if not isinstance(subnode, ast.Call):
-                continue
-            match BuiltinCall.decoded(subnode):
-                case AttributeAccessCall() as call:
-                    receiver, selector_node = call.object_argument, call.name_argument
-                case _:
-                    continue
-            if not isinstance(receiver, ast.Name) or receiver.id != "self":
-                continue
-            if _constant_string(selector_node) is not None:
-                continue
-            selector_expression = ast.unparse(selector_node)
-            if not any(
-                token in selector_expression
-                for token in ("self.", "type(self).", "cls.")
-            ):
-                continue
-            yield DynamicSelfFieldSelectionCandidate(
-                file_path=module.file_path,
-                line=subnode.lineno,
-                subject_name=node.name,
-                name_family=(selector_expression,),
-                method_name=statement.name,
-                reflective_builtin=call.builtin,
-                selector_expression=selector_expression,
-            )
-
-
-def _dynamic_self_field_selection_candidates(
-    module: ParsedModule,
-) -> tuple[DynamicSelfFieldSelectionCandidate, ...]:
-    return CANDIDATE_COLLECTION_AUTHORITY.ast_node_candidates(
-        module,
-        ast.ClassDef,
-        _dynamic_self_field_selection_candidates_for_class,
-    )
 
 
 def _reflective_lookup_shape(
@@ -1308,38 +1209,6 @@ def _maximal_repeated_base_bundle_items(
     return tuple(maximal)
 
 
-def _repeated_base_bundle_candidates(
-    module: ParsedModule,
-) -> tuple[RepeatedBaseBundleCandidate, ...]:
-    grouped: BaseBundleClassGroups = defaultdict(list)
-    for declared in module.fact(ModuleClassStatements).top_level:
-        node = declared.node
-        if node.end_lineno is None:
-            continue
-        for bundle in _contiguous_base_bundles(declared.spelled_base_names):
-            grouped[bundle].append(node)
-    candidates: list[RepeatedBaseBundleCandidate] = []
-    for bundle, nodes in _maximal_repeated_base_bundle_items(grouped):
-        line_numbers = tuple((node.lineno for node in nodes))
-        candidates.append(
-            RepeatedBaseBundleCandidate(
-                file_path=module.file_path,
-                class_names=tuple((node.name for node in nodes)),
-                line_numbers=line_numbers,
-                base_names=bundle,
-                bundle_width=len(bundle),
-                class_count=len(nodes),
-                line_count=sum(
-                    (
-                        (node.end_lineno or node.lineno) - node.lineno + 1
-                        for node in nodes
-                    )
-                ),
-            )
-        )
-    return tuple(candidates)
-
-
 def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
     calls: list[ast.Call] = []
 
@@ -1396,62 +1265,6 @@ class _RegisteredUnionSurfaceSource:
         return (
             None if target_name is None else cls(target_name, node.value, node.lineno)
         )
-
-
-def _registered_union_surface_candidates_for_node(
-    module: ParsedModule,
-    node: ast.AST,
-    classes_by_name: dict[str, ClassStatement],
-) -> Iterable[RegisteredUnionSurfaceCandidate]:
-    source = _RegisteredUnionSurfaceSource.from_node(node)
-    if source is None:
-        return
-    registered_surface = _registered_surface_roots(source.value)
-    if registered_surface is None:
-        return
-    accessor_name, root_names = registered_surface
-    if len(root_names) < 2:
-        return
-    root_nodes = [classes_by_name.get(root_name) for root_name in root_names]
-    if any((root_node is None for root_node in root_nodes)):
-        return
-    if any(
-        (
-            (
-                method := cast(ClassStatement, root_node).method_named(
-                    accessor_name
-                )
-            )
-            is None
-            or not method.spells("classmethod")
-            for root_node in root_nodes
-        )
-    ):
-        return
-    yield RegisteredUnionSurfaceCandidate(
-        file_path=module.file_path,
-        line=source.line,
-        owner_name=source.owner_name,
-        accessor_name=accessor_name,
-        root_names=root_names,
-    )
-
-
-def _registered_union_surface_candidates(
-    module: ParsedModule,
-) -> tuple[RegisteredUnionSurfaceCandidate, ...]:
-    classes_by_name = module.fact(ModuleClassStatements).top_level_by_name
-    source_nodes: tuple[ast.AST, ...] = (
-        *(function for _, function in module.syntax_index.named_functions),
-        *module.syntax_index.instances_of(ast.Assign),
-    )
-    return tuple(
-        candidate
-        for node in source_nodes
-        for candidate in _registered_union_surface_candidates_for_node(
-            module, node, classes_by_name
-        )
-    )
 
 
 _CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES = (
@@ -1628,76 +1441,6 @@ def _concrete_union_contract_name(
         else "Contract"
     )
     return base_name if base_name.endswith(role_suffix) else f"{base_name}{role_suffix}"
-
-
-def _concrete_type_union_contract_candidates_for_function(
-    module: ParsedModule,
-    function_name: str,
-    function: ast.FunctionDef | ast.AsyncFunctionDef,
-    classes_by_name: dict[str, ClassStatement],
-    ancestor_names_by_class: dict[str, tuple[str, ...]],
-) -> Iterable[ConcreteTypeUnionContractCandidate]:
-    arguments = (
-        *function.args.posonlyargs,
-        *function.args.args,
-        *function.args.kwonlyargs,
-    )
-    for argument in arguments:
-        if argument.arg in _IMPLICIT_METHOD_PARAMETER_NAMES:
-            continue
-        member_type_names = _concrete_class_object_union_member_names(
-            argument.annotation
-        )
-        if len(member_type_names) < 2 or any(
-            member_type_name not in classes_by_name
-            for member_type_name in member_type_names
-        ):
-            continue
-        observed_attribute_names = _parameter_class_call_attribute_names(
-            function, argument.arg
-        )
-        if not observed_attribute_names:
-            continue
-        common_base_names = _common_contract_base_names(
-            classes_by_name,
-            ancestor_names_by_class,
-            member_type_names,
-            observed_attribute_names,
-        )
-        yield ConcreteTypeUnionContractCandidate(
-            file_path=module.file_path,
-            line=argument.lineno,
-            function_name=function_name,
-            parameter_name=argument.arg,
-            member_type_names=member_type_names,
-            observed_attribute_names=observed_attribute_names,
-            suggested_contract_name=(
-                common_base_names[0]
-                if common_base_names
-                else _concrete_union_contract_name(
-                    member_type_names, observed_attribute_names
-                )
-            ),
-            common_base_names=common_base_names,
-        )
-
-
-def _concrete_type_union_contract_candidates(
-    module: ParsedModule,
-) -> tuple[ConcreteTypeUnionContractCandidate, ...]:
-    classes_by_name = module.fact(ModuleClassStatements).by_name
-    base_lookup = {
-        class_name: set(declared.base_terminal_names)
-        for class_name, declared in classes_by_name.items()
-    }
-    ancestor_names_by_class = _class_ancestor_name_map(base_lookup)
-    return CANDIDATE_COLLECTION_AUTHORITY.named_function_candidates(
-        module,
-        _concrete_type_union_contract_candidates_for_function,
-        classes_by_name,
-        ancestor_names_by_class,
-        sort_key=lambda item: (item.file_path, item.line, item.function_name),
-    )
 
 
 _MethodFamilyKey: TypeAlias = tuple[str, tuple[str, ...]]
