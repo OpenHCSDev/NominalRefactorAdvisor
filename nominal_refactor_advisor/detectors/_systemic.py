@@ -86,8 +86,6 @@ from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistr
 from nominal_refactor_advisor.detectors._base import (
     _attribute_family_subject_expression,
     _compact_keyed_family_axis_specs_from_index,
-    _compact_keyed_table_axis_specs,
-    _compact_manual_selector_axis_specs,
     _cross_module_axis_shadow_family_candidates_from_specs,
     _derived_wrapper_spec_shadow_candidates,
     _keyed_record_infrastructure_candidates,
@@ -125,7 +123,6 @@ from nominal_refactor_advisor.detectors._base import (
     DerivedWrapperSpecShadowCandidate,
     DetectorConfig,
     DirectBuildFindingRendererCandidate,
-    DISPATCH_ALGEBRA_AUTHORITY,
     EnumMetadataTableCandidate,
     FindingSpecConstructionCandidate,
     high_confidence_certified_spec,
@@ -1214,7 +1211,11 @@ class CompactCrossModuleAxisShadowFamilyCandidateBase(
         del config
         return _cross_module_axis_shadow_family_candidates_from_specs(
             _compact_keyed_family_axis_specs_from_context(context),
-            _compact_manual_selector_axis_specs(context.projections),
+            tuple(
+                axis
+                for projection in context.projections
+                for axis in projection.manual_selector_axes
+            ),
         )
 
 
@@ -1238,11 +1239,9 @@ declare_candidate_rule_detector(
         ),
     ),
     summary=lambda shadow_candidate: (
-        f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.selector_method_name}` across cases {', '.join(shadow_candidate.shared_case_names[:4])}."
+        f"Axis `{shadow_candidate.key_type_name}` is already owned by `{shadow_candidate.authoritative.family_name}` but re-encoded by `{shadow_candidate.shadow.family_name}.{shadow_candidate.shadow.selector_method_name}` across cases {', '.join(shadow_candidate.case_names[:4])}."
     ),
-    metrics=lambda shadow_candidate: DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
-        shadow_candidate.shared_case_names, shadow_candidate.key_type_name
-    ),
+    metrics=lambda shadow_candidate: shadow_candidate.dispatch_metrics,
     detector_base=CompactCrossModuleAxisShadowFamilyCandidateBase,
 )
 
@@ -1287,8 +1286,8 @@ class ResidualClosedAxisBranchingDetector(
     ) -> RefactorFinding:
         authoritative_family_names = ", ".join(
             (
-                family_name
-                for family_name, _, _ in residual_candidate.authoritative_families[:4]
+                family.family_name
+                for family in residual_candidate.authoritative_families[:4]
             )
         )
         return self.build_finding(
@@ -1298,11 +1297,7 @@ class ResidualClosedAxisBranchingDetector(
                 f"even though authoritative family `{authoritative_family_names}` already owns that axis."
             ),
             residual_candidate.evidence,
-            metrics=DispatchCountMetrics(
-                dispatch_site_count=residual_candidate.branch_site_count,
-                dispatch_axis=residual_candidate.key_type_name,
-                literal_cases=residual_candidate.case_names,
-            ),
+            metrics=residual_candidate.dispatch_metrics,
         )
 
 
@@ -1614,7 +1609,7 @@ class ParallelKeyedAxisFamilyDetector(
     def _finding_for_candidate(
         self, family_candidate: ParallelKeyedAxisFamilyCandidate
     ) -> RefactorFinding:
-        shared_cases = ", ".join(family_candidate.shared_case_names[:4])
+        shared_cases = ", ".join(family_candidate.case_names[:4])
         label_clause = ""
         if (
             family_candidate.left.family_label is not None
@@ -1631,10 +1626,7 @@ class ParallelKeyedAxisFamilyDetector(
                 f"across cases {shared_cases}.{label_clause}"
             ),
             family_candidate.evidence,
-            metrics=DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
-                family_candidate.shared_case_names,
-                family_candidate.key_type_name,
-            ),
+            metrics=family_candidate.dispatch_metrics,
         )
 
 
@@ -1671,7 +1663,11 @@ class ParallelKeyedTableAndFamilyDetector(
         del config
         return _parallel_keyed_table_and_family_candidates_from_specs(
             _compact_keyed_family_axis_specs_from_context(context),
-            _compact_keyed_table_axis_specs(context.projections),
+            tuple(
+                axis
+                for projection in context.projections
+                for axis in projection.keyed_table_axes
+            ),
         )
 
     def _finding_for_candidate(
@@ -1679,20 +1675,17 @@ class ParallelKeyedTableAndFamilyDetector(
     ) -> RefactorFinding:
         shape_clause = (
             ""
-            if table_candidate.value_shape_name is None
-            else f" of `{table_candidate.value_shape_name}` records"
+            if table_candidate.table.value_shape_name is None
+            else f" of `{table_candidate.table.value_shape_name}` records"
         )
         return self.build_finding(
             (
-                f"Axis `{table_candidate.key_type_name}` is split between keyed table `{table_candidate.table_name}`"
-                f"{shape_clause} and keyed family `{table_candidate.family_name}` across cases "
-                f"{', '.join(table_candidate.shared_case_names[:4])}."
+                f"Axis `{table_candidate.key_type_name}` is split between keyed table `{table_candidate.table.table_name}`"
+                f"{shape_clause} and keyed family `{table_candidate.family.family_name}` across cases "
+                f"{', '.join(table_candidate.case_names[:4])}."
             ),
             table_candidate.evidence,
-            metrics=DISPATCH_ALGEBRA_AUTHORITY.axis_dispatch_metrics(
-                table_candidate.shared_case_names,
-                table_candidate.key_type_name,
-            ),
+            metrics=table_candidate.dispatch_metrics,
         )
 
 

@@ -4367,9 +4367,11 @@ def test_compact_keyed_axis_projection_is_the_only_global_candidate_authority(
     family_specs = systemic_detectors._compact_keyed_family_axis_specs_from_context(
         context
     )
-    table_specs = base_detectors._compact_keyed_table_axis_specs(projections)
-    manual_selector_specs = base_detectors._compact_manual_selector_axis_specs(
-        projections
+    table_specs = tuple(
+        axis for projection in projections for axis in projection.keyed_table_axes
+    )
+    manual_selector_specs = tuple(
+        axis for projection in projections for axis in projection.manual_selector_axes
     )
     detectors_and_candidates = (
         (

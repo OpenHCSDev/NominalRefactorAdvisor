@@ -16,9 +16,11 @@ from dataclasses import (
 from heapq import merge
 from typing import (
     ClassVar,
+    Generic,
     Iterable,
     NamedTuple,
     Self,
+    TypeVar,
     cast,
 )
 
@@ -49,7 +51,11 @@ from nominal_refactor_advisor.class_symbols import (
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.foreign_family import AssignmentStatement
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
-from nominal_refactor_advisor.models import SourceLineReference
+from nominal_refactor_advisor.models import (
+    DispatchCountMetrics,
+    LineWitness,
+    SourceLineReference,
+)
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 
 
@@ -130,20 +136,59 @@ class CompactSortedKeyCall(CompactSourceLocation):
 
 
 @dataclass(frozen=True)
-class CompactKeyedTableAxis(CompactSourceLocation):
-    """AST-free module-level dictionary keyed by one enum-like axis."""
+class ClosedAxis:
+    """A closed axis as one declaration spells it: its key type and the cases it names."""
 
-    table_name: str
     key_type_name: str
     case_names: tuple[str, ...]
-    value_shape_name: str | None
+
+    @property
+    def dispatch_site_count(self) -> int:
+        """How many places decide between the cases: one per case unless counted."""
+
+        return len(self.case_names)
+
+    @property
+    def dispatch_metrics(self) -> DispatchCountMetrics:
+        return DispatchCountMetrics(
+            dispatch_site_count=self.dispatch_site_count,
+            dispatch_axis=self.key_type_name,
+            literal_cases=self.case_names,
+        )
 
 
 @dataclass(frozen=True)
-class CompactClosedAxisBranchFact:
-    key_type_name: str
+class CompactFamilyAxis(CompactSourceLocation, LineWitness, ClosedAxis):
+    """A class family that enumerates a closed axis, at the line that declares it."""
+
+    family_name: str
+
+    @property
+    def witness_name(self) -> str:
+        return self.family_name
+
+
+@dataclass(frozen=True)
+class CompactKeyedTableAxis(CompactSourceLocation, LineWitness, ClosedAxis):
+    """AST-free module-level dictionary keyed by one enum-like axis."""
+
+    table_name: str
+    value_shape_name: str | None
+
+    @property
+    def witness_name(self) -> str:
+        return self.table_name
+
+
+@dataclass(frozen=True)
+class CompactClosedAxisBranchFact(ClosedAxis):
+    """One function's branches on a closed axis and the cases they name."""
+
     branch_site_count: int
-    case_names: tuple[str, ...]
+
+    @property
+    def dispatch_site_count(self) -> int:
+        return self.branch_site_count
 
 
 @dataclass(frozen=True)
@@ -467,11 +512,13 @@ def _fail_loud_block(statements: list[ast.stmt]) -> bool:
     )
 
 
+BranchFactT = TypeVar("BranchFactT")
+
+
 @dataclass
-class _BranchReferenceTally(ABC):
+class _BranchReferenceTally(ABC, Generic[BranchFactT]):
     """Per-function branch-site counts for one projection of attribute chains."""
 
-    fact_type: ClassVar[type]
     site_counts: dict[int, dict[str, int]] = field(
         default_factory=lambda: defaultdict(lambda: defaultdict(int))
     )
@@ -509,14 +556,18 @@ class _BranchReferenceTally(ABC):
 
         return ast.walk(branch_node)
 
-    def facts(self, function_id: int) -> tuple:
+    @abstractmethod
+    def fact(self, key: str, site_count: int, names: tuple[str, ...]) -> BranchFactT:
+        """The fact for one key: how many sites branch on it and the names they use."""
+
+    def facts(self, function_id: int) -> tuple[BranchFactT, ...]:
         return tuple(
-            self.fact_type(key, site_count, sorted_tuple(self.names[function_id][key]))
+            self.fact(key, site_count, sorted_tuple(self.names[function_id][key]))
             for key, site_count in sorted(self.site_counts[function_id].items())
         )
 
 
-class _EnumMemberBranchTally(_BranchReferenceTally):
+class _EnumMemberBranchTally(_BranchReferenceTally[CompactClosedAxisBranchFact]):
     """``Key.CASE`` references, keyed by the chain's penultimate name.
 
     A case is recovered only where a branch compares a value against it or
@@ -524,7 +575,12 @@ class _EnumMemberBranchTally(_BranchReferenceTally):
     constant query about something else, not a decision between cases.
     """
 
-    fact_type = CompactClosedAxisBranchFact
+    def fact(
+        self, key: str, site_count: int, names: tuple[str, ...]
+    ) -> CompactClosedAxisBranchFact:
+        return CompactClosedAxisBranchFact(
+            key_type_name=key, case_names=names, branch_site_count=site_count
+        )
 
     def referenced_nodes(self, branch_node: ast.AST) -> Iterator[ast.AST]:
         for node in ast.walk(branch_node):
@@ -543,10 +599,15 @@ class _EnumMemberBranchTally(_BranchReferenceTally):
         return parts[-2], f"{parts[-2]}.{parts[-1]}"
 
 
-class _ReceiverFieldBranchTally(_BranchReferenceTally):
+class _ReceiverFieldBranchTally(_BranchReferenceTally[CompactReceiverFieldBranchRead]):
     """``receiver.field.attribute`` reads, keyed by the receiver's field."""
 
-    fact_type = CompactReceiverFieldBranchRead
+    def fact(
+        self, key: str, site_count: int, names: tuple[str, ...]
+    ) -> CompactReceiverFieldBranchRead:
+        return CompactReceiverFieldBranchRead(
+            field_name=key, branch_site_count=site_count, attribute_names=names
+        )
 
     def reference(
         self, parts: tuple[str, ...], receiver: str | None

@@ -507,6 +507,20 @@ class supplies `_collect_findings`, `context_signature` and
 `_candidate_items`; a compact owner for the first with a collector
 owner for the last is that split.
 
+**A candidate holds the facts it joins.** A cross-module candidate is
+built from compact per-module facts. It keeps those facts as fields
+(`candidate.table`, `candidate.family`) and adds only what the join
+derived. Don't declare a spec or site class with the fact's fields and
+copy them over: the closed-axis detectors did that three times over
+(fact, `_...AxisSpec`, `AxisFamilySite`, then raw `(name, path, line)`
+tuples) until 2026-11-14. Two parents make this cheap:
+`models.LineWitness` is a source line that names what is declared there
+and answers `location`; a fact overrides `witness_name`.
+`class_syntax_facets.ClosedAxis` owns a key type, its cases and their
+`dispatch_metrics`; a fact or candidate about an axis inherits it. To
+prove a change to a detector the corpus never fires, dump that
+detector's findings on its test fixture before and after.
+
 **The names in a subtree.** `ast_projection.name_nodes(*roots)` yields
 the bare-name nodes of any subtrees, in walk order. `names_mentioned`,
 `names_read` and `names_bound` give the set of ids for every name, the

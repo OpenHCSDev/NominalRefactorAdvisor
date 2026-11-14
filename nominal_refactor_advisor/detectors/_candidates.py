@@ -11,6 +11,7 @@ from metaclass_registry import AutoRegisterMeta
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.models import (
     EvidenceLocated,
+    LineWitness,
     MappingMetrics,
     SourceLineReference,
     SourceLocation,
@@ -57,14 +58,9 @@ class SourceLocationEvidenceProperty:
         )
 
 
-_LINE_WITNESS_NAME_LOCATION = SourceLocationEvidenceProperty(
-    symbol_attribute_name="witness_name"
-)
-
-
 @dataclass(frozen=True)
 class LineWitnessCandidate(
-    SourceLineReference,
+    LineWitness,
     EvidenceLocated,
     ABC,
     ClassNameKeyed,
@@ -75,8 +71,6 @@ class LineWitnessCandidate(
     @property
     def witness_name(self) -> str:
         return type(self).__name__
-
-    location = _LINE_WITNESS_NAME_LOCATION
 
     @cached_property
     def evidence(self) -> tuple[SourceLocation, ...]:

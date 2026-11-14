@@ -13,7 +13,7 @@ from nominal_refactor_advisor.class_symbols import (
     ModuleClassDefinitions,
 )
 from nominal_refactor_advisor.class_syntax_facets import (
-    CompactSourceLocation,
+    CompactFamilyAxis,
     _trim_leading_docstring,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
@@ -102,11 +102,10 @@ class SelectionGuardKind(StrEnum):
 
 
 @dataclass(frozen=True)
-class CompactManualSelectorAxis(CompactSourceLocation):
-    family_name: str
+class CompactManualSelectorAxis(CompactFamilyAxis):
+    """A class whose selector method enumerates a closed axis by hand."""
+
     selector_method_name: str
-    key_type_name: str
-    case_names: tuple[str, ...]
 
 
 def _compact_predicate_selected_methods(

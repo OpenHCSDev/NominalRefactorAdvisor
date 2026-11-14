@@ -43,7 +43,6 @@ from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConf
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.detectors._candidates import (
     _DEFAULT_FILE_PATH_ATTRIBUTE as _DEFAULT_FILE_PATH_ATTRIBUTE,
-    _LINE_WITNESS_NAME_LOCATION as _LINE_WITNESS_NAME_LOCATION,
     AttributeValueT as AttributeValueT,
     ClassMethodFamilyCandidate as ClassMethodFamilyCandidate,
     ClassNameLineNumbersGroup as ClassNameLineNumbersGroup,
@@ -74,7 +73,14 @@ from nominal_refactor_advisor.descriptor_algebra import (
     ConstantProperty,
 )
 from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
+from nominal_refactor_advisor.class_syntax_facets import (
+    ClosedAxis,
+    CompactClosedAxisBranchFact,
+    CompactFamilyAxis,
+    CompactKeyedTableAxis,
+)
 from nominal_refactor_advisor.registration_facets import (
+    CompactManualSelectorAxis,
     CompactManualSubclassRegistrationSite,
 )
 from nominal_refactor_advisor.semantic_match import (
@@ -136,7 +142,6 @@ from nominal_refactor_advisor.collection_algebra import (
 )
 from nominal_refactor_advisor.models import (
     CertifiedFindingSpec,
-    DispatchCountMetrics,
     EvidenceLocated,
     FindingBuildContext,
     FindingBuildContextKwargs,
@@ -3193,28 +3198,8 @@ class DispatchAlgebraAuthority:
             min(len(left_case_names), len(right_case_names))
         )
 
-    def axis_dispatch_metrics(
-        self,
-        literal_cases: tuple[str, ...],
-        dispatch_axis: str,
-        dispatch_site_count: int | None = None,
-    ) -> DispatchCountMetrics:
-        if dispatch_site_count is None:
-            dispatch_site_count = len(literal_cases)
-        return DispatchCountMetrics(
-            dispatch_site_count=dispatch_site_count,
-            dispatch_axis=dispatch_axis,
-            literal_cases=literal_cases,
-        )
-
 
 DISPATCH_ALGEBRA_AUTHORITY = DispatchAlgebraAuthority()
-
-
-@dataclass(frozen=True)
-class _LineCaseSpec(ABC):
-    line: int
-    case_names: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -3602,31 +3587,11 @@ def _module_keyed_selection_helper_candidates(
 
 
 @dataclass(frozen=True)
-class _FileAxisCaseSpec(_LineCaseSpec):
-    file_path: str
-    key_type_name: str
+class _KeyedFamilyAxisSpec(CompactFamilyAxis):
+    """A keyed family read from the class index: the axis its registry key enumerates."""
 
-
-@dataclass(frozen=True)
-class _FamilyAxisSpec(_FileAxisCaseSpec):
-    family_name: str
-
-
-@dataclass(frozen=True)
-class _KeyedFamilyAxisSpec(_FamilyAxisSpec):
     family_label: str | None
     registry_key_attr_name: str
-
-
-@dataclass(frozen=True)
-class _ManualSelectorAxisSpec(_FamilyAxisSpec):
-    selector_method_name: str
-
-
-@dataclass(frozen=True)
-class _KeyedTableAxisSpec(_FileAxisCaseSpec):
-    table_name: str
-    value_shape_name: str | None
 
 
 KeyedFamilyAxisSpecsByKey: TypeAlias = dict[str, list[_KeyedFamilyAxisSpec]]
@@ -3684,40 +3649,6 @@ def _compact_keyed_family_axis_specs_from_index(
     return tuple(specs)
 
 
-def _compact_keyed_table_axis_specs(
-    projections: Sequence[CompactModuleClassProjection],
-) -> tuple[_KeyedTableAxisSpec, ...]:
-    return tuple(
-        _KeyedTableAxisSpec(
-            file_path=axis.file_path,
-            line=axis.line,
-            table_name=axis.table_name,
-            key_type_name=axis.key_type_name,
-            case_names=axis.case_names,
-            value_shape_name=axis.value_shape_name,
-        )
-        for projection in projections
-        for axis in projection.keyed_table_axes
-    )
-
-
-def _compact_manual_selector_axis_specs(
-    projections: Sequence[CompactModuleClassProjection],
-) -> tuple[_ManualSelectorAxisSpec, ...]:
-    return tuple(
-        _ManualSelectorAxisSpec(
-            file_path=axis.file_path,
-            line=axis.line,
-            family_name=axis.family_name,
-            selector_method_name=axis.selector_method_name,
-            key_type_name=axis.key_type_name,
-            case_names=axis.case_names,
-        )
-        for projection in projections
-        for axis in projection.manual_selector_axes
-    )
-
-
 def _parallel_keyed_family_name_overlap(
     left_family_name: str,
     right_family_name: str,
@@ -3733,7 +3664,7 @@ def _parallel_keyed_family_name_overlap(
 
 def _parallel_keyed_table_and_family_candidates_from_specs(
     family_specs: Sequence[_KeyedFamilyAxisSpec],
-    table_specs: Sequence[_KeyedTableAxisSpec],
+    table_specs: Sequence[CompactKeyedTableAxis],
 ) -> tuple[ParallelKeyedTableAndFamilyCandidate, ...]:
     family_specs_by_file: KeyedFamilyAxisSpecsByKey = {}
     for family_spec in family_specs:
@@ -3777,19 +3708,19 @@ def _parallel_keyed_table_and_family_candidates_from_specs(
             seen.add(key)
             candidates.append(
                 ParallelKeyedTableAndFamilyCandidate(
+                    key_type_name=table_spec.key_type_name,
+                    case_names=shared_case_names,
                     table=table_spec,
-                    family_name=family_spec.family_name,
-                    family_line=family_spec.line,
-                    shared_case_names=shared_case_names,
+                    family=family_spec,
                 )
             )
     return sorted_tuple(
         candidates,
         key=lambda item: (
-            item.file_path,
+            item.table.file_path,
             item.key_type_name,
-            item.table_name,
-            item.family_name,
+            item.table.table_name,
+            item.family.family_name,
         ),
     )
 
@@ -3835,19 +3766,9 @@ def _parallel_keyed_axis_family_candidates_from_specs(
             candidates.append(
                 ParallelKeyedAxisFamilyCandidate(
                     key_type_name=left_spec.key_type_name,
-                    left=KeyedAxisFamilySite(
-                        file_path=left_spec.file_path,
-                        line=left_spec.line,
-                        family_name=left_spec.family_name,
-                        family_label=left_spec.family_label,
-                    ),
-                    right=KeyedAxisFamilySite(
-                        file_path=right_spec.file_path,
-                        line=right_spec.line,
-                        family_name=right_spec.family_name,
-                        family_label=right_spec.family_label,
-                    ),
-                    shared_case_names=shared_case_names,
+                    case_names=shared_case_names,
+                    left=left_spec,
+                    right=right_spec,
                     case_overlap_ratio=case_overlap_score,
                     name_overlap_ratio=name_overlap_ratio,
                 )
@@ -3866,7 +3787,7 @@ def _parallel_keyed_axis_family_candidates_from_specs(
 
 def _cross_module_axis_shadow_family_candidates_from_specs(
     authoritative_specs: Sequence[_KeyedFamilyAxisSpec],
-    shadow_specs: Sequence[_ManualSelectorAxisSpec],
+    shadow_specs: Sequence[CompactManualSelectorAxis],
 ) -> tuple[CrossModuleAxisShadowFamilyCandidate, ...]:
     candidates: list[CrossModuleAxisShadowFamilyCandidate] = []
     seen: set[tuple[str, str, str]] = set()
@@ -3892,18 +3813,9 @@ def _cross_module_axis_shadow_family_candidates_from_specs(
             candidates.append(
                 CrossModuleAxisShadowFamilyCandidate(
                     key_type_name=authoritative_spec.key_type_name,
-                    authoritative=AxisFamilySite(
-                        file_path=authoritative_spec.file_path,
-                        line=authoritative_spec.line,
-                        family_name=authoritative_spec.family_name,
-                    ),
-                    shadow=AxisFamilySite(
-                        file_path=shadow_spec.file_path,
-                        line=shadow_spec.line,
-                        family_name=shadow_spec.family_name,
-                    ),
-                    selector_method_name=shadow_spec.selector_method_name,
-                    shared_case_names=shared_case_names,
+                    case_names=shared_case_names,
+                    authoritative=authoritative_spec,
+                    shadow=shadow_spec,
                 )
             )
     return sorted_tuple(
@@ -3969,10 +3881,12 @@ def _residual_closed_axis_branching_candidates_from_compact_specs(
                         branch_site_count=axis.branch_site_count,
                         case_names=shared_case_names,
                         authoritative_families=sorted_tuple(
-                            (
-                                (spec.family_name, spec.file_path, spec.line)
-                                for spec in specs
-                            )
+                            specs,
+                            key=lambda spec: (
+                                spec.family_name,
+                                spec.file_path,
+                                spec.line,
+                            ),
                         ),
                     )
                 )
@@ -5674,23 +5588,12 @@ class ModuleKeyedSelectionHelperCandidate(
 
 
 @dataclass(frozen=True)
-class AxisFamilySite(LineWitnessCandidate):
-    family_name: str
-    witness_name = AliasProperty[str]("family_name")
+class CrossModuleAxisShadowFamilyCandidate(ClosedAxis, EvidenceLocated):
+    """A closed axis one family owns and a selector in another module enumerates again;
+    its cases are the ones both name."""
 
-
-@dataclass(frozen=True)
-class KeyedAxisFamilySite(AxisFamilySite):
-    family_label: str | None
-
-
-@dataclass(frozen=True)
-class CrossModuleAxisShadowFamilyCandidate(EvidenceLocated):
-    key_type_name: str
-    authoritative: AxisFamilySite
-    shadow: AxisFamilySite
-    selector_method_name: str
-    shared_case_names: tuple[str, ...]
+    authoritative: _KeyedFamilyAxisSpec
+    shadow: CompactManualSelectorAxis
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
@@ -5698,31 +5601,29 @@ class CrossModuleAxisShadowFamilyCandidate(EvidenceLocated):
 
 
 @dataclass(frozen=True)
-class ResidualClosedAxisBranchingCandidate(LineWitnessCandidate):
-    key_type_name: str
-    qualname: str
-    branch_site_count: int
-    case_names: tuple[str, ...]
-    authoritative_families: tuple[tuple[str, str, int], ...]
+class ResidualClosedAxisBranchingCandidate(
+    QualnameLineWitnessCandidate, CompactClosedAxisBranchFact
+):
+    """A function's branches on a closed axis that keyed families elsewhere own;
+    its cases are the ones those families name."""
+
+    authoritative_families: tuple[_KeyedFamilyAxisSpec, ...]
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        evidence = [SourceLocation(self.file_path, self.line, self.qualname)]
-        evidence.extend(
-            (
-                SourceLocation(file_path, line, family_name)
-                for family_name, file_path, line in self.authoritative_families
-            )
-        )
-        return tuple(evidence[:6])
+        return (
+            self.location,
+            *(family.location for family in self.authoritative_families),
+        )[:6]
 
 
 @dataclass(frozen=True)
-class ParallelKeyedAxisFamilyCandidate(EvidenceLocated):
-    key_type_name: str
-    left: KeyedAxisFamilySite
-    right: KeyedAxisFamilySite
-    shared_case_names: tuple[str, ...]
+class ParallelKeyedAxisFamilyCandidate(ClosedAxis, EvidenceLocated):
+    """A closed axis two keyed families in different modules both own;
+    its cases are the ones both name."""
+
+    left: _KeyedFamilyAxisSpec
+    right: _KeyedFamilyAxisSpec
     case_overlap_ratio: float
     name_overlap_ratio: float
 
@@ -5732,38 +5633,16 @@ class ParallelKeyedAxisFamilyCandidate(EvidenceLocated):
 
 
 @dataclass(frozen=True)
-class ParallelKeyedTableAndFamilyCandidate(EvidenceLocated):
-    table: _KeyedTableAxisSpec
-    family_name: str
-    family_line: int
-    shared_case_names: tuple[str, ...]
+class ParallelKeyedTableAndFamilyCandidate(ClosedAxis, EvidenceLocated):
+    """A closed axis one module spells as a keyed table and as a keyed family;
+    its cases are the ones both name."""
 
-    @property
-    def file_path(self) -> str:
-        return self.table.file_path
-
-    @property
-    def key_type_name(self) -> str:
-        return self.table.key_type_name
-
-    @property
-    def table_name(self) -> str:
-        return self.table.table_name
-
-    @property
-    def table_line(self) -> int:
-        return self.table.line
-
-    @property
-    def value_shape_name(self) -> str | None:
-        return self.table.value_shape_name
+    table: CompactKeyedTableAxis
+    family: _KeyedFamilyAxisSpec
 
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
-        return (
-            SourceLocation(self.file_path, self.table_line, self.table_name),
-            SourceLocation(self.file_path, self.family_line, self.family_name),
-        )
+        return (self.table.location, self.family.location)
 
 
 @dataclass(frozen=True)

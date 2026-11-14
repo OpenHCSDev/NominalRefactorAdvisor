@@ -265,6 +265,19 @@ class SourceLocation(SourceLineReference, SemanticRecord):
 
         return f"{checkout_identity_text(self.file_path)}::{self.symbol}"
 
+class LineWitness(SourceLineReference, ABC):
+    """A source line and the name of what is declared there."""
+
+    @property
+    @abstractmethod
+    def witness_name(self) -> str:
+        raise NotImplementedError
+
+    @property
+    def location(self) -> SourceLocation:
+        return SourceLocation(self.file_path, self.line, self.witness_name)
+
+
 class EvidenceLocated(ABC):
     """A record that names every source location a finding about it shows."""
 
