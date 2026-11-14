@@ -2220,7 +2220,6 @@ class CollectedFamily(
     report_presence_predicate: ClassVar[
         Callable[[tuple[object, ...], object], bool] | None
     ] = None
-    report_demand_context_predicate: ClassVar[Callable[[object], bool] | None] = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -2351,8 +2350,7 @@ class CollectedFamily(
 
         if isinstance(demand, CollectedFamilyPresenceDemand):
             return demand.include_context
-        predicate = cls.report_demand_context_predicate
-        return True if predicate is None else predicate(demand)
+        return True
 
     @classmethod
     def can_collect_demanded_source(cls, demand: object) -> bool:

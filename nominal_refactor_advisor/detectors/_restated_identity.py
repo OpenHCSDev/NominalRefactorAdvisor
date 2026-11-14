@@ -36,14 +36,6 @@ from nominal_refactor_advisor.detectors._restated_facts import (
 )
 
 
-def _declared_identities(
-    projections_by_family: CompactProjectionGroups,
-) -> DeclaredIdentities:
-    return DeclaredIdentities.from_modules(
-        DeclaredIdentityFamily.modules_in(projections_by_family)
-    )
-
-
 class RestatedIdentityDetector(
     JoinedRestatedFactDetector[DeclaredIdentities, RestatingSite],
     DeclarationReferenceFindingRecipeSynthesizer,
@@ -71,7 +63,13 @@ class RestatedIdentityDetector(
         (ObservationTag.SEMANTIC_STRING_LITERAL,),
     )
 
-    compact_shared_group_context_builder = staticmethod(_declared_identities)
+    @staticmethod
+    def compact_shared_group_context_builder(
+        projections_by_family: CompactProjectionGroups,
+    ) -> DeclaredIdentities:
+        return DeclaredIdentities.from_modules(
+            DeclaredIdentityFamily.modules_in(projections_by_family)
+        )
 
     def findings_from_sites(
         self, sites: Iterable[RestatingSite], context: DeclaredIdentities

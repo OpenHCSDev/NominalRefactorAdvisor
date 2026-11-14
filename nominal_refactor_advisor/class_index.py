@@ -4551,21 +4551,6 @@ def _native_class_header_module(
     )
 
 
-def _collect_demanded_class_projection_from_source(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    demand: object,
-) -> list[object] | None:
-    if not isinstance(demand, CompactClassProjectionDemand):
-        raise TypeError("class projection demand has the wrong authority type")
-    if not demand.header_core_only:
-        return None
-    parsed_module = _native_class_header_module(source_module, syntax_index)
-    if parsed_module is None:
-        return None
-    return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
-
-
 def _compact_base_references(
     node: ast.ClassDef,
     module_binding_snapshot: ModuleNominalBindingSnapshot,
@@ -4681,9 +4666,21 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
     """Persist class/import facts needed by the global inheritance graph."""
 
     cache_payload_max_bytes = 3_000_000
-    source_demand_collector = staticmethod(
-        _collect_demanded_class_projection_from_source
-    )
+
+    @staticmethod
+    def source_demand_collector(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        demand: object,
+    ) -> list[object] | None:
+        if not isinstance(demand, CompactClassProjectionDemand):
+            raise TypeError("class projection demand has the wrong authority type")
+        if not demand.header_core_only:
+            return None
+        parsed_module = _native_class_header_module(source_module, syntax_index)
+        if parsed_module is None:
+            return None
+        return CompactModuleClassProjectionFamily._collect_header_core(parsed_module)
 
     @classmethod
     def _required_module_projection(

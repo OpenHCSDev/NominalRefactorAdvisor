@@ -241,32 +241,30 @@ class RelocationIndex:
         )
 
 
-def _relocation_index(projections_by_family: CompactProjectionGroups) -> RelocationIndex:
-    reads: dict[str, list[BranchRead]] = defaultdict(list)
-    calls: dict[str, list[LambdaCall]] = defaultdict(list)
-    for module in ConsumerShapeFamily.modules_in(projections_by_family):
-        for read in module.branch_reads:
-            reads[read.member].append(read)
-        for call in module.lambda_calls:
-            calls[call.member].append(call)
-    families = MemberFamilies.from_projection_groups(projections_by_family)
-    return RelocationIndex(
-        families,
-        dict(reads),
-        dict(calls),
-        DeclaredReceiverTyping.from_projections(
-            CompactModuleClassProjectionFamily.modules_in(projections_by_family),
-            families.class_index,
-        ),
-    )
-
-
 class RelocationDetector(
     JoinedRestatedFactDetector[RelocationIndex, RestatingSite], ABC
 ):
     """A relocation joined with the scan's class families and branch consumers."""
 
-    compact_shared_group_context_builder = staticmethod(_relocation_index)
+    @staticmethod
+    def compact_shared_group_context_builder(projections_by_family: CompactProjectionGroups) -> RelocationIndex:
+        reads: dict[str, list[BranchRead]] = defaultdict(list)
+        calls: dict[str, list[LambdaCall]] = defaultdict(list)
+        for module in ConsumerShapeFamily.modules_in(projections_by_family):
+            for read in module.branch_reads:
+                reads[read.member].append(read)
+            for call in module.lambda_calls:
+                calls[call.member].append(call)
+        families = MemberFamilies.from_projection_groups(projections_by_family)
+        return RelocationIndex(
+            families,
+            dict(reads),
+            dict(calls),
+            DeclaredReceiverTyping.from_projections(
+                CompactModuleClassProjectionFamily.modules_in(projections_by_family),
+                families.class_index,
+            ),
+        )
 
     def site_order(self, site: RestatingSite) -> tuple[object, ...]:
         return (site.file_path, site.lineno)

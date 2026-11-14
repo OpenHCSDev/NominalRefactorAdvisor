@@ -1257,119 +1257,6 @@ def _native_environment_import_aliases(
     return _EnvironmentImportAliases.from_module(module), imports
 
 
-def _native_environment_module_projection(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[_EnvironmentBooleanModuleProjection] | None:
-    """Project environment semantics from selected function fragments."""
-
-    if not syntax_index.is_complete:
-        return None
-    try:
-        aliases, imports = _native_environment_import_aliases(syntax_index)
-        module_assignments = [
-            syntax_index.statement_for(node)
-            for node in syntax_index.top_level_assignment_statements()
-        ]
-        parsed_module = source_module.parsed_module(
-            ast.Module(
-                body=[*imports, *module_assignments],
-                type_ignores=[],
-            ),
-        )
-        captures = syntax_index.common_captures()
-        functions = tuple(
-            sorted(
-                captures.get("function", ()),
-                key=lambda node: (node.start_byte, -node.end_byte),
-            )
-        )
-        direct_method_counts: dict[object, int] = defaultdict(int)
-        for function_node in functions:
-            class_node = syntax_index.direct_enclosing_class(function_node)
-            if class_node is not None:
-                direct_method_counts[class_node] += 1
-        class_assignments: dict[object, list[ast.stmt]] = defaultdict(list)
-        for assignment in captures.get("assignment", ()):
-            statement_node = assignment.parent
-            if statement_node is None or statement_node.type != "expression_statement":
-                continue
-            block = statement_node.parent
-            if block is None or block.type != "block":
-                continue
-            class_node = block.parent
-            if class_node is None or class_node.type != "class_definition":
-                continue
-            statement = syntax_index.statement_for(statement_node)
-            if statement not in class_assignments[class_node]:
-                class_assignments[class_node].append(statement)
-
-        imported_read_names = frozenset(
-            name
-            for read_kind in EnvironmentReadKind
-            for name in aliases.names_for(read_kind)
-        )
-        scopes: list[_FunctionScope] = []
-        for function_node in functions:
-            lexical_scopes = syntax_index.named_scope_nodes(function_node)
-            if any(scope.type == "function_definition" for scope in lexical_scopes):
-                continue
-            class_node = next(
-                (
-                    scope
-                    for scope in reversed(lexical_scopes)
-                    if scope.type == "class_definition"
-                ),
-                None,
-            )
-            class_method_count = (
-                0 if class_node is None else direct_method_counts.get(class_node, 0)
-            )
-            function_name = syntax_index.declared_name(function_node)
-            function_symbol = (
-                function_name
-                if class_node is None
-                else f"{syntax_index.declared_name(class_node)}.{function_name}"
-            )
-            function_source = syntax_index.source_for(function_node)
-            may_read_environment = (
-                b"getenv" in function_source
-                or b"environ" in function_source
-                or any(
-                    name.encode("utf-8") in function_source
-                    for name in imported_read_names
-                )
-            )
-            may_declare_authority = _native_environment_function_may_declare_authority(
-                function_symbol
-            )
-            may_be_wrapper = class_node is not None and class_method_count <= 2
-            if not (may_read_environment or may_declare_authority or may_be_wrapper):
-                continue
-            function = syntax_index.function_for(function_node)
-            synthetic_class: ast.ClassDef | None = None
-            if class_node is not None:
-                synthetic_class = ast.ClassDef(
-                    name=syntax_index.declared_name(class_node),
-                    bases=[],
-                    keywords=[],
-                    body=list(class_assignments.get(class_node, ())),
-                    decorator_list=[],
-                )
-            scopes.append(
-                _FunctionScope(
-                    module=parsed_module,
-                    node=function,
-                    class_node=synthetic_class,
-                    class_method_count=class_method_count,
-                )
-            )
-        scopes_tuple = tuple(scopes)
-        return [_EnvironmentBooleanModuleProjection.from_scopes(scopes_tuple, aliases)]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
 class _EnvironmentBooleanModuleProjectionFamily(
     CollectedFamily[_EnvironmentBooleanModuleProjection]
 ):
@@ -1380,7 +1267,119 @@ class _EnvironmentBooleanModuleProjectionFamily(
             if isinstance(item, _EnvironmentBooleanModuleProjection)
         )
     )
-    source_collector = staticmethod(_native_environment_module_projection)
+
+    @staticmethod
+    def source_collector(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[_EnvironmentBooleanModuleProjection] | None:
+        """Project environment semantics from selected function fragments."""
+
+        if not syntax_index.is_complete:
+            return None
+        try:
+            aliases, imports = _native_environment_import_aliases(syntax_index)
+            module_assignments = [
+                syntax_index.statement_for(node)
+                for node in syntax_index.top_level_assignment_statements()
+            ]
+            parsed_module = source_module.parsed_module(
+                ast.Module(
+                    body=[*imports, *module_assignments],
+                    type_ignores=[],
+                ),
+            )
+            captures = syntax_index.common_captures()
+            functions = tuple(
+                sorted(
+                    captures.get("function", ()),
+                    key=lambda node: (node.start_byte, -node.end_byte),
+                )
+            )
+            direct_method_counts: dict[object, int] = defaultdict(int)
+            for function_node in functions:
+                class_node = syntax_index.direct_enclosing_class(function_node)
+                if class_node is not None:
+                    direct_method_counts[class_node] += 1
+            class_assignments: dict[object, list[ast.stmt]] = defaultdict(list)
+            for assignment in captures.get("assignment", ()):
+                statement_node = assignment.parent
+                if statement_node is None or statement_node.type != "expression_statement":
+                    continue
+                block = statement_node.parent
+                if block is None or block.type != "block":
+                    continue
+                class_node = block.parent
+                if class_node is None or class_node.type != "class_definition":
+                    continue
+                statement = syntax_index.statement_for(statement_node)
+                if statement not in class_assignments[class_node]:
+                    class_assignments[class_node].append(statement)
+
+            imported_read_names = frozenset(
+                name
+                for read_kind in EnvironmentReadKind
+                for name in aliases.names_for(read_kind)
+            )
+            scopes: list[_FunctionScope] = []
+            for function_node in functions:
+                lexical_scopes = syntax_index.named_scope_nodes(function_node)
+                if any(scope.type == "function_definition" for scope in lexical_scopes):
+                    continue
+                class_node = next(
+                    (
+                        scope
+                        for scope in reversed(lexical_scopes)
+                        if scope.type == "class_definition"
+                    ),
+                    None,
+                )
+                class_method_count = (
+                    0 if class_node is None else direct_method_counts.get(class_node, 0)
+                )
+                function_name = syntax_index.declared_name(function_node)
+                function_symbol = (
+                    function_name
+                    if class_node is None
+                    else f"{syntax_index.declared_name(class_node)}.{function_name}"
+                )
+                function_source = syntax_index.source_for(function_node)
+                may_read_environment = (
+                    b"getenv" in function_source
+                    or b"environ" in function_source
+                    or any(
+                        name.encode("utf-8") in function_source
+                        for name in imported_read_names
+                    )
+                )
+                may_declare_authority = _native_environment_function_may_declare_authority(
+                    function_symbol
+                )
+                may_be_wrapper = class_node is not None and class_method_count <= 2
+                if not (may_read_environment or may_declare_authority or may_be_wrapper):
+                    continue
+                function = syntax_index.function_for(function_node)
+                synthetic_class: ast.ClassDef | None = None
+                if class_node is not None:
+                    synthetic_class = ast.ClassDef(
+                        name=syntax_index.declared_name(class_node),
+                        bases=[],
+                        keywords=[],
+                        body=list(class_assignments.get(class_node, ())),
+                        decorator_list=[],
+                    )
+                scopes.append(
+                    _FunctionScope(
+                        module=parsed_module,
+                        node=function,
+                        class_node=synthetic_class,
+                        class_method_count=class_method_count,
+                    )
+                )
+            scopes_tuple = tuple(scopes)
+            return [_EnvironmentBooleanModuleProjection.from_scopes(scopes_tuple, aliases)]
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return None
 
     @classmethod
     def collect(

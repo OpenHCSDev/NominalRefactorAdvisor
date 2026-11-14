@@ -1432,41 +1432,39 @@ class RepeatedBuilderCallProjectionDemand:
         )
 
 
-def _collect_repeated_builder_call_ast_demand(
-    module: ParsedModule,
-    demand: object,
-) -> list[object]:
-    if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
-        raise TypeError("repeated-builder demand has the wrong authority type")
-    callee_names = frozenset(
-        callee_name
-        for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
-    )
-    return list(
-        demand.project(module.fact(ModuleBuilderCallShapes).calling(callee_names))
-    )
-
-
-def _collect_repeated_builder_call_source_demand(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-    demand: object,
-) -> list[object] | None:
-    if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
-        raise TypeError("repeated-builder demand has the wrong authority type")
-    builders = _native_repeated_builder_call_shapes(source_module, syntax_index)
-    if builders is None:
-        return None
-    return list(demand.project(tuple(builders)))
-
-
 class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]):
     """Persist normalized builder calls for repository-wide grouping."""
 
     cache_payload_max_bytes = 3_000_000
     source_collector = staticmethod(_native_repeated_builder_call_shapes)
-    source_demand_collector = staticmethod(_collect_repeated_builder_call_source_demand)
-    ast_demand_collector = staticmethod(_collect_repeated_builder_call_ast_demand)
+
+    @staticmethod
+    def source_demand_collector(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        demand: object,
+    ) -> list[object] | None:
+        if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
+            raise TypeError("repeated-builder demand has the wrong authority type")
+        builders = _native_repeated_builder_call_shapes(source_module, syntax_index)
+        if builders is None:
+            return None
+        return list(demand.project(tuple(builders)))
+
+    @staticmethod
+    def ast_demand_collector(
+        module: ParsedModule,
+        demand: object,
+    ) -> list[object]:
+        if not isinstance(demand, RepeatedBuilderCallProjectionDemand):
+            raise TypeError("repeated-builder demand has the wrong authority type")
+        callee_names = frozenset(
+            callee_name
+            for _file_path, callee_name, *_remainder in demand.exact_mapping_keys
+        )
+        return list(
+            demand.project(module.fact(ModuleBuilderCallShapes).calling(callee_names))
+        )
 
     @classmethod
     def report_demand(

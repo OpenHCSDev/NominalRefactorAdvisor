@@ -409,136 +409,6 @@ _NATIVE_REGISTRATION_QUERY = """
 """
 
 
-def _native_registration_shapes(
-    source_module: SourceModule,
-    syntax_index: NativePythonSyntaxIndex,
-) -> list[RegistrationShape] | None:
-    """Recover registration shapes natively, falling back on any uncertainty."""
-
-    if not syntax_index.is_complete:
-        return None
-    captures = syntax_index.captures(_NATIVE_REGISTRATION_QUERY)
-    try:
-        class_names = {
-            syntax_index.source_for(node).decode("utf-8")
-            for node in captures.get("class_name", ())
-        }
-        known_class_family = AstNameFamily(frozenset(class_names))
-        assignments: list[RegistrationShape] = []
-        for syntax_node in sorted(
-            captures.get("assignment", ()),
-            key=lambda node: node.start_byte,
-        ):
-            statement = syntax_index.statement_for(syntax_node)
-            if not isinstance(statement, ast.Assign) or not isinstance(
-                statement.value, ast.Name
-            ):
-                return None
-            if statement.value.id not in class_names:
-                continue
-            for target in statement.targets:
-                registry_name = ExpressionReference.decoded(target).terminal_name
-                key_fingerprint = _registration_key_fingerprint(target)
-                if registry_name is None or key_fingerprint is None:
-                    continue
-                assignments.append(
-                    RegistrationShape.from_assignment(
-                        source_module,  # type: ignore[arg-type]
-                        statement,
-                        registry_name,
-                        key_fingerprint,
-                    )
-                )
-
-        calls: list[RegistrationShape] = []
-        for syntax_node in sorted(
-            captures.get("call", ()),
-            key=lambda node: (node.start_point.row, node.start_byte),
-        ):
-            node = syntax_index.expression_for(syntax_node)
-            if not (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr in REGISTRATION_CALL_FAMILY.names
-                and node.args
-            ):
-                return None
-            class_name = _class_name_from_expr(node.args[0], known_class_family)
-            registry_name = ExpressionReference.decoded(node.func.value).terminal_name
-            if class_name is None or registry_name is None:
-                continue
-            key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
-            calls.append(
-                RegistrationShape.from_registration_call(
-                    source_module,  # type: ignore[arg-type]
-                    node,
-                    registry_name,
-                    class_name,
-                    root_agnostic_expression_fingerprint(key_source),
-                )
-            )
-
-        decorators: list[RegistrationShape] = []
-        decorated_nodes = {
-            (node.start_byte, node.end_byte): node
-            for node in captures.get("decorated", ())
-        }
-        for syntax_node in sorted(
-            decorated_nodes.values(),
-            key=lambda node: (node.start_point.row, node.start_byte),
-        ):
-            statement = syntax_index.statement_for(syntax_node)
-            if not isinstance(statement, ast.ClassDef):
-                return None
-            for decorator in statement.decorator_list:
-                if not (
-                    isinstance(decorator, ast.Call)
-                    and ExpressionReference.decoded(decorator.func).terminal_name
-                    in REGISTRATION_DECORATOR_FAMILY.names
-                    and decorator.args
-                ):
-                    continue
-                registry_name = ExpressionReference.decoded(
-                    decorator.args[0]
-                ).terminal_name
-                if registry_name is None:
-                    continue
-                key_expression = (
-                    decorator.args[1]
-                    if len(decorator.args) >= 2
-                    else ast.Constant(value=statement.name)
-                )
-                decorators.append(
-                    RegistrationShape.from_decorator(
-                        source_module,  # type: ignore[arg-type]
-                        statement,
-                        decorator,
-                        registry_name,
-                        root_agnostic_expression_fingerprint(key_expression),
-                    )
-                )
-        factory_shapes = _factory_decorator_registration_shapes(
-            source_module,
-            (
-                *(
-                    syntax_index.statement_for(node)
-                    for node in syntax_index.top_level_assignment_statements()
-                ),
-                *(
-                    syntax_index.function_for(node)
-                    for node in syntax_index.top_level_declarations("function")
-                ),
-                *(
-                    syntax_index.class_for(node)
-                    for node in syntax_index.top_level_declarations("class")
-                ),
-            ),
-        )
-        return [*assignments, *calls, *decorators, *factory_shapes]
-    except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
-        return None
-
-
 class StringLiteralDispatchObservationSpec(LiteralDispatchObservationSpec):
     literal_kind = LiteralKind.STRING
 
@@ -1287,7 +1157,136 @@ class RegistrationShapeFamily(
     RegisteredSpecCollectedFamily[RegistrationShape], ShapeFamily[RegistrationShape]
 ):
     spec_root = RegistrationShapeSpec
-    source_collector = staticmethod(_native_registration_shapes)
+
+    @staticmethod
+    def source_collector(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[RegistrationShape] | None:
+        """Recover registration shapes natively, falling back on any uncertainty."""
+
+        if not syntax_index.is_complete:
+            return None
+        captures = syntax_index.captures(_NATIVE_REGISTRATION_QUERY)
+        try:
+            class_names = {
+                syntax_index.source_for(node).decode("utf-8")
+                for node in captures.get("class_name", ())
+            }
+            known_class_family = AstNameFamily(frozenset(class_names))
+            assignments: list[RegistrationShape] = []
+            for syntax_node in sorted(
+                captures.get("assignment", ()),
+                key=lambda node: node.start_byte,
+            ):
+                statement = syntax_index.statement_for(syntax_node)
+                if not isinstance(statement, ast.Assign) or not isinstance(
+                    statement.value, ast.Name
+                ):
+                    return None
+                if statement.value.id not in class_names:
+                    continue
+                for target in statement.targets:
+                    registry_name = ExpressionReference.decoded(target).terminal_name
+                    key_fingerprint = _registration_key_fingerprint(target)
+                    if registry_name is None or key_fingerprint is None:
+                        continue
+                    assignments.append(
+                        RegistrationShape.from_assignment(
+                            source_module,  # type: ignore[arg-type]
+                            statement,
+                            registry_name,
+                            key_fingerprint,
+                        )
+                    )
+
+            calls: list[RegistrationShape] = []
+            for syntax_node in sorted(
+                captures.get("call", ()),
+                key=lambda node: (node.start_point.row, node.start_byte),
+            ):
+                node = syntax_index.expression_for(syntax_node)
+                if not (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in REGISTRATION_CALL_FAMILY.names
+                    and node.args
+                ):
+                    return None
+                class_name = _class_name_from_expr(node.args[0], known_class_family)
+                registry_name = ExpressionReference.decoded(node.func.value).terminal_name
+                if class_name is None or registry_name is None:
+                    continue
+                key_source = node.args[1] if len(node.args) >= 2 else node.args[0]
+                calls.append(
+                    RegistrationShape.from_registration_call(
+                        source_module,  # type: ignore[arg-type]
+                        node,
+                        registry_name,
+                        class_name,
+                        root_agnostic_expression_fingerprint(key_source),
+                    )
+                )
+
+            decorators: list[RegistrationShape] = []
+            decorated_nodes = {
+                (node.start_byte, node.end_byte): node
+                for node in captures.get("decorated", ())
+            }
+            for syntax_node in sorted(
+                decorated_nodes.values(),
+                key=lambda node: (node.start_point.row, node.start_byte),
+            ):
+                statement = syntax_index.statement_for(syntax_node)
+                if not isinstance(statement, ast.ClassDef):
+                    return None
+                for decorator in statement.decorator_list:
+                    if not (
+                        isinstance(decorator, ast.Call)
+                        and ExpressionReference.decoded(decorator.func).terminal_name
+                        in REGISTRATION_DECORATOR_FAMILY.names
+                        and decorator.args
+                    ):
+                        continue
+                    registry_name = ExpressionReference.decoded(
+                        decorator.args[0]
+                    ).terminal_name
+                    if registry_name is None:
+                        continue
+                    key_expression = (
+                        decorator.args[1]
+                        if len(decorator.args) >= 2
+                        else ast.Constant(value=statement.name)
+                    )
+                    decorators.append(
+                        RegistrationShape.from_decorator(
+                            source_module,  # type: ignore[arg-type]
+                            statement,
+                            decorator,
+                            registry_name,
+                            root_agnostic_expression_fingerprint(key_expression),
+                        )
+                    )
+            factory_shapes = _factory_decorator_registration_shapes(
+                source_module,
+                (
+                    *(
+                        syntax_index.statement_for(node)
+                        for node in syntax_index.top_level_assignment_statements()
+                    ),
+                    *(
+                        syntax_index.function_for(node)
+                        for node in syntax_index.top_level_declarations("function")
+                    ),
+                    *(
+                        syntax_index.class_for(node)
+                        for node in syntax_index.top_level_declarations("class")
+                    ),
+                ),
+            )
+            return [*assignments, *calls, *decorators, *factory_shapes]
+        except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
+            return None
 
     @staticmethod
     def report_presence_predicate(items: tuple[object, ...], config: object) -> bool:

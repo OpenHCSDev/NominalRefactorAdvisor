@@ -310,29 +310,6 @@ class JoinedRestatedFactDetector(
         )
 
 
-def _declared_class_scope(
-    projections_by_family: CompactProjectionGroups,
-) -> DeclaredClassScope:
-    """The scan's module names and the symbol of every class in one of its own
-    families: a class one of whose resolved bases the scan declares, and each
-    such base."""
-
-    index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
-    edges = tuple(
-        (symbol, base)
-        for symbol, indexed_class in index.classes_by_symbol.items()
-        for base in indexed_class.resolved_base_symbols
-        if base in index.known_symbols
-    )
-    return DeclaredClassScope(
-        tuple(
-            module.module_name
-            for module in TypeTestModuleFamily.modules_in(projections_by_family)
-        ),
-        frozenset(symbol for edge in edges for symbol in edge),
-    )
-
-
 class OwnTypeTestDetector(
     JoinedRestatedFactDetector[DeclaredClassScope, TypeTestShape],
 ):
@@ -343,7 +320,30 @@ class OwnTypeTestDetector(
         TypeTestModuleFamily,
         CompactModuleClassProjectionFamily,
     )
-    compact_shared_group_context_builder = staticmethod(_declared_class_scope)
+
+    @staticmethod
+    def compact_shared_group_context_builder(
+        projections_by_family: CompactProjectionGroups,
+    ) -> DeclaredClassScope:
+        """The scan's module names and the symbol of every class in one of its own
+        families: a class one of whose resolved bases the scan declares, and each
+        such base."""
+
+        index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+        edges = tuple(
+            (symbol, base)
+            for symbol, indexed_class in index.classes_by_symbol.items()
+            for base in indexed_class.resolved_base_symbols
+            if base in index.known_symbols
+        )
+        return DeclaredClassScope(
+            tuple(
+                module.module_name
+                for module in TypeTestModuleFamily.modules_in(projections_by_family)
+            ),
+            frozenset(symbol for edge in edges for symbol in edge),
+        )
+
     restated = RestatedFact(
         fact="The test re-derives at the consumer which class the value is, a fact the class already is; every own class added later must find this site.",
         owner="The owner is the tested class family: a method on the base that answers the default, overridden in each tested class.",
@@ -454,14 +454,6 @@ class DeclaredRecords:
         return cls({fields: tuple(found) for fields, found in owners.items()})
 
 
-def _declared_records(
-    projections_by_family: CompactProjectionGroups,
-) -> DeclaredRecords:
-    return DeclaredRecords.from_observations(
-        FieldObservationFamily.modules_in(projections_by_family)
-    )
-
-
 def _reference_facts(
     projections_by_family: CompactProjectionGroups,
 ) -> Sequence[ModuleReferenceFacts]:
@@ -470,12 +462,6 @@ def _reference_facts(
 
 def _reference_index(projections_by_family: CompactProjectionGroups) -> ReferenceIndex:
     return ReferenceIndex.from_facts(_reference_facts(projections_by_family))
-
-
-def _unreached_modules(
-    projections_by_family: CompactProjectionGroups,
-) -> UnreachedModules:
-    return UnreachedModules.from_facts(_reference_facts(projections_by_family))
 
 
 class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingSite]):
@@ -496,7 +482,13 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
         (ObservationTag.SEMANTIC_STRING_LITERAL,),
     )
 
-    compact_shared_group_context_builder = staticmethod(_declared_records)
+    @staticmethod
+    def compact_shared_group_context_builder(
+        projections_by_family: CompactProjectionGroups,
+    ) -> DeclaredRecords:
+        return DeclaredRecords.from_observations(
+            FieldObservationFamily.modules_in(projections_by_family)
+        )
 
     def describe(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
         # One finding covers one mapping checked against one key set; a symbol
@@ -580,15 +572,6 @@ class ProbeOwnerQuery:
         )
 
 
-def _probe_owner_context_from_files(
-    projections_by_family: CompactProjectionGroups,
-) -> ProbeOwnerContext:
-    """The compact roots path holds projections, not parsed text: it types the files it read."""
-
-    query = ProbeOwnerQuery.of(projections_by_family)
-    return query.answered(SourceFiles(query.file_paths))
-
-
 class ForeignAbsenceProbeDetector(
     JoinedRestatedFactDetector[ProbeOwnerContext, ForeignAbsenceSite],
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
@@ -600,7 +583,14 @@ class ForeignAbsenceProbeDetector(
         CompactModuleClassProjectionFamily,
     )
 
-    compact_shared_group_context_builder = staticmethod(_probe_owner_context_from_files)
+    @staticmethod
+    def compact_shared_group_context_builder(
+        projections_by_family: CompactProjectionGroups,
+    ) -> ProbeOwnerContext:
+        """The compact roots path holds projections, not parsed text: it types the files it read."""
+
+        query = ProbeOwnerQuery.of(projections_by_family)
+        return query.answered(SourceFiles(query.file_paths))
 
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
@@ -832,7 +822,11 @@ class DeadModuleDetector(
         (ObservationTag.PARTIAL_VIEW,),
     )
 
-    compact_shared_group_context_builder = staticmethod(_unreached_modules)
+    @staticmethod
+    def compact_shared_group_context_builder(
+        projections_by_family: CompactProjectionGroups,
+    ) -> UnreachedModules:
+        return UnreachedModules.from_facts(_reference_facts(projections_by_family))
 
     def admits(self, sites: Sequence[RestatingSite], context: UnreachedModules) -> bool:
         return sites[0].group in context.module_names
