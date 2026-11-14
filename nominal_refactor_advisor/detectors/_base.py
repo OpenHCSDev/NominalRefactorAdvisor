@@ -20,8 +20,6 @@ from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from operator import attrgetter
-import types
-import typing
 from typing import (
     Callable,
     ClassVar,
@@ -44,6 +42,7 @@ from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConf
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.detectors._candidates import (
+    SubscriptedContract,
     _DEFAULT_FILE_PATH_ATTRIBUTE as _DEFAULT_FILE_PATH_ATTRIBUTE,
     AttributeValueT as AttributeValueT,
     ClassMethodFamilyCandidate as ClassMethodFamilyCandidate,
@@ -470,7 +469,7 @@ class IssueDetector(
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
     detector_declaration: ClassVar[DetectorDeclaration[object] | None] = None
-    self_collecting_contract: ClassVar[type[ABC] | None] = None
+    self_collecting_contract: ClassVar[type[SelfCollectingContract] | None] = None
     """The contract a candidate type answers when its from_module is this detector's
     collector as called: with the module alone, or with the module and the config. None
     when the collector is not a candidate type's own."""
@@ -1674,7 +1673,17 @@ class CandidateCollectorBaseReference:
             raise ValueError("source does not prove a nominal collector base")
 
 
-class CollectsItself(ABC):
+class SelfCollectingContract(SubscriptedContract):
+    """A contract whose answering type's from_module is a detector's collector."""
+
+    @classmethod
+    def collector_of(cls, candidate: object) -> DetectorCollector[object] | None:
+        """The collector the candidate type gives, when it answers this contract."""
+
+        return None
+
+
+class CollectsItself(SelfCollectingContract, ABC):
     """A candidate type that knows how to find its candidates in one module. A detector
     declared over it has no collector to name."""
 
@@ -1683,8 +1692,13 @@ class CollectsItself(ABC):
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         raise NotImplementedError
 
+    @classmethod
+    def collector_of(cls, candidate: object) -> DetectorCollector[object] | None:
+        answered = cls.answered_by(candidate)
+        return None if answered is None else answered.from_module
 
-class CollectsItselfUnderConfig(ABC):
+
+class CollectsItselfUnderConfig(SelfCollectingContract, ABC):
     """A candidate type that finds its candidates in one module under the detector config.
     A detector over it whose base passes the config has no collector to name."""
 
@@ -1693,50 +1707,30 @@ class CollectsItselfUnderConfig(ABC):
     def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
         raise NotImplementedError
 
-
-SubscriptContractT = TypeVar("SubscriptContractT")
+    @classmethod
+    def collector_of(cls, candidate: object) -> DetectorCollector[object] | None:
+        answered = cls.answered_by(candidate)
+        return None if answered is None else answered.from_module
 
 
 class SubscriptedCandidateType:
-    """A detector whose candidate type is a type argument of a base it subscripts."""
-
-    @classmethod
-    def _subscripted_candidate_type(
-        cls, contract: type[SubscriptContractT]
-    ) -> type[SubscriptContractT] | None:
-        """The first type argument, along the MRO, that answers the contract."""
-
-        return next(
-            (
-                argument
-                for klass in cls.__mro__
-                for base in types.get_original_bases(klass)
-                for argument in typing.get_args(base)
-                if isinstance(argument, type) and issubclass(argument, contract)
-            ),
-            None,
-        )
+    """A detector whose candidate type can be a type argument of a base it subscripts."""
 
     @classmethod
     def _require_candidate_source(
         cls,
         found: Callable[..., object],
         derived: Callable[..., object],
-        contract: type,
+        answering: type | None,
     ) -> None:
         """Refuse a concrete detector whose candidate method is still the base's
-        derived one (`found is derived`) while it subscripts no candidate type
-        answering the contract: it would have no way to find candidates."""
+        derived one (`found is derived`) while no subscripted candidate type answers
+        that method's contract: it would have no way to find candidates."""
 
-        if (
-            _has_finding_spec_contract(cls)
-            and found is derived
-            and cls._subscripted_candidate_type(contract) is None
-        ):
+        if _has_finding_spec_contract(cls) and found is derived and answering is None:
             raise TypeError(
                 f"{cls.__name__} must say how it finds candidates: subscript a "
-                f"candidate type answering {contract.__name__}, or override "
-                f"{derived.__name__}"
+                f"candidate type that finds its own, or override {derived.__name__}"
             )
 
 
@@ -1744,33 +1738,24 @@ class DerivedCandidateCollectorMixin(SubscriptedCandidateType, Generic[Candidate
     candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
     collector_scope: ClassVar[CandidateCollectorScope | None] = None
     collector_uses_config: ClassVar[bool] = False
-    self_collecting_contract: ClassVar[type[ABC] | None]
+    self_collecting_contract: ClassVar[type[SelfCollectingContract] | None]
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
-        collecting = cls._self_collecting_candidate_type()
-        if "candidate_collector" not in vars(cls) and collecting is not None:
-            cls.candidate_collector = cast(
-                DetectorCollector[CandidateItemT], collecting.from_module
-            )
+        contract = cls.self_collecting_contract
+        collector = (
+            None
+            if contract is None
+            else contract.collector_of(contract.subscripted_in(cls))
+        )
+        if "candidate_collector" not in vars(cls) and collector is not None:
+            cls.candidate_collector = cast(DetectorCollector[CandidateItemT], collector)
         if _has_finding_spec_contract(cls) and (
             "candidate_collector" not in vars(cls) or cls.candidate_collector is None
         ):
             raise TypeError(
                 f"{cls.__name__} must own its candidate_collector declaration"
             )
-
-    @classmethod
-    def _self_collecting_candidate_type(
-        cls,
-    ) -> type[CollectsItself | CollectsItselfUnderConfig] | None:
-        """The candidate type this class is subscripted with, when it answers the
-        self-collecting contract this base's collector call fits."""
-
-        contract = cls.self_collecting_contract
-        if contract is None:
-            return None
-        return cls._subscripted_candidate_type(contract)
 
     @classmethod
     def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:
@@ -2129,7 +2114,9 @@ class CompactMultiProjectionCandidateDetector(
         raise NotImplementedError
 
 
-class CollectsItselfFromCompactContext(ABC, Generic[CompactCandidateContextT]):
+class CollectsItselfFromCompactContext(
+    SubscriptedContract, ABC, Generic[CompactCandidateContextT]
+):
     """A candidate type that finds its candidates in a detector's compact context. A
     compact-context detector over it has no candidate method to write."""
 
@@ -2196,7 +2183,7 @@ class CompactContextCandidateDetector(
         cls._require_candidate_source(
             cls._candidates_from_compact_context,
             CompactContextCandidateDetector._candidates_from_compact_context,
-            CollectsItselfFromCompactContext,
+            CollectsItselfFromCompactContext.subscripted_in(cls),
         )
 
     def _candidates_from_compact_context(
@@ -2206,9 +2193,9 @@ class CompactContextCandidateDetector(
     ) -> Sequence[CandidateItemT]:
         """The subscripted candidate type's own candidates in the context."""
 
-        candidate_type = type(self)._subscripted_candidate_type(
-            CollectsItselfFromCompactContext
-        )
+        candidate_type: (
+            type[CollectsItselfFromCompactContext[CompactCandidateContextT]] | None
+        ) = CollectsItselfFromCompactContext.subscripted_in(type(self))
         assert candidate_type is not None
         return cast(
             Sequence[CandidateItemT],
@@ -2364,16 +2351,11 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
                 f"Unknown detector declaration option(s): {', '.join(sorted(unknown_names))}"
             )
         contract = options.get("detector_base", cls.detector_base).self_collecting_contract
-        if (
-            "candidate_collector" not in options
-            and contract is not None
-            and issubclass(candidate_type, contract)
-        ):
+        collector = None if contract is None else contract.collector_of(candidate_type)
+        if "candidate_collector" not in options and collector is not None:
             return cls(
                 **options,
-                candidate_collector=cast(
-                    DetectorCollector[CandidateItemT], candidate_type.from_module
-                ),
+                candidate_collector=cast(DetectorCollector[CandidateItemT], collector),
             )
         return cls(**options)
 

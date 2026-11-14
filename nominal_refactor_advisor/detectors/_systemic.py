@@ -2449,7 +2449,7 @@ class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWi
                     ):
                         continue
                 for surface in projection.named_projection_surfaces:
-                    candidate = _compact_registry_projection_surface_candidate(
+                    candidate = cls._from_named_surface(
                         surface,
                         fact=fact,
                         import_aliases=import_aliases,
@@ -2525,86 +2525,87 @@ class RegistryProjectionSurfaceCandidate(CollectsItselfFromRegistryFacts, LineWi
             injectivity_proof=fact.require_proof(),
         )
 
+    @classmethod
+    def _from_named_surface(
+        cls,
+        surface: CompactNamedProjectionSurface,
+        *,
+        fact: KeyedRegistryAxisFact,
+        import_aliases: dict[str, str],
+    ) -> Self | None:
+        proof = fact.require_proof()
+        if surface.sequence_references:
+            reference_names = tuple(
+                _compact_registry_projection_reference_name(reference, import_aliases)
+                for reference in surface.sequence_references
+            )
+            shared_key_names = sorted_tuple(
+                frozenset(reference_names) & frozenset(proof.key_names)
+            )
+            shared_type_names = sorted_tuple(
+                frozenset(reference_names) & frozenset(proof.registered_type_names)
+            )
+            evidence = RegistryProjectionSurfaceEvidence(
+                surface_name=surface.surface_name,
+                shared_key_names=shared_key_names,
+                shared_type_names=shared_type_names,
+                has_key_to_type_pairs=False,
+                has_type_to_key_pairs=False,
+            )
+            surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
+            if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 2:
+                return None
+            return cls.for_surface(
+                file_path=surface.file_path,
+                fact=fact,
+                evidence=evidence,
+                line=surface.line,
+                surface_kind=surface_kind,
+                projected_names=reference_names,
+            )
 
-def _compact_registry_projection_surface_candidate(
-    surface: CompactNamedProjectionSurface,
-    *,
-    fact: KeyedRegistryAxisFact,
-    import_aliases: dict[str, str],
-) -> RegistryProjectionSurfaceCandidate | None:
-    proof = fact.require_proof()
-    if surface.sequence_references:
-        reference_names = tuple(
+        key_names = tuple(
             _compact_registry_projection_reference_name(reference, import_aliases)
-            for reference in surface.sequence_references
+            for reference in surface.dict_key_references
         )
+        value_names = tuple(
+            _compact_registry_projection_reference_name(reference, import_aliases)
+            for reference in surface.dict_value_references
+        )
+        proof_key_names = frozenset(proof.key_names)
+        proof_type_names = frozenset(proof.registered_type_names)
         shared_key_names = sorted_tuple(
-            frozenset(reference_names) & frozenset(proof.key_names)
+            (frozenset(key_names) | frozenset(value_names)) & proof_key_names
         )
         shared_type_names = sorted_tuple(
-            frozenset(reference_names) & frozenset(proof.registered_type_names)
+            (frozenset(key_names) | frozenset(value_names)) & proof_type_names
+        )
+        has_key_to_type_pairs = bool(
+            len(frozenset(key_names) & proof_key_names) >= 2
+            and len(frozenset(value_names) & proof_type_names) >= 2
+        )
+        has_type_to_key_pairs = bool(
+            len(frozenset(key_names) & proof_type_names) >= 2
+            and len(frozenset(value_names) & proof_key_names) >= 2
         )
         evidence = RegistryProjectionSurfaceEvidence(
             surface_name=surface.surface_name,
             shared_key_names=shared_key_names,
             shared_type_names=shared_type_names,
-            has_key_to_type_pairs=False,
-            has_type_to_key_pairs=False,
+            has_key_to_type_pairs=has_key_to_type_pairs,
+            has_type_to_key_pairs=has_type_to_key_pairs,
         )
         surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
-        if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 2:
+        if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 3:
             return None
-        return RegistryProjectionSurfaceCandidate.for_surface(
+        return cls.for_surface(
             file_path=surface.file_path,
             fact=fact,
             evidence=evidence,
             line=surface.line,
             surface_kind=surface_kind,
-            projected_names=reference_names,
+            projected_names=(*key_names, *value_names),
         )
-
-    key_names = tuple(
-        _compact_registry_projection_reference_name(reference, import_aliases)
-        for reference in surface.dict_key_references
-    )
-    value_names = tuple(
-        _compact_registry_projection_reference_name(reference, import_aliases)
-        for reference in surface.dict_value_references
-    )
-    proof_key_names = frozenset(proof.key_names)
-    proof_type_names = frozenset(proof.registered_type_names)
-    shared_key_names = sorted_tuple(
-        (frozenset(key_names) | frozenset(value_names)) & proof_key_names
-    )
-    shared_type_names = sorted_tuple(
-        (frozenset(key_names) | frozenset(value_names)) & proof_type_names
-    )
-    has_key_to_type_pairs = bool(
-        len(frozenset(key_names) & proof_key_names) >= 2
-        and len(frozenset(value_names) & proof_type_names) >= 2
-    )
-    has_type_to_key_pairs = bool(
-        len(frozenset(key_names) & proof_type_names) >= 2
-        and len(frozenset(value_names) & proof_key_names) >= 2
-    )
-    evidence = RegistryProjectionSurfaceEvidence(
-        surface_name=surface.surface_name,
-        shared_key_names=shared_key_names,
-        shared_type_names=shared_type_names,
-        has_key_to_type_pairs=has_key_to_type_pairs,
-        has_type_to_key_pairs=has_type_to_key_pairs,
-    )
-    surface_kind = RegistryProjectionSurfaceKind.for_evidence(evidence)
-    if surface_kind is None or len(shared_key_names) + len(shared_type_names) < 3:
-        return None
-    return RegistryProjectionSurfaceCandidate.for_surface(
-        file_path=surface.file_path,
-        fact=fact,
-        evidence=evidence,
-        line=surface.line,
-        surface_kind=surface_kind,
-        projected_names=(*key_names, *value_names),
-    )
 
 
 class KeyedRegistryAxisRootAnchored(TargetClassEvidenceAnchored):
@@ -2651,7 +2652,7 @@ class _CompactKeyedRegistryCandidateDetectorBase(
         cls._require_candidate_source(
             cls._candidates_from_registry_facts,
             _CompactKeyedRegistryCandidateDetectorBase._candidates_from_registry_facts,
-            CollectsItselfFromRegistryFacts,
+            CollectsItselfFromRegistryFacts.subscripted_in(cls),
         )
 
     def _candidates_from_registry_facts(
@@ -2661,9 +2662,7 @@ class _CompactKeyedRegistryCandidateDetectorBase(
     ) -> Sequence[CompactKeyedRegistryCandidateT]:
         """The subscripted candidate type's own candidates in the registry facts."""
 
-        candidate_type = type(self)._subscripted_candidate_type(
-            CollectsItselfFromRegistryFacts
-        )
+        candidate_type = CollectsItselfFromRegistryFacts.subscripted_in(type(self))
         assert candidate_type is not None
         return cast(
             Sequence[CompactKeyedRegistryCandidateT],

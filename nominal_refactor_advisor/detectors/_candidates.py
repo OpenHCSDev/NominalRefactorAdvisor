@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import types
+import typing
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, fields
 from functools import cached_property
@@ -161,7 +163,33 @@ class KeyedRegistryAxisFact(KeyedRegistryAxisSurface, SourceLineReference):
         )
 
 
-class CollectsItselfFromRegistryFacts(ABC):
+class SubscriptedContract:
+    """A contract a candidate type answers. It says which type answers it, among the
+    type arguments a detector subscripts its base with."""
+
+    @classmethod
+    def answered_by(cls, candidate: object) -> type[Self] | None:
+        if isinstance(candidate, type) and issubclass(candidate, cls):
+            return candidate
+        return None
+
+    @classmethod
+    def subscripted_in(cls, owner: type) -> type[Self] | None:
+        """The first type argument, along the owner's MRO, that answers this contract."""
+
+        return next(
+            (
+                answered
+                for klass in owner.__mro__
+                for base in types.get_original_bases(klass)
+                for argument in typing.get_args(base)
+                if (answered := cls.answered_by(argument)) is not None
+            ),
+            None,
+        )
+
+
+class CollectsItselfFromRegistryFacts(SubscriptedContract, ABC):
     """A candidate type that finds its candidates in the keyed-registry facts the class
     repository indexes. A registry detector over it has no candidate method to write."""
 
@@ -170,7 +198,7 @@ class CollectsItselfFromRegistryFacts(ABC):
     def from_registry_facts(
         cls,
         projections: Sequence[CompactModuleClassProjection],
-        facts: Sequence[KeyedRegistryAxisFact],
+        facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> tuple[Self, ...]:
         raise NotImplementedError
 
@@ -187,7 +215,7 @@ class KeyedRegistryFactCandidate(CollectsItselfFromRegistryFacts):
     def from_registry_facts(
         cls,
         projections: Sequence[CompactModuleClassProjection],
-        facts: Sequence[KeyedRegistryAxisFact],
+        facts: tuple[KeyedRegistryAxisFact, ...],
     ) -> tuple[Self, ...]:
         del projections
         field_names = tuple(item.name for item in fields(cls))
