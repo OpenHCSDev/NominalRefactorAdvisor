@@ -406,19 +406,6 @@ class RestatingSite(SymbolSite):
     group: str
     detail: tuple[str, ...]
 
-    @staticmethod
-    def restater_of(sites: Sequence[RestatingSite]) -> tuple[str, ...]:
-        """What makes these sites one restater: their symbol, in its file as the
-        file sits in its checkout, the group they share, and what they say.
-        No line and no directory is in it."""
-
-        first = sites[0]
-        return (
-            first.location.subject_key,
-            first.group,
-            *sorted({" ".join(site.detail) for site in sites}),
-        )
-
 
 @dataclass(frozen=True)
 class SubjectReading:

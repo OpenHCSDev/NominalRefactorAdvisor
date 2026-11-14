@@ -1197,14 +1197,15 @@ def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
 
     A pattern nested inside another class, sequence or mapping pattern tests an
     attribute or element of the subject, so it is keyed apart from the top-level
-    patterns of the same match.
+    patterns of the same match: by the pattern it sits in, never by where that
+    pattern is, because the key is part of a finding's identity.
     """
 
     parts: list[str] = []
     for ancestor in reversed(ancestors):
         match ancestor:
             case ast.MatchClass() | ast.MatchSequence() | ast.MatchMapping():
-                parts.append(f"{ancestor.lineno}:{ancestor.col_offset}")
+                parts.append(ast.dump(ancestor))
             case ast.Match(subject=subject):
                 return ast.dump(subject) + "".join(f"@{part}" for part in parts)
     return "@".join(parts)

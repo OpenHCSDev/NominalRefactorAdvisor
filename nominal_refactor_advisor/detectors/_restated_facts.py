@@ -54,7 +54,10 @@ from nominal_refactor_advisor.refactors.optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
     RouteOptionalAstFieldProbesOperation,
 )
-from nominal_refactor_advisor.cache_checkout import checkout_display_path
+from nominal_refactor_advisor.cache_checkout import (
+    checkout_display_path,
+    checkout_identity_text,
+)
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     FindingMetrics,
@@ -193,11 +196,34 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
     ) -> tuple[SourceLocation, ...]:
         return tuple(site.location for site in sites)
 
+    def group_of(self, site: SiteT, context: ContextT) -> tuple[str, str, str]:
+        """What one finding covers: a file or a family, a symbol and a group."""
+
+        return (site.file_path, site.symbol, site.group)
+
+    def site_order(self, site: SiteT) -> tuple[object, ...]:
+        """How the sites of one finding are listed."""
+
+        return (site.lineno, site.detail)
+
+    def restater(self, sites: Sequence[SiteT], context: ContextT) -> tuple[str, ...]:
+        """What makes these sites the same finding in the next scan: what they
+        cover, a file spelled as it sits in its checkout, and what they say.
+        No line and no directory is in it."""
+
+        where, symbol, group = self.group_of(sites[0], context)
+        return (
+            checkout_identity_text(where),
+            symbol,
+            group,
+            *sorted({" ".join(site.detail) for site in sites}),
+        )
+
     def metrics(self, sites: Sequence[SiteT], context: ContextT) -> FindingMetrics:
         """The finding's typed facts. By default only which restater it is,
         which is what makes it the same finding in the next scan."""
 
-        return RestaterMetrics(restater=RestatingSite.restater_of(sites))
+        return RestaterMetrics(restater=self.restater(sites, context))
 
     def finding_context(
         self, sites: Sequence[SiteT], context: ContextT
@@ -212,10 +238,10 @@ class RestatedFactDetector(IssueDetector, Generic[ContextT, SiteT], ABC):
         groups: dict[tuple[str, str, str], list[SiteT]] = defaultdict(list)
         for site in sites:
             if self.restates(site, context):
-                groups[(site.file_path, site.symbol, site.group)].append(site)
+                groups[self.group_of(site, context)].append(site)
         findings = []
         for _key, group in sorted(groups.items()):
-            ordered = sorted(group, key=lambda site: (site.lineno, site.detail))
+            ordered = sorted(group, key=self.site_order)
             if not self.admits(ordered, context):
                 continue
             summary = (
@@ -473,7 +499,9 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
     compact_shared_group_context_builder = staticmethod(_declared_records)
 
     def describe(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
-        (site,) = sites
+        # One finding covers one mapping checked against one key set; a symbol
+        # that writes the same check twice has two sites that say the same.
+        site = sites[0]
         mapping, *keys = site.detail
         return (
             f"The keys of `{mapping}` are checked against the literal "
@@ -483,8 +511,7 @@ class ExactKeySetDetector(JoinedRestatedFactDetector[DeclaredRecords, RestatingS
     def declared(
         self, sites: Sequence[RestatingSite], context: DeclaredRecords
     ) -> tuple[SourceLocation, ...]:
-        (site,) = sites
-        return context.owners_by_fields.get(frozenset(site.detail[1:]), ())
+        return context.owners_by_fields.get(frozenset(sites[0].detail[1:]), ())
 
     def owner(self, sites: Sequence[RestatingSite], context: DeclaredRecords) -> str:
         declared = self.declared(sites, context)
@@ -769,7 +796,7 @@ class ForwardingFacadeDetector(
         self, sites: Sequence[RestatingSite], context: CompactClassFamilyIndex
     ) -> FindingMetrics:
         return ForwardingFacadeMetrics(
-            len(self.forwards(sites)), restater=RestatingSite.restater_of(sites)
+            len(self.forwards(sites)), restater=self.restater(sites, context)
         )
 
 

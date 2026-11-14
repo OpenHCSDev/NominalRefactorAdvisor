@@ -9,12 +9,11 @@ performs these factorings yet, so every finding carries the prescription.
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from operator import attrgetter
 from typing import Generic, TypeVar
 
 from nominal_refactor_advisor.class_index import (
@@ -24,7 +23,7 @@ from nominal_refactor_advisor.class_index import (
 )
 
 from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.relocation_observations import (
     BranchRead,
@@ -269,31 +268,8 @@ class RelocationDetector(
 
     compact_shared_group_context_builder = staticmethod(_relocation_index)
 
-    @abstractmethod
-    def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
-        """The (file, symbol, group) one finding covers."""
-        raise NotImplementedError
-
-    def findings_from_sites(
-        self, sites: Iterable[RestatingSite], context: RelocationIndex
-    ) -> list[RefactorFinding]:
-        groups: dict[tuple[str, str, str], list[RestatingSite]] = defaultdict(list)
-        for site in sites:
-            groups[self.group_of(site, context)].append(site)
-        findings = []
-        for _key, group in sorted(groups.items()):
-            ordered = sorted(group, key=attrgetter("file_path", "lineno"))
-            if not self.admits(ordered, context):
-                continue
-            summary = (
-                f"{self.describe(ordered, context)} {self.restated.fact} "
-                f"Owner: {self.owner(ordered, context)} "
-                f"Factoring: {self.restated.factoring} {self.restated.recipe_status}"
-            )
-            findings.append(
-                self.build_finding(summary, self.evidence(ordered, context))
-            )
-        return findings
+    def site_order(self, site: RestatingSite) -> tuple[object, ...]:
+        return (site.file_path, site.lineno)
 
 
 class FamilyMemberRelocationDetector(RelocationDetector, ABC):
@@ -393,9 +369,6 @@ class OwnStateBranchAnswerDetector(RelocationDetector):
         (CapabilityTag.CLOSED_FAMILY_DISPATCH,),
         (ObservationTag.BRANCH_DISPATCH, ObservationTag.ATTRIBUTE_PROBE),
     )
-
-    def group_of(self, site: RestatingSite, context: RelocationIndex) -> tuple[str, str, str]:
-        return (site.file_path, site.symbol, site.group)
 
     def consumers(
         self, sites: Sequence[RestatingSite], context: RelocationIndex

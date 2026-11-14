@@ -330,7 +330,7 @@ class ExactKeySetSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     parsed_module,
                     node,
                     scope.symbol,
-                    f"{node.lineno}:{node.col_offset}",
+                    " ".join((ast.unparse(mapping), *keys)),
                     (ast.unparse(mapping), *keys),
                 )
 

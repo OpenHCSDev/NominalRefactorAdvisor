@@ -531,8 +531,16 @@ shared with a family (`_base.py:4277`). One passed and was composed:
   directory: 737 of 1,925 findings on NRA's own package, against the
   id's own contract (#97, `tests/test_finding_identity.py`). All 18
   detectors of the family now carry `RestaterMetrics`: the id is the
-  restater (`RestatingSite.restater_of`: symbol in its checkout-relative
-  file, group, what the sites say). `ForwardingFacadeMetrics` and
+  restater (`RestatedFactDetector.restater`: what `group_of` says one
+  finding covers, the file as it sits in its checkout, and what the
+  sites say). So a site's `group` and `detail` must never hold a line,
+  a column or a directory; two families did (`line:column` as the group
+  of an exact key set, a pattern's position in a nested `match` key)
+  and now use the text of what they cover. A detector that groups its
+  sites another way overrides `group_of` and `site_order`, never
+  `findings_from_sites`: the relocation detectors kept a second copy of
+  that assembly and it missed this fix until a whole-package scan of a
+  shifted copy showed 36 ids still moving. `ForwardingFacadeMetrics` and
   `DeclarationReferenceMetrics` inherit it; `string_kind_dispatch` keeps
   its dispatch metrics, whose summary has no line. Their prose still
   names each site as `file:line`, now spelled by

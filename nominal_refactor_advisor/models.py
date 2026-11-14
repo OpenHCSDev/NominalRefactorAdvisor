@@ -467,12 +467,12 @@ class EmptyFindingMetrics(FindingMetrics):
 
 @dataclass(frozen=True, kw_only=True)
 class RestaterMetrics(FindingMetrics):
-    """Which restater a finding is about: the sites inside one symbol that share a group.
+    """Which restater a finding is about: the sites one finding covers.
 
-    `restater` is that symbol, in its file as the file sits in its checkout,
-    the group, and what the sites say (`RestatingSite.restater_of`). It is the
-    finding's identity. The summary lists the sites by line, and lines move;
-    the restater stays until it says something else.
+    `restater` is what the detector grouped them by, the file as it sits in its
+    checkout, and what the sites say (`RestatedFactDetector.restater`). It is
+    the finding's identity. The summary lists the sites by line, and lines
+    move; the restater stays until it says something else.
     """
 
     restater: tuple[str, ...]

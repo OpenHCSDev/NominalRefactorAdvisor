@@ -107,7 +107,7 @@ class RestatedIdentityDetector(
     def metrics(
         self, sites: Sequence[RestatingSite], context: DeclaredIdentities
     ) -> DeclarationReferenceMetrics:
-        restater = RestatingSite.restater_of(sites)
+        restater = self.restater(sites, context)
         carried = context.carried_rewrites(sites)
         if carried:
             return CarriedReferenceRewrites(carried, restater=restater)
