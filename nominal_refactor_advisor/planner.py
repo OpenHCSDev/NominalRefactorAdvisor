@@ -23,9 +23,7 @@ from nominal_refactor_advisor.collection_algebra import (
 )
 from nominal_refactor_advisor.deadline import scan_deadline_checkpoint
 from nominal_refactor_advisor.models import (
-    CERTIFIED,
     ImpactDelta,
-    STRONG_HEURISTIC,
     OutcomeEstimate,
     RefactorFinding,
     RefactorPatternEvidence,
@@ -914,11 +912,11 @@ def _aggregate_certification(
     findings: tuple[RefactorFinding, ...],
 ) -> CertificationLevel:
     certifications = {finding.certification for finding in findings}
-    if certifications == {CERTIFIED}:
-        return CERTIFIED
+    if certifications == {CertificationLevel.CERTIFIED}:
+        return CertificationLevel.CERTIFIED
     if CertificationLevel.SPECULATIVE in certifications:
         return CertificationLevel.SPECULATIVE
-    return STRONG_HEURISTIC
+    return CertificationLevel.STRONG_HEURISTIC
 
 
 def _plan_summary(

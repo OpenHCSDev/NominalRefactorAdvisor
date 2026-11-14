@@ -52,10 +52,6 @@ if TYPE_CHECKING:
         FindingRecipeEvaluator,
     )
 from nominal_refactor_advisor.taxonomy import (
-    CERTIFIED,
-    HIGH_CONFIDENCE,
-    MEDIUM_CONFIDENCE,
-    STRONG_HEURISTIC,
     CapabilityTag,
     CertificationLevel,
     ConfidenceLevel,
@@ -1068,8 +1064,8 @@ class FindingSemantics(SemanticRecord):
     why: str
     capability_gap: str
     relation_context: str
-    confidence: ConfidenceLevel = MEDIUM_CONFIDENCE
-    certification: CertificationLevel = STRONG_HEURISTIC
+    confidence: ConfidenceLevel = ConfidenceLevel.MEDIUM
+    certification: CertificationLevel = CertificationLevel.STRONG_HEURISTIC
     capability_tags: tuple[CapabilityTag, ...] = field(default_factory=tuple)
     observation_tags: tuple[ObservationTag, ...] = field(default_factory=tuple)
 
@@ -1353,21 +1349,21 @@ class FindingSpec(FindingSemantics):
 class HighConfidenceFindingSpec(FindingSpec):
     """Finding spec whose confidence is intentionally high by construction."""
 
-    confidence: ConfidenceLevel = HIGH_CONFIDENCE
+    confidence: ConfidenceLevel = ConfidenceLevel.HIGH
 
 
 @dataclass(frozen=True)
 class CertifiedFindingSpec(FindingSpec):
     """Finding spec whose certification is intentionally certified by construction."""
 
-    certification: CertificationLevel = CERTIFIED
+    certification: CertificationLevel = CertificationLevel.CERTIFIED
 
 
 @dataclass(frozen=True)
 class HighConfidenceCertifiedFindingSpec(HighConfidenceFindingSpec):
     """Finding spec whose high-confidence certified status is constructor-level."""
 
-    certification: CertificationLevel = CERTIFIED
+    certification: CertificationLevel = CertificationLevel.CERTIFIED
 
 
 @dataclass(frozen=True)

@@ -22,4 +22,4 @@ Taxonomy
 --------
 
 .. automodule:: nominal_refactor_advisor.taxonomy
-   :members: CertificationLevel, ConfidenceLevel, CapabilityTag, ObservationTag, CERTIFIED, STRONG_HEURISTIC, SPECULATIVE, HIGH_CONFIDENCE, MEDIUM_CONFIDENCE
+   :members: CertificationLevel, ConfidenceLevel, CapabilityTag, ObservationTag

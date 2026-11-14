@@ -194,11 +194,3 @@ class ObservationTag(LabeledStrEnum):
     SENTINEL_TYPE = ("sentinel_type", "sentinel-type markers")
     STRING_DISPATCH = ("string_dispatch", "string dispatch")
     TYPE_NAMESPACE = ("type_namespace", "class namespace mutation")
-
-
-CERTIFIED = CertificationLevel.CERTIFIED
-STRONG_HEURISTIC = CertificationLevel.STRONG_HEURISTIC
-SPECULATIVE = CertificationLevel.SPECULATIVE
-
-HIGH_CONFIDENCE = ConfidenceLevel.HIGH
-MEDIUM_CONFIDENCE = ConfidenceLevel.MEDIUM
