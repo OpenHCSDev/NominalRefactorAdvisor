@@ -9,8 +9,8 @@ from __future__ import annotations
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from collections import defaultdict, Counter
 from dataclasses import dataclass
-from typing import Sequence, Self, Iterable, ClassVar
-from nominal_refactor_advisor.ast_tools import ParsedModule, statements_without_docstring
+from typing import Sequence, Self, Iterable, ClassVar, cast
+from nominal_refactor_advisor.ast_tools import ParsedModule, statements_without_docstring, ScopedAstObservation
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
     FindingBuildContext,
@@ -31,23 +31,20 @@ from nominal_refactor_advisor.detectors._base import (
     PerModuleIssueDetector,
     CollectsItself,
     ZippedSourceLocationEvidenceProperty,
+    _module_builder_call_shapes,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    _projection_builder_groups,
     DerivedQuerySpecsBySignature,
     NamedStringSequenceSpecsByName,
-    _enum_key_family,
-    _linear_query_signature,
-    _linear_query_source_owner,
     HELPER_SUPPORT_PROJECTION_AUTHORITY,
-    _build_call_keyword_helper_name,
-    _candidate_source_name_from_method,
-    _delegate_name_from_return,
-    _finding_build_call,
-    _guard_role_name,
-    _is_detectorish_class,
-    _is_observation_spec_class,
-    _scope_role_name,
+    _IMPLICIT_METHOD_PARAMETER_NAMES,
+    _SEQUENCE_WRAPPER_CALL_NAMES,
+    _call_display_name,
+    _is_projection_like_builder_value,
+    _linear_query_key_names,
+    _linear_query_loop,
+    _linear_query_raised_exception,
+    _linear_query_return_expr,
 )
 from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
 import ast
@@ -55,6 +52,8 @@ from nominal_refactor_advisor.class_families.parsed_index import ClassStatement,
 from nominal_refactor_advisor.ast_projection import StatementValues, CallKeywords, ExpressionReference
 from nominal_refactor_advisor.detectors._candidates import WitnessCarrierCandidate
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
+from nominal_refactor_advisor.observation_shapes import BuilderCallShape
+from nominal_refactor_advisor.semantic_match import Maybe
 
 
 @dataclass(frozen=True)
@@ -76,7 +75,7 @@ class FragmentedFamilyAuthorityCandidate(CollectsItself):
                 (
                     key_pair
                     for key_pair in (
-                        _enum_key_family(key)
+                        cls._enum_key_family(key)
                         for key in binding.value.keys
                         if key is not None
                     )
@@ -117,6 +116,14 @@ class FragmentedFamilyAuthorityCandidate(CollectsItself):
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _enum_key_family(node: ast.AST) -> tuple[str, str] | None:
+        if not isinstance(node, ast.Attribute):
+            return None
+        if not isinstance(node.value, ast.Name):
+            return None
+        return (node.value.id, node.attr)
 
 
 class FragmentedFamilyAuthorityDetector(
@@ -177,7 +184,7 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         grouped: DerivedQuerySpecsBySignature = defaultdict(list)
         for qualname, function in module.syntax_index.named_functions:
-            signature = _linear_query_signature(function)
+            signature = cls._linear_query_signature(function)
             if signature is None:
                 continue
             source_expression, query_key_names, return_expression, exception_name = (
@@ -185,7 +192,7 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
             )
             grouped[
                 (
-                    _linear_query_source_owner(qualname, source_expression),
+                    cls._linear_query_source_owner(qualname, source_expression),
                     source_expression,
                     return_expression,
                     exception_name,
@@ -223,6 +230,55 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
             candidates,
             key=lambda item: (item.file_path, item.source_expression, item.function_names),
         )
+
+    @staticmethod
+    def _linear_query_signature(
+        node: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, tuple[str, ...], str, str] | None:
+        body = statements_without_docstring(node.body)
+        return (
+            Maybe.of(_linear_query_loop(body))
+            .combine(
+                lambda loop: _linear_query_return_expr(
+                    loop, cast(ast.Name, loop.target).id
+                ),
+                lambda loop, return_expr: (loop, return_expr),
+            )
+            .combine(
+                lambda _context: _linear_query_raised_exception(body),
+                lambda context, raised: (context[0], context[1], raised),
+            )
+            .combine(
+                lambda context: _linear_query_key_names(
+                    node, context[0], context[1], context[2][1]
+                ),
+                lambda context, query_key_names: (
+                    (
+                        ast.unparse(context[0].iter),
+                        query_key_names,
+                        ast.unparse(context[1]),
+                        context[2][0],
+                    )
+                    if query_key_names
+                    else None
+                ),
+            )
+            .unwrap_or_none()
+        )
+
+    @staticmethod
+    def _linear_query_source_owner(
+        qualname: str,
+        source_expression: str,
+    ) -> str | None:
+        expression = ast.parse(source_expression, mode="eval").body
+        if not (
+            HELPER_SUPPORT_PROJECTION_AUTHORITY.expression_root_names(expression)
+            & _IMPLICIT_METHOD_PARAMETER_NAMES
+        ):
+            return None
+        owner_name, separator, _method_name = qualname.rpartition(".")
+        return owner_name if separator else qualname
 
 
 declare_candidate_rule_detector(
@@ -274,7 +330,7 @@ class FindingAssemblyPipelineCandidate(CollectsItself, WitnessCarrierCandidate):
         module: ParsedModule,
         declared: ClassStatement,
     ) -> Iterable[Self]:
-        if not _is_detectorish_class(declared):
+        if not cls._is_detectorish_class(declared):
             return
         node = declared.node
         method = next(
@@ -288,13 +344,13 @@ class FindingAssemblyPipelineCandidate(CollectsItself, WitnessCarrierCandidate):
         )
         if method is None:
             return
-        build_call = _finding_build_call(method)
+        build_call = cls._finding_build_call(method)
         if build_call is None:
             return
-        candidate_source_name = _candidate_source_name_from_method(method)
+        candidate_source_name = cls._candidate_source_name_from_method(method)
         if candidate_source_name is None:
             return
-        metrics_type_name = _build_call_keyword_helper_name(build_call, "metrics")
+        metrics_type_name = cls._build_call_keyword_helper_name(build_call, "metrics")
         if metrics_type_name is None:
             return
         yield cls(
@@ -313,6 +369,66 @@ class FindingAssemblyPipelineCandidate(CollectsItself, WitnessCarrierCandidate):
             candidate_source_name=candidate_source_name,
             metrics_type_name=metrics_type_name,
         )
+
+    @staticmethod
+    def _is_detectorish_class(declared: ClassStatement) -> bool:
+        if declared.node.name.endswith("Detector"):
+            return True
+        return bool(
+            IssueDetector.detector_family_base_names()
+            & set(declared.base_terminal_names)
+        )
+
+    @staticmethod
+    def _finding_build_call(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> ast.Call | None:
+        for node in ast.walk(method):
+            if not isinstance(node, ast.Call):
+                continue
+            if not isinstance(node.func, ast.Attribute) or node.func.attr != "build":
+                continue
+            value = node.func.value
+            if not (
+                isinstance(value, ast.Attribute)
+                and value.attr == "finding_spec"
+                and isinstance(value.value, ast.Name)
+                and (value.value.id == "self")
+            ):
+                continue
+            return node
+        return None
+
+    @staticmethod
+    def _build_call_keyword_helper_name(
+        build_call: ast.Call, keyword_name: str
+    ) -> str | None:
+        for keyword in build_call.keywords:
+            if keyword.arg != keyword_name:
+                continue
+            if isinstance(keyword.value, ast.Call):
+                return _call_display_name(keyword.value)
+        return None
+
+    @staticmethod
+    def _candidate_source_name_from_method(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> str | None:
+        assigned_calls: dict[str, str] = {}
+        for statement in statements_without_docstring(method.body):
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                if isinstance(target, ast.Name) and isinstance(statement.value, ast.Call):
+                    call_name = _call_display_name(statement.value)
+                    if call_name is not None:
+                        assigned_calls[target.id] = call_name
+            if isinstance(statement, ast.For):
+                iterator = statement.iter
+                if isinstance(iterator, ast.Call):
+                    return _call_display_name(iterator)
+                if isinstance(iterator, ast.Name):
+                    return assigned_calls.get(iterator.id)
+        return None
 
 
 class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
@@ -393,7 +509,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         findings: list[RefactorFinding] = []
-        for builders in _projection_builder_groups(module, config):
+        for builders in self._projection_builder_groups(module, config):
             callee_name = builders[0].callee_name
             field_names = builders[0].field_names
             evidence = tuple(
@@ -418,6 +534,46 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
             )
         return findings
 
+    @staticmethod
+    def _projection_builder_groups(
+        module: ParsedModule,
+        config: DetectorConfig,
+    ) -> tuple[tuple[BuilderCallShape, ...], ...]:
+        grouped: dict[tuple[str, tuple[str, ...]], list[BuilderCallShape]] = defaultdict(
+            list
+        )
+        for builder in _module_builder_call_shapes(module):
+            if builder.is_nominal_owner_projection:
+                continue
+            if len(builder.field_names) < max(config.min_builder_keywords, 6):
+                continue
+            if not all(
+                (
+                    _is_projection_like_builder_value(value)
+                    for value in builder.value_fingerprint
+                )
+            ):
+                continue
+            grouped[(builder.callee_name, builder.field_names)].append(builder)
+        candidates: list[Sequence[BuilderCallShape]] = []
+        for builders in grouped.values():
+            if len(builders) < 3:
+                continue
+            source_arities = tuple(builder.source_arity for builder in builders)
+            if min(source_arities) != 1 or max(source_arities) > 2:
+                continue
+            if len({builder.value_fingerprint for builder in builders}) < 2:
+                continue
+            if len({builder.symbol for builder in builders}) < 2:
+                continue
+            candidates.append(
+                sorted_tuple(builders, key=lambda item: (item.file_path, item.lineno))
+            )
+        return sorted_tuple(
+            candidates,
+            key=lambda group: (group[0].file_path, group[0].lineno, group[0].callee_name),
+        )
+
 
 @dataclass(frozen=True)
 class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
@@ -440,7 +596,7 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
         module: ParsedModule,
         declared: ClassStatement,
     ) -> Iterable[Self]:
-        if not _is_observation_spec_class(declared) or declared.is_abstract:
+        if not cls._is_observation_spec_class(declared) or declared.is_abstract:
             return
         node = declared.node
         guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
@@ -469,7 +625,7 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
             guarded_returns.append(((statement, guard), return_stmt))
         # A bare return delegates to nothing.
         for (statement, guard), returned in StatementValues.keyed(guarded_returns).supplied:
-            delegate_name = _delegate_name_from_return(returned.value)
+            delegate_name = cls._delegate_name_from_return(returned.value)
             if delegate_name is None:
                 continue
             yield cls(
@@ -479,13 +635,46 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
                 name_family=(
                     guard.test.__class__.__name__,
                     delegate_name,
-                    _scope_role_name(guard.test),
+                    cls._scope_role_name(guard.test),
                 ),
                 method_name=statement.name,
-                guard_role=_guard_role_name(guard.test),
+                guard_role=cls._guard_role_name(guard.test),
                 delegate_name=delegate_name,
-                scope_role=_scope_role_name(guard.test),
+                scope_role=cls._scope_role_name(guard.test),
             )
+
+    @staticmethod
+    def _is_observation_spec_class(declared: ClassStatement) -> bool:
+        if declared.node.name.endswith("ObservationSpec"):
+            return True
+        return bool(
+            {
+                "ObservationShapeSpec",
+                "FunctionObservationSpec",
+                "AssignObservationSpec",
+                "ContextForwardingShapeSpec",
+            }
+            & set(declared.base_terminal_names)
+        )
+
+    @staticmethod
+    def _delegate_name_from_return(node: ast.AST) -> str | None:
+        if isinstance(node, ast.Call):
+            outer_name = _call_display_name(node)
+            if outer_name in _SEQUENCE_WRAPPER_CALL_NAMES and len(node.args) == 1:
+                inner = node.args[0]
+                if isinstance(inner, ast.Call):
+                    return _call_display_name(inner)
+            return outer_name
+        return None
+
+    @staticmethod
+    def _guard_role_name(node: ast.AST) -> str:
+        return ScopedAstObservation.guard_role_name_from_text(ast.unparse(node))
+
+    @staticmethod
+    def _scope_role_name(node: ast.AST) -> str:
+        return ScopedAstObservation.scope_role_name_from_text(ast.unparse(node))
 
 
 class GuardedDelegatorSpecDetector(PerModuleIssueDetector):

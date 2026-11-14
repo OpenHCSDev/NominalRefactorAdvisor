@@ -33,6 +33,7 @@ from nominal_refactor_advisor.ast_tools import (
     AttributeAccessCall,
     BuiltinCall,
     Getattr,
+    NamespaceCall,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.models import (
@@ -55,7 +56,6 @@ from nominal_refactor_advisor.detectors._base import (
     DetectorConfig,
     ModuleCollectorCandidateDetector,
     OverlappingInheritanceFamiliesCandidate,
-    PropertyAliasHookGroup,
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
     declare_candidate_rule_detector,
@@ -65,32 +65,32 @@ from nominal_refactor_advisor.detectors._base import (
     SelfReflectiveBuiltinCandidate,
     ClassLineWitnessCandidate,
     CollectsItselfUnderConfig,
+    PropertyHookGroup,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     CompactMethodFamilyContext,
     BaseBundleClassGroups,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
     _RegisteredUnionSurfaceSource,
-    _common_contract_base_names,
-    _concrete_class_object_union_member_names,
-    _concrete_union_contract_name,
-    _contiguous_base_bundles,
-    _maximal_repeated_base_bundle_items,
-    _parameter_class_call_attribute_names,
-    _registered_surface_roots,
-    _class_direct_constant_string_assignments,
-    _reflective_lookup_shape,
+    _CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES,
+    _annotation_union_members,
+    _base_defines_contract_attributes,
+    _class_def_declared_and_ancestor_names,
+    _class_object_type_argument_name,
+    _is_composable_base_name,
+    _is_contiguous_subtuple,
+    _shared_edge_tokens,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
     RegexGroupExtractorFamilyCandidate,
 )
-from nominal_refactor_advisor.detectors._helpers import _property_alias_hook_groups
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.class_families.parsed_index import ClassStatement, ModuleClassStatements
 from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
 from nominal_refactor_advisor.detectors._substrate_support import _class_ancestor_name_map, _constant_string, _selector_attribute_name
 from collections import defaultdict
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
     shared_objects=("nominal_attribute_contract",)
@@ -153,11 +153,61 @@ def _reflective_self_attribute_compression_certificate(
     )
 
 
+@dataclass(frozen=True)
+class PropertyAliasHookGroup(CollectsItself, PropertyHookGroup):
+    returned_attribute: str
+
+    @classmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        grouped: dict[tuple[str, str, str], list[tuple[str, int]]] = defaultdict(list)
+        for declared in module.fact(ModuleClassStatements).statements:
+            node = declared.node
+            base_names = declared.family_base_names
+            if not base_names:
+                continue
+            for method in declared.methods:
+                if not method.spells("property"):
+                    continue
+                statement = method.node
+                if len(statement.args.args) != 1:
+                    continue
+                body = statements_without_docstring(statement.body)
+                if len(body) != 1 or not isinstance(body[0], ast.Return):
+                    continue
+                returned = body[0].value
+                if not (
+                    isinstance(returned, ast.Attribute)
+                    and isinstance(returned.value, ast.Name)
+                    and (returned.value.id == "self")
+                ):
+                    continue
+                for base_name in base_names:
+                    grouped[base_name, statement.name, returned.attr].append(
+                        (node.name, statement.lineno)
+                    )
+        return tuple(
+            (
+                cls(
+                    file_path=module.file_path,
+                    base_name=base_name,
+                    property_name=property_name,
+                    returned_attribute=returned_attribute,
+                    class_names=tuple((class_name for class_name, _ in ordered)),
+                    line_numbers=tuple((line for _, line in ordered)),
+                )
+                for (base_name, property_name, returned_attribute), items in sorted(
+                    grouped.items()
+                )
+                if len(items) >= 2
+                for ordered in [sorted_tuple(items, key=lambda item: (item[1], item[0]))]
+            )
+        )
+
+
 class RepeatedPropertyAliasHookDetector(
     ModuleCollectorCandidateDetector[PropertyAliasHookGroup]
 ):
     detector_id = "repeated_property_alias_hooks"
-    candidate_collector = _property_alias_hook_groups
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated property hook aliases should move into a shared base or mixin",
@@ -511,10 +561,10 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
             node = declared.node
             if node.end_lineno is None:
                 continue
-            for bundle in _contiguous_base_bundles(declared.spelled_base_names):
+            for bundle in cls._contiguous_base_bundles(declared.spelled_base_names):
                 grouped[bundle].append(node)
         candidates: list[Self] = []
-        for bundle, nodes in _maximal_repeated_base_bundle_items(grouped):
+        for bundle, nodes in cls._maximal_repeated_base_bundle_items(grouped):
             line_numbers = tuple((node.lineno for node in nodes))
             candidates.append(
                 cls(
@@ -533,6 +583,49 @@ class RepeatedBaseBundleCandidate(CollectsItself, ClassLineNumbersGroup):
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _contiguous_base_bundles(
+        base_names: tuple[str, ...],
+        *,
+        minimum_width: int = 3,
+    ) -> tuple[tuple[str, ...], ...]:
+        return tuple(
+            (
+                base_names[start:end]
+                for start in range(len(base_names))
+                for end in range(start + minimum_width, len(base_names) + 1)
+                if all(_is_composable_base_name(name) for name in base_names[start:end])
+            )
+        )
+
+    @staticmethod
+    def _maximal_repeated_base_bundle_items(
+        grouped: BaseBundleClassGroups,
+    ) -> tuple[tuple[tuple[str, ...], tuple[ast.ClassDef, ...]], ...]:
+        qualified = tuple(
+            (
+                (bundle, sorted_tuple(nodes, key=lambda node: node.lineno))
+                for bundle, nodes in grouped.items()
+                if len(nodes) >= 3
+            )
+        )
+        maximal: list[tuple[tuple[str, ...], tuple[ast.ClassDef, ...]]] = []
+        for bundle, nodes in sorted(
+            qualified,
+            key=lambda item: (-len(item[1]), -len(item[0]), item[0]),
+        ):
+            class_names = {node.name for node in nodes}
+            if any(
+                (
+                    class_names <= {node.name for node in existing_nodes}
+                    and _is_contiguous_subtuple(bundle, existing_bundle)
+                    for existing_bundle, existing_nodes in maximal
+                )
+            ):
+                continue
+            maximal.append((bundle, nodes))
+        return tuple(maximal)
 
 
 declare_candidate_rule_detector(
@@ -598,7 +691,7 @@ class RegisteredUnionSurfaceCandidate(CollectsItself, LineWitnessCandidate):
         source = _RegisteredUnionSurfaceSource.from_node(node)
         if source is None:
             return
-        registered_surface = _registered_surface_roots(source.value)
+        registered_surface = cls._registered_surface_roots(source.value)
         if registered_surface is None:
             return
         accessor_name, root_names = registered_surface
@@ -627,6 +720,41 @@ class RegisteredUnionSurfaceCandidate(CollectsItself, LineWitnessCandidate):
             accessor_name=accessor_name,
             root_names=root_names,
         )
+
+    @staticmethod
+    def _registered_surface_roots(node: ast.AST) -> tuple[str, tuple[str, ...]] | None:
+        calls: list[ast.Call] = []
+
+        def collect_calls(current: ast.AST) -> bool:
+            binary = as_ast(current, ast.BinOp)
+            if binary is not None and isinstance(binary.op, ast.Add):
+                return collect_calls(binary.left) and collect_calls(binary.right)
+            call = as_ast(current, ast.Call)
+            if call is None:
+                return False
+            calls.append(call)
+            return True
+
+        if not collect_calls(node) or len(calls) < 2:
+            return None
+        accessors = tuple(
+            (
+                accessor
+                for call in calls
+                if (
+                    accessor := attribute_call_match(
+                        call, owner_type=ast.Name, argument_count=0, allow_keywords=False
+                    )
+                )
+                is not None
+            )
+        )
+        accessor_names = {accessor.attribute.attr for accessor in accessors}
+        if len(accessor_names) != 1:
+            return None
+        accessor_name = next(iter(accessor_names))
+        root_names = sorted_tuple((accessor.owner.id for accessor in accessors))
+        return (accessor_name, root_names)
 
 
 declare_candidate_rule_detector(
@@ -700,7 +828,7 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
         for argument in arguments:
             if argument.arg in _IMPLICIT_METHOD_PARAMETER_NAMES:
                 continue
-            member_type_names = _concrete_class_object_union_member_names(
+            member_type_names = cls._concrete_class_object_union_member_names(
                 argument.annotation
             )
             if len(member_type_names) < 2 or any(
@@ -708,12 +836,12 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
                 for member_type_name in member_type_names
             ):
                 continue
-            observed_attribute_names = _parameter_class_call_attribute_names(
+            observed_attribute_names = cls._parameter_class_call_attribute_names(
                 function, argument.arg
             )
             if not observed_attribute_names:
                 continue
-            common_base_names = _common_contract_base_names(
+            common_base_names = cls._common_contract_base_names(
                 classes_by_name,
                 ancestor_names_by_class,
                 member_type_names,
@@ -729,12 +857,105 @@ class ConcreteTypeUnionContractCandidate(CollectsItself, LineWitnessCandidate):
                 suggested_contract_name=(
                     common_base_names[0]
                     if common_base_names
-                    else _concrete_union_contract_name(
+                    else cls._concrete_union_contract_name(
                         member_type_names, observed_attribute_names
                     )
                 ),
                 common_base_names=common_base_names,
             )
+
+    @staticmethod
+    def _concrete_class_object_union_member_names(
+        annotation: ast.AST | None,
+    ) -> tuple[str, ...]:
+        if annotation is None:
+            return ()
+        union_members = _annotation_union_members(annotation)
+        member_names = tuple(
+            (
+                member_name
+                for member in union_members
+                if (member_name := _class_object_type_argument_name(member)) is not None
+            )
+        )
+        if len(member_names) != len(union_members):
+            return ()
+        return tuple(dict.fromkeys(member_names))
+
+    @staticmethod
+    def _parameter_class_call_attribute_names(
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        parameter_name: str,
+    ) -> tuple[str, ...]:
+        attribute_names: set[str] = set()
+
+        class Visitor(ast.NodeVisitor):
+            def visit_Call(self, node: ast.Call) -> None:
+                if (
+                    isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == parameter_name
+                ):
+                    attribute_names.add(node.func.attr)
+                self.generic_visit(node)
+
+        Visitor().visit(
+            ast.Module(body=statements_without_docstring(function.body), type_ignores=[])
+        )
+        return sorted_tuple(attribute_names)
+
+    @staticmethod
+    def _common_contract_base_names(
+        classes_by_name: dict[str, ClassStatement],
+        ancestor_names_by_class: dict[str, tuple[str, ...]],
+        member_type_names: tuple[str, ...],
+        observed_attribute_names: tuple[str, ...],
+    ) -> tuple[str, ...]:
+        base_sets = tuple(
+            (
+                _class_def_declared_and_ancestor_names(
+                    classes_by_name, ancestor_names_by_class, member_type_name
+                )
+                for member_type_name in member_type_names
+            )
+        )
+        common_base_names = {
+            name
+            for name in set.intersection(*base_sets)
+            if ClassSymbolResolutionAuthority.establishes_nominal_family(name)
+        }
+        return sorted_tuple(
+            (
+                base_name
+                for base_name in common_base_names
+                if _base_defines_contract_attributes(
+                    classes_by_name, base_name, observed_attribute_names
+                )
+            )
+        )
+
+    @staticmethod
+    def _concrete_union_contract_name(
+        member_type_names: tuple[str, ...],
+        observed_attribute_names: tuple[str, ...],
+    ) -> str:
+        edge_tokens = _shared_edge_tokens(member_type_names)
+        base_name = (
+            "".join((token.title() for token in edge_tokens))
+            if edge_tokens
+            else f"{member_type_names[0]}Family"
+        )
+        role_suffix = (
+            "Factory"
+            if any(
+                (
+                    attribute_name.startswith(_CONCRETE_UNION_FACTORY_ATTRIBUTE_PREFIXES)
+                    for attribute_name in observed_attribute_names
+                )
+            )
+            else "Contract"
+        )
+        return base_name if base_name.endswith(role_suffix) else f"{base_name}{role_suffix}"
 
 
 declare_candidate_rule_detector(
@@ -1014,6 +1235,7 @@ declare_candidate_rule_detector(
     ),
 )
 
+
 @dataclass(frozen=True)
 class StringBackedReflectiveNominalLookupCandidate(CollectsItselfUnderConfig, ClassLineWitnessCandidate):
     method_name: str
@@ -1028,7 +1250,7 @@ class StringBackedReflectiveNominalLookupCandidate(CollectsItselfUnderConfig, Cl
         statements = module.fact(ModuleClassStatements)
         classes_by_name = statements.by_name
         class_string_assignments = {
-            class_name: _class_direct_constant_string_assignments(declared)
+            class_name: cls._class_direct_constant_string_assignments(declared)
             for class_name, declared in classes_by_name.items()
         }
         candidate_map: dict[
@@ -1040,7 +1262,7 @@ class StringBackedReflectiveNominalLookupCandidate(CollectsItselfUnderConfig, Cl
                 continue
             for method in declared.methods:
                 for subnode in ast.walk(method.node):
-                    lookup_shape = _reflective_lookup_shape(subnode)
+                    lookup_shape = cls._reflective_lookup_shape(subnode)
                     if lookup_shape is None:
                         continue
                     lookup_kind, receiver_expression, selector_node = lookup_shape
@@ -1088,6 +1310,45 @@ class StringBackedReflectiveNominalLookupCandidate(CollectsItselfUnderConfig, Cl
             candidate_map.values(),
             key=lambda item: (item.file_path, item.line, item.class_name, item.method_name),
         )
+
+    @staticmethod
+    def _class_direct_constant_string_assignments(
+        declared: ClassStatement,
+    ) -> dict[str, str]:
+        return {
+            name: string_value
+            for name, value in declared.direct_assignments.items()
+            if (string_value := _constant_string(value)) is not None
+        }
+
+    @staticmethod
+    def _reflective_lookup_shape(
+        node: ast.AST,
+    ) -> tuple[str, str, ast.AST] | None:
+        if isinstance(node, ast.Call):
+            match BuiltinCall.decoded(node):
+                case Getattr(name_argument=selector_node) as call if (
+                    _constant_string(selector_node) is None
+                ):
+                    return (call.builtin, ast.unparse(call.object_argument), selector_node)
+            if (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and len(node.args) >= 1
+                and isinstance(node.func.value, ast.Attribute)
+                and node.func.value.attr == "__dict__"
+            ):
+                selector_node = node.args[0]
+                if _constant_string(selector_node) is None:
+                    return ("dict.get", ast.unparse(node.func.value.value), selector_node)
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Call)
+            and isinstance(namespace := BuiltinCall.decoded(node.value), NamespaceCall)
+            and (_constant_string(node.slice) is None)
+        ):
+            return (f"{namespace.builtin}[]", f"{namespace.builtin}()", node.slice)
+        return None
 
 
 declare_candidate_rule_detector(

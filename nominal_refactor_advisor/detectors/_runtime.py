@@ -19,13 +19,13 @@ from typing import cast, Generic, Self, TypeAlias, TypeVar
 
 from tree_sitter import Node
 
-from nominal_refactor_advisor.ast_projection import names_mentioned
+from nominal_refactor_advisor.ast_projection import names_mentioned, CallKeywords, ExpressionReference
 from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
 from nominal_refactor_advisor.detectors._regex_bundle import (
     RepeatedLocalRegexBundleDetector,
 )
 
-from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard
+from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard, annotation_type_names
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
@@ -166,17 +166,19 @@ from nominal_refactor_advisor.detectors._base import (
     ClassLineWitnessCandidate,
     CollectsItselfUnderConfig,
     CollectsItselfFromCompactContext,
+    GuardedWrapperSpecPair,
+    _self_attr_name,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    _guarded_wrapper_spec_pairs,
     HELPER_SYNTAX_PROJECTION_AUTHORITY,
     METHOD_PROJECTION,
-    _class_init_concrete_param_backed_attrs,
-    _receiver_self_attr_name,
+    _guarded_wrapper_function_candidates,
+    _param_backed_name,
 )
 from nominal_refactor_advisor.detectors._substrate_support import _constant_string
 from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
-from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
+from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements, ClassStatement
+from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 
 
 class LiteralDispatchFindingFactory:
@@ -2481,7 +2483,7 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
         }
         candidates: list[Self] = []
         for class_name, declared in sorted(classes_by_name.items()):
-            concrete_config_attrs = _class_init_concrete_param_backed_attrs(declared)
+            concrete_config_attrs = cls._class_init_concrete_param_backed_attrs(declared)
             if not concrete_config_attrs:
                 continue
             for method in declared.methods:
@@ -2498,7 +2500,7 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
                     probed_field_name = _constant_string(lookup.name_argument)
                     if probed_field_name is None:
                         continue
-                    config_attr_name = _receiver_self_attr_name(
+                    config_attr_name = cls._receiver_self_attr_name(
                         lookup.object_argument, aliases
                     )
                     if config_attr_name is None:
@@ -2546,6 +2548,55 @@ class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitn
             candidates,
             key=lambda item: (item.file_path, item.line, item.class_name, item.method_name),
         )
+
+    @staticmethod
+    def _class_init_concrete_param_backed_attrs(
+        declared: ClassStatement,
+    ) -> dict[str, str]:
+        init_statement = declared.method_named("__init__")
+        if init_statement is None:
+            return {}
+        init_method = init_statement.node
+        parameter_type_names = {
+            argument.arg: annotation_type_names(
+                argument.annotation
+            )
+            for argument in ParameterAnnotations.of(
+                tuple(init_method.args.posonlyargs)
+                + tuple(init_method.args.args)
+                + tuple(init_method.args.kwonlyargs)
+            ).annotated
+        }
+        parameter_names = set(parameter_type_names)
+        attr_type_names: dict[str, str] = {}
+        for subnode in ast.walk(init_method):
+            target: ast.AST | None = None
+            value: ast.AST | None = None
+            if isinstance(subnode, ast.Assign) and len(subnode.targets) == 1:
+                target = subnode.targets[0]
+                value = subnode.value
+            elif isinstance(subnode, ast.AnnAssign):
+                target = subnode.target
+                value = subnode.value
+            attr_name = None if target is None else _self_attr_name(target)
+            if attr_name is None or value is None:
+                continue
+            param_name = _param_backed_name(value, parameter_names)
+            if param_name is None:
+                continue
+            type_names = parameter_type_names.get(param_name, ())
+            if len(type_names) != 1:
+                continue
+            attr_type_names.setdefault(attr_name, type_names[0])
+        return attr_type_names
+
+    @staticmethod
+    def _receiver_self_attr_name(node: ast.AST, aliases: dict[str, str]) -> str | None:
+        if isinstance(node, ast.Attribute):
+            return _self_attr_name(node)
+        if isinstance(node, ast.Name):
+            return aliases.get(node.id)
+        return None
 
 
 class ConcreteConfigFieldProbeDetector(
@@ -3121,7 +3172,7 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
         self, module: ParsedModule, config: DetectorConfig
     ) -> list[RefactorFinding]:
         del config
-        wrapper_pairs = _guarded_wrapper_spec_pairs(module)
+        wrapper_pairs = self._guarded_wrapper_spec_pairs(module)
         if len(wrapper_pairs) < 2:
             return []
         evidence_items = [
@@ -3148,6 +3199,72 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
                 evidence,
             )
         ]
+
+    @staticmethod
+    def _guarded_wrapper_spec_pairs(
+        module: ParsedModule,
+    ) -> tuple[GuardedWrapperSpecPair, ...]:
+        wrapper_functions = {
+            function_name: (lineno, node_types)
+            for function_name, lineno, node_types in _guarded_wrapper_function_candidates(
+                module
+            )
+        }
+        pairs: list[GuardedWrapperSpecPair] = []
+        for statement in module.module.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                value = statement.value
+                lineno = statement.lineno
+            elif isinstance(statement, ast.AnnAssign):
+                target = statement.target
+                value = statement.value
+                lineno = statement.lineno
+            else:
+                continue
+            if not isinstance(target, ast.Name) or not isinstance(value, ast.Call):
+                continue
+            constructor_name = ExpressionReference.decoded(value.func).terminal_name
+            if constructor_name is None:
+                continue
+            referenced_functions = [
+                keyword.value.id
+                for keyword in CallKeywords.of(value.keywords).named
+                if isinstance(keyword.value, ast.Name)
+                and keyword.value.id in wrapper_functions
+            ]
+            if len(referenced_functions) != 1:
+                continue
+            node_types_node = next(
+                (
+                    keyword.value
+                    for keyword in value.keywords
+                    if keyword.arg == "node_types"
+                ),
+                None,
+            )
+            if node_types_node is None:
+                continue
+            if isinstance(node_types_node, ast.Tuple):
+                node_types = tuple(ast.unparse(item) for item in node_types_node.elts)
+            else:
+                node_types = (ast.unparse(node_types_node),)
+            function_name = referenced_functions[0]
+            function_line, function_node_types = wrapper_functions[function_name]
+            if tuple(node_types) != function_node_types:
+                continue
+            pairs.append(
+                GuardedWrapperSpecPair(
+                    file_path=module.file_path,
+                    spec_name=target.id,
+                    spec_line=lineno,
+                    function_name=function_name,
+                    function_line=function_line,
+                    constructor_name=constructor_name,
+                    node_types=function_node_types,
+                )
+            )
+        return tuple(pairs)
 
 
 class ForeignFamilySiteDetector(

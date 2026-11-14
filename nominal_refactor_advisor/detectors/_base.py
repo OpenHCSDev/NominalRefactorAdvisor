@@ -3816,11 +3816,6 @@ class PropertyHookGroup(ClassLineNumbersGroup):
 
 
 @dataclass(frozen=True)
-class PropertyAliasHookGroup(PropertyHookGroup):
-    returned_attribute: str
-
-
-@dataclass(frozen=True)
 class GuardedWrapperSpecPair:
     file_path: str
     spec_name: str

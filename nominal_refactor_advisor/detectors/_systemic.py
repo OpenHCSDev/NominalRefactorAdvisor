@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast, ClassVar, Generic, Self, TypeVar
 
-from nominal_refactor_advisor.ast_projection import ExpressionReference, CallKeywords
+from nominal_refactor_advisor.ast_projection import ExpressionReference, CallKeywords, StatementValues, nodes_of, single_name_targets
 from nominal_refactor_advisor.class_syntax_facets import (
     CompactClosedAxisBranchFunction,
     CompactNamedProjectionSurface,
@@ -33,7 +33,7 @@ from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
 )
-from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape, DispatchAxisExpression
+from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape, DispatchAxisExpression, FiniteAxisSystem
 from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
@@ -88,7 +88,7 @@ from nominal_refactor_advisor.models import (
 )
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA, overlap_coefficient
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id
+from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id, constant_value, single_item, single_return_value
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
     KeyedRecordInfrastructureCandidate,
@@ -167,20 +167,19 @@ from nominal_refactor_advisor.detectors._helpers import (
     _finding_spec_build_boilerplate_candidates,
     _from_namespace_keyword_names,
     TupleIndexSemanticOpacityCandidateCollector,
-    _enum_metadata_property_table,
-    _enum_metadata_table_cases,
-    _typed_candidate_cast_assignment,
-    _result_assembly_pipeline_functions,
-    _shared_pipeline_tail,
     _SCHEMA_ACCESSOR_MIN_METHODS,
     _STATIC_OBSERVATION_DETECTOR_BASE_NAMES,
-    _schema_accessor_axis_system,
-    _schema_accessor_family_certificate,
-    _schema_accessor_method_row,
-    _source_location_from_line_symbol_call,
-    _static_minimum_evidence_count,
-    _static_summary_expression,
-    _typed_observation_collection_call,
+    _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES,
+    _STATIC_OBSERVATION_CONTROL_FLOW_NODES,
+    _call_is_cast_of_parameter,
+    _first_named_call_assignment,
+    _parameter_name_is_reused,
+    _pipeline_body_stages,
+    _schema_accessor_coercion_kinds,
+    _schema_accessor_fetch_call,
+    _schema_accessor_returns_local,
+    _single_payload_parameter_name,
+    _source_segment,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
@@ -193,6 +192,7 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     ModuleNamedValues,
     _is_upper_snake_identifier,
     ModuleNamedSequenceMap,
+    _is_private_symbol_name,
 )
 from nominal_refactor_advisor.detectors._finding_spec_defaults import (
     FindingSpecConstructionCandidateCollector,
@@ -4140,7 +4140,7 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
 
     @classmethod
     def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
-        functions = _result_assembly_pipeline_functions(module)
+        functions = cls._result_assembly_pipeline_functions(module)
         if len(functions) < 2:
             return ()
         grouped_functions: dict[
@@ -4152,7 +4152,7 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
             )
         ] = {}
         for left, right in combinations(functions, 2):
-            shared_tail = _shared_pipeline_tail(left, right)
+            shared_tail = cls._shared_pipeline_tail(left, right)
             if len(shared_tail) < config.min_shared_pipeline_stages:
                 continue
             if len(shared_tail) >= len(left.stages) or len(shared_tail) >= len(
@@ -4203,6 +4203,43 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
                 continue
             filtered_candidates.append(candidate)
         return tuple(filtered_candidates)
+
+    @staticmethod
+    def _result_assembly_pipeline_functions(
+        module: ParsedModule,
+    ) -> tuple[ResultAssemblyPipelineFunction, ...]:
+        functions: list[ResultAssemblyPipelineFunction] = []
+        for qualname, function in module.syntax_index.named_functions:
+            stages = _pipeline_body_stages(function)
+            if stages is None:
+                continue
+            functions.append(
+                ResultAssemblyPipelineFunction(
+                    file_path=module.file_path,
+                    qualname=qualname,
+                    lineno=function.lineno,
+                    stages=stages,
+                )
+            )
+        return sorted_tuple(functions, key=lambda item: (item.lineno, item.qualname))
+
+    @staticmethod
+    def _shared_pipeline_tail(
+        left: ResultAssemblyPipelineFunction,
+        right: ResultAssemblyPipelineFunction,
+    ) -> tuple[PipelineAssemblyStage, ...]:
+        shared: list[PipelineAssemblyStage] = []
+        left_index = len(left.stages) - 1
+        right_index = len(right.stages) - 1
+        while left_index >= 0 and right_index >= 0:
+            left_stage = left.stages[left_index]
+            right_stage = right.stages[right_index]
+            if left_stage.shape_key != right_stage.shape_key:
+                break
+            shared.append(left_stage)
+            left_index -= 1
+            right_index -= 1
+        return tuple(reversed(shared))
 
 
 class RepeatedResultAssemblyPipelineDetector(
@@ -4318,7 +4355,7 @@ class TypedCandidateCastBoilerplateCandidate(
                 and statement.name == "_finding_for_candidate"
             ):
                 continue
-            cast_assignment = _typed_candidate_cast_assignment(statement)
+            cast_assignment = cls._typed_candidate_cast_assignment(statement)
             if cast_assignment is None:
                 continue
             parameter_name, local_name, candidate_type_name = cast_assignment
@@ -4335,6 +4372,22 @@ class TypedCandidateCastBoilerplateCandidate(
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _typed_candidate_cast_assignment(
+        method: ast.FunctionDef,
+    ) -> tuple[str, str, str] | None:
+        parameter_name = _single_payload_parameter_name(method)
+        body = statements_without_docstring(method.body)
+        call_assignment = _first_named_call_assignment(body)
+        if parameter_name is None or call_assignment is None:
+            return None
+        cast_call = call_assignment.call
+        if not _call_is_cast_of_parameter(cast_call, parameter_name):
+            return None
+        if _parameter_name_is_reused(body[1:], parameter_name):
+            return None
+        return (parameter_name, call_assignment.target_name, ast.unparse(cast_call.args[0]))
 
 
 declare_candidate_rule_detector(
@@ -4425,16 +4478,16 @@ class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCa
             if evidence_statement is None:
                 continue
             evidence_method = evidence_statement.node
-            collection = _typed_observation_collection_call(evidence_method)
+            collection = cls._typed_observation_collection_call(evidence_method)
             if collection is None:
                 continue
             if not any(
-                _source_location_from_line_symbol_call(child)
+                cls._source_location_from_line_symbol_call(child)
                 for child in ast.walk(evidence_method)
             ):
                 continue
-            minimum_evidence = _static_minimum_evidence_count(declared)
-            summary_expression = _static_summary_expression(module, declared)
+            minimum_evidence = cls._static_minimum_evidence_count(declared)
+            summary_expression = cls._static_summary_expression(module, declared)
             if minimum_evidence is None or summary_expression is None:
                 continue
             family_name, observation_type_name = collection
@@ -4451,6 +4504,79 @@ class StaticTypedObservationDetectorCandidate(CollectsItself, ClassLineWitnessCa
                 )
             )
         return tuple(candidates)
+
+    @staticmethod
+    def _typed_observation_collection_call(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, str] | None:
+        if any(
+            (
+                isinstance(child, _STATIC_OBSERVATION_CONTROL_FLOW_NODES)
+                for child in ast.walk(method)
+            )
+        ):
+            return None
+        collection_calls: list[tuple[str, str]] = []
+        for child in ast.walk(method):
+            if not isinstance(child, ast.Call):
+                continue
+            if name_id(child.func) != "_collect_typed_family_items":
+                continue
+            if len(child.args) < 3 or name_id(child.args[0]) != "module":
+                continue
+            family_name = name_id(child.args[1])
+            observation_type_name = name_id(child.args[2])
+            if family_name is not None and observation_type_name is not None:
+                collection_calls.append((family_name, observation_type_name))
+        return single_item(tuple(collection_calls))
+
+    @staticmethod
+    def _source_location_from_line_symbol_call(
+        node: ast.AST,
+    ) -> bool:
+        if not isinstance(node, ast.Call) or name_id(node.func) != SourceLocation.__name__:
+            return False
+        if len(node.args) < 3:
+            return False
+        return all(
+            (
+                isinstance(argument, ast.Attribute) and argument.attr == expected_attribute
+                for argument, expected_attribute in zip(
+                    node.args[:3], ("file_path", "line", "symbol"), strict=True
+                )
+            )
+        )
+
+    @staticmethod
+    def _static_minimum_evidence_count(declared: ClassStatement) -> int | None:
+        minimum_method = declared.method_named("_minimum_evidence")
+        if minimum_method is None:
+            return 1
+        returns = tuple(nodes_of(ast.Return, minimum_method.node))
+        returned = single_item(returns)
+        if returned is None:
+            return None
+        value = constant_value(returned.value)
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    @staticmethod
+    def _static_summary_expression(
+        module: ParsedModule, declared: ClassStatement
+    ) -> str | None:
+        return (
+            Maybe.of(declared.method_named("_summary"))
+            .map(
+                lambda summary_method: tuple(
+                    child
+                    for child in ast.walk(summary_method.node)
+                    if isinstance(child, ast.Return)
+                )
+            )
+            .project(single_item)
+            .project(lambda returned: returned.value)
+            .project(lambda value: _source_segment(module, value))
+            .unwrap_or_none()
+        )
 
 
 declare_candidate_rule_detector(
@@ -4510,7 +4636,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 defaultdict(list)
             )
             for method in declared.methods:
-                row = _schema_accessor_method_row(method.node)
+                row = cls._schema_accessor_method_row(method.node)
                 if row is not None:
                     grouped_rows[row[1]].append(row)
             for enum_name, rows in grouped_rows.items():
@@ -4520,7 +4646,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 field_names = tuple((row[2] for row in ordered_rows))
                 if len(frozenset(field_names)) < _SCHEMA_ACCESSOR_MIN_METHODS:
                     continue
-                axis_system = _schema_accessor_axis_system(ordered_rows)
+                axis_system = cls._schema_accessor_axis_system(ordered_rows)
                 if not axis_system.determines(("field",), "method"):
                     continue
                 line_count = sum((row[6] for row in ordered_rows))
@@ -4528,7 +4654,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                 field_axes = tuple(
                     (f"{enum_name}.{field_name}" for field_name in field_names)
                 )
-                certificate = _schema_accessor_family_certificate(
+                certificate = cls._schema_accessor_family_certificate(
                     method_count=len(ordered_rows),
                     line_count=line_count,
                     field_axes=field_axes,
@@ -4561,6 +4687,88 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
                     item.enum_name,
                 ),
             )
+        )
+
+    @staticmethod
+    def _schema_accessor_method_row(
+        method: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> tuple[str, str, str, str, str, int, int] | None:
+        if method.name in _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES:
+            return None
+        if _is_private_symbol_name(method.name):
+            return None
+        body = statements_without_docstring(list(method.body))
+        fetches = tuple(
+            (target.id, *fetch)
+            for target, assigned in StatementValues.keyed(
+                (target, statement)
+                for statement in body
+                if isinstance(statement, ast.Assign | ast.AnnAssign)
+                for target in single_name_targets(statement)
+            ).supplied
+            if (fetch := _schema_accessor_fetch_call(assigned.value)) is not None
+        )
+        if len(fetches) != 1:
+            return None
+        local_name, fetch_mode, enum_name, field_name = fetches[0]
+        coercion_kinds = _schema_accessor_coercion_kinds(method, local_name)
+        if not coercion_kinds or not _schema_accessor_returns_local(method, local_name):
+            return None
+        line_count = max(1, (method.end_lineno or method.lineno) - method.lineno + 1)
+        return (
+            method.name,
+            enum_name,
+            field_name,
+            fetch_mode,
+            "+".join(coercion_kinds),
+            method.lineno,
+            line_count,
+        )
+
+    @staticmethod
+    def _schema_accessor_axis_system(
+        rows: tuple[tuple[str, str, str, str, str, int, int], ...],
+    ) -> FiniteAxisSystem[str, str]:
+        return FiniteAxisSystem.from_rows(
+            (
+                (
+                    method_name,
+                    {
+                        "method": method_name,
+                        "enum": enum_name,
+                        "field": field_name,
+                        "fetch_mode": fetch_mode,
+                        "coercion": coercion_kind,
+                    },
+                )
+                for (
+                    method_name,
+                    enum_name,
+                    field_name,
+                    fetch_mode,
+                    coercion_kind,
+                    _line,
+                    _line_count,
+                ) in rows
+            )
+        )
+
+    @staticmethod
+    def _schema_accessor_family_certificate(
+        *,
+        method_count: int,
+        line_count: int,
+        field_axes: tuple[str, ...],
+        coercion_kind_count: int,
+    ) -> CompressionCertificate:
+        return CompressionCertificate.from_object_family(
+            manual_object_count=max(line_count, method_count * max(coercion_kind_count, 1)),
+            replacement_shape=ObjectFamilyShape.from_roles(
+                ("payload_projection_schema", "typed_payload_projector"),
+                axis=("projection_row",),
+            ),
+            semantic_axes=field_axes,
+            residual_object_count=coercion_kind_count,
         )
 
 
@@ -4769,14 +4977,14 @@ class EnumMetadataTableCandidate(CollectsItself, ClassLineWitnessCandidate):
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
-        table_cases = _enum_metadata_table_cases(module)
+        table_cases = cls._enum_metadata_table_cases(module)
         candidates: list[Self] = []
         for declared in module.fact(ModuleClassStatements).top_level:
             statement = declared.node
             property_tables: dict[str, list[str]] = defaultdict(list)
             for item in statement.body:
                 if isinstance(item, ast.FunctionDef):
-                    table_name = _enum_metadata_property_table(item)
+                    table_name = cls._enum_metadata_property_table(item)
                     if table_name is not None:
                         property_tables[table_name].append(item.name)
             for table_name, property_names in property_tables.items():
@@ -4793,6 +5001,40 @@ class EnumMetadataTableCandidate(CollectsItself, ClassLineWitnessCandidate):
                         )
                     )
         return tuple(candidates)
+
+    @staticmethod
+    def _enum_metadata_table_cases(module: ParsedModule) -> dict[str, tuple[str, int]]:
+        tables: dict[str, tuple[str, int]] = {}
+        for binding in module.fact(ModuleNamedValues).bindings:
+            value = as_ast(binding.value, ast.Dict)
+            if value is None:
+                continue
+            enum_key_names = tuple(
+                (
+                    key.value.id
+                    for key in value.keys
+                    if isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name)
+                )
+            )
+            enum_names = set(enum_key_names)
+            if len(enum_key_names) == len(value.keys) and len(enum_names) == 1:
+                tables[binding.name] = (next(iter(enum_names)), len(value.keys))
+        return tables
+
+    @staticmethod
+    def _enum_metadata_property_table(method: ast.FunctionDef) -> str | None:
+        returned = single_return_value(statements_without_docstring(method.body))
+        lookup_source = returned.value if isinstance(returned, ast.Attribute) else returned
+        lookup = as_ast(lookup_source, ast.Subscript)
+        table_name = name_id(None if lookup is None else lookup.value)
+        property_method = any(
+            (name_id(decorator) == "property" for decorator in method.decorator_list)
+        )
+        return (
+            table_name
+            if property_method and lookup is not None and (name_id(lookup.slice) == "self")
+            else None
+        )
 
 
 declare_candidate_rule_detector(
