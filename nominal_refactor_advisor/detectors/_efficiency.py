@@ -18,6 +18,10 @@ from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.relocation_observations import (
+    ModuleClassReadings,
+    declares_abstract,
+)
 from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
     RestatingSiteModule,
@@ -477,63 +481,34 @@ class _UnusedMethodParam:
 
 
 def _collect_unused_method_params(module: ParsedModule) -> list[_UnusedMethodParam]:
-    """Find methods with unused non-self parameters inside classes."""
-    results: list[_UnusedMethodParam] = []
-    index = module.syntax_index
+    """Find methods with unused non-self parameters inside classes.
 
-    abstract_method_names: set[str] = set()
-    for _ni, cls in index.indexed_nodes_of_type(ast.ClassDef):
-        for member in cls.body:
-            if not isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if any(
-                (isinstance(d, ast.Name) and d.id == "abstractmethod")
-                or (isinstance(d, ast.Attribute) and d.attr == "abstractmethod")
-                for d in member.decorator_list
-            ):
-                abstract_method_names.add(member.name)
+    A declaration that only asks (`declares_abstract`) fixes a signature it
+    does not use, and so does every method of the module that carries its name.
+    """
 
-    for _node_index, class_node in index.indexed_nodes_of_type(ast.ClassDef):
-        for item in class_node.body:
-            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            if isinstance(item, ast.FunctionDef) and not item.body:
-                continue
-            is_abstract = any(
-                (isinstance(d, ast.Name) and d.id == "abstractmethod")
-                or (isinstance(d, ast.Attribute) and d.attr == "abstractmethod")
-                for d in item.decorator_list
-            )
-            if is_abstract:
-                continue
-            if item.name in abstract_method_names:
-                continue
-            body_is_ellipsis = (
-                len(item.body) == 1
-                and isinstance(item.body[0], ast.Expr)
-                and isinstance(item.body[0].value, ast.Constant)
-                and item.body[0].value.value is ...
-            )
-            if body_is_ellipsis:
-                continue
-            body_is_docstring_only = (
-                len(item.body) == 1
-                and isinstance(item.body[0], ast.Expr)
-                and isinstance(item.body[0].value, ast.Constant)
-                and isinstance(item.body[0].value.value, str)
-            )
-            if body_is_docstring_only:
-                continue
-
-            for param_name, param_line in _unused_params(item):
-                results.append(_UnusedMethodParam(
-                    method_name=item.name,
-                    param_name=param_name,
-                    line=param_line,
-                    class_name=class_node.name,
-                ))
-
-    return results
+    methods = [
+        (reading, member)
+        for reading in module.fact(ModuleClassReadings).classes
+        for member in reading.node.body
+        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    asked = {
+        member.name
+        for reading, member in methods
+        if declares_abstract(member, reading.bindings)
+    }
+    return [
+        _UnusedMethodParam(
+            method_name=member.name,
+            param_name=param_name,
+            line=param_line,
+            class_name=reading.node.name,
+        )
+        for reading, member in methods
+        if member.name not in asked
+        for param_name, param_line in _unused_params(member)
+    ]
 
 
 class UnusedMethodParameterDetector(PerModuleIssueDetector):
