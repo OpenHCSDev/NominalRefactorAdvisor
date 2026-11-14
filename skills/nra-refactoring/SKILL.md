@@ -507,6 +507,22 @@ class supplies `_collect_findings`, `context_signature` and
 `_candidate_items`; a compact owner for the first with a collector
 owner for the last is that split.
 
+**The fixture corpus.** NRA's own package fires 35 detectors. The other
+70 or so only fire on the small programs the tests write, so a
+byte-identical scan of the package says nothing about them. Capture
+those programs once and scan them before and after a change:
+
+```
+NRA_FIXTURE_OUT=$CORPUS PYTHONPATH=tools/proof pytest -p snap_fixtures \
+    tests/test_refactor_advisor.py tests/test_analysis_cache.py tests/test_*detector*.py
+python tools/proof/fixture_scan.py $CORPUS before.json   # then again after the change
+```
+
+On 2026-11-14 that was 704 fixtures, 862 findings and 104 detectors in
+about five minutes on three workers. `tools/proof/stable_ids.py ROOT
+OUT.json` is the same dump for one tree. One fixture is broken on
+purpose and reports a `SyntaxError` row both times.
+
 **A candidate holds the facts it joins.** A cross-module candidate is
 built from compact per-module facts. It keeps those facts as fields
 (`candidate.table`, `candidate.family`) and adds only what the join
