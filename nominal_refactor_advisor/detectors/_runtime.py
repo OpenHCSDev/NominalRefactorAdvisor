@@ -28,16 +28,20 @@ from nominal_refactor_advisor.detectors._regex_bundle import (
 from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard, annotation_type_names
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import (
+    AstDemandCollectedFamily,
+    AttributeLookup,
     BuiltinCall,
     BuiltinCallName,
-    Globals,
+    collect_family_items,
     CollectedFamily,
+    Globals,
+    ItemPresenceReportedFamily,
     LITERAL_DISPATCH_CASE_MATCHER,
     ParsedModule,
     ParsedModuleSet,
+    SourceCollectedFamily,
+    SourceDemandCollectedFamily,
     SourceModule,
-    collect_family_items,
-    AttributeLookup,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.class_index import (
@@ -465,11 +469,10 @@ class FormalBoundaryPythonStringConstant(SourceLineReference):
 
 
 class FormalBoundaryPythonStringConstantFamily(
-    CollectedFamily[FormalBoundaryPythonStringConstant]
+    SourceCollectedFamily[FormalBoundaryPythonStringConstant], ItemPresenceReportedFamily[FormalBoundaryPythonStringConstant]
 ):
     """Persist compact Python-side formal-boundary constant facts."""
 
-    report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(
         FormalBoundaryStringRegistryAuthority.source_constants
     )
@@ -1035,11 +1038,10 @@ class GeneratedBoundarySemanticConstantAuthority:
 
 
 class GeneratedBoundarySemanticConstantSiteFamily(
-    CollectedFamily[GeneratedBoundarySemanticConstantSite]
+    SourceCollectedFamily[GeneratedBoundarySemanticConstantSite], ItemPresenceReportedFamily[GeneratedBoundarySemanticConstantSite]
 ):
     """Persist compact module facts used by the generated-boundary detector."""
 
-    report_presence_predicate = staticmethod(lambda items, config: bool(items))
     source_collector = staticmethod(
         GeneratedBoundarySemanticConstantAuthority.source_sites
     )
@@ -1428,7 +1430,11 @@ class RepeatedBuilderCallProjectionDemand:
         )
 
 
-class RepeatedBuilderCallShapeProjectionFamily(CollectedFamily[BuilderCallShape]):
+class RepeatedBuilderCallShapeProjectionFamily(
+    SourceCollectedFamily[BuilderCallShape],
+    SourceDemandCollectedFamily[BuilderCallShape],
+    AstDemandCollectedFamily[BuilderCallShape],
+):
     """Persist normalized builder calls for repository-wide grouping."""
 
     cache_payload_max_bytes = 3_000_000

@@ -46,30 +46,10 @@ from nominal_refactor_advisor.observation_shapes import (
 )
 
 from nominal_refactor_advisor.ast_tools import (
-    BuiltinCallName,
-    AstNameFamily,
-    AssignObservationSpec,
-    AutoRegisterMeta,
-    AutoRegisteredModuleShapeSpec,
-    ClassAstObservation,
-    CLASS_OBSERVATION_PROJECTION,
-    CollectedFamily,
-    ContextHelperShapeSpec,
-    FunctionObservationSpec,
-    ParsedModule,
-    RegisteredSpecCollectedFamily,
-    ScopedAstObservation,
-    SharedRegistryRootBase,
-    ShapeEmission,
-    SingleSpecCollectedFamily,
-    SourceModule,
-    REGISTRATION_CALL_FAMILY,
-    REGISTRATION_DECORATOR_FAMILY,
     _builder_call_shape,
     _class_body_field_observation,
     _class_name_from_expr,
     _dynamic_method_injection_observations,
-    root_agnostic_expression_fingerprint,
     _init_field_observations,
     _inline_literal_dispatch_observations_for_kind,
     _iter_attribute_family_calls,
@@ -79,6 +59,28 @@ from nominal_refactor_advisor.ast_tools import (
     _registration_key_fingerprint,
     _sentinel_type_observation,
     _sentinel_type_usage_observations,
+    AssignObservationSpec,
+    AstNameFamily,
+    AutoRegisteredModuleShapeSpec,
+    AutoRegisterMeta,
+    BuiltinCallName,
+    CLASS_OBSERVATION_PROJECTION,
+    ClassAstObservation,
+    CollectedFamily,
+    ContextHelperShapeSpec,
+    FunctionObservationSpec,
+    ItemPresenceReportedFamily,
+    ParsedModule,
+    RegisteredSpecCollectedFamily,
+    REGISTRATION_CALL_FAMILY,
+    REGISTRATION_DECORATOR_FAMILY,
+    root_agnostic_expression_fingerprint,
+    ScopedAstObservation,
+    ShapeEmission,
+    SharedRegistryRootBase,
+    SingleSpecCollectedFamily,
+    SourceCollectedFamily,
+    SourceModule,
 )
 
 FamilyItemT = TypeVar("FamilyItemT")
@@ -1131,7 +1133,10 @@ class TypeTestModuleFamily(ShapeFamily[TypeTestModule]):
 
 
 class RegistrationShapeFamily(
-    RegisteredSpecCollectedFamily[RegistrationShape], ShapeFamily[RegistrationShape]
+    SourceCollectedFamily[RegistrationShape],
+    ItemPresenceReportedFamily[RegistrationShape],
+    RegisteredSpecCollectedFamily[RegistrationShape],
+    ShapeFamily[RegistrationShape],
 ):
     _NATIVE_REGISTRATION_QUERY = """
     (class_definition name: (identifier) @class_name)
@@ -1285,13 +1290,6 @@ class RegistrationShapeFamily(
             return [*assignments, *calls, *decorators, *factory_shapes]
         except (SyntaxError, UnicodeDecodeError, ValueError, TypeError):
             return None
-
-    @staticmethod
-    def report_presence_predicate(items: tuple[object, ...], config: object) -> bool:
-        """Only registration shapes themselves establish report presence."""
-
-        del config
-        return bool(items)
 
 
 class FieldObservationFamily(

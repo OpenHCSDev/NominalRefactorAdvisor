@@ -68,15 +68,16 @@ from nominal_refactor_advisor.ast_projection import (
     single_name_targets,
 )
 from nominal_refactor_advisor.ast_tools import (
-    CompactModuleIdentity,
+    collect_family_items,
     CollectedFamily,
-    OwnScopeNodeVisitor,
-    ScanContext,
+    CompactModuleIdentity,
     LexicalSyntaxScope,
+    OwnScopeNodeVisitor,
     ParsedModule,
     ParsedModuleFact,
+    ScanContext,
+    SourceDemandCollectedFamily,
     SourceModule,
-    collect_family_items,
     statements_without_docstring,
 )
 from nominal_refactor_advisor.class_method_facets import (
@@ -4643,7 +4644,9 @@ def field_declaration_settled_projections(
     )
 
 
-class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
+class CompactModuleClassProjectionFamily(
+    SourceDemandCollectedFamily[CompactModuleClassProjection]
+):
     """Persist class/import facts needed by the global inheritance graph."""
 
     cache_payload_max_bytes = 3_000_000

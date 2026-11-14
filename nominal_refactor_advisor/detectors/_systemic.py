@@ -38,9 +38,11 @@ from nominal_refactor_advisor.semantic_description_length import CompressionCert
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
     CompactModuleIdentity,
-    PythonSourcePathPolicy,
-    SourceModule,
     is_docstring_statement,
+    PresenceReportedFamily,
+    PythonSourcePathPolicy,
+    SourceCollectedFamily,
+    SourceModule,
 )
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
@@ -535,22 +537,16 @@ class _DataclassNamespaceCliModuleProjection:
 
 
 class _DataclassNamespaceCliModuleProjectionFamily(
-    CollectedFamily[_DataclassNamespaceCliModuleProjection]
+    SourceCollectedFamily[_DataclassNamespaceCliModuleProjection],
+    PresenceReportedFamily[_DataclassNamespaceCliModuleProjection],
 ):
-    report_presence_predicate = staticmethod(
+    report_presence = staticmethod(
         lambda items, config: any(
             item.dataclasses or item.cli_specs
             for item in items
             if isinstance(item, _DataclassNamespaceCliModuleProjection)
         )
     )
-    source_collector = staticmethod(
-        lambda source_module, syntax_index: _DataclassNamespaceCliModuleProjectionFamily._native_dataclass_namespace_cli_projections(
-            source_module,
-            syntax_index,
-        )
-    )
-
     @classmethod
     def collect(
         cls, parsed_module: ParsedModule
@@ -596,7 +592,7 @@ class _DataclassNamespaceCliModuleProjectionFamily(
         ]
 
     @staticmethod
-    def _native_dataclass_namespace_cli_projections(
+    def source_collector(
         source_module: SourceModule,
         syntax_index: NativePythonSyntaxIndex,
     ) -> list[_DataclassNamespaceCliModuleProjection] | None:

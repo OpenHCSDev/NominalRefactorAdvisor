@@ -1134,7 +1134,7 @@ def build_compact_projection_shard(
             (
                 family.can_collect_demanded_source(demand_by_family[family])
                 if family in demand_by_family
-                else family.source_collector is not None
+                else family.can_collect_source()
             )
             for family in ast_families
         )

@@ -23,8 +23,9 @@ from nominal_refactor_advisor.ast_projection import (
 from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValues
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCallName,
-    CollectedFamily,
     ParsedModule,
+    PresenceReportedFamily,
+    SourceCollectedFamily,
     SourceModule,
     walk_function_body_nodes,
 )
@@ -1237,9 +1238,10 @@ class _EnvironmentBooleanModuleProjection:
 
 
 class _EnvironmentBooleanModuleProjectionFamily(
-    CollectedFamily[_EnvironmentBooleanModuleProjection]
+    SourceCollectedFamily[_EnvironmentBooleanModuleProjection],
+    PresenceReportedFamily[_EnvironmentBooleanModuleProjection],
 ):
-    report_presence_predicate = staticmethod(
+    report_presence = staticmethod(
         lambda items, config: any(
             item.parser_sites or item.authorities or item.wrapper_facts
             for item in items

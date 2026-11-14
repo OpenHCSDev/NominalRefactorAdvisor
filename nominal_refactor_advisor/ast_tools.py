@@ -2210,22 +2210,6 @@ class CollectedFamily(
     __skip_if_no_key__ = True
     item_type: ClassVar[type[ShapeItemT]]
     cache_payload_max_bytes: ClassVar[int | None] = None
-    source_collector: ClassVar[
-        Callable[[SourceModule, NativePythonSyntaxIndex], list[object] | None] | None
-    ] = None
-    source_demand_collector: ClassVar[
-        Callable[
-            [SourceModule, NativePythonSyntaxIndex, object],
-            list[object] | None,
-        ]
-        | None
-    ] = None
-    ast_demand_collector: ClassVar[
-        Callable[[ParsedModule, object], list[object]] | None
-    ] = None
-    report_presence_predicate: ClassVar[
-        Callable[[tuple[object, ...], object], bool] | None
-    ] = None
 
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
@@ -2287,19 +2271,51 @@ class CollectedFamily(
         return CollectedFamilyImplementationIdentity.from_family(cls)
 
     @classmethod
+    def can_collect_source(cls) -> bool:
+        """Whether the family collects from source text alone; a family that
+        needs a Python AST keeps this answer."""
+
+        return False
+
+    @classmethod
+    def can_collect_source_demand(cls) -> bool:
+        """Whether an exact demand view comes from source text alone."""
+
+        return False
+
+    @classmethod
     def collect_source(
         cls,
         source_module: SourceModule,
         syntax_index: NativePythonSyntaxIndex,
     ) -> list[ShapeItemT] | None:
-        """Collect without a Python AST, or request the exact AST fallback."""
+        """Collect without a Python AST, or request the exact AST fallback (None)."""
 
-        if cls.source_collector is None:
-            return None
-        items = cls.source_collector(source_module, syntax_index)
-        if items is None:
-            return None
-        return [item for item in items if isinstance(item, cls.item_type)]
+        del source_module, syntax_index
+        return None
+
+    @classmethod
+    def collect_source_demand(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        demand: object,
+    ) -> list[ShapeItemT] | None:
+        """An exact demand view from source text, or the AST fallback (None)."""
+
+        del source_module, syntax_index, demand
+        return None
+
+    @classmethod
+    def collect_ast_demand(
+        cls,
+        parsed_module: ParsedModule,
+        demand: object,
+    ) -> list[ShapeItemT] | None:
+        """An exact demand view from the AST, or the full-family fallback (None)."""
+
+        del parsed_module, demand
+        return None
 
     @classmethod
     def collect_demanded_source(
@@ -2314,12 +2330,7 @@ class CollectedFamily(
             if not demand.include_context:
                 return []
             return cls.collect_source(source_module, syntax_index)
-        if cls.source_demand_collector is None:
-            return None
-        items = cls.source_demand_collector(source_module, syntax_index, demand)
-        if items is None:
-            return None
-        return [item for item in items if isinstance(item, cls.item_type)]
+        return cls.collect_source_demand(source_module, syntax_index, demand)
 
     @classmethod
     def collect_demanded(
@@ -2331,10 +2342,7 @@ class CollectedFamily(
 
         if isinstance(demand, CollectedFamilyPresenceDemand):
             return None if demand.include_context else []
-        if cls.ast_demand_collector is None:
-            return None
-        items = cls.ast_demand_collector(parsed_module, demand)
-        return [item for item in items if isinstance(item, cls.item_type)]
+        return cls.collect_ast_demand(parsed_module, demand)
 
     @classmethod
     def report_demand(
@@ -2342,12 +2350,10 @@ class CollectedFamily(
         target_items: tuple[object, ...],
         config: object,
     ) -> object | None:
-        """Derive context demand from complete report-target family items."""
+        """Derive context demand from complete report-target family items; a
+        family that reports no presence keeps None."""
 
-        if cls.report_presence_predicate is not None:
-            return CollectedFamilyPresenceDemand(
-                include_context=cls.report_presence_predicate(target_items, config)
-            )
+        del target_items, config
         return None
 
     @classmethod
@@ -2361,8 +2367,8 @@ class CollectedFamily(
     @classmethod
     def can_collect_demanded_source(cls, demand: object) -> bool:
         if isinstance(demand, CollectedFamilyPresenceDemand):
-            return not demand.include_context or cls.source_collector is not None
-        return cls.source_demand_collector is not None
+            return not demand.include_context or cls.can_collect_source()
+        return cls.can_collect_source_demand()
 
     @classmethod
     def project_cached_demand(
@@ -2384,6 +2390,115 @@ class CollectedFamily(
     @abstractmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ShapeItemT]:
         raise NotImplementedError
+
+
+class SourceCollectedFamily(CollectedFamily[ShapeItemT], Generic[ShapeItemT], ABC):
+    """A family that can also collect from source text, without a Python AST."""
+
+    @staticmethod
+    @abstractmethod
+    def source_collector(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> Sequence[object] | None:
+        """The family's items from source text, or None for the exact AST fallback."""
+
+    @classmethod
+    def can_collect_source(cls) -> bool:
+        return True
+
+    @classmethod
+    def collect_source(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+    ) -> list[ShapeItemT] | None:
+        items = cls.source_collector(source_module, syntax_index)
+        if items is None:
+            return None
+        return [item for item in items if isinstance(item, cls.item_type)]
+
+
+class SourceDemandCollectedFamily(
+    CollectedFamily[ShapeItemT], Generic[ShapeItemT], ABC
+):
+    """A family whose exact demand views come from source text alone."""
+
+    @staticmethod
+    @abstractmethod
+    def source_demand_collector(
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        demand: object,
+    ) -> Sequence[object] | None:
+        """The demanded items from source text, or None for the AST fallback."""
+
+    @classmethod
+    def can_collect_source_demand(cls) -> bool:
+        return True
+
+    @classmethod
+    def collect_source_demand(
+        cls,
+        source_module: SourceModule,
+        syntax_index: NativePythonSyntaxIndex,
+        demand: object,
+    ) -> list[ShapeItemT] | None:
+        items = cls.source_demand_collector(source_module, syntax_index, demand)
+        if items is None:
+            return None
+        return [item for item in items if isinstance(item, cls.item_type)]
+
+
+class AstDemandCollectedFamily(CollectedFamily[ShapeItemT], Generic[ShapeItemT], ABC):
+    """A family whose exact demand views come from one module's AST."""
+
+    @staticmethod
+    @abstractmethod
+    def ast_demand_collector(
+        parsed_module: ParsedModule,
+        demand: object,
+    ) -> Sequence[object]:
+        """The demanded items from the module's AST."""
+
+    @classmethod
+    def collect_ast_demand(
+        cls,
+        parsed_module: ParsedModule,
+        demand: object,
+    ) -> list[ShapeItemT] | None:
+        items = cls.ast_demand_collector(parsed_module, demand)
+        return [item for item in items if isinstance(item, cls.item_type)]
+
+
+class PresenceReportedFamily(CollectedFamily[ShapeItemT], Generic[ShapeItemT], ABC):
+    """A family whose report-target items decide whether context facts are read."""
+
+    @staticmethod
+    @abstractmethod
+    def report_presence(items: tuple[object, ...], config: object) -> bool:
+        """Whether these report-target items need the family's context facts."""
+
+    @classmethod
+    def report_demand(
+        cls,
+        target_items: tuple[object, ...],
+        config: object,
+    ) -> object | None:
+        return CollectedFamilyPresenceDemand(
+            include_context=cls.report_presence(target_items, config)
+        )
+
+
+class ItemPresenceReportedFamily(
+    PresenceReportedFamily[ShapeItemT], Generic[ShapeItemT], ABC
+):
+    """A family whose report needs context exactly when it has items."""
+
+    @staticmethod
+    def report_presence(items: tuple[object, ...], config: object) -> bool:
+        del config
+        return bool(items)
 
 
 def _collected_family_cache_path(
