@@ -21,6 +21,7 @@ from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
+from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
 from nominal_refactor_advisor.detectors._regex_bundle import (
     RepeatedLocalRegexBundleDetector,
 )
@@ -157,7 +158,6 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
     IssueDetector,
     LatentImplementationRosterCandidate,
-    LineWitnessCandidate,
     ManualConcreteSubclassRosterCandidate,
     ModuleCollectorCandidateDetector,
     PerModuleIssueDetector,

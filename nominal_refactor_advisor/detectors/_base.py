@@ -41,6 +41,21 @@ from typing import (
 from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.detectors._candidates import (
+    _DEFAULT_FILE_PATH_ATTRIBUTE as _DEFAULT_FILE_PATH_ATTRIBUTE,
+    _LINE_WITNESS_NAME_EVIDENCE as _LINE_WITNESS_NAME_EVIDENCE,
+    AttributeValueT as AttributeValueT,
+    ClassMethodFamilyCandidate as ClassMethodFamilyCandidate,
+    ClassNameLineNumbersGroup as ClassNameLineNumbersGroup,
+    KeyedRecordInfrastructureCandidate as KeyedRecordInfrastructureCandidate,
+    KeyedRegistryAxisFact as KeyedRegistryAxisFact,
+    KeyedRegistryAxisSurface as KeyedRegistryAxisSurface,
+    KeyedRegistryFactCandidate as KeyedRegistryFactCandidate,
+    LineWitnessCandidate as LineWitnessCandidate,
+    SourceLocationEvidenceProperty as SourceLocationEvidenceProperty,
+    WitnessCarrierCandidate as WitnessCarrierCandidate,
+    _attribute_projection as _attribute_projection,
+)
 from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
@@ -70,10 +85,7 @@ from nominal_refactor_advisor.enum_semantics import PYTHON_ENUM_BASE_AUTHORITY
 from nominal_refactor_advisor.registration_facets import (
     CompactManualSubclassRegistrationSite,
 )
-from nominal_refactor_advisor.registry_identity import (
-    DEFAULT_REGISTRY_KEY_ATTRIBUTE,
-    class_name_registry_key,
-)
+from nominal_refactor_advisor.registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 from nominal_refactor_advisor.semantic_match import (
     AstPredicateRule,
     Maybe,
@@ -1289,7 +1301,6 @@ class SemanticDescentGraphIssueDetector(ContextualGlobalCacheContract):
 
 CandidateItemT = TypeVar("CandidateItemT")
 FindingValueT = TypeVar("FindingValueT")
-AttributeValueT = TypeVar("AttributeValueT")
 CandidateSummaryRenderer: TypeAlias = Callable[[CandidateItemT], str]
 CandidateEvidenceRenderer: TypeAlias = Callable[
     [CandidateItemT], tuple[SourceLocation, ...]
@@ -1310,10 +1321,6 @@ ModuleNamedSequenceMap: TypeAlias = dict[str, tuple[int, tuple[ast.AST, ...]]]
 NormalizedRoleFieldMap: TypeAlias = tuple[
     tuple[SemanticFieldRole, tuple[str, ...]], ...
 ]
-
-
-def _attribute_projection(attribute_name: str) -> Callable[[object], AttributeValueT]:
-    return cast(Callable[[object], AttributeValueT], attrgetter(attribute_name))
 
 
 ResolvedTypeNamePartition: TypeAlias = tuple[tuple[str, ...], tuple[str, ...]]
@@ -1406,34 +1413,10 @@ def single_candidate_evidence(
     candidate: SourceLocationEvidenceCarrier,
 ) -> tuple[SourceLocation, ...]:
     return (candidate.evidence,)
-
-
-_DEFAULT_FILE_PATH_ATTRIBUTE = "file_path"
 _FILE_PATHS_ATTRIBUTE = "file_paths"
 _LINE_NUMBERS_ATTRIBUTE = "line_numbers"
 _CLASS_NAMES_ATTRIBUTE = "class_names"
 _METHOD_SYMBOLS_ATTRIBUTE = "method_symbols"
-
-
-@dataclass(frozen=True)
-class SourceLocationEvidenceProperty:
-    file_attribute_name: str = _DEFAULT_FILE_PATH_ATTRIBUTE
-    line_attribute_name: str = "line"
-    symbol_attribute_name: str = "symbol"
-
-    def __get__(
-        self,
-        instance: object | None,
-        owner: type[object] | None = None,
-    ) -> SourceLocation | SourceLocationEvidenceProperty:
-        del owner
-        if instance is None:
-            return self
-        return SourceLocation(
-            _attribute_projection(self.file_attribute_name)(instance),
-            _attribute_projection(self.line_attribute_name)(instance),
-            _attribute_projection(self.symbol_attribute_name)(instance),
-        )
 
 
 @dataclass(frozen=True)
@@ -1489,9 +1472,6 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
 
 
 _LINE_SYMBOL_EVIDENCE = SourceLocationEvidenceProperty()
-_LINE_WITNESS_NAME_EVIDENCE = SourceLocationEvidenceProperty(
-    symbol_attribute_name="witness_name"
-)
 _LINENO_QUALNAME_EVIDENCE = SourceLocationEvidenceProperty(
     line_attribute_name="lineno", symbol_attribute_name="qualname"
 )
@@ -6084,19 +6064,6 @@ class SupportProjectionAuthority:
 SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
 
 
-@dataclass(frozen=True)
-class LineWitnessCandidate(SourceLineReference, ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
-    @property
-    def witness_name(self) -> str:
-        return type(self).__name__
-
-    evidence = _LINE_WITNESS_NAME_EVIDENCE
-
-
 class ModuleCollectedLineWitnessCandidate(LineWitnessCandidate, ABC):
     """A line witness whose declaration owns its current-source collection."""
 
@@ -6243,14 +6210,6 @@ class FragmentedFamilyAuthorityCandidate:
     total_keys: tuple[str, ...]
 
 
-@dataclass(frozen=True)
-class WitnessCarrierCandidate(LineWitnessCandidate):
-    subject_name: str
-    name_family: tuple[str, ...]
-    witness_name = AliasProperty[str]("subject_name")
-    class_name = AliasProperty[str]("subject_name")
-
-
 class NameFamilyClassNamesMixin(ABC):
     name_family: tuple[str, ...]
     class_names = AliasProperty[tuple[str, ...]]("name_family")
@@ -6286,26 +6245,6 @@ class StructuralObservationPropertyCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class ClassNameLineNumbersGroup(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
-    class_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-
-    def evidence_for_file(self, file_path: str) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(file_path, line, class_name)
-                for class_name, line in zip(
-                    self.class_names, self.line_numbers, strict=True
-                )
-            )
-        )
-
-
-@dataclass(frozen=True)
 class ClassLineNumbersGroup(ClassNameLineNumbersGroup):
     file_path: str
 
@@ -6325,29 +6264,6 @@ class MultiFileClassLineNumbersGroup(ClassNameLineNumbersGroup):
                 SourceLocation(file_path, line, class_name)
                 for file_path, line, class_name in zip(
                     self.file_paths, self.line_numbers, self.class_names, strict=True
-                )
-            )
-        )
-
-
-@dataclass(frozen=True)
-class ClassMethodFamilyCandidate(ABC, metaclass=AutoRegisterMeta):
-    __registry_key__ = DEFAULT_REGISTRY_KEY_ATTRIBUTE
-    __key_extractor__ = class_name_registry_key
-    __skip_if_no_key__ = True
-
-    file_path: str
-    class_name: str
-    method_names: tuple[str, ...]
-    line_numbers: tuple[int, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            (
-                SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
-                for method_name, line in zip(
-                    self.method_names, self.line_numbers, strict=True
                 )
             )
         )
@@ -6520,25 +6436,6 @@ class DerivedWrapperSpecShadowCandidate(EvidenceLocationsWitnessCandidate):
     extra_field_names: tuple[str, ...]
     builder_names: tuple[str, ...]
     witness_name = AliasProperty[str]("derived_family_name")
-
-
-class KeyedRecordInfrastructureCandidate(ABC):
-    """Candidate that owns its keyed-record surface presentation."""
-
-    @property
-    @abstractmethod
-    def finding_summary(self) -> str:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def finding_evidence(self) -> tuple[SourceLocation, ...]:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def finding_metrics(self) -> MappingMetrics:
-        raise NotImplementedError
 
 
 @dataclass(frozen=True)
@@ -6732,58 +6629,8 @@ class RepeatedKeyedFamilyCandidate:
 
 
 @dataclass(frozen=True)
-class KeyedRegistryAxisSurface:
-    key_type_name: str
-    registry_key_attr_name: str
-    lookup_method_names: tuple[str, ...]
-    registered_case_names: tuple[str, ...]
-    consumer_symbols: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class InjectiveRegistryProofSurface(KeyedRegistryAxisSurface):
     injectivity_proof: InjectiveTypeRegistryProof
-
-
-@dataclass(frozen=True)
-class KeyedRegistryAxisFact(KeyedRegistryAxisSurface, SourceLineReference):
-    """Neutral source observation; unresolved keys are not counterexamples."""
-
-    class_name: str
-    missing_maturity_signals: tuple[str, ...]
-    injectivity_proof: InjectiveTypeRegistryProof | None
-
-    def require_proof(self) -> InjectiveTypeRegistryProof:
-        if self.injectivity_proof is None:
-            raise ValueError("Registry key equality remains unproved")
-        return self.injectivity_proof
-
-    @property
-    def is_mature_injective(self) -> bool:
-        proof = self.injectivity_proof
-        return (
-            proof is not None
-            and not self.missing_maturity_signals
-            and proof.is_injective
-        )
-
-
-class KeyedRegistryFactCandidate(ABC):
-    """Nominal refinement of keyed-registry facts selected by one invariant."""
-
-    @classmethod
-    @abstractmethod
-    def accepts_fact(cls, fact: KeyedRegistryAxisFact) -> bool:
-        raise NotImplementedError
-
-    @classmethod
-    def from_facts(cls, facts: Sequence[KeyedRegistryAxisFact]) -> tuple[Self, ...]:
-        field_names = tuple(item.name for item in fields(cls))
-        return tuple(
-            cls(**{name: getattr(fact, name) for name in field_names})
-            for fact in facts
-            if cls.accepts_fact(fact)
-        )
 
 
 @dataclass(frozen=True)

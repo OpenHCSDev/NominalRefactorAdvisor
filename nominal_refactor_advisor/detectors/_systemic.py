@@ -20,6 +20,10 @@ from nominal_refactor_advisor.class_syntax_facets import (
     CompactNamedProjectionSurface,
     CompactSortedKeyCall,
 )
+from nominal_refactor_advisor.detectors._candidates import (
+    KeyedRecordInfrastructureCandidate,
+    KeyedRegistryAxisFact,
+)
 from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
@@ -132,8 +136,6 @@ from nominal_refactor_advisor.detectors._base import (
     ImplicitSelfContractMixinCandidate,
     InjectiveTypeRegistryCandidate,
     IssueDetector,
-    KeyedRecordInfrastructureCandidate,
-    KeyedRegistryAxisFact,
     ManualFiberTagCandidate,
     ManualStructuralRecordMechanicsGroupCandidate,
     ModuleCollectorCandidateDetector,
