@@ -19,7 +19,7 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValues,
     single_name_targets,
 )
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import OwnScopeNodeVisitor, ParsedModule
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.export_tools import PYTHON_PUBLIC_EXPORT_ASSIGNMENT
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -128,7 +128,7 @@ class CompactUnresolvedPublicExportContract(CompactModulePublicExportContract):
         return moved_names
 
 
-class _ModuleScopeNameReferenceCollector(ast.NodeVisitor):
+class _ModuleScopeNameReferenceCollector(OwnScopeNodeVisitor):
     """Collect one module binding's syntax without entering child namespaces."""
 
     def __init__(self, name: str) -> None:
@@ -138,17 +138,6 @@ class _ModuleScopeNameReferenceCollector(ast.NodeVisitor):
     def visit_Name(self, node: ast.Name) -> None:
         if node.id == self.name:
             self.references.append(node)
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        return
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        return
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        return
 
 
 def _module_scope_name_references(

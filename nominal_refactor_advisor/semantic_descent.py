@@ -61,6 +61,7 @@ from nominal_refactor_advisor.ast_tools import (
     ClassFunctionStackNodeVisitor,
     CollectedFamily,
     CompactModuleIdentity,
+    OwnScopeNodeVisitor,
     ParsedModule,
     ParsedModuleSet,
     PythonSourcePathPolicy,
@@ -4555,7 +4556,7 @@ def build_compact_semantic_descent_graph(
     ).graph()
 
 
-class MappingReadProjectionCollector(ast.NodeVisitor):
+class MappingReadProjectionCollector(OwnScopeNodeVisitor):
     """Read sets for one lexical function, with site-local constructor descent.
 
     Only stable name/attribute subjects are grouped. A constructor is evidence
@@ -4574,13 +4575,6 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
             super().visit(node)
         finally:
             self.parents.pop()
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        pass
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-    visit_ClassDef = visit_FunctionDef
-    visit_Lambda = visit_FunctionDef
 
     def visit_Subscript(self, node: ast.Subscript) -> None:
         if isinstance(node.ctx, ast.Load):

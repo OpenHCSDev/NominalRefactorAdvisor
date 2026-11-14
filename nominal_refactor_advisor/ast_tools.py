@@ -1979,6 +1979,22 @@ class ClassAstObservation:
     is_dataclass_family: bool
 
 
+class OwnScopeNodeVisitor(ast.NodeVisitor):
+    """A visitor of one scope's own code.
+
+    A nested def, class or lambda is another scope's: it is skipped whole, with its
+    decorators, bases and defaults.
+    """
+
+    def _another_scope(self, node: ast.AST) -> None:
+        """A nested scope's code is its own."""
+
+    visit_FunctionDef = _another_scope
+    visit_AsyncFunctionDef = _another_scope
+    visit_ClassDef = _another_scope
+    visit_Lambda = _another_scope
+
+
 class ClassFunctionStackNodeVisitor(ast.NodeVisitor, ABC):
     """Nominal AST visitor base that owns class/function scope stack lifecycle."""
 

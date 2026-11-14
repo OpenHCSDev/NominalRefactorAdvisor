@@ -20,7 +20,7 @@ from typing import ClassVar
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from nominal_refactor_advisor.ast_projection import nodes_of
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import OwnScopeNodeVisitor, ParsedModule
 from nominal_refactor_advisor.audit.findings import Package, RawShape
 from nominal_refactor_advisor.audit.identity import TypePositions
 from nominal_refactor_advisor.audit.lexical import DecoratorBinding, ModuleScope, Scope
@@ -123,24 +123,12 @@ class PlainStrIdAnnotation(PerFileOccurrenceMeasure):
         return 1
 
 
-class OwnInstanceWrites(ast.NodeVisitor):
+class OwnInstanceWrites(OwnScopeNodeVisitor):
     """A method body's object.__setattr__ calls on its own instance; nested scopes own theirs."""
 
     def __init__(self, instance: str) -> None:
         self.instance = instance
         self.found: list[ast.Call] = []
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-        """A nested scope's writes are its own."""
-
-    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
-        """A nested scope's writes are its own."""
-
-    def visit_Lambda(self, node: ast.Lambda) -> None:
-        """A nested scope's writes are its own."""
-
-    def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        """A nested scope's writes are its own."""
 
     def visit_Call(self, node: ast.Call) -> None:
         written = [*map(ast.unparse, node.args[:1])]

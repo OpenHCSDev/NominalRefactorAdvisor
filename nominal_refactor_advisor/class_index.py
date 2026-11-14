@@ -70,6 +70,7 @@ from nominal_refactor_advisor.ast_projection import (
 from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
+    OwnScopeNodeVisitor,
     ScanContext,
     LexicalSyntaxScope,
     ParsedModule,
@@ -4219,7 +4220,7 @@ def module_star_import_origins(
 ) -> tuple[CompactModuleStarImportOrigin, ...]:
     origins: list[CompactModuleStarImportOrigin] = []
 
-    class ModuleScopeStarImportCollector(ast.NodeVisitor):
+    class ModuleScopeStarImportCollector(OwnScopeNodeVisitor):
         def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
             if any(alias.name == "*" for alias in node.names):
                 origins.append(
@@ -4230,17 +4231,6 @@ def module_star_import_origins(
                         )
                     )
                 )
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            return
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
 
     ModuleScopeStarImportCollector().visit(parsed_module.module)
     return tuple(origins)
@@ -5818,19 +5808,7 @@ def _dynamic_dataclass_schema_lines(node: ast.ClassDef) -> tuple[int, ...]:
 
     lines: set[int] = set()
 
-    class DynamicSchemaVisitor(ast.NodeVisitor):
-        def visit_ClassDef(self, child: ast.ClassDef) -> None:
-            return None
-
-        def visit_FunctionDef(self, child: ast.FunctionDef) -> None:
-            return None
-
-        def visit_AsyncFunctionDef(self, child: ast.AsyncFunctionDef) -> None:
-            return None
-
-        def visit_Lambda(self, child: ast.Lambda) -> None:
-            return None
-
+    class DynamicSchemaVisitor(OwnScopeNodeVisitor):
         def visit_AnnAssign(self, child: ast.AnnAssign) -> None:
             lines.add(child.lineno)
 
