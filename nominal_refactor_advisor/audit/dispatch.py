@@ -6,6 +6,7 @@ import ast
 import typing
 from abc import abstractmethod
 from collections.abc import Iterator
+from functools import lru_cache
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
@@ -39,6 +40,23 @@ class MatchArms:
             yield from cls.alternatives(case.pattern)
 
 
+@lru_cache(maxsize=1)
+def own_scope(function: ast.AST) -> tuple[ast.AST, ...]:
+    """The nodes of one function's own scope, in the order its readers visit them. A nested
+    function, lambda or class opens another scope: its comparisons cannot combine with its
+    parent's. Kept for the function being measured, which every dispatch measure reads."""
+
+    nodes = []
+    pending = list(ast.iter_child_nodes(function))
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        nodes.append(node)
+        pending.extend(ast.iter_child_nodes(node))
+    return tuple(nodes)
+
+
 class DispatchCases(MroDispatch):
     """Collect cases of one external Python AST without executing its source."""
 
@@ -61,15 +79,16 @@ class DispatchCases(MroDispatch):
     def groups(self) -> tuple[frozenset[str], ...]:
         return tuple(cases for _, cases in self.decided())
 
-    def read_function(self, function: ast.AST) -> None:
-        pending = list(ast.iter_child_nodes(function))
-        while pending:
-            node = pending.pop()
-            # A nested scope's comparisons cannot combine with its parent's.
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
-                continue
-            self.dispatch_sync(node)
-            pending.extend(ast.iter_child_nodes(node))
+    @classmethod
+    @lru_cache(maxsize=4)
+    def decided_in(cls, function: ast.AST) -> tuple[tuple[ast.AST, frozenset[str]], ...]:
+        """What one function decides case by case, as this collector reads it. A measure
+        and its arm count ask for the same function one after the other."""
+
+        collector = cls()
+        for node in own_scope(function):
+            collector.dispatch_sync(node)
+        return collector.decided()
 
 
 class LiteralDispatchCases(MatchArms, DispatchCases):
@@ -159,16 +178,15 @@ class DispatchMeasure(PerFileOccurrenceMeasure, NodeCount):
 
     @classmethod
     @abstractmethod
-    def collector(cls) -> DispatchCases: ...
+    def cases(cls) -> type[DispatchCases]:
+        """The collector that reads this measure's cases."""
 
     @classmethod
     def decided(cls, node: ast.AST) -> tuple[tuple[ast.AST, frozenset[str]], ...]:
         """One function's subjects decided case by case; the overlay lists these too."""
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             return ()
-        collector = cls.collector()
-        collector.read_function(node)
-        return collector.decided()
+        return cls.cases().decided_in(node)
 
     @classmethod
     def groups(cls, node: ast.AST) -> tuple[frozenset[str], ...]:
@@ -184,8 +202,8 @@ class StringDispatch(DispatchMeasure):
     outside it."""
 
     @classmethod
-    def collector(cls) -> DispatchCases:
-        return LiteralDispatchCases()
+    def cases(cls) -> type[DispatchCases]:
+        return LiteralDispatchCases
 
 
 class TypeSwitch(DispatchMeasure):
@@ -193,8 +211,8 @@ class TypeSwitch(DispatchMeasure):
     belongs to."""
 
     @classmethod
-    def collector(cls) -> DispatchCases:
-        return TypeDispatchCases()
+    def cases(cls) -> type[DispatchCases]:
+        return TypeDispatchCases
 
 
 class DispatchArms(DispatchMeasure):
