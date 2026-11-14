@@ -113,7 +113,6 @@ class FragmentedFamilyAuthorityCandidate(CollectsItself):
 class FragmentedFamilyAuthorityDetector(
     ModuleCollectorCandidateDetector[FragmentedFamilyAuthorityCandidate]
 ):
-    candidate_collector = FragmentedFamilyAuthorityCandidate.from_module
     finding_spec = high_confidence_spec(
         PatternId.AUTHORITATIVE_SCHEMA,
         "Parallel key-family tables should become one authoritative record",

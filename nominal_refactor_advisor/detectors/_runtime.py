@@ -2973,7 +2973,6 @@ def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
 class MirroredImportFallbackDetector(
     ModuleCollectorCandidateDetector[MirroredImportFallbackCandidate]
 ):
-    candidate_collector = MirroredImportFallbackCandidate.from_module
     finding_spec = high_confidence_spec(
         PatternId.LOCAL_VALUE_AUTHORITY,
         "Mirrored import fallback should collapse to one import authority",

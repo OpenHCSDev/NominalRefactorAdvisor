@@ -461,7 +461,6 @@ declare_candidate_rule_detector(
 class ReflectiveSelfAttributeEscapeDetector(
     ModuleCollectorCandidateDetector[ReflectiveSelfAttributeCandidate]
 ):
-    candidate_collector = ReflectiveSelfAttributeCandidate.from_module
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Reflective self-attribute access hides a nominal contract",

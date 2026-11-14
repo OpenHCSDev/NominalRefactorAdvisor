@@ -20,6 +20,8 @@ from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
 from operator import attrgetter
+import types
+import typing
 from typing import (
     Callable,
     ClassVar,
@@ -1671,6 +1673,16 @@ class CandidateCollectorBaseReference:
             raise ValueError("source does not prove a nominal collector base")
 
 
+class CollectsItself(ABC):
+    """A candidate type that knows how to find its candidates in one module. A detector
+    declared over it has no collector to name."""
+
+    @classmethod
+    @abstractmethod
+    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
+        raise NotImplementedError
+
+
 class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
     candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
     collector_scope: ClassVar[CandidateCollectorScope | None] = None
@@ -1678,12 +1690,37 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
+        collecting = cls._self_collecting_candidate_type()
+        if "candidate_collector" not in vars(cls) and collecting is not None:
+            cls.candidate_collector = cast(
+                DetectorCollector[CandidateItemT], collecting.from_module
+            )
         if _has_finding_spec_contract(cls) and (
             "candidate_collector" not in vars(cls) or cls.candidate_collector is None
         ):
             raise TypeError(
                 f"{cls.__name__} must own its candidate_collector declaration"
             )
+
+    @classmethod
+    def _self_collecting_candidate_type(cls) -> type[CollectsItself] | None:
+        """The candidate type this class is subscripted with, when it collects itself from
+        a module and this base calls its collector with the module alone."""
+
+        if (
+            cls.collector_scope is not CandidateCollectorScope.MODULE
+            or cls.collector_uses_config
+        ):
+            return None
+        return next(
+            (
+                argument
+                for base in types.get_original_bases(cls)
+                for argument in typing.get_args(base)
+                if isinstance(argument, type) and issubclass(argument, CollectsItself)
+            ),
+            None,
+        )
 
     @classmethod
     def collector_base_shape(cls) -> CandidateCollectorBaseShape | None:
@@ -5035,16 +5072,6 @@ class SupportProjectionAuthority:
 
 
 SUPPORT_PROJECTION_AUTHORITY = SupportProjectionAuthority()
-
-
-class CollectsItself(ABC):
-    """A candidate type that knows how to find its candidates in one module. A detector
-    declared over it has no collector to name."""
-
-    @classmethod
-    @abstractmethod
-    def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
-        raise NotImplementedError
 
 
 class ModuleCollectedLineWitnessCandidate(CollectsItself, LineWitnessCandidate, ABC):
