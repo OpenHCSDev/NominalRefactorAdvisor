@@ -1308,7 +1308,7 @@ class ProjectDecoderOwners:
             node.left.attr
             for parsed in self.snapshot.parsed_modules
             if parsed.module_name.partition(".")[0] == self.root
-            for node in ast.walk(parsed.module)
+            for node in parsed.syntax_index.breadth_first_nodes
             if _none_probe(node)
         }
         return tuple(
@@ -2121,7 +2121,7 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
             parsed_module = snapshot.parsed_module_for_source_path(evidence.file_path)
             fields = {
                 probe.left.attr
-                for probe in ast.walk(parsed_module.module)
+                for probe in parsed_module.syntax_index.breadth_first_nodes
                 if _none_probe(probe) and probe.lineno == evidence.line
             }
             probed_fields |= fields

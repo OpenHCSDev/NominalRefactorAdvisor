@@ -1042,7 +1042,7 @@ class Enumerated(Rewritten, ABC):
         """An import of the enum inside a function binds a name no rewrite sees."""
 
         for module in snapshot.parsed_modules:
-            for scope in FunctionDefinition.within(ast.walk(module.module)):
+            for scope in FunctionDefinition.within(module.syntax_index.breadth_first_nodes):
                 for node in ast.walk(scope):
                     if not isinstance(node, ast.ImportFrom):
                         continue
@@ -1092,7 +1092,7 @@ class Enumerated(Rewritten, ABC):
 
         return frozenset(
             id(node)
-            for scope in ast.walk(module.module)
+            for scope in module.syntax_index.breadth_first_nodes
             if isinstance(scope, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
             and names & _scope_names(scope)
             for node in name_nodes(scope)
@@ -1773,7 +1773,7 @@ class Fold(Cases, ABC):
         parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node)
-            for annotated in ast.walk(module.module)
+            for annotated in module.syntax_index.breadth_first_nodes
             for annotation in _annotations(annotated)
             for node in ast.walk(annotation)
         }
@@ -1786,7 +1786,7 @@ class Fold(Cases, ABC):
         is_test = PythonSourcePathPolicy.is_test_path(module.path)
         members = {member.name: member.class_name for member in enum.members}
         shadowed = self.shadowed(module, names.enum)
-        for node in ast.walk(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if (
                 id(node) in enum_nodes
                 or id(node) in holder_field
@@ -2018,7 +2018,7 @@ class KeyedMap:
             for component in self.components
             for consumer in component.consumers
         }
-        for node in ast.walk(self.module.module):
+        for node in self.module.syntax_index.breadth_first_nodes:
             if (
                 isinstance(node, ast.Subscript)
                 and (node.lineno, node.col_offset) in found
@@ -2311,12 +2311,12 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
         parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node)
-            for annotated in ast.walk(module.module)
+            for annotated in module.syntax_index.breadth_first_nodes
             for annotation in _annotations(annotated)
             for node in ast.walk(annotation)
         }
         shadowed = self.shadowed(module, names.enum)
-        for node in ast.walk(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if id(node) in handled:
                 continue
             if (

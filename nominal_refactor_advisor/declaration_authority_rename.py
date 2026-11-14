@@ -470,8 +470,7 @@ class DeclarationAuthorityModuleRenameProof:
         }
         qualified_candidates = tuple(
             (node, root_surface)
-            for node in ast.walk(module.module)
-            if isinstance(node, ast.Attribute)
+            for node in module.syntax_index.instances_of(ast.Attribute)
             if node.attr == target.name
             if (root_reference := nominal_reference_root(node)) is not None
             if (
@@ -520,8 +519,7 @@ class DeclarationAuthorityModuleRenameProof:
         supported_alias_ids = frozenset(id(reference.alias) for reference in imports)
         unsupported_imports = tuple(
             alias
-            for statement in ast.walk(module.module)
-            if isinstance(statement, ast.ImportFrom)
+            for statement in module.syntax_index.instances_of(ast.ImportFrom)
             if module.module_path_identity.resolve_import_from_module(
                 imported_module=statement.module,
                 level=statement.level,
@@ -933,7 +931,7 @@ class DeclarationAuthorityRenameProof:
             spelled = index.spells(target.name)
             # A module that never spells the name declares no `global` of it and
             # comments none; only a string assembled from pieces can still hold it.
-            for node in ast.walk(parsed_module.module) if spelled else index.string_constants:
+            for node in parsed_module.syntax_index.breadth_first_nodes if spelled else index.string_constants:
                 if (
                     isinstance(node, ast.Constant)
                     and isinstance(node.value, str)

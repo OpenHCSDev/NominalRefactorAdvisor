@@ -208,7 +208,7 @@ def _walk_calls(parsed_module: ParsedModule) -> tuple[PackageWalkCall, ...]:
 
     aliases = module_import_aliases(parsed_module)
     calls: list[PackageWalkCall] = []
-    for node in ast.walk(parsed_module.module):
+    for node in parsed_module.syntax_index.breadth_first_nodes:
         match node:
             case ast.Call(
                 func=ast.Attribute(value=ast.Name(id=receiver), attr=method),

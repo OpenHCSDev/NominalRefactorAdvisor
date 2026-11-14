@@ -301,7 +301,7 @@ class ClassAuthorityCollapseProofContext:
                     f"Class authority {displaced.qualname!r} has an open star-import "
                     "boundary"
                 )
-            for node in ast.walk(parsed_module.module):
+            for node in parsed_module.syntax_index.breadth_first_nodes:
                 if (
                     isinstance(node, (ast.Attribute, ast.Call, ast.Name, ast.Subscript))
                     and resolver.symbol_for_reference(node) == displaced.symbol

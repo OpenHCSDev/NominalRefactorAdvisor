@@ -299,7 +299,7 @@ class AnsweredMethod:
         receivers: list[TypedReceiver] = []
         namespaces: list[TypedReceiver] = []
         for parsed in self.snapshot.parsed_modules:
-            for node in ast.walk(parsed.module):
+            for node in parsed.syntax_index.breadth_first_nodes:
                 namespace = _namespace_lookup(node)
                 if namespace is not None:
                     where = f"{parsed.file_path}:{node.lineno}"

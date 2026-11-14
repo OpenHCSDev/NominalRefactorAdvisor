@@ -211,7 +211,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
             if class_node.name not in parsed.source:
                 continue
             parents = parsed.fact(ModuleNodeIndex).parents
-            for call in (node for node in ast.walk(parsed.module) if isinstance(node, ast.Call)):
+            for call in (node for node in parsed.syntax_index.instances_of(ast.Call)):
                 if fields[0].class_symbol(parsed.file_path, call.func, parents) != target_symbol:
                     continue
                 replacements.setdefault(parsed.file_path, []).extend(

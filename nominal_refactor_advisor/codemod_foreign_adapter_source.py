@@ -424,7 +424,7 @@ class ForeignAdapterBindChainModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
         }
         resolver = TypeArgumentResolver(parsed_module)
         shapes = []
-        for function in FunctionDefinition.within(ast.walk(parsed_module.module)):
+        for function in FunctionDefinition.within(parsed_module.syntax_index.breadth_first_nodes):
             for chain in BindChain.in_scope(function, resolver):
                 if not chain.conjunct_free:
                     continue

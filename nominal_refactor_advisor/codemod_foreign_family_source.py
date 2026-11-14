@@ -128,7 +128,7 @@ class FunctionRewriteAuthority(SourceRewriteAuthority):
         matches = tuple(
             candidate
             for candidate in FunctionDefinition.within(
-                ast.walk(self.parsed_module.module)
+                self.parsed_module.syntax_index.breadth_first_nodes
             )
             if (candidate.lineno, candidate.col_offset) == position
         )

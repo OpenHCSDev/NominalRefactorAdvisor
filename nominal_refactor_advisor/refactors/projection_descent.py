@@ -924,9 +924,7 @@ class _TypeKeyedBehaviorSourceDerivation:
                 module,
                 self.snapshot.required_class_family_index,
             )
-            for node in ast.walk(module.module):
-                if not isinstance(node, ast.Call):
-                    continue
+            for node in module.syntax_index.instances_of(ast.Call):
                 offsets = geometry.required_node_offsets(node)
                 if self._offsets_within_any(offsets, deleted_spans):
                     continue
@@ -992,7 +990,7 @@ class _TypeKeyedBehaviorSourceDerivation:
         replacements: list[SourceTextSpanReplacement],
         spans: list[SourceTextSpan],
     ) -> None:
-        for function in FunctionDefinition.within(ast.walk(module.module)):
+        for function in FunctionDefinition.within(module.syntax_index.breadth_first_nodes):
             function_offsets = geometry.required_node_offsets(function)
             if self._offsets_within_any(function_offsets, deleted_spans):
                 continue
@@ -1071,7 +1069,7 @@ class _TypeKeyedBehaviorSourceDerivation:
             )
             geometry = SourceTextGeometry(module.source)
             allowed_spans = allowed_spans_by_path.get(module.file_path, ())
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 if isinstance(node, ast.Name | ast.Attribute):
                     symbol = resolver.symbol_for_reference(node)
                     if symbol not in family_symbols:

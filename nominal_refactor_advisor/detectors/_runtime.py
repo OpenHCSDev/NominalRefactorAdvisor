@@ -280,8 +280,8 @@ class FormalBoundaryStringRegistryAuthority:
             return ()
         calls = tuple(
             node
-            for node in ast.walk(module.module)
-            if isinstance(node, ast.Call) and cls.is_registry_call(node)
+            for node in module.syntax_index.instances_of(ast.Call)
+            if cls.is_registry_call(node)
         )
         if not cls.has_formal_boundary_consumer(calls, constants):
             return ()

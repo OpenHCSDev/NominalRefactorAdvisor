@@ -182,7 +182,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
     def can_contain_facade(module: ParsedModule) -> bool:
         """Return whether one AST can contain the complete facade relation."""
 
-        nodes = tuple(ast.walk(module.module))
+        nodes = module.syntax_index.breadth_first_nodes
         possible_map_method_names = frozenset(
             node.name
             for node in nodes
@@ -492,7 +492,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
     ) -> tuple[EnumKeyedQueryConsumer, ...]:
         consumers = []
         parent_index = self.module.syntax_index.parent_index
-        for node in ast.walk(self.module.module):
+        for node in self.module.syntax_index.breadth_first_nodes:
             if not (
                 isinstance(node, ast.Subscript)
                 and isinstance(node.slice, ast.expr)

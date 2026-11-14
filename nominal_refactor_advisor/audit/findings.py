@@ -111,7 +111,7 @@ class Package:
         facts: dict[str, tuple[FunctionFacts, ...]] = {}
         for module in self.modules:
             collected = []
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 match node:
                     case ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
                          ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end):
@@ -125,7 +125,7 @@ class Package:
     def class_fields(self) -> dict[str, frozenset[str]]:
         index = {}
         for module in self.modules:
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 match node:
                     case ast.ClassDef(name=name, body=body):
                         names = frozenset(ast.unparse(item.target) for item in body if isinstance(item, ast.AnnAssign))
@@ -137,7 +137,7 @@ class Package:
     def sizes(self) -> dict[str, int]:
         sizes = {}
         for module in self.modules:
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 match node:
                     case ast.ClassDef(name=name, lineno=start, end_lineno=int() as end) | \
                          ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
@@ -149,7 +149,7 @@ class Package:
     def imported(self) -> frozenset[str]:
         names: set[str] = set()
         for module in self.modules:
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 match node:
                     case ast.Import(names=aliases):
                         names.update(alias.name for alias in aliases)
@@ -403,7 +403,7 @@ class PerNodeFinding(Finding):
     @classmethod
     def detect(cls, package: Package) -> Iterator[Self]:
         for module in package.modules:
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 yield from cls.from_node(node, module)
 
     @classmethod

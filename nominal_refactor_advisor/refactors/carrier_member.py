@@ -209,9 +209,8 @@ class CarrierFieldBecomesMemberOperation(RepositorySourceReprovedOperation):
             if not any(spelling in parsed.source for spelling in spellings):
                 continue
             parents = parsed.fact(ModuleNodeIndex).parents
-            for node in ast.walk(parsed.module):
-                if isinstance(node, ast.Call):
-                    self.constructor_writes(carrier, parsed.file_path, node, parents, replace)
+            for node in parsed.syntax_index.instances_of(ast.Call):
+                self.constructor_writes(carrier, parsed.file_path, node, parents, replace)
         for use in answered.answering_calls():
             self.rewritten_use(carrier, use, replace)
         edits: list[NominalSourceEdit] = []

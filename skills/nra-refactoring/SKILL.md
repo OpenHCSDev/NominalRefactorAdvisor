@@ -430,6 +430,16 @@ tools in `tools/proof` set `NRA_CACHE_HOME` to a fresh directory, so
 the installed-owner cache in the home directory cannot leak between
 runs either.
 
+Compare two dumps with `python tools/proof/compare_dumps.py BEFORE.json
+AFTER.json` (corpus or fixture dumps). It counts the rows only one side
+has by detector and exits 1 when there are any. One row is expected to
+move on every change to NRA's own source: the corpus holds a manual
+registration whose candidate owner is the installed
+`nominal-refactor-advisor`, the summary prints that package's files
+digest, and the package is this checkout. The tool counts rows that
+differ only in such a digest on their own line, so they neither hide a
+real difference nor look like one.
+
 **Rule 1: a detector that needs other modules reads a compact family.**
 `DetectorTypePartition(default_detector_types_for_analysis()).compact_global_complete`
 must stay True. One context detector that keeps syntax trees (a
@@ -452,6 +462,15 @@ evaluates a node: a def's header belongs to the scope it stands in),
 `indexed_nodes_of_type`, `parent_by_node`. Existing facts:
 `ModuleScopes`, `ModuleDefinitions`, `ModuleClassReadings`,
 `ClassLineBindingSnapshots`, `ModuleImportBindings`.
+
+**A parsed module is walked once.** Never write
+`ast.walk(parsed_module.module)`. `parsed_module.syntax_index.breadth_first_nodes`
+is that walk, in the same order, already made; `instances_of(ast.Call)`
+is the nodes of one type in that order, typed, so the site drops its
+`isinstance` test. 45 places walked the tree again before 2026-11-14,
+five of them once per finding family in `audit/findings.py`. The audit
+gate's own `ModuleScope` (`audit/lexical.py`) still parses and walks on
+its own; so do refactors that hold a bare `ast.Module`.
 
 **Site families come in families.** When two `RestatingSiteFamily`
 members share their loop, the loop belongs to a parent and each member

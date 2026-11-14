@@ -113,9 +113,8 @@ def star_imported_modules(parsed_module: ParsedModule) -> tuple[str, ...]:
                 *filter(None, [statement.module]),
             )
         )
-        for statement in ast.walk(parsed_module.module)
-        if isinstance(statement, ast.ImportFrom)
-        and any(alias.name == "*" for alias in statement.names)
+        for statement in parsed_module.syntax_index.instances_of(ast.ImportFrom)
+        if any(alias.name == "*" for alias in statement.names)
     )
 
 
@@ -145,7 +144,7 @@ class StaticProjectionSites:
         """Names the module rebinds outside imports; a site spelled by one is unproved."""
 
         names: set[str] = set()
-        for node in ast.walk(self.parsed_module.module):
+        for node in self.parsed_module.syntax_index.breadth_first_nodes:
             match node:
                 case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
                     names.add(name)
@@ -181,7 +180,7 @@ class StaticProjectionSites:
     @cached_property
     def sites(self) -> tuple[StaticProjectionSite, ...]:
         sites = []
-        for node in ast.walk(self.parsed_module.module):
+        for node in self.parsed_module.syntax_index.breadth_first_nodes:
             match node:
                 case ast.Call(
                     func=ast.Attribute(value=ast.Name(id=name), attr=question),
@@ -215,8 +214,7 @@ class StaticProjectionSites:
 
         return {
             name: statement
-            for statement in ast.walk(self.parsed_module.module)
-            if isinstance(statement, ast.ImportFrom)
+            for statement in self.parsed_module.syntax_index.instances_of(ast.ImportFrom)
             for name in ImportBoundNameProjection(statement).names()
             if name in self.bound_names
         }

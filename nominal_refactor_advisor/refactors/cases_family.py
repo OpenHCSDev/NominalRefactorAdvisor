@@ -1093,7 +1093,7 @@ class CasesFamily(Cases, Descent):
                     )
                 )
                 for module in snapshot.parsed_modules
-                for parent in ast.walk(module.module)
+                for parent in module.syntax_index.breadth_first_nodes
                 for node in ast.iter_child_nodes(parent)
                 if isinstance(node, ast.Attribute) and node.attr in names
             ):
@@ -1827,7 +1827,7 @@ class CasesFamily(Cases, Descent):
         parents = module.fact(ModuleNodeIndex).parents
         annotations = {
             id(node): annotation
-            for annotated in ast.walk(module.module)
+            for annotated in module.syntax_index.breadth_first_nodes
             for annotation in annotations_of(annotated)
             for node in type_positions(annotation)
         }
@@ -1835,7 +1835,7 @@ class CasesFamily(Cases, Descent):
         local_names = set(names.enum)
         if module is model.enum.module:
             local_names.add(model.root)
-        for node in ast.walk(module.module):
+        for node in module.syntax_index.breadth_first_nodes:
             if id(node) in handled:
                 continue
             if (
@@ -1924,7 +1924,7 @@ class CasesFamily(Cases, Descent):
         if not model.called:
             return
         for module in snapshot.parsed_modules:
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 if (
                     isinstance(node, ast.ClassDef)
                     and node is not model.enum.node
@@ -1943,7 +1943,7 @@ class CasesFamily(Cases, Descent):
                     )
         for module in snapshot.parsed_modules:
             parents = module.fact(ModuleNodeIndex).parents
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 if (
                     isinstance(node, ast.Attribute)
                     and node.attr in model.called
@@ -2397,7 +2397,7 @@ class ScopeCollector(ast.NodeVisitor):
         self.found: dict[int, Scope] = {}
         self.enclosure: Enclosure = FREE_BODY
         self.bindings = ModuleNominalBindingAuthority(module).snapshots_before(
-            node.lineno for node in ast.walk(module.module) if isinstance(node, ast.ClassDef)
+            node.lineno for node in module.syntax_index.instances_of(ast.ClassDef)
         )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
@@ -2437,9 +2437,8 @@ class DeclaredTypes:
     def classes(self) -> dict[str, list[tuple[ParsedModule, ast.ClassDef]]]:
         found: dict[str, list[tuple[ParsedModule, ast.ClassDef]]] = {}
         for module in self.snapshot.parsed_modules:
-            for node in ast.walk(module.module):
-                if isinstance(node, ast.ClassDef):
-                    found.setdefault(node.name, []).append((module, node))
+            for node in module.syntax_index.instances_of(ast.ClassDef):
+                found.setdefault(node.name, []).append((module, node))
         return found
 
     @staticmethod
@@ -2495,8 +2494,7 @@ class ValueReads:
         return [
             (module, owner, statement)
             for module in self.snapshot.parsed_modules
-            for owner in ast.walk(module.module)
-            if isinstance(owner, ast.ClassDef)
+            for owner in module.syntax_index.instances_of(ast.ClassDef)
             for statement in owner.body
             if isinstance(statement, ast.AnnAssign)
             and isinstance(statement.target, ast.Name)
@@ -2529,7 +2527,7 @@ class ValueReads:
         held: set[int] = set()
         scopes = [
             node
-            for node in ast.walk(module.module)
+            for node in module.syntax_index.breadth_first_nodes
             if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda)
         ]
         for scope in [module.module, *scopes]:
@@ -2558,9 +2556,7 @@ class ValueReads:
                 for node in scope_walk(scope)
                 if isinstance(node, ast.Name) and node.id in typed
             )
-        for owner in ast.walk(module.module):
-            if not isinstance(owner, ast.ClassDef):
-                continue
+        for owner in module.syntax_index.instances_of(ast.ClassDef):
             fields = {
                 statement.target.id
                 for statement in owner.body
@@ -2616,7 +2612,7 @@ class ValueReads:
         for module in self.snapshot.parsed_modules:
             held = self.held_subjects(module)
             scopes = DeclaredTypes.scopes(module)
-            for node in ast.walk(module.module):
+            for node in module.syntax_index.breadth_first_nodes:
                 if (
                     isinstance(node, ast.Attribute)
                     and node.attr == "value"
