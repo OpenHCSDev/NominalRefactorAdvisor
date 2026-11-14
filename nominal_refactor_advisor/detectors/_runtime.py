@@ -37,6 +37,8 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSet,
     SourceModule,
     collect_family_items,
+    AttributeLookup,
+    _walk_nodes,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.class_index import (
@@ -147,7 +149,6 @@ from nominal_refactor_advisor.detectors._base import (
     CompactMultiProjectionCandidateDetector,
     CompactProjectionCandidateDetector,
     CompactProjectionGroups,
-    ConcreteConfigFieldProbeCandidate,
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
     IssueDetector,
@@ -166,13 +167,19 @@ from nominal_refactor_advisor.detectors._base import (
     certified_spec,
     finding_spec_template,
     high_confidence_spec,
+    ClassLineWitnessCandidate,
+    CollectsItselfUnderConfig,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    _concrete_config_field_probe_candidates,
     _guarded_wrapper_spec_pairs,
+    HELPER_SYNTAX_PROJECTION_AUTHORITY,
+    METHOD_PROJECTION,
+    _class_init_concrete_param_backed_attrs,
+    _receiver_self_attr_name,
 )
 from nominal_refactor_advisor.detectors._substrate_support import _constant_string
 from nominal_refactor_advisor.detectors._base import high_confidence_certified_spec
+from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
 
 
 class LiteralDispatchFindingFactory:
@@ -2456,10 +2463,98 @@ class EnumKeyedDerivedMapFacadeDetector(
         )
 
 
+@dataclass(frozen=True)
+class ConcreteConfigFieldProbeCandidate(CollectsItselfUnderConfig, ClassLineWitnessCandidate):
+    method_name: str
+    config_attr_name: str
+    config_type_name: str
+    missing_field_names: tuple[str, ...]
+    probe_builtin_names: tuple[str, ...]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
+        classes_by_name = module.fact(ModuleClassStatements).by_name
+        config_field_names = {
+            class_name: {
+                field_name
+                for field_name, _ in HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(
+                    declared.node
+                )
+            }
+            for class_name, declared in classes_by_name.items()
+        }
+        candidates: list[Self] = []
+        for class_name, declared in sorted(classes_by_name.items()):
+            concrete_config_attrs = _class_init_concrete_param_backed_attrs(declared)
+            if not concrete_config_attrs:
+                continue
+            for method in declared.methods:
+                aliases = METHOD_PROJECTION.aliases_to_self_attrs(method.node)
+                grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
+                grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
+                grouped_lines: dict[tuple[str, str], int] = {}
+                for subnode in _walk_nodes(method.node):
+                    if not isinstance(subnode, ast.Call):
+                        continue
+                    lookup = BuiltinCall.decoded(subnode)
+                    if not isinstance(lookup, AttributeLookup):
+                        continue
+                    probed_field_name = _constant_string(lookup.name_argument)
+                    if probed_field_name is None:
+                        continue
+                    config_attr_name = _receiver_self_attr_name(
+                        lookup.object_argument, aliases
+                    )
+                    if config_attr_name is None:
+                        continue
+                    config_type_name = concrete_config_attrs.get(config_attr_name)
+                    if config_type_name is None:
+                        continue
+                    config_class = classes_by_name.get(config_type_name)
+                    if (
+                        config_class is None
+                        or config_class.method_named("__getattr__")
+                        is not None
+                    ):
+                        continue
+                    declared_field_names = config_field_names.get(config_type_name, set())
+                    if (
+                        not declared_field_names
+                        or probed_field_name in declared_field_names
+                    ):
+                        continue
+                    key = (config_attr_name, config_type_name)
+                    grouped_missing_fields[key].add(probed_field_name)
+                    grouped_probe_builtins[key].add(lookup.builtin)
+                    grouped_lines.setdefault(key, subnode.lineno)
+                for (config_attr_name, config_type_name), missing_fields in sorted(
+                    grouped_missing_fields.items()
+                ):
+                    if len(missing_fields) < 2:
+                        continue
+                    candidates.append(
+                        cls(
+                            file_path=module.file_path,
+                            line=grouped_lines[config_attr_name, config_type_name],
+                            class_name=class_name,
+                            method_name=method.name,
+                            config_attr_name=config_attr_name,
+                            config_type_name=config_type_name,
+                            missing_field_names=sorted_tuple(missing_fields),
+                            probe_builtin_names=sorted_tuple(
+                                grouped_probe_builtins[config_attr_name, config_type_name]
+                            ),
+                        )
+                    )
+        return sorted_tuple(
+            candidates,
+            key=lambda item: (item.file_path, item.line, item.class_name, item.method_name),
+        )
+
+
 class ConcreteConfigFieldProbeDetector(
     ConfiguredModuleCollectorCandidateDetector[ConcreteConfigFieldProbeCandidate]
 ):
-    candidate_collector = staticmethod(_concrete_config_field_probe_candidates)
     finding_spec = high_confidence_spec(
         PatternId.CONFIG_CONTRACTS,
         "Concrete config backend is probing fields outside its declared contract",

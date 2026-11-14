@@ -59,15 +59,15 @@ from nominal_refactor_advisor.detectors._base import (
     PropertyAliasHookGroup,
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,
-    StringBackedReflectiveNominalLookupCandidate,
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
     CANDIDATE_COLLECTION_AUTHORITY,
     SelfReflectiveBuiltinCandidate,
+    ClassLineWitnessCandidate,
+    CollectsItselfUnderConfig,
 )
 from nominal_refactor_advisor.detectors._helpers import (
-    _string_backed_reflective_nominal_lookup_candidates,
     CompactMethodFamilyContext,
     BaseBundleClassGroups,
     _IMPLICIT_METHOD_PARAMETER_NAMES,
@@ -79,6 +79,8 @@ from nominal_refactor_advisor.detectors._helpers import (
     _maximal_repeated_base_bundle_items,
     _parameter_class_call_attribute_names,
     _registered_surface_roots,
+    _class_direct_constant_string_assignments,
+    _reflective_lookup_shape,
 )
 from nominal_refactor_advisor.detectors._structural_step_regex_extractor import (
     AccumulatorFoldFamilyCandidate,
@@ -88,7 +90,7 @@ from nominal_refactor_advisor.detectors._helpers import _property_alias_hook_gro
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.class_families.parsed_index import ClassStatement, ModuleClassStatements
 from nominal_refactor_advisor.detectors._candidates import LineWitnessCandidate
-from nominal_refactor_advisor.detectors._substrate_support import _class_ancestor_name_map, _constant_string
+from nominal_refactor_advisor.detectors._substrate_support import _class_ancestor_name_map, _constant_string, _selector_attribute_name
 from collections import defaultdict
 
 _REFLECTIVE_ATTRIBUTE_CONTRACT_REPLACEMENT_SHAPE = ObjectFamilyShape(
@@ -1015,6 +1017,82 @@ declare_candidate_rule_detector(
     ),
 )
 
+@dataclass(frozen=True)
+class StringBackedReflectiveNominalLookupCandidate(CollectsItselfUnderConfig, ClassLineWitnessCandidate):
+    method_name: str
+    selector_attr_name: str
+    lookup_kind: str
+    receiver_expression: str
+    concrete_class_names: tuple[str, ...]
+    selector_values: tuple[str, ...]
+
+    @classmethod
+    def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
+        statements = module.fact(ModuleClassStatements)
+        classes_by_name = statements.by_name
+        class_string_assignments = {
+            class_name: _class_direct_constant_string_assignments(declared)
+            for class_name, declared in classes_by_name.items()
+        }
+        candidate_map: dict[
+            tuple[str, str, str, str, str], Self
+        ] = {}
+        for class_name, declared in sorted(classes_by_name.items()):
+            descendants = statements.descendant_names(class_name)
+            if len(descendants) < config.min_reflective_selector_values:
+                continue
+            for method in declared.methods:
+                for subnode in _walk_nodes(method.node):
+                    lookup_shape = _reflective_lookup_shape(subnode)
+                    if lookup_shape is None:
+                        continue
+                    lookup_kind, receiver_expression, selector_node = lookup_shape
+                    selector_attr_name = _selector_attribute_name(selector_node)
+                    if selector_attr_name is None:
+                        continue
+                    concrete_class_names = tuple(
+                        (
+                            descendant
+                            for descendant in descendants
+                            if selector_attr_name in class_string_assignments[descendant]
+                        )
+                    )
+                    if len(concrete_class_names) < config.min_reflective_selector_values:
+                        continue
+                    selector_values = sorted_tuple(
+                        {
+                            class_string_assignments[descendant][selector_attr_name]
+                            for descendant in concrete_class_names
+                        }
+                    )
+                    if len(selector_values) < config.min_reflective_selector_values:
+                        continue
+                    candidate = cls(
+                        file_path=module.file_path,
+                        line=subnode.lineno,
+                        class_name=class_name,
+                        method_name=method.name,
+                        selector_attr_name=selector_attr_name,
+                        lookup_kind=lookup_kind,
+                        receiver_expression=receiver_expression,
+                        concrete_class_names=concrete_class_names,
+                        selector_values=selector_values,
+                    )
+                    candidate_map[
+                        (
+                            class_name,
+                            method.name,
+                            selector_attr_name,
+                            lookup_kind,
+                            receiver_expression,
+                        )
+                    ] = candidate
+        return sorted_tuple(
+            candidate_map.values(),
+            key=lambda item: (item.file_path, item.line, item.class_name, item.method_name),
+        )
+
+
 declare_candidate_rule_detector(
     StringBackedReflectiveNominalLookupCandidate,
     high_confidence_spec(
@@ -1042,5 +1120,4 @@ declare_candidate_rule_detector(
         branch_site_count=1,
     ),
     detector_base=ConfiguredModuleCollectorCandidateDetector,
-    candidate_collector=_string_backed_reflective_nominal_lookup_candidates,
 )

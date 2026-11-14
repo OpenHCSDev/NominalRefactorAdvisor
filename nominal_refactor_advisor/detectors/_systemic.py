@@ -121,7 +121,6 @@ from nominal_refactor_advisor.detectors._base import (
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
     RepeatedKeyedFamilyCandidate,
-    RepeatedResultAssemblyPipelineCandidate,
     ResidualClosedAxisBranchingCandidate,
     ResidualClosedAxisIndirectionCandidate,
     SchemaAccessorFamilyCandidate,
@@ -153,19 +152,24 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
     ConcreteCandidateDetectorShape,
     ZippedSourceLocationEvidenceProperty,
+    CollectsItselfUnderConfig,
+    PipelineAssemblyStage,
+    ResultAssemblyPipelineFunction,
+    _PIPELINE_RETURN_STAGE,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _cli_argument_spec_fields,
     _dataclass_config_field_names,
     _finding_spec_build_boilerplate_candidates,
     _from_namespace_keyword_names,
-    _repeated_result_assembly_pipeline_candidates,
     _schema_accessor_family_candidates,
     _static_typed_observation_detector_candidates,
     TupleIndexSemanticOpacityCandidateCollector,
     _enum_metadata_property_table,
     _enum_metadata_table_cases,
     _typed_candidate_cast_assignment,
+    _result_assembly_pipeline_functions,
+    _shared_pipeline_tail,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
     ModuleClassStatements,
@@ -178,6 +182,7 @@ from nominal_refactor_advisor.detectors._substrate_support import (
 from nominal_refactor_advisor.detectors._finding_spec_defaults import (
     FindingSpecConstructionCandidateCollector,
 )
+from itertools import combinations
 
 
 @dataclass(frozen=True)
@@ -2983,10 +2988,86 @@ class ImplicitSelfContractMixinDetector(
         )
 
 
+@dataclass(frozen=True)
+class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, EvidenceLocated):
+    file_path: str
+    shared_tail: tuple[PipelineAssemblyStage, ...]
+    functions: tuple[ResultAssemblyPipelineFunction, ...]
+
+    @property
+    def evidence(self) -> tuple[SourceLocation, ...]:
+        return tuple(function.location for function in self.functions[:6])
+
+    @classmethod
+    def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
+        functions = _result_assembly_pipeline_functions(module)
+        if len(functions) < 2:
+            return ()
+        grouped_functions: dict[
+            (
+                tuple[tuple[object, ...], ...],
+                tuple[
+                    tuple[PipelineAssemblyStage, ...], set[ResultAssemblyPipelineFunction]
+                ],
+            )
+        ] = {}
+        for left, right in combinations(functions, 2):
+            shared_tail = _shared_pipeline_tail(left, right)
+            if len(shared_tail) < config.min_shared_pipeline_stages:
+                continue
+            if len(shared_tail) >= len(left.stages) or len(shared_tail) >= len(
+                right.stages
+            ):
+                continue
+            if shared_tail[-1].kind != _PIPELINE_RETURN_STAGE:
+                continue
+            distinct_stage_names = {stage.callee_name for stage in shared_tail}
+            if len(distinct_stage_names) < config.min_shared_pipeline_stages - 1:
+                continue
+            key = tuple(stage.shape_key for stage in shared_tail)
+            if key not in grouped_functions:
+                grouped_functions[key] = (shared_tail, set())
+            grouped_functions[key][1].update((left, right))
+
+        candidates = [
+            cls(
+                file_path=module.file_path,
+                shared_tail=shared_tail,
+                functions=sorted_tuple(
+                    grouped, key=lambda item: (item.lineno, item.qualname)
+                ),
+            )
+            for shared_tail, grouped in grouped_functions.values()
+            if len(grouped) >= 2
+        ]
+        filtered_candidates: list[Self] = []
+        for candidate in sorted(
+            candidates,
+            key=lambda item: (
+                -len(item.shared_tail),
+                -len(item.functions),
+                item.functions[0].qualname,
+            ),
+        ):
+            candidate_function_names = tuple(
+                (function.qualname for function in candidate.functions)
+            )
+            if any(
+                (
+                    len(existing.shared_tail) >= len(candidate.shared_tail)
+                    and candidate_function_names
+                    == tuple((function.qualname for function in existing.functions))
+                    for existing in filtered_candidates
+                )
+            ):
+                continue
+            filtered_candidates.append(candidate)
+        return tuple(filtered_candidates)
+
+
 class RepeatedResultAssemblyPipelineDetector(
     ConfiguredModuleCollectorCandidateDetector[RepeatedResultAssemblyPipelineCandidate]
 ):
-    candidate_collector = staticmethod(_repeated_result_assembly_pipeline_candidates)
     finding_spec = high_confidence_spec(
         PatternId.SHARED_ALGORITHM_AUTHORITY,
         "Repeated result-assembly pipeline should collapse into one authoritative assembler",

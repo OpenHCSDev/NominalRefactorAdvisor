@@ -473,6 +473,10 @@ class IssueDetector(
     detector_id: ClassVar[str | None] = None
     finding_spec: ClassVar[FindingSpec]
     detector_declaration: ClassVar[DetectorDeclaration[object] | None] = None
+    self_collecting_contract: ClassVar[type[ABC] | None] = None
+    """The contract a candidate type answers when its from_module is this detector's
+    collector as called: with the module alone, or with the module and the config. None
+    when the collector is not a candidate type's own."""
     cache_granularity: ClassVar[DetectorCacheGranularity] = (
         DetectorCacheGranularity.GLOBAL
     )
@@ -1683,10 +1687,21 @@ class CollectsItself(ABC):
         raise NotImplementedError
 
 
+class CollectsItselfUnderConfig(ABC):
+    """A candidate type that finds its candidates in one module under the detector config.
+    A detector over it whose base passes the config has no collector to name."""
+
+    @classmethod
+    @abstractmethod
+    def from_module(cls, module: ParsedModule, config: DetectorConfig) -> tuple[Self, ...]:
+        raise NotImplementedError
+
+
 class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
     candidate_collector: ClassVar[DetectorCollector[CandidateItemT]]
     collector_scope: ClassVar[CandidateCollectorScope | None] = None
     collector_uses_config: ClassVar[bool] = False
+    self_collecting_contract: ClassVar[type[ABC] | None]
 
     def __init_subclass__(cls) -> None:
         super().__init_subclass__()
@@ -1703,21 +1718,21 @@ class DerivedCandidateCollectorMixin(Generic[CandidateItemT]):
             )
 
     @classmethod
-    def _self_collecting_candidate_type(cls) -> type[CollectsItself] | None:
-        """The candidate type this class is subscripted with, when it collects itself from
-        a module and this base calls its collector with the module alone."""
+    def _self_collecting_candidate_type(
+        cls,
+    ) -> type[CollectsItself | CollectsItselfUnderConfig] | None:
+        """The candidate type this class is subscripted with, when it answers the
+        self-collecting contract this base's collector call fits."""
 
-        if (
-            cls.collector_scope is not CandidateCollectorScope.MODULE
-            or cls.collector_uses_config
-        ):
+        contract = cls.self_collecting_contract
+        if contract is None:
             return None
         return next(
             (
                 argument
                 for base in types.get_original_bases(cls)
                 for argument in typing.get_args(base)
-                if isinstance(argument, type) and issubclass(argument, CollectsItself)
+                if isinstance(argument, type) and issubclass(argument, contract)
             ),
             None,
         )
@@ -1817,6 +1832,7 @@ class ModuleCollectorCandidateDetector(
     collector_scope: ClassVar[CandidateCollectorScope | None] = (
         CandidateCollectorScope.MODULE
     )
+    self_collecting_contract = CollectsItself
     candidate_collector: ClassVar[ModuleCandidateCollector[CandidateItemT]]
 
     def _candidate_items(
@@ -1833,6 +1849,8 @@ class ConfiguredModuleCollectorCandidateDetector(
     ABC,
 ):
     """Candidate detector whose collector depends on detector configuration."""
+
+    self_collecting_contract = CollectsItselfUnderConfig
 
     collector_scope: ClassVar[CandidateCollectorScope | None] = (
         CandidateCollectorScope.MODULE
@@ -2198,6 +2216,8 @@ class FlattenedModuleCollectorCandidateDetector(
 ):
     """Cross-module detector backed by one-module candidate collection."""
 
+    self_collecting_contract = CollectsItself
+
     collector_scope: ClassVar[CandidateCollectorScope | None] = (
         CandidateCollectorScope.FLATTENED_MODULE
     )
@@ -2224,6 +2244,8 @@ class ConfiguredFlattenedModuleCollectorCandidateDetector(
     ABC,
 ):
     """Cross-module detector backed by configured one-module collection."""
+
+    self_collecting_contract = CollectsItselfUnderConfig
 
     collector_scope: ClassVar[CandidateCollectorScope | None] = (
         CandidateCollectorScope.FLATTENED_MODULE
@@ -2269,16 +2291,19 @@ class DetectorDeclarationOptions(Generic[CandidateItemT]):
         options: DetectorDeclarationOptionKwargs[CandidateItemT],
         candidate_type: type[CandidateItemT],
     ) -> DetectorDeclarationOptions[CandidateItemT]:
-        """The declared options. A candidate type that collects itself from a module
-        (`CollectsItself`) is the collector unless one is named."""
+        """The declared options. A candidate type that answers the declared base's
+        self-collecting contract is the collector unless one is named."""
 
         unknown_names = set(options) - cls.field_names()
         if unknown_names:
             raise TypeError(
                 f"Unknown detector declaration option(s): {', '.join(sorted(unknown_names))}"
             )
-        if "candidate_collector" not in options and issubclass(
-            candidate_type, CollectsItself
+        contract = options.get("detector_base", cls.detector_base).self_collecting_contract
+        if (
+            "candidate_collector" not in options
+            and contract is not None
+            and issubclass(candidate_type, contract)
         ):
             return cls(
                 **options,
@@ -5343,25 +5368,6 @@ class SelfReflectiveBuiltinCandidate(WitnessCarrierCandidate):
 
 
 @dataclass(frozen=True)
-class StringBackedReflectiveNominalLookupCandidate(ClassLineWitnessCandidate):
-    method_name: str
-    selector_attr_name: str
-    lookup_kind: str
-    receiver_expression: str
-    concrete_class_names: tuple[str, ...]
-    selector_values: tuple[str, ...]
-
-
-@dataclass(frozen=True)
-class ConcreteConfigFieldProbeCandidate(ClassLineWitnessCandidate):
-    method_name: str
-    config_attr_name: str
-    config_type_name: str
-    missing_field_names: tuple[str, ...]
-    probe_builtin_names: tuple[str, ...]
-
-
-@dataclass(frozen=True)
 class QualnameLineWitnessCandidate(QualnameWitnessNameMixin, LineWitnessCandidate):
     qualname: str
 
@@ -5797,17 +5803,6 @@ class ResultAssemblyPipelineFunction:
     stages: tuple[PipelineAssemblyStage, ...]
 
     location = _LINENO_QUALNAME_LOCATION
-
-
-@dataclass(frozen=True)
-class RepeatedResultAssemblyPipelineCandidate(EvidenceLocated):
-    file_path: str
-    shared_tail: tuple[PipelineAssemblyStage, ...]
-    functions: tuple[ResultAssemblyPipelineFunction, ...]
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(function.location for function in self.functions[:6])
 
 
 @dataclass(frozen=True)

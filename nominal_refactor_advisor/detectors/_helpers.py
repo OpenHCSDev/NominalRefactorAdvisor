@@ -12,7 +12,6 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from itertools import combinations
 from typing import (
     Callable,
     ClassVar,
@@ -48,7 +47,6 @@ from nominal_refactor_advisor.ast_projection import (
     single_name_targets,
 )
 from nominal_refactor_advisor.ast_tools import (
-    AttributeLookup,
     BuiltinCall,
     BuiltinCallName,
     Getattr,
@@ -117,7 +115,6 @@ from nominal_refactor_advisor.detectors._base import (
     CANDIDATE_COLLECTION_AUTHORITY,
     ClassFamilyWitnessCarrier,
     ClassMethodLineWitnessCandidate,
-    ConcreteConfigFieldProbeCandidate,
     DetectorConfig,
     FindingAssemblyPipelineCandidate,
     GuardedDelegatorCandidate,
@@ -127,7 +124,6 @@ from nominal_refactor_advisor.detectors._base import (
     OverlappingInheritanceFamiliesCandidate,
     PipelineAssemblyStage,
     PropertyAliasHookGroup,
-    RepeatedResultAssemblyPipelineCandidate,
     ResultAssemblyPipelineFunction,
     SchemaAccessorFamilyCandidate,
     SemanticOverlapMethodCandidate,
@@ -135,7 +131,6 @@ from nominal_refactor_advisor.detectors._base import (
     SemanticOverlapResidueAxisCandidate,
     StaticModulePatternDetector,
     StaticTypedObservationDetectorCandidate,
-    StringBackedReflectiveNominalLookupCandidate,
     StructuralObservationPropertyCandidate,
     TupleIndexSemanticOpacityCandidate,
 )
@@ -147,7 +142,6 @@ from nominal_refactor_advisor.detectors._substrate_support import (
     ModuleNamedValues,
     _constant_string,
     _is_private_symbol_name,
-    _selector_attribute_name,
 )
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
@@ -904,74 +898,6 @@ def _reflective_lookup_shape(
     return None
 
 
-def _string_backed_reflective_nominal_lookup_candidates(
-    module: ParsedModule, config: DetectorConfig
-) -> tuple[StringBackedReflectiveNominalLookupCandidate, ...]:
-    statements = module.fact(ModuleClassStatements)
-    classes_by_name = statements.by_name
-    class_string_assignments = {
-        class_name: _class_direct_constant_string_assignments(declared)
-        for class_name, declared in classes_by_name.items()
-    }
-    candidate_map: dict[
-        tuple[str, str, str, str, str], StringBackedReflectiveNominalLookupCandidate
-    ] = {}
-    for class_name, declared in sorted(classes_by_name.items()):
-        descendants = statements.descendant_names(class_name)
-        if len(descendants) < config.min_reflective_selector_values:
-            continue
-        for method in declared.methods:
-            for subnode in _walk_nodes(method.node):
-                lookup_shape = _reflective_lookup_shape(subnode)
-                if lookup_shape is None:
-                    continue
-                lookup_kind, receiver_expression, selector_node = lookup_shape
-                selector_attr_name = _selector_attribute_name(selector_node)
-                if selector_attr_name is None:
-                    continue
-                concrete_class_names = tuple(
-                    (
-                        descendant
-                        for descendant in descendants
-                        if selector_attr_name in class_string_assignments[descendant]
-                    )
-                )
-                if len(concrete_class_names) < config.min_reflective_selector_values:
-                    continue
-                selector_values = sorted_tuple(
-                    {
-                        class_string_assignments[descendant][selector_attr_name]
-                        for descendant in concrete_class_names
-                    }
-                )
-                if len(selector_values) < config.min_reflective_selector_values:
-                    continue
-                candidate = StringBackedReflectiveNominalLookupCandidate(
-                    file_path=module.file_path,
-                    line=subnode.lineno,
-                    class_name=class_name,
-                    method_name=method.name,
-                    selector_attr_name=selector_attr_name,
-                    lookup_kind=lookup_kind,
-                    receiver_expression=receiver_expression,
-                    concrete_class_names=concrete_class_names,
-                    selector_values=selector_values,
-                )
-                candidate_map[
-                    (
-                        class_name,
-                        method.name,
-                        selector_attr_name,
-                        lookup_kind,
-                        receiver_expression,
-                    )
-                ] = candidate
-    return sorted_tuple(
-        candidate_map.values(),
-        key=lambda item: (item.file_path, item.line, item.class_name, item.method_name),
-    )
-
-
 def _param_backed_name(expr: ast.AST, parameter_names: set[str]) -> str | None:
     if isinstance(expr, ast.Name) and expr.id in parameter_names:
         return expr.id
@@ -1043,88 +969,6 @@ def _receiver_self_attr_name(node: ast.AST, aliases: dict[str, str]) -> str | No
     if isinstance(node, ast.Name):
         return aliases.get(node.id)
     return None
-
-
-def _concrete_config_field_probe_candidates(
-    module: ParsedModule, config: DetectorConfig
-) -> tuple[ConcreteConfigFieldProbeCandidate, ...]:
-    classes_by_name = module.fact(ModuleClassStatements).by_name
-    config_field_names = {
-        class_name: {
-            field_name
-            for field_name, _ in HELPER_SYNTAX_PROJECTION_AUTHORITY.typed_field_map(
-                declared.node
-            )
-        }
-        for class_name, declared in classes_by_name.items()
-    }
-    candidates: list[ConcreteConfigFieldProbeCandidate] = []
-    for class_name, declared in sorted(classes_by_name.items()):
-        concrete_config_attrs = _class_init_concrete_param_backed_attrs(declared)
-        if not concrete_config_attrs:
-            continue
-        for method in declared.methods:
-            aliases = METHOD_PROJECTION.aliases_to_self_attrs(method.node)
-            grouped_missing_fields: dict[tuple[str, str], set[str]] = defaultdict(set)
-            grouped_probe_builtins: dict[tuple[str, str], set[str]] = defaultdict(set)
-            grouped_lines: dict[tuple[str, str], int] = {}
-            for subnode in _walk_nodes(method.node):
-                if not isinstance(subnode, ast.Call):
-                    continue
-                lookup = BuiltinCall.decoded(subnode)
-                if not isinstance(lookup, AttributeLookup):
-                    continue
-                probed_field_name = _constant_string(lookup.name_argument)
-                if probed_field_name is None:
-                    continue
-                config_attr_name = _receiver_self_attr_name(
-                    lookup.object_argument, aliases
-                )
-                if config_attr_name is None:
-                    continue
-                config_type_name = concrete_config_attrs.get(config_attr_name)
-                if config_type_name is None:
-                    continue
-                config_class = classes_by_name.get(config_type_name)
-                if (
-                    config_class is None
-                    or config_class.method_named("__getattr__")
-                    is not None
-                ):
-                    continue
-                declared_field_names = config_field_names.get(config_type_name, set())
-                if (
-                    not declared_field_names
-                    or probed_field_name in declared_field_names
-                ):
-                    continue
-                key = (config_attr_name, config_type_name)
-                grouped_missing_fields[key].add(probed_field_name)
-                grouped_probe_builtins[key].add(lookup.builtin)
-                grouped_lines.setdefault(key, subnode.lineno)
-            for (config_attr_name, config_type_name), missing_fields in sorted(
-                grouped_missing_fields.items()
-            ):
-                if len(missing_fields) < 2:
-                    continue
-                candidates.append(
-                    ConcreteConfigFieldProbeCandidate(
-                        file_path=module.file_path,
-                        line=grouped_lines[config_attr_name, config_type_name],
-                        class_name=class_name,
-                        method_name=method.name,
-                        config_attr_name=config_attr_name,
-                        config_type_name=config_type_name,
-                        missing_field_names=sorted_tuple(missing_fields),
-                        probe_builtin_names=sorted_tuple(
-                            grouped_probe_builtins[config_attr_name, config_type_name]
-                        ),
-                    )
-                )
-    return sorted_tuple(
-        candidates,
-        key=lambda item: (item.file_path, item.line, item.class_name, item.method_name),
-    )
 
 
 _DECLARATIVE_FAMILY_DEFINITION_BASE_NAMES = frozenset(
@@ -3043,75 +2887,6 @@ def _shared_pipeline_tail(
         left_index -= 1
         right_index -= 1
     return tuple(reversed(shared))
-
-
-def _repeated_result_assembly_pipeline_candidates(
-    module: ParsedModule,
-    config: DetectorConfig,
-) -> tuple[RepeatedResultAssemblyPipelineCandidate, ...]:
-    functions = _result_assembly_pipeline_functions(module)
-    if len(functions) < 2:
-        return ()
-    grouped_functions: dict[
-        (
-            tuple[tuple[object, ...], ...],
-            tuple[
-                tuple[PipelineAssemblyStage, ...], set[ResultAssemblyPipelineFunction]
-            ],
-        )
-    ] = {}
-    for left, right in combinations(functions, 2):
-        shared_tail = _shared_pipeline_tail(left, right)
-        if len(shared_tail) < config.min_shared_pipeline_stages:
-            continue
-        if len(shared_tail) >= len(left.stages) or len(shared_tail) >= len(
-            right.stages
-        ):
-            continue
-        if shared_tail[-1].kind != _PIPELINE_RETURN_STAGE:
-            continue
-        distinct_stage_names = {stage.callee_name for stage in shared_tail}
-        if len(distinct_stage_names) < config.min_shared_pipeline_stages - 1:
-            continue
-        key = tuple(stage.shape_key for stage in shared_tail)
-        if key not in grouped_functions:
-            grouped_functions[key] = (shared_tail, set())
-        grouped_functions[key][1].update((left, right))
-
-    candidates = [
-        RepeatedResultAssemblyPipelineCandidate(
-            file_path=module.file_path,
-            shared_tail=shared_tail,
-            functions=sorted_tuple(
-                grouped, key=lambda item: (item.lineno, item.qualname)
-            ),
-        )
-        for shared_tail, grouped in grouped_functions.values()
-        if len(grouped) >= 2
-    ]
-    filtered_candidates: list[RepeatedResultAssemblyPipelineCandidate] = []
-    for candidate in sorted(
-        candidates,
-        key=lambda item: (
-            -len(item.shared_tail),
-            -len(item.functions),
-            item.functions[0].qualname,
-        ),
-    ):
-        candidate_function_names = tuple(
-            (function.qualname for function in candidate.functions)
-        )
-        if any(
-            (
-                len(existing.shared_tail) >= len(candidate.shared_tail)
-                and candidate_function_names
-                == tuple((function.qualname for function in existing.functions))
-                for existing in filtered_candidates
-            )
-        ):
-            continue
-        filtered_candidates.append(candidate)
-    return tuple(filtered_candidates)
 
 
 _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
