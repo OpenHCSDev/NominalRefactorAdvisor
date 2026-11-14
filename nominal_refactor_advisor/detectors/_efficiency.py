@@ -12,15 +12,21 @@ import ast
 from collections import defaultdict
 from dataclasses import dataclass
 
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 
-from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleSet
-from nominal_refactor_advisor.models import RefactorFinding, SourceLineReference, SourceLocation
+from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.restated_fact_observations import (
+    RestatingSiteFamily,
+    RestatingSiteModule,
+)
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
-    CrossModuleCollectorCandidateDetector,
+    CompactModuleProjectionDetectorMixin,
     DetectorConfig,
+    IssueDetector,
     PerModuleIssueDetector,
     high_confidence_spec,
 )
@@ -698,20 +704,6 @@ class LoopRelookupDetector(PerModuleIssueDetector):
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _PhantomFamilySite(SourceLineReference):
-    """One definition of a name that appears across modules without a shared declaration."""
-    name: str
-    class_name: str | None
-
-
-@dataclass(frozen=True)
-class _PhantomFamilyCandidate:
-    """A name defined in 2+ modules with no shared ancestor declaring it."""
-    name: str
-    sites: tuple[_PhantomFamilySite, ...]
-
-
 _MIN_PHANTOM_MODULES = 2
 _SKIP_COMMON_NAMES = frozenset({
     "setup", "teardown", "main", "run", "execute", "process", "handle",
@@ -720,67 +712,42 @@ _SKIP_COMMON_NAMES = frozenset({
 })
 
 
-def _phantom_family_candidates(
-    modules: ParsedModuleSet,
-) -> Sequence[_PhantomFamilyCandidate]:
-    """Find function/method names defined in 2+ modules of one package."""
+class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+    """Each public top-level function and each public method of a top-level
+    class, one site per def: `group` is its name, `detail` its class."""
 
-    name_sites: dict[str, list[_PhantomFamilySite]] = defaultdict(list)
+    item_type = RestatingSiteModule
 
-    for module in modules:
-        module_path = str(module.path)
-        _collect_module_definitions(module.module, module_path, name_sites)
-
-    candidates: list[_PhantomFamilyCandidate] = []
-    for name, sites in sorted(name_sites.items()):
-        if name in _SKIP_COMMON_NAMES:
-            continue
-        distinct_modules = {s.file_path for s in sites}
-        if len(distinct_modules) < _MIN_PHANTOM_MODULES:
-            continue
-        candidates.append(_PhantomFamilyCandidate(
-            name=name,
-            sites=tuple(sites),
-        ))
-
-    return candidates
-
-
-def _collect_module_definitions(
-    tree: ast.Module,
-    module_path: str,
-    name_sites: dict[str, list[_PhantomFamilySite]],
-) -> None:
-    """Collect all non-private function/method names from a module."""
-
-    for node in tree.body:
-        match node:
-            case ast.ClassDef(name=class_name, body=body):
-                for item in body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        if item.name.startswith("_"):
-                            continue
-                        name_sites[item.name].append(_PhantomFamilySite(
-                            file_path=module_path,
-                            line=item.lineno,
-                            name=item.name,
-                            class_name=class_name,
-                        ))
-            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name):
-                if name.startswith("_"):
-                    continue
-                name_sites[name].append(_PhantomFamilySite(
-                    file_path=module_path,
-                    line=node.lineno,
-                    name=name,
-                    class_name=None,
-                ))
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        for node in parsed_module.module.body:
+            match node:
+                case ast.ClassDef(name=class_name, body=body):
+                    for item in body:
+                        match item:
+                            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(
+                                name=name
+                            ) if not name.startswith("_"):
+                                yield cls.site(
+                                    parsed_module,
+                                    item,
+                                    f"{class_name}.{name}",
+                                    name,
+                                    (class_name,),
+                                )
+                case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(
+                    name=name
+                ) if not name.startswith("_"):
+                    yield cls.site(parsed_module, node, name, name, ())
 
 
 class PhantomFamilyDetector(
-    CrossModuleCollectorCandidateDetector[_PhantomFamilyCandidate],
+    CompactModuleProjectionDetectorMixin[RestatingSiteModule], IssueDetector
 ):
-    candidate_collector = _phantom_family_candidates
+    """One name defined in several modules. The sites come from a compact
+    per-module family, so the scan keeps no syntax tree for this detector."""
+
+    module_projection_family = PublicDefinitionSiteFamily
     finding_spec = high_confidence_spec(
         PatternId.PHANTOM_FAMILY,
         "Same name across modules with no shared declaration",
@@ -799,28 +766,37 @@ class PhantomFamilyDetector(
         (ObservationTag.METHOD_ROLE,),
     )
 
-    def _finding_for_candidate(
-        self, candidate: _PhantomFamilyCandidate
+    def _findings_from_compact_projections(
+        self,
+        projections: Sequence[RestatingSiteModule],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del config
+        sites_by_name: dict[str, list[RestatingSite]] = defaultdict(list)
+        for module in projections:
+            for site in module.sites:
+                sites_by_name[site.group].append(site)
+        return [
+            self._finding_for_name(name, sites)
+            for name, sites in sorted(sites_by_name.items())
+            if name not in _SKIP_COMMON_NAMES
+            and len({site.file_path for site in sites}) >= _MIN_PHANTOM_MODULES
+        ]
+
+    def _finding_for_name(
+        self, name: str, sites: Sequence[RestatingSite]
     ) -> RefactorFinding:
-        evidence = tuple(
-            SourceLocation(
-                site.file_path,
-                site.line,
-                f"{site.class_name}.{site.name}" if site.class_name else site.name,
-            )
-            for site in candidate.sites
-        )
-        module_count = len({s.file_path for s in candidate.sites})
-        classes = [s.class_name for s in candidate.sites if s.class_name]
+        module_count = len({site.file_path for site in sites})
+        classes = [class_name for site in sites for class_name in site.detail]
         if classes:
-            owners = ", ".join(f"`{c}`" for c in classes)
+            owners = ", ".join(f"`{class_name}`" for class_name in classes)
             summary = (
-                f"`{candidate.name}` defined on {owners} across "
+                f"`{name}` defined on {owners} across "
                 f"{module_count} modules with no shared declaring ancestor"
             )
         else:
             summary = (
-                f"`{candidate.name}` defined as a module function in "
+                f"`{name}` defined as a module function in "
                 f"{module_count} modules with no shared import"
             )
-        return self.build_finding(summary, evidence)
+        return self.build_finding(summary, tuple(site.location for site in sites))

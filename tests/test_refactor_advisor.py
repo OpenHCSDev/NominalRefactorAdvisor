@@ -14625,7 +14625,7 @@ def test_detects_mature_injective_type_registry_for_metaclass_upgrade(
     assert "mature injective registry" in finding.summary
     assert "AutoRegisterMeta" in finding.summary
     assert finding.certification == CertificationLevel.STRONG_HEURISTIC
-    assert "migration lifecycle remains unproven" in finding.relation_context
+    assert "migration lifecycle is unproven" in finding.relation_context
 
 
 def test_detects_non_injective_type_registry(tmp_path: Path) -> None:
@@ -25427,7 +25427,7 @@ def test_structural_overlap_does_not_project_codemod_candidates(
     assert "codemod_candidates" not in payload
     assert overlap_payload["actionability"] == "structural_evidence_only"
     assert "Structural-overlap evidence (non-actionable):" in gated_markdown
-    assert "do not prove" in gated_markdown
+    assert "don't prove which owner to pick" in gated_markdown
     assert not gated_markdown.startswith("Semantic refactor gate:")
     assert "Raw finding evidence suppressed:" not in gated_markdown
     assert f"Stable id: {finding.stable_id}" in gated_markdown
