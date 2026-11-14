@@ -3,7 +3,6 @@ checkout sits: a new worktree reads what another worktree already paid for."""
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass
 from pathlib import Path, PosixPath, PurePosixPath
 from typing import NamedTuple
@@ -14,10 +13,9 @@ from nominal_refactor_advisor.analysis_cache import (
 )
 from nominal_refactor_advisor.ast_tools import (
     CollectedFamilyCacheContext,
-    StableCacheValue,
     parse_python_modules,
 )
-from nominal_refactor_advisor.cache_checkout import CheckoutRelocation
+from nominal_refactor_advisor.cache_checkout import CacheBytes, CheckoutRelocation
 from nominal_refactor_advisor.cache_paths import (
     default_analysis_cache_dir,
     default_parse_cache_dir,
@@ -79,17 +77,16 @@ def test_relocation_rebases_paths_and_binds_what_it_cannot_rebase(tmp_path: Path
     second = CheckoutRelocation(tmp_path / "second")
     value = (str(first.root), f"{first.root}/pkg/mod.py:3", PurePosixPath(first.root, "x"))
 
-    data, portable = first.portable_dumps(value)
+    encoded = CacheBytes.of(value, first)
 
-    assert portable
-    assert second.load(io.BytesIO(data)) == (
+    assert encoded.portable
+    assert encoded.value(second) == (
         str(second.root),
         f"{second.root}/pkg/mod.py:3",
         PurePosixPath(second.root, "x"),
     )
     assert first.relative_id(f"{first.root}-sibling/x") is None
-    _, embedded_is_portable = first.portable_dumps(f"read {first.root}/pkg")
-    assert not embedded_is_portable
+    assert not CacheBytes.of(f"read {first.root}/pkg", first).portable
 
 
 def test_source_signatures_keep_one_shard_per_checkout(tmp_path: Path) -> None:
@@ -138,10 +135,9 @@ class _NamedSite(_Site):
     name: str
 
 
-def test_subclasses_of_fast_path_types_relocate_like_their_bases(tmp_path: Path) -> None:
-    """The walk's exact-type fast paths and its general branches must agree: a
-    subclass value is relocated exactly as its base is, so every checkout of the
-    same content derives one signature, and a tuple subclass has the tuple's form."""
+def test_subclasses_of_relocated_types_relocate_like_their_bases(tmp_path: Path) -> None:
+    """A subclass value is relocated exactly as its base is, so every checkout of
+    the same content encodes the same bytes and derives one signature."""
 
     first = CheckoutRelocation(tmp_path / "first")
     second = CheckoutRelocation(tmp_path / "second")
@@ -161,9 +157,6 @@ def test_subclasses_of_fast_path_types_relocate_like_their_bases(tmp_path: Path)
 
     first_values, second_values = at(first.root), at(second.root)
     for one, other in zip(first_values, second_values):
-        relocated = StableCacheValue.of(one, first)
-        assert relocated.signature == StableCacheValue.of(other, second).signature
-        assert str(first.root) not in repr(relocated.form)
-    assert StableCacheValue.of(first_values[4], first).form == (
-        StableCacheValue.of(first_values[5], first).form
-    )
+        relocated = CacheBytes.of(one, first)
+        assert relocated.signature == CacheBytes.of(other, second).signature
+        assert str(first.root).encode() not in relocated.data

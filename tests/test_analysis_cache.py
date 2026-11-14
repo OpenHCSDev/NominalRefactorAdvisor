@@ -119,6 +119,7 @@ from nominal_refactor_advisor.cache_paths import (
     semantic_descent_cache_sibling,
 )
 from nominal_refactor_advisor.cache_checkout import (
+    CacheBytes,
     CacheCheckoutPathError,
     absolute_checkout_path,
     checkout_relative_path,
@@ -2114,8 +2115,7 @@ def test_uncertified_family_cache_payload_is_invalidated(
         entries.payload_bytes(
             ast_tools_module.CollectedFamilyCachePayload(
                 identity=payload.identity,
-                items=payload.items,
-                ast_free=False,
+                items=payload.items.value(None),
             ),
             entries.read_signature(payload_path),
         )
@@ -2123,10 +2123,10 @@ def test_uncertified_family_cache_payload_is_invalidated(
 
     reloaded_module = parse_python_modules(package_root, cache_dir=cache_dir)[0]
     actual_items = collect_family_items(reloaded_module, BuilderCallShapeFamily)
-    certified_payload = entries.read_payload(payload_path)
+    rewritten_payload = entries.read_payload(payload_path)
 
     assert actual_items == expected_items
-    assert certified_payload.ast_free is True
+    assert isinstance(rewritten_payload.items, CacheBytes)
 
 
 @pytest.mark.parametrize("payload_margin", (0, -1))

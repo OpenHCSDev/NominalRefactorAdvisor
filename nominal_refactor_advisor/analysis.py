@@ -1234,14 +1234,25 @@ class BoundedCompactProjectionManifest:
         is_context_demand = self._is_context_demand_source(source, demand)
         source_key = family, source.resolved_path_text
         source_projections = self.runtime_projections.get(source_key)
+        # Items read from a cache entry take the signature it was stored with:
+        # written from the fresh items, it is their identity in every process,
+        # while decoded items can encode apart from it (unpickling interns
+        # attribute names, so equal strings share differently).
+        stored_signature: str | None = None
         demanded_cache_hit = False
         if source_projections is None and is_context_demand:
             source_projections = source.load_items(
                 family, self._demand_signature(family)
             )
             demanded_cache_hit = source_projections is not None
+            if demanded_cache_hit:
+                stored_signature = source.load_content_signature(
+                    family, self._demand_signature(family)
+                )
         if source_projections is None:
             source_projections = source.load_items(family)
+            if source_projections is not None and not is_context_demand:
+                stored_signature = source.load_content_signature(family)
         if source_projections is None:
             source_projections = self._repair_source_family(source, family)
         if is_context_demand and not demanded_cache_hit:
@@ -1252,6 +1263,8 @@ class BoundedCompactProjectionManifest:
             source_signature = self._source_projection_signatures.get(source_key)
             if source_signature is None:
                 source_signature = self._indexed_content_signature(source, family)
+            if source_signature is None:
+                source_signature = stored_signature
             if source_signature is None:
                 source_signature = source.items_content_signature(
                     tuple(source_projections)

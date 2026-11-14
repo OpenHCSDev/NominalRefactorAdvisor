@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ast
+import hashlib
 import io
 import os
 import pickle
@@ -248,38 +250,84 @@ class CheckoutRelocation:
     def is_mentioned_in(self, data: bytes) -> bool:
         return any(root.encode("utf-8") in data for root in self.root_texts)
 
-    def portable_dumps(self, value: object) -> tuple[bytes, bool]:
-        """The relocated pickle, or the plain one when relocation leaves the root."""
 
-        buffer = io.BytesIO()
-        _RelocatingPickler(buffer, self).dump(value)
-        data = buffer.getvalue()
-        if not self.is_mentioned_in(data):
-            return data, True
-        return pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL), False
-
-    def load(self, handle: BinaryIO) -> object:
-        return _RelocatingUnpickler(handle, self).load()
+class CacheRetainsSyntax(ValueError):
+    """A value would put parsed syntax in a cache entry, which no entry may hold."""
 
 
-class _RelocatingPickler(pickle.Pickler):
-    def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation) -> None:
+@dataclass(frozen=True)
+class CacheBytes:
+    """The one encoding of cached content, and its content identity.
+
+    A pickle whose bytes spell only the content: strings and paths under the
+    checkout are written relative to it, so every checkout of the same content
+    writes the same bytes; sets are written sorted, so no process's hash seed
+    orders them; parsed syntax is refused. Pickle restores exactly the sharing it
+    wrote, so content read back from a cache encodes to the bytes it was stored
+    as, and the signature of those bytes is the content's identity.
+    """
+
+    data: bytes
+    portable: bool
+    """False when a string spells the checkout root inside a longer text, so the
+    bytes stay bound to the checkout that wrote them."""
+
+    @classmethod
+    def of(cls, value: object, relocation: CheckoutRelocation | None) -> CacheBytes:
+        if relocation is None:
+            return cls(_canonical_dumps(value, None), True)
+        data = _canonical_dumps(value, relocation)
+        if not relocation.is_mentioned_in(data):
+            return cls(data, True)
+        return cls(_canonical_dumps(value, None), False)
+
+    @cached_property
+    def signature(self) -> str:
+        return hashlib.blake2s(self.data, digest_size=16).hexdigest()
+
+    def value(self, relocation: CheckoutRelocation | None) -> object:
+        """The content again; relocated strings rebase onto this checkout."""
+
+        return _CanonicalUnpickler(io.BytesIO(self.data), relocation if self.portable else None).load()
+
+
+def _canonical_dumps(value: object, relocation: CheckoutRelocation | None) -> bytes:
+    buffer = io.BytesIO()
+    _CanonicalPickler(buffer, relocation).dump(value)
+    return buffer.getvalue()
+
+
+class _CanonicalPickler(pickle.Pickler):
+    def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation | None) -> None:
         super().__init__(handle, protocol=pickle.HIGHEST_PROTOCOL)
         self._relocation = relocation
 
     def persistent_id(self, obj: object) -> tuple[object, ...] | None:
-        return self._relocation.relative_id(obj)
+        if type(obj) is str or isinstance(obj, PurePath):
+            return None if self._relocation is None else self._relocation.relative_id(obj)
+        if isinstance(obj, (set, frozenset)):
+            return (
+                "set",
+                type(obj),
+                tuple(sorted(obj, key=lambda item: _canonical_dumps(item, self._relocation))),
+            )
+        if isinstance(obj, ast.AST):
+            raise CacheRetainsSyntax(f"{type(obj).__name__} is parsed syntax")
+        return None
 
 
-class _RelocatingUnpickler(pickle.Unpickler):
-    def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation) -> None:
+class _CanonicalUnpickler(pickle.Unpickler):
+    def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation | None) -> None:
         super().__init__(handle)
         self._relocation = relocation
 
     def persistent_load(self, pid: object) -> object:
-        if not isinstance(pid, tuple) or len(pid) != 3:
-            raise pickle.UnpicklingError("unknown persistent reference")
-        return self._relocation.restored(pid)
+        match pid:
+            case ("set", kind, items) if isinstance(kind, type) and issubclass(kind, (set, frozenset)):
+                return kind(items)
+            case ("checkout", _kind, _suffix) if self._relocation is not None:
+                return self._relocation.restored(pid)
+        raise pickle.UnpicklingError(f"unknown persistent reference {pid!r}")
 
 
 def checkout_identity_text(path: Path | str) -> str:
