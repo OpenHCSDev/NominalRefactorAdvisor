@@ -23,7 +23,6 @@ class ImplementationSource:
     path: str = field(compare=False, repr=False)
 
     @classmethod
-    @ScanCache.cached
     def from_module_name(cls, module_name: str) -> Self:
         module = sys.modules.get(module_name)
         source_path = None if module is None else module.__dict__.get("__file__")
@@ -34,7 +33,7 @@ class ImplementationSource:
             path_stat = path.stat()
         except OSError:
             return cls(module_name, cls._text_signature(str(path)), str(path))
-        path_text = str(path.resolve())
+        path_text = _resolved_path_text(source_path)
         return cls(
             module_name,
             _source_signature(
@@ -345,6 +344,14 @@ def _annotation_reference_names(annotation: str) -> tuple[str, ...]:
             names.append(annotation_node.id)
         annotation_stack.extend(ast.iter_child_nodes(annotation_node))
     return tuple(names)
+
+
+@ScanCache.cached
+def _resolved_path_text(source_path: str) -> str:
+    """Where a module file lives, resolved once per scan; its content is signed
+    on every read, so an edit between two reads is still seen."""
+
+    return str(Path(source_path).resolve())
 
 
 @ScanCache.cached
