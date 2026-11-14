@@ -129,6 +129,19 @@ stronger than a synthesized recipe that hedged its way to silence.
   three from a parent with no registry. A family that keys another way
   overrides `__key_extractor__` only. Eleven roots restated these lines
   before 2026-11-14.
+- **A slot that repeats the base's subscript is the subscript said
+  twice.** `class F(ShapeFamily[X]): item_type = X`, `class D(ModuleCollector
+  CandidateDetector[C]): candidate_collector = C.from_module`. The base
+  derives it in `__init_subclass__` from `types.get_original_bases`, and
+  the slots go (2026-11-14: 40 item_type slots, 3 candidate_type slots,
+  every collector slot). Two traps, both caught by listing the derived
+  value for every subclass before and after: read only the argument of
+  the base that is the family (a mixin's `[ShapeT]` is not the item), and
+  derive only when no ancestor set the value, or a subclass of a family
+  parameterised by something else (`SpelledClassSiteFamily[tuple[...]]`)
+  gets the wrong type. To ask "which type argument answers contract K",
+  ask K (`K.subscripted_in(cls)`): passing an abstract K as an argument
+  is a type-abstract error, calling its classmethod is not.
 - **Moving a declaration between modules by script** (until
   `move_symbols_to_module` stops leaving a re-export behind, 2026-11-14).
   Edit imports only inside the import statements the syntax tree finds:
