@@ -2537,12 +2537,17 @@ class StableCacheValue:
 
     @cached_property
     def signature(self) -> str:
-        """The form's content hash. A form is built of tuples, strings, numbers,
-        bytes and None, whose repr spells only content; a pickle would also spell
-        which equal strings happen to be one object, so a form rebuilt from the
-        cache would hash apart from the one it was stored as."""
+        """The form's content hash. A form is a tree of tuples, strings, numbers,
+        bytes and None, its sets and dicts already sorted; pickled without a memo
+        it spells only that content. A memo would also spell which equal strings
+        happen to be one object, so a form rebuilt from the cache would hash
+        apart from the one it was stored as."""
 
-        return hashlib.blake2s(repr(self.form).encode("utf-8"), digest_size=16).hexdigest()
+        buffer = io.BytesIO()
+        pickler = pickle.Pickler(buffer, protocol=pickle.HIGHEST_PROTOCOL)
+        pickler.fast = True
+        pickler.dump(self.form)
+        return hashlib.blake2s(buffer.getvalue(), digest_size=16).hexdigest()
 
 
 _NORMAL_FORMERS: dict[type, Callable[[_StableCacheWalk, Any], object]] = {}
