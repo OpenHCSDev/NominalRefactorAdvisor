@@ -767,7 +767,12 @@ to its owner before waiting it out. Two more things the instruments
 taught: the corpus dump runs from the main checkout (one finding reads
 the installed NRA, so a spare worktree changes its text), and `-x` with
 xdist stops the count early, so rerun without it before quoting a
-number.
+number. Never edit the tree while tests run on it: the analysis cache
+keys on the digest of NRA's own source, so an edit between a test's
+two scans turns a reused cache into a miss, and two cache-reuse tests
+in test_refactor_advisor.py fail for that reason alone (2026-11-14,
+both passed on the still tree). Run checks from a spare worktree when
+the next fold is going into the main one.
 
 **A branch the dispatch already took.** A class that only one dispatcher
 builds knows what the dispatcher tested. The mapping recipe builders are
