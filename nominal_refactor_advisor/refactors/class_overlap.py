@@ -873,8 +873,18 @@ def required_name_imports(
     return tuple(imports)
 
 
+class ClassOverlapRewrite(ABC):
+    """One proved class-overlap source rewrite: validate then emit edits.
+
+    Six independent helpers all declared `source_edits(self, rationale)` with no
+    shared ancestor. This ABC is the family the phantom_family detector found."""
+
+    @abstractmethod
+    def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]: ...
+
+
 @dataclass(frozen=True)
-class ClassComposition:
+class ClassComposition(ClassOverlapRewrite):
     """A class restates an existing class's whole body; it composes that class instead.
 
     The owner becomes the first base and the restated declarations go. With
@@ -1035,7 +1045,7 @@ class ClassComposition:
 
 
 @dataclass(frozen=True)
-class CoveringComposition:
+class CoveringComposition(ClassOverlapRewrite):
     """Classes restating a block that existing classes already own between them
     compose those classes instead (#96).
 
@@ -1232,7 +1242,7 @@ def _owner_import_edits(
 
 
 @dataclass(frozen=True)
-class BaseFold:
+class BaseFold(ClassOverlapRewrite):
     """Every direct child of a base restates one block; the base declares it once.
 
     The base becomes a frozen-consistent dataclass whose fields are keyword
@@ -1817,7 +1827,7 @@ _LAYOUT_TOKENS = frozenset(
 
 
 @dataclass(frozen=True)
-class ConstructionKeywording:
+class ConstructionKeywording(ClassOverlapRewrite):
     """Every positional construction of one dataclass, bound by keyword instead.
 
     A direct call `C(x, y)` binds the generated `__init__`'s positional
@@ -2169,7 +2179,7 @@ def movable_members(
 
 
 @dataclass(frozen=True)
-class MixinCreation:
+class MixinCreation(ClassOverlapRewrite):
     """A new class declares a block several classes restate; nothing uses it yet.
 
     The class is a root (`[mixin, object]`) with the anchor's own dataclass
@@ -2277,7 +2287,7 @@ class MixinCreation:
 
 
 @dataclass(frozen=True)
-class OwnerExtension:
+class OwnerExtension(ClassOverlapRewrite):
     """An existing class gains the block declarations it lacks.
 
     The owner already declares the rest of the block identically and is
