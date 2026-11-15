@@ -9,12 +9,14 @@ from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
 from nominal_refactor_advisor.detectors._base import (
-    FindingSpecConstructionCandidate,
+    FINDING_SPEC_FACTORIES,
     FindingSpecFactory,
     FindingSpecSemanticDefaults,
     FindingSpecSemanticField,
     FindingSpecSemanticValue,
-    FINDING_SPEC_FACTORIES,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
+    FindingSpecConstructionCandidate,
 )
 from nominal_refactor_advisor.ast_projection import StatementValues, single_name_targets
 

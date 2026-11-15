@@ -39,8 +39,10 @@ from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
-    FunctionEvidenceLocationsCandidate,
     high_confidence_spec,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
+    FunctionEvidenceLocationsCandidate,
 )
 
 

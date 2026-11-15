@@ -101,8 +101,6 @@ from nominal_refactor_advisor.semantic_match import as_ast, Maybe, name_id, cons
 from nominal_refactor_advisor.semantic_shape_algebra import InjectiveTypeRegistryProof
 from nominal_refactor_advisor.detectors._base import (
     CandidateCollectionAuthority,
-    ClassLineNumbersGroup,
-    ClassMethodLineWitnessCandidate,
     CollectsItself,
     CollectsItselfFromCompactContext,
     CollectsItselfUnderConfig,
@@ -116,11 +114,8 @@ from nominal_refactor_advisor.detectors._base import (
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
     DispatchAlgebraAuthority,
-    EvidenceLocationsWitnessCandidate,
-    FindingSpecConstructionCandidate,
     IssueDetector,
     KeyedFamilyAxisSpecsByKey,
-    KeyedRecordInfrastructureCandidate,
     ModuleCollectorCandidateDetector,
     NameFamilyClassNamesMixin,
     NamedFunctionNode,
@@ -141,7 +136,6 @@ from nominal_refactor_advisor.detectors._base import (
     SyntaxProjectionAuthority,
     TargetClassEvidenceAnchored,
     TargetProjectionRequired,
-    TupleIndexSemanticOpacityCandidate,
     WitnessCarrierClassCandidate,
     ZippedSourceLocationEvidenceProperty,
     _KeyedFamilyAxisSpec,
@@ -149,6 +143,14 @@ from nominal_refactor_advisor.detectors._base import (
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
+    ClassLineNumbersGroup,
+    ClassMethodLineWitnessCandidate,
+    EvidenceLocationsWitnessCandidate,
+    FindingSpecConstructionCandidate,
+    KeyedRecordInfrastructureCandidate,
+    TupleIndexSemanticOpacityCandidate,
 )
 from nominal_refactor_advisor.detectors._systemic_candidates import (
     CandidateCollectorBoilerplateCandidate,

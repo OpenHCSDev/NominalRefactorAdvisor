@@ -133,6 +133,7 @@ from nominal_refactor_advisor.codemod_source_cache import (
 from nominal_refactor_advisor.detectors._base import (CrossModuleCandidateDetector, DetectorCacheGranularity, DetectorConfig, IssueDetector, PerModuleIssueDetector, SemanticDescentGraphIssueDetector)
 from nominal_refactor_advisor.detectors import _environment as environment_detectors
 from nominal_refactor_advisor.detectors import _base as base_detectors
+from nominal_refactor_advisor.detectors import _candidate_records as candidate_records
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import _semantic_descent as semantic_descent_detectors
@@ -5933,15 +5934,15 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
         ),
         (
             structural_detectors.SemanticOverlapMethodDetector,
-            base_detectors.SemanticOverlapMethodCandidate,
+            candidate_records.SemanticOverlapMethodCandidate,
         ),
         (
             structural_detectors.SemanticOverlapMethodFamilyDetector,
-            base_detectors.SemanticOverlapMethodFamilyCandidate,
+            candidate_records.SemanticOverlapMethodFamilyCandidate,
         ),
         (
             structural_detectors.OverlappingInheritanceFamiliesDetector,
-            base_detectors.OverlappingInheritanceFamiliesCandidate,
+            candidate_records.OverlappingInheritanceFamiliesCandidate,
         ),
     )
 
@@ -5956,20 +5957,20 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
     with pytest.raises(TypeError, match="declares 0 candidate families"):
         context.candidates_for(object)
     method_candidates = context.candidates_for(
-        base_detectors.SemanticOverlapMethodCandidate
+        candidate_records.SemanticOverlapMethodCandidate
     )
     family_candidates = context.candidates_for(
-        base_detectors.SemanticOverlapMethodFamilyCandidate
+        candidate_records.SemanticOverlapMethodFamilyCandidate
     )
     global_candidates = context.candidates_for(
-        base_detectors.OverlappingInheritanceFamiliesCandidate
+        candidate_records.OverlappingInheritanceFamiliesCandidate
     )
     residue_axis_candidates = context.candidates_for(
-        base_detectors.SemanticOverlapResidueAxisCandidate
+        candidate_records.SemanticOverlapResidueAxisCandidate
     )
     with pytest.raises(TypeError, match="violates its SemanticOverlapMethodCandidate"):
         helper_detectors.CompactMethodFamilyCandidates(
-            base_detectors.SemanticOverlapMethodCandidate,
+            candidate_records.SemanticOverlapMethodCandidate,
             family_candidates,
         )
     with pytest.raises(TypeError, match="requires one family per candidate type"):
@@ -6085,7 +6086,7 @@ def test_compact_method_family_profiles_are_derived_after_the_family_join(
     )
 
     method_candidates = context.candidates_for(
-        base_detectors.SemanticOverlapMethodCandidate
+        candidate_records.SemanticOverlapMethodCandidate
     )
     assert tuple(candidate.method_name for candidate in method_candidates) == (
         "emit",

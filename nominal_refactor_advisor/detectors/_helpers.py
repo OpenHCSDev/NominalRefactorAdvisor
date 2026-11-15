@@ -83,14 +83,16 @@ from nominal_refactor_advisor.semantic_match import (
     single_item,
 )
 from nominal_refactor_advisor.detectors._base import (
+    CandidateCollectionAuthority,
+    ClassFamilyWitnessCarrier,
+    DetectorConfig,
+    NamedFunctionNode,
     _PIPELINE_ASSIGN_STAGE,
     _PIPELINE_RETURN_STAGE,
     _self_attr_name,
-    CandidateCollectionAuthority,
-    ClassFamilyWitnessCarrier,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
     ClassMethodLineWitnessCandidate,
-    DetectorConfig,
-    NamedFunctionNode,
     OverlappingInheritanceFamiliesCandidate,
     SemanticOverlapMethodCandidate,
     SemanticOverlapMethodFamilyCandidate,

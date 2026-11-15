@@ -48,24 +48,26 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.semantic_match import as_ast, ast_sequence, name_id
 from nominal_refactor_advisor.detectors._base import (
+    CandidateCollectionAuthority,
     CollectsItself,
-    ClassLineNumbersGroup,
+    CollectsItselfUnderConfig,
     CompactClassRepositoryContext,
     CompactClassRepositoryProjectionMixin,
     CompactContextCandidateDetector,
     ConfiguredModuleCollectorCandidateDetector,
     DetectorConfig,
     ModuleCollectorCandidateDetector,
-    OverlappingInheritanceFamiliesCandidate,
-    SemanticOverlapMethodCandidate,
-    SemanticOverlapMethodFamilyCandidate,
     declare_candidate_rule_detector,
     high_confidence_certified_spec,
     high_confidence_spec,
-    CandidateCollectionAuthority,
-    SelfReflectiveBuiltinCandidate,
-    CollectsItselfUnderConfig,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
+    ClassLineNumbersGroup,
+    OverlappingInheritanceFamiliesCandidate,
     PropertyHookGroup,
+    SelfReflectiveBuiltinCandidate,
+    SemanticOverlapMethodCandidate,
+    SemanticOverlapMethodFamilyCandidate,
 )
 from nominal_refactor_advisor.detectors._helpers import (
     _IMPLICIT_METHOD_PARAMETER_NAMES,

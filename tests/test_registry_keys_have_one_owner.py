@@ -11,6 +11,8 @@ import nominal_refactor_advisor
 from nominal_refactor_advisor.detectors._base import (
     ClassLineWitnessCandidate,
     LineWitnessCandidate,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
     QualnameLineWitnessCandidate,
 )
 from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthority

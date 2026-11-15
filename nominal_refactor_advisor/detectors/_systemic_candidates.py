@@ -20,19 +20,21 @@ from nominal_refactor_advisor.detectors._base import (
     CandidateCollectorBaseShape,
     CandidateCollectorScope,
     CandidateFindingDetector,
-    ClassMethodLineWitnessCandidate,
     CollectsItself,
     DerivedCandidateCollectorMixin,
     DetectorDeclaration,
     DispatchAlgebraAuthority,
     EnumCaseFamilyMixin,
-    FieldFamilyLineSurface,
     IssueDetector,
     ParameterizedBaseSource,
-    PositionalKeywordCallSurface,
     SyntaxProjectionAuthority,
     _detector_id_value_from_class_name,
     _self_attr_name,
+)
+from nominal_refactor_advisor.detectors._candidate_records import (
+    ClassMethodLineWitnessCandidate,
+    FieldFamilyLineSurface,
+    PositionalKeywordCallSurface,
 )
 from nominal_refactor_advisor.detectors._candidates import (
     LineWitnessCandidate,
