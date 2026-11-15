@@ -228,6 +228,7 @@ class AstNameFamily:
         return self.matching_name(node) is not None
 
 
+@dataclass(frozen=True)
 class CallKeyword(ABC):
     """One keyword of a call or class header: `name=value` or a `**mapping` splat."""
 
@@ -269,7 +270,6 @@ class CallKeyword(ABC):
 
 @dataclass(frozen=True)
 class NamedKeyword(CallKeyword):
-    node: ast.keyword
     name: str
 
     @property
@@ -291,7 +291,6 @@ class NamedKeyword(CallKeyword):
 
 @dataclass(frozen=True)
 class KeywordSplat(CallKeyword):
-    node: ast.keyword
 
     @property
     def spelled_name(self) -> str:
@@ -368,6 +367,7 @@ class StatementValueQuestion(ABC, Generic[AnswerT]):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class StatementValue(ABC):
     """The value an assignment, annotation or `return` supplies, or its absence."""
 
@@ -415,7 +415,6 @@ class StatementValue(ABC):
 
 @dataclass(frozen=True)
 class SuppliedValue(StatementValue):
-    statement: ValuedStatement
     value: ast.expr
 
     def sort_into(
@@ -445,7 +444,6 @@ class SuppliedValue(StatementValue):
 
 @dataclass(frozen=True)
 class NoStatementValue(StatementValue):
-    statement: ValuedStatement
 
     def sort_into(
         self,

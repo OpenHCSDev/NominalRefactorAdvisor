@@ -25,6 +25,7 @@ class FeatureChange(ChangeKind, Attributed): ...
 class DirectChange(ChangeKind, Attributed): ...
 
 
+@dataclass(frozen=True)
 class ModuleOrigin(ABC):
     merged_at: int
 
@@ -42,7 +43,6 @@ class ModuleOrigin(ABC):
 
 @dataclass(frozen=True)
 class MergedPullRequest(ModuleOrigin):
-    merged_at: int
     number: int
     branch: str
     github_merge: ClassVar[re.Pattern] = re.compile(r"Merge pull request #(\d+) from [^/\s]+/(\S+)")
@@ -61,7 +61,6 @@ class MergedPullRequest(ModuleOrigin):
 
 @dataclass(frozen=True)
 class DirectCommit(ModuleOrigin):
-    merged_at: int
     subject: str
 
     def kind(self, refactor_branches: re.Pattern) -> type[ChangeKind]:
