@@ -2483,10 +2483,9 @@ class SourceExecutionKernel(
         ):
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
         self.effects.source_operation(read.context, result.value_use)
-        prefix = self._admitted_prefix(read.context, read.use.position)
-        if isinstance(prefix, OpenCapturedReference):
-            return prefix
-        return self._read_use(result.value_use, read.context, pending)
+        return self._admitted_prefix(read.context, read.use.position).and_then(
+            lambda _prefix: self._read_use(result.value_use, read.context, pending)
+        )
 
     def _empty_dictionary_resolution(
         self,

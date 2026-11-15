@@ -415,6 +415,26 @@ class NativeTypeCapture(CapturedReferenceResolution, ABC):
         NativeCreationBackend.current().require_nonabstract_member(self.native_type)
 
 
+_CaptureStepT = TypeVar("_CaptureStepT")
+
+
+class CaptureOutcome(ABC):
+    """A capture lookup's result: resolved evidence, or an open reference that
+    propagates. Owns the short-circuit so each step composes instead of every
+    caller re-checking ``isinstance(..., OpenCapturedReference)`` and returning
+    early.
+
+    ``outcome.and_then(step)`` runs ``step`` on resolved evidence and returns its
+    result; an open reference ignores ``step`` and returns itself, carrying the
+    unproved state up unchanged.
+    """
+
+    def and_then(
+        self, step: Callable[[Self], _CaptureStepT]
+    ) -> _CaptureStepT | OpenCapturedReference:
+        return step(self)
+
+
 class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
     """An explicit captured kind can leave particular object protocols unknown."""
 
@@ -509,10 +529,14 @@ class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
 
 
 @dataclass(frozen=True)
-class OpenCapturedReference(OpaqueCapturedObjectOperations):
+class OpenCapturedReference(OpaqueCapturedObjectOperations, CaptureOutcome):
     violation: CapturedReferenceViolation
     mutation: CompactMutation | None = None
     cause: ValueError | None = field(default=None, compare=False, repr=False)
+
+    def and_then(self, step: Callable[[Self], object]) -> Self:
+        """An open reference is unproved: it propagates unchanged, ignoring the step."""
+        return self
 
     def __post_init__(self) -> None:
         """Keep original diagnostic links, but no captured execution stacks."""
@@ -692,13 +716,12 @@ class CapturedNativeObject(NativeTypeCapture):
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
-        namespace = self.attribute_namespace(resolver.initial, attribute)
-        if isinstance(namespace, OpenCapturedReference):
-            return namespace
-        result = resolver._slot(namespace, attribute, context, position, pending)
-        return (
-            OpenCapturedReference(CapturedReferenceViolation.UNPROVED_ACCESS)
-            if result is None
+        return self.attribute_namespace(resolver.initial, attribute).and_then(
+            lambda namespace: OpenCapturedReference(
+                CapturedReferenceViolation.UNPROVED_ACCESS
+            )
+            if (result := resolver._slot(namespace, attribute, context, position, pending))
+            is None
             else result
         )
 
@@ -722,7 +745,7 @@ NamespaceEntryT = TypeVar("NamespaceEntryT")
 FoldT = TypeVar("FoldT")
 
 
-class ClosedEvidence(ABC):
+class ClosedEvidence(CaptureOutcome):
     """What a lookup answers when it is not an OpenCapturedReference.
 
     A lookup that may stay unproved returns evidence or an open reference.  A consumer
@@ -2399,9 +2422,9 @@ class CapturedReferenceKernel(
         ) or not call.position.dominates(read.use.position):
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
         prefix = self._admitted_prefix(read.context, call.position)
-        if isinstance(prefix, OpenCapturedReference):
-            return prefix
-        return self.effects.call_result(read.context, call)
+        return prefix.and_then(
+            lambda _: self.effects.call_result(read.context, call)
+        )
 
     def _unproved_value_resolution(
         self, context: ValueQuery
@@ -2595,12 +2618,11 @@ class CapturedReferenceKernel(
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution | None:
-        if isinstance(namespace, OpenCapturedReference):
-            return namespace
-        prefix = self._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
-            return prefix
-        return self._namespace_resolution(namespace, key, prefix, pending)
+        return namespace.and_then(
+            lambda proven: self._admitted_prefix(context, position).and_then(
+                lambda prefix: self._namespace_resolution(proven, key, prefix, pending)
+            )
+        )
 
     def _binding_mutation_resolution(
         self,
@@ -2610,10 +2632,9 @@ class CapturedReferenceKernel(
     ) -> OpenCapturedReference | None:
         query, occurrence = context
         source = occurrence.source
-        namespace = source.frame.binding_namespace(source.context, name)
-        if isinstance(namespace, OpenCapturedReference):
-            return namespace
-        return query.write_effect(namespace, name, mutation)
+        return source.frame.binding_namespace(source.context, name).and_then(
+            lambda namespace: query.write_effect(namespace, name, mutation)
+        )
 
     def _receiver_mutation_resolution(
         self,
