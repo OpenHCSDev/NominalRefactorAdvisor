@@ -3467,4 +3467,3 @@ class WitnessCarrierClassCandidate(WitnessCarrierCandidate):
     field_names = AliasProperty[tuple[str, ...]]("name_family")
 
 
-__all__ = tuple(name for name in globals() if not name.startswith("__"))

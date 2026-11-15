@@ -967,4 +967,3 @@ def default_detectors() -> tuple[IssueDetector, ...]:
     )
 
 
-__all__ = tuple(name for name in globals() if not name.startswith("_"))

@@ -1497,4 +1497,3 @@ def _assignment_target_arity(target: ast.AST) -> int | None:
 _SCHEMA_ACCESSOR_SELF_NAME = "self"
 
 
-__all__ = tuple(name for name in globals() if not name.startswith("__"))
