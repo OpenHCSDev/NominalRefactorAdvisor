@@ -294,6 +294,7 @@ class ConstructorClassKeyEntry(SourceClassKeyEntry):
         environment.capture_value(self.value_node).require_closed()
 
 
+@dataclass(frozen=True)
 class RegistryEntries(ABC):
     """Original declaration/key edges share ordering and native-key obligations."""
 
@@ -376,7 +377,6 @@ class DirectManualRegistryEntry(SourceClassKeyEntry):
 class DirectManualRegistryComponent(RegistryEntries):
     """Complete direct-registration component anchored by one registered class."""
 
-    module: ast.Module
     registry_assignment: RegistryAssignment
     entries: tuple[DirectManualRegistryEntry, ...]
 
@@ -736,10 +736,8 @@ class DirectManualRegistryComponent(RegistryEntries):
 class AutoRegisterInstanceViewComponent(RegistryEntries):
     """One constructor-valued view proved against its AutoRegister authority."""
 
-    module: ast.Module
     authority: KeyedMetaclassFamily
     assignment: RegistryAssignment
-    entries: tuple[SourceClassKeyEntry, ...]
 
     def require_original_entry_values(
         self, environment: NativeReferenceEnvironment

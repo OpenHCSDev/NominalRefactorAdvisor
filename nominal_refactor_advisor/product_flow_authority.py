@@ -507,6 +507,7 @@ class _ProductMemberAnswers(ClassMemberAnswersABC[_CompactClassMemberResolution]
         )
 
 
+@dataclass(frozen=True)
 class CompactFunctionCallResolution(ABC):
     """Complete call-resolution result retained for every projected call."""
 
@@ -552,8 +553,6 @@ class CompactFunctionCallResolution(ABC):
 class CompactResolvedFunctionCall(CompactFunctionCallResolution):
     """One call edge whose callee has exactly one nominal declaration."""
 
-    context: CompactFlowContext
-    call: CompactFunctionCall
     resolved_target: ResolvedCompactFunctionTarget
 
     @cached_property
@@ -583,8 +582,6 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
 class CompactOpenFunctionCall(CompactFunctionCallResolution):
     """One projected call without a resolved function declaration."""
 
-    context: CompactFlowContext
-    call: CompactFunctionCall
     open_target_resolution: CompactCallTargetResolution
 
     @property
