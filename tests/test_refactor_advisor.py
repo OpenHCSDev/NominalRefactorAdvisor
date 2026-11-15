@@ -285,6 +285,9 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.detectors._base import (DetectorConfig, IssueDetector)
 from nominal_refactor_advisor.detectors._semantic_descent import SemanticMirrorWithoutDescentDetector
 from nominal_refactor_advisor.detectors import _base as base_detectors
+from nominal_refactor_advisor.detectors import (
+    _systemic_candidates as systemic_candidates,
+)
 from nominal_refactor_advisor.detectors import _helpers as helper_detectors
 from nominal_refactor_advisor.detectors import _runtime as runtime_detectors
 from nominal_refactor_advisor.detectors import _systemic as systemic_detectors
@@ -15471,7 +15474,7 @@ def test_candidate_collector_boilerplate_ignores_implementation_base(
     module = parse_python_modules(tmp_path)[0]
 
     assert (
-        base_detectors.CandidateCollectorBoilerplateCandidate.from_module(module) == ()
+        systemic_candidates.CandidateCollectorBoilerplateCandidate.from_module(module) == ()
     )
 
 

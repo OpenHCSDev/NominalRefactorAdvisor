@@ -66,15 +66,17 @@ from nominal_refactor_advisor.declaration_dependencies import (
 from nominal_refactor_advisor.detectors._base import (
     CallableCandidateFindingRenderer,
     CandidateCollectorBaseReference,
-    CandidateCollectorBoilerplateCandidate,
-    DeclarativeDetectorClassCandidate,
     DerivedCandidateCollectorMixin,
     DetectorDeclaration,
     DetectorDeclarationOptions,
-    DirectBuildFindingRendererCandidate,
     IssueDetector,
-    ModuleCollectedLineWitnessCandidate,
     declare_module_detector,
+)
+from nominal_refactor_advisor.detectors._systemic_candidates import (
+    CandidateCollectorBoilerplateCandidate,
+    DeclarativeDetectorClassCandidate,
+    DirectBuildFindingRendererCandidate,
+    ModuleCollectedLineWitnessCandidate,
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
