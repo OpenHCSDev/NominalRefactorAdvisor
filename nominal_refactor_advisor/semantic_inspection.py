@@ -40,6 +40,7 @@ from nominal_refactor_advisor.source_index import (
     SourceFileDigest,
     SourceIndex,
     StableIdPart,
+    _IdentifiedTarget,
     build_source_index,
 )
 from nominal_refactor_advisor.source_identity import source_path_is_package_init
@@ -155,10 +156,7 @@ class InspectedScopeReferences:
 
 
 @dataclass(frozen=True, kw_only=True)
-class FunctionSummary(InspectedScopeReferences, SemanticInspectionRecord):
-    target_id: str
-    name: str
-    qualname: str
+class FunctionSummary(InspectedScopeReferences, _IdentifiedTarget, SemanticInspectionRecord):
     kind: FunctionSummaryKind
     line: int
     end_line: int
@@ -167,11 +165,8 @@ class FunctionSummary(InspectedScopeReferences, SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class ClassTargetSummaryReference(SourceLineReference):
-    target_id: str
+class ClassTargetSummaryReference(_IdentifiedTarget, SourceLineReference):
     module_name: str
-    name: str
-    qualname: str
     method_ids: tuple[str, ...]
 
 

@@ -182,15 +182,21 @@ class SourceFileDigest(DataclassJsonReport):
         return self.module_path_identity.is_package_init
 
 
-@dataclass(frozen=True)
-class AstTargetDigest(DataclassJsonReport, SourceLineReference):
-    """Stable AST target address for one module, class, function, or method."""
+@dataclass(frozen=True, kw_only=True)
+class _IdentifiedTarget:
+    """An AST target's stable identity: its target id and its names."""
 
     target_id: str
-    file_id: str
-    node_kind: AstTargetNodeKind = json_report_field(field_name="node_type")
     name: str
     qualname: str
+
+
+@dataclass(frozen=True)
+class AstTargetDigest(_IdentifiedTarget, DataclassJsonReport, SourceLineReference):
+    """Stable AST target address for one module, class, function, or method."""
+
+    file_id: str
+    node_kind: AstTargetNodeKind = json_report_field(field_name="node_type")
     end_line: int
     parameters: tuple[str, ...] = ()
     decorators: tuple[str, ...] = ()
