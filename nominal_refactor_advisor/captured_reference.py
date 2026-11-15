@@ -757,7 +757,19 @@ class ClosedEvidence(CaptureOutcome):
         return self
 
 
-class NamespaceEvidenceABC(ClosedEvidence):
+class AdmittedEvidenceABC(ClosedEvidence, ABC):
+    """Closed evidence that also proves admission into an initial native island.
+
+    Both namespace evidence and execution-prefix evidence declare
+    require_admitted independently. This ABC is the family the
+    phantom_family detector found: one declaring ancestor for both."""
+
+    @abstractmethod
+    def require_admitted(self, initial: InitialNativeIsland) -> None:
+        raise NotImplementedError
+
+
+class NamespaceEvidenceABC(AdmittedEvidenceABC):
     """A canonical admitted namespace identity and its initial binding evidence.
 
     Source-created namespaces must carry proven creation, not substitute a
@@ -1223,7 +1235,7 @@ class CompletedSourceOperation(
         return result
 
 
-class AdmittedExecutionPrefixABC(ClosedEvidence):
+class AdmittedExecutionPrefixABC(AdmittedEvidenceABC):
     """A supplied activation/order proof, not an inferred source-parent relation.
 
     Intervals retain their own context, canonical activation frame and local
