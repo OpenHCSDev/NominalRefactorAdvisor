@@ -67,6 +67,34 @@ class FunctionDefinition(ForeignFamily):
     col_offset: int
 
 
+class ImportStatement(ForeignFamily):
+    """An import or from-import statement.
+
+    Both members store ``names``; the family declares the fields its sites read.
+    """
+
+    members = (ast.Import, ast.ImportFrom)
+
+    names: list[ast.alias]
+    lineno: int
+    col_offset: int
+
+
+class DefinitionStatement(ForeignFamily):
+    """A class, function or async function definition.
+
+    All three members store ``name``, ``body``, ``decorator_list`` and positions.
+    """
+
+    members = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+
+    name: str
+    body: list[ast.stmt]
+    decorator_list: list[ast.expr]
+    lineno: int
+    col_offset: int
+
+
 class AssignmentStatement(ForeignAdapter):
     """An assignment statement: what it binds, to which value, under which annotation."""
 
