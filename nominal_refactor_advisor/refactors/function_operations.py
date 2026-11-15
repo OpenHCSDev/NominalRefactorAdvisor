@@ -8,7 +8,7 @@ from abc import (
     abstractmethod,
 )
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
@@ -502,13 +502,14 @@ class ProjectStaticCallsToAdapterOperation(SourceReprovedOperation):
         )
 
 
+@dataclass(frozen=True)
 class _Forwarder(ABC):
     """A member whose body only forwards: what it reads besides self, whether its
     value is read, and its body rewritten for one use."""
 
     method: ast.FunctionDef | ast.AsyncFunctionDef
-    imports: tuple[ast.Import | ast.ImportFrom, ...]
     returns: bool
+    imports: tuple[ast.Import | ast.ImportFrom, ...] = ()
 
     @property
     @abstractmethod
@@ -527,10 +528,7 @@ class _ForwarderBody(_Forwarder):
     any imports that bind what it calls. An async forwarder awaits that call, so
     its callers' `await` reaches the forwarded call itself."""
 
-    method: ast.FunctionDef | ast.AsyncFunctionDef
-    call: ast.Call
-    returns: bool
-    imports: tuple[ast.Import | ast.ImportFrom, ...] = ()
+    call: ast.Call = field(kw_only=True)
 
     @classmethod
     def of(cls, method: ast.FunctionDef | ast.AsyncFunctionDef, qualname: str) -> _ForwarderBody:
@@ -563,7 +561,7 @@ class _ForwarderBody(_Forwarder):
             value = value.value if isinstance(value, ast.Await) else None
         if not isinstance(value, ast.Call):
             raise ValueError(f"{qualname!r} is not a plain one-call forwarder")
-        return cls(method, value, isinstance(statement, ast.Return), imports)
+        return cls(method=method, call=value, returns=isinstance(statement, ast.Return), imports=imports)
 
     @property
     def free_names(self) -> frozenset[str]:
@@ -639,10 +637,8 @@ class _PropertyForwarderBody(_Forwarder):
     """A property whose whole body returns an attribute chain on self: every read of
     it becomes that chain on the read's receiver."""
 
-    method: ast.FunctionDef
-    value: ast.Attribute
-
-    imports: tuple[ast.Import | ast.ImportFrom, ...] = ()
+    method: ast.FunctionDef = field(kw_only=True)
+    value: ast.Attribute = field(kw_only=True)
     returns: bool = True
 
     @property
@@ -674,7 +670,7 @@ class _PropertyForwarderBody(_Forwarder):
             case [ast.Return(value=ast.Attribute() as value)] if (
                 isinstance(method, ast.FunctionDef) and cls.chain_root(value) == self_name
             ):
-                return cls(method, value)
+                return cls(method=method, value=value)
         raise ValueError(f"{qualname!r} is not a property returning an attribute of self")
 
     @staticmethod
