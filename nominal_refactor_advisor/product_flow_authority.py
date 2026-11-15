@@ -2470,6 +2470,10 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             )
         )
 
+    @cached_property
+    def _modules_by_name(self) -> dict[str, ParsedModule]:
+        return {module.module_name: module for module in self.modules}
+
     def iter_product_projections(self) -> Iterator[CompactProductFlowModuleProjection]:
         """Preserve every original module without projecting unrequested successors."""
         for module in self.modules:
@@ -2479,11 +2483,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         declaration = self.class_index.class_for(symbol)
         if declaration is None or not self.contains_module(declaration.module_name):
             return None
-        module = next(
-            module
-            for module in self.modules
-            if module.module_name == declaration.module_name
-        )
+        module = self._modules_by_name[declaration.module_name]
         classes = [
             node
             for _, node in module.syntax_index.indexed_nodes_of_type(
@@ -2530,14 +2530,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
         declaration = context.declaration
         if declaration is None:
             return None
-        module = next(
-            (
-                module
-                for module in self.modules
-                if module.module_name == context.module_name
-            ),
-            None,
-        )
+        module = self._modules_by_name.get(context.module_name)
         if module is None:
             return None
         syntax = module.syntax_index
