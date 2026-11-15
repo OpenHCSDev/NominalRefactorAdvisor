@@ -269,6 +269,12 @@ class CompactDataclassFacet(ABC):
 
     @property
     @abstractmethod
+    def is_present(self) -> bool:
+        """Whether this facet carries a dataclass-like declaration."""
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
     def generates_construction(self) -> bool:
         """Whether a dataclass-like decorator builds the class's `__init__` from
         its fields, so an added field changes how the class is constructed."""
@@ -303,6 +309,10 @@ class CompactDataclassFacet(ABC):
 @dataclass(frozen=True)
 class CompactDataclassDeclaration(CompactDataclassFacet):
     """One dataclass-like declaration, including fail-closed unknown semantics."""
+
+    @property
+    def is_present(self) -> bool:
+        return True
 
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         if (
@@ -342,6 +352,10 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
 @dataclass(frozen=True)
 class NoDataclassDeclaration(CompactDataclassFacet):
     """A class no dataclass-like decorator declares: no runtime, no fields."""
+
+    @property
+    def is_present(self) -> bool:
+        return False
 
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         raise NotStandardDataclass(reason)
@@ -434,7 +448,7 @@ class ClassDeclaration(QualifiedDeclaration, LineWitness):
     def is_dataclass(self) -> bool:
         """Whether a decorator bound to a dataclass-like declaration declares the class."""
 
-        return not isinstance(self.dataclass_declaration, NoDataclassDeclaration)
+        return self.dataclass_declaration.is_present
 
     @property
     def member_binding_names(self) -> frozenset[str]:
