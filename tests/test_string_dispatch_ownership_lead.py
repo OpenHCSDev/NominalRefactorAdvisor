@@ -17,7 +17,7 @@ from nominal_refactor_advisor.patterns import PatternId
 
 
 def _findings(source: str):
-    module = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+    module = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
     return StringLiteralDispatchOwnershipLeadDetector().detect(ParsedModuleSet.of([module]), DetectorConfig())
 
 
@@ -199,7 +199,7 @@ def test_guarded_event_case_lead_retains_distinct_roots_without_a_recipe():
         "        if kind == 'done':\n"
         "            return self.parts\n"
     )
-    parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+    parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
     finding, = GuardedStringCaseOwnershipLeadDetector().detect(
         ParsedModuleSet.of([parsed]), DetectorConfig()
     )
@@ -243,10 +243,10 @@ def test_rendered_relation_for_both_leads_does_not_assert_closed_family():
         "    if kind == 'done':\n"
         "        return 3\n"
     )
-    parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+    parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
     guarded, = GuardedStringCaseOwnershipLeadDetector().detect(ParsedModuleSet.of([parsed]), DetectorConfig())
     ladder_source = source.replace("reply_targets and ", "")
-    ladder_parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", ladder_source).parse()
+    ladder_parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=ladder_source).parse()
     ladder, = StringLiteralDispatchOwnershipLeadDetector().detect(ParsedModuleSet.of([ladder_parsed]), DetectorConfig())
     for finding in (guarded, ladder):
         output = MARKDOWN_RENDERER.findings([finding])
@@ -265,7 +265,7 @@ def test_guarded_cases_in_separate_functions_do_not_form_one_family():
         "    if reply_targets and kind == 'committed_progress':\n"
         "        return 2\n"
     )
-    parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+    parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
         ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
@@ -280,7 +280,7 @@ def test_guard_order_and_false_short_circuit_have_distinct_source_receipts():
             "    if ready() and kind == 'committed_progress':\n"
             "        return 2\n"
         )
-        parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+        parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
         finding, = GuardedStringCaseOwnershipLeadDetector().detect(
             ParsedModuleSet.of([parsed]), DetectorConfig()
         )
@@ -303,7 +303,7 @@ def test_same_spelled_rebound_function_is_not_one_lexical_owner():
         "    if ready() and kind == 'committed_progress':\n"
         "        return 2\n"
     )
-    parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+    parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
         ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []
@@ -315,7 +315,7 @@ def test_two_kind_equalities_in_one_guard_are_not_two_case_alternatives():
         "    if kind == 'chunk' and kind == 'committed_progress':\n"
         "        return 1\n"
     )
-    parsed = SourceModule(Path("pkg/handler.py"), "pkg.handler", source).parse()
+    parsed = SourceModule(path=Path("pkg/handler.py"), module_name="pkg.handler", source=source).parse()
     assert GuardedStringCaseOwnershipLeadDetector().detect(
         ParsedModuleSet.of([parsed]), DetectorConfig()
     ) == []

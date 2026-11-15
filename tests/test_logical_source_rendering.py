@@ -44,11 +44,11 @@ def test_editing_original_line_does_not_consume_a_separate_append(
     path = Path(__file__).with_name("empty_renderer_fixture.py").resolve().as_posix()
     compiler = CodemodSourceSnapshot.from_source_mapping({path: source}).execution_snapshot()
     first = (
-        SourceSpanDeletion(file_path=path, span=SourceLineSpan(1, 1), )
+        SourceSpanDeletion(file_path=path, span=SourceLineSpan(start_line=1, end_line=1), )
         if delete
         else SourceSpanReplacement(
             file_path=path,
-            span=SourceLineSpan(1, 1),
+            span=SourceLineSpan(start_line=1, end_line=1),
             replacement_lines=("first = object\n",),
         )
     )
@@ -58,7 +58,7 @@ def test_editing_original_line_does_not_consume_a_separate_append(
         inserted_lines=("second = type\n",),
     )
     edits = (second, first) if reverse else (first, second)
-    batch = NominalEditBatch(compiler, edits)
+    batch = NominalEditBatch(compiler=compiler, edits=edits)
     assert len(batch.physical_edits) == 2
     actual = compiler.simulate_rewrites(batch.planned_rewrites)
     assert actual.parse_validation.parse_valid

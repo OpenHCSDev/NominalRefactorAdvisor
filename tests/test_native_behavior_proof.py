@@ -239,7 +239,7 @@ def test_dsl_projected_source_admits_real_type_operation_without_transporting_ac
     )
     operation = PatchTargetOperation(
         target=SourceRewriteTarget(file_path=path),
-        replacements=(SourceTextReplacement("padding=0", "padding=1"),),
+        replacements=(SourceTextReplacement(old_source="padding=0", new_source="padding=1"),),
     )
     preview = CodemodPlanSequence.from_operations((operation,)).simulate(snapshot)
     assert preview.is_clean
@@ -291,7 +291,7 @@ def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
     assert original.inspect().provenance is NativeUseProvenance.PROVED
     unrelated = PatchTargetOperation(
         target=SourceRewriteTarget(file_path=path),
-        replacements=(SourceTextReplacement("padding=0", "padding=1"),),
+        replacements=(SourceTextReplacement(old_source="padding=0", new_source="padding=1"),),
     )
     first = (
         CodemodPlanSequence.from_operations((unrelated,))
@@ -306,7 +306,7 @@ def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
         target=SourceRewriteTarget(
             file_path=provider_path, qualname="mro_registry_value"
         ),
-        replacements=(SourceTextReplacement("        None,", "        'changed',"),),
+        replacements=(SourceTextReplacement(old_source="        None,", new_source="        'changed',"),),
     )
     second = (
         CodemodPlanSequence.from_operations((dependency,))
@@ -366,8 +366,9 @@ def test_native_mapping_mutation_cannot_hide_behind_a_retained_namespace(
         @classmethod
         def from_source(cls, source):
             initial = InitialNativeIsland(
-                (builtins, registry_identity, fixture), (fixture.DATA,)
-            )
+                modules=(builtins, registry_identity, fixture),
+                extra_storages=(fixture.DATA,),
+                      )
             return cls.from_standard_source_loader(
                 source, initial, initial.namespace_for_storage(vars(builtins))
             )

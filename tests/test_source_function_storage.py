@@ -144,8 +144,10 @@ def test_function_storage_rejects_another_activation_prefix():
     (
         copy,
         lambda prefix: SingleFlowPrefix(
-            prefix.endpoint.context, prefix.endpoint.frame, prefix.endpoint.position
-        ),
+            context=prefix.endpoint.context,
+            frame=prefix.endpoint.frame,
+            position=prefix.endpoint.position,
+                       ),
     ),
 )
 def test_matching_endpoint_does_not_authenticate_a_rebuilt_or_truncated_prefix(rebuild):

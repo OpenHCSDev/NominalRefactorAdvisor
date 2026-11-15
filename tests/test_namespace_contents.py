@@ -32,7 +32,7 @@ def positioned_contents(environment, assignment="tail", *, completed=False):
     prefix = environment.required_prefix(
         read.context, None if completed else read.use.position
     )
-    return NamespaceMemberInventory(environment.kernel, namespace, prefix)
+    return NamespaceMemberInventory(kernel=environment.kernel, namespace=namespace, prefix=prefix)
 
 
 def paired_contents():

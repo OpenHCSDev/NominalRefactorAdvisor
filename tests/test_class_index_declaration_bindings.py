@@ -78,8 +78,9 @@ def test_projection_rebinds_changed_declarations_and_reuses_unchanged_ancestors(
         tuple(module for module in declaration_modules if module.path != consumer_path)
         + changed,
         previous=ClassFamilyIndexPredecessor(
-            before, {module.file_path: module for module in declaration_modules}
-        ),
+            index=before,
+            modules_by_file_path={module.file_path: module for module in declaration_modules},
+                 ),
     ).build()
 
     assert before.ancestor_symbols("consumer.Early") == ("parents.First",)

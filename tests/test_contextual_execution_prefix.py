@@ -87,26 +87,26 @@ class PlainChildFixtureEffects(CapturedReferenceEffectsABC):
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
         cut = self.definition.target.header_position
-        parent = SingleFlowPrefix(self.parent, self.parent_frame, cut)
+        parent = SingleFlowPrefix(context=self.parent, frame=self.parent_frame, position=cut)
         if context is self.child:
             return ChildExecutionPrefix(
                 parent,
                 self.definition,
-                SingleFlowPrefix(self.child, self.child_frame, position),
+                SingleFlowPrefix(context=self.child, frame=self.child_frame, position=position),
             )
         if context is not self.parent:
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS)
         if not self.definition.position.may_precede(position):
-            return SingleFlowPrefix(context, self.parent_frame, position)
+            return SingleFlowPrefix(context=context, frame=self.parent_frame, position=position)
         completed = ChildExecutionPrefix(
             parent,
             self.definition,
-            SingleFlowPrefix(self.child, self.child_frame, None),
+            SingleFlowPrefix(context=self.child, frame=self.child_frame, position=None),
         )
         return SequentialExecutionPrefix(
             (
                 completed,
-                SingleFlowPrefix(context, self.parent_frame, position, cut),
+                SingleFlowPrefix(context=context, frame=self.parent_frame, position=position, after=cut),
             )
         )
 
@@ -127,17 +127,19 @@ def fixture(source, globals_storage=None):
     )
     globals_storage = {} if globals_storage is None else globals_storage
     local_storage = {}
-    island = InitialNativeIsland((builtins,), (globals_storage, local_storage))
+    island = InitialNativeIsland(modules=(builtins,), extra_storages=(globals_storage, local_storage))
     globals_namespace = island.namespace_for_storage(globals_storage)
     builtins_namespace = island.namespace_for_storage(vars(builtins))
     parent_frame = InitialNativeFrame(
-        globals_namespace, globals_namespace, builtins_namespace
-    )
+        locals=globals_namespace,
+        globals=globals_namespace,
+        builtins=builtins_namespace,
+                   )
     child_frame = InitialNativeFrame(
-        island.namespace_for_storage(local_storage),
-        globals_namespace,
-        builtins_namespace,
-    )
+        locals=island.namespace_for_storage(local_storage),
+        globals=globals_namespace,
+        builtins=builtins_namespace,
+                  )
     effects = PlainChildFixtureEffects(
         module, parent, child, definition, parent_frame, child_frame
     )
@@ -149,7 +151,7 @@ def fixture(source, globals_storage=None):
         and n.targets[0].id == "result"
     )
     read = projection.reference_reads_by_span[SourceByteSpan.require_node(result.value)]
-    return CapturedReferenceKernel(island, effects), read
+    return CapturedReferenceKernel(initial=island, effects=effects), read
 
 
 def native(source, expected):
@@ -239,8 +241,10 @@ def test_child_entry_keeps_context_and_owner_identity():
         replace(
             prefix,
             child=SingleFlowPrefix(
-                kernel.effects.parent, kernel.effects.parent_frame, read.use.position
-            ),
+                context=kernel.effects.parent,
+                frame=kernel.effects.parent_frame,
+                position=read.use.position,
+                  ),
         )
 
 
@@ -324,8 +328,8 @@ def test_shared_actual_mutation_cut_has_one_installation_occurrence():
     context = kernel.effects.parent
     frame = kernel.effects.parent_frame
     installation = context.flow.mutations[0]
-    first = SingleFlowPrefix(context, frame, installation.position)
-    second = SingleFlowPrefix(context, frame, read.use.position, installation.position)
+    first = SingleFlowPrefix(context=context, frame=frame, position=installation.position)
+    second = SingleFlowPrefix(context=context, frame=frame, position=read.use.position, after=installation.position)
     prefix = SequentialExecutionPrefix((first, second))
     prefix.require_admitted(kernel.initial)
     assert not first.contains(installation)
@@ -339,7 +343,7 @@ def test_shared_actual_mutation_cut_has_one_installation_occurrence():
         "builtins",
         prefix,
         frozenset(),
-        ContextualMutation(second, installation),
+        ContextualMutation(source=second, mutation=installation),
     )
     assert all(
         not isinstance(event, OpenCapturedReference)
@@ -353,10 +357,10 @@ def test_interval_rejects_reversed_cuts_without_sorting_them():
     )
     with pytest.raises(ValueError, match="ordered cuts"):
         SingleFlowPrefix(
-            read.context,
-            kernel.effects.parent_frame,
-            kernel.effects.definition.target.header_position,
-            read.use.position,
+            context=read.context,
+            frame=kernel.effects.parent_frame,
+            position=kernel.effects.definition.target.header_position,
+            after=read.use.position,
         )
 
 
@@ -366,8 +370,11 @@ def test_equal_cuts_are_empty_not_a_replayed_activation():
     )
     position = kernel.effects.parent.flow.mutations[0].position
     empty = SingleFlowPrefix(
-        kernel.effects.parent, kernel.effects.parent_frame, position, position
-    )
+        context=kernel.effects.parent,
+        frame=kernel.effects.parent_frame,
+        position=position,
+        after=position,
+            )
     assert tuple(empty.mutation_occurrences()) == ()
 
 
@@ -375,8 +382,8 @@ def test_incomparable_evaluation_cuts_do_not_manufacture_interval_order():
     kernel, read = fixture(
         "import builtins\nclass Child:\n    saved = object\nresult = builtins.property\n"
     )
-    first = CompactFlowPosition((), 0, 1, (CompactEvaluationBranch(0, 0),))
-    second = CompactFlowPosition((), 0, 2, (CompactEvaluationBranch(0, 1),))
+    first = CompactFlowPosition(branch_path=(), statement_index=0, event_index=1, evaluation_path=(CompactEvaluationBranch(parent_event_index=0, member_index=0),))
+    second = CompactFlowPosition(branch_path=(), statement_index=0, event_index=2, evaluation_path=(CompactEvaluationBranch(parent_event_index=0, member_index=1),))
     assert first.may_precede(second)
     with pytest.raises(ValueError, match="ordered cuts"):
-        SingleFlowPrefix(read.context, kernel.effects.parent_frame, second, first)
+        SingleFlowPrefix(context=read.context, frame=kernel.effects.parent_frame, position=second, after=first)

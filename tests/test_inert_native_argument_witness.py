@@ -24,8 +24,9 @@ def witness_for(environment, node=None):
     if node is None:
         node = environment.module.module.body[-1].value
     return InertNativeArgumentWitness(
-        environment, environment.source.value_reads_by_node[node]
-    )
+        environment=environment,
+        read=environment.source.value_reads_by_node[node],
+           )
 
 
 def test_witness_owns_only_original_read_and_environment_not_a_free_payload():

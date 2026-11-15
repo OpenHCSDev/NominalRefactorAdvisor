@@ -180,8 +180,9 @@ def test_global_lookup_still_reads_later_ambiguous_modules(tmp_path):
         Family, derive_content_identity=False
     )
     repository = CompactProductFlowRepository(
-        sequence, CompactModuleClassProjectionFamily.collect_modules(modules)
-    )
+        product_projections=sequence,
+        class_projections=CompactModuleClassProjectionFamily.collect_modules(modules),
+                 )
     assert repository.product_projection_for_module("shared") is None
     assert sequence.materialized_item_count == 2
     assert repository.module_flow_context_for_name("shared") is None
@@ -199,10 +200,11 @@ def test_eligibility_short_circuit_does_not_truncate_later_queries(tmp_path):
         Family, derive_content_identity=False
     )
     classes = CompactModuleClassProjectionFamily.collect_modules(modules)
-    repository = CompactProductFlowRepository(sequence, classes)
+    repository = CompactProductFlowRepository(product_projections=sequence, class_projections=classes)
     eager = CompactProductFlowRepository(
-        tuple(compact_product_flow_projection(module) for module in modules), classes
-    )
+        product_projections=tuple(compact_product_flow_projection(module) for module in modules),
+        class_projections=classes,
+            )
     assert (
         repository.product_authorities_by_symbol
         == eager.product_authorities_by_symbol

@@ -39,4 +39,4 @@ class IncrementalAnalysis:
         return AnalysisCacheStatus.combine(cache_statuses)
 
     def _empty(self) -> CachedAnalysisResult:
-        return CachedAnalysisResult([], AnalysisCacheStatus.MISS)
+        return CachedAnalysisResult(findings=[], cache_status=AnalysisCacheStatus.MISS)

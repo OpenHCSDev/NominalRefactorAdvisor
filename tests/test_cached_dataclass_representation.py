@@ -80,11 +80,17 @@ def test_shared_family_representation_is_derived_once_and_keys_are_unchanged(
     monkeypatch.setattr(CollectedFamilySchemaIdentity._representation, "func", observed)
     with ScanCache.scope():
         first = CollectedFamilyCacheContext(
-            tmp_path / "a.py", "a", "source", None
-        ).identity(BuilderCallShapeFamily)
+            path=tmp_path / "a.py",
+            module_name="a",
+            source_signature="source",
+            family_cache_dir=None,
+                ).identity(BuilderCallShapeFamily)
         second = CollectedFamilyCacheContext(
-            tmp_path / "b.py", "b", "source", None
-        ).identity(BuilderCallShapeFamily)
+            path=tmp_path / "b.py",
+            module_name="b",
+            source_signature="source",
+            family_cache_dir=None,
+                 ).identity(BuilderCallShapeFamily)
         schema = first.family_schema
         assert schema is second.family_schema
         expected = native_repr(schema)
@@ -101,8 +107,11 @@ def test_shared_family_representation_is_derived_once_and_keys_are_unchanged(
 
 def test_implementation_changes_and_transport_do_not_reuse_stale_schema_text(tmp_path):
     identity = CollectedFamilyCacheContext(
-        tmp_path / "a.py", "a", "source", None
-    ).identity(BuilderCallShapeFamily)
+        path=tmp_path / "a.py",
+        module_name="a",
+        source_signature="source",
+        family_cache_dir=None,
+               ).identity(BuilderCallShapeFamily)
     schema = identity.family_schema
     original_token = identity.cache_token
     first, *remaining = schema.implementation.sources

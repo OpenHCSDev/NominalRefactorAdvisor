@@ -185,7 +185,7 @@ def test_tuple_capture_rejects_noncanonical_source_admission(defect):
     else:
         environment = other
     with pytest.raises(ValueError):
-        SourceTupleCapture(environment, read, frozenset()).require_closed()
+        SourceTupleCapture(execution=environment, read=read, pending=frozenset()).require_closed()
 
 
 @pytest.mark.parametrize("defect", ("reordered", "duplicated", "omitted"))
@@ -204,7 +204,7 @@ def test_tuple_inputs_must_match_actual_source_elements_and_order(defect):
     # canonical outer event: geometry/outer identity alone cannot authorize it.
     object.__setattr__(production, "inputs", invalid)
     with pytest.raises(ValueError):
-        SourceTupleCapture(environment, read, frozenset()).require_closed()
+        SourceTupleCapture(execution=environment, read=read, pending=frozenset()).require_closed()
 
 
 def test_copied_tuple_ast_is_not_an_original_capture():
@@ -301,7 +301,7 @@ def test_tuple_element_capture_preserves_the_pending_alias_cycle_guard():
         for mutation in read.context.flow.mutations
         if mutation.target.bound_name == "alias"
     )
-    pending = frozenset((CompactBindingVisit(read.context, alias),))
+    pending = frozenset((CompactBindingVisit(context=read.context, mutation=alias),))
     with pytest.raises(CapturedReferenceRejection) as caught:
-        SourceTupleCapture(environment, read, pending).require_closed()
+        SourceTupleCapture(execution=environment, read=read, pending=pending).require_closed()
     assert caught.value.violation is CapturedReferenceViolation.CYCLIC_BINDING

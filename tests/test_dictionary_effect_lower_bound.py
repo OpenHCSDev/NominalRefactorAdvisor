@@ -39,7 +39,7 @@ def dictionary_effect(environment, dictionary):
 
 def occurrences_at(environment, node):
     read = environment.source.reference_reads_by_node[node]
-    prefix = SingleFlowPrefix(read.context, environment.entry.frame, read.use.position)
+    prefix = SingleFlowPrefix(context=read.context, frame=environment.entry.frame, position=read.use.position)
     return tuple(environment.effects.occurrences(environment.source, prefix))
 
 
@@ -186,9 +186,9 @@ def test_refined_overlap_keeps_half_open_and_continuation_boundaries():
     entry = dictionary_effect(environment, dictionary).earliest_application(
         environment.source, whole
     )
-    before = SingleFlowPrefix(context, environment.entry.frame, entry)
+    before = SingleFlowPrefix(context=context, frame=environment.entry.frame, position=entry)
     assert not before.may_overlap_positions(entry, whole.exit)
-    during = SingleFlowPrefix(context, environment.entry.frame, whole.exit)
+    during = SingleFlowPrefix(context=context, frame=environment.entry.frame, position=whole.exit)
     assert during.may_overlap_positions(entry, whole.exit)
     completed = SingleFlowPrefix(
         context, environment.entry.frame, None, after=whole.exit

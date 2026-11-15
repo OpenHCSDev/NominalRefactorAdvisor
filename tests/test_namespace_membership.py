@@ -66,8 +66,11 @@ def test_initial_presence_does_not_require_the_values_identity():
     standard = execution("result = globals()\n")
     unknown = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
     entry = SourceModuleEntryPremise(
-        standard.source, standard.initial, {"unknown": unknown}, standard.entry.builtins
-    )
+        source=standard.source,
+        native_island=standard.initial,
+        bindings={"unknown": unknown},
+        builtins=standard.entry.builtins,
+            )
     environment = SourceModuleExecution(entry)
     assert observe(environment) == {"unknown"}
     assert entry.member("unknown") is unknown
@@ -191,8 +194,11 @@ def test_binding_directives_do_not_create_runtime_value_obligations(source):
 def test_namespace_from_a_different_entry_cannot_supply_membership():
     environment = execution("result = globals()\n")
     other = SourceModuleEntryPremise(
-        environment.source, environment.initial, {}, environment.entry.builtins
-    )
+        source=environment.source,
+        native_island=environment.initial,
+        bindings={},
+        builtins=environment.entry.builtins,
+            )
     read = environment.source.value_reads_by_node[
         environment.module.module.body[0].value
     ]
@@ -278,11 +284,11 @@ def test_attribute_consumers_use_the_receivers_declared_namespace(operation):
     context = environment.entry.context
     prefix = environment.required_prefix(context, mutation.position)
     query = CapturedSlotQuery(
-        environment.initial.namespace_for_storage(vars(builtins)),
-        "marker",
-        prefix,
-        frozenset(),
-    )
+        namespace=environment.initial.namespace_for_storage(vars(builtins)),
+        key="marker",
+        prefix=prefix,
+        pending=frozenset(),
+            )
     capture = RestrictedAttributeCapture(builtins)
     with pytest.raises(ValueError, match="receiver-owned namespace restriction"):
         if operation == "read":

@@ -2769,13 +2769,13 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                             "Generated class frame lacks its original function creation"
                         )
                     self.frame_origins[identity] = GeneratedClassNativeFrameOrigin(
-                        execution,
-                        NativeCaptureSite(
+                        execution=execution,
+                        activation=NativeCaptureSite(
                             frame=frame.owner.frame_origin,
                             instruction_offset=frame.activation.offset,
                         ),
-                        frame.bindings,
-                    )
+                        bindings=frame.bindings,
+                                                   )
                 else:
                     self.frame_origins[identity] = OpenNativeFrameOrigin(
                         compilation=compilation,

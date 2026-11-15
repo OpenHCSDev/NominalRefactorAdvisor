@@ -408,7 +408,7 @@ def test_construction_authority_materialization_indexes_each_method_once(
         authorities=graph.authorities,
         projection_construction_type_names=frozenset({"StateFactory"}),
     )
-    construction = PresentationAuthorityConstruction("StateFactory", ())
+    construction = PresentationAuthorityConstruction(type_name="StateFactory", field_tokens=())
 
     for _ in range(5):
         assert resolver.construction_type_materializes_authority(
@@ -646,7 +646,7 @@ def test_semantic_graph_overlay_remaps_line_shifted_projection_identity(
 
     module_path.write_text(f"\n{source}", encoding="utf-8", newline="")
     modules = tuple(parse_python_modules(tmp_path))
-    overlay = SemanticDescentGraphModuleOverlay(base_graph, modules, modules)
+    overlay = SemanticDescentGraphModuleOverlay(base_graph=base_graph, modules=modules, changed_modules=modules)
     updated_graph = overlay.graph()
     updated_projection = next(
         projection
@@ -5527,9 +5527,9 @@ def test_semantic_descent_treats_module_constructor_assignment_as_descent(
     )
     assert decoder_projection.projection_constructions == (
         PresentationAuthorityConstruction(
-            "Decoder",
-            ("projection", "type_label", "validation_error"),
-            ("Decoder",),
+            type_name="Decoder",
+            field_tokens=("projection", "type_label", "validation_error"),
+            call_target_parts=("Decoder",),
         ),
     )
 

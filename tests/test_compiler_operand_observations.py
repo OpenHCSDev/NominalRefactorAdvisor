@@ -47,12 +47,12 @@ def test_implicit_reads_share_one_statement_but_not_the_expression_index():
         "position",
     }
     for use in uses:
-        read = CompactFlowValue(entry.context, use)
+        read = CompactFlowValue(context=entry.context, use=use)
         operation = env.source.value_operation(read)
         assert operation.node is node
         assert operation.event is use
         with pytest.raises(ValueError, match="original operation"):
-            env.source.value_operation(CompactFlowValue(entry.context, copy(use)))
+            env.source.value_operation(CompactFlowValue(context=entry.context, use=copy(use)))
 
 
 @pytest.mark.native_proof
@@ -76,7 +76,7 @@ def test_roles_select_actual_native_operands_and_survive_transport():
 def test_implicit_origin_requires_the_selected_original_operand_not_just_a_span(role):
     env, entry, write = fixture()
     use = (write.value_use, write.target.receiver_use, write.target.index_use)[role]
-    read = CompactFlowValue(entry.context, use)
+    read = CompactFlowValue(context=entry.context, use=use)
     operand = use.native_operand(env.source, read)
     use.require_native_origin(env.source, read, operand)
     with pytest.raises(ValueError, match="original native operand"):
@@ -86,7 +86,7 @@ def test_implicit_origin_requires_the_selected_original_operand_not_just_a_span(
         other
     ]
     other_operand = other_use.native_operand(
-        env.source, CompactFlowValue(entry.context, other_use)
+        env.source, CompactFlowValue(context=entry.context, use=other_use)
     )
     with pytest.raises(ValueError, match="original native operand"):
         use.require_native_origin(env.source, read, other_operand)
@@ -105,7 +105,7 @@ def test_compiler_origin_cannot_be_relabelled_as_an_arbitrary_source_expression(
     use = write.target.index_use
     object.__setattr__(use, "value", ast.Constant(value="item"))
     with pytest.raises(ValueError, match="declared input role"):
-        env.source.value_operation(CompactFlowValue(entry.context, use))
+        env.source.value_operation(CompactFlowValue(context=entry.context, use=use))
 
 
 @pytest.mark.native_proof

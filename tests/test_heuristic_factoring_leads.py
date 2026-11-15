@@ -15,7 +15,7 @@ from nominal_refactor_advisor.patterns import PatternId
 
 
 def _findings(source: str, detector):
-    module = SourceModule(Path("pkg/source.py"), "pkg.source", source).parse()
+    module = SourceModule(path=Path("pkg/source.py"), module_name="pkg.source", source=source).parse()
     return detector().detect(ParsedModuleSet.of([module]), DetectorConfig())
 
 

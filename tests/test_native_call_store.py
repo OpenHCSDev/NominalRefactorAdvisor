@@ -134,7 +134,7 @@ def test_callee_is_its_original_reference_read_not_a_synthetic_value_event():
     with pytest.raises(ValueError):
         replace(read, use=copy(read.use)).source_operation(env.source)
     store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
-    join = SourceNativeOperandJoin(store, read)
+    join = SourceNativeOperandJoin(parent=store, read=read)
     join.require_join(store.production.value.callee)
     with pytest.raises(ValueError, match="original production"):
         join.require_join(copy(store.production.value.callee))
@@ -184,7 +184,7 @@ def test_backend_declares_its_call_order_and_checks_original_preparation():
     if prelude:
         with pytest.raises(ValueError):
             backend.require_invocation([prelude[0]._replace(arg=True)], call)
-    marker = NativeCallMarker(0, None)
+    marker = NativeCallMarker(instruction_offset=0, source_span=None)
     with pytest.raises(ValueError):
         backend.call_operand_order.split((marker, marker))
     assert set(NativeCallOperandOrder) == {

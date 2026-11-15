@@ -432,6 +432,8 @@ class CaptureOutcome(ABC):
     unproved state up unchanged.
     """
 
+    is_open: bool = False
+
     def and_then(
         self, step: Callable[[Self], _CaptureStepT]
     ) -> _CaptureStepT | OpenCapturedReference:
@@ -535,6 +537,7 @@ class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
 
 @dataclass(frozen=True)
 class OpenCapturedReference(OpaqueCapturedObjectOperations, CaptureOutcome):
+    is_open: bool = field(default=True, init=False, repr=False, compare=False)
     violation: CapturedReferenceViolation
     mutation: CompactMutation | None = None
     cause: ValueError | None = field(default=None, compare=False, repr=False)
@@ -655,7 +658,7 @@ class CapturedNativeObject(NativeTypeCapture):
         namespace = self.object_namespace(initial)
         return (
             self.dictionary_namespace(initial)
-            if isinstance(namespace, OpenCapturedReference)
+            if namespace.is_open
             else namespace
         )
 
@@ -739,7 +742,7 @@ class CapturedNativeObject(NativeTypeCapture):
         namespace = self.attribute_namespace(
             resolver.initial, mutation.target.attribute_name
         )
-        if isinstance(namespace, OpenCapturedReference):
+        if namespace.is_open:
             return OpenCapturedReference(
                 violation=CapturedReferenceViolation.UNPROVED_EFFECTS,
                 mutation=mutation,
@@ -1109,7 +1112,7 @@ class InitialNativeFrame:
         tuple[NamespaceEvidenceABC | OpenCapturedReference, ...] | OpenCapturedReference
     ):
         binding_namespace = self.binding_namespace(context, name)
-        if isinstance(binding_namespace, OpenCapturedReference):
+        if binding_namespace.is_open:
             return binding_namespace
         if context.flow.local_binding_hides_outer_lookup(name):
             return (binding_namespace,)
@@ -1445,7 +1448,7 @@ class AdmittedExecutionPrefixABC(AdmittedEvidenceABC):
             return
         for interval in reversed(self.intervals):
             destination = interval.frame.binding_namespace(interval.context, name)
-            if isinstance(destination, OpenCapturedReference):
+            if destination.is_open:
                 yield destination
                 continue
             if destination is not namespace:
@@ -1843,7 +1846,7 @@ class InitialNativeIsland:
     def require_frame(self, frame: InitialNativeFrame) -> None:
         """Validate exact evidence without demanding unused unresolved fallbacks."""
         for namespace in frame.namespace_values:
-            if not isinstance(namespace, OpenCapturedReference):
+            if not namespace.is_open:
                 namespace.require_admitted(self)
 
     def __post_init__(
@@ -1986,7 +1989,7 @@ class CapturedSlotQuery:
         """Select lexical installation and subsequent writes under this query's law."""
         self.namespace.require_key(self.key)
         for candidate in self.prefix.binding_sources(self.namespace, self.key):
-            if isinstance(candidate, OpenCapturedReference):
+            if candidate.is_open:
                 return candidate
             source, binding = candidate
             if binding.mutation is not None:
@@ -2084,7 +2087,7 @@ class CapturedSlotQuery:
         self, resolver: CapturedReferenceKernel
     ) -> CapturedReferenceResolution | None:
         for occurrence in self.mutations_after_installation():
-            if isinstance(occurrence, OpenCapturedReference):
+            if occurrence.is_open:
                 return occurrence
             mutation = occurrence.mutation
             visit = CompactBindingVisit(context=occurrence.source.context, mutation=mutation)
@@ -2394,7 +2397,7 @@ class CapturedReferenceKernel(
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
         for namespace in namespaces:
-            if isinstance(namespace, OpenCapturedReference):
+            if namespace.is_open:
                 return namespace
             result = self._namespace_resolution(namespace, name, prefix, pending)
             if result is not None:
@@ -2485,7 +2488,7 @@ class CapturedReferenceKernel(
         position: CompactFlowPosition | None,
     ) -> AdmittedExecutionPrefixABC | OpenCapturedReference:
         prefix = self.effects.admit(context, position)
-        if not isinstance(prefix, OpenCapturedReference):
+        if not prefix.is_open:
             prefix.require_admitted(self.initial)
             if (
                 prefix.endpoint.context is not context

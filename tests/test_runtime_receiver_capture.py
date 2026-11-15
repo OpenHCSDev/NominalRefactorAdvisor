@@ -68,8 +68,9 @@ def test_source_capture_proves_plain_receiver_while_compact_queries_stay_open(
         participants
     ) == {f"receiver.{name}"}
     compact = CompactProductFlowRepository(
-        repository.product_projections, repository.class_projections
-    )
+        product_projections=repository.product_projections,
+        class_projections=repository.class_projections,
+              )
     assert (
         mutation.resolve(compact, context).candidate_symbols_within(participants)
         == participants
@@ -125,12 +126,12 @@ def test_source_capture_requires_actual_context_and_original_use():
     repository = SourceProductFlowRepository.from_modules((parsed,))
     context = repository.module_flow_contexts["receiver"]
     use = context.flow.mutations[-1].target.receiver_use
-    repository.captured_value(CompactFlowValue(context, use)).require_closed()
+    repository.captured_value(CompactFlowValue(context=context, use=use)).require_closed()
     with pytest.raises(ValueError, match="unique original operation"):
-        repository.captured_value(CompactFlowValue(context, replace(use)))
+        repository.captured_value(CompactFlowValue(context=context, use=replace(use)))
     other = SourceProductFlowRepository.from_modules((parsed,))
     with pytest.raises(ValueError, match="unique original operation"):
-        other.captured_value(CompactFlowValue(context, use))
+        other.captured_value(CompactFlowValue(context=context, use=use))
 
 
 def test_duplicate_module_names_do_not_select_a_runtime_activation():
@@ -138,7 +139,7 @@ def test_duplicate_module_names_do_not_select_a_runtime_activation():
     second = replace(first, path=Path("/elsewhere/receiver.py"))
     repository = SourceProductFlowRepository.from_modules((first, second))
     context = repository.sources[0].compact.flow_contexts[0]
-    value = CompactFlowValue(context, context.flow.mutations[-1].target.receiver_use)
+    value = CompactFlowValue(context=context, use=context.flow.mutations[-1].target.receiver_use)
     with pytest.raises(ValueError, match="unique original source owner"):
         repository.captured_value(value)
 
@@ -167,8 +168,9 @@ def test_only_declared_compiler_annotation_storage_excludes_compact_receivers(
     subprocess.run([sys.executable, "-c", source], check=True)
     repository = SourceProductFlowRepository.from_modules((module(source),))
     compact = CompactProductFlowRepository(
-        repository.product_projections, repository.class_projections
-    )
+        product_projections=repository.product_projections,
+        class_projections=repository.class_projections,
+              )
     ((context, mutation),) = (
         (context, mutation)
         for context in repository.flow_contexts
@@ -177,7 +179,7 @@ def test_only_declared_compiler_annotation_storage_excludes_compact_receivers(
     )
     participants = frozenset(("receiver.Owner", "receiver.Other"))
     captured = repository.captured_value(
-        CompactFlowValue(context, mutation.target.receiver_use)
+        CompactFlowValue(context=context, use=mutation.target.receiver_use)
     )
     captured.require_closed()
     assert captured.native_type is dict

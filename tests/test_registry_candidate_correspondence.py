@@ -44,7 +44,7 @@ def _convert(tmp_path, *, change_body=False):
         operations += (
             PatchTargetOperation(
                 target=SourceRewriteTarget(file_path=path, qualname="Alpha.kind"),
-                replacements=(SourceTextReplacement("return object", "return type"),),
+                replacements=(SourceTextReplacement(old_source="return object", new_source="return type"),),
             ),
         )
     simulation = CodemodPlanDocument(
@@ -144,7 +144,7 @@ def test_actual_later_rename_refuses_old_class_selector_even_with_retained_body(
                     PatchTargetOperation(
                         target=SourceRewriteTarget(file_path=path, qualname="Alpha"),
                         replacements=(
-                            SourceTextReplacement("class Alpha(", "class Gamma("),
+                            SourceTextReplacement(old_source="class Alpha(", new_source="class Gamma("),
                         ),
                     ),
                 ),

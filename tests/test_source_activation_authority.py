@@ -264,7 +264,7 @@ def test_definition_activation_projection_does_not_activate_its_body(definition)
             declared_operation_conditions=(DeclaredOperationCompletion(operation),),
         )
     )
-    owner = SourceDefinitionEntry(environment, node)
+    owner = SourceDefinitionEntry(execution=environment, node=node)
     environment.require_operation_completion(owner)
     assert owner.activation_context is environment.entry.context
     assert owner.activation_position == operation.event.target.header_position
@@ -287,7 +287,7 @@ def test_class_and_function_cached_definitions_cannot_exchange_source_nodes(swap
             ),
         )
     )
-    owner = SourceDefinitionEntry(environment, nodes[swapped])
+    owner = SourceDefinitionEntry(execution=environment, node=nodes[swapped])
     _ = owner.operation
     _ = owner.definition
     _ = owner.context
@@ -315,8 +315,10 @@ def test_condition_requires_original_declared_cut_and_frame(corruption):
         substituted = replace(
             original,
             frame=InitialNativeFrame(
-                original.frame.locals, foreign.entry, original.frame.builtins
-            ),
+                locals=original.frame.locals,
+                globals=foreign.entry,
+                builtins=original.frame.builtins,
+                  ),
         )
     object.__setattr__(entry, "native_frame_prefix", substituted)
     with pytest.raises(ValueError, match="original activation cut"):

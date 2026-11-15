@@ -108,8 +108,8 @@ def test_native_roots_with_one_name_do_not_overwrite_identity() -> None:
     second = type("Root", (), {"__module__": "same"})
     context = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(()))
     with pytest.raises(ValueError):
-        _ = SourceNativeClassMro(context, (first, second)).native_declarations
-    indexed = SourceNativeClassMro(context, (first, first)).native_declarations
+        _ = SourceNativeClassMro(context=context, native_roots=(first, second)).native_declarations
+    indexed = SourceNativeClassMro(context=context, native_roots=(first, first)).native_declarations
     assert indexed["same.Root"].declaration is first
 
 

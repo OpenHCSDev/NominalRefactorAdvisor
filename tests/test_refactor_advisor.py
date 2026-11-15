@@ -793,9 +793,9 @@ def test_planned_rewrite_selection_deduplicates_exact_rewrites_and_rejects_overl
     assert json_report_object(first_contributor) == {
         **json_report_object(
             SourceEditOrigin(
-                "first-recipe",
-                "FirstOperation",
-                0,
+                recipe_id="first-recipe",
+                plan_item_declaration="FirstOperation",
+                plan_item_index=0,
             )
         ),
         "file_path": module_path.as_posix(),
@@ -3719,7 +3719,7 @@ def test_carrier_replacement_refuses_a_use_it_cannot_rewrite(tmp_path: Path, con
     operation = ReplaceFieldsWithCarrierOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Candidate"),
         carrier_field_declaration="stats: Stats",
-        field_projections=(CarrierFieldProjection("count", "count"),),
+        field_projections=(CarrierFieldProjection(source_field="count", carrier_attribute="count"),),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError):
@@ -3731,8 +3731,8 @@ def test_carrier_field_projection_rejects_ambiguous_source_fields() -> None:
         target=SourceRewriteTarget(qualname="Candidate", file_path="pkg/mod.py"),
         carrier_field_declaration="stats: Stats",
         field_projections=(
-            CarrierFieldProjection("count", "count"),
-            CarrierFieldProjection("count", "total"),
+            CarrierFieldProjection(source_field="count", carrier_attribute="count"),
+            CarrierFieldProjection(source_field="count", carrier_attribute="total"),
         ),
     )
 
@@ -6793,7 +6793,7 @@ def test_refactor_recipe_converts_literal_dispatch_to_polymorphism(
     assert len(simulation.recipe.guard_suite.rules) == 1
     dispatch_guard = simulation.recipe.guard_suite.rules[0]
     assert dispatch_guard.scopes == (
-        ArchitectureGuardTargetScope("pkg/mod.py", "render"),
+        ArchitectureGuardTargetScope(file_path="pkg/mod.py", target_qualname="render"),
     )
     assert dispatch_guard.constraints == (
         ForbiddenDispatchArchitectureGuardConstraint(("kind",)),
@@ -8018,7 +8018,7 @@ def test_a_one_line_import_past_its_width_is_parenthesized(tmp_path: Path) -> No
     (tmp_path / "pyproject.toml").write_text("[tool.ruff]\nline-length = 30\n")
     statement = ast.parse("def f():\n    from .a import First, Second\n").body[0].body[0]
     narrow = ImportLayout.of(statement, (tmp_path / "m.py").as_posix())
-    assert ImportFromSource("pkg.destination", statement.names, narrow).source == (
+    assert ImportFromSource(module_name="pkg.destination", aliases=statement.names, layout=narrow).source == (
         "from pkg.destination import (\n    First,\n    Second,\n)\n"
     )
 
@@ -11163,7 +11163,7 @@ def test_architecture_guard_scope_resolution_fails_closed(
                     constraints=(
                         ForbiddenDispatchArchitectureGuardConstraint(("value",)),
                     ),
-                    scopes=(ArchitectureGuardTargetScope(guard_path, target_qualname),),
+                    scopes=(ArchitectureGuardTargetScope(file_path=guard_path, target_qualname=target_qualname),),
                 ),
             ),
         )
@@ -11757,7 +11757,7 @@ def test_ownership_closure_recovers_transitive_projection_owner() -> None:
     )
 
     assert (
-        OwnershipProjection("Module", "parser", "ParsedModule") in closure.projections
+        OwnershipProjection(owner_name="Module", projection_name="parser", target_name="ParsedModule") in closure.projections
     )
     assert closure.transitive_targets("Module") == frozenset(
         {"ParsedModule", "PathSpec"}
@@ -11775,12 +11775,12 @@ def test_ownership_closure_recovers_transitive_projection_owner() -> None:
 def test_ownership_closure_derives_postdominators_boundaries_and_diagrams() -> None:
     closure = OwnershipClosure(
         (
-            OwnershipProjection("Root", "left", "Prepare"),
-            OwnershipProjection("Root", "right", "Validate"),
-            OwnershipProjection("Prepare", "finish", "Commit"),
-            OwnershipProjection("Validate", "finish", "Commit"),
-            OwnershipProjection("Commit", "emit", "Artifact"),
-            OwnershipProjection("Commit", "log", "Audit"),
+            OwnershipProjection(owner_name="Root", projection_name="left", target_name="Prepare"),
+            OwnershipProjection(owner_name="Root", projection_name="right", target_name="Validate"),
+            OwnershipProjection(owner_name="Prepare", projection_name="finish", target_name="Commit"),
+            OwnershipProjection(owner_name="Validate", projection_name="finish", target_name="Commit"),
+            OwnershipProjection(owner_name="Commit", projection_name="emit", target_name="Artifact"),
+            OwnershipProjection(owner_name="Commit", projection_name="log", target_name="Audit"),
         )
     )
 
@@ -11791,8 +11791,8 @@ def test_ownership_closure_derives_postdominators_boundaries_and_diagrams() -> N
         ("Root", "Validate", "Commit"),
     )
     assert closure.boundary_edges("Root", ("Commit",)) == (
-        OwnershipProjection("Commit", "emit", "Artifact"),
-        OwnershipProjection("Commit", "log", "Audit"),
+        OwnershipProjection(owner_name="Commit", projection_name="emit", target_name="Artifact"),
+        OwnershipProjection(owner_name="Commit", projection_name="log", target_name="Audit"),
     )
 
 
@@ -17414,14 +17414,14 @@ def test_codemod_execution_modes_share_one_typed_plan_authority(
 
     preflight_presenter = Mock(spec=CodemodPlanExecutionPresenter)
     preflight_exit_code = CodemodPlanExecutionRequest(
-        sequence,
-        CodemodExecutionMode.PREFLIGHT,
-    ).execute(snapshot, preflight_presenter)
+        sequence=sequence,
+        mode=CodemodExecutionMode.PREFLIGHT,
+                          ).execute(snapshot, preflight_presenter)
     simulation_presenter = Mock(spec=CodemodPlanExecutionPresenter)
     simulation_request = CodemodPlanExecutionRequest(
-        sequence,
-        CodemodExecutionMode.SIMULATE,
-    )
+        sequence=sequence,
+        mode=CodemodExecutionMode.SIMULATE,
+                )
     simulation_exit_code = simulation_request.execute(snapshot, simulation_presenter)
 
     preflight_report = preflight_presenter.present_preflight.call_args.args[0]
@@ -17439,9 +17439,9 @@ def test_codemod_execution_modes_share_one_typed_plan_authority(
 
     apply_presenter = Mock(spec=CodemodPlanExecutionPresenter)
     apply_exit_code = CodemodPlanExecutionRequest(
-        sequence,
-        CodemodExecutionMode.APPLY,
-    ).execute(snapshot, apply_presenter)
+        sequence=sequence,
+        mode=CodemodExecutionMode.APPLY,
+                      ).execute(snapshot, apply_presenter)
 
     applied_simulation = apply_presenter.present_simulation.call_args.args[0]
     assert apply_exit_code == 0
@@ -17486,9 +17486,9 @@ def test_codemod_apply_execution_blocks_dirty_guard_without_mutation(
 
     presenter = Mock(spec=CodemodPlanExecutionPresenter)
     exit_code = CodemodPlanExecutionRequest(
-        CodemodPlanSequence.from_document(document),
-        CodemodExecutionMode.APPLY,
-    ).execute(snapshot, presenter)
+        sequence=CodemodPlanSequence.from_document(document),
+        mode=CodemodExecutionMode.APPLY,
+                ).execute(snapshot, presenter)
 
     sequence_simulation = presenter.present_simulation.call_args.args[0]
     assert sequence_simulation.is_clean is False
@@ -17525,9 +17525,9 @@ def test_codemod_simulation_presents_operation_preflight_failure_report(
 
     presenter = Mock(spec=CodemodPlanExecutionPresenter)
     exit_code = CodemodPlanExecutionRequest(
-        sequence,
-        CodemodExecutionMode.SIMULATE,
-    ).execute(snapshot, presenter)
+        sequence=sequence,
+        mode=CodemodExecutionMode.SIMULATE,
+                ).execute(snapshot, presenter)
 
     error = presenter.present_operation_preflight_failure.call_args.args[0]
     assert error.report.operation == "move_symbols_to_module"
@@ -17567,9 +17567,9 @@ def test_codemod_simulation_reports_every_refused_recipe_in_one_run(
 
     presenter = Mock(spec=CodemodPlanExecutionPresenter)
     exit_code = CodemodPlanExecutionRequest(
-        sequence,
-        CodemodExecutionMode.SIMULATE,
-    ).execute(snapshot, presenter)
+        sequence=sequence,
+        mode=CodemodExecutionMode.SIMULATE,
+                         ).execute(snapshot, presenter)
 
     error = presenter.present_operation_preflight_failure.call_args.args[0]
     assert [report.operation for report in error.reports] == ["move_symbols_to_module"] * 2
@@ -27632,7 +27632,7 @@ def test_carrier_replacement_refuses_an_abstract_carrier_with_members(tmp_path: 
     operation = ReplaceFieldsWithCarrierOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Imported"),
         carrier_field_declaration="conversation: Conversation",
-        field_projections=(CarrierFieldProjection("count", "count"),),
+        field_projections=(CarrierFieldProjection(source_field="count", carrier_attribute="count"),),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="cannot be decoded back"):
@@ -27653,7 +27653,7 @@ def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_pat
     operation = ReplaceFieldsWithCarrierOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Reply"),
         carrier_field_declaration="stats: Stats",
-        field_projections=(CarrierFieldProjection("count", "count"),),
+        field_projections=(CarrierFieldProjection(source_field="count", carrier_attribute="count"),),
     )
     (tmp_path / "pyproject.toml").write_text(
         '[tool.nominal-refactor-advisor]\ndurable-bases = ["pkg.mod:DurableTables"]\n'

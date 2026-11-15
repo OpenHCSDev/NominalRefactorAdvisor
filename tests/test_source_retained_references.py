@@ -103,7 +103,7 @@ def test_definition_identity_includes_the_actual_execution(declaration):
     with pytest.raises(ValueError, match="another execution admission"):
         one.require_release_from(
             second.kernel,
-            CapturedSlotQuery(first.entry, "Original", prefix, frozenset()),
+            CapturedSlotQuery(namespace=first.entry, key="Original", prefix=prefix, pending=frozenset()),
         )
 
 

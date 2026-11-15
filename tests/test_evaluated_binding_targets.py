@@ -128,7 +128,7 @@ def test_unlinked_multi_target_assignment_remains_open(assignment):
 
 def test_attribute_assignment_retains_rhs_without_claiming_a_lexical_destination():
     module = execution("target.slot = result\n").module
-    collector, body = _ProductFlowCollection(module, _SourceFlowCollector).collectors[0]
+    collector, body = _ProductFlowCollection(parsed_module=module, collector_type=_SourceFlowCollector).collectors[0]
     collector.collect(body)
     assert isinstance(collector.mutations[-1], CompactEvaluatedAssignment)
     assert collector.mutations[-1].result is collector.evaluated_results[0]
@@ -187,7 +187,7 @@ def test_equal_replaced_result_receipt_cannot_authenticate_original_target():
 
 def test_target_factory_failure_restores_original_collector_and_mutation_kind():
     module = execution("selected = source\n").module
-    collector, _ = _ProductFlowCollection(module, _SourceFlowCollector).collectors[0]
+    collector, _ = _ProductFlowCollection(parsed_module=module, collector_type=_SourceFlowCollector).collectors[0]
     statement = module.module.body[0]
     result = collector._capture_result(
         statement.value,

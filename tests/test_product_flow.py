@@ -68,15 +68,15 @@ def _value(name: str) -> LexicalValueReference:
             "saved = result.callback",
             (
                 LexicalValueReference("result"),
-                LexicalValueReference("result", ("callback",)),
+                LexicalValueReference(root_name="result", attribute_path=("callback",)),
             ),
         ),
         (
             "saved = result.child.callback",
             (
                 LexicalValueReference("result"),
-                LexicalValueReference("result", ("child",)),
-                LexicalValueReference("result", ("child", "callback")),
+                LexicalValueReference(root_name="result", attribute_path=("child",)),
+                LexicalValueReference(root_name="result", attribute_path=("child", "callback")),
             ),
         ),
         (
@@ -201,7 +201,7 @@ def _contains_ast(value: object) -> bool:
 def test_lexical_value_reference_accepts_only_exact_name_attribute_chains() -> None:
     assert LexicalValueReference.from_expression(
         ast.parse("request.key.value").body[0].value
-    ) == LexicalValueReference("request", ("key", "value"))
+    ) == LexicalValueReference(root_name="request", attribute_path=("key", "value"))
     assert (
         LexicalValueReference.from_expression(ast.parse("request[0]").body[0].value)
         is None
@@ -234,8 +234,8 @@ def test_function_signature_owns_full_python_argument_binding() -> None:
             CompactCallArgument(_value("third")),
         ),
         (
-            CompactKeywordArgument("c", _value("required")),
-            CompactKeywordArgument("extra", _value("extension")),
+            CompactKeywordArgument(name="c", value=_value("required")),
+            CompactKeywordArgument(name="extra", value=_value("extension")),
         ),
     )
 
@@ -351,7 +351,7 @@ def test_bound_attribute_result_requires_unchanged_binding_and_closed_slot_write
     )
     flow = next(item for item in projection.flows if item.owner.qualname == "caller")
     make, consume = flow.calls
-    reference = LexicalValueReference("owner", ("child", "result"))
+    reference = LexicalValueReference(root_name="owner", attribute_path=("child", "result"))
     assert flow.bound_call_result_for(reference, consume.position) == (
         make if retains_result else None
     )
@@ -369,14 +369,14 @@ def test_function_signature_rejects_every_non_exact_binding_boundary() -> None:
                 CompactCallArgument(_value("a")),
                 CompactCallArgument(_value("extra")),
             ),
-            (CompactKeywordArgument("b", _value("b")),),
+            (CompactKeywordArgument(name="b", value=_value("b")),),
         ).violation
         is CompactCallBindingViolation.TOO_MANY_POSITIONAL_ARGUMENTS
     )
     assert (
         signature.bind(
             (CompactCallArgument(_value("a")),),
-            (CompactKeywordArgument("unknown", _value("b")),),
+            (CompactKeywordArgument(name="unknown", value=_value("b")),),
         ).violation
         is CompactCallBindingViolation.UNEXPECTED_KEYWORD_ARGUMENT
     )
@@ -384,8 +384,8 @@ def test_function_signature_rejects_every_non_exact_binding_boundary() -> None:
         signature.bind(
             (CompactCallArgument(_value("a")),),
             (
-                CompactKeywordArgument("a", _value("duplicate")),
-                CompactKeywordArgument("b", _value("b")),
+                CompactKeywordArgument(name="a", value=_value("duplicate")),
+                CompactKeywordArgument(name="b", value=_value("b")),
             ),
         ).violation
         is CompactCallBindingViolation.DUPLICATE_ARGUMENT
@@ -453,7 +453,7 @@ def test_product_flow_projection_preserves_complete_construction_forwarding_cont
         ("left", "right"), consumer_call.arguments.values, strict=True
     ):
         assert binding.argument_for(name).values[0] is supplied
-        assert supplied.lexical_reference == LexicalValueReference("cache_key", (name,))
+        assert supplied.lexical_reference == LexicalValueReference(root_name="cache_key", attribute_path=(name,))
     module_flow = projection.flows[0]
     assert [
         use.target.terminal_name for use in module_flow.callable_reference_uses
@@ -545,12 +545,12 @@ def test_product_flow_resolves_straight_line_alias_origins_and_attribute_suffixe
     call = wrapper.calls[0]
 
     resolution = wrapper.value_origin_for(
-        LexicalValueReference("second", ("value",)),
+        LexicalValueReference(root_name="second", attribute_path=("value",)),
         call.position,
     )
 
     assert isinstance(resolution, ExactCompactValueOrigin)
-    assert resolution.exact_origin == LexicalValueReference("source", ("value",))
+    assert resolution.exact_origin == LexicalValueReference(root_name="source", attribute_path=("value",))
     assert tuple(
         mutation.reference.root_name for mutation in resolution.alias_chain
     ) == (
@@ -746,8 +746,8 @@ def test_function_flow_ownership_requires_a_declaration() -> None:
         CompactFlowOwner()
     for kind in (Function, ClassBody):
         with pytest.raises(ValueError, match="owned by their declaration"):
-            CompactNamespaceFlowOwner(kind, "Owner")
-    owner = CompactNamespaceFlowOwner(Module, "")
+            CompactNamespaceFlowOwner(kind=kind, qualname="Owner")
+    owner = CompactNamespaceFlowOwner(kind=Module, qualname="")
     assert owner.declaration is None
     assert owner.kind is Module
     assert owner.qualname == ""

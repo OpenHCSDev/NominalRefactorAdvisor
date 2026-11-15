@@ -47,7 +47,7 @@ def test_original_module_setup_supplies_both_read_and_complete_membership(future
     result, prefix = result_at_read(environment)
     assert isinstance(result, SourceModuleAnnotationNamespace)
     assert result is environment.initial_contents.annotation_namespace
-    contents = NamespaceMemberInventory(environment.kernel, result, prefix)
+    contents = NamespaceMemberInventory(kernel=environment.kernel, namespace=result, prefix=prefix)
     assert contents.names == {"value"}
     value = contents.require_member("value")
     if future:
@@ -56,7 +56,7 @@ def test_original_module_setup_supplies_both_read_and_complete_membership(future
         value.require_native_identity(NativeDeclaration(int))
     assert (
         "__annotations__"
-        in NamespaceMemberInventory(environment.kernel, environment.entry, prefix).names
+        in NamespaceMemberInventory(kernel=environment.kernel, namespace=environment.entry, prefix=prefix).names
     )
     assert dict(environment.entry.initial_entries) == original_entries
     assert "__annotations__" not in original_entries
@@ -118,7 +118,7 @@ def test_source_reassignment_uses_normal_storage_instead_of_replaying_setup():
     environment = execution(source)
     result, prefix = result_at_read(environment)
     assert result is not environment.initial_contents.annotation_namespace
-    assert NamespaceMemberInventory(environment.kernel, result, prefix).names == {
+    assert NamespaceMemberInventory(kernel=environment.kernel, namespace=result, prefix=prefix).names == {
         "value"
     }
 
@@ -164,7 +164,7 @@ def test_dictionary_release_uses_current_contents_for_ordinary_source_dictionari
     )
     environment = execution(source)
     result, prefix = result_at_read(environment)
-    assert NamespaceMemberInventory(environment.kernel, result, prefix).names == set()
+    assert NamespaceMemberInventory(kernel=environment.kernel, namespace=result, prefix=prefix).names == set()
 
 
 def test_dictionary_release_does_not_use_empty_birth_after_storing_a_finalizer():

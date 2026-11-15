@@ -90,7 +90,7 @@ def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
     tmp_path: Path,
 ) -> None:
     _write_source(tmp_path, "pkg/complete.py", _base_source())
-    search = RefactorSearch((tmp_path,), DetectorConfig(), SearchBudget(depth=2, width=1))
+    search = RefactorSearch(roots=(tmp_path,), config=DetectorConfig(), budget=SearchBudget(depth=2, width=1))
     scan = CodemodWorkflowScan.parsed(
         (tmp_path,),
         DetectorConfig(),
@@ -1593,8 +1593,9 @@ def test_self_host_coherence_cache_key_does_not_cross_its_public_owner() -> None
     )
     assert isinstance(write.target, CompactItemTarget)
     assert write.target.receiver_use.lexical_reference == LexicalValueReference(
-        "self", ("_coherence_cohorts_cache",)
-    )
+        root_name="self",
+        attribute_path=("_coherence_cohorts_cache",),
+                                                          )
     assert module.source.splitlines()[write.line - 1].strip() == (
         "self._coherence_cohorts_cache[cache_key] = cohorts"
     )

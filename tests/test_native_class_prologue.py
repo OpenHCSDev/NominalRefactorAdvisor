@@ -649,7 +649,7 @@ class _BindingResolver(NativeBindingTransferResolverABC):
 def test_primitive_owns_actual_resolution_without_destination_mirror(
     operation, expected
 ):
-    binding = NativeBindingTransfer(operation, "selected", 12, 0)
+    binding = NativeBindingTransfer(operation=operation, name="selected", instruction_offset=12, operand_index=0)
     result, retained_binding = binding.resolve(_BindingResolver())
     assert result == expected
     assert retained_binding is binding

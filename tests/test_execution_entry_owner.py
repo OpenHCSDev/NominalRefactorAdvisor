@@ -39,11 +39,11 @@ def supplied_entry(parsed):
     source = source_product_flow_projection(parsed)
     initial = InitialNativeIsland((builtins,))
     return SourceModuleEntryPremise(
-        source,
-        initial,
-        {"property": CapturedNativeObject(object)},
-        initial.namespace_for_storage(vars(builtins)),
-    )
+        source=source,
+        native_island=initial,
+        bindings={"property": CapturedNativeObject(object)},
+        builtins=initial.namespace_for_storage(vars(builtins)),
+           )
 
 
 def test_supplied_entry_is_the_only_constructor_authority(monkeypatch):

@@ -1629,10 +1629,10 @@ class ProductFlowRepository(
                 ):
                     fetches.append(
                         CompactDynamicFetch(
-                            context,
-                            use.line,
-                            None,
-                            self._receiver_classes(
+                            context=context,
+                            line=use.line,
+                            attribute_name=None,
+                            receiver_classes=self._receiver_classes(
                                 context,
                                 LexicalValueReference(
                                     root_name=reference.root_name,
@@ -2301,7 +2301,7 @@ class ProductFlowRepository(
             else ()
         )
         return AlternativeCompactFunctionTargets(
-            (
+            alternatives=(
                 local_and_imported,
                 *attribute,
                 *(
@@ -2317,8 +2317,8 @@ class ProductFlowRepository(
                     and (alias := context.flow.exact_alias_for(mutation)) is not None
                 ),
             ),
-            violation,
-        )
+            violation=violation,
+               )
 
     def _function_resolution_for_symbol(
         self,

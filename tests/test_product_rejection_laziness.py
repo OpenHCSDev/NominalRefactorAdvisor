@@ -81,11 +81,11 @@ def test_one_rejected_candidate_does_not_skip_other_candidates_or_late_rejection
         for name in candidates[:2]:
             observed.append(name)
             yield CompactProductRuntimeFailure(
-                context,
-                event,
-                ResolvedCompactClassTarget(self.class_index.class_for(name)),
-                CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION,
-            )
+                context=context,
+                source_event=event,
+                target_resolution=ResolvedCompactClassTarget(self.class_index.class_for(name)),
+                violation=CompactProductRuntimeViolation.CLASS_REBINDING_OR_MEMBER_MUTATION,
+                  )
 
     monkeypatch.setattr(
         ProductFlowRepository, "iter_product_runtime_failures", selective_failures

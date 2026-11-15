@@ -280,15 +280,19 @@ def test_subscription_effect_uses_its_application_cut_not_its_receiver_or_argume
         invocation.position,
     ):
         interval = SingleFlowPrefix(
-            environment.entry.context, environment.entry.frame, cut
-        )
+            context=environment.entry.context,
+            frame=environment.entry.frame,
+            position=cut,
+                   )
         assert not any(
             isinstance(occurrence.effect, SubscriptionClassNamespaceEffect)
             for occurrence in environment.effects.occurrences(source, interval)
         )
     interval = SingleFlowPrefix(
-        environment.entry.context, environment.entry.frame, result_use.position
-    )
+        context=environment.entry.context,
+        frame=environment.entry.frame,
+        position=result_use.position,
+               )
     (occurrence,) = tuple(
         occurrence
         for occurrence in environment.effects.occurrences(source, interval)

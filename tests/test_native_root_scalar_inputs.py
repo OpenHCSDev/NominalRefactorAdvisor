@@ -52,7 +52,7 @@ def test_complete_root_exposes_owned_scalar_contents_without_a_result(name, expe
     environment, (root, _) = prepared_execution()
     entry = environment.class_entry(root)
     prefix = entry.completion_prefix
-    assert name in NamespaceMemberInventory(environment.kernel, entry, prefix).names
+    assert name in NamespaceMemberInventory(kernel=environment.kernel, namespace=entry, prefix=prefix).names
     actual = entry.completion_member(name).require_native_scalar()
     assert type(actual) is type(expected)
     assert actual == expected
@@ -114,8 +114,10 @@ def test_firstlineno_contents_come_from_actual_compiler_production_when_emitted(
     environment, (root, _) = prepared_execution()
     entry = environment.class_entry(root)
     names = NamespaceMemberInventory(
-        environment.kernel, entry, entry.completion_prefix
-    ).names
+        kernel=environment.kernel,
+        namespace=entry,
+        prefix=entry.completion_prefix,
+            ).names
     native = native_control(
         "import json\nfrom metaclass_registry import AutoRegisterMeta\n"
         "namespace = {'Creator': AutoRegisterMeta, '__name__': 'authored'}\nexec("

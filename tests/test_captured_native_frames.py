@@ -99,7 +99,7 @@ class SimpleFrameEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return SingleFlowPrefix(context, self.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.frame, position=position)
 
 
 def _fixture(source, globals_storage=None, builtin_storage=None, locals_storage=None):
@@ -118,16 +118,16 @@ def _fixture(source, globals_storage=None, builtin_storage=None, locals_storage=
     projection = compact_product_flow_projection(module)
     context = projection.flow_contexts[0]
     island = InitialNativeIsland(
-        (builtins,),
-        (locals_storage, globals_storage, builtin_storage),
-    )
+        modules=(builtins,),
+        extra_storages=(locals_storage, globals_storage, builtin_storage),
+             )
     frame = InitialNativeFrame(
-        island.namespace_for_storage(locals_storage),
-        island.namespace_for_storage(globals_storage),
-        island.namespace_for_storage(builtin_storage),
-    )
+        locals=island.namespace_for_storage(locals_storage),
+        globals=island.namespace_for_storage(globals_storage),
+        builtins=island.namespace_for_storage(builtin_storage),
+            )
     effects = SimpleFrameEffects(module, context, frame)
-    kernel = CapturedReferenceKernel(island, effects)
+    kernel = CapturedReferenceKernel(initial=island, effects=effects)
     result = next(
         node
         for node in module.module.body
@@ -297,7 +297,7 @@ def test_unproved_globals_slot_does_not_fall_through_to_builtin():
 
 def test_namespace_snapshot_and_frame_owners_are_one_initial_admission():
     storage = {"property": property}
-    island = InitialNativeIsland((), (storage, storage))
+    island = InitialNativeIsland(modules=(), extra_storages=(storage, storage))
     namespace = island.namespace_for_storage(storage)
     assert len(island.namespaces) == 1
     assert namespace.storage is storage
@@ -307,7 +307,7 @@ def test_namespace_snapshot_and_frame_owners_are_one_initial_admission():
     assert replacement_snapshot.member("property").value is object
     with pytest.raises(ValueError, match="different admission"):
         island.require_frame(
-            InitialNativeFrame(namespace, namespace, replacement_snapshot)
+            InitialNativeFrame(locals=namespace, globals=namespace, builtins=replacement_snapshot)
         )
     with pytest.raises(ValueError, match="not admitted"):
         island.namespace_for_storage(storage.copy())
@@ -319,11 +319,13 @@ def test_kernel_rejects_foreign_frame_snapshot_before_using_it():
     kernel, read = _fixture("result = property\n")
     frame = kernel.effects.frame
     foreign = InitialNativeFrame(
-        frame.locals, frame.globals, NativeNamespace(frame.builtins.storage)
-    )
+        locals=frame.locals,
+        globals=frame.globals,
+        builtins=NativeNamespace(frame.builtins.storage),
+              )
     effects = SimpleFrameEffects(kernel.effects.module, kernel.effects.context, foreign)
     with pytest.raises(ValueError, match="different admission"):
-        CapturedReferenceKernel(kernel.initial, effects).read(read)
+        CapturedReferenceKernel(initial=kernel.initial, effects=effects).read(read)
 
 
 def test_exact_dict_with_hostile_foreign_key_is_rejected_without_equality():
@@ -369,7 +371,7 @@ def test_foreign_string_storage_key_is_rejected_before_copy():
 
 def test_module_and_frame_reuse_the_same_namespace_owner():
     module = ModuleType("native_namespace_owner")
-    island = InitialNativeIsland((module,), (vars(module), vars(module)))
+    island = InitialNativeIsland(modules=(module,), extra_storages=(vars(module), vars(module)))
     namespace = island.namespace_for_storage(vars(module))
     assert island.namespaces == (namespace,)
     assert (
@@ -491,12 +493,12 @@ def test_slot_interval_preserves_loop_ambiguity_and_dominating_refresh(repeat):
     read = projection.reference_reads_by_span[
         SourceByteSpan.require_node(result_node.value)
     ]
-    island = InitialNativeIsland((), ({},))
+    island = InitialNativeIsland(modules=(), extra_storages=({},))
     namespace = island.namespaces[0]
-    frame = InitialNativeFrame(namespace, namespace, namespace)
-    prefix = SingleFlowPrefix(context, frame, read.use.position)
+    frame = InitialNativeFrame(locals=namespace, globals=namespace, builtins=namespace)
+    prefix = SingleFlowPrefix(context=context, frame=frame, position=read.use.position)
     query = CapturedSlotQuery(
-        namespace, "saved", prefix, frozenset(), ContextualMutation(prefix, installed)
+        namespace, "saved", prefix, frozenset(), ContextualMutation(source=prefix, mutation=installed)
     )
     assert (
         item_write
@@ -525,7 +527,7 @@ def test_slot_interval_does_not_order_unproved_evaluation_siblings():
             target=mutation.target,
             kind=mutation.kind,
             position=CompactFlowPosition(
-                (), 0, index + 1, (CompactEvaluationBranch(0, index),)
+                (), 0, index + 1, (CompactEvaluationBranch(parent_event_index=0, member_index=index),)
             ),
             line=mutation.line,
         )
@@ -534,14 +536,14 @@ def test_slot_interval_does_not_order_unproved_evaluation_siblings():
     flow = replace(read.context.flow, mutations=(first, installed))
     context = replace(read.context, flow=flow)
     frame = kernel.effects.frame
-    prefix = SingleFlowPrefix(context, frame, CompactFlowPosition((), 1, 0))
+    prefix = SingleFlowPrefix(context=context, frame=frame, position=CompactFlowPosition(branch_path=(), statement_index=1, event_index=0))
     query = CapturedSlotQuery(
-        frame.globals,
-        "saved",
-        prefix,
-        frozenset(),
-        ContextualMutation(prefix, installed),
-    )
+        namespace=frame.globals,
+        key="saved",
+        prefix=prefix,
+        pending=frozenset(),
+        installed=ContextualMutation(source=prefix, mutation=installed),
+            )
     assert tuple(event.mutation for event in query.mutations_after_installation()) == (
         first,
     )
@@ -556,7 +558,7 @@ def test_qualified_known_global_does_not_demand_open_builtin_fallback(alias):
     kernel, read = _fixture(source, {"builtins": builtins})
     original = kernel.effects.frame
     unresolved = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
-    frame = InitialNativeFrame(original.locals, original.globals, unresolved)
+    frame = InitialNativeFrame(locals=original.locals, globals=original.globals, builtins=unresolved)
     effects = replace(kernel.effects, frame=frame)
     resolution = replace(kernel, effects=effects).read(read)
     assert resolution.value is property
@@ -577,7 +579,7 @@ def test_initial_global_binding_survives_open_builtin_fallback():
     kernel, read = _fixture("result = property\n", {"property": object})
     original = kernel.effects.frame
     unresolved = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
-    frame = InitialNativeFrame(original.locals, original.globals, unresolved)
+    frame = InitialNativeFrame(locals=original.locals, globals=original.globals, builtins=unresolved)
     assert (
         replace(kernel, effects=replace(kernel.effects, frame=frame)).read(read).value
         is object
@@ -591,7 +593,7 @@ def test_demanded_builtin_namespace_preserves_open_evidence_without_hashing_it()
     kernel, read = _fixture("result = property\n")
     original = kernel.effects.frame
     unresolved = UnhashableOpen(CapturedReferenceViolation.UNPROVED_BINDING)
-    frame = InitialNativeFrame(original.locals, original.globals, unresolved)
+    frame = InitialNativeFrame(locals=original.locals, globals=original.globals, builtins=unresolved)
     resolution = replace(kernel, effects=replace(kernel.effects, frame=frame)).read(
         read
     )
@@ -604,9 +606,9 @@ def test_unknown_earlier_namespace_is_not_proved_absence(unknown_locals):
     original = kernel.effects.frame
     unresolved = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
     frame = (
-        InitialNativeFrame(unresolved, original.globals, original.builtins)
+        InitialNativeFrame(locals=unresolved, globals=original.globals, builtins=original.builtins)
         if unknown_locals
-        else InitialNativeFrame(original.locals, unresolved, original.builtins)
+        else InitialNativeFrame(locals=original.locals, globals=unresolved, builtins=original.builtins)
     )
     resolution = replace(kernel, effects=replace(kernel.effects, frame=frame)).read(
         read
@@ -615,7 +617,7 @@ def test_unknown_earlier_namespace_is_not_proved_absence(unknown_locals):
 
 
 def test_observed_namespace_uses_common_contract_without_fabricating_creation():
-    island = InitialNativeIsland((), ({"property": property},))
+    island = InitialNativeIsland(modules=(), extra_storages=({"property": property},))
     namespace = island.namespaces[0]
     assert isinstance(namespace, NamespaceEvidenceABC)
     assert namespace.member("property").value is property

@@ -193,7 +193,7 @@ def test_complete_prepared_namespace_matches_native_return_before_metaclass_runs
         "print(json.dumps(snapshots[0]))\n",
         False,
     )
-    names = NamespaceMemberInventory(env.kernel, entry, entry.completion_prefix).names
+    names = NamespaceMemberInventory(kernel=env.kernel, namespace=entry, prefix=entry.completion_prefix).names
     names = names | frozenset(binding.name for binding in tail.bindings)
     actual = {name: tail.member(name).native_type.__name__ for name in names}
     assert actual == observed["members"]

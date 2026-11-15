@@ -154,10 +154,10 @@ class CarrierFieldBecomesMemberOperation(
         if declaration is None:
             raise ValueError(f"{qualname!r} is not a field declared in {source_path!r}")
         carrier = CarrierField(
-            snapshot,
-            AnsweredField(snapshot=snapshot, source_class=source_class, method=declaration),
-            ResolvedClassTarget.from_rewrite_target(snapshot, self.family),
-        )
+            snapshot=snapshot,
+            answered=AnsweredField(snapshot=snapshot, source_class=source_class, method=declaration),
+            family=ResolvedClassTarget.from_rewrite_target(snapshot, self.family),
+                  )
         carrier.optional  # the annotation must be text before anything is read
         return carrier
 

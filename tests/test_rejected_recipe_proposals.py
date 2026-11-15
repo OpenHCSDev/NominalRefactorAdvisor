@@ -173,7 +173,7 @@ def test_changed_source_rejects_old_proposal_native_receipts(subject):
 
 def test_rejection_before_source_context_has_no_fabricated_proposal(subject):
     _, _, finding, _ = subject
-    record = FindingRecipeSynthesisAttempt(finding, None).evaluate()
+    record = FindingRecipeSynthesisAttempt(finding=finding, selector_context=None).evaluate()
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.proposal is None
     assert record.proposal_preflight is None

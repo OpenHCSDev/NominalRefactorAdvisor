@@ -130,8 +130,9 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
         ),
     )
     payload = AnalysisFindingSummaryCachePayload(
-        identity, FindingSummary.from_findings(())
-    )
+        identity=identity,
+        summary=FindingSummary.from_findings(()),
+              )
     lookup = payload.lookup(identity)
     assert lookup.payload is payload
     assert lookup.summary is payload.summary
@@ -326,8 +327,9 @@ def test_a_cache_served_summary_over_no_source_is_incomplete(tmp_path):
         AnalysisCacheIdentity.from_roots((package,), DetectorConfig()), source_files=()
     )
     payload = AnalysisFindingSummaryCachePayload(
-        covered_nothing, FindingSummary.from_findings(())
-    )
+        identity=covered_nothing,
+        summary=FindingSummary.from_findings(()),
+              )
     report = cli.JsonLoopCachePayloadBuilder(
         payload, ScanTiming(), cli.ScanTarget((package,), PythonSourcePathPolicy())
     ).build()

@@ -180,13 +180,13 @@ def test_sequential_dsl_stores_select_the_projected_hit_not_the_prior_result(tmp
             PatchTargetOperation(
                 target=SourceRewriteTarget(file_path=path),
                 replacements=(
-                    SourceTextReplacement("registry[str]=int", "registry[str]=bool"),
+                    SourceTextReplacement(old_source="registry[str]=int", new_source="registry[str]=bool"),
                 ),
             ),
             PatchTargetOperation(
                 target=SourceRewriteTarget(file_path=path),
                 replacements=(
-                    SourceTextReplacement("registry[str]=bool", "registry[str]=str"),
+                    SourceTextReplacement(old_source="registry[str]=bool", new_source="registry[str]=str"),
                 ),
             ),
         )

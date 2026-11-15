@@ -12,7 +12,7 @@ from nominal_refactor_advisor.taxonomy import CertificationLevel
 
 
 def findings(detector, source: str):
-    parsed = SourceModule(Path("package/example.py"), "package.example", source).parse()
+    parsed = SourceModule(path=Path("package/example.py"), module_name="package.example", source=source).parse()
     return detector.detect(ParsedModuleSet.of([parsed]), DetectorConfig())
 
 

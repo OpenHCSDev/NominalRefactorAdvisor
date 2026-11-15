@@ -44,8 +44,9 @@ def _verdicts(*modules: tuple[str, str]) -> tuple[ClassOverlapCandidate, ...]:
         tuple(_module(name, source) for name, source in modules)
     )
     return ClassOverlapVerdicts(
-        tuple(projections), build_compact_class_family_index(projections)
-    ).candidates
+        projections=tuple(projections),
+        class_index=build_compact_class_family_index(projections),
+           ).candidates
 
 
 def _kinds(candidate: ClassOverlapCandidate) -> set[OverlapReceiptKind]:
@@ -427,7 +428,7 @@ def test_verdicts_touching_a_class_are_the_scan_verdicts_naming_it():
         )
     )
     index = build_compact_class_family_index(projections)
-    scan = ClassOverlapVerdicts(projections, index)
+    scan = ClassOverlapVerdicts(projections=projections, class_index=index)
 
     def named(candidates, symbol):
         return [
@@ -438,7 +439,7 @@ def test_verdicts_touching_a_class_are_the_scan_verdicts_naming_it():
 
     assert len(scan.candidates) >= 3
     for symbol in index.classes_by_symbol:
-        asked = ClassOverlapVerdicts(projections, index)
+        asked = ClassOverlapVerdicts(projections=projections, class_index=index)
         assert named(asked.candidates_touching(frozenset({symbol})), symbol) == named(
             scan.candidates, symbol
         )
@@ -463,7 +464,7 @@ def test_a_use_through_a_renamed_re_export_names_the_class_it_binds() -> None:
             )
         )
     )
-    scan = ClassOverlapVerdicts(projections, build_compact_class_family_index(projections))
+    scan = ClassOverlapVerdicts(projections=projections, class_index=build_compact_class_family_index(projections))
 
     assert {use.consumer for use in scan.uses.uses_for("pkg.a.X")} == {"by_name", "through_module"}
 

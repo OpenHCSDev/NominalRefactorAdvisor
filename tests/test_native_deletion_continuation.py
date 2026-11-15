@@ -100,7 +100,7 @@ def test_continuation_requires_original_binding_at_unique_native_address():
     ambiguous = replace(receipt, stores=(*receipt.stores, copy(binding)))
     with pytest.raises(ValueError):
         ambiguous.binding_for(span, binding.name)
-    alias = replace(binding, source_span=SourceByteSpan(0, 0, 0, 1))
+    alias = replace(binding, source_span=SourceByteSpan(start_line_index=0, end_line_index=0, start_byte=0, end_byte=1))
     ambiguous_address = replace(receipt, stores=(*receipt.stores, alias))
     with pytest.raises(ValueError, match="ambiguous instruction"):
         ambiguous_address.binding_for(span, binding.name)
@@ -167,7 +167,7 @@ def test_jump_target_deletion_cannot_start_a_straight_line_continuation():
     operations = NativeCreationBackend.current().primitive_operations
     deletion = next(i for i in dis.get_instructions(code) if i.opname == "DELETE_NAME")
     assert deletion.is_jump_target
-    stream = NativeStoreStream(code, operations)
+    stream = NativeStoreStream(code=code, operations=operations)
     stream.observe(deletion)
     assert stream.continuation is None
 

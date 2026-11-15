@@ -192,9 +192,9 @@ def test_function_parameter_binding_authority_requires_stable_nominal_types() ->
         node for node in module.module.body if isinstance(node, ast.FunctionDef)
     )
     authority = FunctionNominalParameterBindingAuthority(
-        ModuleNominalBindingAuthority(module),
-        function,
-    )
+        module_bindings=ModuleNominalBindingAuthority(module),
+        function=function,
+                )
 
     assert authority.stable_type_names_by_parameter == {
         "stable": "pkg.models.Target"

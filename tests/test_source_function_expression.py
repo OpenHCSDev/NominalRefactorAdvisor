@@ -103,7 +103,7 @@ def test_native_operand_join_requires_original_inventory_and_creation():
         for binding in environment.entry.context.flow.mutations
     ]
     joins = [
-        SourceNativeOperandJoin(store, environment.source.value_reads_by_node[node])
+        SourceNativeOperandJoin(parent=store, read=environment.source.value_reads_by_node[node])
         for node, store in zip(nodes, stores, strict=True)
     ]
     values = [store.production.value for store in stores]

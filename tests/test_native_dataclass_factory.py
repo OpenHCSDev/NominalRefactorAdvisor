@@ -52,7 +52,7 @@ def returned_closure_proof(source):
     exec(compilation.compile(), namespace)
     function = namespace["factory"]
     return NativeReturnedClosureFactorySource(
-        NativePythonFunctionSource(function, compilation),
+        NativePythonFunctionSource(function=function, compilation=compilation),
     )
 
 

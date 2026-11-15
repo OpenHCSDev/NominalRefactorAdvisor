@@ -20,7 +20,7 @@ VERSION_PAIR = "(sys.version_info.major, sys.version_info.minor)"
 
 def _findings(*sources: str):
     modules = [
-        SourceModule(Path(f"pkg/m{index}.py"), f"pkg.m{index}", source).parse()
+        SourceModule(path=Path(f"pkg/m{index}.py"), module_name=f"pkg.m{index}", source=source).parse()
         for index, source in enumerate(sources)
     ]
     return RepeatedModuleExpressionLeadDetector().detect(ParsedModuleSet.of(modules), DetectorConfig())

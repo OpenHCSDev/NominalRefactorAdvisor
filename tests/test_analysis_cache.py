@@ -330,14 +330,14 @@ def test_cache_retention_evicts_old_roots_and_protects_active_root(
         (root / "entry.pickle").write_bytes(b"cache")
         os.utime(root, (index, index))
     retention = AdvisorCacheRetention(
-        cache_home,
-        AdvisorCacheRetentionPolicy(
+        cache_home=cache_home,
+        policy=AdvisorCacheRetentionPolicy(
             max_root_count=2,
             max_total_bytes=1024,
             max_root_bytes=1024,
             maintenance_interval_seconds=0.0,
         ),
-    )
+                )
 
     report = retention.maintain(active_root)
 
@@ -360,14 +360,14 @@ def test_cache_retention_prunes_oldest_files_to_per_root_byte_bound(
         cache_file.write_bytes(b"0123456789")
         os.utime(cache_file, (index, index))
     retention = AdvisorCacheRetention(
-        cache_home,
-        AdvisorCacheRetentionPolicy(
+        cache_home=cache_home,
+        policy=AdvisorCacheRetentionPolicy(
             max_root_count=2,
             max_total_bytes=1024,
             max_root_bytes=15,
             maintenance_interval_seconds=0.0,
         ),
-    )
+                )
 
     report = retention.maintain(active_root)
 
@@ -382,12 +382,12 @@ def test_cache_retention_throttles_repeated_tree_walks(tmp_path: Path) -> None:
     cache_home = tmp_path / "cache-home"
     active_root = cache_home / "active"
     retention = AdvisorCacheRetention(
-        cache_home,
-        AdvisorCacheRetentionPolicy(
+        cache_home=cache_home,
+        policy=AdvisorCacheRetentionPolicy(
             max_root_count=1,
             maintenance_interval_seconds=3600.0,
         ),
-    )
+                )
     retention.maintain(active_root)
     late_root = cache_home / "late"
     late_root.mkdir()
@@ -3397,7 +3397,7 @@ def test_native_class_header_core_matches_cached_minimal_projection(
     full_items = tuple(family.collect(parsed_module))
     expected = family.project_cached_demand(full_items, demand)
     actual = family.collect_demanded_source(
-        SourceModule(source_path, parsed_module.module_name, source),
+        SourceModule(path=source_path, module_name=parsed_module.module_name, source=source),
         NativePythonSyntaxIndex.from_source(source),
         demand,
     )

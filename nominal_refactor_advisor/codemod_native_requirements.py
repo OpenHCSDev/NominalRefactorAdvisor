@@ -233,14 +233,14 @@ class NativeUseRequirement:
     @cached_property
     def receipt(self) -> NativeUseReceipt:
         return NativeUseReceipt(
-            self.operation.operation_key(),
-            CodemodSourceRevision(
+            operation=self.operation.operation_key(),
+            revision=CodemodSourceRevision(
                 file_path=self.module.file_path,
                 source_hash=CodemodSourceRevision.hash_source(self.module.source),
             ),
-            SourceByteSpan.require_node(self.node),
-            tuple(declaration.qualified_name for declaration in self.declarations),
-        )
+            span=SourceByteSpan.require_node(self.node),
+            native_declarations=tuple(declaration.qualified_name for declaration in self.declarations),
+               )
 
     def inspect(self) -> NativeUseResolution:
         """Keep captured identity distinct from original-operation behavior proof."""

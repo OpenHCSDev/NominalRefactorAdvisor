@@ -67,7 +67,7 @@ def test_captured_intervals_reject_foreign_and_copied_frames_even_after_warming(
 
 def test_an_unowned_interval_cannot_borrow_a_different_activation_kernel():
     first, second, left, _, _ = activations()
-    supplied = SingleFlowPrefix(left.context, left.frame, left.position)
+    supplied = SingleFlowPrefix(context=left.context, frame=left.frame, position=left.position)
     assert supplied.capture_kernel(first.kernel) is first.kernel
     with pytest.raises(ValueError, match="original activation frame"):
         supplied.capture_kernel(second.kernel)

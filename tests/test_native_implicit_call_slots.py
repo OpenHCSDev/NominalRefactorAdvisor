@@ -22,19 +22,19 @@ from nominal_refactor_advisor.value_graph import DataclassGraphValue
 
 @pytest.mark.parametrize("order", tuple(NativeCallOperandOrder))
 def test_implicit_prefix_uses_original_values_in_native_order(order):
-    callee, argument = NativeProducedValue(2, ()), NativeConstantValue(4, (), None)
+    callee, argument = NativeProducedValue(instruction_offset=2, inputs=()), NativeConstantValue(4, (), None)
     actual_callee, actual_argument = order.split((callee, argument))
     assert actual_callee is callee
     assert actual_argument is argument
     assert actual_argument.implicit_arguments == (argument,)
-    marker = NativeCallMarker(0, None)
+    marker = NativeCallMarker(instruction_offset=0, source_span=None)
     assert order.split(order.compose(callee, marker)) == (callee, marker)
     assert marker.implicit_arguments == ()
 
 
 @pytest.mark.parametrize("order", tuple(NativeCallOperandOrder))
 def test_wrong_null_layout_and_noncallable_marker_cannot_be_implicit(order):
-    callee, marker = NativeProducedValue(2, ()), NativeCallMarker(0, None)
+    callee, marker = NativeProducedValue(instruction_offset=2, inputs=()), NativeCallMarker(instruction_offset=0, source_span=None)
     for invalid in ((marker, marker), tuple(reversed(order.compose(callee, marker)))):
         with pytest.raises(ValueError):
             order.split(invalid)
@@ -81,8 +81,9 @@ def test_real_vm_implicit_call_matches_shared_native_operand_graph(implicit):
     exec(code, namespace)  # Only the tiny authored fixture above is executed.
     assert namespace["result"] == (implicit, 7)
     window = NativeValueStoreWindow(
-        code, NativeCreationBackend.current().primitive_operations
-    )
+        code=code,
+        operations=NativeCreationBackend.current().primitive_operations,
+             )
     for instruction in dis.get_instructions(code):
         window.observe(instruction)
     assert window.store is not None
@@ -106,13 +107,13 @@ def test_real_vm_implicit_call_matches_shared_native_operand_graph(implicit):
 
 
 def test_null_protocol_marker_remains_unstorable_as_a_python_value():
-    stack = NativeOperandStack(stack=[NativeCallMarker(0, None)])
+    stack = NativeOperandStack(stack=[NativeCallMarker(instruction_offset=0, source_span=None)])
     with pytest.raises(ValueError, match="not a Python operand"):
         stack.pop(1)
 
 
 def call_chain(count):
-    callee = NativeProducedValue(0, ())
+    callee = NativeProducedValue(instruction_offset=0, inputs=())
     value = callee
     for offset in range(1, count + 1):
         value = NativeCallValue(offset, (callee, value), value)

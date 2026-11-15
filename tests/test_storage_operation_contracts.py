@@ -95,7 +95,7 @@ def test_product_construction_uses_validated_binding_presence(kind):
         if kind is CompactValueDestinationKind.BOUND
         else None
     )
-    destination = CompactValueDestination(kind, binding)
+    destination = CompactValueDestination(use=kind, binding=binding)
     changed = replace(invocation, result=destination)
     construction = changed.product_construction()
     if binding is None:
@@ -104,7 +104,7 @@ def test_product_construction_uses_validated_binding_presence(kind):
         assert construction is not None
         assert construction.result_binding is binding
     with pytest.raises(ValueError, match="binding does not match"):
-        CompactValueDestination(kind, None if binding else LexicalValueReference("x"))
+        CompactValueDestination(use=kind, binding=None if binding else LexicalValueReference("x"))
 
 
 @pytest.mark.parametrize("intervening", ("", "result += other\n", "del result\n"))

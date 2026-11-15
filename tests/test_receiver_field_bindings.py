@@ -12,7 +12,7 @@ from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRep
 
 
 def module(source, name="pkg.models"):
-    return SourceModule(Path(name.replace(".", "/") + ".py"), name, source).parse()
+    return SourceModule(path=Path(name.replace(".", "/") + ".py"), module_name=name, source=source).parse()
 
 
 @pytest.mark.parametrize(
@@ -34,8 +34,9 @@ def test_constructor_fields_require_one_stable_binding(body, expected):
     parsed = module(source)
     function = parsed.module.body[1].body[0]
     authority = FunctionNominalParameterBindingAuthority(
-        ModuleNominalBindingAuthority(parsed), function
-    )
+        module_bindings=ModuleNominalBindingAuthority(parsed),
+        function=function,
+                )
     assert authority.type_name_for_receiver_field("field") == expected
     assert "field" in authority.receiver_field_type_names
 

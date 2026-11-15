@@ -46,7 +46,7 @@ class SplitNamespaceEntry(
 
     @cached_property
     def frame(self):
-        return InitialNativeFrame(self, self.globals_namespace, self.builtins_namespace)
+        return InitialNativeFrame(locals=self, globals=self.globals_namespace, builtins=self.builtins_namespace)
 
     def prefix(self, position, kernel):
         return CapturedFlowPrefix(self.context, self.frame, position, kernel=kernel)

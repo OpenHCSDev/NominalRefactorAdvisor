@@ -54,7 +54,7 @@ def test_pending_binding_context_and_historical_cut_are_part_of_the_query():
     rejected = environment.kernel._read_use(
         after.use,
         after.context,
-        frozenset((CompactBindingVisit(after.context, mutation),)),
+        frozenset((CompactBindingVisit(context=after.context, mutation=mutation),)),
     )
     assert isinstance(rejected, OpenCapturedReference)
     environment.kernel.read(before).require_native_identity(NativeDeclaration(property))

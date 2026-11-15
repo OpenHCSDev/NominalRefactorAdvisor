@@ -30,7 +30,7 @@ from nominal_refactor_advisor.audit.merge_review import MergeReview
 from tests.audit.gate_fixture import FixtureProject
 
 # A repository that declares no project: the census measures every module of it.
-CENSUS = CensusRun(Repository(SCRIPTS), Undeclared())
+CENSUS = CensusRun(repo=Repository(SCRIPTS), owners=Undeclared())
 
 
 def source_for(cases: int, *, type_switch: bool = False) -> str:
@@ -174,7 +174,7 @@ class Decode(MroDispatch):
     @cases(DomainRecord, ast.Dict)
     async def domain(self, value): pass
 '''
-        declared = CensusRun(Repository(SCRIPTS), FixtureProject(SCRIPTS, "src/pkg"))
+        declared = CensusRun(repo=Repository(SCRIPTS), owners=FixtureProject(SCRIPTS, "src/pkg"))
         for census, path, count in ((CENSUS, "src/pkg/field_codec.py", 7),
                                     (declared, "src/pkg/presentation.py", 7),
                                     (declared, "src/pkg/field_codec.py", 0),
@@ -271,7 +271,7 @@ class Consumer(MroDispatch):
                 git("commit", "-qm", "Change specimen")
                 git("checkout", "-q", "--detach", base)
                 git("merge", "--no-ff", "-qm", "Merge pull request #1 from test/feature", "feature")
-                review = MergeReview.of(CensusRun(Repository(path), Undeclared()), "HEAD", 0, "Test", "pkg")
+                review = MergeReview.of(CensusRun(repo=Repository(path), owners=Undeclared()), "HEAD", 0, "Test", "pkg")
                 result = subprocess.run([sys.executable, "-m", "nominal_refactor_advisor.audit.merge_review",
                                          "--repo", directory, "--root", "pkg", "--since", base, "--rev", "HEAD"],
                                         capture_output=True, text=True, env=env)

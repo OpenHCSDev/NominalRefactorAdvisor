@@ -110,7 +110,7 @@ def test_warmed_original_receipts_reject_substituted_native_operands(damage):
         object.__setattr__(
             value,
             "argument_slot",
-            NativeCallMarker(value.instruction_offset, value.source_span),
+            NativeCallMarker(instruction_offset=value.instruction_offset, source_span=value.source_span),
         )
     elif damage == "frame":
         object.__setattr__(result.creation.native_result_store, "frame", copy(result.creation.native_result_store.frame))

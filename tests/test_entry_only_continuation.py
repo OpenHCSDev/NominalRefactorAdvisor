@@ -191,8 +191,10 @@ def test_complete_namespace_matches_actual_class_frame_return(body):
         False,
     )
     names = NamespaceMemberInventory(
-        tail.execution.kernel, tail.entry, tail.entry.completion_prefix
-    ).names | frozenset(binding.name for binding in tail.bindings)
+        kernel=tail.execution.kernel,
+        namespace=tail.entry,
+        prefix=tail.entry.completion_prefix,
+            ).names | frozenset(binding.name for binding in tail.bindings)
     assert {name: tail.member(name).native_type.__name__ for name in names} == observed[
         "types"
     ]

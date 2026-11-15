@@ -65,7 +65,7 @@ def test_branch_membership_is_not_definite_execution():
     context = environment.entry.context
     node = environment.module.module.body[0].body[0].value
     event = environment.source.value_reads_by_node[node].use
-    prefix = SingleFlowPrefix(context, environment.entry.frame, None)
+    prefix = SingleFlowPrefix(context=context, frame=environment.entry.frame, position=None)
     assert prefix.contains(event)
     with pytest.raises(ValueError, match="Conditional execution"):
         prefix.require_event(context, event, environment.entry.frame)

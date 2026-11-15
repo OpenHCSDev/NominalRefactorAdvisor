@@ -211,13 +211,13 @@ def test_positioned_reference_shares_origin_logic_without_changing_record_equali
         _module("alias = original\nresult = alias\n")
     ).flows
     read = flow.exact_value_aliases[-1].source_use
-    value = CompactValueUse(read.lexical_reference, read.position)
+    value = CompactValueUse(value=read.lexical_reference, position=read.position)
     assert isinstance(read, CompactPositionedReference)
     assert isinstance(value, CompactPositionedReference)
     assert read.origin_in(flow).exact_origin == value.origin_in(flow).exact_origin
     assert read.reference_equivalents_in(flow) == value.reference_equivalents_in(flow)
     assert pickle.loads(pickle.dumps(read)) == read
-    equivalent = CompactValueUse(value.value, value.position)
+    equivalent = CompactValueUse(value=value.value, position=value.position)
     assert equivalent == value
     assert hash(equivalent) == hash(value)
     assert CompactValueUse.__eq__ is DataclassGraphValue.__eq__

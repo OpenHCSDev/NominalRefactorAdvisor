@@ -33,7 +33,7 @@ def test_each_attribute_read_retains_its_exact_utf8_source_site(source: str) -> 
     reads = tuple(
         use
         for use in flow.callable_reference_uses
-        if use.target.lexical_reference == LexicalValueReference("café", ("member",))
+        if use.target.lexical_reference == LexicalValueReference(root_name="café", attribute_path=("member",))
     )
     nodes = sorted(
         (node for node in ast.walk(tree) if isinstance(node, ast.Attribute)),

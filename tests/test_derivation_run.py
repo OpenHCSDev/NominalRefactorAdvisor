@@ -51,31 +51,31 @@ def boundary() -> DerivationRunBoundary:
             analyzer_name="exact-relation",
             analyzer_version="1.0.0",
             analyzer_settings=(
-                DerivationSetting("workers", "1"),
-                DerivationSetting("collection_mode", "static_and_runtime"),
+                DerivationSetting(name="workers", value="1"),
+                DerivationSetting(name="collection_mode", value="static_and_runtime"),
             ),
             solver_settings=(
-                DerivationSetting("search", "bounded_exact"),
-                DerivationSetting("tie_break", "lexicographic"),
+                DerivationSetting(name="search", value="bounded_exact"),
+                DerivationSetting(name="tie_break", value="lexicographic"),
             ),
         ),
         dynamic_boundaries=(
             KnownDynamicBoundary(
-                "plugin-loading",
-                DynamicBoundaryKind.DYNAMIC_LOADING,
-                "billing.plugins",
-                "freeze the installed plugin manifest at input capture",
+                boundary_id="plugin-loading",
+                kind=DynamicBoundaryKind.DYNAMIC_LOADING,
+                locator="billing.plugins",
+                policy="freeze the installed plugin manifest at input capture",
             ),
             KnownDynamicBoundary(
-                "registry-mutation",
-                DynamicBoundaryKind.RUNTIME_MUTATION,
-                "billing.registry",
-                "reject mutation after input capture",
+                boundary_id="registry-mutation",
+                kind=DynamicBoundaryKind.RUNTIME_MUTATION,
+                locator="billing.registry",
+                policy="reject mutation after input capture",
             ),
         ),
         dependency_revisions=(
-            RevisionPin("schema", "v2"),
-            RevisionPin("runtime", "def456"),
+            RevisionPin(name="schema", revision="v2"),
+            RevisionPin(name="runtime", revision="def456"),
         ),
         generated_policy="exclude generated clients",
         vendored_policy="exclude",
@@ -122,8 +122,8 @@ def test_boundary_canonicalizes_typed_settings_and_dynamic_boundaries() -> None:
 def test_boundary_rejects_duplicate_setting_names(field_name: str) -> None:
     value = boundary().analyzer_configuration
     duplicate_settings = (
-        DerivationSetting("same", "first"),
-        DerivationSetting("same", "second"),
+        DerivationSetting(name="same", value="first"),
+        DerivationSetting(name="same", value="second"),
     )
 
     with pytest.raises(ValueError, match=f"{field_name} names must not contain"):
@@ -147,107 +147,107 @@ def test_boundary_rejects_duplicate_dynamic_boundary_identities() -> None:
 
 def manifest(*, reverse: bool = False) -> DerivationRunManifest:
     meanings = (
-        DomainMeaning("invoice", "billing", "A payable invoice."),
-        DomainMeaning("credit", "billing", "A credit against an invoice."),
+        DomainMeaning(meaning_id="invoice", bounded_context="billing", description="A payable invoice."),
+        DomainMeaning(meaning_id="credit", bounded_context="billing", description="A credit against an invoice."),
         DomainMeaning(
-            "legacy_wire_alias",
-            "billing",
-            "A compatibility-only historical wire identity.",
+            meaning_id="legacy_wire_alias",
+            bounded_context="billing",
+            description="A compatibility-only historical wire identity.",
         ),
     )
     questions = (
         RequiredQuestion(
-            "display_label",
-            "billing",
-            "Which label must a consumer display?",
+            question_id="display_label",
+            bounded_context="billing",
+            description="Which label must a consumer display?",
         ),
         RequiredQuestion(
-            "posting_account",
-            "billing",
-            "Which account receives the posting?",
+            question_id="posting_account",
+            bounded_context="billing",
+            description="Which account receives the posting?",
         ),
     )
     relation = (
-        RequiredRelationRow("credit", "ledger"),
-        RequiredRelationRow("invoice", "ledger"),
-        RequiredRelationRow("invoice", "statement"),
+        RequiredRelationRow(implementation_key="credit", consumer="ledger"),
+        RequiredRelationRow(implementation_key="invoice", consumer="ledger"),
+        RequiredRelationRow(implementation_key="invoice", consumer="statement"),
     )
     cases = (
         AdmittedRelationCase(
-            "ledger-current",
-            "tests/test_ledger.py",
-            "Current ledger access cases.",
+            case_id="ledger-current",
+            source="tests/test_ledger.py",
+            description="Current ledger access cases.",
         ),
         AdmittedRelationCase(
-            "statement-current",
-            "contracts/billing.md#statements",
-            "Current statement contract cases.",
+            case_id="statement-current",
+            source="contracts/billing.md#statements",
+            description="Current statement contract cases.",
         ),
         AdmittedRelationCase(
-            "zero-pair-case",
-            "contracts/billing.md#no-posting",
-            "A covered case that intentionally requires no relation row.",
+            case_id="zero-pair-case",
+            source="contracts/billing.md#no-posting",
+            description="A covered case that intentionally requires no relation row.",
         ),
     )
     evidence = (
         RelationEvidenceRecord(
-            "contract-statement",
-            RelationEvidenceKind.CITED_CONTRACT,
-            "contracts/billing.md#statements",
-            "manual contract review",
-            "Statements must render every invoice.",
+            evidence_id="contract-statement",
+            kind=RelationEvidenceKind.CITED_CONTRACT,
+            source="contracts/billing.md#statements",
+            collection_method="manual contract review",
+            description="Statements must render every invoice.",
         ),
         RelationEvidenceRecord(
-            "observed-credit",
-            RelationEvidenceKind.OBSERVED_CODE,
-            "src/billing/ledger.py:42",
-            "static access-site collection",
-            "The ledger dispatches credit records.",
+            evidence_id="observed-credit",
+            kind=RelationEvidenceKind.OBSERVED_CODE,
+            source="src/billing/ledger.py:42",
+            collection_method="static access-site collection",
+            description="The ledger dispatches credit records.",
         ),
         RelationEvidenceRecord(
-            "observed-invoice",
-            RelationEvidenceKind.OBSERVED_CODE,
-            "src/billing/ledger.py:38",
-            "static access-site collection",
-            "The ledger dispatches invoice records.",
+            evidence_id="observed-invoice",
+            kind=RelationEvidenceKind.OBSERVED_CODE,
+            source="src/billing/ledger.py:38",
+            collection_method="static access-site collection",
+            description="The ledger dispatches invoice records.",
         ),
         RelationEvidenceRecord(
-            "zero-pair-contract",
-            RelationEvidenceKind.CITED_DOMAIN,
-            "contracts/billing.md#no-posting",
-            "manual domain review",
-            "This admitted case intentionally requires no pair.",
+            evidence_id="zero-pair-contract",
+            kind=RelationEvidenceKind.CITED_DOMAIN,
+            source="contracts/billing.md#no-posting",
+            collection_method="manual domain review",
+            description="This admitted case intentionally requires no pair.",
         ),
     )
     relation_evidence_bindings = (
         RequiredRelationEvidenceBinding(
-            relation[0].row_id,
-            ("observed-credit",),
+            row_id=relation[0].row_id,
+            evidence_ids=("observed-credit",),
         ),
         RequiredRelationEvidenceBinding(
-            relation[1].row_id,
-            ("observed-invoice",),
+            row_id=relation[1].row_id,
+            evidence_ids=("observed-invoice",),
         ),
         RequiredRelationEvidenceBinding(
-            relation[2].row_id,
-            ("contract-statement",),
+            row_id=relation[2].row_id,
+            evidence_ids=("contract-statement",),
         ),
     )
     case_coverage_bindings = (
         AdmittedCaseCoverageBinding(
-            "ledger-current",
-            (relation[0].row_id, relation[1].row_id),
-            ("observed-credit", "observed-invoice"),
+            case_id="ledger-current",
+            row_ids=(relation[0].row_id, relation[1].row_id),
+            evidence_ids=("observed-credit", "observed-invoice"),
         ),
         AdmittedCaseCoverageBinding(
-            "statement-current",
-            (relation[2].row_id,),
-            ("contract-statement",),
+            case_id="statement-current",
+            row_ids=(relation[2].row_id,),
+            evidence_ids=("contract-statement",),
         ),
         AdmittedCaseCoverageBinding(
-            "zero-pair-case",
-            (),
-            ("zero-pair-contract",),
+            case_id="zero-pair-case",
+            row_ids=(),
+            evidence_ids=("zero-pair-contract",),
         ),
     )
     return DerivationRunManifest(
@@ -257,15 +257,15 @@ def manifest(*, reverse: bool = False) -> DerivationRunManifest:
         required_questions=tuple(reversed(questions)) if reverse else questions,
         structural_collisions=(
             StructuralCollision(
-                "mapping with amount and account keys",
-                ("invoice", "credit"),
-                ("posting_account",),
+                representation="mapping with amount and account keys",
+                meaning_ids=("invoice", "credit"),
+                question_ids=("posting_account",),
             ),
         ),
         independent_roles=(
             IndependentRoleDeclaration(
-                "credit",
-                "Credits and invoices can change posting policy independently.",
+                role_id="credit",
+                reason="Credits and invoices can change posting policy independently.",
             ),
         ),
         admitted_cases=tuple(reversed(cases)) if reverse else cases,
@@ -350,9 +350,9 @@ def test_manifest_canonicalizes_authored_sets_without_changing_relation_rows() -
     assert left.canonical_json == right.canonical_json
     assert left.input_digest == right.input_digest
     assert left.required_relation == (
-        RequiredRelationRow("credit", "ledger"),
-        RequiredRelationRow("invoice", "ledger"),
-        RequiredRelationRow("invoice", "statement"),
+        RequiredRelationRow(implementation_key="credit", consumer="ledger"),
+        RequiredRelationRow(implementation_key="invoice", consumer="ledger"),
+        RequiredRelationRow(implementation_key="invoice", consumer="statement"),
     )
     payload = json_report_object(left)
     assert payload["required_relation"][0] == {
@@ -408,25 +408,25 @@ def test_relation_binding_receipt_references_authorities_and_derives_coverage() 
 
 def test_manifest_digest_changes_with_one_required_pair() -> None:
     original = manifest()
-    added_pair = RequiredRelationRow("credit", "statement")
+    added_pair = RequiredRelationRow(implementation_key="credit", consumer="statement")
     changed = replace(
         original,
         required_relation=(*original.required_relation, added_pair),
         relation_evidence=(
             *original.relation_evidence,
             RelationEvidenceRecord(
-                "contract-credit-statement",
-                RelationEvidenceKind.CITED_CONTRACT,
-                "contracts/billing.md#credits",
-                "manual contract review",
-                "Statements must render every credit.",
+                evidence_id="contract-credit-statement",
+                kind=RelationEvidenceKind.CITED_CONTRACT,
+                source="contracts/billing.md#credits",
+                collection_method="manual contract review",
+                description="Statements must render every credit.",
             ),
         ),
         relation_evidence_bindings=(
             *original.relation_evidence_bindings,
             RequiredRelationEvidenceBinding(
-                added_pair.row_id,
-                ("contract-credit-statement",),
+                row_id=added_pair.row_id,
+                evidence_ids=("contract-credit-statement",),
             ),
         ),
     )
@@ -446,24 +446,24 @@ def test_manifest_digest_changes_with_one_required_pair() -> None:
         lambda value: replace(
             value,
             independent_roles=(
-                IndependentRoleDeclaration("unknown", "independent future"),
+                IndependentRoleDeclaration(role_id="unknown", reason="independent future"),
             ),
         ),
         lambda value: replace(
             value,
             structural_collisions=(
                 StructuralCollision(
-                    "same shape",
-                    ("invoice", "unknown"),
-                    ("posting_account",),
+                    representation="same shape",
+                    meaning_ids=("invoice", "unknown"),
+                    question_ids=("posting_account",),
                 ),
             ),
         ),
         lambda value: replace(
             value,
             independent_roles=(
-                IndependentRoleDeclaration("credit", "reason one"),
-                IndependentRoleDeclaration("credit", "reason two"),
+                IndependentRoleDeclaration(role_id="credit", reason="reason one"),
+                IndependentRoleDeclaration(role_id="credit", reason="reason two"),
             ),
         ),
         lambda value: replace(
@@ -512,9 +512,9 @@ def test_manifest_digest_changes_with_one_required_pair() -> None:
             admitted_cases=(
                 *value.admitted_cases,
                 AdmittedRelationCase(
-                    "unbound-case",
-                    "tests/test_unbound.py",
-                    "A case with no relation binding.",
+                    case_id="unbound-case",
+                    source="tests/test_unbound.py",
+                    description="A case with no relation binding.",
                 ),
             ),
         ),
@@ -545,7 +545,7 @@ def test_row_evidence_binding_has_no_case_field_or_json() -> None:
 
 def test_case_coverage_binding_requires_evidence_even_with_zero_rows() -> None:
     with pytest.raises(ValueError, match="evidence_ids must not be empty"):
-        AdmittedCaseCoverageBinding("zero-pair-case", (), ())
+        AdmittedCaseCoverageBinding(case_id="zero-pair-case", row_ids=(), evidence_ids=())
 
 
 @pytest.mark.parametrize(
@@ -624,11 +624,11 @@ def test_case_coverage_binding_requires_evidence_even_with_zero_rows() -> None:
             relation_evidence=(
                 *value.relation_evidence,
                 RelationEvidenceRecord(
-                    "unused-evidence",
-                    RelationEvidenceKind.CITED_TEST,
-                    "tests/test_unused.py",
-                    "test inspection",
-                    "Evidence that no binding references.",
+                    evidence_id="unused-evidence",
+                    kind=RelationEvidenceKind.CITED_TEST,
+                    source="tests/test_unused.py",
+                    collection_method="test inspection",
+                    description="Evidence that no binding references.",
                 ),
             ),
         ),
@@ -727,21 +727,21 @@ def test_artifact_paths_cannot_escape_the_portable_run_directory(
 ) -> None:
     with pytest.raises(ValueError, match="run directory|POSIX separators"):
         DerivationArtifact(
-            DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE,
-            relative_path,
-            "1" * 64,
+            kind=DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE,
+            relative_path=relative_path,
+            sha256="1" * 64,
         )
 
 
 def test_artifact_and_analyzer_digests_are_exact_sha256_values() -> None:
     with pytest.raises(ValueError, match="lowercase SHA-256"):
         DerivationArtifact(
-            DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE,
-            "relation-factorization-certificate.json",
-            "A" * 64,
+            kind=DerivationArtifactKind.RELATION_FACTORIZATION_CERTIFICATE,
+            relative_path="relation-factorization-certificate.json",
+            sha256="A" * 64,
         )
     with pytest.raises(ValueError, match="lowercase SHA-256"):
-        AnalyzerProvenance("short", "1" * 64, ("analyzer",))
+        AnalyzerProvenance(configuration_digest="short", input_digest="1" * 64, invocation=("analyzer",))
 
 
 def test_receipt_derives_complete_state_from_bound_provenance_and_artifacts() -> None:

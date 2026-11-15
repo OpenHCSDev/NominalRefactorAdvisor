@@ -23,7 +23,7 @@ def scalar_tail(body, index=-1):
     text = "class Family:\n" + "".join(
         "    " + line + "\n" for line in body.splitlines()
     )
-    module = SourceModule(Path("prepared_tail.py"), "prepared_tail", text).parse()
+    module = SourceModule(path=Path("prepared_tail.py"), module_name="prepared_tail", source=text).parse()
     env = SourceModuleExecution.from_module(module)
     entry = env.class_entry(module.module.body[0])
     stores = [

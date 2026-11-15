@@ -175,7 +175,7 @@ def test_plain_literal_leaf_cannot_reinterpret_compiler_marked_value():
 def test_generic_kernel_has_no_compiler_value_authority():
     env = execution('"documentation"\n')
     read = env.source.value_reads_by_node[env.module.module.body[0].value]
-    generic = CapturedReferenceKernel(env.initial, env)
+    generic = CapturedReferenceKernel(initial=env.initial, effects=env)
     with pytest.raises(ValueError):
         generic.read(read).require_closed()
 

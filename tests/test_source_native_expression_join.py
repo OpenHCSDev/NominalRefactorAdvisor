@@ -110,7 +110,7 @@ def test_operand_with_same_value_at_another_source_site_cannot_supply_join():
     env, store = assignment("payload = (object, object)\n")
     receipt = store.require_installation(env.required_prefix(env.entry.context, None))
     uses = store.source_value.production.inputs
-    join = SourceNativeOperandJoin(store, CompactFlowValue(env.entry.context, uses[0]))
+    join = SourceNativeOperandJoin(parent=store, read=CompactFlowValue(context=env.entry.context, use=uses[0]))
     join.require_join(receipt.value.inputs[0])
     with pytest.raises(ValueError, match="original source expression"):
         join.require_join(receipt.value.inputs[1])
@@ -158,7 +158,7 @@ def test_foreign_source_context_does_not_borrow_an_original_native_operand():
     foreign, other = assignment("payload = (object, object)\n")
     uses = other.source_value.production.inputs
     join = SourceNativeOperandJoin(
-        store, CompactFlowValue(foreign.entry.context, uses[0])
+        store, CompactFlowValue(context=foreign.entry.context, use=uses[0])
     )
     with pytest.raises(ValueError):
         join.require_join(store.production.value.inputs[0])
@@ -171,7 +171,7 @@ def test_creation_needs_completed_event_even_when_lookup_prefix_is_admitted(
     env, store = assignment("payload = ({}, object)\n")
     receipt = store.require_installation(env.required_prefix(env.entry.context, None))
     use = store.source_value.production.inputs[0]
-    join = SourceNativeOperandJoin(store, CompactFlowValue(env.entry.context, use))
+    join = SourceNativeOperandJoin(parent=store, read=CompactFlowValue(context=env.entry.context, use=use))
     assert join.source_completion_prefix is store.source_completion_prefix
     assert join.native_lookup_prefix is not join.source_completion_prefix
     monkeypatch.setattr(

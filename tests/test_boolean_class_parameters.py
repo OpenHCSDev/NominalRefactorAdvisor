@@ -24,7 +24,7 @@ class Colours:
                     not member._private, not member.maybe)
         return read
 """
-    parsed = SourceModule(Path("pkg/colours.py"), "pkg.colours", source).parse()
+    parsed = SourceModule(path=Path("pkg/colours.py"), module_name="pkg.colours", source=source).parse()
     repository = SourceProductFlowRepository.from_modules((parsed,))
     attributes = [
         node.operand
@@ -65,7 +65,7 @@ class Colours:
             return not member.background
         return read
 """
-        parsed = SourceModule(Path("pkg/colours.py"), "pkg.colours", source).parse()
+        parsed = SourceModule(path=Path("pkg/colours.py"), module_name="pkg.colours", source=source).parse()
         repository = SourceProductFlowRepository.from_modules((parsed,))
         attribute = next(
             node.operand
@@ -82,15 +82,15 @@ class Colours:
 
 def test_property_getter_keeps_nominal_receiver_ownership():
     parsed = SourceModule(
-        Path("pkg/views.py"),
-        "pkg.views",
-        """
+        path=Path("pkg/views.py"),
+        module_name="pkg.views",
+        source="""
 class View:
     @property
     def order(self):
         return self.form if self.form is not None else None
 """,
-    ).parse()
+             ).parse()
     repository = SourceProductFlowRepository.from_modules((parsed,))
     reference = next(
         node
@@ -105,9 +105,9 @@ class View:
 
 def test_class_receivers_do_not_borrow_instance_properties():
     parsed = SourceModule(
-        Path("pkg/views.py"),
-        "pkg.views",
-        """
+        path=Path("pkg/views.py"),
+        module_name="pkg.views",
+        source="""
 from typing import ClassVar
 class View:
     background: ClassVar[bool] = False
@@ -118,7 +118,7 @@ class View:
     def query(cls, instance: View):
         return not cls.background, not cls.ready, not instance.ready
 """,
-    ).parse()
+             ).parse()
     repository = SourceProductFlowRepository.from_modules((parsed,))
     attributes = [
         node.operand
@@ -251,9 +251,9 @@ def _comprehension_query(
     constructor=False,
 ):
     declarations = SourceModule(
-        Path("pkg/declarations.py"),
-        "pkg.declarations",
-        """
+        path=Path("pkg/declarations.py"),
+        module_name="pkg.declarations",
+        source="""
 from typing import ClassVar
 class ThemeColour(metaclass=UnknownRegistry):
     background: ClassVar[bool] = False
@@ -266,11 +266,11 @@ class BaseFrame:
 class Frame(BaseFrame):
     pass
 """,
-    ).parse()
+                   ).parse()
     parsed = SourceModule(
-        Path("pkg/paint.py"),
-        "pkg.paint",
-        f"""
+        path=Path("pkg/paint.py"),
+        module_name="pkg.paint",
+        source=f"""
 from pkg.declarations import Frame, Derived
 {before}
 class Painter:
@@ -278,7 +278,7 @@ class Painter:
         {body or "pass"}
         return {expression}
 """,
-    ).parse()
+             ).parse()
     # Keep fixture declarations external and immutable without executing them.
     declared_source = declarations.source.replace(
         "tuple[type[Derived], ...]", annotation
@@ -289,8 +289,10 @@ class Painter:
             f"def __init__(self, stops: {annotation}):\n        self.stops = stops",
         )
     declarations = SourceModule(
-        Path("pkg/declarations.py"), "pkg.declarations", declared_source
-    ).parse()
+        path=Path("pkg/declarations.py"),
+        module_name="pkg.declarations",
+        source=declared_source,
+                   ).parse()
     repository = SourceProductFlowRepository.from_modules((parsed, declarations))
     attribute = next(
         node.operand
@@ -314,7 +316,7 @@ class View:
     def query(self, member: Field, others):
         return {expression}
 """
-        parsed = SourceModule(Path("pkg/views.py"), "pkg.views", source).parse()
+        parsed = SourceModule(path=Path("pkg/views.py"), module_name="pkg.views", source=source).parse()
         repository = SourceProductFlowRepository.from_modules((parsed,))
         attribute = next(
             node.operand

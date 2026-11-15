@@ -79,13 +79,13 @@ def test_generic_declaration_geometry_recovers_exact_decorator_marker(source):
     assert generic.decorated_node_start_line(declaration) == 1
     assert (
         editor.node_start_line(
-            SourceNodeSpan(declaration, Include)
+            SourceNodeSpan(node=declaration, decorator_policy=Include)
         )
         == 1
     )
     assert (
         editor.node_start_line(
-            SourceNodeSpan(declaration, Exclude)
+            SourceNodeSpan(node=declaration, decorator_policy=Exclude)
         )
         == declaration.lineno
     )

@@ -192,7 +192,7 @@ def test_candidate_gate_observes_later_edit_in_complete_document(tmp_path):
     patch = PatchTargetOperation(
         target=SourceRewriteTarget(file_path=str(path)),
         replacements=(
-            SourceTextReplacement("padding = None", "AutoRegisterMeta = int"),
+            SourceTextReplacement(old_source="padding = None", new_source="AutoRegisterMeta = int"),
         ),
     )
     path, operation, simulation = conversion(tmp_path, later=(patch,))
@@ -239,8 +239,8 @@ def test_known_wrong_creator_retains_structured_reproof_diagnostic(tmp_path):
         target=SourceRewriteTarget(file_path=str(tmp_path / "registry.py")),
         replacements=(
             SourceTextReplacement(
-                "from metaclass_registry import AutoRegisterMeta",
-                "from builtins import int as AutoRegisterMeta",
+                old_source="from metaclass_registry import AutoRegisterMeta",
+                new_source="from builtins import int as AutoRegisterMeta",
             ),
         ),
     )
@@ -275,8 +275,8 @@ def test_recipe_apply_and_sequence_preserve_candidate_refusal(tmp_path):
         target=SourceRewriteTarget(file_path=str(tmp_path / "registry.py")),
         replacements=(
             SourceTextReplacement(
-                "from metaclass_registry import AutoRegisterMeta",
-                "from builtins import int as AutoRegisterMeta",
+                old_source="from metaclass_registry import AutoRegisterMeta",
+                new_source="from builtins import int as AutoRegisterMeta",
             ),
         ),
     )

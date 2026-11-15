@@ -49,7 +49,7 @@ def mutation(source, old, new, index=0, path=PATH):
     result = SourceTextGeometry(source).nominal_edit(
         file_path=path, replacements=(replacement,), rationale=f"change {index}"
     )
-    return result.with_origin(SourceEditOrigin("exact-windows", "authored", index))
+    return result.with_origin(SourceEditOrigin(recipe_id="exact-windows", plan_item_declaration="authored", plan_item_index=index))
 
 
 def context(source=SOURCE):
@@ -62,7 +62,7 @@ def test_resolution_keeps_actual_peers_and_duplicate_replacement_occurrences():
     duplicate = replace(
         first,
         replacements=(duplicate_replacement,),
-        origins=(SourceEditOrigin("exact-windows", "authored", 1),),
+        origins=(SourceEditOrigin(recipe_id="exact-windows", plan_item_declaration="authored", plan_item_index=1),),
     )
     last = mutation(SOURCE, "left", "changed", 2)
     (resolution,) = SourceTextMutation.peer_resolutions(
@@ -166,20 +166,22 @@ def test_resolution_rejects_empty_mixed_revision_and_foreign_source_inputs():
     edit = mutation(SOURCE, "first", "changed")
     geometry = SourceTextGeometry(SOURCE)
     with pytest.raises(ValueError, match="nonempty mutation peers"):
-        ExactSourceEditResolution((), geometry)
+        ExactSourceEditResolution(mutations=(), geometry=geometry)
     with pytest.raises(CodemodSourceRevisionError, match="original source revision"):
         ExactSourceEditResolution(
-            (edit, mutation(SOURCE.replace("first", "other"), "other", "changed")),
-            geometry,
+            mutations=(edit, mutation(SOURCE.replace("first", "other"), "other", "changed")),
+            geometry=geometry,
         )
     with pytest.raises(CodemodSourceRevisionError, match="original source revision"):
         ExactSourceEditResolution(
-            (edit,), SourceTextGeometry(SOURCE.replace("first", "other"))
+            mutations=(edit,),
+            geometry=SourceTextGeometry(SOURCE.replace("first", "other")),
         )
     other_path = Path(PATH).with_name("other.py").as_posix()
     with pytest.raises(CodemodSourceRevisionError, match="original source revision"):
         ExactSourceEditResolution(
-            (edit, mutation(SOURCE, "first", "changed", path=other_path)), geometry
+            mutations=(edit, mutation(SOURCE, "first", "changed", path=other_path)),
+            geometry=geometry,
         )
 
 
@@ -190,7 +192,7 @@ def test_resolution_and_peer_boundary_reject_cross_nominal_declarations():
     edit = mutation(SOURCE, "first", "changed")
     other = OtherMutation(**edit.__dict__)
     with pytest.raises(ValueError, match="nominal mutation declaration"):
-        ExactSourceEditResolution((edit, other), SourceTextGeometry(SOURCE))
+        ExactSourceEditResolution(mutations=(edit, other), geometry=SourceTextGeometry(SOURCE))
     with pytest.raises(ValueError, match="exact nominal declaration"):
         SourceTextMutation.peer_resolutions((other,), context())
     assert OtherMutation.peer_resolutions((other,), context())[0].mutations[0] is other
@@ -202,7 +204,7 @@ def test_window_can_only_select_an_actual_derived_projection():
     )[0]
     for index in (-1, len(resolution.projections)):
         with pytest.raises(ValueError, match="actual resolution projection"):
-            ExactSourceWindow(resolution, index)
+            ExactSourceWindow(resolution=resolution, projection_index=index)
     with pytest.raises(TypeError):
         ExactSourceWindow(resolution, 0, replacement_lines=("forged = True\n",))
 
@@ -216,7 +218,7 @@ def test_existing_geometry_projects_once_per_resolution_even_when_all_views_are_
             return super().physical_edit_projections(**kwargs)
 
     peers = mutation(SOURCE, "first", "long_first"), mutation(SOURCE, "left", "changed")
-    resolution = ExactSourceEditResolution(peers, ObservedGeometry(SOURCE))
+    resolution = ExactSourceEditResolution(mutations=peers, geometry=ObservedGeometry(SOURCE))
     for window in resolution.windows:
         assert window.physical_edit is window.physical_edit
         assert window.replacement_inputs is window.replacement_inputs
@@ -240,11 +242,11 @@ def test_physical_declarations_own_original_source_intervals(source):
         for end in range(start, len(lines) + 1):
             replacement = SourceSpanReplacement(
                 file_path=PATH,
-                span=SourceLineSpan(start, end),
+                span=SourceLineSpan(start_line=start, end_line=end),
                 replacement_lines=("new = 1\n",),
             )
             deletion = SourceSpanDeletion(
-                file_path=PATH, span=SourceLineSpan(start, end), 
+                file_path=PATH, span=SourceLineSpan(start_line=start, end_line=end), 
             )
             span = replacement.original_span(geometry)
             assert span == deletion.original_span(geometry)
@@ -256,7 +258,7 @@ def test_physical_declarations_own_original_source_intervals(source):
             SourceInsertion(file_path=PATH, insertion_line=line).original_span(geometry)
     with pytest.raises(ValueError, match="outside source geometry"):
         SourceSpanDeletion(
-            file_path=PATH, span=SourceLineSpan(1, len(geometry.line_offsets) + 1), 
+            file_path=PATH, span=SourceLineSpan(start_line=1, end_line=len(geometry.line_offsets) + 1), 
         ).original_span(geometry)
     with pytest.raises(ValueError, match="must be nonempty"):
         geometry.line_span_offsets(1, 0)
@@ -311,10 +313,10 @@ def test_empty_module_sentinel_span_is_used_by_the_actual_batch_renderer():
     assert (target.line, target.end_line) == (1, 1)
     edit = SourceSpanReplacement(
         file_path=PATH,
-        span=SourceLineSpan(1, 1),
+        span=SourceLineSpan(start_line=1, end_line=1),
         replacement_lines=("written = object\n",),
     )
-    batch = NominalEditBatch(compiler, (edit,))
+    batch = NominalEditBatch(compiler=compiler, edits=(edit,))
     rendered = compiler.simulate_rewrites(batch.planned_rewrites)
     assert rendered.parse_validation.parse_valid
     assert rendered.rewritten_sources[PATH] == "written = object\n"

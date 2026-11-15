@@ -94,9 +94,9 @@ def join(
     document_source = source if mutation_source is None else mutation_source
     mutation = SourceTextMutation(
         revision=CodemodSourceRevision(
-            PATH,
-            CodemodSourceRevision.hash_source(document_source),
-        ),
+            file_path=PATH,
+            source_hash=CodemodSourceRevision.hash_source(document_source),
+                 ),
         replacements=(SourceTextSpanReplacement(0, 0, replacement_source=prefix),),
     )
     return (
@@ -110,11 +110,11 @@ def join(
 
 def requirement(env, node):
     return NativeUseRequirement(
-        TypedMirror,
-        node,
-        (NativeDeclaration(object),),
-        env,
-    )
+        operation=TypedMirror,
+        node=node,
+        declarations=(NativeDeclaration(object),),
+        environment=env,
+           )
 
 
 def transport(use, relation, after):
@@ -239,8 +239,9 @@ def test_replaced_identical_text_has_no_retained_read_origin():
     before, after, relation = join(prefix="")
     mutation = SourceTextMutation(
         revision=CodemodSourceRevision(
-            PATH, CodemodSourceRevision.hash_source(before.module.source)
-        ),
+            file_path=PATH,
+            source_hash=CodemodSourceRevision.hash_source(before.module.source),
+                 ),
         replacements=(SourceTextSpanReplacement(8, 14, replacement_source="object"),),
     )
     relation = replace(
@@ -365,7 +366,7 @@ def test_equal_opaque_document_output_does_not_create_exact_read_provenance(reve
     )
     opaque = SourceSpanReplacement(
         file_path=PATH,
-        span=SourceLineSpan(1, 1),
+        span=SourceLineSpan(start_line=1, end_line=1),
         replacement_lines=(source.replace("left", "renamed"),),
     )
     document = document_for(source, (opaque, exact) if reverse else (exact, opaque))

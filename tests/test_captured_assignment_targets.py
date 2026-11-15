@@ -89,7 +89,7 @@ def test_receiver_writes_cannot_prove_an_attribute_result_unchanged(write: str) 
     flow = compact_product_flow_projection(module).flows[-1]
     assert (
         flow.bound_call_result_for(
-            LexicalValueReference("box", ("context",)), flow.calls[-1].position
+            LexicalValueReference(root_name="box", attribute_path=("context",)), flow.calls[-1].position
         )
         is None
     )

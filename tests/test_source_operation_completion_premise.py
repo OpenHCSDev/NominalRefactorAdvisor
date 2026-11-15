@@ -309,11 +309,11 @@ def test_native_behavior_is_not_returned_identity_or_automatic_codemod_acceptanc
     with pytest.raises(ValueError):
         result.require_native_identity(NativeDeclaration(ClassVar))
     requirement = NativeUseRequirement(
-        ConvertManualRegistryToAutoregisterOperation,
-        operation.node.value,
-        (NativeDeclaration(ClassVar),),
-        environment,
-    )
+        operation=ConvertManualRegistryToAutoregisterOperation,
+        node=operation.node.value,
+        declarations=(NativeDeclaration(ClassVar),),
+        environment=environment,
+                  )
     resolution = DeclaredNativeUseInvariants().resolve((requirement,))[0]
     assert resolution.provenance is NativeUseProvenance.CAPTURED_IDENTITY
     assert not resolution.provenance.is_admitted

@@ -182,7 +182,7 @@ def test_function_and_class_targets_share_existing_declaration_owners():
 
 def test_definition_target_rejects_module_namespace_as_body_owner():
     ((_, mutation),) = _definitions(_projection("class Owner: pass\n"))
-    module_owner = CompactNamespaceFlowOwner(Module, "")
+    module_owner = CompactNamespaceFlowOwner(kind=Module, qualname="")
     with pytest.raises((TypeError, ValueError)):
         replace(mutation.target, owner=module_owner)
 

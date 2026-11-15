@@ -22,14 +22,14 @@ from nominal_refactor_advisor.declaration_dependencies import (
 def _environment(name: str, source: str) -> DeclarationModuleBindingEnvironment:
     module = ast.parse(source)
     return DeclarationModuleBindingEnvironment(
-        ParsedModule(
+        module=ParsedModule(
             path=Path(f"pkg/{name}.py"),
             module_name=f"pkg.{name}",
             module=module,
             source=source,
         ),
-        next(node for node in module.body if isinstance(node, ast.ClassDef)),
-    )
+        scope=next(node for node in module.body if isinstance(node, ast.ClassDef)),
+           )
 
 
 @pytest.mark.parametrize(
@@ -80,7 +80,7 @@ def test_transfer_requires_binding_identity_not_equal_names_or_values(
     destination = _environment(
         "destination", destination_header + "\nclass Destination: pass\n"
     )
-    transfer = DeclarationModuleBindingTransfer(source, destination)
+    transfer = DeclarationModuleBindingTransfer(source=source, destination=destination)
     method = source.scope.body[0]
     if preserved:
         transfer.require_preserved(method)
@@ -98,9 +98,10 @@ def test_same_module_runtime_global_keeps_its_owned_cell() -> None:
         "class Source:\n def moved(self): return label\nlabel = object()\nclass Destination: pass\n",
     )
     destination = DeclarationModuleBindingEnvironment(
-        source.module, source.module.module.body[-1]
-    )
-    DeclarationModuleBindingTransfer(source, destination).require_preserved(
+        module=source.module,
+        scope=source.module.module.body[-1],
+                  )
+    DeclarationModuleBindingTransfer(source=source, destination=destination).require_preserved(
         source.scope.body[0]
     )
 
@@ -151,7 +152,7 @@ def test_annotations_resolve_at_their_actual_evaluation_phase(
         "destination",
         prelude + "class Destination: pass\nfrom builtins import str as Result\n",
     )
-    transfer = DeclarationModuleBindingTransfer(source, destination)
+    transfer = DeclarationModuleBindingTransfer(source=source, destination=destination)
     eager = not postponed and annotation == "Result" and sys.version_info < (3, 14)
     if eager:
         with pytest.raises(ValueError, match="'Result'.*binding authority"):
@@ -167,7 +168,7 @@ def test_annotation_representation_change_is_not_silently_accepted() -> None:
     )
     destination = _environment("destination", "class Destination: pass\n")
     with pytest.raises(ValueError, match="annotation evaluation mode changes"):
-        DeclarationModuleBindingTransfer(source, destination).require_preserved(
+        DeclarationModuleBindingTransfer(source=source, destination=destination).require_preserved(
             source.scope.body[0]
         )
 
@@ -181,7 +182,7 @@ def test_same_qualified_name_does_not_prove_redefined_declaration_identity() -> 
         "destination", "from pkg.source import Result\nclass Destination: pass\n"
     )
     with pytest.raises(ValueError, match="rebound declaration"):
-        DeclarationModuleBindingTransfer(source, destination).require_preserved(
+        DeclarationModuleBindingTransfer(source=source, destination=destination).require_preserved(
             source.scope.body[0]
         )
 
@@ -211,7 +212,7 @@ def test_quoted_annotation_dependencies_keep_their_native_type_authority(
         destination_namespace["Destination"].moved
     )
     with pytest.raises(ValueError, match="'Result'.*binding authority"):
-        DeclarationModuleBindingTransfer(source, destination).require_preserved(
+        DeclarationModuleBindingTransfer(source=source, destination=destination).require_preserved(
             source.scope.body[0]
         )
 

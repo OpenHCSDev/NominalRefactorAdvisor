@@ -112,11 +112,11 @@ def test_member_hook_absence_does_not_prove_truth_evaluation():
              )
     seed = SourceModuleExecution.from_module(module)
     entry = SourceModuleEntryPremise(
-        seed.source,
-        seed.initial,
-        dict(seed.entry.initial_entries, flag=CapturedNativeObject(proxy)),
-        seed.entry.builtins,
-    )
+        source=seed.source,
+        native_island=seed.initial,
+        bindings=dict(seed.entry.initial_entries, flag=CapturedNativeObject(proxy)),
+        builtins=seed.entry.builtins,
+            )
     with pytest.raises(ValueError):
         SourceModuleExecution(entry).require_class_creation(module.module.body[-1])
     assert not calls

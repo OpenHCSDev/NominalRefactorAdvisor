@@ -140,8 +140,10 @@ def test_substitution_shares_execution_but_not_counterfactual_mro(tmp_path):
     )
     first = SourceNativeClassMro(snapshot)
     substitution = NativeClassBaseSubstitution(
-        root, root.node.bases[0], NativeClassMroDeclaration(object)
-    )
+        owner=root,
+        base=root.node.bases[0],
+        replacement=NativeClassMroDeclaration(object),
+                   )
     second = replace(first, substitution=substitution)
     assert second.bindings is first.bindings is snapshot.module_binding_proof
     execution = first.bindings.native_reference_environment(module)

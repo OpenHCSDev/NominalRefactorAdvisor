@@ -438,8 +438,11 @@ def test_duplicate_actual_emission_is_not_collapsed_by_code_identity(monkeypatch
         item for item in inventory.emissions if item.receipt is receipt.body
     )
     duplicated = NativeCreationInventory(
-        code, (*inventory.emissions, body), inventory.builder_loads, inventory.prefixes
-    )
+        root_code=code,
+        emissions=(*inventory.emissions, body),
+        builder_loads=inventory.builder_loads,
+        prefixes=inventory.prefixes,
+                 )
     result = duplicated.class_captures(
         compilation.identity, (), NativeCreationBackend.current()
     )

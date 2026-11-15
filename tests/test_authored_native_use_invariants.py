@@ -50,8 +50,11 @@ def _requirement(
     if isinstance(statement, ast.FunctionDef):
         statement = statement.body[-1]
     return NativeUseRequirement(
-        operation, statement.value, (NativeDeclaration(expected),), environment
-    )
+        operation=operation,
+        node=statement.value,
+        declarations=(NativeDeclaration(expected),),
+        environment=environment,
+           )
 
 
 def _declare(*requirements):
@@ -171,10 +174,10 @@ def test_subset_acceptance_does_not_leak_to_other_uses_or_environments():
     environment = SourceModuleExecution.from_module(module)
     requirements = tuple(
         NativeUseRequirement(
-            TypedMirror,
-            statement.value,
-            (NativeDeclaration(property),),
-            environment,
+            operation=TypedMirror,
+            node=statement.value,
+            declarations=(NativeDeclaration(property),),
+            environment=environment,
         )
         for statement in module.module.body[1:]
     )
@@ -251,11 +254,11 @@ def test_forged_revision_from_reused_ast_cannot_relabel_actual_environment_sourc
     forged_receipt = replace(
         requirement.receipt,
         revision=CodemodSourceRevision(
-            reused_ast_module.file_path,
-            CodemodSourceRevision.hash_source(reused_ast_module.source),
-        ),
+            file_path=reused_ast_module.file_path,
+            source_hash=CodemodSourceRevision.hash_source(reused_ast_module.source),
+                 ),
     )
-    declared = DeclaredNativeUseInvariants((forged_receipt,), RATIONALE)
+    declared = DeclaredNativeUseInvariants(requirements=(forged_receipt,), rationale=RATIONALE)
     assert requirement.module is module
     assert requirement.module is requirement.environment.source.module
     with pytest.raises(ValueError, match="stale|foreign"):
@@ -344,16 +347,16 @@ def test_duplicate_requirements_and_unscoped_rationale_are_rejected():
     with pytest.raises(ValueError, match="ambiguous"):
         _declare(requirement).resolve((requirement, requirement))
     with pytest.raises(ValueError, match="rationale"):
-        DeclaredNativeUseInvariants((requirement.receipt,), " ")
+        DeclaredNativeUseInvariants(requirements=(requirement.receipt,), rationale=" ")
     with pytest.raises(ValueError, match="rationale"):
-        DeclaredNativeUseInvariants((), RATIONALE)
+        DeclaredNativeUseInvariants(requirements=(), rationale=RATIONALE)
 
 
 def test_receipt_cannot_reference_absent_source_or_empty_native_expectations():
     requirement = _requirement(_module("import builtins\nvalue = builtins.property\n"))
     with pytest.raises(ValueError, match="existing source"):
         replace(
-            requirement.receipt, revision=CodemodSourceRevision("/repo/use.py", None)
+            requirement.receipt, revision=CodemodSourceRevision(file_path="/repo/use.py", source_hash=None)
         )
     with pytest.raises(ValueError, match="distinct"):
         replace(requirement.receipt, native_declarations=())

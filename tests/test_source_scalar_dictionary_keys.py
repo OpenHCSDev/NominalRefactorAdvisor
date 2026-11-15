@@ -30,8 +30,10 @@ def test_scalar_item_installation_preserves_original_value_and_inventory(key):
     original = environment.class_entry(environment.module.module.body[1]).definition
     assert query.resolve(environment.kernel).source_definition()[1] is original
     contents = NamespaceMemberInventory(
-        environment.kernel, query.namespace, query.prefix
-    )
+        kernel=environment.kernel,
+        namespace=query.namespace,
+        prefix=query.prefix,
+               )
     assert contents.names == frozenset((key,))
     assert contents.require_member(key).source_definition()[1] is original
 

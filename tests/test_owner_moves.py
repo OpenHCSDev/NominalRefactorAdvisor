@@ -219,7 +219,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
         guard_suite=ArchitectureGuardSuite(),
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
-        owner_picks=OwnerPicks("picks.json", "0", ()),
+        owner_picks=OwnerPicks(path="picks.json", digest="0", picks=()),
     ).run()
     assert [outcome.outcome for outcome in unpicked.owner_picks.outcomes] == ["missing"]
     assert unpicked.stage_count == 0
@@ -232,9 +232,9 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
-            "picks.json",
-            "0",
-            (
+            path="picks.json",
+            digest="0",
+            picks=(
                 OwnerPick(
                     finding=mixin.stable_id,
                     owner="new_mixin:pkg.records",
@@ -243,7 +243,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
                     judgement="a lettered record",
                 ),
             ),
-        ),
+                    ),
     ).run()
 
     assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
@@ -265,9 +265,9 @@ def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> 
         and finding.metrics.move is ExtractMixin
     )
     picks = OwnerPicks(
-        "picks.json",
-        "0",
-        (
+        path="picks.json",
+        digest="0",
+        picks=(
             OwnerPick(
                 finding=mixin.stable_id,
                 owner="new_mixin:pkg.records",
@@ -277,7 +277,7 @@ def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> 
             ),
             OwnerPick(finding="0000000000", owner="new_mixin:pkg.records", because="new_class"),
         ),
-    )
+            )
 
     applied, report = picks.applied(findings)
 
@@ -304,10 +304,10 @@ def test_a_pick_without_an_owner_declines_the_finding(tmp_path: Path) -> None:
         and finding.metrics.move is ExtractMixin
     )
     picks = OwnerPicks(
-        "picks.json",
-        "0",
-        (OwnerPick(finding=mixin.stable_id, owner=None, because="not one concept"),),
-    )
+        path="picks.json",
+        digest="0",
+        picks=(OwnerPick(finding=mixin.stable_id, owner=None, because="not one concept"),),
+            )
 
     _applied, report = picks.applied(findings)
 
@@ -358,9 +358,9 @@ def _goal_with_pick(root: Path, name: str) -> object:
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
-            "picks.json",
-            "0",
-            (
+            path="picks.json",
+            digest="0",
+            picks=(
                 OwnerPick(
                     finding=mixin.stable_id,
                     owner="new_mixin:pkg.records",
@@ -369,7 +369,7 @@ def _goal_with_pick(root: Path, name: str) -> object:
                     judgement="a lettered record",
                 ),
             ),
-        ),
+                    ),
     ).run()
 
 
@@ -554,9 +554,9 @@ def test_a_hold_source_pick_holds_the_value_it_copied(tmp_path: Path) -> None:
         initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
-            "picks.json",
-            "0",
-            (
+            path="picks.json",
+            digest="0",
+            picks=(
                 OwnerPick(
                     finding=copy.stable_id,
                     owner=hold.candidate_id,
@@ -564,7 +564,7 @@ def test_a_hold_source_pick_holds_the_value_it_copied(tmp_path: Path) -> None:
                     name="first",
                 ),
             ),
-        ),
+                    ),
     ).run()
 
     source = (tmp_path / "pkg/records.py").read_text()

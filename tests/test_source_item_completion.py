@@ -74,7 +74,7 @@ def test_item_store_completes_the_actual_body_without_a_fictional_binding(
     assert completion.require_join(value) is completion.source_value
     target = completion.binding.target
     for use, operand in ((target.receiver_use, receiver), (target.index_use, key)):
-        join = SourceNativeOperandJoin(completion, CompactFlowValue(context, use))
+        join = SourceNativeOperandJoin(parent=completion, read=CompactFlowValue(context=context, use=use))
         assert join.require_join(operand) is join.source_value
     assert completion.native_completion_offset(prefix) == effect.instruction_offset
     assert all(effect is not binding.value for binding in receipt.stores)

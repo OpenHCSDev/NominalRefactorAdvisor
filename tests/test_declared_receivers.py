@@ -145,9 +145,11 @@ def _typed(tmp_path: Path, body: str) -> dict[int, object]:
         typing = DeclaredReceiverTyping.from_projections(projections, index)
         (use,) = (module for module in modules if module.module_name.endswith("use"))
         builder = ReceiverPathBuilder(
-            use.module_name, use.module, module_import_aliases(use),
-            use.syntax_index.parent_index,
-        )
+            module_name=use.module_name,
+            module=use.module,
+            aliases=module_import_aliases(use),
+            parents=use.syntax_index.parent_index,
+                  )
         return {
             node.lineno: builder.path_of(node.value).declared(typing)
             for node in ast.walk(use.module)

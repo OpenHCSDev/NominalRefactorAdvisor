@@ -20,7 +20,7 @@ from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 def parsed(name, source):
-    return SourceModule(Path(name + ".py"), name, source).parse()
+    return SourceModule(path=Path(name + ".py"), module_name=name, source=source).parse()
 
 
 @pytest.mark.parametrize("star_exports", ("__all__ = ('Foreign',)\n", ""))

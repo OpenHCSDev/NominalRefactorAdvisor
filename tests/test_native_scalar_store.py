@@ -64,9 +64,9 @@ def test_scalar_pair_matches_actual_native_instructions(value, in_class):
     production, store = instructions[index : index + 2]
     assert store.offset == receipt.binding.instruction_offset
     assert (
-        NativeInstructionSite(code, production).source_span == receipt.production_span
+        NativeInstructionSite(containing_code=code, instruction=production).source_span == receipt.production_span
     )
-    assert NativeInstructionSite(code, store).source_span == receipt.source_span
+    assert NativeInstructionSite(containing_code=code, instruction=store).source_span == receipt.source_span
 
 
 @pytest.mark.native_proof

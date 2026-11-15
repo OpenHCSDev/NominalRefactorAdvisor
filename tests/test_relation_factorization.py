@@ -102,7 +102,7 @@ def test_relation_rejects_duplicate_invalid_or_foreign_input(
 
 
 def test_pair_is_exact_two_field_canonical_vocabulary() -> None:
-    pair = RequiredRelationPair("implementation", "consumer")
+    pair = RequiredRelationPair(implementation_key="implementation", consumer="consumer")
     assert tuple(pair.__dataclass_fields__) == ("implementation_key", "consumer")
     assert pair.implementation_key == "implementation"
     assert pair.consumer == "consumer"
@@ -429,8 +429,8 @@ def test_empty_residual_has_one_intent_one_empty_optimum_and_no_combinations() -
     cover = factor_provider_cover(empty)
     assert cover.rectangles == ()
     assert cover.candidate_rectangles == ()
-    assert cover.formal_concept_statistics == FormalConceptSearchStatistics(1, 0)
-    assert cover.cover_statistics == ProviderCoverSearchStatistics(0, 1)
+    assert cover.formal_concept_statistics == FormalConceptSearchStatistics(intent_subsets_examined=1, maximal_biclique_candidates=0)
+    assert cover.cover_statistics == ProviderCoverSearchStatistics(combinations_examined=0, optimal_covers=1)
 
 
 def test_atomic_certificate_zero_degree_is_not_a_choke_point() -> None:
@@ -449,23 +449,23 @@ def test_atomic_certificate_zero_degree_is_not_a_choke_point() -> None:
     assert not surfaces["zero"].is_choke_point
     assert surfaces["zero"].derived_consumers == ()
     with pytest.raises(ValueError):
-        OwnerInvalidationSurface("zero", (), (), True)
+        OwnerInvalidationSurface(implementation_key="zero", derived_consumers=(), residual_pairs=(), is_choke_point=True)
 
 
 def test_invalidation_surface_rejects_wrong_type_duplicate_and_foreign_rows() -> None:
-    pair = RequiredRelationPair("owner", "x")
+    pair = RequiredRelationPair(implementation_key="owner", consumer="x")
     with pytest.raises(TypeError):
         OwnerInvalidationSurface(
-            "owner",
-            (),
-            ("not-a-pair",),
-            False,  # type: ignore[arg-type]
+            implementation_key="owner",
+            derived_consumers=(),
+            residual_pairs=("not-a-pair",),
+            is_choke_point=False,
         )
     with pytest.raises(ValueError):
-        OwnerInvalidationSurface("owner", (), (pair, pair), False)
+        OwnerInvalidationSurface(implementation_key="owner", derived_consumers=(), residual_pairs=(pair, pair), is_choke_point=False)
     with pytest.raises(ValueError):
         OwnerInvalidationSurface(
-            "owner", (), (RequiredRelationPair("foreign", "x"),), False
+            "owner", (), (RequiredRelationPair(implementation_key="foreign", consumer="x"),), False
         )
 
 
@@ -505,45 +505,45 @@ def test_laminar_statistics_reject_nonexact_or_nonpositive_counts(
 
 def test_laminar_statistics_reject_impossible_relations() -> None:
     with pytest.raises(ValueError):
-        LaminarSearchStatistics(1, 2, 1)
+        LaminarSearchStatistics(subsets_examined=1, feasible_laminar_subsets=2, optimal_subsets=1)
     with pytest.raises(ValueError):
-        LaminarSearchStatistics(2, 1, 2)
+        LaminarSearchStatistics(subsets_examined=2, feasible_laminar_subsets=1, optimal_subsets=2)
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "1", -1, 0])
 def test_formal_statistics_reject_invalid_positive_intent_count(value: object) -> None:
     with pytest.raises((TypeError, ValueError)):
-        FormalConceptSearchStatistics(value, 0)  # type: ignore[arg-type]
+        FormalConceptSearchStatistics(intent_subsets_examined=value, maximal_biclique_candidates=0)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "1", -1])
 def test_formal_statistics_reject_invalid_candidate_count(value: object) -> None:
     with pytest.raises((TypeError, ValueError)):
-        FormalConceptSearchStatistics(1, value)  # type: ignore[arg-type]
+        FormalConceptSearchStatistics(intent_subsets_examined=1, maximal_biclique_candidates=value)  # type: ignore[arg-type]
 
 
 def test_formal_statistics_reject_impossible_relations() -> None:
     with pytest.raises(ValueError):
-        FormalConceptSearchStatistics(1, 2)
+        FormalConceptSearchStatistics(intent_subsets_examined=1, maximal_biclique_candidates=2)
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "1", -1])
 def test_cover_statistics_reject_invalid_combination_count(value: object) -> None:
     with pytest.raises((TypeError, ValueError)):
-        ProviderCoverSearchStatistics(value, 1)  # type: ignore[arg-type]
+        ProviderCoverSearchStatistics(combinations_examined=value, optimal_covers=1)  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "1", -1, 0])
 def test_cover_statistics_reject_invalid_optimal_count(value: object) -> None:
     with pytest.raises((TypeError, ValueError)):
-        ProviderCoverSearchStatistics(1, value)  # type: ignore[arg-type]
+        ProviderCoverSearchStatistics(combinations_examined=1, optimal_covers=value)  # type: ignore[arg-type]
 
 
 def test_cover_statistics_reject_impossible_relations() -> None:
     with pytest.raises(ValueError):
-        ProviderCoverSearchStatistics(0, 2)
+        ProviderCoverSearchStatistics(combinations_examined=0, optimal_covers=2)
     with pytest.raises(ValueError):
-        ProviderCoverSearchStatistics(1, 2)
+        ProviderCoverSearchStatistics(combinations_examined=1, optimal_covers=2)
 
 
 @pytest.mark.parametrize(
@@ -655,7 +655,7 @@ def test_provider_cover_rejects_rectangle_candidate_union_count_and_policy_forge
     None
 ):
     cover = factor_provider_cover(crossing_relation())
-    fake = ProviderRectangle(("left",), ("a",))
+    fake = ProviderRectangle(implementation_keys=("left",), consumers=("a",))
     for forged in (
         replace(cover, rectangles=(fake,)),
         replace(cover, candidate_rectangles=()),

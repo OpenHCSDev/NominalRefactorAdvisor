@@ -158,11 +158,11 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             return
         self.checks.append(
             DeclaredAttributeCheck(
-                SourceLocation(file_path=self.module.file_path, line=node.lineno, symbol=self.qualname),
-                subject_type,
-                value.attr,
-                self.module_bindings.reference_for(expected_parts),
-                ast.unparse(node),
+                location=SourceLocation(file_path=self.module.file_path, line=node.lineno, symbol=self.qualname),
+                subject_type=subject_type,
+                attribute=value.attr,
+                expected_type=self.module_bindings.reference_for(expected_parts),
+                expression=ast.unparse(node),
             )
         )
 

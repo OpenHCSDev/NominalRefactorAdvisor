@@ -149,8 +149,9 @@ def test_historical_receiver_read_does_not_use_later_binding():
 def test_method_load_does_not_fabricate_a_bound_receiver_or_null_marker():
     code = compile("payload = unknown.method()\n", "method_call.py", "exec")
     window = NativeValueStoreWindow(
-        code, NativeCreationBackend.current().primitive_operations
-    )
+        code=code,
+        operations=NativeCreationBackend.current().primitive_operations,
+             )
     for instruction in dis.get_instructions(code):
         window.observe(instruction)
     assert window.closed

@@ -52,7 +52,7 @@ def test_canonical_class_entry_inherits_body_without_a_second_namespace_owner():
     env.require_class_creation(node)
     assert entry.frame.locals is entry
     assert entry.frame is entry.frame
-    contents = NamespaceMemberInventory(env.kernel, entry, entry.completion_prefix)
+    contents = NamespaceMemberInventory(kernel=env.kernel, namespace=entry, prefix=entry.completion_prefix)
     assert contents.namespace is entry
     selected = contents.require_member("selected")
     assert selected is entry.completion_member("selected")

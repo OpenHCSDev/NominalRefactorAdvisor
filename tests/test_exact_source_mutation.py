@@ -49,7 +49,7 @@ def _mutation(source, old, new, index):
             ),
             rationale=f"change {index}",
         )
-        .with_origin(SourceEditOrigin("exact-source", "authored-change", index))
+        .with_origin(SourceEditOrigin(recipe_id="exact-source", plan_item_declaration="authored-change", plan_item_index=index))
     )
 
 

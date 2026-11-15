@@ -879,8 +879,9 @@ class SourceDefinitionDecoratorApplicationABC(
         context = self.creation.parent_context
         self.execution.source_operation(context, self.decorator_use)
         return SourceNativeOperandJoin(
-            self, CompactFlowValue(context=context, use=self.decorator_use)
-        ).require_join(native_value.callee)
+            parent=self,
+            read=CompactFlowValue(context=context, use=self.decorator_use),
+               ).require_join(native_value.callee)
 
     def function_activation(self) -> SourceFunctionActivationABC:
         return self.callee.definition_application_activation(self)
@@ -2003,7 +2004,8 @@ class SourceNativeExpressionABC(
         )
         for argument, operand in zip(arguments.values, value.arguments, strict=True):
             SourceNativeOperandJoin(
-                self, CompactFlowValue(context=context, use=argument)
+                parent=self,
+                read=CompactFlowValue(context=context, use=argument),
             ).require_join(operand)
         return result
 
@@ -2052,7 +2054,8 @@ class SourceNativeExpressionABC(
             strict=True,
         ):
             SourceNativeOperandJoin(
-                self, CompactFlowValue(context=self.source_read.context, use=use)
+                parent=self,
+                read=CompactFlowValue(context=self.source_read.context, use=use),
             ).require_join(operand)
         return self.source_value
 

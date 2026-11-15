@@ -21,7 +21,7 @@ def _position(event, *members, statement=0, controls=()):
         controls,
         statement,
         event,
-        tuple(CompactEvaluationBranch(slot, member) for slot, member in members),
+        tuple(CompactEvaluationBranch(parent_event_index=slot, member_index=member) for slot, member in members),
     )
 
 
@@ -90,7 +90,7 @@ def test_statement_order_takes_precedence_over_local_event_coordinates():
 
 
 def test_empty_paths_preserve_existing_exact_positions():
-    original = CompactFlowPosition((), 0, 1)
+    original = CompactFlowPosition(branch_path=(), statement_index=0, event_index=1)
     assert original.evaluation_path == ()
     assert original == _position(1)
     assert original.may_precede(original)
@@ -111,7 +111,7 @@ def test_reserved_parent_slot_overlap_stays_conservative():
 
 
 def test_loop_repetition_still_overrides_local_event_order():
-    loop = (CompactControlBranch(0, CompactControlBranchKind.LOOP_BODY),)
+    loop = (CompactControlBranch(parent_statement_index=0, kind=CompactControlBranchKind.LOOP_BODY),)
     earlier = _position(0, controls=loop)
     later = _position(3, (2, 0), controls=loop)
     assert earlier.may_precede(later)
@@ -125,12 +125,12 @@ def test_try_stage_order_still_precedes_event_region_comparison():
     body = _position(
         9,
         (4, 0),
-        controls=(CompactControlBranch(0, CompactControlBranchKind.TRY_BODY),),
+        controls=(CompactControlBranch(parent_statement_index=0, kind=CompactControlBranchKind.TRY_BODY),),
     )
     final = _position(
         0,
         (0, 1),
-        controls=(CompactControlBranch(0, CompactControlBranchKind.TRY_FINALLY),),
+        controls=(CompactControlBranch(parent_statement_index=0, kind=CompactControlBranchKind.TRY_FINALLY),),
     )
     assert body.may_precede(final)
     assert not final.may_precede(body)
@@ -140,7 +140,7 @@ def test_try_stage_order_still_precedes_event_region_comparison():
 def test_suite_entry_keeps_existing_header_uncertainty():
     header = _position(0, (1, 0))
     body = _position(
-        0, controls=(CompactControlBranch(0, CompactControlBranchKind.IF_BODY),)
+        0, controls=(CompactControlBranch(parent_statement_index=0, kind=CompactControlBranchKind.IF_BODY),)
     )
     assert header.may_precede(body)
     assert body.may_precede(header)
@@ -173,13 +173,13 @@ def _positions(sequence, path=()):
     results = {}
     for index, item in enumerate(sequence):
         if isinstance(item, str):
-            results[item] = CompactFlowPosition((), 0, index, path)
+            results[item] = CompactFlowPosition(branch_path=(), statement_index=0, event_index=index, evaluation_path=path)
         else:
             for member_index, member in enumerate(item.members):
                 results.update(
                     _positions(
                         member,
-                        (*path, CompactEvaluationBranch(index, member_index)),
+                        (*path, CompactEvaluationBranch(parent_event_index=index, member_index=member_index)),
                     )
                 )
     return results
@@ -221,10 +221,10 @@ def _receive_positions(positions):
 
 
 def test_compact_pickle_and_spawn_preserve_shared_regions():
-    branch = CompactEvaluationBranch(1, 0)
+    branch = CompactEvaluationBranch(parent_event_index=1, member_index=0)
     positions = (
-        CompactFlowPosition((), 0, 0, (branch,)),
-        CompactFlowPosition((), 0, 1, (branch,)),
+        CompactFlowPosition(branch_path=(), statement_index=0, event_index=0, evaluation_path=(branch,)),
+        CompactFlowPosition(branch_path=(), statement_index=0, event_index=1, evaluation_path=(branch,)),
     )
     restored = pickle.loads(pickle.dumps(positions))
     assert restored == positions
@@ -239,8 +239,8 @@ def test_compact_pickle_and_spawn_preserve_shared_regions():
 
 
 def test_deep_regions_do_not_require_recursive_position_comparison():
-    path = tuple(CompactEvaluationBranch(index, 0) for index in range(1500))
-    earlier = CompactFlowPosition((), 0, 0, path)
-    later = CompactFlowPosition((), 0, 1, path)
+    path = tuple(CompactEvaluationBranch(parent_event_index=index, member_index=0) for index in range(1500))
+    earlier = CompactFlowPosition(branch_path=(), statement_index=0, event_index=0, evaluation_path=path)
+    later = CompactFlowPosition(branch_path=(), statement_index=0, event_index=1, evaluation_path=path)
     assert earlier.dominates(later)
     assert not later.may_precede(earlier)

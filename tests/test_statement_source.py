@@ -98,10 +98,10 @@ def test_member_insertion_precedes_complete_decorator_and_attached_comment(
 
 def test_coalesced_class_members_keep_declared_evaluation_order() -> None:
     first = ClassMemberInsertion(
-        target_id="owner", members=(ClassMemberSource("z", "    z = 3\n"),)
+        target_id="owner", members=(ClassMemberSource(name="z", source="    z = 3\n"),)
     )
     second = ClassMemberInsertion(
-        target_id="owner", members=(ClassMemberSource("a", "    a = z + 1\n"),)
+        target_id="owner", members=(ClassMemberSource(name="a", source="    a = z + 1\n"),)
     )
     combined = ClassMemberInsertion._coalesced_same_target((first, second))
     namespace = {}

@@ -74,8 +74,10 @@ def test_actual_root_uses_canonical_factory_and_complete_prepared_namespace():
     assert entry.frame.locals is entry
     assert entry.completion_prefix.endpoint.frame is entry.frame
     names = NamespaceMemberInventory(
-        environment.kernel, entry, entry.completion_prefix
-    ).names
+        kernel=environment.kernel,
+        namespace=entry,
+        prefix=entry.completion_prefix,
+            ).names
     assert {
         "__registry__",
         "__registry_key__",

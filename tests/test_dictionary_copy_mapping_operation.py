@@ -47,8 +47,8 @@ CASES = (
             + f"observed=dict({operand})\n"
             + STORE,
             (
-                SourceTextReplacement(STORE, ""),
-                SourceTextReplacement("observed=", STORE + "observed="),
+                SourceTextReplacement(old_source=STORE, new_source=""),
+                SourceTextReplacement(old_source="observed=", new_source=STORE + "observed="),
             ),
             operand == "other",
         )
@@ -57,32 +57,32 @@ CASES = (
     MappingCase(
         "same_key_different_native_value",
         VALUES,
-        (SourceTextReplacement("= object", "= property"),),
+        (SourceTextReplacement(old_source="= object", new_source="= property"),),
         False,
     ),
     MappingCase(
         "same_native_value",
         VALUES,
-        (SourceTextReplacement("padding", "extra"),),
+        (SourceTextReplacement(old_source="padding", new_source="extra"),),
         True,
     ),
     MappingCase(
         "changed_keyword",
         "registry={}\nobserved=dict(registry, extra=object)\n",
-        (SourceTextReplacement("extra=", "other="),),
+        (SourceTextReplacement(old_source="extra=", new_source="other="),),
         False,
     ),
     MappingCase(
         "changed_call",
         "registry={}\nobserved=dict(registry)\n",
-        (SourceTextReplacement("dict(registry)", "dict(registry, added=object)"),),
+        (SourceTextReplacement(old_source="dict(registry)", new_source="dict(registry, added=object)"),),
         False,
     ),
     MappingCase(
         "source_created_identity_unproved",
         "padding=None\nclass Item: pass\nregistry={}\n"
         "registry['alpha']=Item\nobserved=dict(registry)\n",
-        (SourceTextReplacement("padding", "extra"),),
+        (SourceTextReplacement(old_source="padding", new_source="extra"),),
         False,
     ),
     MappingCase(
@@ -90,8 +90,8 @@ CASES = (
         "registry={}\n" + STORES + "observed=dict(registry)\n",
         (
             SourceTextReplacement(
-                STORES,
-                "registry['beta']=property\nregistry['alpha']=object\n",
+                old_source=STORES,
+                new_source="registry['beta']=property\nregistry['alpha']=object\n",
             ),
         ),
         True,
@@ -207,7 +207,7 @@ def test_failed_mapping_blocks_application_even_without_optional_guards(
     snapshot = snapshot_for(path, VALUES)
     before_bytes = path.read_bytes()
     operation = obligation(snapshot, path)
-    patch = patch_for(path, (SourceTextReplacement("= object", "= property"),))
+    patch = patch_for(path, (SourceTextReplacement(old_source="= object", new_source="= property"),))
     simulation = document_for_operation(operation, (patch,)).simulate(snapshot)
     assert not simulation.is_clean
     with pytest.raises(ValueError):
@@ -220,7 +220,7 @@ def test_positive_mapping_allows_checked_apply_to_original_file(tmp_path):
     path = tmp_path / "allowed.py"
     snapshot = snapshot_for(path, VALUES)
     operation = obligation(snapshot, path)
-    patch = patch_for(path, (SourceTextReplacement("padding", "extra"),))
+    patch = patch_for(path, (SourceTextReplacement(old_source="padding", new_source="extra"),))
     simulation = document_for_operation(operation, (patch,)).simulate(snapshot)
     assert simulation.is_clean
     assert simulation.apply() == (path.as_posix(),)
@@ -299,9 +299,9 @@ def test_earlier_recipe_obligation_checks_later_recipe_physical_edits(tmp_path, 
     snapshot = snapshot_for(path, VALUES)
     operation = obligation(snapshot, path)
     replacement = (
-        SourceTextReplacement("padding", "extra")
+        SourceTextReplacement(old_source="padding", new_source="extra")
         if safe
-        else SourceTextReplacement("= object", "= property")
+        else SourceTextReplacement(old_source="= object", new_source="= property")
     )
     document = document_for_operation(
         operation, (patch_for(path, (replacement,)),), separate=True
@@ -323,7 +323,7 @@ def test_failed_stage_does_not_advance_to_later_file_creation(tmp_path):
     operation = obligation(snapshot, path)
     first = document_for_operation(
         operation,
-        (patch_for(path, (SourceTextReplacement("= object", "= property"),)),),
+        (patch_for(path, (SourceTextReplacement(old_source="= object", new_source="= property"),)),),
     )
     second = CodemodPlanDocument(
         recipes=(
@@ -362,7 +362,7 @@ def test_sequence_preflight_retains_post_simulation_mapping_failure(tmp_path):
     operation = obligation(snapshot, path)
     document = document_for_operation(
         operation,
-        (patch_for(path, (SourceTextReplacement("= object", "= property"),)),),
+        (patch_for(path, (SourceTextReplacement(old_source="= object", new_source="= property"),)),),
     )
     document.preflight(snapshot).report.require_clean()
     report = CodemodPlanSequence(documents=(document,)).preflight_snapshot(snapshot)
@@ -380,7 +380,7 @@ def test_document_preflight_retains_post_simulation_mapping_failure(tmp_path):
     operation = obligation(snapshot, path)
     document = document_for_operation(
         operation,
-        (patch_for(path, (SourceTextReplacement("= object", "= property"),)),),
+        (patch_for(path, (SourceTextReplacement(old_source="= object", new_source="= property"),)),),
     )
     document.preflight(snapshot).report.require_clean()
     report = document.preflight_snapshot(snapshot)
@@ -421,9 +421,9 @@ def test_failed_optional_guard_cannot_hide_required_mapping_report(tmp_path, saf
     snapshot = snapshot_for(path, VALUES)
     operation = obligation(snapshot, path)
     replacement = (
-        SourceTextReplacement("padding", "extra")
+        SourceTextReplacement(old_source="padding", new_source="extra")
         if safe
-        else SourceTextReplacement("= object", "= property")
+        else SourceTextReplacement(old_source="= object", new_source="= property")
     )
     document = document_for_operation(operation, (patch_for(path, (replacement,)),))
     document = replace(

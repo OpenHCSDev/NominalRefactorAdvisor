@@ -34,7 +34,7 @@ def context(source):
     digest = compiler.source_index.target_by_id[
         target.required_target_id(compiler.source_index)
     ]
-    return compiler, SourceTargetEditor(compiler.sources_by_file_path, digest)
+    return compiler, SourceTargetEditor(sources=compiler.sources_by_file_path, target=digest)
 
 
 def exact(source, old, new):
@@ -79,7 +79,7 @@ def test_direct_index_rejects_out_of_bounds_or_nonmonotone_intervals(offsets):
         for start, end in offsets
     )
     with pytest.raises(ValueError, match="fit|monotone"):
-        SourceRetainedSpanIndex(SourceTextGeometry("abcdef"), inputs)
+        SourceRetainedSpanIndex(geometry=SourceTextGeometry("abcdef"), ordered_inputs=inputs)
 
 
 @pytest.mark.parametrize("physical", (False, True))
@@ -90,7 +90,7 @@ def test_neutral_insertions_remain_actual_inputs_without_interrupting_a_read(phy
         _, editor = context(source)
         item = SourceInsertion(file_path=PATH, insertion_line=2)
         ordered = editor.ordered_windows((item,))
-        index = SourceRetainedSpanIndex(geometry, ordered)
+        index = SourceRetainedSpanIndex(geometry=geometry, ordered_inputs=ordered)
         assert index.ordered_inputs is ordered
     else:
         item = SourceTextSpanReplacement(5, 5, replacement_source="")
@@ -115,9 +115,9 @@ def test_outer_and_inner_deltas_apply_once_with_unicode_and_actual_rendering(
     first, second = exact(source, "café", "long_café"), exact(
         source, "left", "renamed_left"
     )
-    batch = NominalEditBatch(owner, (first, prefix, second))
+    batch = NominalEditBatch(compiler=owner, edits=(first, prefix, second))
     ordered = editor.ordered_windows(batch.windows)
-    index = SourceRetainedSpanIndex(SourceTextGeometry(source), ordered)
+    index = SourceRetainedSpanIndex(geometry=SourceTextGeometry(source), ordered_inputs=ordered)
     originals = (
         span(source, "sorted"),
         span(source, "type"),
@@ -141,14 +141,15 @@ def test_cross_window_contiguity_refuses_even_when_fine_edits_could_prove_it():
     source = "before = object\nleft = 1; read = type\n"
     owner, editor = context(source)
     mutation = exact(source, "1", "1000")
-    batch = NominalEditBatch(owner, (mutation,))
+    batch = NominalEditBatch(compiler=owner, edits=(mutation,))
     original = SourceTextSpan(0, source.index("1"))
     assert SourceTextGeometry(source).exact_span_index(mutation.replacements).project(
         (original,)
     ) == (original,)
     index = SourceRetainedSpanIndex(
-        SourceTextGeometry(source), editor.ordered_windows(batch.windows)
-    )
+        geometry=SourceTextGeometry(source),
+        ordered_inputs=editor.ordered_windows(batch.windows),
+            )
     with pytest.raises(ValueError, match="across window boundaries"):
         index.project((original,))
 
@@ -168,9 +169,9 @@ def test_coalesced_stale_geometry_admission_visits_actual_exact_participants(nes
     if nested:
         window = CoalescedSourceWindow((CoalescedSourceWindow((first,)), window))
     with pytest.raises(ValueError, match="original source geometry"):
-        SourceRetainedSpanIndex(SourceTextGeometry(first_source), (window,))
+        SourceRetainedSpanIndex(geometry=SourceTextGeometry(first_source), ordered_inputs=(window,))
     with pytest.raises(ValueError, match="original source geometry"):
-        SourceRetainedSpanIndex(SourceTextGeometry(second_source), (first,))
+        SourceRetainedSpanIndex(geometry=SourceTextGeometry(second_source), ordered_inputs=(first,))
 
 
 def test_equal_empty_character_anchors_keep_physical_order_and_identity():
@@ -179,14 +180,14 @@ def test_equal_empty_character_anchors_keep_physical_order_and_identity():
         file_path=PATH, insertion_line=1, inserted_lines=("first = object\n",)
     )
     middle = SourceSpanReplacement(
-        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("middle = type\n",)
+        file_path=PATH, span=SourceLineSpan(start_line=1, end_line=1), replacement_lines=("middle = type\n",)
     )
     last = SourceInsertion(
         file_path=PATH, insertion_line=2, inserted_lines=("last = sorted\n",)
     )
-    batch = NominalEditBatch(owner, (last, middle, first))
+    batch = NominalEditBatch(compiler=owner, edits=(last, middle, first))
     ordered = editor.ordered_windows(batch.windows)
-    index = SourceRetainedSpanIndex(SourceTextGeometry(""), ordered)
+    index = SourceRetainedSpanIndex(geometry=SourceTextGeometry(""), ordered_inputs=ordered)
     assert index.ordered_inputs is ordered
     assert len(index.ordered_inputs) == 3
     assert tuple(item.physical_edit.start_line for item in index.ordered_inputs) == (
@@ -210,12 +211,12 @@ def test_repeated_queries_cache_indices_and_batch_duplicate_reads_per_window(
     source = "left = object; another = type\nright = sorted\n"
     owner, editor = context(source)
     batch = NominalEditBatch(
-        owner,
-        (
+        compiler=owner,
+        edits=(
             exact(source, "left", "renamed_left"),
             exact(source, "right", "renamed_right"),
         ),
-    )
+            )
     ordered = editor.ordered_windows(batch.windows)
     built, delegated = [], []
     original_init = SourceRetainedSpanIndex.__post_init__
@@ -233,7 +234,7 @@ def test_repeated_queries_cache_indices_and_batch_duplicate_reads_per_window(
     monkeypatch.setattr(
         ExactSourceWindow, "_project_retained_interiors", counted_project
     )
-    index = SourceRetainedSpanIndex(SourceTextGeometry(source), ordered)
+    index = SourceRetainedSpanIndex(geometry=SourceTextGeometry(source), ordered_inputs=ordered)
     originals = (
         span(source, "sorted"),
         span(source, "object"),

@@ -71,9 +71,9 @@ class NativeSubscriptionAuthority(NativeDeclarationFamily, CompletedSourceOperat
     @cached_property
     def inspected_argument(self) -> InertNativeArgumentWitness:
         return InertNativeArgumentWitness(
-            self.environment,
-            CompactFlowValue(context=self.context, use=self.invocation.argument_use),
-        )
+            environment=self.environment,
+            read=CompactFlowValue(context=self.context, use=self.invocation.argument_use),
+               )
 
     @classmethod
     def for_subscription(

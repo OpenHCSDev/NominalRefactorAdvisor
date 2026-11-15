@@ -73,8 +73,9 @@ def test_forwarded_result_cannot_precede_its_operand_or_borrow_a_foreign_context
     )
     for context in contexts:
         forged = CompactFlowValue(
-            context, replace(read.use, position=value.result.value_use.position)
-        )
+            context=context,
+            use=replace(read.use, position=value.result.value_use.position),
+                 )
         with pytest.raises(ValueError, match="unproved|original"):
             environment.kernel._forwarded_result_value_resolution(
                 value, (forged, frozenset())
@@ -101,8 +102,9 @@ def test_fabricated_later_cut_cannot_replace_the_original_forwarding_read():
         for node in environment.module.module.body
     )
     forged = CompactFlowValue(
-        first.context, replace(first.use, position=second.use.position)
-    )
+        context=first.context,
+        use=replace(first.use, position=second.use.position),
+             )
     with pytest.raises(ValueError, match="original"):
         environment.kernel._forwarded_result_value_resolution(
             first.use.value, (forged, frozenset())

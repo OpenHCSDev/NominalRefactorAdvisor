@@ -73,8 +73,10 @@ def test_substitution_and_replaced_snapshot_get_independent_projections(
     original = hierarchy.for_source_class(leaf)
     original_base = hierarchy.for_source_class(classes["probe.Base"])
     substitution = NativeClassBaseSubstitution(
-        root, root.node.bases[0], NativeClassMroDeclaration(object)
-    )
+        owner=root,
+        base=root.node.bases[0],
+        replacement=NativeClassMroDeclaration(object),
+                   )
     changed = replace(hierarchy, substitution=substitution)
     projected = changed.for_source_class(leaf)
     assert projected is not original

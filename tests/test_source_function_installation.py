@@ -87,8 +87,10 @@ def test_preinstallation_cut_does_not_contain_the_original_definition_store():
     (
         copy,
         lambda prefix: SingleFlowPrefix(
-            prefix.endpoint.context, prefix.endpoint.frame, prefix.endpoint.position
-        ),
+            context=prefix.endpoint.context,
+            frame=prefix.endpoint.frame,
+            position=prefix.endpoint.position,
+                       ),
     ),
 )
 def test_copied_or_truncated_cut_cannot_borrow_canonical_installation(rebuild):

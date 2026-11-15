@@ -73,7 +73,7 @@ def test_two_phase_groups_keep_actual_occurrences_and_rendering_order():
             SourceTextSpanReplacement(0, 0, replacement_source="import collections\n"),
         ),
     )
-    batch = NominalEditBatch(compiler(), (first, middle, last, first))
+    batch = NominalEditBatch(compiler=compiler(), edits=(first, middle, last, first))
     (final,) = batch.windows
     physical_group, exact_window = final.windows
     assert physical_group.windows[0] is first
@@ -97,14 +97,15 @@ def test_equal_output_intersects_actual_exact_and_opaque_evidence(opaque, revers
     other = exact(old="type", new="type")
     second = (
         SourceSpanReplacement(
-            file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=(SOURCE,)
+            file_path=PATH, span=SourceLineSpan(start_line=1, end_line=1), replacement_lines=(SOURCE,)
         )
         if opaque
         else OtherExact(revision=other.revision, replacements=other.replacements)
     )
     batch = NominalEditBatch(
-        compiler(), (second, first) if reverse else (first, second)
-    )
+        compiler=compiler(),
+        edits=(second, first) if reverse else (first, second),
+            )
     assert rendered(batch) == SOURCE
     (window,) = batch.windows
     for name in ("object", "type"):
@@ -123,7 +124,7 @@ def test_deletion_groups_preserve_sorted_overlap_and_pairwise_metadata_fold():
     source = "".join(f"value_{index} = object\n" for index in range(1, 8))
     first, second, third, isolated = tuple(
         SourceSpanDeletion(
-            file_path=PATH, span=SourceLineSpan(start, end), rationale=rationale
+            file_path=PATH, span=SourceLineSpan(start_line=start, end_line=end), rationale=rationale
         )
         for start, end, rationale in (
             (1, 2, "A"),
@@ -132,7 +133,7 @@ def test_deletion_groups_preserve_sorted_overlap_and_pairwise_metadata_fold():
             (6, 6, "C"),
         )
     )
-    batch = NominalEditBatch(compiler(source), (third, isolated, first, second))
+    batch = NominalEditBatch(compiler=compiler(source), edits=(third, isolated, first, second))
     joined, separate = batch.windows
     assert joined.windows[0].windows == (first, second, third)
     assert separate.windows[0].windows == (isolated,)
@@ -169,7 +170,7 @@ def test_imports_keep_nominal_grouping_without_becoming_window_declarations():
         not isinstance(edit, (CoalescedSourceWindow, ExactSourceWindow))
         for edit in imports.edits
     )
-    batch = NominalEditBatch(owner, (*imports.edits, exact()))
+    batch = NominalEditBatch(compiler=owner, edits=(*imports.edits, exact()))
     output = rendered(batch)
     assert output.count("import typing") == 1
     assert "renamed = object" in output
@@ -220,7 +221,7 @@ def test_batch_caches_exact_resolution_for_render_and_repeated_interior_queries(
     source = SOURCE + SOURCE.replace("left", "second")
     first = exact(source)
     second = exact(source, old="second", new="another")
-    batch = NominalEditBatch(compiler(source), (first, second))
+    batch = NominalEditBatch(compiler=compiler(source), edits=(first, second))
     windows = batch.windows
     assert len(windows) == 2
     exact_window = windows[0].windows[0]
@@ -261,7 +262,7 @@ def test_one_abstract_window_owner_and_one_physical_projection():
 @pytest.mark.parametrize("deletion", (False, True))
 def test_keyed_and_deletion_grouping_project_each_occurrence_once(deletion):
     peer = (
-        SourceSpanDeletion(file_path=PATH, span=SourceLineSpan(1, 2), )
+        SourceSpanDeletion(file_path=PATH, span=SourceLineSpan(start_line=1, end_line=2), )
         if deletion
         else insertion("typing")
     )

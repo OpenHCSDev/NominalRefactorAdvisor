@@ -28,7 +28,7 @@ def test_full_coverage_has_no_focused_report_boundary(
         "redundant": (*roots, roots[0] / "source.py"),
     }[report_kind]
     explicit = AnalysisPathScope.from_requested_roots(reports, roots)
-    direct = AnalysisPathScope(roots, reports)
+    direct = AnalysisPathScope(analysis_roots=roots, report_roots=reports)
     assert explicit == direct == AnalysisPathScope(roots)
     assert not direct.has_report_filter
     assert direct.resolved_report_roots == ()
@@ -43,7 +43,7 @@ def test_partial_coverage_still_requires_full_context(tmp_path: Path) -> None:
     roots = (tmp_path / "first", tmp_path / "second")
     for root in roots:
         root.mkdir()
-    scope = AnalysisPathScope(roots, (roots[0],))
+    scope = AnalysisPathScope(analysis_roots=roots, report_roots=(roots[0],))
     assert scope.has_report_filter
     assert scope.analysis_roots == roots
     assert scope.includes_report_path(roots[0] / "source.py")
@@ -53,7 +53,7 @@ def test_partial_coverage_still_requires_full_context(tmp_path: Path) -> None:
 def test_file_report_does_not_cover_its_package(tmp_path: Path) -> None:
     source = tmp_path / "source.py"
     source.write_text("class Owner: pass\n")
-    scope = AnalysisPathScope((tmp_path,), (source,))
+    scope = AnalysisPathScope(analysis_roots=(tmp_path,), report_roots=(source,))
     assert scope.has_report_filter
     assert scope.includes_report_path(source)
     assert not scope.includes_report_path(tmp_path / "other.py")
@@ -62,7 +62,7 @@ def test_file_report_does_not_cover_its_package(tmp_path: Path) -> None:
 def test_file_context_can_be_fully_reported(tmp_path: Path) -> None:
     source = tmp_path / "source.py"
     source.write_text("class Owner: pass\n")
-    assert not AnalysisPathScope((source,), (source,)).has_report_filter
+    assert not AnalysisPathScope(analysis_roots=(source,), report_roots=(source,)).has_report_filter
 
 
 def test_symlink_report_coverage_preserves_analysis_spelling(tmp_path: Path) -> None:
@@ -70,7 +70,7 @@ def test_symlink_report_coverage_preserves_analysis_spelling(tmp_path: Path) -> 
     target.mkdir()
     alias = tmp_path / "alias"
     alias.symlink_to(target, target_is_directory=True)
-    scope = AnalysisPathScope((alias,), (target,))
+    scope = AnalysisPathScope(analysis_roots=(alias,), report_roots=(target,))
     assert scope.analysis_roots == (alias,)
     assert not scope.has_report_filter
 

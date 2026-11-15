@@ -67,7 +67,7 @@ def conversion(tmp_path, source=_PLAIN, *, patch=False):
         operations += (
             PatchTargetOperation(
                 target=SourceRewriteTarget(file_path=path.as_posix()),
-                replacements=(SourceTextReplacement("padding", "updated"),),
+                replacements=(SourceTextReplacement(old_source="padding", new_source="updated"),),
             ),
         )
     simulation = CodemodPlanDocument(
@@ -113,8 +113,9 @@ def test_generated_requirement_owns_actual_candidate_node_environment_and_revisi
     original_source = before.product_flow_repository.source_projection(original_module)
     assert requirement.node not in original_source.reference_reads_by_node
     assert requirement.receipt.revision == CodemodSourceRevision(
-        module.file_path, CodemodSourceRevision.hash_source(module.source)
-    )
+        file_path=module.file_path,
+        source_hash=CodemodSourceRevision.hash_source(module.source),
+                                           )
     assert requirement.receipt.span == SourceByteSpan.require_node(requirement.node)
     assert (
         requirement.receipt.revision.source_hash

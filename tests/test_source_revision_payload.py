@@ -76,7 +76,7 @@ def test_same_location_changed_expression_does_not_reuse_source_revision(newline
 
 def test_source_revision_hash_alias_is_same_canonical_function():
     assert CodemodSourceRevision.hash_source is python_source_cache_signature
-    assert CodemodSourceRevision("/repo/use.py", None).hash_source is (
+    assert CodemodSourceRevision(file_path="/repo/use.py", source_hash=None).hash_source is (
         python_source_cache_signature
     )
     assert CodemodSourceRevision.hash_source("μ\r\n") != (
@@ -101,10 +101,10 @@ def test_revision_json_shape_preserves_absent_empty_and_existing_sources(source)
 
 
 def test_native_owner_positional_constructor_equality_hash_and_pickle_unchanged():
-    span = SourceByteSpan(0, 1, 2, 3)
-    revision = CodemodSourceRevision("/repo/use.py", "hash")
-    assert span == SourceByteSpan(0, 1, 2, 3)
-    assert revision == CodemodSourceRevision("/repo/use.py", "hash")
+    span = SourceByteSpan(start_line_index=0, end_line_index=1, start_byte=2, end_byte=3)
+    revision = CodemodSourceRevision(file_path="/repo/use.py", source_hash="hash")
+    assert span == SourceByteSpan(start_line_index=0, end_line_index=1, start_byte=2, end_byte=3)
+    assert revision == CodemodSourceRevision(file_path="/repo/use.py", source_hash="hash")
     assert hash(span) == hash((0, 1, 2, 3))
     assert hash(revision) == hash(("/repo/use.py", "hash"))
     assert pickle.loads(pickle.dumps((span, revision))) == (span, revision)

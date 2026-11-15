@@ -42,8 +42,11 @@ def _entry(text="result = property\n", bindings=None):
     if bindings is not None:
         facts.update(bindings)
     return module, SourceModuleEntryPremise(
-        source, island, facts, island.namespace_for_storage(vars(builtins))
-    )
+        source=source,
+        native_island=island,
+        bindings=facts,
+        builtins=island.namespace_for_storage(vars(builtins)),
+            )
 
 
 def test_source_entry_itself_owns_fresh_namespace_and_canonical_frame():
@@ -65,8 +68,11 @@ def test_initial_facts_are_immutable_and_do_not_mirror_source_bindings():
     unknown = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
     facts = {"known_unknown": unknown}
     entry = SourceModuleEntryPremise(
-        source, island, facts, island.namespace_for_storage(vars(builtins))
-    )
+        source=source,
+        native_island=island,
+        bindings=facts,
+        builtins=island.namespace_for_storage(vars(builtins)),
+                   )
     facts["known_unknown"] = CapturedNativeObject(property)
     facts["alias"] = CapturedNativeObject(property)
     assert entry.member("known_unknown") is unknown
@@ -86,8 +92,11 @@ def test_entry_rejects_equal_foreign_context_and_foreign_native_admission():
     with pytest.raises(ValueError, match="different entry premise"):
         entry.require_admitted(InitialNativeIsland((builtins,)))
     other = SourceModuleEntryPremise(
-        entry.source, entry.initial, {}, entry.frame.builtins
-    )
+        source=entry.source,
+        native_island=entry.initial,
+        bindings={},
+        builtins=entry.frame.builtins,
+            )
     assert entry is not other
     assert entry.frame is not other.frame
 
@@ -105,18 +114,18 @@ def test_entry_requires_exactly_one_module_flow(flows):
         )
     source = replace(entry.source, compact=replace(entry.source.compact, flows=flows))
     with pytest.raises(ValueError, match="one actual module flow"):
-        SourceModuleEntryPremise(source, entry.initial, {}, entry.frame.builtins)
+        SourceModuleEntryPremise(source=source, native_island=entry.initial, bindings={}, builtins=entry.frame.builtins)
 
 
 def test_unknown_captured_builtins_does_not_erase_known_globals():
     _, entry = _entry()
     unknown = OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
     explicit = SourceModuleEntryPremise(
-        entry.source,
-        entry.initial,
-        {"builtins": CapturedNativeObject(builtins)},
-        unknown,
-    )
+        source=entry.source,
+        native_island=entry.initial,
+        bindings={"builtins": CapturedNativeObject(builtins)},
+        builtins=unknown,
+               )
     explicit.initial.require_frame(explicit.frame)
     assert explicit.member("builtins").value is builtins
     assert explicit.frame.builtins is unknown
@@ -129,7 +138,10 @@ def test_initial_facts_require_typed_evidence_and_exact_scalar_keys(facts):
     _, entry = _entry()
     with pytest.raises(TypeError):
         SourceModuleEntryPremise(
-            entry.source, entry.initial, facts, entry.frame.builtins
+            source=entry.source,
+            native_island=entry.initial,
+            bindings=facts,
+            builtins=entry.frame.builtins,
         )
 
 
@@ -138,10 +150,10 @@ def test_foreign_builtin_namespace_cannot_be_used_in_entry():
     foreign = InitialNativeIsland((builtins,))
     with pytest.raises(ValueError, match="different admission"):
         SourceModuleEntryPremise(
-            entry.source,
-            entry.initial,
-            {},
-            foreign.namespace_for_storage(vars(builtins)),
+            source=entry.source,
+            native_island=entry.initial,
+            bindings={},
+            builtins=foreign.namespace_for_storage(vars(builtins)),
         )
 
 
@@ -221,7 +233,7 @@ class _FirstReadEffects(CapturedReferenceEffectsABC):
         assert position.event_index == 0
         assert not self.entry.context.flow.calls
         assert len(self.entry.context.flow.mutations) == 1
-        return SingleFlowPrefix(context, self.entry.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.entry.frame, position=position)
 
 
 @pytest.mark.parametrize("shadow", (False, True))
@@ -230,8 +242,9 @@ def test_supplied_source_entry_agrees_with_isolated_actual_native_execution(shad
     module, entry = _entry(bindings=facts)
     read = entry.source.reference_reads_by_node[module.module.body[0].value]
     result = CapturedReferenceKernel(
-        entry.initial, _FirstReadEffects(entry, read)
-    ).read(read)
+        initial=entry.initial,
+        effects=_FirstReadEffects(entry, read),
+              ).read(read)
     expected = object if shadow else property
     assert (
         result.require_native_identity(NativeDeclaration(expected)).declaration
@@ -255,8 +268,9 @@ def test_known_unknown_initial_binding_does_not_fall_through_to_native_builtin()
     module, entry = _entry(bindings={"property": unknown})
     read = entry.source.reference_reads_by_node[module.module.body[0].value]
     outcome = CapturedReferenceKernel(
-        entry.initial, _FirstReadEffects(entry, read)
-    ).read(read)
+        initial=entry.initial,
+        effects=_FirstReadEffects(entry, read),
+             ).read(read)
     assert outcome is unknown
     with pytest.raises(ValueError, match="remains open"):
         outcome.require_native_identity(NativeDeclaration(property))

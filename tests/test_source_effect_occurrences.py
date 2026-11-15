@@ -63,7 +63,7 @@ def test_import_occurrence_closes_only_its_actual_alias():
         if isinstance(op.event, CompactMutation)
     )
     first, second = stores
-    interval = SingleFlowPrefix(env.entry.context, env.entry.frame, second.position)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=second.position)
     selected = tuple(
         item
         for item in occurrences(env, interval)
@@ -82,7 +82,7 @@ def test_import_occurrence_closes_only_its_actual_alias():
 @pytest.mark.native_proof
 def test_expression_disposition_selects_store_or_discard_application():
     env = execution('"module documentation"\nNone\n')
-    interval = SingleFlowPrefix(env.entry.context, env.entry.frame, None)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None)
     selected = tuple(
         item
         for item in occurrences(env, interval)
@@ -133,7 +133,7 @@ def test_operation_selection_retains_half_open_boundaries(part):
         "empty": (first.position, first.position, ()),
     }
     start, end, expected = starts_ends[part]
-    interval = SingleFlowPrefix(env.entry.context, env.entry.frame, end, start)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=end, after=start)
     actual = tuple(
         item.operation
         for item in occurrences(env, interval)
@@ -155,7 +155,7 @@ def test_unresolved_evaluation_uses_original_observer_bounds(part):
         "after": (evaluation.exit, None),
     }
     start, end = bounds[part]
-    interval = SingleFlowPrefix(env.entry.context, env.entry.frame, end, start)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=end, after=start)
     selected = tuple(
         item
         for item in occurrences(env, interval)
@@ -179,14 +179,14 @@ def test_missing_observer_bounds_are_not_treated_as_no_effect():
             item for item in env.source.evaluations if item.node is not node
         ),
     )
-    interval = SingleFlowPrefix(env.entry.context, env.entry.frame, None)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None)
     with pytest.raises(ValueError, match="no actual operation or evaluation bound"):
         tuple(env.effects.occurrences(source, interval))
 
 
 def test_selected_failure_does_not_mark_interval_closed():
     env = execution("unknown()\n")
-    interval = SingleFlowPrefix(env.entry.context, env.entry.frame, None)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None)
     for _ in range(2):
         with pytest.raises(ValueError):
             env.require_interval_effects(interval)

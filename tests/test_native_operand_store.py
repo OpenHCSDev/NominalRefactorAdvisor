@@ -107,8 +107,8 @@ def test_operand_edges_exclude_non_operand_metadata_fields():
     class AnnotatedProduction(NativeProducedValue):
         annotation: NativeProducedValue
 
-    operand = NativeProducedValue(0, ())
-    metadata = NativeProducedValue(9, ())
+    operand = NativeProducedValue(instruction_offset=0, inputs=())
+    metadata = NativeProducedValue(instruction_offset=9, inputs=())
     value = AnnotatedProduction(1, (operand,), metadata)
     assert value.graph_children is value.inputs
     assert value.productions() == (value, operand)

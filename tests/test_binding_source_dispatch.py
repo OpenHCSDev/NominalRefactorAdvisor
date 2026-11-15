@@ -74,10 +74,10 @@ def test_selected_source_projects_actual_evidence(name: str) -> None:
     selection = flow.binding_resolution_for(name)
     assert selection is not None
     position = flow.mutations[0].position
-    context = CompactFlowContext(module.module_name, module.file_path, flow)
-    prior = CompactFlowContext("prior", module.file_path, flow)
-    pending = frozenset((CompactBindingVisit(prior, flow.mutations[0]),))
-    reference = LexicalValueReference(name, ("member",))
+    context = CompactFlowContext(module_name=module.module_name, file_path=module.file_path, flow=flow)
+    prior = CompactFlowContext(module_name="prior", file_path=module.file_path, flow=flow)
+    pending = frozenset((CompactBindingVisit(context=prior, mutation=flow.mutations[0]),))
+    reference = LexicalValueReference(root_name=name, attribute_path=("member",))
     resolver = _ReceiptResolver()
     result = selection.resolve_binding(resolver, context, reference, position, pending)
     (receipt,) = resolver.receipts

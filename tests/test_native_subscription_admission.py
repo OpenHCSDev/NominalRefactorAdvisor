@@ -66,7 +66,7 @@ class ReferenceFixtureEffects(CapturedReferenceEffectsABC):
             type(node) not in allowed for node in ast.walk(self.module.module)
         ):
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS)
-        return SingleFlowPrefix(context, self.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.frame, position=position)
 
 
 class ReferenceFixtureEnvironment(NativeReferenceEnvironment):
@@ -110,14 +110,16 @@ def _reference(value=list, expression="chosen"):
     module = ParsedModule(path=Path("subscription.py"), module_name="subscription", module=tree, source=source)
     observed = source_product_flow_projection(module)
     globals_storage = {"chosen": value}
-    initial = InitialNativeIsland((builtins,), (globals_storage,))
+    initial = InitialNativeIsland(modules=(builtins,), extra_storages=(globals_storage,))
     namespace = initial.namespace_for_storage(globals_storage)
     frame = InitialNativeFrame(
-        namespace, namespace, initial.namespace_for_storage(vars(builtins))
-    )
+        locals=namespace,
+        globals=namespace,
+        builtins=initial.namespace_for_storage(vars(builtins)),
+            )
     effects = ReferenceFixtureEffects(module, observed.compact.flow_contexts[0], frame)
     environment = ReferenceFixtureEnvironment(
-        observed, CapturedReferenceKernel(initial, effects)
+        observed, CapturedReferenceKernel(initial=initial, effects=effects)
     )
     return tree.body[0].value, environment
 
@@ -137,10 +139,10 @@ def _subscription(
     initial = InitialNativeIsland((builtins,))
     environment = SourceModuleExecution(
         SourceModuleEntryPremise(
-            source,
-            initial,
-            {"chosen": receiver, "argument": argument},
-            initial.namespace_for_storage(vars(builtins)),
+            source=source,
+            native_island=initial,
+            bindings={"chosen": receiver, "argument": argument},
+            builtins=initial.namespace_for_storage(vars(builtins)),
         )
     )
     operation = source.node_operation(module.module.body[0].value, CompactSubscription)

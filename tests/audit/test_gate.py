@@ -36,7 +36,7 @@ from tests.audit.gate_fixture import PROJECT, Checkout, FixtureProject
 
 def test_measure_owner_rejects_a_new_absence() -> None:
     name = NoneAbsence.at("tools/example.py")
-    result = Comparison("tools", "base", "head", (), {name: 0}, {name: 1}, {name: [1]}, {})
+    result = Comparison(root="tools", base_revision="base", head_revision="head", paths=(), base={name: 0}, head={name: 1}, introduced={name: [1]}, found={})
     assert result.delta[name] == 1
     assert result.failed
 
@@ -52,7 +52,7 @@ GROWN_ABSENCE = NoneAbsence.at("tools/example.py")
 def test_clean_lines_growth_fails_only_on_a_new_site_or_a_missing_report(introduced, failed, missing):
     """Raw growth alone is a move; an explicit empty report says nothing is new, while an
     absent report proves nothing."""
-    result = Comparison("tools", "base", "head", (), {GROWN_ABSENCE: 0}, {GROWN_ABSENCE: 1}, introduced, {})
+    result = Comparison(root="tools", base_revision="base", head_revision="head", paths=(), base={GROWN_ABSENCE: 0}, head={GROWN_ABSENCE: 1}, introduced=introduced, found={})
     assert result.delta[GROWN_ABSENCE] == 1
     assert result.failed is failed
     assert result.missing == missing
@@ -97,7 +97,7 @@ def test_plain_str_id_annotations_block_growth_per_file(source, expected):
     before = PlainStrIdAnnotation.snapshot(PROJECT, [(path, b"description: str")])
     after = PlainStrIdAnnotation.snapshot(PROJECT, [(path, source.encode())])
     identity = PlainStrIdAnnotation.at(path)
-    comparison = Comparison("src", "base", "head", (path,), before, after, {}, {})
+    comparison = Comparison(root="src", base_revision="base", head_revision="head", paths=(path,), base=before, head=after, introduced={}, found={})
     assert comparison.delta[identity] == expected
     assert comparison.failed == bool(expected)
 
@@ -1592,7 +1592,7 @@ def test_a_guarded_import_moved_into_another_file_grows_that_file(repo: Checkout
 
 def test_a_moved_file_reports_only_the_findings_its_move_added():
     """The base's findings of a moved file are matched at its head path, as its counts are."""
-    moved = ChangedPaths(frozenset({"old.py", "new.py"}), (("old.py", "new.py"),))
+    moved = ChangedPaths(touched=frozenset({"old.py", "new.py"}), moved=(("old.py", "new.py"),))
     kept, added = CheckerSite("new.py", 1, "kept"), CheckerSite("new.py", 2, "added")
     results = [(BaseSide, (CheckerSite("old.py", 1, "kept"),)), (HeadSide, (kept, added))]
     grown = TypeErrors.at("new.py")

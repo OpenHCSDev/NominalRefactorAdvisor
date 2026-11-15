@@ -242,7 +242,7 @@ def test_nonempty_value_read_cannot_request_empty_creation():
         environment.module.module.body[0].value
     ]
     owner = environment.empty_dictionary_creation(
-        CompactFlowValue(read.context, read.use)
+        CompactFlowValue(context=read.context, use=read.use)
     )
     # The compiler law refuses non-empty syntax when the owner is admitted.
     with pytest.raises(ValueError):

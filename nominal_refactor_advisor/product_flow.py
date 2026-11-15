@@ -3607,14 +3607,14 @@ class _DeclarationCollector(ast.NodeVisitor):
         )
         self.class_contexts.append(
             _ClassContext(
-                node,
-                CompactClassDeclaration(
+                node=node,
+                declaration=CompactClassDeclaration(
                     qualname=qualname,
                     capture=self.module.native_compilation.class_capture_for(
                         SourceByteSpan.require_node(node)
                     ),
                 ),
-                lexical_scopes,
+                lexical_scope_qualnames=lexical_scopes,
             )
         )
         self.scope_names.append(node.name)

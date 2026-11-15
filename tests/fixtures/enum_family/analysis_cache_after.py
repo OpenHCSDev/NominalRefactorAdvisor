@@ -208,7 +208,7 @@ class AnalysisFindingSummaryCachePayload:
     ) -> AnalysisFindingSummaryLookup:
         if self.identity != requested_identity:
             return AnalysisFindingSummaryLookup(Miss)
-        return AnalysisFindingSummaryLookup(Hit, self)
+        return AnalysisFindingSummaryLookup(status=Hit, payload=self)
 
 
 @dataclass(frozen=True)

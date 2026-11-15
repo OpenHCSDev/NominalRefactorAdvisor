@@ -100,8 +100,9 @@ def test_point_queries_match_full_original_indexes_including_ambiguity(modules, 
         symbol in repository.ambiguous_function_declaration_symbols
     )
     compact = CompactProductFlowRepository(
-        repository.product_projections, repository.class_projections
-    )
+        product_projections=repository.product_projections,
+        class_projections=repository.class_projections,
+              )
     assert compact.flow_context_for_symbol(symbol) is context
     assert compact._declared_function_resolution(symbol) == resolution
     for name in {source.module_name for source in modules}:

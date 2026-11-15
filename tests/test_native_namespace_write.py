@@ -54,27 +54,27 @@ class WriteFixtureEffects(CapturedReferenceEffectsABC):
             type(node) not in allowed for node in ast.walk(self.source.module)
         ):
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS)
-        return SingleFlowPrefix(context, self.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.frame, position=position)
 
 
 def fixture(entries, source="target.member = replacement\n"):
     module = ModuleType("write_fixture")
     vars(module).update(entries)
     globals_storage = {"target": module, "replacement": object}
-    initial = InitialNativeIsland((builtins, module), (globals_storage,))
+    initial = InitialNativeIsland(modules=(builtins, module), extra_storages=(globals_storage,))
     globals_namespace = initial.namespace_for_storage(globals_storage)
     frame = InitialNativeFrame(
-        globals_namespace,
-        globals_namespace,
-        initial.namespace_for_storage(vars(builtins)),
-    )
+        locals=globals_namespace,
+        globals=globals_namespace,
+        builtins=initial.namespace_for_storage(vars(builtins)),
+            )
     parsed = ParsedModule(path=Path("write.py"), module_name="write", module=ast.parse(source), source=source)
     projected = source_product_flow_projection(parsed)
     context = projected.compact.flow_contexts[0]
     kernel = CapturedReferenceKernel(
-        initial,
-        WriteFixtureEffects(parsed, context, frame),
-    )
+        initial=initial,
+        effects=WriteFixtureEffects(parsed, context, frame),
+             )
     writes = tuple(
         mutation
         for mutation in context.flow.mutations

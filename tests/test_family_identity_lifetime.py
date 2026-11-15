@@ -17,7 +17,7 @@ from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 def context(tmp_path, name="module"):
-    return CollectedFamilyCacheContext(tmp_path / f"{name}.py", name, "source", None)
+    return CollectedFamilyCacheContext(path=tmp_path / f"{name}.py", module_name=name, source_signature="source", family_cache_dir=None)
 
 
 def test_unscoped_identity_remains_fresh(tmp_path):

@@ -44,7 +44,7 @@ class InitialReadEffects(CapturedReferenceEffectsABC):
         mutation = context.flow.mutations[0]
         assert position != mutation.position
         assert position.dominates(mutation.position)
-        return SingleFlowPrefix(context, self.entry.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.entry.frame, position=position)
 
 
 def fixture(expression="property", *, bindings=None, modules=()):
@@ -58,9 +58,12 @@ def fixture(expression="property", *, bindings=None, modules=()):
     projection = source_product_flow_projection(module)
     island = InitialNativeIsland((builtins, *modules))
     entry = SourceModuleEntryPremise(
-        projection, island, bindings or {}, island.namespace_for_storage(vars(builtins))
-    )
-    kernel = CapturedReferenceKernel(island, InitialReadEffects(entry))
+        source=projection,
+        native_island=island,
+        bindings=bindings or {},
+        builtins=island.namespace_for_storage(vars(builtins)),
+            )
+    kernel = CapturedReferenceKernel(initial=island, effects=InitialReadEffects(entry))
     return module, entry, kernel
 
 

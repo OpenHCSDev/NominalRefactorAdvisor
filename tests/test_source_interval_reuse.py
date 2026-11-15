@@ -61,7 +61,7 @@ def test_failed_interval_is_not_recorded_as_closed():
             source=source,
         )
     )
-    interval = SingleFlowPrefix(execution.entry.context, execution.entry.frame, None)
+    interval = SingleFlowPrefix(context=execution.entry.context, frame=execution.entry.frame, position=None)
     for _ in range(2):
         with pytest.raises(ValueError):
             execution.require_interval_effects(interval)
@@ -91,7 +91,7 @@ def test_completed_receipt_is_scoped_to_its_actual_module_activation():
 def test_positioned_write_projection_is_reused_but_each_iterator_is_fresh(monkeypatch):
     execution = _execution(3)
     context = execution.entry.context
-    interval = SingleFlowPrefix(context, execution.entry.frame, None)
+    interval = SingleFlowPrefix(context=context, frame=execution.entry.frame, position=None)
     comparisons = []
     original = SingleFlowPrefix.contains
 
@@ -110,10 +110,10 @@ def test_positioned_write_projection_is_reused_but_each_iterator_is_fresh(monkey
     assert all(left is right for left, right in zip(first, second))
 
     later_cut = SingleFlowPrefix(
-        context,
-        execution.entry.frame,
-        context.flow.mutations[-1].position,
-    )
+        context=context,
+        frame=execution.entry.frame,
+        position=context.flow.mutations[-1].position,
+                )
     later = tuple(later_cut.mutation_occurrences())
     assert len(comparisons) == 2 * count
     assert all(occurrence.source is later_cut for occurrence in later)

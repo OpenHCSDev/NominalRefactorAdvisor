@@ -101,11 +101,11 @@ def test_subscription_argument_hashing_uses_native_provenance(
     observed = bindings.source_projection(module)
     initial = InitialNativeIsland((builtins, typing, prepared))
     entry = SourceModuleEntryPremise(
-        observed,
-        initial,
-        {name: CapturedNativeObject(value) for name, value in vars(prepared).items()},
-        initial.namespace_for_storage(vars(builtins)),
-    )
+        source=observed,
+        native_island=initial,
+        bindings={name: CapturedNativeObject(value) for name, value in vars(prepared).items()},
+        builtins=initial.namespace_for_storage(vars(builtins)),
+            )
     environment = SourceModuleExecution(entry)
     owner = module.module.body[-1]
     operation = next(

@@ -25,7 +25,7 @@ def test_workers_preserve_signatures_and_parent_owns_publication(tmp_path, worke
     assert owner is not None
     owner.source_file_signatures(paths)
     pending = owner.pending_semantic_hashes(paths)
-    plan = WorkerPlan(workers, len(pending))
+    plan = WorkerPlan(requested_worker_count=workers, work_item_count=len(pending))
     computed = plan.map(CachedSourceFileSignature.with_semantic_hash, pending)
 
     assert all(entry.semantic_hash is None for entry in owner.entries_by_path.values())
@@ -108,7 +108,7 @@ def test_single_preparation_task_does_not_start_idle_workers(tmp_path, monkeypat
         raise AssertionError("One task must execute in the current process")
 
     monkeypatch.setattr("nominal_refactor_advisor.worker_pool.ProcessPoolExecutor", forbidden)
-    result = WorkerPlan(16, len(pending)).map(
+    result = WorkerPlan(requested_worker_count=16, work_item_count=len(pending)).map(
         CachedSourceFileSignature.with_semantic_hash, pending,
     )
     assert len(result) == 1

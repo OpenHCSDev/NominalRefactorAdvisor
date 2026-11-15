@@ -131,7 +131,7 @@ def test_copied_application_and_foreign_callee_cannot_create_an_activation():
     with pytest.raises(ValueError, match="original creation chain"):
         replace(application).function_activation()
     foreign = environment.capture_definition(environment.module.module.body[1])
-    activation = SourceDefinitionFunctionActivation(application, foreign)
+    activation = SourceDefinitionFunctionActivation(application=application, function=foreign)
     with pytest.raises(ValueError, match="different source callee"):
         _ = activation.initial_entries
 

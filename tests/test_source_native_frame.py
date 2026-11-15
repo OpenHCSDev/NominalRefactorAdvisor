@@ -42,7 +42,8 @@ def test_module_origin_requires_original_compilation_for_each_consumer(statement
             ModuleNativeFrameOrigin(identity).resolve(resolver)
     with pytest.raises(ValueError, match="no admitted executing frame"):
         OpenNativeFrameOrigin(
-            original, NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN
+            compilation=original,
+            reason=NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN,
         ).resolve(resolver)
 
 

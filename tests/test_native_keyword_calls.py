@@ -170,8 +170,9 @@ def test_real_vm_implicit_argument_stays_positional_with_keyword_inputs(implicit
     exec(code, namespace)  # Execute only this authored bytecode fixture.
     assert namespace["result"] == ((implicit,), {"key": 7})
     window = NativeValueStoreWindow(
-        code, NativeCreationBackend.current().primitive_operations
-    )
+        code=code,
+        operations=NativeCreationBackend.current().primitive_operations,
+             )
     for instruction in dis.get_instructions(code):
         window.observe(instruction)
     (binding,) = window.operands.bindings

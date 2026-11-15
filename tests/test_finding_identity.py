@@ -44,14 +44,14 @@ MOVED_DOWN = "import os\n\n\nVALUE = os.sep\n\n\n"
 
 
 def _ids(detector, source: str) -> list[str]:
-    module = SourceModule(Path("pkg/mod.py"), "pkg.mod", source).parse()
+    module = SourceModule(path=Path("pkg/mod.py"), module_name="pkg.mod", source=source).parse()
     findings = detector.detect(ParsedModuleSet.of([module]), DetectorConfig())
     assert findings
     return [finding.stable_id for finding in findings]
 
 
 def _lines(detector, source: str) -> list[int]:
-    module = SourceModule(Path("pkg/mod.py"), "pkg.mod", source).parse()
+    module = SourceModule(path=Path("pkg/mod.py"), module_name="pkg.mod", source=source).parse()
     findings = detector.detect(ParsedModuleSet.of([module]), DetectorConfig())
     return [site.line for finding in findings for site in finding.evidence]
 
@@ -93,7 +93,7 @@ TWIN_CONDITIONS = (
 def _sorted_ids(source: str) -> list[str]:
     from nominal_refactor_advisor.analysis import SortedFindingsAuthority
 
-    module = SourceModule(Path("pkg/mod.py"), "pkg.mod", source).parse()
+    module = SourceModule(path=Path("pkg/mod.py"), module_name="pkg.mod", source=source).parse()
     findings = LongConditionFactoringLeadDetector().detect(
         ParsedModuleSet.of([module]), DetectorConfig()
     )
@@ -110,7 +110,7 @@ def test_two_identical_decisions_in_one_function_are_two_findings() -> None:
     assert first != second
     assert first == _ids(LongConditionFactoringLeadDetector(), LONG_CONDITION)[0]
     assert _sorted_ids(MOVED_DOWN + TWIN_CONDITIONS) == [first, second]
-    module = SourceModule(Path("pkg/mod.py"), "pkg.mod", TWIN_CONDITIONS).parse()
+    module = SourceModule(path=Path("pkg/mod.py"), module_name="pkg.mod", source=TWIN_CONDITIONS).parse()
     findings = SortedFindingsAuthority.sort(
         LongConditionFactoringLeadDetector().detect(
             ParsedModuleSet.of([module]), DetectorConfig()

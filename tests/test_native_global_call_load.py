@@ -120,8 +120,9 @@ def test_function_global_load_observation_does_not_claim_source_activation():
         if isinstance(value, CodeType)
     )
     window = NativeValueStoreWindow(
-        code, NativeCreationBackend.current().primitive_operations
-    )
+        code=code,
+        operations=NativeCreationBackend.current().primitive_operations,
+             )
     for instruction in dis.get_instructions(code):
         window.observe(instruction)
     assert window.store is not None

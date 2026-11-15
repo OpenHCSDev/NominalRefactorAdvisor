@@ -136,7 +136,7 @@ def test_application_chain_rejects_nonoriginal_or_nonimplicit_links(damage):
         object.__setattr__(
             call,
             "argument_slot",
-            NativeCallMarker(raw.instruction_offset, raw.source_span),
+            NativeCallMarker(instruction_offset=raw.instruction_offset, source_span=raw.source_span),
         )
     elif damage == "cycle":
         object.__setattr__(call, "inputs", (call.callee, call))

@@ -40,7 +40,7 @@ def test_surviving_alias_permits_deletion_and_inventory_removes_the_key(definiti
         owner.kernel._namespace_resolution(owner.entry, "Original", prefix, frozenset())
         is None
     )
-    names = NamespaceMemberInventory(owner.kernel, owner.entry, prefix).names
+    names = NamespaceMemberInventory(kernel=owner.kernel, namespace=owner.entry, prefix=prefix).names
     assert "saved" in names and "Original" not in names
 
 
@@ -85,8 +85,10 @@ def test_class_local_delete_does_not_delete_its_global_binding():
     assert (
         "local"
         not in NamespaceMemberInventory(
-            owner.kernel, entry, entry.completion_prefix
-        ).names
+            kernel=owner.kernel,
+            namespace=entry,
+            prefix=entry.completion_prefix,
+               ).names
     )
 
 
@@ -105,7 +107,7 @@ def test_class_global_delete_uses_global_storage_but_local_alias_retains_value()
     prefix = owner.required_prefix(owner.entry.context, None)
     assert (
         "Original"
-        not in NamespaceMemberInventory(owner.kernel, owner.entry, prefix).names
+        not in NamespaceMemberInventory(kernel=owner.kernel, namespace=owner.entry, prefix=prefix).names
     )
 
 
@@ -154,7 +156,7 @@ def test_reinstall_after_delete_proves_the_new_binding_without_old_value_release
     owner.capture(owner.module.module.body[-1].value).require_closed()
     prefix = owner.required_prefix(owner.entry.context, None)
     assert (
-        "Original" in NamespaceMemberInventory(owner.kernel, owner.entry, prefix).names
+        "Original" in NamespaceMemberInventory(kernel=owner.kernel, namespace=owner.entry, prefix=prefix).names
     )
 
 

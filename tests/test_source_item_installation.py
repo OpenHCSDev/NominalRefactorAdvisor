@@ -68,7 +68,7 @@ def test_unique_item_read_retains_original_class_and_strict_query_refuses(
         is environment.class_entry(environment.module.module.body[1]).definition
     )
     environment.item_installation_value(original).require_definition_identity(owner)
-    strict = CapturedSlotQuery(query.namespace, query.key, query.prefix, query.pending)
+    strict = CapturedSlotQuery(namespace=query.namespace, key=query.key, prefix=query.prefix, pending=query.pending)
     assert isinstance(strict.resolve(environment.kernel), OpenCapturedReference)
     assert replace(query, key="unused").resolve(environment.kernel) is None
 
@@ -140,7 +140,7 @@ def test_repeated_key_release_requires_the_original_independent_class_binding():
     with pytest.raises(ValueError, match="independent retained reference"):
         alpha.require_release_from(
             environment.kernel,
-            CapturedSlotQuery(environment.entry, "Alpha", query.prefix, frozenset()),
+            CapturedSlotQuery(namespace=environment.entry, key="Alpha", prefix=query.prefix, pending=frozenset()),
         )
 
 
@@ -221,7 +221,7 @@ def test_arbitrary_prefix_provider_does_not_inherit_storage_attestation():
     prefix.require_admitted(environment.initial)
     with pytest.raises(ValueError):
         effects.item_installation_value(actual)
-    kernel = CapturedReferenceKernel(environment.initial, effects)
+    kernel = CapturedReferenceKernel(initial=environment.initial, effects=effects)
     value = query.matching_item_write(kernel, actual)
     assert isinstance(value, OpenCapturedReference)
     with pytest.raises(ValueError):
@@ -236,7 +236,7 @@ def test_installation_transition_preserves_unrelated_pending_cycle_guard():
     query = tail_query(environment)
     alpha, beta = installation(query, 0), installation(query, 1)
     pending = frozenset(
-        CompactBindingVisit(occurrence.source.context, occurrence.mutation)
+        CompactBindingVisit(context=occurrence.source.context, mutation=occurrence.mutation)
         for occurrence in (alpha, beta)
     )
     value = replace(query, pending=pending).matching_item_write(

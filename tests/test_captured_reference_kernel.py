@@ -118,7 +118,7 @@ class FixtureEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return SingleFlowPrefix(context, self.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.frame, position=position)
 
 
 def _fixture(source):
@@ -131,15 +131,15 @@ def _fixture(source):
     projection = compact_product_flow_projection(module)
     context = projection.flow_contexts[0]
     globals_storage = {}
-    island = InitialNativeIsland((builtins, math), (globals_storage,))
+    island = InitialNativeIsland(modules=(builtins, math), extra_storages=(globals_storage,))
     globals_namespace = island.namespace_for_storage(globals_storage)
     frame = InitialNativeFrame(
-        globals_namespace,
-        globals_namespace,
-        island.namespace_for_storage(vars(builtins)),
-    )
+        locals=globals_namespace,
+        globals=globals_namespace,
+        builtins=island.namespace_for_storage(vars(builtins)),
+            )
     effects = FixtureEffects(module, context, frame)
-    kernel = CapturedReferenceKernel(island, effects)
+    kernel = CapturedReferenceKernel(initial=island, effects=effects)
     result = next(
         node
         for node in module.module.body
@@ -389,7 +389,7 @@ class PlainModuleFixtureEffects(CapturedReferenceEffectsABC):
                 return OpenCapturedReference(
                     CapturedReferenceViolation.UNPROVED_EFFECTS
                 )
-        return SingleFlowPrefix(context, self.frame, position)
+        return SingleFlowPrefix(context=context, frame=self.frame, position=position)
 
 
 @contextmanager
@@ -424,17 +424,17 @@ def _plain_module_fixture(source, modules, builtin_storage=None, registry_entrie
         globals_storage = {}
         if builtin_storage is None:
             builtin_storage = vars(builtins)
-        island = InitialNativeIsland(modules, (globals_storage, builtin_storage))
+        island = InitialNativeIsland(modules=modules, extra_storages=(globals_storage, builtin_storage))
         globals_namespace = island.namespace_for_storage(globals_storage)
         frame = InitialNativeFrame(
-            globals_namespace,
-            globals_namespace,
-            island.namespace_for_storage(builtin_storage),
-        )
+            locals=globals_namespace,
+            globals=globals_namespace,
+            builtins=island.namespace_for_storage(builtin_storage),
+                )
         kernel = CapturedReferenceKernel(
-            island,
-            PlainModuleFixtureEffects(module, context, frame),
-        )
+            initial=island,
+            effects=PlainModuleFixtureEffects(module, context, frame),
+                 )
         read = projection.reference_reads_by_span[
             SourceByteSpan.require_node(module.module.body[-1].value)
         ]

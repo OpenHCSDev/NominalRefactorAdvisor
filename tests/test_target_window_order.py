@@ -28,7 +28,7 @@ def context(source):
     digest = compiler.source_index.target_by_id[
         target.required_target_id(compiler.source_index)
     ]
-    return compiler, SourceTargetEditor(compiler.sources_by_file_path, digest)
+    return compiler, SourceTargetEditor(sources=compiler.sources_by_file_path, target=digest)
 
 
 @pytest.mark.parametrize("source", ("", "\n", "original = object\n"))
@@ -40,14 +40,14 @@ def test_actual_windows_keep_logical_anchor_order_and_renderer_output(source, re
     )
     middle = SourceSpanReplacement(
         file_path=PATH,
-        span=SourceLineSpan(1, 1),
+        span=SourceLineSpan(start_line=1, end_line=1),
         replacement_lines=("middle = object\n",),
     )
     after = SourceInsertion(
         file_path=PATH, insertion_line=2, inserted_lines=("after = sorted\n",)
     )
     edits = (after, middle, before) if reverse else (before, middle, after)
-    batch = NominalEditBatch(compiler, edits)
+    batch = NominalEditBatch(compiler=compiler, edits=edits)
     ordered = editor.ordered_windows(batch.windows)
     assert tuple(window.physical_edit.start_line for window in ordered) == (1, 1, 2)
     assert tuple(window.physical_edit.end_line for window in ordered) == (0, 1, 1)
@@ -72,7 +72,7 @@ def test_ordering_preserves_exact_resolution_not_only_its_physical_bytes():
     prefix = SourceInsertion(
         file_path=PATH, insertion_line=1, inserted_lines=("import typing\n",)
     )
-    batch = NominalEditBatch(compiler, (exact, prefix))
+    batch = NominalEditBatch(compiler=compiler, edits=(exact, prefix))
     ordered = editor.ordered_windows(batch.windows)
     assert ordered[0] is batch.windows[1]
     assert ordered[1] is batch.windows[0]
@@ -99,14 +99,14 @@ def test_equal_distinct_input_windows_are_not_recovered_by_equality():
     "changes, message",
     (
         ({"file_path": "foreign.py"}, "does not match"),
-        ({"span": SourceLineSpan(0, 1)}, "outside target"),
-        ({"span": SourceLineSpan(1, 3)}, "outside target"),
+        ({"span": SourceLineSpan(start_line=0, end_line=1)}, "outside target"),
+        ({"span": SourceLineSpan(start_line=1, end_line=3)}, "outside target"),
     ),
 )
 def test_actual_window_boundary_reuses_physical_target_admission(changes, message):
     _, editor = context("value = object\n")
     physical = SourceSpanReplacement(
-        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("value = type\n",)
+        file_path=PATH, span=SourceLineSpan(start_line=1, end_line=1), replacement_lines=("value = type\n",)
     )
     window = CoalescedSourceWindow((replace(physical, **changes),))
     for consume in (editor.ordered_windows, editor.replacement_source):
@@ -117,7 +117,7 @@ def test_actual_window_boundary_reuses_physical_target_admission(changes, messag
 def test_overlapping_windows_are_rejected_before_rendering():
     _, editor = context("value = object\n")
     physical = SourceSpanReplacement(
-        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("value = type\n",)
+        file_path=PATH, span=SourceLineSpan(start_line=1, end_line=1), replacement_lines=("value = type\n",)
     )
     windows = (CoalescedSourceWindow((physical,)), CoalescedSourceWindow((physical,)))
     for consume in (editor.ordered_windows, editor.replacement_source):

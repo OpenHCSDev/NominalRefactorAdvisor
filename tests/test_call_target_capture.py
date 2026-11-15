@@ -158,7 +158,7 @@ def test_capture_does_not_survive_as_the_binding_for_a_later_call() -> None:
             "owner.child.execute()",
             (
                 LexicalValueReference("owner"),
-                LexicalValueReference("owner", ("child",)),
+                LexicalValueReference(root_name="owner", attribute_path=("child",)),
             ),
         ),
         ("factory().execute()", ()),
@@ -207,7 +207,7 @@ def test_receiver_property_is_evaluated_before_argument_call() -> None:
         use.target.lexical_reference for use in flow.callable_reference_uses
     ) == (
         LexicalValueReference("owner"),
-        LexicalValueReference("owner", ("child",)),
+        LexicalValueReference(root_name="owner", attribute_path=("child",)),
     )
     owner_use, child_use = flow.callable_reference_uses
     inner, outer = flow.calls

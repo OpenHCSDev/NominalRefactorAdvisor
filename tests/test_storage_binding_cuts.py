@@ -29,12 +29,12 @@ def context(source, qualname=""):
 def frame():
     local = {}
     global_ = {}
-    island = InitialNativeIsland((builtins,), (local, global_))
+    island = InitialNativeIsland(modules=(builtins,), extra_storages=(local, global_))
     return InitialNativeFrame(
-        island.namespace_for_storage(local),
-        island.namespace_for_storage(global_),
-        island.namespace_for_storage(vars(builtins)),
-    )
+        locals=island.namespace_for_storage(local),
+        globals=island.namespace_for_storage(global_),
+        builtins=island.namespace_for_storage(vars(builtins)),
+           )
 
 
 def test_first_write_cut_proves_empty_storage_without_changing_lexical_selection():

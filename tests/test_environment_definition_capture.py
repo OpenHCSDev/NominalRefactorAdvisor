@@ -59,7 +59,7 @@ def test_generic_kernel_keeps_typed_open_instead_of_gaining_definition_proof(
     # kernel. Successful source-prefix evidence does not add its missing role.
     generic = ReferenceFixtureEnvironment(
         environment.source,
-        CapturedReferenceKernel(environment.initial, environment),
+        CapturedReferenceKernel(initial=environment.initial, effects=environment),
     )
     value = generic.capture_definition(node)
     assert isinstance(value, OpenCapturedReference)

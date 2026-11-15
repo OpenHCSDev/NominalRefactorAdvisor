@@ -54,7 +54,7 @@ def read_and_later(environment):
     )
     read = environment.source.value_reads_by_node[answer.value]
     mutation = environment.source.mutation_operation(later.targets[0]).event
-    return read, CompactBindingVisit(read.context, mutation)
+    return read, CompactBindingVisit(context=read.context, mutation=mutation)
 
 
 def test_actual_future_mutation_is_not_a_candidate_of_earlier_positioned_read():
@@ -78,8 +78,8 @@ def test_unordered_sibling_events_keep_guard_without_ordering_member_indices():
     # evaluated assignment whose RHS ordering would contradict its constructor.
     environment = execution("answer=property\nlater=other=object\n")
     read, visit = read_and_later(environment)
-    first = CompactFlowPosition((), 0, 0, (CompactEvaluationBranch(0, 0),))
-    second = CompactFlowPosition((), 0, 100, (CompactEvaluationBranch(0, 1),))
+    first = CompactFlowPosition(branch_path=(), statement_index=0, event_index=0, evaluation_path=(CompactEvaluationBranch(parent_event_index=0, member_index=0),))
+    second = CompactFlowPosition(branch_path=(), statement_index=0, event_index=100, evaluation_path=(CompactEvaluationBranch(parent_event_index=0, member_index=1),))
     unordered = replace(visit, mutation=replace(visit.mutation, position=second))
     assert unordered.required_at_read(read.context, first)
 
@@ -135,7 +135,7 @@ def outcome(source, keep_all, monkeypatch):
         )
         read = environment.source.value_reads_by_node[answer.value]
         pending = frozenset(
-            CompactBindingVisit(context, mutation)
+            CompactBindingVisit(context=context, mutation=mutation)
             for context in environment.source.compact.flow_contexts
             for mutation in context.flow.mutations
             if context is not read.context
@@ -168,7 +168,7 @@ def test_true_historical_cycle_guard_is_not_dropped_after_successful_query():
     binding = environment.source.mutation_operation(assignment.targets[0]).event
     success = environment.kernel.read(read)
     assert isinstance(success, CapturedNativeObject) and success.value is property
-    visit = CompactBindingVisit(read.context, binding)
+    visit = CompactBindingVisit(context=read.context, mutation=binding)
     assert visit.required_at_read(read.context, read.use.position)
     blocked = environment.kernel._read_use(read.use, read.context, frozenset((visit,)))
     assert isinstance(blocked, OpenCapturedReference)
@@ -180,7 +180,7 @@ def test_future_local_guard_does_not_remove_compile_time_local_absence():
     answer, assignment = environment.module.module.body[0].body
     read = environment.source.value_reads_by_node[answer.value]
     mutation = environment.source.mutation_operation(assignment.targets[0]).event
-    assert not CompactBindingVisit(read.context, mutation).required_at_read(
+    assert not CompactBindingVisit(context=read.context, mutation=mutation).required_at_read(
         read.context, read.use.position
     )
     assert read.context.flow.local_binding_hides_outer_lookup("property")
@@ -236,7 +236,7 @@ def test_nested_historical_lookup_never_reselects_a_discarded_guard(
             active.pop()
 
     def select(kernel, context, reference, binding, position, pending):
-        visit = CompactBindingVisit(context, binding)
+        visit = CompactBindingVisit(context=context, mutation=binding)
         selections.append(visit)
         assert all(visit not in dropped for dropped in active)
         return original_select(kernel, context, reference, binding, position, pending)

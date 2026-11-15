@@ -25,11 +25,11 @@ def context():
 def test_repeated_visit_matches_but_copied_event_or_context_does_not():
     owner = context()
     event = owner.flow.mutations[0]
-    visit = CompactBindingVisit(owner, event)
-    assert visit == CompactBindingVisit(owner, event)
-    assert hash(visit) == hash(CompactBindingVisit(owner, event))
-    assert visit != CompactBindingVisit(replace(owner), event)
-    assert visit != CompactBindingVisit(owner, replace(event))
+    visit = CompactBindingVisit(context=owner, mutation=event)
+    assert visit == CompactBindingVisit(context=owner, mutation=event)
+    assert hash(visit) == hash(CompactBindingVisit(context=owner, mutation=event))
+    assert visit != CompactBindingVisit(context=replace(owner), mutation=event)
+    assert visit != CompactBindingVisit(context=owner, mutation=replace(event))
     assert visit != (owner.owner_symbol, event)
     assert visit.context is owner
     assert visit.mutation is event
@@ -38,8 +38,8 @@ def test_repeated_visit_matches_but_copied_event_or_context_does_not():
 def test_visit_hash_and_equality_do_not_traverse_the_source_graph(monkeypatch):
     owner = context()
     event = owner.flow.mutations[0]
-    first = CompactBindingVisit(owner, event)
-    second = CompactBindingVisit(owner, event)
+    first = CompactBindingVisit(context=owner, mutation=event)
+    second = CompactBindingVisit(context=owner, mutation=event)
 
     def forbidden(*args):
         raise AssertionError("Cycle visits must not compare or hash source value graphs")
@@ -78,13 +78,13 @@ def test_value_origin_cycle_requires_the_original_flow_and_binding():
     reference = LexicalValueReference("alias")
 
     cyclic = selection.value_origin(
-        flow, reference, frozenset({CompactBindingVisit(flow, mutation)})
+        flow, reference, frozenset({CompactBindingVisit(context=flow, mutation=mutation)})
     )
     assert isinstance(cyclic, OpenCompactValueOrigin)
     assert cyclic.violation is CompactValueOriginViolation.CYCLIC_ALIAS
     for unrelated in (
-        CompactBindingVisit(replace(flow), mutation),
-        CompactBindingVisit(flow, replace(mutation)),
+        CompactBindingVisit(context=replace(flow), mutation=mutation),
+        CompactBindingVisit(context=flow, mutation=replace(mutation)),
     ):
         result = selection.value_origin(flow, reference, frozenset({unrelated}))
         assert result.exact_origin == LexicalValueReference("value")

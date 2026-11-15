@@ -22,16 +22,16 @@ def execution(source, **bindings):
     seed = SourceModuleExecution.from_module(module)
     return SourceModuleExecution(
         SourceModuleEntryPremise(
-            seed.source,
-            seed.initial,
-            dict(
+            source=seed.source,
+            native_island=seed.initial,
+            bindings=dict(
                 seed.entry.initial_entries,
                 **{
                     name: CapturedNativeObject(value)
                     for name, value in bindings.items()
                 },
             ),
-            seed.entry.builtins,
+            builtins=seed.entry.builtins,
         )
     )
 

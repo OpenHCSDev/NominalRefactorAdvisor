@@ -55,7 +55,7 @@ def test_twelve_observations_form_one_checked_mapping_operation(tmp_path):
     source = batch_source()
     snapshot = snapshot_for(path, source)
     operation = selected_batch(snapshot, path)
-    patch = patch_for(path, (SourceTextReplacement("padding", "extra"),))
+    patch = patch_for(path, (SourceTextReplacement(old_source="padding", new_source="extra"),))
 
     environment, calls = operation.selected_calls(snapshot)
     assert len(calls) == 12
@@ -82,8 +82,8 @@ def test_any_changed_mapping_fails_the_whole_observation_batch(tmp_path, changed
         path,
         (
             SourceTextReplacement(
-                f"registry_{changed}['alpha']=object",
-                f"registry_{changed}['alpha']=property",
+                old_source=f"registry_{changed}['alpha']=object",
+                new_source=f"registry_{changed}['alpha']=property",
             ),
         ),
     )

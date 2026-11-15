@@ -19,18 +19,21 @@ def _parts():
     )
     effects = kernel.effects
     cut = effects.definition.target.header_position
-    parent = SingleFlowPrefix(effects.parent, effects.parent_frame, cut)
-    child = SingleFlowPrefix(effects.child, effects.child_frame, None)
+    parent = SingleFlowPrefix(context=effects.parent, frame=effects.parent_frame, position=cut)
+    child = SingleFlowPrefix(context=effects.child, frame=effects.child_frame, position=None)
     resume = SingleFlowPrefix(
-        effects.parent, effects.parent_frame, read.use.position, cut
-    )
+        context=effects.parent,
+        frame=effects.parent_frame,
+        position=read.use.position,
+        after=cut,
+             )
     return kernel, parent, child, resume
 
 
 @pytest.mark.parametrize("nested_side", ("left", "right"))
 def test_deep_prefix_traversal_preserves_actual_occurrences(nested_side):
     kernel, parent, child, resume = _parts()
-    prefix = ChildExecutionPrefix(parent, kernel.effects.definition, child)
+    prefix = ChildExecutionPrefix(parent=parent, definition=kernel.effects.definition, child=child)
     # Repetition is intentional: flattening must retain each occurrence so
     # admission can reject a duplicated activation rather than hiding it.
     count = 1200
@@ -54,9 +57,9 @@ def test_alternating_composites_preserve_cuts_and_canonical_frames():
     prefix = SequentialExecutionPrefix(
         (
             ChildExecutionPrefix(
-                SequentialExecutionPrefix((parent,)),
-                kernel.effects.definition,
-                SequentialExecutionPrefix((child,)),
+                parent=SequentialExecutionPrefix((parent,)),
+                definition=kernel.effects.definition,
+                child=SequentialExecutionPrefix((child,)),
             ),
             SequentialExecutionPrefix((resume,)),
         )

@@ -29,9 +29,9 @@ def peers(request):
         other = replace(first, insertion_line=2)
     elif request.param is SourceSpanReplacement:
         first = SourceSpanReplacement(
-            file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("a = 1\n",)
+            file_path=PATH, span=SourceLineSpan(start_line=1, end_line=1), replacement_lines=("a = 1\n",)
         )
-        other = replace(first, span=SourceLineSpan(2, 2))
+        other = replace(first, span=SourceLineSpan(start_line=2, end_line=2))
     else:
         first = ModuleImportMutation.from_source(
             file_path=PATH, import_source="import typing\n"
@@ -60,10 +60,10 @@ def test_grouping_preserves_equal_but_distinct_participants_and_encounter_order(
 def test_actual_groups_derive_the_existing_public_coalescence_result(peers):
     first, other, duplicate, _different_file = peers
     first = replace(
-        first, origins=(SourceEditOrigin("r", "First", 0),), rationale="first"
+        first, origins=(SourceEditOrigin(recipe_id="r", plan_item_declaration="First", plan_item_index=0),), rationale="first"
     )
     duplicate = replace(
-        duplicate, origins=(SourceEditOrigin("r", "Second", 1),), rationale="second"
+        duplicate, origins=(SourceEditOrigin(recipe_id="r", plan_item_declaration="Second", plan_item_index=1),), rationale="second"
     )
     originals = first, other, duplicate
     groups = type(first).peer_groups(originals)
@@ -101,7 +101,7 @@ def test_duplicate_insertion_keeps_first_boundary_and_all_origins():
     duplicate = replace(
         second,
         leading_boundary=SourceInsertionBoundary.TWO_BLANK_LINES,
-        origins=(SourceEditOrigin("r", "Third", 2),),
+        origins=(SourceEditOrigin(recipe_id="r", plan_item_declaration="Third", plan_item_index=2),),
     )
     group = SourceInsertion.peer_groups((first, second, duplicate))[0]
     assert group[2] is duplicate
@@ -112,7 +112,7 @@ def test_duplicate_insertion_keeps_first_boundary_and_all_origins():
 
 def test_group_exposes_conflicting_replacement_inputs_before_merge_rejects():
     first = SourceSpanReplacement(
-        file_path=PATH, span=SourceLineSpan(1, 1), replacement_lines=("a = 1\n",)
+        file_path=PATH, span=SourceLineSpan(start_line=1, end_line=1), replacement_lines=("a = 1\n",)
     )
     conflicting = replace(first, replacement_lines=("a = 2\n",))
     group = SourceSpanReplacement.peer_groups((first, conflicting))[0]

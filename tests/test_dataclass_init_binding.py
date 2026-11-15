@@ -47,7 +47,7 @@ def authority(index, symbol):
 
 
 def test_each_field_records_its_init_binding_from_field_sentinel_and_decorator():
-    modules = (SourceModule(Path("records.py"), "records", SOURCE).parse(),)
+    modules = (SourceModule(path=Path("records.py"), module_name="records", source=SOURCE).parse(),)
     with ScanCache.scope():
         index = CompactClassFamilyIndex.from_modules(modules)
         child = authority(index, "records.Child")
@@ -113,7 +113,7 @@ def test_construction_parameters_follow_the_generated_init_along_the_mro():
 
     namespace: dict[str, object] = {}
     exec(CONSTRUCTION_SOURCE, namespace)
-    modules = (SourceModule(Path("shapes.py"), "shapes", CONSTRUCTION_SOURCE).parse(),)
+    modules = (SourceModule(path=Path("shapes.py"), module_name="shapes", source=CONSTRUCTION_SOURCE).parse(),)
     with ScanCache.scope():
         index = CompactClassFamilyIndex.from_modules(modules)
         for name in ("Root", "Left", "Right", "Joined", "Labelled", "Plain"):
@@ -135,7 +135,7 @@ def test_construction_parameters_follow_the_generated_init_along_the_mro():
 )
 def test_construction_parameters_refuse_what_rebinds_the_call(body, refusal):
     source = f"from dataclasses import dataclass\n\n@dataclass\nclass Built:\n    a: int\n{body}"
-    modules = (SourceModule(Path("built.py"), "built", source).parse(),)
+    modules = (SourceModule(path=Path("built.py"), module_name="built", source=source).parse(),)
     with ScanCache.scope():
         index = CompactClassFamilyIndex.from_modules(modules)
         with pytest.raises(ValueError, match=refusal):
@@ -147,7 +147,7 @@ def test_construction_parameters_refuse_an_outside_base_with_its_own_constructio
     admits no outside base but `object` and `ABC`, so the class stays open."""
 
     source = "from dataclasses import dataclass\n\n@dataclass\nclass Failed(Exception):\n    a: int\n"
-    modules = (SourceModule(Path("failed.py"), "failed", source).parse(),)
+    modules = (SourceModule(path=Path("failed.py"), module_name="failed", source=source).parse(),)
     with ScanCache.scope():
         index = CompactClassFamilyIndex.from_modules(modules)
         with pytest.raises(ValueError, match="no closed runtime MRO"):

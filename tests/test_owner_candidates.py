@@ -38,8 +38,9 @@ def _mixin_verdicts(*modules: tuple[str, str]):
         tuple(_module(name, source) for name, source in modules)
     )
     verdicts = ClassOverlapVerdicts(
-        tuple(projections), build_compact_class_family_index(projections)
-    )
+        projections=tuple(projections),
+        class_index=build_compact_class_family_index(projections),
+               )
     return [
         candidate for candidate in verdicts.candidates if candidate.move is ExtractMixin
     ]

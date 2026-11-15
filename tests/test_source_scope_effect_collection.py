@@ -200,10 +200,11 @@ def test_duplicate_or_missing_class_completion_does_not_choose_a_scope():
     root, evidence = collect("class Owner:\n    item = 1\n")
     owner = root.body[0]
     with pytest.raises(ValueError, match="one actual"):
-        SourceExecutionEffectEvidence(evidence.sites, ()).class_evidence(owner)
+        SourceExecutionEffectEvidence(sites=evidence.sites, completed_scopes=()).class_evidence(owner)
     with pytest.raises(ValueError, match="one actual"):
         SourceExecutionEffectEvidence(
-            evidence.sites, evidence.completed_scopes * 2
+            sites=evidence.sites,
+            completed_scopes=evidence.completed_scopes * 2,
         ).class_evidence(owner)
 
 
