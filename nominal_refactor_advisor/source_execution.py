@@ -813,6 +813,7 @@ class SourceFunctionCall(SignatureCallAuthorityABC, SourceFunctionActivationABC)
         return self.activation.result()
 
 
+@dataclass(frozen=True, eq=False)
 class SourceDefinitionDecoratorApplicationABC(
     SourceDefinitionResultABC,
     SourceNativeOperandInventoryABC,
@@ -942,7 +943,6 @@ class SourceNativeDecoratorApplication(
     """Native decorator application over the shared definition topology."""
 
     creation: SourceCreatedFunctionCapture
-    index: int
 
     native_declarations = NativeDecoratorContract.admitted_native_declarations()
 
@@ -3398,7 +3398,6 @@ class SourceClassDecoratorApplication(
     """Class decorator topology without a transformation or identity claim."""
 
     creation: SourceClassBodyEntryABC
-    index: int
     violation = CapturedReferenceViolation.UNPROVED_ACCESS
 
     @property

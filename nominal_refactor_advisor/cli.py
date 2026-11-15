@@ -2796,6 +2796,7 @@ class ArchitectureGuardSourceEvaluator:
         return tuple(updated_modules)
 
 
+@dataclass(frozen=True)
 class CodemodSourceSnapshotRequired(ABC):
     """Behavior shared by execution surfaces that require a source snapshot."""
 
@@ -2974,9 +2975,7 @@ class CodemodCliExecution(
     source_snapshot_error_message: ClassVar[str] = (
         "--codemod-preflight/--codemod-simulate/--codemod-apply require a codemod plan"
     )
-    parser: argparse.ArgumentParser
     args: argparse.Namespace
-    source_snapshot: CodemodSourceSnapshot | None
     execution_request: CodemodPlanExecutionRequest
     workflow_scan: CodemodWorkflowScan | None = None
 
