@@ -2606,7 +2606,7 @@ class LatentRosterValue(StatementValueQuestion[tuple[LatentRosterObservation, ..
             value=value.value,
         )
 
-    def bare(self, value: NoStatementValue) -> tuple[LatentRosterObservation, ...]:
+    def bare(self) -> tuple[LatentRosterObservation, ...]:
         return ()
 
 
@@ -3862,7 +3862,7 @@ class AnnotatedDeclarationKind(StatementValueQuestion[ClassBodyDeclarationKind])
     def supplied(self, value: SuppliedValue) -> ClassBodyDeclarationKind:
         return ClassBodyDeclarationKind.DEFAULTED_FIELD
 
-    def bare(self, value: NoStatementValue) -> ClassBodyDeclarationKind:
+    def bare(self) -> ClassBodyDeclarationKind:
         return ClassBodyDeclarationKind.FIELD
 
 
@@ -3960,7 +3960,7 @@ class AnnotatedFieldFact(StatementValueQuestion[CompactFieldFact]):
     def supplied(self, value: SuppliedValue) -> CompactFieldFact:
         return NoFieldFact()
 
-    def bare(self, value: NoStatementValue) -> CompactFieldFact:
+    def bare(self) -> CompactFieldFact:
         return CompactBareFieldFact()
 
 
@@ -5460,7 +5460,7 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
     class_aliases: dict[str, str]
     preceding_class_bound_names: frozenset[str]
 
-    def bare(self, value: NoStatementValue) -> CompactDataclassFieldRole:
+    def bare(self) -> CompactDataclassFieldRole:
         return CompactDataclassFieldRole.STORED_INIT
 
     def supplied(self, supplied: SuppliedValue) -> CompactDataclassFieldRole:
@@ -5662,7 +5662,7 @@ class _ReturnedFieldDeclaration(StatementValueQuestion[_FieldDeclarationFoldOutc
     def supplied(self, value: SuppliedValue) -> _FieldDeclarationFoldOutcome:
         return _FieldDeclarationReturned(value.value)
 
-    def bare(self, value: NoStatementValue) -> _FieldDeclarationFoldOutcome:
+    def bare(self) -> _FieldDeclarationFoldOutcome:
         return _FieldDeclarationUnfolded()
 
 

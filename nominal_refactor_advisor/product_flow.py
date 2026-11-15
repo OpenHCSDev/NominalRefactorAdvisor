@@ -4050,7 +4050,7 @@ class _AnnotatedAssignmentFlow(StatementValueQuestion[None]):
             (target,), result.lexical_reference, mutations
         )
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         target = self.statement.target
         self.collector.mutation_targets.visit(target)
         if isinstance(target, ast.Name) and self.collector.owner.kind.is_function_scope:

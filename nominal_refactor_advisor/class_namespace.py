@@ -637,7 +637,7 @@ class _AnnotatedAssignmentSource(StatementValueQuestion[None]):
     def supplied(self, value: SuppliedValue) -> None:
         self.projection.visit_Assign(self.statement)
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         """A bare annotation assigns nothing."""
 
 

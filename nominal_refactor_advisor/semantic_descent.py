@@ -4673,7 +4673,7 @@ class _AnnotatedPresentation(StatementValueQuestion[None]):
         ):
             self.visitor.generic_visit(self.statement)
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         self.visitor.generic_visit(self.statement)
 
 
@@ -4688,7 +4688,7 @@ class _ReturnedPresentation(StatementValueQuestion[None]):
         if not self.visitor._collect_return_projection(self.statement, value.value):
             self.visitor.generic_visit(self.statement)
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         self.visitor.generic_visit(self.statement)
 
 

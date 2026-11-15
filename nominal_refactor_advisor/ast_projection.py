@@ -364,7 +364,7 @@ class StatementValueQuestion(ABC, Generic[AnswerT]):
         raise NotImplementedError
 
     @abstractmethod
-    def bare(self, value: NoStatementValue) -> AnswerT:
+    def bare(self) -> AnswerT:
         raise NotImplementedError
 
 
@@ -456,7 +456,7 @@ class NoStatementValue(StatementValue):
         bare.append((key, self))
 
     def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:
-        return question.bare(self)
+        return question.bare()
 
     def visit_with(self, visitor: ast.NodeVisitor) -> None:
         return None

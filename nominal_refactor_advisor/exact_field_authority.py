@@ -117,7 +117,7 @@ class DefaultFreeField(StatementValueQuestion[None]):
     def supplied(self, value: SuppliedValue) -> None:
         raise ValueError("Promoted dataclass fields must be default-free names")
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         """A bare annotation is the default-free field the promotion moves."""
 
 

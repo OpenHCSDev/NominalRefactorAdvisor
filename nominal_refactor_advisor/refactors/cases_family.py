@@ -224,7 +224,7 @@ class EnumBodyAnnotation(StatementValueQuestion[None]):
     def supplied(self, value: SuppliedValue) -> None:
         raise handback(self.module, value.statement, ENUM_BODY_STATEMENT_UNMODELED)
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         """A bare annotation declares a field the family form keeps."""
 
 

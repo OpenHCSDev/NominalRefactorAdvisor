@@ -433,7 +433,7 @@ class _AnnotatedAssignmentReads(StatementValueQuestion[None]):
         self.collector.visit(value.value)
         self.collector.visit(self.target)
 
-    def bare(self, value: NoStatementValue) -> None:
+    def bare(self) -> None:
         """A bare annotation reads no value and binds no target."""
 
 
