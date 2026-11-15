@@ -198,6 +198,7 @@ class Repository:
         return frozenset(lines)
 
 
+@dataclass(frozen=True)
 class Change(Family, ABC, root=True):
     """One file's change between two revisions. Names are git's status letters."""
 
@@ -254,7 +255,6 @@ def _absent(path: str) -> ParseOutcome:
 
 @dataclass(frozen=True)
 class Added(Change, name="A"):
-    path: str
 
     @classmethod
     def from_paths(cls, paths: list[str]) -> Added:
@@ -274,12 +274,11 @@ class Copied(Added, name="C"):
 
     @classmethod
     def from_paths(cls, paths: list[str]) -> Copied:
-        return cls(paths[-1], paths[0])
+        return cls(path=paths[-1], source=paths[0])
 
 
 @dataclass(frozen=True)
 class Modified(Change, name="M"):
-    path: str
 
     @classmethod
     def from_paths(cls, paths: list[str]) -> Modified:
@@ -294,12 +293,11 @@ class TypeChanged(Modified, name="T"):
 @dataclass(frozen=True)
 class Renamed(Change, name="R"):
     old: str
-    path: str
     arity = 2
 
     @classmethod
     def from_paths(cls, paths: list[str]) -> Renamed:
-        return cls(paths[0], paths[-1])
+        return cls(old=paths[0], path=paths[-1])
 
     def before(self, census: MeasuredRevisions, base: str) -> ParseOutcome:
         return census.measure(base, self.old)
@@ -313,7 +311,6 @@ class Renamed(Change, name="R"):
 
 @dataclass(frozen=True)
 class Deleted(Change, name="D"):
-    path: str
 
     @classmethod
     def from_paths(cls, paths: list[str]) -> Deleted:
