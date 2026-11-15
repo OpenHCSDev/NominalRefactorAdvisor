@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Sequence
 
+from nominal_refactor_advisor.detectors._registry_candidates import ClassLineWitnessCandidate
 from nominal_refactor_advisor.semantic_algebra import ObjectFamilyShape
 from nominal_refactor_advisor.semantic_description_length import CompressionCertificate
 from nominal_refactor_advisor.class_index import CompactModuleClassProjection
@@ -63,7 +64,6 @@ from nominal_refactor_advisor.detectors._base import (
     high_confidence_spec,
     CandidateCollectionAuthority,
     SelfReflectiveBuiltinCandidate,
-    ClassLineWitnessCandidate,
     CollectsItselfUnderConfig,
     PropertyHookGroup,
 )

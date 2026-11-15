@@ -29,6 +29,12 @@ from nominal_refactor_advisor.detectors._candidates import (
     LineWitnessCandidate,
     WitnessCarrierCandidate,
 )
+from nominal_refactor_advisor.detectors._registry_candidates import (
+    ClassLineWitnessCandidate,
+    InjectiveTypeRegistryCandidate,
+    NonInjectiveTypeRegistryCandidate,
+    RepeatedKeyedFamilyCandidate,
+)
 from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
@@ -99,7 +105,6 @@ from nominal_refactor_advisor.detectors._base import (
     CandidateCollectionAuthority,
     CandidateCollectorBoilerplateCandidate,
     ClassLineNumbersGroup,
-    ClassLineWitnessCandidate,
     ClassMethodLineWitnessCandidate,
     CollectsItself,
     CollectsItselfFromCompactContext,
@@ -124,7 +129,6 @@ from nominal_refactor_advisor.detectors._base import (
     FindingSpecConstructionCandidate,
     high_confidence_certified_spec,
     high_confidence_spec,
-    InjectiveTypeRegistryCandidate,
     IssueDetector,
     KeyedFamilyAxisSpecsByKey,
     KeyedRecordInfrastructureCandidate,
@@ -134,13 +138,11 @@ from nominal_refactor_advisor.detectors._base import (
     ModuleCollectorCandidateDetector,
     NamedFunctionNode,
     NameFamilyClassNamesMixin,
-    NonInjectiveTypeRegistryCandidate,
     PipelineAssemblyStage,
     RegistryProjectionMaterialization,
     RegistryProjectionRole,
     RegistryProjectionSurfaceEvidence,
     RegistryProjectionSurfaceKind,
-    RepeatedKeyedFamilyCandidate,
     ResidualClosedAxisBranchingIdentity,
     ResultAssemblyPipelineFunction,
     SelfCastAliasPartition,

@@ -26,6 +26,7 @@ from nominal_refactor_advisor.detectors._regex_bundle import (
 )
 
 from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard, annotation_type_names
+from nominal_refactor_advisor.detectors._registry_candidates import ClassLineWitnessCandidate
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import (
     AstDemandCollectedFamily,
@@ -167,7 +168,6 @@ from nominal_refactor_advisor.detectors._base import (
     certified_spec,
     finding_spec_template,
     high_confidence_spec,
-    ClassLineWitnessCandidate,
     CollectsItselfUnderConfig,
     CollectsItselfFromCompactContext,
     GuardedWrapperSpecPair,
