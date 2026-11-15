@@ -144,7 +144,7 @@ class CapabilityGuardToOverrideOperation(
             raise ValueError(f"{qualname!r} is not a function declared in {source_path!r}")
         guard = CapabilityGuard.in_function(function)
         base = ResolvedClassTarget.from_rewrite_target(snapshot, self.base)
-        base_answer = AnsweredMethod(snapshot, base, function)
+        base_answer = AnsweredMethod(snapshot=snapshot, source_class=base, method=function)
         parents = snapshot.parsed_module_for_source_path(source_path).fact(ModuleNodeIndex).parents
         capability = base_answer.class_symbol(source_path, guard.capability, parents)
         if capability is None:

@@ -99,7 +99,7 @@ class StatementDeletionSource(StatementScopeSource):
             run = tuple(group)
             first_index, first = run[0]
             last_index, last = run[-1]
-            first_span = SourceNodeSpan(first, Include)
+            first_span = SourceNodeSpan(node=first, decorator_policy=Include)
             first_line = self.node_start_line(first_span)
             start = self.line_offsets[first_line - 1] + SourceByteSpan.character_column(
                 self.lines[first_line - 1], first.col_offset
@@ -164,7 +164,7 @@ class StatementDeletionSource(StatementScopeSource):
             if previous_line_end < start and not self.source[previous_line_end:start].strip():
                 preceding_start = previous_line_end
         if last_index + 1 < len(body):
-            following = self.node_start_line(SourceNodeSpan(body[last_index + 1], Include))
+            following = self.node_start_line(SourceNodeSpan(node=body[last_index + 1], decorator_policy=Include))
             following_start = self.line_offsets[following - 1]
             if (first_index == 0 or preceding_start < start) and (
                 following_start > end and not self.source[end:following_start].strip()
@@ -251,7 +251,7 @@ class StatementSource(SourceTextGeometry):
     node: ast.stmt
 
     def member_source(self, indentation: str) -> str:
-        span = SourceNodeSpan(self.node, Include)
+        span = SourceNodeSpan(node=self.node, decorator_policy=Include)
         first_line = self.node_start_line(span)
         original_line = self.lines[first_line - 1]
         original_indentation = original_line[

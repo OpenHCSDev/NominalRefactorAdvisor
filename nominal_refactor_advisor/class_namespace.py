@@ -523,7 +523,7 @@ class SourceExecutionEffectEvidence:
                         operation.owner is interval.context.flow.owner
                         and interval.contains(operation.event)
                     ):
-                        yield OperationEffectOccurrence(effect, interval, operation)
+                        yield OperationEffectOccurrence(effect=effect, interval=interval, operation=operation)
                 continue
             evaluations = tuple(
                 evaluation
@@ -538,7 +538,7 @@ class SourceExecutionEffectEvidence:
                 if interval.may_overlap_positions(
                     effect.earliest_application(source, evaluation), evaluation.exit
                 ):
-                    yield EvaluationEffectOccurrence(effect, interval, evaluation)
+                    yield EvaluationEffectOccurrence(effect=effect, interval=interval, evaluation=evaluation)
 
     def definition_effects(
         self,
@@ -588,18 +588,18 @@ class SourceExecutionEffectEvidence:
             raise ValueError("Class evidence requires one actual completed class scope")
         namespace = namespaces[0]
         return ClassNamespaceExecutionEvidence(
-            frozenset(
+            binding_names=frozenset(
                 name
                 for name, resolution in namespace.bindings.items()
                 if resolution is not LexicalNameResolution.EXTERNAL
             ),
-            tuple(
+            sites=tuple(
                 site
                 for site in self.sites
                 if site.binding_phase is ModuleBindingResolutionPhase.SOURCE_POSITION
                 and any(scope.class_declaration is owner for scope in site.scope_path)
             ),
-        )
+               )
 
 
 @dataclass(frozen=True)
@@ -734,7 +734,7 @@ class _ClassNamespaceEffectProjection(ast.NodeVisitor):
         self._record_effect(AugmentedAssignmentSourceEffect, node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        StatementValue.of(node).answer(_AnnotatedAssignmentSource(self, node))
+        StatementValue.of(node).answer(_AnnotatedAssignmentSource(projection=self, statement=node))
         if node.simple and self.scope.scopes[-1].records_variable_annotations:
             self._record_effect(AnnotationStorageEffect, node)
 
@@ -765,10 +765,10 @@ class _SourceExecutionEffectCollector(_DeclarationDependencyCollector):
             if effects:
                 self.effect_sites.append(
                     SourceEffectSite(
-                        node,
-                        effects,
-                        tuple(self.scopes),
-                        self.binding_phase,
+                        trigger=node,
+                        effects=effects,
+                        scope_path=tuple(self.scopes),
+                        binding_phase=self.binding_phase,
                     )
                 )
         super().visit(node)

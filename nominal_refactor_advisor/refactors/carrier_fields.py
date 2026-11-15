@@ -166,7 +166,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
         _target_identifier, target, class_node = self.target_node_from_context(context)
         if not isinstance(class_node, ast.ClassDef):
             raise ValueError("Field carrier replacement requires a class target")
-        target_class = ResolvedClassTarget(target, class_node)
+        target_class = ResolvedClassTarget(target=target, node=class_node)
         target_symbol = target_class.required_symbol(context)
         descendants = context.required_class_family_index.descendant_symbols(target_symbol)
         if descendants:
@@ -189,7 +189,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
             if self.field_name_for_statement(statement) in self.field_projection_map
         }
         fields = tuple(
-            AnsweredField(context, target_class, declarations[name])
+            AnsweredField(snapshot=context, source_class=target_class, method=declarations[name])
             for name in self.field_projection_map
             if name in declarations
         )

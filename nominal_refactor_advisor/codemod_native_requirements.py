@@ -235,8 +235,8 @@ class NativeUseRequirement:
         return NativeUseReceipt(
             self.operation.operation_key(),
             CodemodSourceRevision(
-                self.module.file_path,
-                CodemodSourceRevision.hash_source(self.module.source),
+                file_path=self.module.file_path,
+                source_hash=CodemodSourceRevision.hash_source(self.module.source),
             ),
             SourceByteSpan.require_node(self.node),
             tuple(declaration.qualified_name for declaration in self.declarations),
@@ -247,23 +247,25 @@ class NativeUseRequirement:
         capture = self.environment.capture(self.node)
         if isinstance(capture, OpenCapturedReference):
             return NativeUseResolution(
-                self.receipt, NativeUseProvenance.UNRESOLVED, capture.violation.value
-            )
+                receipt=self.receipt,
+                provenance=NativeUseProvenance.UNRESOLVED,
+                rationale=capture.violation.value,
+                   )
         # A contradictory known capture cannot be bypassed by an assumption.
         capture.require_native(self.declarations)
         try:
             self.require_behavior()
         except ValueError as error:
             return NativeUseResolution(
-                self.receipt,
-                NativeUseProvenance.CAPTURED_IDENTITY,
-                str(error),
-            )
+                receipt=self.receipt,
+                provenance=NativeUseProvenance.CAPTURED_IDENTITY,
+                rationale=str(error),
+                   )
         return NativeUseResolution(
-            self.receipt,
-            NativeUseProvenance.PROVED,
-            "Original operation behavior and result proved under the supplied source entry premises.",
-        )
+            receipt=self.receipt,
+            provenance=NativeUseProvenance.PROVED,
+            rationale="Original operation behavior and result proved under the supplied source entry premises.",
+               )
 
     def require_behavior(self) -> None:
         if self.source_state is None:

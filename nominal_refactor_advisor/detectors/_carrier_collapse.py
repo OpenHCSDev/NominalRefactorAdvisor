@@ -92,17 +92,17 @@ class CarrierCollapseCandidateDetector(
         authority_location = authority.named(authority.class_symbol)
         participant_locations = tuple(
             SourceLocation(
-                participant.context.file_path,
-                participant.declaration.line,
-                participant.symbol,
+                file_path=participant.context.file_path,
+                line=participant.declaration.line,
+                symbol=participant.symbol,
             )
             for participant in component.participants
         )
         call_locations = tuple(
             SourceLocation(
-                edge.resolved_call.context.file_path,
-                edge.resolved_call.call.line,
-                edge.resolved_call.context.owner_symbol,
+                file_path=edge.resolved_call.context.file_path,
+                line=edge.resolved_call.call.line,
+                symbol=edge.resolved_call.context.owner_symbol,
             )
             for edge in component.edges
         )

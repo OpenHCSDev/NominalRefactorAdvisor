@@ -173,9 +173,9 @@ class FormalConceptLattice(FiniteCoverRelation[FormalConcept]):
             )
         }
         if not row_tuple:
-            concepts.add(FormalConcept(frozenset(), frozenset()))
+            concepts.add(FormalConcept(extent=frozenset(), intent=frozenset()))
         elif objects:
-            concepts.add(FormalConcept(objects, shared_intent(objects)))
+            concepts.add(FormalConcept(extent=objects, intent=shared_intent(objects)))
         return cls(
             sorted_tuple(
                 concepts,
@@ -332,7 +332,7 @@ class OwnershipClosure:
                 if axis_name == owner_axis_name:
                     continue
                 projections.add(
-                    OwnershipProjection(owner_name, axis_name, str(axis_value))
+                    OwnershipProjection(owner_name=owner_name, projection_name=axis_name, target_name=str(axis_value))
                 )
         return cls(sorted_tuple(projections, key=repr))
 
@@ -439,7 +439,7 @@ class OwnershipClosure:
                 if target_name in path
             )
         )
-        return ProjectionDiagram(source_name, target_name, sorted_tuple(paths))
+        return ProjectionDiagram(source_name=source_name, target_name=target_name, paths=sorted_tuple(paths))
 
     def commuting_projection_pairs(
         self,

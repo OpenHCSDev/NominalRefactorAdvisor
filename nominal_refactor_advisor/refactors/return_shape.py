@@ -112,7 +112,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                 if new_annotation != annotation_src:
                     add(resolved_class.file_path, start, end, new_annotation)
 
-        for use in AnsweredMethod(snapshot, base, function).answering_calls():
+        for use in AnsweredMethod(snapshot=snapshot, source_class=base, method=function).answering_calls():
             geo = geometry(use.file_path)
             self._rewrite_reader(use, snapshot, geo, replacements)
 

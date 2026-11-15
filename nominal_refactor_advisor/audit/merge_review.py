@@ -58,7 +58,7 @@ def main() -> int:
     ap.add_argument("--top", type=int, default=10)
     args = ap.parse_args()
     repo = Repository(args.repo)
-    census = CensusRun(repo, Undeclared())
+    census = CensusRun(repo=repo, owners=Undeclared())
     reviews = [MergeReview.of(census, merge.sha, merge.time, merge.subject, args.root)
                for merge in repo.merges(args.since, args.rev)]
     failures = [(review, failure) for review in reviews for failure in review.unparsed]

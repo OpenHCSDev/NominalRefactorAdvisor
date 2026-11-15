@@ -256,7 +256,7 @@ class RefactorSearch:
 
     def score(self, scan: CodemodWorkflowScan) -> StateScore:
         census = MemberAwarenessCensusBuilder.from_sources(
-            CensusCorpus(tuple(scan.modules), self.config)
+            CensusCorpus(modules=tuple(scan.modules), config=self.config)
         ).report(self.introspection)
         return StateScore(
             findings=len(scan.findings),
@@ -268,12 +268,12 @@ class RefactorSearch:
         """Every concept played from `scan`, whose score is `start`, looking `depth` moves ahead."""
 
         turn = SearchTurn(
-            start,
-            tuple(
+            start=start,
+            moves=tuple(
                 self.move(scan, start, concept)
                 for concept in RefactorConcept.declaration_types()
             ),
-        )
+               )
         if depth <= 1:
             return turn
         widened = frozenset(move.concept for move in turn.front[: self.budget.width])
@@ -292,11 +292,12 @@ class RefactorSearch:
             )
         )
         if not targets:
-            return UnscoredMove(key, "no targets")
+            return UnscoredMove(concept=key, reason="no targets")
         if targets > self.budget.max_targets:
             return UnscoredMove(
-                key, f"{targets} targets exceed the per-concept cap of {self.budget.max_targets}"
-            )
+                concept=key,
+                reason=f"{targets} targets exceed the per-concept cap of {self.budget.max_targets}",
+                   )
         report = CodemodRefactorGoalRunner(
             roots=self.roots,
             config=self.config,
@@ -307,7 +308,7 @@ class RefactorSearch:
             trajectory_budget=CodemodRefactorTrajectoryBudget(),
         ).run()
         if not report.stop_reason.completed or not report.stages:
-            return UnscoredMove(key, f"goal search stopped: {report.stop_reason.value}")
+            return UnscoredMove(concept=key, reason=f"goal search stopped: {report.stop_reason.value}")
         end = report.trajectory_proof.proved_terminal.state.scan
         return ScoredMove(
             concept=key,

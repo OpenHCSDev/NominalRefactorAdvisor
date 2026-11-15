@@ -189,9 +189,9 @@ class RecordedTrace(IntrospectionSource):
                 sorted(
                     (
                         GenericIntrospector(
-                            consumer,
-                            len(introspected),
-                            sum(fields.get(name, 0) for name in introspected),
+                            consumer=consumer,
+                            classes=len(introspected),
+                            fields=sum(fields.get(name, 0) for name in introspected),
                         )
                         for consumer, introspected in by_consumer.items()
                         if len(introspected) >= 2

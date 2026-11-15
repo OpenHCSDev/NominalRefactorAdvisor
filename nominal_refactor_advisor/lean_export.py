@@ -59,10 +59,10 @@ def _source_location(row: JsonObject) -> SourceLocation:
     if not isinstance(line, int) or isinstance(line, bool):
         raise LeanExportError("evidence line must be an integer")
     return SourceLocation(
-        _required_string(row, "file_path"),
-        line,
-        _required_string(row, "symbol"),
-    )
+        file_path=_required_string(row, "file_path"),
+        line=line,
+        symbol=_required_string(row, "symbol"),
+           )
 
 
 def _evidence(row: JsonObject) -> tuple[SourceLocation, ...]:

@@ -140,7 +140,7 @@ class DispatchPolymorphismArm:
 
     @property
     def cases(self) -> tuple[DispatchPolymorphismCase, ...]:
-        return tuple(DispatchPolymorphismCase(literal, self) for literal in self.literals)
+        return tuple(DispatchPolymorphismCase(literal=literal, arm=self) for literal in self.literals)
 
 
 @dataclass(frozen=True)
@@ -331,7 +331,7 @@ class DispatchPolymorphismFunction:
             statements = self.case_statements(current.body)
             if not literals or statements is None:
                 return None
-            arms.append(DispatchPolymorphismArm(literals, statements))
+            arms.append(DispatchPolymorphismArm(literals=literals, statements=statements))
             if len(current.orelse) == 1 and isinstance(current.orelse[0], ast.If):
                 current = current.orelse[0]
                 continue
@@ -339,7 +339,7 @@ class DispatchPolymorphismFunction:
             break
         if not self.is_preservable_fallback(fallback):
             return None
-        return DispatchPolymorphismExtraction(tuple(arms), fallback)
+        return DispatchPolymorphismExtraction(arms=tuple(arms), fallback_statements=fallback)
 
     def match_extraction(self) -> DispatchPolymorphismExtraction | None:
         body = self.dispatch_body
@@ -362,10 +362,10 @@ class DispatchPolymorphismFunction:
             statements = self.case_statements(match_case.body)
             if not literals or statements is None:
                 return None
-            arms.append(DispatchPolymorphismArm(literals, statements))
+            arms.append(DispatchPolymorphismArm(literals=literals, statements=statements))
         if not self.is_preservable_fallback(fallback):
             return None
-        return DispatchPolymorphismExtraction(tuple(arms), fallback)
+        return DispatchPolymorphismExtraction(arms=tuple(arms), fallback_statements=fallback)
 
     def sequential_guard_extraction(self) -> DispatchPolymorphismExtraction | None:
         arms: list[DispatchPolymorphismArm] = []
@@ -379,12 +379,12 @@ class DispatchPolymorphismFunction:
             statements = self.case_statements(statement.body)
             if not literals or statements is None:
                 return None
-            arms.append(DispatchPolymorphismArm(literals, statements))
+            arms.append(DispatchPolymorphismArm(literals=literals, statements=statements))
             index += 1
         fallback = body[index:]
         if not arms or not self.is_preservable_fallback(fallback):
             return None
-        return DispatchPolymorphismExtraction(tuple(arms), fallback)
+        return DispatchPolymorphismExtraction(arms=tuple(arms), fallback_statements=fallback)
 
     def test_literals(self, test: ast.expr) -> tuple[ast.Constant, ...]:
         if not isinstance(test, ast.Compare) or len(test.ops) != 1:
@@ -1027,9 +1027,9 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
                 f"Dispatch literals derive duplicate class names: {source.class_names!r}"
             )
         insertion_line = NamedDeclarationSourceAuthority(
-            source.host.insertion_anchor,
-            context.sources_by_file_path[target_digest.file_path],
-        ).declaration_line_span.start_line
+            node=source.host.insertion_anchor,
+            source=context.sources_by_file_path[target_digest.file_path],
+                         ).declaration_line_span.start_line
         self_reference_resolves = ModuleReferenceScope(
             context.module_nodes_by_file_path[target_digest.file_path]
         ).resolves(
@@ -1062,12 +1062,12 @@ class DispatchToPolymorphismOperation(SourceReprovedOperation):
         body_start = dispatch_body[0].lineno
         body_end = dispatch_body[-1].end_lineno or dispatch_body[-1].lineno
         body_indent = SourceTargetEditor(
-            source_by_path,
-            target_digest,
-        ).indentation_for_line(body_start)
+            sources=source_by_path,
+            target=target_digest,
+                      ).indentation_for_line(body_start)
         return SourceSpanReplacement(
             file_path=target_digest.file_path,
-            span=SourceLineSpan(body_start, body_end),
+            span=SourceLineSpan(start_line=body_start, end_line=body_end),
             replacement_lines=tuple(
                 f"{body_indent}{line}\n" for line in source.dispatch_call_lines()
             ),

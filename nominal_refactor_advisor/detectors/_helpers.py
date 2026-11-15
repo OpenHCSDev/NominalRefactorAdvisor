@@ -1147,28 +1147,28 @@ class CompactMethodFamilyContext:
         return cls(
             candidate_families=(
                 CompactMethodFamilyCandidates(
-                    ExactMethodRoleComponent,
-                    exact_method_candidates,
+                    candidate_type=ExactMethodRoleComponent,
+                    candidates=exact_method_candidates,
                 ),
                 CompactMethodFamilyCandidates(
-                    ExactLeafMethodAncestorPromotionComponent,
-                    exact_promotion_builder.proven_components,
+                    candidate_type=ExactLeafMethodAncestorPromotionComponent,
+                    candidates=exact_promotion_builder.proven_components,
                 ),
                 CompactMethodFamilyCandidates(
-                    SemanticOverlapMethodCandidate,
-                    method_candidates,
+                    candidate_type=SemanticOverlapMethodCandidate,
+                    candidates=method_candidates,
                 ),
                 CompactMethodFamilyCandidates(
-                    SemanticOverlapMethodFamilyCandidate,
-                    family_candidates,
+                    candidate_type=SemanticOverlapMethodFamilyCandidate,
+                    candidates=family_candidates,
                 ),
                 CompactMethodFamilyCandidates(
-                    OverlappingInheritanceFamiliesCandidate,
-                    global_candidates,
+                    candidate_type=OverlappingInheritanceFamiliesCandidate,
+                    candidates=global_candidates,
                 ),
                 CompactMethodFamilyCandidates(
-                    SemanticOverlapResidueAxisCandidate,
-                    residue_axis_candidates,
+                    candidate_type=SemanticOverlapResidueAxisCandidate,
+                    candidates=residue_axis_candidates,
                 ),
             )
         )
@@ -1188,11 +1188,11 @@ def _pipeline_stage_source(statement: ast.stmt) -> _PipelineStageSource | None:
         output_arity = _assignment_target_arity(single_assign_target(assignment))
         if call is None or output_arity is None:
             return None
-        return _PipelineStageSource(_PIPELINE_ASSIGN_STAGE, call, output_arity)
+        return _PipelineStageSource(kind=_PIPELINE_ASSIGN_STAGE, call=call, output_arity=output_arity)
     call = return_call(statement)
     if call is None:
         return None
-    return _PipelineStageSource(_PIPELINE_RETURN_STAGE, call, 0)
+    return _PipelineStageSource(kind=_PIPELINE_RETURN_STAGE, call=call, output_arity=0)
 
 
 def _self_finding_spec_build_call(node: ast.AST) -> ast.Call | None:

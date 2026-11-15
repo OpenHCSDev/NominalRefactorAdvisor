@@ -214,11 +214,12 @@ class DeclaredSpellings:
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
         classes = nodes_of(ast.ClassDef, tree)
         return ModuleDeclarations(
-            tuple(filter(cls.multiword, functions)),
-            tuple((node.name, tuple(base.id if isinstance(base, ast.Name) else base.attr
+            module_name=tuple(filter(cls.multiword, functions)),
+            file_path=tuple((node.name, tuple(base.id if isinstance(base, ast.Name) else base.attr
                                     for base in node.bases
                                     if isinstance(base, (ast.Name, ast.Attribute))))
-                  for node in classes))
+                  for node in classes),
+               )
 
     @classmethod
     def read(cls, modules: dict[str, ModuleDeclarations]) -> DeclaredSpellings:
@@ -281,7 +282,7 @@ class DeclaredSpellings:
         def record(literal: ast.AST, reading: type[IdentityReading], target: str) -> None:
             if (isinstance(literal, ast.Constant) and isinstance(literal.value, str)
                     and id(literal) not in exempt):
-                found.setdefault(id(literal), IdentitySite(literal.lineno, literal.value, reading, target))
+                found.setdefault(id(literal), IdentitySite(line=literal.lineno, spelling=literal.value, reading=reading, target=target))
 
         for node in ast.walk(tree):
             match node:

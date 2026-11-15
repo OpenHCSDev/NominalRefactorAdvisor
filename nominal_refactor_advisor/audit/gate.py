@@ -126,7 +126,7 @@ class Compared(Measure, Runner[P]):
 
     @classmethod
     def at(cls, path: str) -> FileCount:
-        return FileCount(cls, path)
+        return FileCount(measure=cls, path=path)
 
     @classmethod
     def grown(cls, delta: Counts) -> bool:
@@ -230,7 +230,7 @@ class FileCount(MeasureCount):
         return f"::warning file={self.path}::{text}"
 
     def member(self, name: str) -> MemberCount:
-        return MemberCount(self.measure, self.path, name)
+        return MemberCount(measure=self.measure, path=self.path, name=name)
 
 
 @dataclass(frozen=True)
@@ -420,7 +420,7 @@ class LocatedSource(CountedSource):
         found: dict[MeasureCount, list[Site]] = {}
         for path, source in sources:
             (key,) = cls.tally([(path, 1)])
-            found.setdefault(key, []).extend(Site(path, line) for line in cls.lines(repo, source, path))
+            found.setdefault(key, []).extend(Site(module=path, owner=line) for line in cls.lines(repo, source, path))
         return found
 
 
@@ -802,7 +802,7 @@ class FieldExtraction(ProvedMove):
                 for field in sorted(base.fields):
                     if (not owner.binds(field) and field in held.fields
                             and base.declared(field).same(held.declared(field))):
-                        yield Move(base, tuple(base.compared(field)), held, tuple(held.compared(field)))
+                        yield Move(left=base, gave=tuple(base.compared(field)), reached=held, took=tuple(held.compared(field)))
 
 
 class DefinitionRename(ProvedMove):
@@ -840,7 +840,7 @@ class DefinitionRename(ProvedMove):
                        for shape in old.shapes}
             for part in replacement.parts:
                 if pending.get(shape := ast.dump(part)):
-                    yield Move(old, (pending[shape].pop(0),), replacement, (part,))
+                    yield Move(left=old, gave=(pending[shape].pop(0),), reached=replacement, took=(part,))
 
     @staticmethod
     def replacements(gone: list[DeclaredDefinition], new: list[DeclaredDefinition],
@@ -892,7 +892,7 @@ class MemberRelocation(ProvedMove):
                                 and ast.dump(old) == ast.dump(new := parent.methods[name])
                                 and cls.portable(old)
                                 and cls.owners(child, old).same(cls.owners(parent, new))):
-                            yield Move(child, (old,), parent, (new,))
+                            yield Move(left=child, gave=(old,), reached=parent, took=(new,))
 
     @staticmethod
     def portable(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
@@ -955,7 +955,7 @@ class CleanChangedLines(OccurrenceMeasure):
         occurrences arriving elsewhere, and for those a proved move carried."""
         sources = [ChangedSource.read(repo, base, head, path) for path in paths]
         left = [ChangedSource.departed(repo, base, head, path) for path in departed_from]
-        changed = ChangedModules(tuple(sources), tuple(left))
+        changed = ChangedModules(sources=tuple(sources), left=tuple(left))
         found: dict[FileCount, list[int]] = {}
         for measure in cls.members():
             departed: Counter[tuple[str, str]] = Counter()
@@ -1074,7 +1074,7 @@ def compare(repo: Project, base: str, head: str, root: str, workers: int,
     # Every measure reads production Python paths only, so with none touched each would
     # report no change.
     if not touched & (repo.production_paths(base) | repo.production_paths(head)):
-        return Comparison(root, base, head, (), before, after, introduced, {})
+        return Comparison(root=root, base_revision=base, head_revision=head, paths=(), base=before, head=after, introduced=introduced, found={})
 
     # A pass of a shared runner is measured once, by that runner.
     measures = tuple(dict.fromkeys(measure.run_by() for measure in measured))
@@ -1108,9 +1108,16 @@ def compare(repo: Project, base: str, head: str, root: str, workers: int,
         for path_sites in sites:
             introduced.update({identity: sorted(found)
                                for identity, found in path_sites.result().items()})
-    comparison = Comparison(root, base, head, tuple(sorted(paths)),
-                            MeasureCount.paired(before, changed),
-                            MeasureCount.paired(after, changed), introduced, {})
+    comparison = Comparison(
+                            root=root,
+                            base_revision=base,
+                            head_revision=head,
+                            paths=tuple(sorted(paths)),
+                            base=MeasureCount.paired(before, changed),
+                            head=MeasureCount.paired(after, changed),
+                            introduced=introduced,
+                            found={},
+                 )
     # A measure whose results hold its findings reports them for each grown count.
     found = {key: sites for measure in measures
              for key, sites in measure.grown_sites(results[measure], comparison.delta,

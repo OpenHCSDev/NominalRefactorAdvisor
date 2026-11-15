@@ -892,7 +892,7 @@ class CasesFamily(Cases, Descent):
         )
         for module, names in aliases.items():
             self.rewrite_reads(rewrite, module, names, model, handled)
-        ValueReads(model, snapshot, aliases).rewrite(rewrite, handled)
+        ValueReads(model=model, snapshot=snapshot, aliases=aliases).rewrite(rewrite, handled)
         self.rewrite_called(rewrite, snapshot, model, handled)
         answer.require_complete()
         if self.imported_root(model) is None:
@@ -985,7 +985,9 @@ class CasesFamily(Cases, Descent):
             forwarded["value"] = declared.value
         data = [
             Datum(
-                forwarded.get(datum.stored, datum.name), datum.annotation, datum.stored
+                name=forwarded.get(datum.stored, datum.name),
+                annotation=datum.annotation,
+                stored=datum.stored,
             )
             for datum in data
         ]
@@ -995,8 +997,15 @@ class CasesFamily(Cases, Descent):
                 for name, value in literals[member.name].items()
             }
         model = CaseModel(
-            enum, declared, data, expressions, literals, {}, forwarded, frozenset()
-        )
+            enum=enum,
+            declared=declared,
+            data=data,
+            expressions=expressions,
+            literals=literals,
+            folded={},
+            forwarded=forwarded,
+            called=frozenset(),
+                )
         self.fold_properties(model)
         model.called = frozenset(
             function.name
@@ -1089,7 +1098,7 @@ class CasesFamily(Cases, Descent):
         if new is None:
             if not all(len(member.arguments) == 1 for member in enum.members):
                 raise handback(module, enum.node, "tuple members without __new__")
-            return [Datum("value", "str", "value")], {
+            return [Datum(name="value", annotation="str", stored="value")], {
                 member.name: {"value": member.arguments[0]} for member in enum.members
             }
         body = new.body
@@ -1139,12 +1148,12 @@ class CasesFamily(Cases, Descent):
             )
             for argument in new.args.args[1:]
         }
-        data = [Datum("value", annotations_by_parameter[value_parameter], "value")]
+        data = [Datum(name="value", annotation=annotations_by_parameter[value_parameter], stored="value")]
         data.extend(
             Datum(
-                stores[parameter],
-                annotations.get(stores[parameter], annotations_by_parameter[parameter]),
-                stores[parameter],
+                name=stores[parameter],
+                annotation=annotations.get(stores[parameter], annotations_by_parameter[parameter]),
+                stored=stores[parameter],
             )
             for parameter in parameters[1:]
         )
@@ -1388,18 +1397,16 @@ class CasesFamily(Cases, Descent):
         bodies: dict[str, list[str]] = {}
         for member in model.members:
             folding = Folding(
-                module,
-                rewrite,
-                (
-                    (
+                module=module,
+                rewrite=rewrite,
+                literal=(
                         lambda node, member=member: self.member_literal(
                             model, member, receiver, node
                         )
                     )
                     if receiver is not None and decorators != (CLASS_METHOD_DECORATOR,)
-                    else (lambda node: UNKNOWN)
-                ),
-                renames
+                    else (lambda node: UNKNOWN),
+                renames=renames
                 | {
                     id(call): applied(
                         model.inlined[model.attribute_name(call.func.attr)][
@@ -1413,33 +1420,31 @@ class CasesFamily(Cases, Descent):
                     for call in applications
                     if isinstance(call.func, ast.Attribute)
                 },
-                self.boolean_names(function),
-            )
+                boolean_names=self.boolean_names(function),
+                      )
             bodies[member.name], _ends = folding.block(statements)
         generic = (
             None
             if applications
             else Folding(
-                module,
-                rewrite,
-                lambda node: UNKNOWN,
-                renames,
-                self.boolean_names(function),
-            ).block(statements)[0]
+                module=module,
+                rewrite=rewrite,
+                literal=lambda node: UNKNOWN,
+                renames=renames,
+                boolean_names=self.boolean_names(function),
+                 ).block(statements)[0]
         )
         return MethodBodies(
-            function.name,
-            header,
-            bodies,
-            generic,
-            (
-                []
+            name=function.name,
+            header=header,
+            bodies=bodies,
+            generic=generic,
+            docstring=[]
                 if documentation is None
                 else rewrite.statements_source(module, [documentation])
                 .rstrip("\n")
-                .split("\n")
-            ),
-        )
+                .split("\n"),
+               )
 
     def method_renames(
         self,
@@ -2106,7 +2111,7 @@ class Typed(DeclaredType):
         if len(found) != 1:
             return UNKNOWN_CLASS
         module, node = found[0]
-        return KnownClass(module, node)
+        return KnownClass(module=module, node=node)
 
     def _elements(self) -> tuple[bool, list[ast.expr]]:
         """Whether the container is a tuple, and its element annotations (none if not one)."""
@@ -2127,13 +2132,13 @@ class Typed(DeclaredType):
     def element(self) -> DeclaredType:
         is_tuple, elements = self._elements()
         if self._variadic(elements) or (len(elements) == 1 and not is_tuple):
-            return Typed(self.module, elements[0])
+            return Typed(module=self.module, annotation=elements[0])
         return UNKNOWN_TYPE
 
     def element_at(self, index: int) -> DeclaredType:
         is_tuple, elements = self._elements()
         if is_tuple and not self._variadic(elements):
-            return Typed(self.module, elements[index]) if index < len(elements) else UNKNOWN_TYPE
+            return Typed(module=self.module, annotation=elements[index]) if index < len(elements) else UNKNOWN_TYPE
         return self.element()
 
     def otherwise(self, alternative: DeclaredType) -> DeclaredType:
@@ -2200,11 +2205,11 @@ class KnownClass(DeclaredClass):
             if isinstance(statement, ast.AnnAssign) and is_name(
                 statement.target, [name]
             ):
-                return Typed(self.module, statement.annotation)
+                return Typed(module=self.module, annotation=statement.annotation)
         found: DeclaredType = UNKNOWN_TYPE
         for base in self.node.bases:
             found = found.otherwise(
-                Typed(self.module, base)
+                Typed(module=self.module, annotation=base)
                 .declared_class(types)
                 .field(types, name, depth + 1)
             )
@@ -2253,7 +2258,7 @@ class FunctionScope(Scope):
         for argument in arguments:
             if argument.arg == node.id:
                 for annotation in declared_annotations(argument):
-                    return Typed(module, annotation)
+                    return Typed(module=module, annotation=annotation)
                 return UNKNOWN_TYPE
         bindings = [
             binding
@@ -2271,7 +2276,7 @@ class FunctionScope(Scope):
             return UNKNOWN_TYPE
         (binding,) = bindings
         if isinstance(binding, ast.AnnAssign):
-            return Typed(module, binding.annotation)
+            return Typed(module=module, annotation=binding.annotation)
         if isinstance(binding, ast.Assign):
             if len(binding.targets) != 1:
                 return UNKNOWN_TYPE
@@ -2309,7 +2314,7 @@ class MethodScope(FunctionScope):
         self, types: DeclaredTypes, module: ParsedModule, node: ast.Name, depth: int
     ) -> DeclaredType:
         if node.id == self.receiver.arg:
-            return Typed(module, ast.Name(self.owner.name, ast.Load()))
+            return Typed(module=module, annotation=ast.Name(self.owner.name, ast.Load()))
         return super().name_type(types, module, node, depth)
 
 
@@ -2345,7 +2350,7 @@ class ClassBody(Enclosure):
         arguments = FunctionScope.arguments_of(function)
         if not arguments or self.bindings.decorated_by(function, (STATIC_METHOD_DECORATOR,)):
             return FunctionScope(function)
-        return MethodScope(function, self.owner, arguments[0])
+        return MethodScope(function=function, owner=self.owner, receiver=arguments[0])
 
 
 class FreeBody(Enclosure):
@@ -2370,7 +2375,7 @@ class ScopeCollector(ast.NodeVisitor):
         )
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self._visit_within(ClassBody(node, self.bindings[node.lineno]), node)
+        self._visit_within(ClassBody(owner=node, bindings=self.bindings[node.lineno]), node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -2594,7 +2599,7 @@ class ValueReads:
                     and id(node) not in handled
                 ):
                     self.rename_if_member(
-                        MemberValueRead(rewrite, module, node, attribute, handled),
+                        MemberValueRead(rewrite=rewrite, module=module, node=node, attribute=attribute, handled=handled),
                         held,
                         scopes.get(id(node), self.MODULE_SCOPE),
                     )
@@ -2693,11 +2698,27 @@ class Site:
 
         if cls.guards(body, start, end):
             return Guard(
-                module, owner, function, receiver, field_name, fields, body, start, end
-            )
+                module=module,
+                owner=owner,
+                function=function,
+                receiver=receiver,
+                field_name=field_name,
+                fields=fields,
+                body=body,
+                start=start,
+                end=end,
+                   )
         return Block(
-            module, owner, function, receiver, field_name, fields, body, start, end
-        )
+            module=module,
+            owner=owner,
+            function=function,
+            receiver=receiver,
+            field_name=field_name,
+            fields=fields,
+            body=body,
+            start=start,
+            end=end,
+               )
 
     @staticmethod
     def guards(body: list[ast.stmt], start: int, end: int) -> bool:
@@ -2951,17 +2972,25 @@ class Block(Site):
         bodies: dict[str, list[str]] = {}
         for member in model.members:
             folding = Folding(
-                module, rewrite, self.literal(model, member), renames, booleans
-            )
+                module=module,
+                rewrite=rewrite,
+                literal=self.literal(model, member),
+                renames=renames,
+                boolean_names=booleans,
+                      )
             bodies[member.name], _ends = folding.block(statements)
         generic, _ends = Folding(
-            module, rewrite, lambda node: UNKNOWN, renames, booleans
-        ).block(statements)
+            module=module,
+            rewrite=rewrite,
+            literal=lambda node: UNKNOWN,
+            renames=renames,
+            boolean_names=booleans,
+                         ).block(statements)
         call = self.family_call(
             returns, list(arguments.values()), statements[0].col_offset
         )
         self.replace_statements(rewrite, statements, call, handled)
-        return MethodBodies(self.method, header, bodies, generic)
+        return MethodBodies(name=self.method, header=header, bodies=bodies, generic=generic)
 
 
 @dataclass
@@ -3025,8 +3054,12 @@ class Guard(Site):
         bodies: dict[str, list[str]] = {}
         for member in model.members:
             folding = Folding(
-                module, rewrite, self.literal(model, member), {}, frozenset()
-            )
+                module=module,
+                rewrite=rewrite,
+                literal=self.literal(model, member),
+                renames={},
+                boolean_names=frozenset(),
+                      )
             test = folding.truth(guard.test)
             if not isinstance(test, ast.Constant):
                 raise handback(
@@ -3106,4 +3139,4 @@ class Guard(Site):
             for statement in self.body[self.start :]
             for node in ast.walk(statement)
         )
-        return MethodBodies(self.method, header, bodies, generic)
+        return MethodBodies(name=self.method, header=header, bodies=bodies, generic=generic)

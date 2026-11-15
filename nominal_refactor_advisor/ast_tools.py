@@ -790,7 +790,7 @@ class ParsedModule(SourceFileIdentity):
     @cached_property
     def native_compilation(self) -> NativePythonCompilation:
         """Share lazy compiler evidence over this module's original source context."""
-        return NativePythonCompilation(self.source, self.file_path)
+        return NativePythonCompilation(source=self.source, file_path=self.file_path)
 
     @cached_property
     def collected_family_cache(self) -> CollectedFamilyCacheContext:
@@ -863,8 +863,9 @@ class ParsedModule(SourceFileIdentity):
             cached_items = cache.load_items(family, signature)
             if cached_items is not None:
                 batches[key] = CollectedFamilyBatch(
-                    cached_items, cache.load_content_signature(family, signature)
-                )
+                    items=cached_items,
+                    content_signature=cache.load_content_signature(family, signature),
+                               )
             else:
                 items = tuple(
                     item
@@ -874,8 +875,9 @@ class ParsedModule(SourceFileIdentity):
                     if isinstance(item, family.item_type)
                 )
                 batches[key] = CollectedFamilyBatch(
-                    items, cache.store_items(family, items, signature)
-                )
+                    items=items,
+                    content_signature=cache.store_items(family, items, signature),
+                               )
         return cast(CollectedFamilyBatch[ShapeItemT], batches[key])
 
     def _collected(
@@ -3225,7 +3227,7 @@ def python_source_paths_for_roots(
     seen_paths: set[Path] = set()
     active_source_policy = source_policy or PythonSourcePathPolicy()
     for root in roots:
-        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+        for path in PythonSourcePathDiscovery(root=root, source_policy=active_source_policy).paths():
             normalized_path = path.resolve()
             if normalized_path in seen_paths:
                 continue
@@ -3282,7 +3284,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         return parser.parsed_modules()
 
     def parsed_modules(self) -> list[ParsedModule]:
-        paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()
+        paths = PythonSourcePathDiscovery(root=self.root, source_policy=self.source_policy).paths()
         return self.parsed_source_paths(paths)
 
     def parsed_source_path(
@@ -3302,7 +3304,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         )
 
     def source_path_identities(self) -> tuple[PythonModulePathIdentity, ...]:
-        paths = PythonSourcePathDiscovery(self.root, self.source_policy).paths()
+        paths = PythonSourcePathDiscovery(root=self.root, source_policy=self.source_policy).paths()
         return self.source_path_identities_for_paths(paths)
 
     def source_path_identities_for_paths(
@@ -3373,7 +3375,7 @@ def parse_python_module_roots(
             source_policy=source_policy,
         )
         admitted_paths: list[Path] = []
-        for path in PythonSourcePathDiscovery(root, parser.source_policy).paths():
+        for path in PythonSourcePathDiscovery(root=root, source_policy=parser.source_policy).paths():
             normalized_path = path.resolve()
             if normalized_path in seen_paths:
                 continue
@@ -3484,7 +3486,7 @@ class ModuleSyntaxIndex:
     def parent_index(self) -> AstParentIndex:
         """`parent_by_node` with its ancestor queries."""
 
-        return AstParentIndex(self.module, self.parent_by_node)
+        return AstParentIndex(root=self.module, parent_by_node=self.parent_by_node)
 
     @cached_property
     def children_by_node(self) -> dict[ast.AST, tuple[ast.AST, ...]]:
@@ -3964,7 +3966,7 @@ class _LiteralDispatchCompareStep(SingleCompareEffectStep[_LiteralDispatchCompar
     operator_type = ast.Eq
 
     def project_compare(self, left: ast.AST, right: ast.AST) -> _LiteralDispatchCompare:
-        return _LiteralDispatchCompare(left, right)
+        return _LiteralDispatchCompare(left=left, right=right)
 
 
 @dataclass(frozen=True)

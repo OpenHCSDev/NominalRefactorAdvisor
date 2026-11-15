@@ -72,7 +72,7 @@ class NativeSubscriptionAuthority(NativeDeclarationFamily, CompletedSourceOperat
     def inspected_argument(self) -> InertNativeArgumentWitness:
         return InertNativeArgumentWitness(
             self.environment,
-            CompactFlowValue(self.context, self.invocation.argument_use),
+            CompactFlowValue(context=self.context, use=self.invocation.argument_use),
         )
 
     @classmethod
@@ -104,7 +104,7 @@ class NativeSubscriptionAuthority(NativeDeclarationFamily, CompletedSourceOperat
             (self.node.slice, invocation.argument_use),
         ):
             original = self.environment.source.value_operation(
-                CompactFlowValue(self.context, receipt)
+                CompactFlowValue(context=self.context, use=receipt)
             )
             if original.node is not node:
                 raise ValueError("Subscription operand is not its original production")

@@ -277,7 +277,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     def class_overlap_verdicts(self) -> ClassOverlapVerdicts:
         """The scan's class-overlap verdicts, re-derived from this source state."""
 
-        return ClassOverlapVerdicts(self.compact_class_projections, self.compact_class_index)
+        return ClassOverlapVerdicts(projections=self.compact_class_projections, class_index=self.compact_class_index)
 
     @cached_property
     def declared_receiver_typing(self) -> DeclaredReceiverTyping:
@@ -384,12 +384,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 else class_family_index
             ),
             SourceIndexBuildArtifacts(
-                source_index,
-                (
-                    AstTargetNodeIndex.from_modules(source_index, modules)
+                source_index=source_index,
+                node_index=AstTargetNodeIndex.from_modules(source_index, modules)
                     if ast_target_node_cache is None
-                    else AstTargetNodeIndex(ast_target_node_cache)
-                ),
+                    else AstTargetNodeIndex(ast_target_node_cache),
             ),
         )
 
@@ -665,7 +663,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             except CodemodOperationPreflightError as error:
                 refused.extend(error.reports)
         CodemodPlanPreflightReport(tuple(refused)).require_clean()
-        return NominalEditBatch(self, tuple(edits))
+        return NominalEditBatch(compiler=self, edits=tuple(edits))
 
     def planned_rewrites_for_recipes(
         self,
@@ -739,9 +737,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     ) -> PlannedSourceRewrite:
         target = group.target
         replacement_source = SourceTargetEditor(
-            self.sources_by_file_path,
-            target,
-        ).replacement_source(group.replacements)
+            sources=self.sources_by_file_path,
+            target=target,
+                             ).replacement_source(group.replacements)
         return PlannedSourceRewrite(
             target_id=target.target_id,
             replacement_source=replacement_source,
@@ -3386,19 +3384,19 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
         if unproved_candidates:
             return FindingRecipeCandidatePairAssessment(
-                left_index,
-                right_index,
-                FindingRecipeCandidatePairDisposition.UNPROVED,
-                "individual recipe simulation is unproved: "
+                left_index=left_index,
+                right_index=right_index,
+                disposition=FindingRecipeCandidatePairDisposition.UNPROVED,
+                reason="individual recipe simulation is unproved: "
                 + "; ".join(assessment.reason for assessment in unproved_candidates),
-            )
+                   )
         if self.candidates_have_nominal_conflict(left_index, right_index):
             return FindingRecipeCandidatePairAssessment(
-                left_index,
-                right_index,
-                FindingRecipeCandidatePairDisposition.CONFLICTING,
-                "nominal source action identities conflict",
-            )
+                left_index=left_index,
+                right_index=right_index,
+                disposition=FindingRecipeCandidatePairDisposition.CONFLICTING,
+                reason="nominal source action identities conflict",
+                   )
         simulations = (
             self.simulate_recipe_set((left_index, right_index)),
             self.simulate_recipe_set((right_index, left_index)),
@@ -3410,11 +3408,11 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
         if len(conflicting_compositions) == len(simulations):
             return FindingRecipeCandidatePairAssessment(
-                left_index,
-                right_index,
-                FindingRecipeCandidatePairDisposition.CONFLICTING,
-                "recipe source edits conflict in both composition orders",
-            )
+                left_index=left_index,
+                right_index=right_index,
+                disposition=FindingRecipeCandidatePairDisposition.CONFLICTING,
+                reason="recipe source edits conflict in both composition orders",
+                   )
         unproved_compositions = tuple(
             simulation.assessment
             for simulation in simulations
@@ -3422,28 +3420,28 @@ class CurrentSnapshotRecipeBatchEvaluation:
         )
         if unproved_compositions:
             return FindingRecipeCandidatePairAssessment(
-                left_index,
-                right_index,
-                FindingRecipeCandidatePairDisposition.UNPROVED,
-                "composed recipe simulation is unproved: "
+                left_index=left_index,
+                right_index=right_index,
+                disposition=FindingRecipeCandidatePairDisposition.UNPROVED,
+                reason="composed recipe simulation is unproved: "
                 + "; ".join(assessment.reason for assessment in unproved_compositions),
-            )
+                   )
         if (
             simulations[0].required_document_simulation.simulation.rewritten_sources
             != simulations[1].required_document_simulation.simulation.rewritten_sources
         ):
             return FindingRecipeCandidatePairAssessment(
-                left_index,
-                right_index,
-                FindingRecipeCandidatePairDisposition.UNPROVED,
-                "recipe composition depends on source order",
-            )
+                left_index=left_index,
+                right_index=right_index,
+                disposition=FindingRecipeCandidatePairDisposition.UNPROVED,
+                reason="recipe composition depends on source order",
+                   )
         return FindingRecipeCandidatePairAssessment(
-            left_index,
-            right_index,
-            FindingRecipeCandidatePairDisposition.COMPATIBLE,
-            "the nominal codemod document composes and simulates cleanly",
-        )
+            left_index=left_index,
+            right_index=right_index,
+            disposition=FindingRecipeCandidatePairDisposition.COMPATIBLE,
+            reason="the nominal codemod document composes and simulates cleanly",
+               )
 
     def components_for(
         self,
@@ -4042,7 +4040,7 @@ class CodemodSimulationWriter:
         if revision.source_hash is None:
             os.link(staged_path, target_path)
             staged_path.unlink()
-            return CommittedCodemodSource(target_path, None)
+            return CommittedCodemodSource(target_path=target_path, backup_path=None)
         backup_path = self.reserve_backup_path(target_path)
         os.replace(target_path, backup_path)
         try:
@@ -4051,7 +4049,7 @@ class CodemodSimulationWriter:
         except BaseException:
             os.replace(backup_path, target_path)
             raise
-        return CommittedCodemodSource(target_path, backup_path)
+        return CommittedCodemodSource(target_path=target_path, backup_path=backup_path)
 
     def commit_deletion(
         self,
@@ -4067,7 +4065,7 @@ class CodemodSimulationWriter:
         except BaseException:
             os.replace(backup_path, target_path)
             raise
-        return CommittedCodemodSource(target_path, backup_path)
+        return CommittedCodemodSource(target_path=target_path, backup_path=backup_path)
 
     @staticmethod
     def reserve_backup_path(target_path: Path) -> Path:

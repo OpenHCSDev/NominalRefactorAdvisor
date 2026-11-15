@@ -141,7 +141,7 @@ class FragmentedFamilyAuthorityDetector(
     ) -> RefactorFinding:
         evidence = tuple(
             (
-                SourceLocation(authority_candidate.file_path, line, name)
+                SourceLocation(file_path=authority_candidate.file_path, line=line, symbol=name)
                 for name, line in zip(
                     authority_candidate.mapping_names,
                     authority_candidate.line_numbers,
@@ -172,7 +172,7 @@ class DerivedQueryIndexCandidate(CollectsItself, EvidenceLocated):
     return_expressions: tuple[str, ...]
     exception_names: tuple[str, ...]
 
-    evidence = ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+    evidence = ZippedSourceLocationEvidenceProperty(line_numbers_attribute_name="line_numbers", symbol_names_attribute_name="function_names")
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
@@ -550,9 +550,9 @@ class FindingAssemblyPipelineDetector(PerModuleIssueDetector):
         evidence = tuple(
             (
                 SourceLocation(
-                    candidate.file_path,
-                    candidate.line,
-                    f"{candidate.class_name}.{candidate.method_name}",
+                    file_path=candidate.file_path,
+                    line=candidate.line,
+                    symbol=f"{candidate.class_name}.{candidate.method_name}",
                 )
                 for candidate in candidates[:6]
             )
@@ -609,7 +609,7 @@ class ProjectionBuilderAuthorityDetector(PerModuleIssueDetector):
             field_names = builders[0].field_names
             evidence = tuple(
                 (
-                    SourceLocation(builder.file_path, builder.lineno, builder.symbol)
+                    SourceLocation(file_path=builder.file_path, line=builder.lineno, symbol=builder.symbol)
                     for builder in builders[:6]
                 )
             )
@@ -802,9 +802,9 @@ class GuardedDelegatorSpecDetector(PerModuleIssueDetector):
         evidence = tuple(
             (
                 SourceLocation(
-                    candidate.file_path,
-                    candidate.line,
-                    f"{candidate.class_name}.{candidate.method_name}",
+                    file_path=candidate.file_path,
+                    line=candidate.line,
+                    symbol=f"{candidate.class_name}.{candidate.method_name}",
                 )
                 for candidate in candidates[:6]
             )

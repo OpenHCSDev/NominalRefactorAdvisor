@@ -130,10 +130,10 @@ class OwnerPackagesDeclaration:
         match tomllib.loads(content.decode()):
             case {"tool": {"nominal-refactor-advisor": {"owner-packages": list(names)}}}:
                 return DeclaredOwnerPackages(
-                    tuple(sorted({str(name) for name in names})),
-                    str(pyproject),
-                    hashlib.sha256(content).hexdigest(),
-                )
+                    packages=tuple(sorted({str(name) for name in names})),
+                    pyproject=str(pyproject),
+                    digest=hashlib.sha256(content).hexdigest(),
+                       )
         return OwnerPackagesDeclaration()
 
 
@@ -405,8 +405,10 @@ class RegistrationOwners:
                 module_name=owner.symbol.rpartition(".")[0],
                 receipts=self._receipts(owner, roles),
                 cost=OwnerCost(
-                    rewritten, int(owner.distribution not in self.imported), 0
-                ),
+                    statements_rewritten=rewritten,
+                    imports_added=int(owner.distribution not in self.imported),
+                    cycles_created=0,
+                     ),
                 installed=owner,
             )
             for owner in self.owners
@@ -420,19 +422,19 @@ class RegistrationOwners:
         imported = owner.distribution in self.imported
         return (
             Receipt(
-                OwnerReceiptKind.ALREADY_IMPORTED
+                kind=OwnerReceiptKind.ALREADY_IMPORTED
                 if imported
                 else OwnerReceiptKind.IMPORT_ADDED,
-                f"{owner.distribution} is "
+                detail=f"{owner.distribution} is "
                 + ("already imported" if imported else "declared, not yet imported"),
-                evidence,
+                evidence=evidence,
             ),
             *(
                 (
                     Receipt(
-                        OwnerReceiptKind.PLAYS_SAME_ROLE,
-                        f"registers as a {owner.role.value}, as the local class does",
-                        evidence,
+                        kind=OwnerReceiptKind.PLAYS_SAME_ROLE,
+                        detail=f"registers as a {owner.role.value}, as the local class does",
+                        evidence=evidence,
                     ),
                 )
                 if owner.role in roles

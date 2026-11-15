@@ -92,8 +92,9 @@ class ScopeBranchOperation(SourceReprovedOperation, ABC):
         _, target, node = self.target_node_from_context(snapshot)
         geometry = SourceTextGeometry(snapshot.sources_by_file_path[target.file_path])
         fit = RewrittenLineFit(
-            geometry, DeclaredRoot.line_length_for(Path(target.file_path))
-        )
+            geometry=geometry,
+            line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
+              )
         return geometry.physical_edits(
             file_path=target.file_path,
             replacements=self.distinction.at_line(

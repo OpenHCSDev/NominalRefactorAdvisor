@@ -124,11 +124,11 @@ class SourceModuleMappingKeyAuthority(MappingKeyResolverABC[ast.Module]):
     @cached_property
     def parsed_module(self) -> ParsedModule:
         return ParsedModule(
-            Path("__nra_registry_key__.py"),
-            "__nra_registry_key__",
-            self.module,
-            ast.unparse(self.module),
-        )
+            path=Path("__nra_registry_key__.py"),
+            module_name="__nra_registry_key__",
+            module=self.module,
+            source=ast.unparse(self.module),
+               )
 
     @cached_property
     def enum_declarations_by_name(
@@ -822,7 +822,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
                 authority.node.name,
             ):
                 return None
-            entries.append(ConstructorClassKeyEntry(class_node, key, value_node))
+            entries.append(ConstructorClassKeyEntry(class_node=class_node, key_node=key, value_node=value_node))
         return cls(
             module=module,
             authority=authority,

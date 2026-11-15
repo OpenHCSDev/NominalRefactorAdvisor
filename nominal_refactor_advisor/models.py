@@ -249,7 +249,7 @@ class SourceLineReference:
     def named(self, symbol: str) -> SourceLocation:
         """The evidence site at this line, shown as ``symbol``."""
 
-        return SourceLocation(self.file_path, self.line, symbol)
+        return SourceLocation(file_path=self.file_path, line=self.line, symbol=symbol)
 
 
 @dataclass(frozen=True)
@@ -478,23 +478,27 @@ class SemanticMirrorMetricRelation:
 
 
 BehaviorFindingMetrics = CompositeClassSpec(
-    "BehaviorFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+    class_name="BehaviorFindingMetrics",
+    bases=(FindingMetrics, ABC),
+                         ).build(__name__)
 
 
 MappingFindingMetrics = CompositeClassSpec(
-    "MappingFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+    class_name="MappingFindingMetrics",
+    bases=(FindingMetrics, ABC),
+                        ).build(__name__)
 
 
 RegistrationFindingMetrics = CompositeClassSpec(
-    "RegistrationFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+    class_name="RegistrationFindingMetrics",
+    bases=(FindingMetrics, ABC),
+                             ).build(__name__)
 
 
 DispatchFindingMetrics = CompositeClassSpec(
-    "DispatchFindingMetrics", (FindingMetrics, ABC)
-).build(__name__)
+    class_name="DispatchFindingMetrics",
+    bases=(FindingMetrics, ABC),
+                         ).build(__name__)
 
 
 @dataclass(frozen=True)

@@ -39,7 +39,7 @@ class Document:
 
     @cached_property
     def links(self) -> tuple[Link, ...]:
-        return tuple(Link(self.name, target, fragment) for target, fragment in self.link_pattern.findall(self.text))
+        return tuple(Link(source=self.name, target=target, fragment=fragment) for target, fragment in self.link_pattern.findall(self.text))
 
 
 @dataclass(frozen=True)

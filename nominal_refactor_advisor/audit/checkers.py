@@ -172,7 +172,7 @@ class CheckedRevision(SideCounts):
     @classmethod
     def site(cls, path: str, match: re.Match[str]) -> CheckerSite:
         """One reported finding at its repository path."""
-        return CheckerSite(path, int(match["line"]), match["message"])
+        return CheckerSite(path=path, line=int(match["line"]), message=match["message"])
 
     @classmethod
     def parts(cls, repo: Project, base: str, head: str, changed: set[str],
@@ -214,7 +214,7 @@ class Unformatted(Advisory, CheckedRevision):
     @classmethod
     def site(cls, path: str, match: re.Match[str]) -> CheckerSite:
         """Black names the file, not a line: the finding is the whole file's layout."""
-        return CheckerSite(path, 1, "Black would reformat this file")
+        return CheckerSite(path=path, line=1, message="Black would reformat this file")
 
     @classmethod
     def findings(cls, repo: Project, ref: str, head: str, root: str, selected: list[str],

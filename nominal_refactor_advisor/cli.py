@@ -752,7 +752,7 @@ class JsonFindingCounts(DataclassJsonReport):
     @json_report_property()
     def by_pattern(self) -> tuple[JsonFindingPatternCount, ...]:
         return tuple(
-            JsonFindingPatternCount(item.pattern_id, item.count)
+            JsonFindingPatternCount(pattern_id=item.pattern_id, count=item.count)
             for item in self.summary.pattern_counts
         )
 
@@ -1055,7 +1055,7 @@ class JsonSummaryPreparseCachePolicy:
         """What a served result needs first: the cached graph, or nothing."""
         if not self.mode.requires_semantic_descent_cache:
             return NO_GRAPH_DEMAND
-        return CachedGraphDemand(cache_context, latest)
+        return CachedGraphDemand(cache_context=cache_context, fallback=latest)
 
     @property
     def compact_analysis_compatible(self) -> bool:
@@ -1404,7 +1404,7 @@ class JsonPayloadBuilder:
         if sections.semantic_descent_graph and finding_tuple:
             started = perf_counter()
             semantic_descent_source.held_graph.answer(
-                RepositoryGraphPayload(semantic_descent_source, finding_tuple, payload)
+                RepositoryGraphPayload(source=semantic_descent_source, finding_tuple=finding_tuple, payload=payload)
             )
             semantic_descent_graph_seconds = round(perf_counter() - started, 3)
         source_snapshot = self.source_snapshot
@@ -1541,7 +1541,7 @@ class JsonDocumentInputSet:
     ) -> JsonDocumentInputSet:
         return cls(
             tuple(
-                JsonDocumentInput(option_name, path)
+                JsonDocumentInput(option_name=option_name, path=path)
                 for option_name, paths in option_paths
                 for path in paths
                 if path is not None
@@ -2456,9 +2456,9 @@ class CalibrationCliCommand(CliReportCommand):
     @property
     def exit_code(self) -> int:
         return CalibrationExitCodeAuthority(
-            self.report,
-            self.args.fail_on_calibration_regression,
-        ).exit_code()
+            report=self.report,
+            fail_on_calibration_regression=self.args.fail_on_calibration_regression,
+               ).exit_code()
 
 
 class SingleRootReportCliCommand(CliReportCommand, ABC):
@@ -2467,9 +2467,9 @@ class SingleRootReportCliCommand(CliReportCommand, ABC):
     @property
     def root(self) -> Path:
         SingleRootModeAuthority(
-            self.parser,
-            self.path_scope.analysis_roots,
-            "--" + self.command_id.replace("_", "-"),
+            parser=self.parser,
+            roots=self.path_scope.analysis_roots,
+            option_name="--" + self.command_id.replace("_", "-"),
         ).require()
         return self.path_scope.primary_analysis_root
 
@@ -2528,11 +2528,11 @@ class RefactorSearchCliCommand(SingleRootReportCliCommand):
     @cached_property
     def report(self) -> SearchTurn:
         return RefactorSearch(
-            (self.root,),
-            self.detector_config,
-            SearchBudgetArguments.budget(self.args),
-            IntrospectionSource.from_argument(self.args.introspection_trace),
-        ).first_turn(
+            roots=(self.root,),
+            config=self.detector_config,
+            budget=SearchBudgetArguments.budget(self.args),
+            introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
+               ).first_turn(
             cache_dir=self.configured_parse_cache_dir,
             use_parse_cache=self.args.use_parse_cache,
         )
@@ -2567,8 +2567,9 @@ class EconomicsProofCliCommand(SingleRootReportCliCommand):
     @property
     def exit_code(self) -> int:
         return ProofExitCodeAuthority(
-            self.report, self.args.fail_on_proof_regression
-        ).exit_code()
+            report=self.report,
+            fail_on_proof_regression=self.args.fail_on_proof_regression,
+               ).exit_code()
 
 
 class DetectorCapabilitiesCliCommand(CliEarlyExitCommand):
@@ -4086,7 +4087,7 @@ class ColdScanAnalysis:
 
     @property
     def target(self) -> ScanTarget:
-        return ScanTarget(self.roots, self.source_policy)
+        return ScanTarget(roots=self.roots, source_policy=self.source_policy)
 
     def outcome(self) -> ScanAnalysisOutcome:
         if self.focused_loop_cold_policy.enabled:
@@ -4211,8 +4212,8 @@ class ColdScanAnalysis:
         )
         return analysis_result.answer(
             FullScanOutcome(
-                replace(parsed, analysis_seconds=round(perf_counter() - started, 3)),
-                self.path_scope,
+                parsed=replace(parsed, analysis_seconds=round(perf_counter() - started, 3)),
+                path_scope=self.path_scope,
             )
         )
 
@@ -4462,9 +4463,10 @@ def _scan_main(
     if selected_command_type is not None:
         source_policy = selected_command_type.scan_policy(args, source_policy, roots, config)
     for named_root in roots:
-        if not PythonSourcePathDiscovery(named_root, source_policy).paths() and (
+        if not PythonSourcePathDiscovery(root=named_root, source_policy=source_policy).paths() and (
             PythonSourcePathDiscovery(
-                named_root, PythonSourcePathPolicy(include_tests=True)
+                root=named_root,
+                source_policy=PythonSourcePathPolicy(include_tests=True),
             ).paths()
         ):
             parser.error(
@@ -4638,9 +4640,9 @@ def _scan_main(
                     print(
                         json.dumps(
                             JsonLoopCachePayloadBuilder(
-                                summary_cache_result,
-                                timing,
-                                cold_scan_analysis.target,
+                                cached=summary_cache_result,
+                                timing=timing,
+                                target=cold_scan_analysis.target,
                             ).build(),
                             indent=2,
                         )
@@ -4697,9 +4699,9 @@ def _scan_main(
     )
     architecture_guard_rules = codemod_plan_sequence.guard_suite.to_tuple()
     architecture_guard_evaluator = ArchitectureGuardSourceEvaluator(
-        modules,
-        architecture_guard_rules,
-    )
+        modules=modules,
+        rules=architecture_guard_rules,
+                                   )
     structural_overlap = None
     architecture_guard_report = None
     source_snapshot = None

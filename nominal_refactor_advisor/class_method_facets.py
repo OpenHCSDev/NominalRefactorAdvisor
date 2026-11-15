@@ -315,11 +315,11 @@ class ClassMethodPromotionSafetyProfile:
         source_lines: tuple[str, ...],
     ) -> ClassMethodPromotionSafetyProfile:
         inspection = MethodPromotionInspection(
-            method,
-            binding_snapshot,
-            class_bound_names,
-            source_lines,
-        )
+            method=method,
+            binding_snapshot=binding_snapshot,
+            class_bound_names=class_bound_names,
+            source_lines=source_lines,
+                     )
         return cls(
             ClassScopeDependency.from_node(method)
             + tuple(
@@ -385,42 +385,42 @@ class CompactClassMethod:
         if isinstance(node, ast.Constant):
             coordinates.append(
                 CompactMethodSemanticCoordinate(
-                    coordinate_path,
-                    CompactMethodSemanticCoordinateKind.CONSTANT,
-                    repr(node.value),
+                    path=coordinate_path,
+                    kind=CompactMethodSemanticCoordinateKind.CONSTANT,
+                    value=repr(node.value),
                 )
             )
         elif isinstance(node, ast.Name):
             coordinates.append(
                 CompactMethodSemanticCoordinate(
-                    coordinate_path,
-                    CompactMethodSemanticCoordinateKind.NAME,
-                    node.id,
+                    path=coordinate_path,
+                    kind=CompactMethodSemanticCoordinateKind.NAME,
+                    value=node.id,
                 )
             )
         elif isinstance(node, ast.Attribute):
             if isinstance(node.value, ast.Name) and node.value.id == "self":
                 coordinates.append(
                     CompactMethodSemanticCoordinate(
-                        coordinate_path,
-                        CompactMethodSemanticCoordinateKind.SELF_ATTRIBUTE,
-                        node.attr,
+                        path=coordinate_path,
+                        kind=CompactMethodSemanticCoordinateKind.SELF_ATTRIBUTE,
+                        value=node.attr,
                     )
                 )
             else:
                 coordinates.append(
                     CompactMethodSemanticCoordinate(
-                        coordinate_path,
-                        CompactMethodSemanticCoordinateKind.ATTRIBUTE,
-                        ast.unparse(node),
+                        path=coordinate_path,
+                        kind=CompactMethodSemanticCoordinateKind.ATTRIBUTE,
+                        value=ast.unparse(node),
                     )
                 )
         elif isinstance(node, ast.Call):
             coordinates.append(
                 CompactMethodSemanticCoordinate(
-                    tuple(str(item) for item in (*path, "func")),
-                    CompactMethodSemanticCoordinateKind.CALL,
-                    ast.unparse(node.func),
+                    path=tuple(str(item) for item in (*path, "func")),
+                    kind=CompactMethodSemanticCoordinateKind.CALL,
+                    value=ast.unparse(node.func),
                 )
             )
         skipped_fields = {"func"} if isinstance(node, ast.Call) else set()

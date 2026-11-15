@@ -87,9 +87,11 @@ class CompactFunctionParameter(ABC):
         match argument:
             case ast.arg(annotation=ast.expr() as annotation):
                 return UndefaultedAnnotatedParameter(
-                    argument.arg, kind, ast.unparse(annotation)
-                )
-        return UndefaultedUnannotatedParameter(argument.arg, kind)
+                    name=argument.arg,
+                    kind=kind,
+                    annotation_expression=ast.unparse(annotation),
+                       )
+        return UndefaultedUnannotatedParameter(name=argument.arg, kind=kind)
 
     def with_default_from(self, names: frozenset[str]) -> CompactFunctionParameter:
         """This parameter as declared with a default exactly when `names` holds it."""
@@ -153,13 +155,17 @@ class AnnotatedParameter(CompactFunctionParameter, ABC):
 
     def defaulted(self) -> DefaultedFunctionParameter:
         return DefaultedAnnotatedParameter(
-            self.name, self.kind, self.annotation_expression
-        )
+            name=self.name,
+            kind=self.kind,
+            annotation_expression=self.annotation_expression,
+               )
 
     def undefaulted(self) -> UndefaultedFunctionParameter:
         return UndefaultedAnnotatedParameter(
-            self.name, self.kind, self.annotation_expression
-        )
+            name=self.name,
+            kind=self.kind,
+            annotation_expression=self.annotation_expression,
+               )
 
     @property
     def plain_undefaulted_names(self) -> frozenset[str]:
@@ -175,10 +181,10 @@ class UnannotatedParameter(CompactFunctionParameter, ABC):
     """A parameter that declares no annotation."""
 
     def defaulted(self) -> DefaultedFunctionParameter:
-        return DefaultedUnannotatedParameter(self.name, self.kind)
+        return DefaultedUnannotatedParameter(name=self.name, kind=self.kind)
 
     def undefaulted(self) -> UndefaultedFunctionParameter:
-        return UndefaultedUnannotatedParameter(self.name, self.kind)
+        return UndefaultedUnannotatedParameter(name=self.name, kind=self.kind)
 
     @property
     def plain_undefaulted_names(self) -> frozenset[str]:

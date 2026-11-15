@@ -197,7 +197,7 @@ class TypeKeyedBehaviorProjectionComponentBuilder:
             target_class = self.class_index.class_for(target_symbol)
             if target_class is None:
                 return None
-            bindings.append(TypeKeyedBehaviorBinding(projection_leaf, target_class))
+            bindings.append(TypeKeyedBehaviorBinding(projection_class=projection_leaf, target_class=target_class))
         if len({binding.target_class.symbol for binding in bindings}) != len(bindings):
             return None
         return sorted_tuple(

@@ -64,38 +64,38 @@ class EnumKeyedDerivedMapFacadeComponent(EvidenceLocated):
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(
-                self.file_path,
-                self.reverse_method_line,
-                self.reverse_method_symbol,
+                file_path=self.file_path,
+                line=self.reverse_method_line,
+                symbol=self.reverse_method_symbol,
             ),
             self.authority_evidence,
             SourceLocation(
-                self.file_path,
-                self.map_owner_line,
-                self.map_owner_symbol,
+                file_path=self.file_path,
+                line=self.map_owner_line,
+                symbol=self.map_owner_symbol,
             ),
             SourceLocation(
-                self.file_path,
-                self.map_method_line,
-                self.map_method_symbol,
+                file_path=self.file_path,
+                line=self.map_method_line,
+                symbol=self.map_method_symbol,
             ),
             *(
-                SourceLocation(self.file_path, consumer.line, consumer.owner_symbol)
+                SourceLocation(file_path=self.file_path, line=consumer.line, symbol=consumer.owner_symbol)
                 for consumer in self.consumers
             ),
         )
 
     @property
     def authority_evidence(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.enum_line, self.enum_symbol)
+        return SourceLocation(file_path=self.file_path, line=self.enum_line, symbol=self.enum_symbol)
 
     @property
     def projection_evidence(self) -> SourceLocation:
         return SourceLocation(
-            self.file_path,
-            self.map_method_line,
-            self.map_method_symbol,
-        )
+            file_path=self.file_path,
+            line=self.map_method_line,
+            symbol=self.map_method_symbol,
+               )
 
     @property
     def map_method_symbol(self) -> str:
@@ -222,7 +222,7 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
         class_index: ClassFamilyIndex,
         binding_proof: ModuleNominalBindingView,
     ) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
-        resolver = ModuleClassReferenceResolver(self.module, class_index)
+        resolver = ModuleClassReferenceResolver(parsed_module=self.module, class_index=class_index)
         components = []
         for owner in class_index.classes_by_symbol.values():
             if owner.file_path != self.module.file_path:

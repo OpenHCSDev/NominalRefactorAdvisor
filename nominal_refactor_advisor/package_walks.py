@@ -106,9 +106,9 @@ class ModuleWalks(ParsedModuleFact):
             class_keywords={
                 symbol: {
                     keyword.arg: ClassKeyword(
-                        static_module_name(keyword.value, parsed_module),
-                        ast.unparse(keyword.value),
-                    )
+                        package=static_module_name(keyword.value, parsed_module),
+                        expression=ast.unparse(keyword.value),
+                                 )
                     for keyword in node.keywords
                     if keyword.arg not in {None, "metaclass"}
                 }
@@ -133,7 +133,7 @@ class ModuleWalks(ParsedModuleFact):
                 ) if package in aliases:
                     owner = _class_symbol(parsed_module, aliases, receiver)
                     if owner is not None:
-                        calls.append(PackageWalkCall(owner, method, aliases[package]))
+                        calls.append(PackageWalkCall(receiver=owner, method=method, package=aliases[package]))
         return tuple(calls)
 
 
@@ -163,9 +163,9 @@ def _keyword_walk(node: ast.ClassDef) -> KeywordWalk | None:
                 case ast.Name(id=keyword) if keyword in parameters:
                     recursive = keywords.get("discovery_recursive")
                     return KeywordWalk(
-                        keyword,
-                        isinstance(recursive, ast.Constant) and recursive.value is True,
-                    )
+                        keyword=keyword,
+                        recursive=isinstance(recursive, ast.Constant) and recursive.value is True,
+                           )
     return None
 
 
@@ -207,9 +207,9 @@ def _walker(function: ast.FunctionDef, local: dict[str, Walker]) -> Walker | Non
             case ast.Attribute(value=ast.Name(id=name), attr="__path__") if (
                 called in WALKS_RECURSIVELY and name in positions
             ):
-                return Walker(positions[name], WALKS_RECURSIVELY[called])
+                return Walker(position=positions[name], recursive=WALKS_RECURSIVELY[called])
             case ast.Name(id=name) if called in local and name in positions:
-                return Walker(positions[name], local[called].recursive)
+                return Walker(position=positions[name], recursive=local[called].recursive)
     return None
 
 

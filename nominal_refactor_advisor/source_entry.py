@@ -255,7 +255,7 @@ class SourceModuleEntryPremise(
 
     @cached_property
     def frame(self) -> InitialNativeFrame:
-        return InitialNativeFrame(self, self, self.builtins)
+        return InitialNativeFrame(locals=self, globals=self, builtins=self.builtins)
 
     def prefix(
         self, position: CompactFlowPosition | None, kernel: CapturedReferenceKernel

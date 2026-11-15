@@ -159,7 +159,7 @@ class MovedMethod(AnsweredMethod):
                 f"{tuple(argument.arg for argument in annotated)!r}; none is clearly its self"
             )
         if annotated:
-            return DestinationInstanceMethod(self, annotated[0])
+            return DestinationInstanceMethod(moved=self, parameter=annotated[0])
         if self.destination_reads:
             return DestinationClassMethod(self)
         raise ValueError(
@@ -185,7 +185,7 @@ class MovedMethod(AnsweredMethod):
         definition = geometry.required_node_offsets(self.method)[0]
         body_start = geometry.line_offsets[self.method.body[0].lineno - 1]
         end = method_deletion_offsets(geometry, self.method)[1]
-        signature = SignatureText(geometry, self.method)
+        signature = SignatureText(geometry=geometry, method=self.method)
         header = _edited(source, definition, body_start, (
             *self.member.signature_edits(signature),
             *signature.renamed(self.new_name),
@@ -606,11 +606,11 @@ class DestinationInstanceMethod(DestinationMember):
             (each for each in call.call.keywords if each.arg == self.parameter.arg), None,
         )
         if keyword is not None:
-            return KeywordArgument(keyword, keyword.value)
+            return KeywordArgument(node=keyword, value=keyword.value)
         positional = self.moved.source.positional_parameters
         if self.parameter in positional and positional.index(self.parameter) < len(call.call.args):
             passed = call.call.args[positional.index(self.parameter)]
-            return PassedArgument(passed, passed)
+            return PassedArgument(node=passed, value=passed)
         raise ValueError(f"{call.where} passes no {self.parameter.arg!r} to {self.moved.name!r}")
 
     def replacement(

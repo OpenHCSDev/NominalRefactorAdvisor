@@ -84,7 +84,7 @@ class HandRolledRegistrationDetector(
             )
             if owners:
                 candidates.append(
-                    HandRolledRegistration(indexed_class, roles[0], owners, scope)
+                    HandRolledRegistration(indexed_class=indexed_class, role=roles[0], owners=owners, scope=scope)
                 )
         return tuple(candidates)
 

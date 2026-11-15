@@ -280,7 +280,7 @@ def analysis_cache_lookup(
 ) -> AnalysisCacheLookup:
     """Build the canonical cache lookup record for one status."""
 
-    return AnalysisCacheLookup(status, findings)
+    return AnalysisCacheLookup(status=status, findings=findings)
 
 
 class CachedFindingPayloadShape:
@@ -401,7 +401,7 @@ class AnalysisFindingSummaryCachePayload:
     ) -> AnalysisFindingSummaryLookup:
         if self.identity != requested_identity:
             return AnalysisFindingSummaryLookup(Miss)
-        return AnalysisFindingSummaryLookup(Hit, self)
+        return AnalysisFindingSummaryLookup(status=Hit, payload=self)
 
 
 @dataclass(frozen=True)
@@ -418,9 +418,9 @@ class AnalysisExecutionPlanCachePayload:
         if self.identity != requested_identity:
             return AnalysisExecutionPlanLookup(Miss)
         return AnalysisExecutionPlanLookup(
-            Hit,
-            self.execution_plan,
-        )
+            status=Hit,
+            plan=self.execution_plan,
+               )
 
 
 @dataclass(frozen=True)
@@ -652,7 +652,7 @@ def detector_implementation_hash(detector_type: type[IssueDetector]) -> str:
 
 def _module_source_signature(module_name: str) -> SourceFileSignature:
     source = ImplementationSource.from_module_name(module_name)
-    return SourceFileSignature(source.path, source.source_signature)
+    return SourceFileSignature(path=source.path, source_hash=source.source_signature)
 
 
 _SEMANTIC_MODULE_HASH_ATTRIBUTE = "_nominal_refactor_advisor_semantic_hash"
@@ -1308,9 +1308,9 @@ class PerModuleDetectorFindingCachePayload:
     ) -> PerModuleDetectorBundleLookup:
         if self.identity != requested_identity:
             return PerModuleDetectorBundleLookup(
-                Miss,
-                tuple(None for _registry in requested_registries),
-            )
+                status=Miss,
+                findings_by_bundle=tuple(None for _registry in requested_registries),
+                   )
         bundles_by_registry = {
             bundle.detector_registry: bundle for bundle in self.bundles
         }
@@ -1333,7 +1333,7 @@ class PerModuleDetectorFindingCachePayload:
             hit_count,
             len(requested_registries),
         )
-        return PerModuleDetectorBundleLookup(status, tuple(aligned_findings))
+        return PerModuleDetectorBundleLookup(status=status, findings_by_bundle=tuple(aligned_findings))
 
 
 @dataclass(frozen=True)
@@ -1919,25 +1919,25 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return PerModuleDetectorBundleLookup(
-                Disabled,
-                tuple(None for _registry in detector_registries),
-            )
+                status=Disabled,
+                findings_by_bundle=tuple(None for _registry in detector_registries),
+                   )
         payload = storage.load_typed_payload(
             storage.per_module_detector_bundle_path(identity),
             PerModuleDetectorFindingCachePayload,
         )
         if payload is None:
             return PerModuleDetectorBundleLookup(
-                Miss,
-                tuple(None for _registry in detector_registries),
-            )
+                status=Miss,
+                findings_by_bundle=tuple(None for _registry in detector_registries),
+                   )
         try:
             return payload.lookup(identity, detector_registries)
         except CacheCheckoutPathError:
             return PerModuleDetectorBundleLookup(
-                Miss,
-                tuple(None for _registry in detector_registries),
-            )
+                status=Miss,
+                findings_by_bundle=tuple(None for _registry in detector_registries),
+                   )
 
     def store_per_module_detector_bundles(
         self,
@@ -1966,7 +1966,7 @@ class AnalysisFindingCache:
             )
             storage.store_typed_payload_atomic(
                 storage.per_module_detector_bundle_path(identity),
-                PerModuleDetectorFindingCachePayload(identity, rebased_bundles),
+                PerModuleDetectorFindingCachePayload(identity=identity, bundles=rebased_bundles),
             )
         except (OSError, CacheCheckoutPathError):
             return
@@ -2095,7 +2095,7 @@ class AnalysisFindingCache:
         storage = self.storage()
         if storage is None:
             return
-        payload = AnalysisExecutionPlanCachePayload(identity, execution_plan)
+        payload = AnalysisExecutionPlanCachePayload(identity=identity, execution_plan=execution_plan)
         try:
             storage.store_typed_payload_atomic(
                 storage.execution_plan_path(identity),
@@ -2182,7 +2182,7 @@ class AnalysisFindingCache:
         summary: FindingSummary,
         storage: AnalysisCacheStorage,
     ) -> None:
-        payload = AnalysisFindingSummaryCachePayload(identity, summary)
+        payload = AnalysisFindingSummaryCachePayload(identity=identity, summary=summary)
         storage.store_typed_payload_atomic(storage.summary_path(identity), payload)
 
     def rebuild_lease(

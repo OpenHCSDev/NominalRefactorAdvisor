@@ -242,9 +242,9 @@ class EnumDeclaration:
                 )
             members.append(
                 Member(
-                    statement.targets[0].id,
-                    statement,
-                    tuple(
+                    name=statement.targets[0].id,
+                    node=statement,
+                    fields=tuple(
                         (name, extra[index] if index < len(extra) else default)
                         for index, (name, default) in enumerate(data_fields)
                     ),
@@ -441,9 +441,9 @@ class HeldEnumAxis(CaseAxis):
                 members = self.enum.member_refs(right)
                 if members is not None:
                     return MemberIn(
-                        members,
-                        isinstance(operator, ast.IsNot | ast.NotEq | ast.NotIn),
-                    )
+                        members=members,
+                        negated=isinstance(operator, ast.IsNot | ast.NotEq | ast.NotIn),
+                           )
         return None
 
 
@@ -480,7 +480,7 @@ class Guard(ABC):
                 and CompactValueExpression.project(right).value_is_none_literal
                 and isinstance(operator, ast.Is | ast.IsNot)
             ):
-                return PropertyIsNone(left.attr, negated)
+                return PropertyIsNone(property_name=left.attr, negated=negated)
         guard = axis.case_guard(test, subject)
         if guard is not None:
             return guard
@@ -658,10 +658,10 @@ class Rewrite:
         later = [statement for statement in from_imports if statement not in earlier]
         geometry = self.geometry(module)
         rendered = ImportFromSource(
-            source,
-            tuple(ast.alias(name) for name in missing),
-            ImportLayout.fitted(module.file_path),
-        ).source
+            module_name=source,
+            aliases=tuple(ast.alias(name) for name in missing),
+            layout=ImportLayout.fitted(module.file_path),
+                   ).source
         sections = {
             id(statement): self.import_order(
                 module, ImportFromModuleName.from_node(statement)
@@ -722,11 +722,11 @@ class Rewrite:
         geometry = self.geometry(module)
         start = geometry.line_offsets[node.lineno - 1]
         end = geometry.node_span_offsets(
-            SourceNodeSpan(node, Include)
+            SourceNodeSpan(node=node, decorator_policy=Include)
         )[1]
         trailing = re.match(r"[ \t]*\r?\n(?:[ \t]*\r?\n)*", geometry.source[end:])
         decorated_start = geometry.node_span_offsets(
-            SourceNodeSpan(node, Include)
+            SourceNodeSpan(node=node, decorator_policy=Include)
         )[0]
         start = geometry.line_offsets[
             geometry.line_number_for_offset(decorated_start) - 1
@@ -806,10 +806,10 @@ class Rewrite:
                 SourceNodeSpan(statement)
             )
             source = ImportFromSource(
-                ImportFromModuleName.from_node(statement).source,
-                tuple(aliases),
-                ImportLayout.of(statement, module.file_path),
-            ).source
+                module_name=ImportFromModuleName.from_node(statement).source,
+                aliases=tuple(aliases),
+                layout=ImportLayout.of(statement, module.file_path),
+                     ).source
             self.span(module, start, end, source)
 
     def edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -1031,7 +1031,7 @@ class Enumerated(Rewritten, ABC):
                 ),
             )
             if module is enum.module:
-                names = ModuleNames(frozenset({enum.name}), frozenset({root}))
+                names = ModuleNames(enum=frozenset({enum.name}), root=frozenset({root}))
             if names.enum or names.root:
                 found[module] = names
         return found
@@ -1387,7 +1387,7 @@ class Fold(Cases, ABC):
 
     def holder(self, snapshot: CodemodSourceSnapshot, enum: EnumDeclaration) -> Holder:
         holders = [
-            Holder(enum.module, statement, member)
+            Holder(module=enum.module, node=statement, field=member)
             for statement in enum.module.module.body
             if isinstance(statement, ast.ClassDef)
             for member in statement.body
@@ -1451,7 +1451,7 @@ class Fold(Cases, ABC):
             if len(parents) != 1:
                 break
             root = parents[0]
-        return Family(classes, root)
+        return Family(classes=classes, root=root)
 
     def branches(
         self,
@@ -1511,8 +1511,14 @@ class Fold(Cases, ABC):
         if owner.name == holder.name:
             arms = self.arms(site, function, body, "self", holder, enum)
             return InFamily(
-                module, function, "self", arms, Tail(body), holder.name, owner
-            )
+                module=module,
+                function=function,
+                subject="self",
+                arms=arms,
+                tail=Tail(body),
+                root=holder.name,
+                owner=owner,
+                   )
         prelude = body.pop(0) if body and isinstance(body[0], ast.Assign) else None
         if (
             prelude is None
@@ -1559,8 +1565,8 @@ class Fold(Cases, ABC):
                 raise ValueError(
                     f"handback: {site}: arm at line {node.lineno} does not return"
                 )
-            axis = HeldEnumAxis(enum, holder.field_name)
-            arms.append(Arm(node, Guard.decoded(node.test, subject, axis)))
+            axis = HeldEnumAxis(enum=enum, field_name=holder.field_name)
+            arms.append(Arm(node=node, guard=Guard.decoded(node.test, subject, axis)))
         if not arms or not body or not isinstance(body[-1], ast.Return):
             raise ValueError(
                 f"handback: {site}: branch is not arms then a returning tail"
@@ -2031,8 +2037,9 @@ class Keyed(Enumerated, ABC):
         components = tuple(
             component
             for component in EnumKeyedDerivedMapFacadeComponentBuilder(
-                enum.module, snapshot.parsed_modules
-            ).proven_components()
+                module=enum.module,
+                repository_modules=snapshot.parsed_modules,
+                             ).proven_components()
             if component.enum_symbol == enum.symbol
         )
         maps = {
@@ -2091,13 +2098,13 @@ class Keyed(Enumerated, ABC):
         ):
             raise ValueError(f"{site}: map values are not declared as type[Root]")
         return KeyedMap(
-            enum.module,
-            owner,
-            method,
-            values,
-            value_annotation.slice.id,
-            components,
-        )
+            module=enum.module,
+            owner=owner,
+            method=method,
+            values=values,
+            root=value_annotation.slice.id,
+            components=components,
+               )
 
 
 @dataclass(frozen=True)
@@ -2156,7 +2163,7 @@ class KeyedMirror(Mirror, Keyed, Enumerated, Descent):
 
     def family_root(self, snapshot: CodemodSourceSnapshot) -> FamilyRoot:
         keyed = self.keyed(snapshot, self.enum(snapshot))
-        return FamilyRoot(keyed.module.file_path, keyed.root)
+        return FamilyRoot(file_path=keyed.module.file_path, qualname=keyed.root)
 
     def mirrored(
         self,

@@ -66,7 +66,7 @@ class FlatModulePackageDestinationDetector(
                 f"`{destination.source_path}` belongs in "
                 f"`{destination.destination_path}`, the package its destination "
                 "table declares.",
-                (SourceLocation(destination.source_path, 1, "<module>"),),
+                (SourceLocation(file_path=destination.source_path, line=1, symbol="<module>"),),
                 metrics=destination.metrics(),
             )
             for destination in DestinationTable.from_texts(

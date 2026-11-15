@@ -169,7 +169,7 @@ class AnsweredMethod:
         if site.call is None:
             raise ValueError(f"{site.where} uses {self.name!r} other than by calling it")
         self.admits(binding, site.where)
-        return MethodCall(site.file_path, site.attribute, site.call)
+        return MethodCall(file_path=site.file_path, attribute=site.attribute, call=site.call)
 
     def answering_calls(self) -> tuple[AnsweredUse, ...]:
         """The uses the member answers, each receiver typed by the class binding, the
@@ -215,16 +215,17 @@ class AnsweredMethod:
                 where = f"{parsed.file_path}:{node.lineno}"
                 parent = parents.get(node)
                 site = MethodReference(
-                    parsed.file_path, node,
-                    parent if isinstance(parent, ast.Call) and parent.func is node else None,
-                )
+                    file_path=parsed.file_path,
+                    attribute=node,
+                    call=parent if isinstance(parent, ast.Call) and parent.func is node else None,
+                       )
                 if isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name) and (
                     node.value.func.id == "super"
                 ):
                     if self._enclosing_class(snapshot, parsed.file_path, node, parents) in self.family:
                         raise ValueError(f"{where} reaches {self.name!r} through super()")
                     continue
-                receivers.append(TypedReceiver(parsed, node.value, node, where, site))
+                receivers.append(TypedReceiver(parsed=parsed, expression=node.value, anchor=node, where=where, site=site))
         return receivers
 
     def reaching(
@@ -289,7 +290,7 @@ class AnsweredMethod:
                     where = f"{parsed.file_path}:{node.lineno}"
                     if isinstance(namespace, ast.Call):
                         return where
-                    namespaces.append(TypedReceiver(parsed, namespace, node, where, None))
+                    namespaces.append(TypedReceiver(parsed=parsed, expression=namespace, anchor=node, where=where, site=None))
                     continue
                 if not isinstance(node, ast.Call):
                     continue
@@ -301,7 +302,7 @@ class AnsweredMethod:
                     return where
                 index = parsed.fact(ModuleNodeIndex)
                 for receiver in self._literal_loop_values(node.args[0], index.parents) or (node.args[0],):
-                    receivers.append(TypedReceiver(parsed, receiver, node, where, None))
+                    receivers.append(TypedReceiver(parsed=parsed, expression=receiver, anchor=node, where=where, site=None))
         try:
             reached = self.reaching(receivers)
             classes = [
@@ -564,7 +565,7 @@ class _ScopeBindings:
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
                     if ImportBoundNameProjection(node).alias_bound_name(alias) == name:
-                        last = ImportedName(node, alias)
+                        last = ImportedName(statement=node, alias=alias)
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if ImportBoundNameProjection(node).alias_bound_name(alias) == name:
@@ -669,7 +670,7 @@ class AnsweredProperty(AnsweredMethod):
         if not isinstance(site.attribute.ctx, ast.Load):
             raise ValueError(f"{site.where} assigns or deletes the property {self.name!r}")
         self.admits(binding, site.where)
-        return AnsweredUse(site.file_path, site.attribute)
+        return AnsweredUse(file_path=site.file_path, attribute=site.attribute)
 
 
 @dataclass(frozen=True)
@@ -687,7 +688,7 @@ class AnsweredField(AnsweredMethod):
         if isinstance(site.attribute.ctx, ast.Del):
             raise ValueError(f"{site.where} deletes the field {self.name!r}")
         self.admits(binding, site.where)
-        return AnsweredUse(site.file_path, site.attribute)
+        return AnsweredUse(file_path=site.file_path, attribute=site.attribute)
 
 
 class AttributeLookup:

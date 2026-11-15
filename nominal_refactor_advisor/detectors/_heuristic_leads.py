@@ -77,7 +77,7 @@ class LongConditionFactoringLeadDetector(PerModuleIssueDetector):
                     f"{len(original_terms)} direct {'and' if isinstance(test.op, ast.And) else 'or'} "
                     f"terms in source order {original_terms}; common fact or owner, "
                     "reachability, short-circuit effects and replacement OPEN.",
-                    (SourceLocation(module.file_path, node.lineno, symbol),),
+                    (SourceLocation(file_path=module.file_path, line=node.lineno, symbol=symbol),),
                 )
             )
         return findings
@@ -125,7 +125,9 @@ class RepeatedLiteralRosterLeadDetector(PerModuleIssueDetector):
             kind = type(node).__name__
             groups[(kind, literals)].append(
                 SourceLocation(
-                    module.file_path, node.lineno, index.lexical_symbol(node_index)
+                    file_path=module.file_path,
+                    line=node.lineno,
+                    symbol=index.lexical_symbol(node_index),
                 )
             )
         findings: list[RefactorFinding] = []

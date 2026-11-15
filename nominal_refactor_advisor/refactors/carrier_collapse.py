@@ -240,7 +240,7 @@ class _ClosedCarrierCollapseSourceRewrite(SourceRewriteABC):
             raise ValueError(
                 f"Carrier authority {authority_symbol!r} has no class node"
             )
-        return ResolvedClassTarget(target, node)
+        return ResolvedClassTarget(target=target, node=node)
 
     @cached_property
     def participant_rewrites(
@@ -321,7 +321,7 @@ class _ClosedCarrierCollapseSourceRewrite(SourceRewriteABC):
         ] = defaultdict(list)
         for file_path, replacement in call_replacements:
             call_spans_by_file_path[file_path].append(
-                SourceTextSpan(replacement.start_offset, replacement.end_offset)
+                SourceTextSpan(start_offset=replacement.start_offset, end_offset=replacement.end_offset)
             )
             replacements_by_file_path[file_path].append(replacement)
         for rewrite in self.participant_rewrites:
@@ -465,7 +465,7 @@ class _ClosedCarrierCollapseSourceRewrite(SourceRewriteABC):
         geometry = self.geometries_by_file_path[resolved_call.context.file_path]
         source_span = resolved_call.call.source_span
         start_offset, end_offset = geometry.byte_span_offsets(source_span)
-        span = SourceTextSpan(start_offset, end_offset)
+        span = SourceTextSpan(start_offset=start_offset, end_offset=end_offset)
         if geometry.span_contains_comment(span):
             raise ValueError(
                 f"Component call at {resolved_call.context.file_path}:"

@@ -340,7 +340,7 @@ class DeclinedPick(OwnerPickResolution):
     because: str
 
     def outcome(self, finding: str) -> OwnerPickOutcome:
-        return OwnerPickOutcome(finding, "declined", self.because)
+        return OwnerPickOutcome(finding=finding, outcome="declined", detail=self.because)
 
 
 @dataclass(frozen=True)
@@ -350,7 +350,7 @@ class RejectedPick(OwnerPickResolution):
     reason: str
 
     def outcome(self, finding: str) -> OwnerPickOutcome:
-        return OwnerPickOutcome(finding, "rejected", self.reason)
+        return OwnerPickOutcome(finding=finding, outcome="rejected", detail=self.reason)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -361,8 +361,10 @@ class PickedOwner(OwnerPick, OwnerPickResolution):
 
     def outcome(self, finding: str) -> OwnerPickOutcome:
         return OwnerPickOutcome(
-            finding, "picked", f"{self.owner} because {self.because}"
-        )
+            finding=finding,
+            outcome="picked",
+            detail=f"{self.owner} because {self.because}",
+               )
 
     def picked(self) -> tuple[PickedOwner, ...]:
         return (self,)
@@ -584,9 +586,9 @@ class BlockOwnerQuestion:
             held = self._held(symbol)
             receipts = [
                 Receipt(
-                    OwnerReceiptKind.ANCESTOR_OF_BOTH,
-                    f"`{base.qualname}` is an ancestor of both",
-                    (_location(base),),
+                    kind=OwnerReceiptKind.ANCESTOR_OF_BOTH,
+                    detail=f"`{base.qualname}` is an ancestor of both",
+                    evidence=(_location(base),),
                 ),
                 *self._holding_receipts(base, held),
                 *self._consumer_receipts(base),
@@ -601,11 +603,11 @@ class BlockOwnerQuestion:
             if others:
                 receipts.append(
                     Receipt(
-                        OwnerReceiptKind.BASE_SERVES_OTHERS,
-                        f"`{base.qualname}` has descendants that do not restate the "
+                        kind=OwnerReceiptKind.BASE_SERVES_OTHERS,
+                        detail=f"`{base.qualname}` has descendants that do not restate the "
                         "block; a fold is proved only for a base whose every "
                         "descendant restates it",
-                        (_location(base),),
+                        evidence=(_location(base),),
                     )
                 )
                 receipts.append(
@@ -691,11 +693,11 @@ class BlockOwnerQuestion:
             if not self.same_construction(owner, self.first):
                 receipts.append(
                     Receipt(
-                        OwnerReceiptKind.DIFFERENT_CONSTRUCTION,
-                        f"`{owner.qualname}` is created differently from "
+                        kind=OwnerReceiptKind.DIFFERENT_CONSTRUCTION,
+                        detail=f"`{owner.qualname}` is created differently from "
                         f"`{self.first.qualname}` (dataclass declaration, metaclass "
                         "or class keywords): composing it changes construction",
-                        (_location(owner), _location(self.first)),
+                        evidence=(_location(owner), _location(self.first)),
                     )
                 )
             imports, cycles, import_receipts = self._import_receipts(
@@ -816,11 +818,11 @@ class BlockOwnerQuestion:
             if not self.same_construction(owner, self.first):
                 receipts.append(
                     Receipt(
-                        OwnerReceiptKind.DIFFERENT_CONSTRUCTION,
-                        f"`{owner.qualname}` is created differently from "
+                        kind=OwnerReceiptKind.DIFFERENT_CONSTRUCTION,
+                        detail=f"`{owner.qualname}` is created differently from "
                         f"`{self.first.qualname}` (dataclass declaration, metaclass "
                         "or class keywords): composing it changes construction",
-                        (_location(owner), _location(self.first)),
+                        evidence=(_location(owner), _location(self.first)),
                     )
                 )
         receipts.extend(
@@ -854,11 +856,11 @@ class BlockOwnerQuestion:
         owned_elsewhere = (
             (
                 Receipt(
-                    OwnerReceiptKind.OWNED_BY_EXISTING_CLASSES,
-                    "the block is already declared by "
+                    kind=OwnerReceiptKind.OWNED_BY_EXISTING_CLASSES,
+                    detail="the block is already declared by "
                     + " + ".join(f"`{owner.qualname}`" for owner in covering)
                     + ", which other classes compose: a new mixin would be another copy",
-                    tuple(_location(owner) for owner in covering),
+                    evidence=tuple(_location(owner) for owner in covering),
                 ),
             )
             if covering
@@ -888,10 +890,10 @@ class BlockOwnerQuestion:
                 module_name=module_name,
                 receipts=(
                     Receipt(
-                        OwnerReceiptKind.NEW_CLASS,
-                        f"a new class in `{module_name}` declares the "
+                        kind=OwnerReceiptKind.NEW_CLASS,
+                        detail=f"a new class in `{module_name}` declares the "
                         f"{len(self.block)}-declaration block",
-                        (),
+                        evidence=(),
                     ),
                     *self._restater_receipts(restaters),
                     *import_receipts,
@@ -1103,10 +1105,10 @@ class BlockOwnerQuestion:
                 count=len(brought),
             ),
             Receipt(
-                OwnerReceiptKind.OWNER_NOT_CONTAINED,
-                f"`{owner.qualname}` declares more than the block; composition is "
+                kind=OwnerReceiptKind.OWNER_NOT_CONTAINED,
+                detail=f"`{owner.qualname}` declares more than the block; composition is "
                 "proved only for an owner whose whole body each composer restates",
-                (_location(owner),),
+                evidence=(_location(owner),),
             ),
         )
 
@@ -1203,9 +1205,9 @@ class BlockOwnerQuestion:
         if already and not needed:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.ALREADY_IMPORTED,
-                    f"both classes' modules already are or import `{module_name}`",
-                    tuple(_location(owner) for owner in owners),
+                    kind=OwnerReceiptKind.ALREADY_IMPORTED,
+                    detail=f"both classes' modules already are or import `{module_name}`",
+                    evidence=tuple(_location(owner) for owner in owners),
                 )
             )
         if needed:

@@ -368,13 +368,13 @@ class NoDataclassDeclaration(CompactDataclassFacet):
         pending_symbols: frozenset[str],
     ) -> _CompactProductLineage:
         return _CompactProductLineage(
-            (),
-            (
+            effective_fields=(),
+            failures=(
                 composer.failure(
                     heir, CompactProductAuthorityViolation.NON_DATACLASS_BASE
                 ),
             ),
-        )
+               )
 
     def product_resolution_in(
         self,
@@ -502,7 +502,7 @@ class CompactNominalReference(ABC):
 
         if binding is None:
             return UnboundNominalReference(parts)
-        return BoundNominalReference(parts, binding)
+        return BoundNominalReference(source_parts=parts, root_binding=binding)
 
     @property
     @abstractmethod
@@ -1787,9 +1787,9 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                     binding_facets.class_decorators_are_promotion_safe
                 ),
                 class_header_is_reconstructible=ClassHeaderSourceSpan(
-                    node,
-                    parsed_module.source_segments.lines,
-                ).is_reconstructible,
+                    node=node,
+                    source_lines=parsed_module.source_segments.lines,
+                                                ).is_reconstructible,
                 base_key_type_names=CompactModuleClassHeader._compact_base_key_type_names(node),
                 base_argument_sources=CompactModuleClassHeader._compact_base_argument_sources(node),
                 type_parameter_names=TypeParameterSyntax.names(node),
@@ -1931,7 +1931,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
                 for returns in declared_annotations(statement)
             )
             declarations.extend(
-                declared or (CompactUnannotatedCallable(statement.name, statement.lineno),)
+                declared or (CompactUnannotatedCallable(name=statement.name, line=statement.lineno),)
             )
         return tuple(declarations)
 
@@ -2418,7 +2418,7 @@ class LatentRosterObservation(SourceLineReference):
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 return ()
             return StatementValue.of(body[0]).answer(
-                LatentRosterValue(parsed_module, statement, statement.name)
+                LatentRosterValue(parsed_module=parsed_module, statement=statement, roster_name=statement.name)
             )
         if not isinstance(statement, ast.Assign | ast.AnnAssign):
             return ()
@@ -2427,13 +2427,11 @@ class LatentRosterObservation(SourceLineReference):
             for target in single_name_targets(statement)
             for observation in StatementValue.of(statement).answer(
                 LatentRosterValue(
-                    parsed_module,
-                    statement,
-                    (
-                        f"{roster_prefix}.{target.id}"
+                    parsed_module=parsed_module,
+                    statement=statement,
+                    roster_name=f"{roster_prefix}.{target.id}"
                         if roster_prefix is not None
-                        else target.id
-                    ),
+                        else target.id,
                 )
             )
         )
@@ -2580,14 +2578,14 @@ class LatentRosterObservation(SourceLineReference):
         missing_names = sorted_tuple(authority_members - roster_members)
         coverage_ratio = len(roster_members) / len(authority_members)
         if not missing_names:
-            return LatentRosterMatch(coverage_ratio, (), None)
+            return LatentRosterMatch(coverage_ratio=coverage_ratio, missing_member_names=(), projection_policy_hint=None)
         if self.projection_policy_hint is None:
             return None
         return LatentRosterMatch(
-            coverage_ratio,
-            missing_names,
-            self.projection_policy_hint,
-        )
+            coverage_ratio=coverage_ratio,
+            missing_member_names=missing_names,
+            projection_policy_hint=self.projection_policy_hint,
+               )
 
 
 @dataclass(frozen=True)
@@ -2917,14 +2915,14 @@ class _ProductLineageComposer:
         indexed_class = self.classes_by_symbol[class_symbol]
         if class_symbol in pending_symbols:
             return _CompactProductLineage(
-                (),
-                (
+                effective_fields=(),
+                failures=(
                     self.failure(
                         indexed_class,
                         CompactProductAuthorityViolation.CYCLIC_PRODUCT_LINEAGE,
                     ),
                 ),
-            )
+                   )
         failures = tuple(
             self.failure(indexed_class, failure.violation, line=failure.line)
             for failure in declaration.failures
@@ -2997,17 +2995,17 @@ class _ProductLineageComposer:
         )
         failures = tuple(dict.fromkeys((*lineage.failures, *role_failures)))
         return (
-            OpenCompactProductAuthority(class_symbol, failures)
+            OpenCompactProductAuthority(class_symbol=class_symbol, failures=failures)
             if failures
             else ResolvedCompactProductAuthority(
-                class_symbol,
-                CompactProductAuthority(
+                class_symbol=class_symbol,
+                resolved_authority=CompactProductAuthority(
                     class_symbol=class_symbol,
                     effective_fields=lineage.effective_fields,
                     file_path=indexed_class.file_path,
                     line=indexed_class.line,
                 ),
-            )
+                 )
         )
 
 
@@ -3023,7 +3021,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanCo
     def declared_mro_authority(self) -> ClassMroAuthority:
         """The MRO the declarations state, for reading declared member types (`DeclaredBases`)."""
 
-        return ClassMroAuthority(self.classes_by_symbol, DeclaredBases())
+        return ClassMroAuthority(classes_by_symbol=self.classes_by_symbol, bases=DeclaredBases())
 
     def member_in_mro(self, owner_symbol: str, member_name: str) -> ClassMemberLookup:
         """The binding of `member_name` that an instance of `owner_symbol` reads at runtime."""
@@ -3071,9 +3069,9 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanCo
                 case (), ():
                     continue
                 case (declaration,), ():
-                    return AssignedClassMember(current, declaration)
+                    return AssignedClassMember(owner=current, declaration=declaration)
                 case (), (declaration,):
-                    return CallableClassMember(current, declaration)
+                    return CallableClassMember(owner=current, declaration=declaration)
             return AmbiguousClassMember()
         if not self._binds_member(owner, member_name) and self._reaches_opaque_base(
             owner_symbol, authority
@@ -4052,11 +4050,11 @@ class ClassBodyModuleScope:
     ) -> ModuleNominalBindingWitness | None:
         for snapshot in (declaration, final):
             if (binding := snapshot.binding_for(name)) is not None:
-                return ModuleNominalBindingWitness(binding.qualified_name, name)
+                return ModuleNominalBindingWitness(qualified_name=binding.qualified_name, root_name=name)
         if declaration.resolves_unshadowed_builtin(name):
-            return ModuleNominalBindingWitness(f"{builtins.__name__}.{name}", name)
+            return ModuleNominalBindingWitness(qualified_name=f"{builtins.__name__}.{name}", root_name=name)
         if name in declaration.unresolved_bound_names or name in final.unresolved_bound_names:
-            return ModuleNominalBindingWitness(f"{self.module_name}.{name}", name)
+            return ModuleNominalBindingWitness(qualified_name=f"{self.module_name}.{name}", root_name=name)
         return None
 
 
@@ -4256,11 +4254,11 @@ class ClassBodyNormalForm:
         return replace(
             declaration,
             field_declaration=CompactCalledFieldFact(
-                CompactFieldDeclarationCall.of_call(
+                call=CompactFieldDeclarationCall.of_call(
                     ".".join((witness.qualified_name, *cast(tuple[str, ...], parts)[1:])),
                     call,
                 ),
-                cls._of_statement(
+                bare=cls._of_statement(
                     ClassBodyDeclarationKind.FIELD,
                     name,
                     bare_statement,
@@ -4268,7 +4266,7 @@ class ClassBodyNormalForm:
                     scope,
                     bound_names,
                 ).compact(),
-            ),
+                              ),
         )
 
     @classmethod
@@ -4380,7 +4378,7 @@ class NamedImportModuleBindingProjection(ModuleNominalBindingView):
             )
         )
         return (
-            ModuleNominalBindingWitness(f"builtins.{name}", name)
+            ModuleNominalBindingWitness(qualified_name=f"builtins.{name}", root_name=name)
             if is_unshadowed
             else None
         )
@@ -4402,7 +4400,7 @@ class NamedImportModuleBindingProjection(ModuleNominalBindingView):
         )
         if qualified_name is None:
             return None
-        return ModuleNominalBindingWitness(qualified_name, root_name)
+        return ModuleNominalBindingWitness(qualified_name=qualified_name, root_name=root_name)
 
 
 def _direct_binding_target_names(target: ast.AST) -> tuple[str, ...]:
@@ -4882,7 +4880,9 @@ class CompactModuleClassProjectionFamily(
                 type_variable_names=cls._module_type_variable_names(parsed_module),
                 annotated_function_returns=tuple(
                     CompactAnnotatedFunctionReturn(
-                        node.name, node.lineno, ast.unparse(returns)
+                        name=node.name,
+                        line=node.lineno,
+                        return_annotation_expression=ast.unparse(returns),
                     )
                     for node in parsed_module.module.body
                     if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -5434,7 +5434,9 @@ def _dataclass_field_role(
         return CompactDataclassFieldRole.UNRESOLVED
     return StatementValue.of(statement).answer(
         DataclassFieldDefaultRole(
-            module_binding_snapshot, class_aliases, preceding_class_bound_names
+            module_binding_snapshot=module_binding_snapshot,
+            class_aliases=class_aliases,
+            preceding_class_bound_names=preceding_class_bound_names,
         )
     )
 
@@ -5814,7 +5816,7 @@ class CompactFieldDeclarationWrapper(NamedTuple):
                 if default is not None
             ),
         )
-        fold = _FieldDeclarationFold(snapshot, frozenset())
+        fold = _FieldDeclarationFold(snapshot=snapshot, absent=frozenset())
         # Every MISSING parameter of a wrapper is read as giving a default when
         # supplied: wrong only toward "a different field", never a false match.
         missing = tuple(
@@ -5822,7 +5824,7 @@ class CompactFieldDeclarationWrapper(NamedTuple):
             for argument, default in defaulted
             if fold.qualified(default) == _MISSING_QUALIFIED_NAME
         )
-        fold = _FieldDeclarationFold(snapshot, frozenset(missing))
+        fold = _FieldDeclarationFold(snapshot=snapshot, absent=frozenset(missing))
         value = fold.statements(statements_without_docstring(function.body)).returned()
         returned = None if value is None else fold.returned_call(value)
         if returned is None:
@@ -6509,9 +6511,9 @@ class CompactClassFamilyIndexBuilder:
         }
         return CompactClassFamilyIndex(
             classes_by_symbol=RegisteringMetaclassAuthority(
-                classes_by_symbol,
-                CompactRepositoryPublicExposureIndex(tuple(self.projections)),
-            ).resolved()
+                scanned=classes_by_symbol,
+                exposure=CompactRepositoryPublicExposureIndex(tuple(self.projections)),
+                              ).resolved()
         )
 
     @staticmethod

@@ -74,7 +74,7 @@ class UncarriedRecordFormat(ChangeMeasure):
         before = cls.formats(repo, base, root, changed)
         after = cls.formats(repo, head, root, changed)
         uncarried: Counts = {
-            UncarriedFormatCount(cls, name, form.narrowed(before[name])[0]): 1
+            UncarriedFormatCount(measure=cls, record=name, key=form.narrowed(before[name])[0]): 1
             for name, form in after.items()
             if name in before and not form.widens(before[name])
             and (before[name].version == form.version or not carried)}
@@ -107,7 +107,7 @@ class DonePhaseBroken(Compared):
         before, after = results
         head_commit = repo.revision(head)
         broken: Counts = {
-            PhaseSiteCount(cls, guard, site): 1
+            PhaseSiteCount(measure=cls, phase=guard, site=site): 1
             for guard in sorted(after - before, key=lambda guard: guard.__name__)
             for site in repo.guard_sites(head_commit, guard)
         }

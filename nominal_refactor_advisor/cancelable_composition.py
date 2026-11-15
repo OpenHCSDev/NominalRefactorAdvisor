@@ -225,8 +225,10 @@ def detect_cancelable_composition_signals(
         if node is None:
             continue
         signal = CancelableCompositionSignalTargetAuthority(
-            source_index, target, node
-        ).signal()
+            source_index=source_index,
+            target=target,
+            node=node,
+                 ).signal()
         if signal is not None:
             signals.append(signal)
     return sorted_tuple(

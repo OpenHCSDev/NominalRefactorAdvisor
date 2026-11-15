@@ -744,7 +744,7 @@ class InlineForwarderOperation(PreflightByReproof, RepositorySourceReprovedOpera
             replacements.setdefault(call.file_path, []).append(
                 (call.node, forwarder.inlined(call.node, call.attribute.value, call.file_path))
             )
-        callee = _ForwardedNames(snapshot, source_path, forwarder)
+        callee = _ForwardedNames(snapshot=snapshot, source_path=source_path, forwarder=forwarder)
         edits: list[NominalSourceEdit] = []
         for file_path, file_replacements in replacements.items():
             geometry = SourceTextGeometry(snapshot.sources_by_file_path[file_path])

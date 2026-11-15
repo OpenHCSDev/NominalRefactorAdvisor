@@ -239,7 +239,7 @@ class CallKeyword(ABC):
 
         if keyword.arg is None:
             return KeywordSplat(keyword)
-        return NamedKeyword(keyword, keyword.arg)
+        return NamedKeyword(node=keyword, name=keyword.arg)
 
     @property
     def value(self) -> ast.expr:
@@ -379,7 +379,7 @@ class StatementValue(ABC):
 
         if statement.value is None:
             return NoStatementValue(statement)
-        return SuppliedValue(statement, statement.value)
+        return SuppliedValue(statement=statement, value=statement.value)
 
     @abstractmethod
     def answer(self, question: StatementValueQuestion[AnswerT]) -> AnswerT:

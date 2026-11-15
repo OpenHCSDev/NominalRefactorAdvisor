@@ -117,7 +117,7 @@ class ImportBlockInsertionPointABC(ABC):
         """Render additions with any required following group boundary."""
 
         existing_imports = self.leading_import_statements
-        inserted_source = RequestedImportBlock(additions, self.file_path).source_after(
+        inserted_source = RequestedImportBlock(statements=additions, file_path=self.file_path).source_after(
             slot.previous_statement(self)
         )
         if (
@@ -841,8 +841,9 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 file_path=self.file_path,
                 source=source,
                 statement_span=SourceLineSpan(
-                    guard.lineno, guard.end_lineno or guard.lineno
-                ),
+                    start_line=guard.lineno,
+                    end_line=guard.end_lineno or guard.lineno,
+                               ),
                 rationale=self.rationale
                 or f"Remove empty type-checking import guard in {self.file_path!r}.",
             )
@@ -870,7 +871,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 replacements.append(
                     SourceSpanDeletion(
                         file_path=self.file_path,
-                        span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                        span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
                         rationale=self.rationale
                         or f"Remove import bindings in {self.file_path!r}.",
                         contributors=self.contributors,
@@ -902,7 +903,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             replacements.append(
                 SourceSpanReplacement(
                     file_path=self.file_path,
-                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                    span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTextGeometry(source).generated_lines(
                         replacement_source
                     ),
@@ -1022,8 +1023,10 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         additions: tuple[RequestedImportStatement, ...],
     ) -> tuple[SourceInsertion, ...]:
         insertion_point = TypeCheckingGuardImportInsertionPoint(
-            source, guard, self.file_path
-        )
+            source=source,
+            guard=guard,
+            file_path=self.file_path,
+                          )
         existing_imports = insertion_point.leading_import_statements
         return tuple(
             self._guarded_import_group_insertion(
@@ -1096,11 +1099,12 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             if insertion_point.insertion_index_for(addition) != import_boundary_index
         )
         runtime_source = RequestedImportBlock(
-            boundary_runtime_additions, self.file_path
-        ).source_after(
+            statements=boundary_runtime_additions,
+            file_path=self.file_path,
+                         ).source_after(
             insertion_point.previous_import_statement
         )
-        guarded_source = RequestedImportBlock(guarded_additions, self.file_path).source_after(
+        guarded_source = RequestedImportBlock(statements=guarded_additions, file_path=self.file_path).source_after(
             None
         )
         separator_before_guard = (

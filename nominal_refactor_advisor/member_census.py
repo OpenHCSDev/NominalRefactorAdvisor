@@ -548,7 +548,7 @@ class MemberAwarenessCensusBuilder:
                 )
             ] |= observation.members
         return tuple(
-            Consumer(kind, family, file_path, symbol, subject, frozenset(found))
+            Consumer(kind=kind, family=family, file_path=file_path, symbol=symbol, subject=subject, members=frozenset(found))
             for (kind, family, file_path, symbol, subject), found in sorted(
                 members.items()
             )
@@ -559,8 +559,10 @@ class MemberAwarenessCensusBuilder:
         method_names = frozenset().union(*(owner.method_names for owner in self.owners))
         return {
             module.file_path: ModuleCalls(
-                module, self.corpus.resolvers[module.file_path], method_names
-            )
+                module=module,
+                resolver=self.corpus.resolvers[module.file_path],
+                method_names=method_names,
+                              )
             for module in self.corpus.modules
         }
 
@@ -674,7 +676,7 @@ class MemberAwarenessCensusBuilder:
             for consumer in group.bypassing:
                 bypassing[group.kind, group.family][consumer.file_path, consumer.qualname] = consumer
         return tuple(sorted(
-            (FamilyAddCost(kind, family, tuple(found[key] for key in sorted(found)))
+            (FamilyAddCost(kind=kind, family=family, consumers=tuple(found[key] for key in sorted(found)))
              for (kind, family), found in bypassing.items()),
             key=lambda cost: (-cost.edits, cost.kind.value, cost.family),
         ))
@@ -766,13 +768,13 @@ def build_member_awareness_census(
     """Count the consumers that name each family's members under ``root``."""
 
     corpus = CensusCorpus(
-        tuple(
+        modules=tuple(
             parse_python_modules(
                 root,
                 cache_dir=cache_dir,
                 use_parse_cache=use_parse_cache,
             )
         ),
-        config or DetectorConfig(),
-    )
+        config=config or DetectorConfig(),
+             )
     return MemberAwarenessCensusBuilder.from_sources(corpus).report(introspection)

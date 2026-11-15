@@ -90,7 +90,7 @@ def parsed(source: bytes, filename: str) -> ast.Module:
 @lru_cache(maxsize=4)
 def scoped(source: bytes, filename: str) -> ModuleScope:
     """A file's syntax with its scopes, walked once while every measure reads it."""
-    return ModuleScope(parsed(source, filename), filename)
+    return ModuleScope(tree=parsed(source, filename), path=filename)
 
 
 class PatternMeasure(NodeCount):
@@ -278,12 +278,12 @@ class Tally:
     def __add__(self, other: Tally) -> Tally:
         counts = collections.Counter(self.counts)
         counts.update(other.counts)        # Counter's + would drop negative totals; changes can be negative
-        return Tally(counts, self.code_lines + other.code_lines)
+        return Tally(counts=counts, code_lines=self.code_lines + other.code_lines)
 
     def __sub__(self, other: Tally) -> Tally:
         counts = collections.Counter(self.counts)
         counts.subtract(other.counts)
-        return Tally(counts, self.code_lines - other.code_lines)
+        return Tally(counts=counts, code_lines=self.code_lines - other.code_lines)
 
     def __getitem__(self, measure: type[Measure]) -> int:
         return self.counts[measure]
@@ -355,13 +355,13 @@ class NodeTable:
         try:
             tree = ast.parse(text)
         except SyntaxError as error:
-            return Unparsed(path, lines, str(error))
+            return Unparsed(path=path, code_lines=lines, error=str(error))
         tally = Tally(code_lines=lines)
         for node in ast.walk(tree):
             for measure in self.by_node.get(type(node), ()):
                 if measure.admits(owners, path):
                     tally.counts[measure] += measure.occurrences(node)
-        return Measured(path, lines, tally)
+        return Measured(path=path, code_lines=lines, tally=tally)
 
 
 def interpreter() -> str:

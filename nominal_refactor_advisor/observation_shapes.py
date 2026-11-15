@@ -126,10 +126,10 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
         """Project this structural observation onto its source coordinate."""
 
         return SourceLocation(
-            self.file_path,
-            self.observation_line,
-            self.owner_symbol,
-        )
+            file_path=self.file_path,
+            line=self.observation_line,
+            symbol=self.owner_symbol,
+               )
 
 
 class ExecutionLevelObservationMixin(ABC):
@@ -189,15 +189,15 @@ class LineSymbolObservationMixin(
 
 
 FunctionBodyLineSymbolObservationMixin = CompositeClassSpec(
-    "FunctionBodyLineSymbolObservationMixin",
-    (FunctionBodyExecutionMixin, LineSymbolObservationMixin, ABC),
-).build(__name__)
+    class_name="FunctionBodyLineSymbolObservationMixin",
+    bases=(FunctionBodyExecutionMixin, LineSymbolObservationMixin, ABC),
+                                         ).build(__name__)
 
 
 ModuleBodyLineSymbolObservationMixin = CompositeClassSpec(
-    "ModuleBodyLineSymbolObservationMixin",
-    (ModuleBodyExecutionMixin, LineSymbolObservationMixin, ABC),
-).build(__name__)
+    class_name="ModuleBodyLineSymbolObservationMixin",
+    bases=(ModuleBodyExecutionMixin, LineSymbolObservationMixin, ABC),
+                                       ).build(__name__)
 
 
 class FunctionBodyLinenoSymbolObservationMixin(
@@ -376,7 +376,7 @@ class SymbolSite:
 
     @property
     def location(self) -> SourceLocation:
-        return SourceLocation(self.file_path, self.lineno, self.symbol)
+        return SourceLocation(file_path=self.file_path, line=self.lineno, symbol=self.symbol)
 
 @dataclass(frozen=True)
 class ModuleExpressionShape(SymbolSite):
@@ -566,14 +566,16 @@ class RegistrationShape:
                 ),
                 derived_fields=(
                     ConstructorDerivedField(
-                        "file_path", lambda bound: bound["parsed_module"].file_path
+                        field_name="file_path",
+                        resolver=lambda bound: bound["parsed_module"].file_path,
                     ),
                     ConstructorDerivedField(
-                        "lineno", lambda bound: bound["node"].lineno
+                        field_name="lineno",
+                        resolver=lambda bound: bound["node"].lineno,
                     ),
                     ConstructorDerivedField(
-                        "key_expression",
-                        lambda bound: ast.unparse(
+                        field_name="key_expression",
+                        resolver=lambda bound: ast.unparse(
                             bound["node"].args[1]
                             if len(bound["node"].args) >= 2
                             else bound["node"].args[0]
@@ -593,17 +595,20 @@ class RegistrationShape:
                 parameter_fields=("registry_name", "key_fingerprint"),
                 derived_fields=(
                     ConstructorDerivedField(
-                        "file_path", lambda bound: bound["parsed_module"].file_path
+                        field_name="file_path",
+                        resolver=lambda bound: bound["parsed_module"].file_path,
                     ),
                     ConstructorDerivedField(
-                        "lineno", lambda bound: bound["node"].lineno
+                        field_name="lineno",
+                        resolver=lambda bound: bound["node"].lineno,
                     ),
                     ConstructorDerivedField(
-                        "registered_class", lambda bound: bound["node"].name
+                        field_name="registered_class",
+                        resolver=lambda bound: bound["node"].name,
                     ),
                     ConstructorDerivedField(
-                        "key_expression",
-                        lambda bound: ast.unparse(
+                        field_name="key_expression",
+                        resolver=lambda bound: ast.unparse(
                             bound["decorator"].args[1]
                             if len(bound["decorator"].args) >= 2
                             else ast.Constant(value=bound["node"].name)
@@ -627,13 +632,16 @@ class RegistrationShape:
                 ),
                 derived_fields=(
                     ConstructorDerivedField(
-                        "file_path", lambda bound: bound["parsed_module"].file_path
+                        field_name="file_path",
+                        resolver=lambda bound: bound["parsed_module"].file_path,
                     ),
                     ConstructorDerivedField(
-                        "lineno", lambda bound: bound["node"].lineno
+                        field_name="lineno",
+                        resolver=lambda bound: bound["node"].lineno,
                     ),
                     ConstructorDerivedField(
-                        "registered_class", lambda bound: bound["node"].name
+                        field_name="registered_class",
+                        resolver=lambda bound: bound["node"].name,
                     ),
                 ),
             ),

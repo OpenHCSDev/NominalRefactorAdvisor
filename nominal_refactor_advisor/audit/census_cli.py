@@ -68,7 +68,7 @@ class ChangeReport(Report):
     def render(self, top: int) -> str:
         label = f"{self.base}..{self.rev}"
         return "\n\n".join(part for part in (f"changed between {label} (touched files, after minus before)",
-                                             CountTable(label, self.census.tally).render(),
+                                             CountTable(label=label, tally=self.census.tally).render(),
                                              DensityTable((("added", self.census.tally),)).render(),
                                              self.census.render_coverage(), self.census.render_top(top)) if part)
 
@@ -101,7 +101,7 @@ class SnapshotMode(Mode):
     help = "the tree at --rev (the default)"
 
     def report(self, scope: Scope) -> Report:
-        return SnapshotReport(scope.rev, scope.snapshot(scope.rev))
+        return SnapshotReport(rev=scope.rev, census=scope.snapshot(scope.rev))
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class ChangeMode(Mode):
     help = "measure what changed between this revision and --rev"
 
     def report(self, scope: Scope) -> Report:
-        return ChangeReport(self.base, scope.rev, scope.changes_since(self.base))
+        return ChangeReport(base=self.base, rev=scope.rev, census=scope.changes_since(self.base))
 
 
 @dataclass(frozen=True)
@@ -122,7 +122,7 @@ class ForkMode(Mode):
 
     def report(self, scope: Scope) -> Report:
         merge_base = scope.census.repo.merge_base(scope.rev, self.upstream)
-        return ForkReport(merge_base, scope.snapshot(merge_base), scope.changes_since(merge_base))
+        return ForkReport(merge_base=merge_base, upstream=scope.snapshot(merge_base), fork=scope.changes_since(merge_base))
 
 
 class SelectMode(argparse.Action):
@@ -148,7 +148,7 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = parser().parse_args()
-    scope = Scope(CensusRun(Repository(args.repo), Undeclared()), args.root, args.rev, tuple(args.exclude))
+    scope = Scope(census=CensusRun(repo=Repository(args.repo), owners=Undeclared()), root=args.root, rev=args.rev, excluded=tuple(args.exclude))
     report = args.mode.report(scope)
     print(report.render(args.top))
     if args.json:

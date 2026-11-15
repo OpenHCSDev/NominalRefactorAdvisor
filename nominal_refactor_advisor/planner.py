@@ -50,7 +50,7 @@ class _FindingCluster:
         cls, findings: tuple[RefactorFinding, ...], root: Path
     ) -> _FindingCluster:
         return cls(
-            subsystem=SubsystemNameProjection(findings, root).name(),
+            subsystem=SubsystemNameProjection(findings=findings, root=root).name(),
             findings=findings,
             evidence=FindingProjection.combined_evidence(findings),
         )
@@ -258,7 +258,7 @@ def build_refactor_execution_plan(
     relation_graph = _FindingRelationGraph.from_findings(finding_tuple, root)
     clusters = ExecutionPartitionPlanner(root).clusters(findings)
     class_inputs = [
-        ExecutionClassInputAuthority(cluster, root, relation_graph).input()
+        ExecutionClassInputAuthority(cluster=cluster, root=root, relation_graph=relation_graph).input()
         for cluster in clusters
     ]
     ordered_inputs = sorted(
@@ -305,7 +305,7 @@ def build_refactor_execution_plan_from_groups(
         )
     relation_graph = _FindingRelationGraph.from_findings(finding_tuple, root)
     class_inputs = [
-        ExecutionClassInputAuthority(cluster, root, relation_graph).input()
+        ExecutionClassInputAuthority(cluster=cluster, root=root, relation_graph=relation_graph).input()
         for cluster in clusters
     ]
     ordered_inputs = sorted(
@@ -377,7 +377,7 @@ def _cluster_findings(
         ordered_findings = sorted_tuple(
             group_findings,
             key=lambda finding: (
-                SubsystemNameProjection((finding,), root).name(),
+                SubsystemNameProjection(findings=(finding,), root=root).name(),
                 finding.pattern_id,
                 finding.title,
             ),
@@ -497,15 +497,15 @@ class _FindingRelationFacts:
         return (
             *(
                 _FindingRelationAuthorityKey(
-                    _FindingRelationAuthorityAxis.EVIDENCE_PATH,
-                    path,
+                    axis=_FindingRelationAuthorityAxis.EVIDENCE_PATH,
+                    value=path,
                 )
                 for path in sorted(self.paths)
             ),
             *(
                 _FindingRelationAuthorityKey(
-                    _FindingRelationAuthorityAxis.SYMBOL_ROOT,
-                    root,
+                    axis=_FindingRelationAuthorityAxis.SYMBOL_ROOT,
+                    value=root,
                 )
                 for root in sorted(self.symbol_roots)
             ),

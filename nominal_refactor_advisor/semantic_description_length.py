@@ -119,7 +119,7 @@ class OrbitPartition(
     def projection_group_member(
         value: KeyT, members: tuple[ObjectT, ...]
     ) -> SemanticOrbit[ObjectT, KeyT]:
-        return SemanticOrbit(value, members)
+        return SemanticOrbit(canonical_key=value, members=members)
 
     @property
     def object_count(self) -> int:

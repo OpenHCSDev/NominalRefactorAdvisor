@@ -147,7 +147,7 @@ class ResolvedServedClass:
         members = ClassMemberPromotionStatement.selected(source_class.node, request.member_names)
         resolved = cls(request, source_class, members)
         context = ClassMemberMoveProofContext.between(snapshot, source_class, source_class)
-        ServedMemberScope(source_class, frozenset(request.member_names), members).require_safe(
+        ServedMemberScope(source_class=source_class, moved=frozenset(request.member_names), members=members).require_safe(
             context
         )
         return resolved
@@ -516,9 +516,9 @@ class ServeClassMembersOperation(RepositorySourceReprovedOperation):
         self, snapshot: CodemodSourceSnapshot,
     ) -> tuple[NominalSourceEdit, ...]:
         served = tuple(ResolvedServedClass.require(snapshot, request) for request in self.classes)
-        imports = ServedHeaderBindings(snapshot, served).required_imports()
-        SubclassKeywords(snapshot, served).require_given()
-        FamilyMemberReads(snapshot, served).require_none()
+        imports = ServedHeaderBindings(snapshot=snapshot, served=served).required_imports()
+        SubclassKeywords(snapshot=snapshot, served=served).require_given()
+        FamilyMemberReads(snapshot=snapshot, served=served).require_none()
         return (
             *imports,
             *(edit for each in served for edit in each.source_edits(snapshot, self.rationale)),

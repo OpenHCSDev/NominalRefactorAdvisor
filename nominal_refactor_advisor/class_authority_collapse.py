@@ -261,7 +261,7 @@ class ClassAuthorityCollapseProofContext:
     def require_reference_closure(self) -> None:
         displaced = self.displaced
         resolvers_by_path = {
-            file_path: ModuleClassReferenceResolver(module, self.class_index)
+            file_path: ModuleClassReferenceResolver(parsed_module=module, class_index=self.class_index)
             for file_path, module in self.modules_by_path.items()
         }
         allowed_reference_node_ids: set[int] = set()
@@ -369,7 +369,7 @@ class ClassAuthorityCollapseProofContext:
                     "Class-authority collapse cannot partially clean a shared "
                     "import binding"
                 )
-            obsolete.append(ObsoleteClassAuthorityImport(module_name, imported_name))
+            obsolete.append(ObsoleteClassAuthorityImport(module_name=module_name, imported_name=imported_name))
         return tuple(obsolete)
 
 

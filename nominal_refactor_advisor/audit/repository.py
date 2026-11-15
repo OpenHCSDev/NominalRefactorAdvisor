@@ -241,7 +241,7 @@ class Change(Family, ABC, root=True):
         before, after = self.before(census, base), self.after(census, rev)
         match before, after:
             case Measured(tally=old), Measured(tally=new):
-                return Measured(self.path, after.code_lines, new - old)
+                return Measured(path=self.path, code_lines=after.code_lines, tally=new - old)
             case Unparsed() as failed, _:
                 return failed
             case _, failed:
@@ -249,7 +249,7 @@ class Change(Family, ABC, root=True):
 
 
 def _absent(path: str) -> ParseOutcome:
-    return Measured(path, 0, Tally())
+    return Measured(path=path, code_lines=0, tally=Tally())
 
 
 @dataclass(frozen=True)
@@ -363,8 +363,10 @@ class ChangedPaths:
     @cache
     def of(repo: Repository, base: str, head: str) -> ChangedPaths:
         changes = repo.changes(base, head)
-        return ChangedPaths(frozenset(path for change in changes for path in change.touched()),
-                            tuple(move for change in changes for move in change.moved()))
+        return ChangedPaths(
+                            touched=frozenset(path for change in changes for path in change.touched()),
+                            moved=tuple(move for change in changes for move in change.moved()),
+               )
 
 
 @dataclass(frozen=True)

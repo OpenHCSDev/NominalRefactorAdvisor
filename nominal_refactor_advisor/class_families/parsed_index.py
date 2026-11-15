@@ -310,7 +310,7 @@ class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact)
             return self
         return ClassFamilyIndexBuilder(
             projected_modules,
-            previous=ClassFamilyIndexPredecessor(self, previous),
+            previous=ClassFamilyIndexPredecessor(index=self, modules_by_file_path=previous),
         ).build()
 
 
@@ -571,11 +571,11 @@ class ClassFamilyIndexBuilder:
                 )
             classes_by_symbol[record.symbol] = resolved
         authority = RegisteringMetaclassAuthority(
-            classes_by_symbol,
-            CompactRepositoryPublicExposureIndex(
+            scanned=classes_by_symbol,
+            exposure=CompactRepositoryPublicExposureIndex(
                 CompactModuleClassProjectionFamily.header_core_projections(self.modules)
             ),
-        )
+                    )
         for symbol, record in classes_by_symbol.items():
             if record.registry_facts.metaclass_references:
                 classes_by_symbol[symbol] = record.with_registering_metaclass(authority)

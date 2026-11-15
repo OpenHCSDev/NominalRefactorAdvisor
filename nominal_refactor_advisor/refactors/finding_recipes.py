@@ -127,7 +127,7 @@ class FindingRecipeClassPlanReport(DataclassJsonReport):
     @json_report_cached_property()
     def classes(self) -> tuple[FindingRecipeClassPlan, ...]:
         return tuple(
-            FindingRecipeClassPlan(execution_class, self.finding_plan)
+            FindingRecipeClassPlan(execution_class=execution_class, finding_plan=self.finding_plan)
             for execution_class in self.execution_plan.classes
         )
 

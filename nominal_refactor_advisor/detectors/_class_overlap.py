@@ -42,7 +42,7 @@ class ClassOverlapDetectorABC(
         del config
         verdicts = context.cached(
             ClassOverlapVerdicts,
-            lambda: ClassOverlapVerdicts(tuple(context.projections), context.class_index),
+            lambda: ClassOverlapVerdicts(projections=tuple(context.projections), class_index=context.class_index),
         )
         return tuple(
             candidate

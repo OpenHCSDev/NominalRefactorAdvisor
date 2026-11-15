@@ -307,9 +307,9 @@ class AuthorityDiscoveryRequiredFindingProjection:
             return item.evidence_locations[:6]
         return (
             SourceLocation(
-                cls.synthetic_file_path,
-                0,
-                resolution.claim.claimed_symbol,
+                file_path=cls.synthetic_file_path,
+                line=0,
+                symbol=resolution.claim.claimed_symbol,
             ),
         )
 

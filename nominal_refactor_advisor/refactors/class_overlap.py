@@ -134,8 +134,8 @@ class OverlapClass(ABC):
 
         options = target.dataclass_argument_sources
         if options is None:
-            return PlainOverlapClass(target, facts)
-        return DataclassOverlapClass(target, facts, options)
+            return PlainOverlapClass(target=target, facts=facts)
+        return DataclassOverlapClass(target=target, facts=facts, options=options)
 
     @classmethod
     def require(
@@ -648,7 +648,7 @@ def require_static_c3(
         ):
             raise ValueError(f"`{current.qualname}` runs a subclass creation hook")
         if "metaclass" in current.class_keyword_names:
-            MetaclassMroProof(snapshot, current).require_type_mro()
+            MetaclassMroProof(snapshot=snapshot, indexed_class=current).require_type_mro()
     return tuple(reached.values())
 
 
@@ -927,7 +927,8 @@ class ClassComposition(ClassOverlapRewrite):
         composition.require_field_order()
         restated.require_no_owner_bound_values(snapshot)
         ClassReferenceSites(
-            snapshot, frozenset((owner.symbol,))
+            snapshot=snapshot,
+            symbols=frozenset((owner.symbol,)),
         ).require_no_identity_reads()
         if owner.file_path == restating.file_path:
             composition.relocation.require_safe(snapshot)
@@ -954,8 +955,9 @@ class ClassComposition(ClassOverlapRewrite):
                 f"`{owner.qualname}` and `{restating.qualname}` differ as dataclasses"
             )
         header = ClassHeaderSpanSourceAuthority(
-            restating.node, self.snapshot.sources_by_file_path[restating.file_path]
-        )
+            node=restating.node,
+            source=self.snapshot.sources_by_file_path[restating.file_path],
+                 )
         if not header.can_rewrite:
             raise ValueError(f"`{restating.qualname}` has an unrewritable header")
 
@@ -993,7 +995,7 @@ class ClassComposition(ClassOverlapRewrite):
                 f"`{restating.qualname}`: {before} becomes {after}, and the owner "
                 "is not keyword-only"
             )
-        return KeywordOnlyComposition(self.snapshot, restating)
+        return KeywordOnlyComposition(snapshot=self.snapshot, composer=restating)
 
     @cached_property
     def relocation(self) -> ModuleDeclarationRelocation:
@@ -1004,7 +1006,7 @@ class ClassComposition(ClassOverlapRewrite):
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         restating = self.restating
         source = self.snapshot.sources_by_file_path[restating.file_path]
-        header = ClassHeaderSpanSourceAuthority(restating.node, source)
+        header = ClassHeaderSpanSourceAuthority(node=restating.node, source=source)
         deletion = StatementDeletionSource(
             source=source, node=restating.node, file_path=restating.file_path
         )
@@ -1105,7 +1107,8 @@ class CoveringComposition(ClassOverlapRewrite):
             for restatement in restatements:
                 restatement.require_no_owner_bound_values(snapshot)
         ClassReferenceSites(
-            snapshot, frozenset(owner.symbol for owner in owners)
+            snapshot=snapshot,
+            symbols=frozenset(owner.symbol for owner in owners),
         ).require_no_identity_reads()
         return composition
 
@@ -1138,8 +1141,9 @@ class CoveringComposition(ClassOverlapRewrite):
                         f"`{owner.qualname}` is declared after `{composer.qualname}`"
                     )
             header = ClassHeaderSpanSourceAuthority(
-                composer.node, self.snapshot.sources_by_file_path[composer.file_path]
-            )
+                node=composer.node,
+                source=self.snapshot.sources_by_file_path[composer.file_path],
+                     )
             if not header.can_rewrite:
                 raise ValueError(f"`{composer.qualname}` has an unrewritable header")
 
@@ -1169,7 +1173,7 @@ class CoveringComposition(ClassOverlapRewrite):
         imported: set[tuple[str, str]] = set()
         for composer, restatements in zip(self.composers, self.restated, strict=True):
             source = self.snapshot.sources_by_file_path[composer.file_path]
-            header = ClassHeaderSpanSourceAuthority(composer.node, source)
+            header = ClassHeaderSpanSourceAuthority(node=composer.node, source=source)
             deletion = StatementDeletionSource(
                 source=source, node=composer.node, file_path=composer.file_path
             )
@@ -1289,7 +1293,8 @@ class BaseFold(ClassOverlapRewrite):
             fold.require_movable(restatement)
         family = fold.family_symbols
         ClassReferenceSites(
-            snapshot, frozenset((base.symbol, *fold.descendant_symbols))
+            snapshot=snapshot,
+            symbols=frozenset((base.symbol, *fold.descendant_symbols)),
         ).require_keyword_construction()
         require_no_positional_self_construction(snapshot, family)
         return fold
@@ -1400,7 +1405,7 @@ class BaseFold(ClassOverlapRewrite):
         source = self.snapshot.sources_by_file_path[base.file_path]
         first = self.restated[0]
         first_source = self.snapshot.sources_by_file_path[first.restating.file_path]
-        body = ClassBodySourceAuthority(base.node, source)
+        body = ClassBodySourceAuthority(node=base.node, source=source)
         header_line = source.splitlines(keepends=True)[base.node.lineno - 1]
         indentation = header_line[: len(header_line) - len(header_line.lstrip())]
         return (
@@ -1533,7 +1538,8 @@ class KeywordOnlyComposition:
                     f"`{member.qualname}` declares its own construction surface"
                 )
         ClassReferenceSites(
-            self.snapshot, frozenset(self.family)
+            snapshot=self.snapshot,
+            symbols=frozenset(self.family),
         ).require_keyword_construction()
         require_no_positional_self_construction(self.snapshot, self.family)
         self.require_no_field_order_digest()
@@ -1864,8 +1870,8 @@ class ConstructionKeywording(ClassOverlapRewrite):
     def constructions(self) -> tuple[PositionalConstruction, ...]:
         parameters = self.parameter_names(self.target.symbol)
         direct = tuple(
-            PositionalConstruction(site.file_path, site.parent, parameters)
-            for site in ClassReferenceSites(self.snapshot, frozenset((self.target.symbol,))).sites
+            PositionalConstruction(file_path=site.file_path, call=site.parent, parameter_names=parameters)
+            for site in ClassReferenceSites(snapshot=self.snapshot, symbols=frozenset((self.target.symbol,))).sites
             if site.role is ClassReferenceRole.CONSTRUCTION
             and isinstance(site.parent, ast.Call)
             and site.parent.args
@@ -1896,7 +1902,7 @@ class ConstructionKeywording(ClassOverlapRewrite):
                     f"`{self.target.qualname}`, and its receiver may be one"
                 )
         return tuple(
-            PositionalConstruction(self.target.file_path, call, parameters) for call in calls
+            PositionalConstruction(file_path=self.target.file_path, call=call, parameter_names=parameters) for call in calls
         )
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -2349,7 +2355,7 @@ class OwnerExtension(ClassOverlapRewrite):
         self.owner.require_construction_extended_by(self)
 
     def require_dataclass_construction(self) -> None:
-        sites = ClassReferenceSites(self.snapshot, frozenset(self.family))
+        sites = ClassReferenceSites(snapshot=self.snapshot, symbols=frozenset(self.family))
         added_required = tuple(
             ast.unparse(statement.target)
             for statement in self.restated.statements
@@ -2392,7 +2398,7 @@ class OwnerExtension(ClassOverlapRewrite):
         owner = self.owner
         source = self.snapshot.sources_by_file_path[owner.file_path]
         anchor_source = self.snapshot.sources_by_file_path[self.anchor.file_path]
-        body = ClassBodySourceAuthority(owner.node, source)
+        body = ClassBodySourceAuthority(node=owner.node, source=source)
         return (
             *body.geometry.physical_edits(
                 file_path=owner.file_path,

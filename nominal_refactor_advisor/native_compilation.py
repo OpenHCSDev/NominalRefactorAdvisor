@@ -739,7 +739,7 @@ class NativeKeywordCallValue(NativeCallValue):
     ) -> tuple[CompactKeywordArgument[NativeProducedValue], ...]:
         names = self.names
         return tuple(
-            CompactKeywordArgument(name, operand)
+            CompactKeywordArgument(name=name, value=operand)
             for name, operand in zip(
                 names, self.arguments[len(self.arguments) - len(names) :], strict=True
             )
@@ -1502,7 +1502,9 @@ class NativeOperandStack:
             )
         names = self.emit(
             NativeConstantValue(
-                instruction.offset, (), self.code.co_consts[instruction.arg]
+                instruction_offset=instruction.offset,
+                inputs=(),
+                value=self.code.co_consts[instruction.arg],
             ),
             instruction,
         )
@@ -1571,7 +1573,9 @@ class NativeOperandStack:
         self.stack.append(
             self.emit(
                 NativeTypedValue(
-                    instruction.offset, inputs, NativeTypeDeclaration(dict)
+                    instruction_offset=instruction.offset,
+                    inputs=inputs,
+                    declaration=NativeTypeDeclaration(dict),
                 ),
                 instruction,
             )
@@ -1615,7 +1619,9 @@ class NativeOperandStack:
     ) -> NativeProducedValue:
         return self.emit(
             NativeTypedValue(
-                instruction.offset, self.pop(count), NativeTypeDeclaration(native_type)
+                instruction_offset=instruction.offset,
+                inputs=self.pop(count),
+                declaration=NativeTypeDeclaration(native_type),
             ),
             instruction,
         )
@@ -1643,7 +1649,7 @@ class NativeOperandStack:
 
         value = instruction.argval
         production = (
-            self.emit(NativeConstantValue(instruction.offset, (), value), instruction)
+            self.emit(NativeConstantValue(instruction_offset=instruction.offset, inputs=(), value=value), instruction)
             if NativeConstantValue.supports_constant(value)
             else self.typed(instruction, type(value))
         )
@@ -1664,8 +1670,10 @@ class NativeOperandStack:
 
     def complete(self, offset: int) -> ExactNativeClassPrologue:
         return ExactNativeClassPrologue(
-            tuple(self.bindings), offset, tuple(self.values)
-        )
+            bindings=tuple(self.bindings),
+            body_instruction_offset=offset,
+            values=tuple(self.values),
+               )
 
 
 class NativePrimitiveOperation(Enum):
@@ -2151,7 +2159,7 @@ class NativeInstructionSite:
         line, end_line, column, end_column = instruction.positions
         if None in (line, end_line, column, end_column):
             return None
-        return SourceByteSpan(line - 1, end_line - 1, column, end_column)
+        return SourceByteSpan(start_line_index=line - 1, end_line_index=end_line - 1, start_byte=column, end_byte=end_column)
 
 
 @dataclass(frozen=True, eq=False)
@@ -2408,7 +2416,7 @@ class NativeValueStoreWindow(NativeOperandObservation):
             value = self.operands.bindings[0].value
             if value is None:
                 return
-            store = NativeInstructionSite(self.code, instruction)
+            store = NativeInstructionSite(containing_code=self.code, instruction=instruction)
             try:
                 self.require_store(store)
                 reachable = {id(production) for production in value.productions()}
@@ -2426,7 +2434,7 @@ class NativeValueStoreWindow(NativeOperandObservation):
             except ValueError:
                 self.closed = True
                 return
-            self.load = NativeInstructionSite(self.code, instruction)
+            self.load = NativeInstructionSite(containing_code=self.code, instruction=instruction)
 
     def receipt(
         self, frame: NativeFrameOrigin, continuation: NativeReturn | None = None
@@ -2630,7 +2638,7 @@ class NativeScopeObservation(NativeCodeObservation):
 
     @cached_property
     def entry_window(self) -> NativeEntryValueWindow:
-        return NativeEntryValueWindow(self.code, self.operations)
+        return NativeEntryValueWindow(code=self.code, operations=self.operations)
 
     @cached_property
     def value_stream(self) -> NativeValueStoreStream:
@@ -2655,11 +2663,11 @@ class NativeScopeObservation(NativeCodeObservation):
         continuation = self.value_stream.return_receipt(frame)
         constant = self.entry_window.receipt(frame)
         return NativeScopeReceipts(
-            frame,
-            () if constant is None else (constant,),
-            self.value_stream.receipts(frame, continuation),
-            continuation,
-        )
+            frame=frame,
+            constant_stores=() if constant is None else (constant,),
+            value_stores=self.value_stream.receipts(frame, continuation),
+            continuation=continuation,
+               )
 
 
 class NativeScopeInventoryABC(ABC):
@@ -2735,8 +2743,9 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                 raise ValueError("Native emission ownership contains a cycle")
             binding.add(identity)
             emission.binding = NativeEmissionBinding(
-                emission, origin_for(id(emission.containing_code))
-            )
+                emission=emission,
+                frame=origin_for(id(emission.containing_code)),
+                               )
             binding.remove(identity)
             bound.add(identity)
 
@@ -2761,20 +2770,19 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                     self.frame_origins[identity] = GeneratedClassNativeFrameOrigin(
                         execution,
                         NativeCaptureSite(
-                            frame.owner.frame_origin, frame.activation.offset
+                            frame=frame.owner.frame_origin,
+                            instruction_offset=frame.activation.offset,
                         ),
                         frame.bindings,
                     )
                 else:
                     self.frame_origins[identity] = OpenNativeFrameOrigin(
-                        compilation,
-                        (
-                            NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN
+                        compilation=compilation,
+                        reason=NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN
                             if identity in by_code.ambiguous_handles
                             or identity in generated_by_code.ambiguous_handles
-                            else NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN
-                        ),
-                    )
+                            else NativeExecutionUnavailable.UNJOINED_FRAME_ORIGIN,
+                                                   )
             return self.frame_origins[identity]
 
         for emission in self.emissions:
@@ -2812,21 +2820,27 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         for span, sites in builders.items():
             if len(sites) != 1:
                 results[span] = OpenNativeClassCapture(
-                    compilation, span, NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN
-                )
+                    compilation=compilation,
+                    source_span=span,
+                    reason=NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN,
+                                )
                 continue
             builder = sites[0]
             candidates = emissions.get((span, id(builder.containing_code)), ())
             if len(candidates) != 1:
                 results[span] = OpenNativeClassCapture(
-                    compilation, span, NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN
-                )
+                    compilation=compilation,
+                    source_span=span,
+                    reason=NativeExecutionUnavailable.AMBIGUOUS_SOURCE_SPAN,
+                                )
                 continue
             body = candidates[0]
             if not backend.proves_class_capture(builder, body):
                 results[span] = OpenNativeClassCapture(
-                    compilation, span, NativeExecutionUnavailable.NO_OBSERVED_CREATION
-                )
+                    compilation=compilation,
+                    source_span=span,
+                    reason=NativeExecutionUnavailable.NO_OBSERVED_CREATION,
+                                )
                 continue
             prologue = backend.class_prologue(self.prefixes[id(body.code)])
             captures[span] = (builder, body, prologue)
@@ -2861,7 +2875,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                 compilation,
                 span,
                 cast(ExactNativeFunctionExecution, body.receipt),
-                NativeCaptureSite(origin, builder.instruction.offset),
+                NativeCaptureSite(frame=origin, instruction_offset=builder.instruction.offset),
                 prologue,
             )
         return results
@@ -2941,17 +2955,17 @@ class _RejectedNativeCompilation(_NativeCompilationOutcome):
 
     def class_capture_for(self, source_span: SourceByteSpan) -> NativeClassCapture:
         return OpenNativeClassCapture(
-            self.compilation,
-            source_span,
-            NativeExecutionUnavailable.COMPILATION_REJECTED,
-        )
+            compilation=self.compilation,
+            source_span=source_span,
+            reason=NativeExecutionUnavailable.COMPILATION_REJECTED,
+               )
 
     def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:
         return OpenNativeFunctionExecution(
-            self.compilation,
-            source_span,
-            NativeExecutionUnavailable.COMPILATION_REJECTED,
-        )
+            compilation=self.compilation,
+            source_span=source_span,
+            reason=NativeExecutionUnavailable.COMPILATION_REJECTED,
+               )
 
 
 @dataclass(frozen=True)
@@ -3082,20 +3096,22 @@ class _NativeExecutionIndex(NativeScopeInventoryABC, _NativeCompilationOutcome):
     def class_capture_for(self, source_span: SourceByteSpan) -> NativeClassCapture:
         if self.has_incomplete_ranges:
             return OpenNativeClassCapture(
-                self.compilation,
-                source_span,
-                NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES,
-            )
+                compilation=self.compilation,
+                source_span=source_span,
+                reason=NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES,
+                   )
         if source_span in self.class_captures:
             return self.class_captures[source_span]
         return OpenNativeClassCapture(
-            self.compilation, source_span, self.class_capture_fallback
-        )
+            compilation=self.compilation,
+            source_span=source_span,
+            reason=self.class_capture_fallback,
+               )
 
     def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:
         reason = self.unavailability_for(source_span)
         if reason is not None:
-            return OpenNativeFunctionExecution(self.compilation, source_span, reason)
+            return OpenNativeFunctionExecution(compilation=self.compilation, source_span=source_span, reason=reason)
         return self.declarations.unambiguous_declarations_by_handle[source_span]
 
     def unavailability_for(
@@ -3141,7 +3157,7 @@ class NativeCodeEmission:
 
     @cached_property
     def source_span(self) -> SourceByteSpan | None:
-        return NativeInstructionSite(self.containing_code, self.load).source_span
+        return NativeInstructionSite(containing_code=self.containing_code, instruction=self.load).source_span
 
 
 @dataclass(frozen=True)
@@ -3186,7 +3202,7 @@ class NativeDefinitionApplicationObservation:
             frame,
             self.call.offset,
             span,
-            tuple(NativeCaptureSite(frame, step.offset) for step in self.prelude),
+            tuple(NativeCaptureSite(frame=frame, instruction_offset=step.offset) for step in self.prelude),
             argument,
         )
 
@@ -3212,12 +3228,13 @@ class NativeEmissionBinding:
         if (
             source.creation is None
             or NativeInstructionSite(
-                source.containing_code, source.creation
-            ).source_span
+                containing_code=source.containing_code,
+                instruction=source.creation,
+               ).source_span
             is None
         ):
             return ExactNativeFunctionExecution(*arguments)
-        creation = NativeCaptureSite(self.frame, source.creation.offset)
+        creation = NativeCaptureSite(frame=self.frame, instruction_offset=source.creation.offset)
         if source.installation is None:
             return CreatedNativeFunctionExecution(*arguments, creation)
         if source.applications:
@@ -3350,7 +3367,7 @@ class MakeNativeFunction(NativeFunctionCreationOperation):
         ):
             raise ValueError("Native function creation has a different code operand")
         stack.stack.append(
-            stack.emit(NativeFunctionValue(instruction.offset, inputs), instruction)
+            stack.emit(NativeFunctionValue(instruction_offset=instruction.offset, inputs=inputs), instruction)
         )
 
     @classmethod
@@ -3391,7 +3408,9 @@ class AttachNativeFunctionAttribute(
         stack.stack.append(
             stack.emit(
                 NativeFunctionAttributeValue(
-                    instruction.offset, inputs, instruction.arg
+                    instruction_offset=instruction.offset,
+                    inputs=inputs,
+                    attribute_flag=instruction.arg,
                 ),
                 instruction,
             )
@@ -3446,7 +3465,8 @@ class ApplyNativeDefinition(CreatedNativeFunctionOperation):
             return None
         current.applications.append(
             NativeDefinitionApplicationObservation(
-                instruction, tuple(current.application_prelude)
+                call=instruction,
+                prelude=tuple(current.application_prelude),
             )
         )
         current.application_prelude.clear()
@@ -3469,7 +3489,7 @@ class InstallNativeFunction(CreatedNativeFunctionOperation):
         if current.source_span is None or current.application_prelude:
             return None
         if (
-            NativeInstructionSite(current.containing_code, instruction).source_span
+            NativeInstructionSite(containing_code=current.containing_code, instruction=instruction).source_span
             != current.source_span
         ):
             return None
@@ -3747,7 +3767,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             has_children = any(
                 isinstance(value, CodeType) for value in parent.co_consts
             )
-            prefix = NativeScopeObservation(parent, self.primitive_operations)
+            prefix = NativeScopeObservation(code=parent, operations=self.primitive_operations)
             prefixes[id(parent)] = prefix
             observations.append(prefix)
             parent_builders: set[SourceByteSpan] = set()
@@ -3762,7 +3782,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
                             parent_builders.add(builder.source_span)
                     emission = None
                     if isinstance(instruction.argval, CodeType):
-                        emission = NativeCodeEmission(compilation, instruction, parent)
+                        emission = NativeCodeEmission(compilation=compilation, load=instruction, containing_code=parent)
                         pending.append(
                             (
                                 emission.code,
@@ -3780,12 +3800,12 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
                     after_prologue=not requires_prefix or prefix.boundary is not None,
                 )
         return NativeCreationInventory(
-            code,
-            tuple(emissions),
-            tuple(builders),
-            prefixes,
-            tuple(observations),
-        )
+            root_code=code,
+            emissions=tuple(emissions),
+            builder_loads=tuple(builders),
+            prefixes=prefixes,
+            observations=tuple(observations),
+               )
 
     @abstractmethod
     def proves_class_capture(
@@ -3808,9 +3828,9 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
     @lru_cache(maxsize=None)
     def annotation_order(cls) -> NativeAnnotationOrder:
         return OpenNativeAnnotationOrder(
-            NativeAnnotationOrder.probe_compilation().identity,
-            NativeAnnotationOrderUnavailable.UNSUPPORTED_COMPILER,
-        )
+            compilation=NativeAnnotationOrder.probe_compilation().identity,
+            reason=NativeAnnotationOrderUnavailable.UNSUPPORTED_COMPILER,
+               )
 
     @classmethod
     def current(cls) -> NativeCreationBackend:
@@ -3880,7 +3900,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         }
         return _NativeExecutionIndex(
             compilation,
-            IdentityHandleMultiplicityProjection(exact, frozenset(ambiguous)),
+            IdentityHandleMultiplicityProjection(unambiguous_declarations_by_handle=exact, ambiguous_handles=frozenset(ambiguous)),
             incomplete,
             class_captures,
             self.class_capture_fallback,
@@ -3932,10 +3952,10 @@ class NativeAnnotationOrder(ABC):
     @staticmethod
     def probe_compilation() -> NativePythonCompilation:
         return NativePythonCompilation(
-            "def probe(a: first, b: second, /, c: third, d: fourth, "
+            source="def probe(a: first, b: second, /, c: third, d: fourth, "
             "*rest: fifth, e: sixth, f: seventh, **kw: eighth) -> ninth: pass\n",
-            "<native-annotation-order>",
-        )
+            file_path="<native-annotation-order>",
+               )
 
     def parameter_sources(
         self, arguments: ast.arguments
@@ -4007,9 +4027,9 @@ class EagerAnnotationOrderBackend(NativeCreationBackend):
             code = compilation.compile()
         except SyntaxError:
             return OpenNativeAnnotationOrder(
-                compilation.identity,
-                NativeAnnotationOrderUnavailable.COMPILATION_REJECTED,
-            )
+                compilation=compilation.identity,
+                reason=NativeAnnotationOrderUnavailable.COMPILATION_REJECTED,
+                   )
         function = ast.parse(compilation.source).body[0]
         parameters = FunctionArgumentSource.from_arguments(function.args)
         roots = tuple(parameter.argument.annotation for parameter in parameters) + (
@@ -4022,18 +4042,18 @@ class EagerAnnotationOrderBackend(NativeCreationBackend):
                 if None not in instruction.positions
             ),
             lambda instruction: SourceByteSpan(
-                instruction.positions.lineno - 1,
-                instruction.positions.end_lineno - 1,
-                instruction.positions.col_offset,
-                instruction.positions.end_col_offset,
-            ),
+                start_line_index=instruction.positions.lineno - 1,
+                end_line_index=instruction.positions.end_lineno - 1,
+                start_byte=instruction.positions.col_offset,
+                end_byte=instruction.positions.end_col_offset,
+                                ),
         )
         spans = tuple(SourceByteSpan.require_node(root) for root in roots)
         if any(span not in offsets for span in spans):
             return OpenNativeAnnotationOrder(
-                compilation.identity,
-                NativeAnnotationOrderUnavailable.INCOMPLETE_EMISSION,
-            )
+                compilation=compilation.identity,
+                reason=NativeAnnotationOrderUnavailable.INCOMPLETE_EMISSION,
+                   )
         order = tuple(
             sorted(range(len(spans)), key=lambda index: offsets[spans[index]].offset)
         )
@@ -4050,9 +4070,10 @@ class EagerAnnotationOrderBackend(NativeCreationBackend):
         ) + (len(parameters),)
         if order != expected or set(groups) != set(CompactParameterKind):
             return OpenNativeAnnotationOrder(
-                compilation.identity, NativeAnnotationOrderUnavailable.NONUNIFORM_GROUPS
-            )
-        return ExactNativeAnnotationOrder(compilation.identity, groups)
+                compilation=compilation.identity,
+                reason=NativeAnnotationOrderUnavailable.NONUNIFORM_GROUPS,
+                   )
+        return ExactNativeAnnotationOrder(compilation=compilation.identity, parameter_kinds=groups)
 
 
 class ContiguousNativeCreationBackend(NativeCreationBackend):
@@ -4183,7 +4204,7 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
     ) -> NativeInstructionSite | None:
         if instruction.opcode != self.builder_opcode:
             return None
-        return NativeInstructionSite(parent, instruction)
+        return NativeInstructionSite(containing_code=parent, instruction=instruction)
 
     def proves_class_capture(
         self, builder: NativeInstructionSite, body: NativeCodeEmission
@@ -4204,7 +4225,7 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
             and body.source_span is not None
             and builder.source_span == body.source_span
             and body.creation is not None
-            and NativeInstructionSite(body.containing_code, body.creation).source_span
+            and NativeInstructionSite(containing_code=body.containing_code, instruction=body.creation).source_span
             is not None
             and builder.instruction.offset < body.load.offset < body.creation.offset
         )
@@ -4660,7 +4681,7 @@ class CPythonGeneratedClassBinding(StrEnum):
             for binding in prologue.bindings
         ):
             raise ValueError("Generated class closure is shadowed in its body prologue")
-        return NativeGeneratedFrameBinding(value, self.declaration)
+        return NativeGeneratedFrameBinding(value=value, declaration=self.declaration)
 
 
 class CPython314CreationBackend(
@@ -4748,13 +4769,13 @@ class CPython314CreationBackend(
         if call.arg != 0:
             raise ValueError("Generated class wrapper requires zero arguments")
         return NativeGeneratedClassFrame(
-            emission,
-            call,
-            tuple(
+            owner=emission,
+            activation=call,
+            bindings=tuple(
                 declaration.bind(emission, body, prologue)
                 for declaration in CPythonGeneratedClassBinding
             ),
-        )
+               )
 
 
 @dataclass(frozen=True)
@@ -4986,10 +5007,10 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
     @cached_property
     def identity(self) -> NativeCompilationIdentity:
         return NativeCompilationIdentity(
-            self.file_path,
-            python_source_cache_signature(self.source),
-            InterpreterBuild.running(),
-        )
+            file_path=self.file_path,
+            source_digest=python_source_cache_signature(self.source),
+            interpreter=InterpreterBuild.running(),
+               )
 
     def compile(self, *, filename: str | None = None) -> CodeType:
         """Return transient native code, preserving compiler errors for validation."""

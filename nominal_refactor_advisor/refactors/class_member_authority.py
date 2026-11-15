@@ -750,7 +750,7 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite(SourceRewriteABC):
         )
         return SourceSpanReplacement(
             file_path=authority.file_path,
-            span=SourceLineSpan(authority.target.line, authority.target.end_line),
+            span=SourceLineSpan(start_line=authority.target.line, end_line=authority.target.end_line),
             replacement_lines=SourceTargetEditor.source_lines(replacement_source),
             rationale=self.rationale
             or f"Move exact shared methods to {authority.qualname!r}.",
@@ -1043,7 +1043,7 @@ class ModuleDeclarationRelocation(SourceRewriteABC):
     @cached_property
     def span(self) -> SourceLineSpan:
         return SourceTextGeometry(self.source).node_line_span(
-            SourceNodeSpan(self.declaration, Include)
+            SourceNodeSpan(node=self.declaration, decorator_policy=Include)
         )
 
     @property
@@ -1108,7 +1108,7 @@ class ModuleDeclarationRelocation(SourceRewriteABC):
             ),
             SourceSpanDeletion(
                 file_path=self.file_path,
-                span=SourceLineSpan(self.span.start_line - 2, self.span.end_line),
+                span=SourceLineSpan(start_line=self.span.start_line - 2, end_line=self.span.end_line),
                 rationale=self.rationale,
             ),
         )
@@ -1161,7 +1161,7 @@ class PromoteExactDataclassFieldsToExistingAuthorityOperation(
             targets=ExistingDataclassFieldAuthorityTargets.required(
                 snapshot,
                 component,
-                ResolvedClassTarget(target, node),
+                ResolvedClassTarget(target=target, node=node),
             ),
             rationale=self.rationale,
         )
@@ -1370,7 +1370,7 @@ class ClassMemberPromotionStatement(ABC):
 
     @property
     def source_span(self) -> SourceNodeSpan:
-        return SourceNodeSpan(self.statement, Include)
+        return SourceNodeSpan(node=self.statement, decorator_policy=Include)
 
     @property
     def end_line(self) -> int:
@@ -1602,7 +1602,7 @@ class ClassMemberMoveSelection(SourceRewriteABC):
         ):
             mro_type = hierarchy.for_source_class(classes[symbol])
             before = ClassMemberLookupProof(mro_type)
-            after = ClassMemberLookupProof(mro_type, namespace_changes)
+            after = ClassMemberLookupProof(mro_type=mro_type, namespace_changes=namespace_changes)
             for name in resolved_names:
                 previous_owner = before.owner_of(name)
                 if previous_owner is not None:
@@ -1617,7 +1617,7 @@ class ClassMemberMoveSelection(SourceRewriteABC):
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         source = self.context.source
         destination = self.context.destination_class
-        body_authority = ClassBodySourceAuthority(destination.node, source)
+        body_authority = ClassBodySourceAuthority(node=destination.node, source=source)
         deletion = StatementDeletionSource(
             source=source,
             node=self.context.source_class.node,

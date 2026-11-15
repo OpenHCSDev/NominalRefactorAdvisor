@@ -159,10 +159,10 @@ def _declaration_member_source(
         )
     _source_lines, first_line = inspect.getsourcelines(member)
     return SourceLocation(
-        source_path,
-        first_line,
-        f"{declaration_type.__qualname__}.{member_name}",
-    )
+        file_path=source_path,
+        line=first_line,
+        symbol=f"{declaration_type.__qualname__}.{member_name}",
+           )
 
 
 @dataclass(frozen=True)

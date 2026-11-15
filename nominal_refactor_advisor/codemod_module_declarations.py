@@ -396,10 +396,10 @@ class ModuleSymbolTable:
         """Return the first line after every selected top-level binding."""
 
         import_boundary = ModuleImportInsertionPoint(
-            self.source,
-            self.file_path,
-            self.module,
-        ).line_number
+            source=self.source,
+            file_path=self.file_path,
+            module_node=self.module,
+                          ).line_number
         binding_end_lines = tuple(
             statement.end_lineno or statement.lineno
             for name in names
@@ -1220,7 +1220,7 @@ class MovedTopLevelDeclarationSource(SourceTextGeometry):
             deletion_end_line += 1
         return SourceSpanDeletion(
             file_path=self.declaration.source_path,
-            span=SourceLineSpan(deletion_start_line, deletion_end_line),
+            span=SourceLineSpan(start_line=deletion_start_line, end_line=deletion_end_line),
             rationale=rationale or f"Remove moved declaration {self.name!r}.",
         )
 

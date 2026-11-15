@@ -134,7 +134,7 @@ class RequiredRelation(DataclassJsonReport):
         )
 
     def with_pairs(self, pairs: Iterable[RequiredRelationPair]) -> RequiredRelation:
-        return RequiredRelation(self.implementation_keys, self.consumers, pairs)
+        return RequiredRelation(implementation_keys=self.implementation_keys, consumers=self.consumers, pairs=pairs)
 
     def difference(self, other: RequiredRelation) -> RequiredRelation:
         if (
@@ -473,7 +473,7 @@ class ProviderRectangle(DataclassJsonRow):
     @property
     def pairs(self) -> frozenset[RequiredRelationPair]:
         return frozenset(
-            RequiredRelationPair(implementation_key, consumer)
+            RequiredRelationPair(implementation_key=implementation_key, consumer=consumer)
             for implementation_key in self.implementation_keys
             for consumer in self.consumers
         )
@@ -599,7 +599,7 @@ def factor_provider_cover(
             rectangles=(),
             candidate_rectangles=candidates,
             formal_concept_statistics=formal_statistics,
-            cover_statistics=ProviderCoverSearchStatistics(0, 1),
+            cover_statistics=ProviderCoverSearchStatistics(combinations_examined=0, optimal_covers=1),
             search_limits=limits,
         )
     examined = 0
@@ -627,7 +627,7 @@ def factor_provider_cover(
         rectangles=optimum[0],
         candidate_rectangles=candidates,
         formal_concept_statistics=formal_statistics,
-        cover_statistics=ProviderCoverSearchStatistics(examined, len(optimum)),
+        cover_statistics=ProviderCoverSearchStatistics(combinations_examined=examined, optimal_covers=len(optimum)),
         search_limits=limits,
     )
 

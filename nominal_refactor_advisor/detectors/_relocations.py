@@ -242,9 +242,9 @@ class RelocationIndex:
                     unresolved.append(use)
         shown = {use.file_path for use in counted} | {site.file_path for site in sites}
         return ReachingUses(
-            tuple(counted),
-            tuple(use for use in unresolved if use.file_path in shown),
-        )
+            counted=tuple(counted),
+            uncounted=tuple(use for use in unresolved if use.file_path in shown),
+               )
 
 
 AnswerT = TypeVar("AnswerT", bound=MemberAnswer)
@@ -268,14 +268,14 @@ class RelocationDetector(
                 calls[call.member].append(call)
         families = MemberFamilies.from_projection_groups(projections_by_family)
         return RelocationIndex(
-            families,
-            dict(reads),
-            dict(calls),
-            DeclaredReceiverTyping.from_projections(
+            families=families,
+            branch_reads=dict(reads),
+            lambda_calls=dict(calls),
+            typing=DeclaredReceiverTyping.from_projections(
                 CompactModuleClassProjectionFamily.modules_in(projections_by_family),
                 families.class_index,
             ),
-        )
+               )
 
     def site_order(self, site: MemberAnswerSite[AnswerT]) -> tuple[object, ...]:
         return (site.file_path, site.lineno)

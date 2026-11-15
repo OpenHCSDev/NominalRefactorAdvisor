@@ -156,6 +156,6 @@ class ClassBodyReferenceCapture:
         if not destination_surface.resolves_module_name(self.reference.id, None):
             raise ValueError("Class namespace does not prove the same captured binding")
         DeclarationModuleBindingTransfer(
-            source=DeclarationModuleBindingEnvironment(self.module, self.method),
-            destination=DeclarationModuleBindingEnvironment(self.module, self.owner),
+            source=DeclarationModuleBindingEnvironment(module=self.module, scope=self.method),
+            destination=DeclarationModuleBindingEnvironment(module=self.module, scope=self.owner),
         ).require_reference_preserved(source_surface, destination_surface)

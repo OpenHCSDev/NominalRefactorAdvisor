@@ -290,7 +290,7 @@ class RepositoryModuleBindingProof(
             )
         ):
             return None
-        return ModuleNominalBindingWitness(f"builtins.{name}", name)
+        return ModuleNominalBindingWitness(qualified_name=f"builtins.{name}", root_name=name)
 
     def reference_witness_at(
         self,
@@ -312,4 +312,4 @@ class RepositoryModuleBindingProof(
         )
         if qualified_name is None:
             return None
-        return ModuleNominalBindingWitness(qualified_name, root_name)
+        return ModuleNominalBindingWitness(qualified_name=qualified_name, root_name=root_name)

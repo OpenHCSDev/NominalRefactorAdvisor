@@ -375,7 +375,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             or node.bases
             or node.keywords
             or declaration.failures
-            or not ClassHeaderSourceSpan(node, source_segments.lines).is_reconstructible
+            or not ClassHeaderSourceSpan(node=node, source_lines=source_segments.lines).is_reconstructible
         ):
             raise ValueError(refusal)
         if any(
@@ -433,7 +433,7 @@ class ExactDataclassFieldAuthorityComponentBuilder:
             )
             for statement in direct_fields
         )
-        return ExactDataclassFieldParticipant(indexed_class, decorator, fields)
+        return ExactDataclassFieldParticipant(indexed_class=indexed_class, decorator=decorator, fields=fields)
 
     @staticmethod
     def _common_prefix(

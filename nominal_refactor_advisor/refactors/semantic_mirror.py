@@ -172,7 +172,7 @@ class SemanticMirrorOperationTargets:
         if not projection_module.node_kind.is_module:
             return None
         return SemanticMirrorOperationTargets(
-            authority=ResolvedClassTarget(authority_target, authority_node),
+            authority=ResolvedClassTarget(target=authority_target, node=authority_node),
             projection_module=projection_module,
         )
 

@@ -50,10 +50,10 @@ class CodemodPlanEvidenceLocation:
     @classmethod
     def authority_claim(cls, recipe_id: str, claimed_symbol: str) -> SourceLocation:
         return SourceLocation(
-            cls.file_path,
-            cls.line,
-            f"{recipe_id}:{claimed_symbol}",
-        )
+            file_path=cls.file_path,
+            line=cls.line,
+            symbol=f"{recipe_id}:{claimed_symbol}",
+               )
 
 
 class AuthorityClaimPreflightFinding:

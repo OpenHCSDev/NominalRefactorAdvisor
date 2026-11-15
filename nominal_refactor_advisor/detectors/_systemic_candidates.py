@@ -203,7 +203,7 @@ class CandidateCollectorBoilerplateCandidate(
     @property
     def recommended_base_type(self) -> type[DerivedCandidateCollectorMixin]:
         return DerivedCandidateCollectorMixin.collector_base_types_by_shape()[
-            CandidateCollectorBaseShape(self.collector_scope, self.uses_config)
+            CandidateCollectorBaseShape(scope=self.collector_scope, uses_config=self.uses_config)
         ]
 
     @property
@@ -406,12 +406,14 @@ class ManualFiberTagCandidate(
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(
-                self.file_path, self.init_line, f"{self.class_name}.__init__"
+                file_path=self.file_path,
+                line=self.init_line,
+                symbol=f"{self.class_name}.__init__",
             ),
             SourceLocation(
-                self.file_path,
-                self.method_line,
-                f"{self.class_name}.{self.method_name}",
+                file_path=self.file_path,
+                line=self.method_line,
+                symbol=f"{self.class_name}.{self.method_name}",
             ),
         )
 

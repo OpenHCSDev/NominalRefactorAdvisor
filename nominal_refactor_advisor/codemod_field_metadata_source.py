@@ -45,7 +45,7 @@ class FieldMetadataKeywordRemoval(SourceTextGeometry):
 
     @cached_property
     def field(self) -> ast.AnnAssign:
-        return DirectClassDeclarationAuthority(self, self.owner.node).annotated_field(
+        return DirectClassDeclarationAuthority(source_segments=self, node=self.owner.node).annotated_field(
             self.field_name
         )
 
@@ -186,8 +186,8 @@ class PrunedFieldMetadataKeywordRemoval(FieldMetadataKeywordRemoval):
         if any(
             self.span_contains_comment(span)
             for span in (
-                SourceTextSpan(start, value_start),
-                SourceTextSpan(value_end, end),
+                SourceTextSpan(start_offset=start, end_offset=value_start),
+                SourceTextSpan(start_offset=value_end, end_offset=end),
             )
         ):
             raise ValueError("Annotation elision would remove a comment")

@@ -513,7 +513,7 @@ class _DeclarationDependencyCollector(
         self._visit_class(node)
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        StatementValue.of(node).answer(_AnnotatedAssignmentReads(self, node.target))
+        StatementValue.of(node).answer(_AnnotatedAssignmentReads(collector=self, target=node.target))
         self._visit_annotation(
             node.annotation,
             evaluation_sensitive=(self.scopes[-1].records_variable_annotations),

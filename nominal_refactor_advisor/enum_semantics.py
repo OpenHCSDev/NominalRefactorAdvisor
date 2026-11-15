@@ -302,11 +302,11 @@ class PythonEnumBaseAuthority:
                     member_value = PythonEnumAutoMemberValue()
                 else:
                     raise ValueError("Enum member value semantics remain open")
-            declarations.append(PythonEnumMemberDeclaration(name, member_value))
+            declarations.append(PythonEnumMemberDeclaration(name=name, value=member_value))
             declared_names.add(name)
         if len(declarations) < 2:
             raise ValueError("Enum key proof requires at least two declared members")
-        return PythonEnumDeclarationAuthority(identity, base, tuple(declarations))
+        return PythonEnumDeclarationAuthority(identity=identity, base=base, members=tuple(declarations))
 
     def permits_new_member(self, member_name: str) -> bool:
         """Reject additions that would replace standard enum behavior."""

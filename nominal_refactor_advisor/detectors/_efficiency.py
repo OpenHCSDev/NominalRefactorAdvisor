@@ -98,9 +98,9 @@ class CallbackThreadingDetector(PerModuleIssueDetector):
                 continue
             evidence = tuple(
                 SourceLocation(
-                    str(module.path),
-                    site.line,
-                    f"{site.function_name}({site.param_name}=)",
+                    file_path=str(module.path),
+                    line=site.line,
+                    symbol=f"{site.function_name}({site.param_name}=)",
                 )
                 for site in sites
             )
@@ -293,7 +293,7 @@ class MethodParameterFamily(ShapeFamily[MethodParametersModule]):
                         read=tuple(name for name in candidates if name in named),
                     )
                 )
-        return [MethodParametersModule(parsed_module.module_name, tuple(methods))]
+        return [MethodParametersModule(module_name=parsed_module.module_name, methods=tuple(methods))]
 
     @staticmethod
     def _candidate_parameters(
@@ -404,7 +404,9 @@ class UnusedMethodParameterDetector(
                     f"the result depends only on self",
                     tuple(
                         SourceLocation(
-                            member.file_path, line, f"{member.symbol}({name})"
+                            file_path=member.file_path,
+                            line=line,
+                            symbol=f"{member.symbol}({name})",
                         )
                         for member, name, line in ignored
                     ),
@@ -449,9 +451,9 @@ class LinearScanByNameDetector(PerModuleIssueDetector):
         for scan in scans:
             evidence = (
                 SourceLocation(
-                    str(module.path),
-                    scan.line,
-                    f"{scan.spelling} over {scan.sequence_label}",
+                    file_path=str(module.path),
+                    line=scan.line,
+                    symbol=f"{scan.spelling} over {scan.sequence_label}",
                 ),
             )
             findings.append(
@@ -587,17 +589,17 @@ class LoopRelookupDetector(PerModuleIssueDetector):
         for (loop_line, iterator), sites in sorted(grouped.items()):
             evidence = [
                 SourceLocation(
-                    str(module.path),
-                    loop_line,
-                    f"for ... in {iterator}",
+                    file_path=str(module.path),
+                    line=loop_line,
+                    symbol=f"for ... in {iterator}",
                 ),
             ]
             for site in sites:
                 evidence.append(SourceLocation(
-                    str(module.path),
-                    site.call_line,
-                    f"{site.call_label}(..., {site.target_name}.{site.element_attr})",
-                ))
+                    file_path=str(module.path),
+                    line=site.call_line,
+                    symbol=f"{site.call_label}(..., {site.target_name}.{site.element_attr})",
+                                ))
 
             call_names = sorted({s.call_label for s in sites})
             findings.append(

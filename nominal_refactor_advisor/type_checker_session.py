@@ -240,16 +240,16 @@ class BuiltTypeChecker(TypeCheckerSession):
                 found = result.types.get(expression)
                 if found is not None:
                     span = ReceiverSpan(
-                        state.xpath,
-                        expression.line,
-                        expression.column,
-                        expression.end_line,
-                        expression.end_column,
-                    )
+                        file_path=state.xpath,
+                        line=expression.line,
+                        column=expression.column,
+                        end_line=expression.end_line,
+                        end_column=expression.end_column,
+                           )
                     inferred[span] = InferredReceiverType(
-                        format_type_bare(found, options, verbosity=2),
-                        cls._classes_of(found),
-                    )
+                        spelled=format_type_bare(found, options, verbosity=2),
+                        classes=cls._classes_of(found),
+                                     )
         return cls(inferred, shared)
 
     def receiver_types(

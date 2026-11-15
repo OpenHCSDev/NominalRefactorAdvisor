@@ -84,7 +84,7 @@ class ClassLineNumbersGroup(ClassNameLineNumbersGroup):
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
-            SourceLocation(self.file_path, line, class_name)
+            SourceLocation(file_path=self.file_path, line=line, symbol=class_name)
             for class_name, line in zip(
                 self.class_names, self.line_numbers, strict=True
             )
@@ -131,7 +131,7 @@ class FunctionFamilyEvidenceSurface:
     function_names: tuple[str, ...]
     line_numbers: tuple[int, ...]
     evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "function_names")
+        ZippedSourceLocationEvidenceProperty(line_numbers_attribute_name="line_numbers", symbol_names_attribute_name="function_names")
     )
 
 
@@ -480,7 +480,7 @@ class ModuleKeyedSelectionHelperCandidate(
             rule_table_names: list[str] = []
             indexed_table_names: list[str] = []
             evidence: list[SourceLocation] = [
-                SourceLocation(module.file_path, node.lineno, node.name)
+                SourceLocation(file_path=module.file_path, line=node.lineno, symbol=node.name)
             ]
             for family_name, (line, elements) in sorted(named_sequences.items()):
                 if len(elements) < 2:
@@ -506,7 +506,7 @@ class ModuleKeyedSelectionHelperCandidate(
                 ):
                     continue
                 rule_table_names.append(family_name)
-                evidence.append(SourceLocation(module.file_path, line, family_name))
+                evidence.append(SourceLocation(file_path=module.file_path, line=line, symbol=family_name))
             if len(rule_table_names) < 2:
                 continue
             helper_names = {helper.function_name for helper in matching_helpers}
@@ -520,7 +520,7 @@ class ModuleKeyedSelectionHelperCandidate(
                 argument = call.args[0]
                 if isinstance(argument, ast.Name) and argument.id in rule_table_names:
                     indexed_table_names.append(call_name)
-                    evidence.append(SourceLocation(module.file_path, line, call_name))
+                    evidence.append(SourceLocation(file_path=module.file_path, line=line, symbol=call_name))
             if len(indexed_table_names) < 2:
                 continue
             candidates.append(
@@ -555,8 +555,9 @@ class ModuleKeyedSelectionHelperCandidate(
             .combine(
                 lambda returned: single_item(returned.generators),
                 lambda returned, generator: _SelectionDictCompContext(
-                    returned, generator
-                ),
+                    returned=returned,
+                    generator=generator,
+                                            ),
             )
             .filter(
                 lambda context: (

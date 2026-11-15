@@ -350,7 +350,7 @@ class DetectorTypeShardRunner:
         minimum_auto_work_items: int = 4,
     ) -> DetectorTypeShardRunner:
         return cls(
-            worker_state=DetectorAnalysisWorkerState(modules, config),
+            worker_state=DetectorAnalysisWorkerState(modules=modules, config=config),
             detector_types=detector_types,
             worker_plan=WorkerPlan(
                 requested_worker_count=analysis_workers,
@@ -511,9 +511,9 @@ class PerModuleDetectorBundlePlan:
                 bundle.finding_bundle(materialized_new_findings)
                 if cached_findings is None
                 else PerModuleDetectorFindingBundle(
-                    bundle.detector_registry,
-                    cached_findings,
-                )
+                    detector_registry=bundle.detector_registry,
+                    findings=cached_findings,
+                     )
             )
             for bundle, cached_findings in zip(
                 self.bundles,
@@ -731,7 +731,7 @@ def _compact_findings_by_detector(
             continue
         family = families[0]
         projections = projections_by_family.get(family, ())
-        context_key = CompactProjectionContextCacheKey(family, context_builder)
+        context_key = CompactProjectionContextCacheKey(family=family, context_builder=context_builder)
         if context_key not in active_shared_contexts:
             active_shared_contexts[context_key] = context_builder(projections, config)
             built = active_shared_contexts[context_key]
@@ -773,7 +773,7 @@ def accumulate_compact_global_projections_for_roots(
             use_parse_cache=use_parse_cache,
             source_policy=active_source_policy,
         )
-        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+        for path in PythonSourcePathDiscovery(root=root, source_policy=active_source_policy).paths():
             normalized_path = path.resolve()
             if normalized_path in seen_paths:
                 continue
@@ -1598,7 +1598,7 @@ class BoundedCompactProjectionManifest:
                 )
             )
             group_results = group_plan.map_state(
-                CompactGroupWorkerState(self, config, groups), range(len(groups))
+                CompactGroupWorkerState(manifest=self, config=config, groups=groups), range(len(groups))
             )
             for group_findings, materialized_counts, timing in group_results:
                 self._materialized_source_counts.update(materialized_counts)
@@ -1959,7 +1959,7 @@ def analyze_compact_roots_with_cache(
     source_paths: list[Path] = []
     seen_source_paths: set[Path] = set()
     for root in roots:
-        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+        for path in PythonSourcePathDiscovery(root=root, source_policy=active_source_policy).paths():
             normalized_path = path.resolve()
             if normalized_path in seen_source_paths:
                 continue
@@ -2088,8 +2088,9 @@ def analyze_compact_roots_with_cache(
             target_paths = tuple(
                 path
                 for path in PythonSourcePathDiscovery(
-                    root, active_source_policy
-                ).paths()
+                    root=root,
+                    source_policy=active_source_policy,
+                            ).paths()
                 if path.resolve() in source_path_set
                 and path.resolve() not in demanded_target_paths
                 and report_scope.includes_report_path(path)
@@ -2225,7 +2226,7 @@ def analyze_compact_roots_with_cache(
             use_parse_cache=use_parse_cache,
             source_policy=active_source_policy,
         )
-        for path in PythonSourcePathDiscovery(root, active_source_policy).paths():
+        for path in PythonSourcePathDiscovery(root=root, source_policy=active_source_policy).paths():
             normalized_path = path.resolve()
             if (
                 normalized_path not in source_path_set
@@ -2291,8 +2292,8 @@ def analyze_compact_roots_with_cache(
                 source_policy=active_source_policy,
                 source_semantic_hash=(
                     PythonSourceSemanticHash(
-                        source_signature,
-                        local_semantic_hash,
+                        source_signature=source_signature,
+                        semantic_hash=local_semantic_hash,
                     )
                     if local_semantic_hash is not None
                     else None
@@ -3151,7 +3152,7 @@ class HeldExactFindings(LoadedAnalysisCache):
         )
 
     def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
-        return authority.serve(ExactCacheHit(list(self.findings), self.cache_identity))
+        return authority.serve(ExactCacheHit(findings=list(self.findings), cache_identity=self.cache_identity))
 
 
 @dataclass(frozen=True)
@@ -3299,13 +3300,13 @@ class AnalysisCacheResolutionAuthority(
             report_roots=report_roots,
         )
         cache_identity = AnalysisCacheIdentityAuthority(
-            self._roots,
-            self._config,
-            self._source_policy,
-            analysis_cache.source_signature_cache(),
-            self._source_paths,
-            report_roots,
-        ).cache_identity()
+            roots=self._roots,
+            config=self._config,
+            source_policy=self._source_policy,
+            source_signature_cache=analysis_cache.source_signature_cache(),
+            source_paths=self._source_paths,
+            report_roots=report_roots,
+                         ).cache_identity()
         if self._report_scope is not None and self._report_scope.has_report_filter:
             unscoped_semantic_identity = AnalysisCacheIdentity.from_modules(
                 self._roots,
@@ -3439,14 +3440,14 @@ def analyze_module_detector_types_with_cache(
     )
     if cache_lookup.status.is_hit:
         return IncrementalAnalysisResult(
-            [
+            findings=[
                 finding
                 for bundle_findings in cache_lookup.findings_by_bundle
                 if bundle_findings is not None
                 for finding in bundle_findings
             ],
-            Hit,
-        )
+            cache_status=Hit,
+               )
     new_findings = analyze_detector_types(
         ParsedModuleSet((module,)),
         config,
@@ -3466,7 +3467,7 @@ def analyze_module_detector_types_with_cache(
     findings = SortedFindingsAuthority.sort(
         detector_bundle_plan.findings(finding_bundles)
     )
-    return IncrementalAnalysisResult(findings, cache_lookup.status)
+    return IncrementalAnalysisResult(findings=findings, cache_status=cache_lookup.status)
 
 
 class IncrementalAnalysisCacheResolver:
@@ -3542,7 +3543,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.PER_MODULE
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], Miss)
+            return IncrementalAnalysisResult(findings=[], cache_status=Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3599,7 +3600,7 @@ class IncrementalAnalysisCacheResolver:
             findings.extend(module_findings)
 
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
-        return IncrementalAnalysisResult(findings, cache_status)
+        return IncrementalAnalysisResult(findings=findings, cache_status=cache_status)
 
     def _missing_per_module_findings(
         self,
@@ -3643,7 +3644,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.CONTEXTUAL_MODULE
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], Miss)
+            return IncrementalAnalysisResult(findings=[], cache_status=Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3685,7 +3686,7 @@ class IncrementalAnalysisCacheResolver:
                 self._analysis_cache.store(identity, module_findings)
                 findings.extend(module_findings)
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
-        return IncrementalAnalysisResult(findings, cache_status)
+        return IncrementalAnalysisResult(findings=findings, cache_status=cache_status)
 
     def _local_detector_modules(self) -> ParsedModuleSet:
         scope = self._report_scope
@@ -3702,7 +3703,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.GLOBAL
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], Miss)
+            return IncrementalAnalysisResult(findings=[], cache_status=Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3733,7 +3734,7 @@ class IncrementalAnalysisCacheResolver:
             findings.extend(detector_findings)
 
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
-        return IncrementalAnalysisResult(findings, cache_status)
+        return IncrementalAnalysisResult(findings=findings, cache_status=cache_status)
 
     def _missing_global_detector_findings(
         self,
@@ -3751,7 +3752,7 @@ class IncrementalAnalysisCacheResolver:
             DetectorCacheGranularity.CONTEXTUAL_GLOBAL
         )
         if not detector_types:
-            return IncrementalAnalysisResult([], Miss)
+            return IncrementalAnalysisResult(findings=[], cache_status=Miss)
 
         findings: list[RefactorFinding] = []
         hit_count = 0
@@ -3862,7 +3863,7 @@ class IncrementalAnalysisCacheResolver:
             findings.extend(detector_findings)
 
         cache_status = AnalysisCacheStatus.from_reused_item_count(hit_count)
-        return IncrementalAnalysisResult(findings, cache_status)
+        return IncrementalAnalysisResult(findings=findings, cache_status=cache_status)
 
     @cached_property
     def semantic_descent_context_graph(self) -> SemanticDescentGraph:
@@ -3953,29 +3954,29 @@ def load_analysis_cache_for_roots(
     if analysis_cache_dir is None:
         return DISABLED_ANALYSIS_CACHE
     identity_authority = AnalysisCacheIdentityAuthority(
-        roots,
-        config,
-        source_policy,
-        AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
-        source_paths,
-        report_roots,
-    )
+        roots=roots,
+        config=config,
+        source_policy=source_policy,
+        source_signature_cache=AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
+        source_paths=source_paths,
+        report_roots=report_roots,
+                         )
     cache_identity = identity_authority.cache_identity()
     analysis_cache = AnalysisFindingCache(analysis_cache_dir)
     cache_lookup = analysis_cache.load(cache_identity)
     if cache_lookup.status.is_hit:
-        return HeldExactFindings(tuple(cache_lookup.findings), cache_identity)
+        return HeldExactFindings(findings=tuple(cache_lookup.findings), cache_identity=cache_identity)
     family_identity = identity_authority.family_identity(cache_identity)
     latest_cache_entry = analysis_cache.load_latest(family_identity)
     if latest_cache_entry is None:
-        return HeldNothingForRequest(cache_lookup.status, cache_identity)
+        return HeldNothingForRequest(cache_status=cache_lookup.status, cache_identity=cache_identity)
     previous_cache_identity, previous_findings = latest_cache_entry
     return HeldPreviousFindings(
-        cache_lookup.status,
-        cache_identity,
-        previous_cache_identity,
-        tuple(previous_findings),
-    )
+        cache_status=cache_lookup.status,
+        cache_identity=cache_identity,
+        previous_cache_identity=previous_cache_identity,
+        previous_findings=tuple(previous_findings),
+           )
 
 
 @ScanCache.scope()
@@ -4111,8 +4112,9 @@ class FastCachedPathAnalysisAuthority:
         )
         if partial_cache_lookup.status.is_partial:
             return PartialCacheReuse(
-                list(partial_cache_lookup.findings), cache_result.cache_identity
-            )
+                findings=list(partial_cache_lookup.findings),
+                cache_identity=cache_result.cache_identity,
+                   )
         changed_paths = ChangedSourcePathAuthority.paths(
             cache_result.cache_identity,
             cache_result.previous_cache_identity,
@@ -4154,7 +4156,7 @@ class FastCachedPathAnalysisAuthority:
             cache_result.previous_cache_identity,
             findings,
         )
-        return PartialCacheReuse(findings, cache_result.cache_identity)
+        return PartialCacheReuse(findings=findings, cache_identity=cache_result.cache_identity)
 
     def _changed_findings(
         self,

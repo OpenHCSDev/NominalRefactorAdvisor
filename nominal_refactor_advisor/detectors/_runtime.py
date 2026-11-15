@@ -200,7 +200,9 @@ class LiteralDispatchFindingFactory:
             f"{module.path} dispatches on `{observation.dispatch_axis_expression}` through {case_summary_label} {observation.literal_cases}.",
             (
                 SourceLocation(
-                    observation.file_path, observation.line, observation.symbol
+                    file_path=observation.file_path,
+                    line=observation.line,
+                    symbol=observation.symbol,
                 ),
             ),
             relation_context=(
@@ -640,7 +642,7 @@ class FormalBoundaryExternalStringRegistryMirrorAuthority:
         evidence: list[SourceLocation] = []
         for value in values:
             site = sites_by_value[value][0]
-            evidence.append(SourceLocation(str(site.path), site.line, value))
+            evidence.append(SourceLocation(file_path=str(site.path), line=site.line, symbol=value))
         return tuple(evidence)
 
     @staticmethod
@@ -1182,7 +1184,7 @@ class RuntimeNamespaceBridgeDetector(PerModuleIssueDetector):
             return []
         bridge_kinds = sorted_tuple(site.bridge_kind.value for site in sites)
         evidence = tuple(
-            SourceLocation(module.file_path, site.line, site.symbol)
+            SourceLocation(file_path=module.file_path, line=site.line, symbol=site.symbol)
             for site in sites[:12]
         )
         return [
@@ -1671,8 +1673,8 @@ class ManualClassRegistrationDetector(
             first = registrations[0]
             candidates.append(
                 ManualRegistrationGroup(
-                    registrations,
-                    RegistrationOwners.for_package(
+                    registrations=registrations,
+                    scope=RegistrationOwners.for_package(
                         class_projections,
                         module_names.get(first.file_path, ""),
                         Path(first.file_path),
@@ -1707,7 +1709,7 @@ class ManualClassRegistrationDetector(
             + "".join(f"; gap: {gap}" for gap in scope.gaps)
             + ".",
             tuple(
-                SourceLocation(item.file_path, item.lineno, item.symbol)
+                SourceLocation(file_path=item.file_path, line=item.lineno, symbol=item.symbol)
                 for item in registrations[:6]
             ),
             metrics=InstalledOwnerRegistrationMetrics(
@@ -1847,7 +1849,7 @@ class ManualConcreteSubclassRosterCandidate(CollectsItselfFromCompactContext[_Co
                 continue
             for compact_site in root.registration_sites:
                 consumers = tuple(
-                    SourceLocation(file_path, line, symbol)
+                    SourceLocation(file_path=file_path, line=line, symbol=symbol)
                     for registry_name, line, symbol, file_path in root.consumer_locations
                     if registry_name == compact_site.registry_name
                 )
@@ -1921,9 +1923,9 @@ class ManualConcreteSubclassRosterDetector(
         evidence.extend(
             (
                 SourceLocation(
-                    roster_candidate.file_path,
-                    roster_candidate.line,
-                    f"{roster_candidate.class_name}.{consumer_name}",
+                    file_path=roster_candidate.file_path,
+                    line=roster_candidate.line,
+                    symbol=f"{roster_candidate.class_name}.{consumer_name}",
                 )
                 for consumer_name in roster_candidate.consumer_names[:3]
             )
@@ -1931,7 +1933,9 @@ class ManualConcreteSubclassRosterDetector(
         evidence.extend(
             (
                 SourceLocation(
-                    roster_candidate.file_path, roster_candidate.line, class_name
+                    file_path=roster_candidate.file_path,
+                    line=roster_candidate.line,
+                    symbol=class_name,
                 )
                 for class_name in roster_candidate.concrete_class_names[:2]
             )
@@ -2235,7 +2239,9 @@ class PredicateSelectedConcreteFamilyDetector(
         evidence.extend(
             (
                 SourceLocation(
-                    family_candidate.file_path, family_candidate.line, class_name
+                    file_path=family_candidate.file_path,
+                    line=family_candidate.line,
+                    symbol=class_name,
                 )
                 for class_name in family_candidate.concrete_class_names[:3]
             )
@@ -2848,7 +2854,7 @@ class StringLiteralDispatchOwnershipLeadDetector(PerModuleIssueDetector):
             chain_else = tuple(current.orelse)
             trailing = self._following_original_statements(parent, root)
             evidence = tuple(
-                SourceLocation(module.file_path, item.lineno, symbol)
+                SourceLocation(file_path=module.file_path, line=item.lineno, symbol=symbol)
                 for item in (*chain, *chain_else, *trailing)
             )
             findings.append(
@@ -2895,7 +2901,7 @@ class _OriginalGuardedStringCase:
     source_test: str
 
     def location(self, module: ParsedModule, symbol: str) -> SourceLocation:
-        return SourceLocation(module.file_path, self.line, symbol)
+        return SourceLocation(file_path=module.file_path, line=self.line, symbol=symbol)
 
 
 class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
@@ -2966,12 +2972,12 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             fingerprint, expression, literal_case = matches[0]
             groups[(owner, symbol, fingerprint)].append(
                 _OriginalGuardedStringCase(
-                    node.lineno,
-                    root.lineno,
-                    expression,
-                    literal_case,
-                    is_guarded,
-                    ast.get_source_segment(module.source, node.test)
+                    line=node.lineno,
+                    root_line=root.lineno,
+                    axis=expression,
+                    literal_case=literal_case,
+                    is_guarded=is_guarded,
+                    source_test=ast.get_source_segment(module.source, node.test)
                     or ast.unparse(node.test),
                 )
             )
@@ -3200,12 +3206,12 @@ class ScopedShapeWrapperDetector(PerModuleIssueDetector):
         if len(wrapper_pairs) < 2:
             return []
         evidence_items = [
-            SourceLocation(module.file_path, pair.spec_line, pair.spec_name)
+            SourceLocation(file_path=module.file_path, line=pair.spec_line, symbol=pair.spec_name)
             for pair in wrapper_pairs[:6]
         ]
         evidence_items.extend(
             (
-                SourceLocation(module.file_path, pair.function_line, pair.function_name)
+                SourceLocation(file_path=module.file_path, line=pair.function_line, symbol=pair.function_name)
                 for pair in wrapper_pairs[:6]
             )
         )

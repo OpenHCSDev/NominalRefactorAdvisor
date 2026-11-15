@@ -363,8 +363,9 @@ class DeclaredCollection(DeclaredType):
 
     def join_collection(self, other: DeclaredCollection, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
-            self.item.join(other.item, typing), self.container.joined(other.container)
-        )
+            item=self.item.join(other.item, typing),
+            container=self.container.joined(other.container),
+               )
 
 
 @dataclass(frozen=True)
@@ -387,7 +388,7 @@ class DeclaredTuple(DeclaredType):
         return typing.joined(self.items)
 
     def sliced(self, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredCollection(typing.joined(self.items), self.TUPLE_CONTAINER)
+        return DeclaredCollection(item=typing.joined(self.items), container=self.TUPLE_CONTAINER)
 
     def class_symbols(self) -> tuple[str, ...]:
         return self.TUPLE_CONTAINER.class_symbols()
@@ -440,10 +441,10 @@ class DeclaredMapping(DeclaredType):
 
     def join_mapping(self, other: DeclaredMapping, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredMapping(
-            self.key.join(other.key, typing),
-            self.value.join(other.value, typing),
-            self.container.joined(other.container),
-        )
+            key=self.key.join(other.key, typing),
+            value=self.value.join(other.value, typing),
+            container=self.container.joined(other.container),
+               )
 
 
 class MappingMethod(ABC):
@@ -462,7 +463,7 @@ class MappingKeys(MappingMethod):
 
     @staticmethod
     def of(mapping: DeclaredMapping) -> DeclaredType:
-        return DeclaredCollection(mapping.key, UNNAMED_CONTAINER)
+        return DeclaredCollection(item=mapping.key, container=UNNAMED_CONTAINER)
 
 
 class MappingValues(MappingMethod):
@@ -470,7 +471,7 @@ class MappingValues(MappingMethod):
 
     @staticmethod
     def of(mapping: DeclaredMapping) -> DeclaredType:
-        return DeclaredCollection(mapping.value, UNNAMED_CONTAINER)
+        return DeclaredCollection(item=mapping.value, container=UNNAMED_CONTAINER)
 
 
 class MappingItems(MappingMethod):
@@ -479,8 +480,9 @@ class MappingItems(MappingMethod):
     @staticmethod
     def of(mapping: DeclaredMapping) -> DeclaredType:
         return DeclaredCollection(
-            DeclaredTuple((mapping.key, mapping.value)), UNNAMED_CONTAINER
-        )
+            item=DeclaredTuple((mapping.key, mapping.value)),
+            container=UNNAMED_CONTAINER,
+               )
 
 
 class MappingValueLookup(MappingMethod):
@@ -706,7 +708,7 @@ class HomogeneousHead(AnnotationHead):
     )
 
     def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
-        return DeclaredCollection(typed[0], self.container)
+        return DeclaredCollection(item=typed[0], container=self.container)
 
 
 class TupleHead(AnnotationHead):
@@ -717,7 +719,7 @@ class TupleHead(AnnotationHead):
     def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         match items:
             case [_, ast.Constant(value=builtins.Ellipsis)]:
-                return DeclaredCollection(typed[0], self.container)
+                return DeclaredCollection(item=typed[0], container=self.container)
         return DeclaredTuple(tuple(typed))
 
 
@@ -737,7 +739,7 @@ class MappingHead(AnnotationHead):
     def declared(self, items: Sequence[ast.expr], typed: Sequence[DeclaredType], typing: DeclaredReceiverTyping, named: Callable[[], DeclaredType]) -> DeclaredType:
         if len(typed) != 2:
             return UndeclaredType("a mapping annotation takes a key and a value type")
-        return DeclaredMapping(typed[0], typed[1], self.container)
+        return DeclaredMapping(key=typed[0], value=typed[1], container=self.container)
 
 
 class ClassHead(AnnotationHead):
@@ -782,8 +784,8 @@ class DeclaredReceiverTyping:
             projections,
             class_index,
             StubDeclarations(
-                installed_stub_root(),
-                frozenset(
+                root=installed_stub_root(),
+                shadowed_roots=frozenset(
                     projection.module_name.partition(".")[0] for projection in projections
                 ),
             ),
@@ -839,7 +841,7 @@ class DeclaredReceiverTyping:
     ) -> DeclaredType:
         typing = self.declaring(symbol)
         return typing.class_index.declared_member(symbol, name).answer(
-            _MemberRead(typing, symbol, name, receiver)
+            _MemberRead(typing=typing, symbol=symbol, name=name, receiver=receiver)
         )
 
     def method_call(
@@ -847,7 +849,7 @@ class DeclaredReceiverTyping:
     ) -> DeclaredType:
         typing = self.declaring(symbol)
         return typing.class_index.declared_member(symbol, name).answer(
-            _MethodCall(typing, symbol, name, receiver)
+            _MethodCall(typing=typing, symbol=symbol, name=name, receiver=receiver)
         )
 
     def function_result(self, function_symbol: str) -> DeclaredType:
@@ -920,7 +922,7 @@ class DeclaredReceiverTyping:
             declaration = self.class_index.class_for(current)
             if declaration is None:
                 continue
-            scope = AnnotationScope(DeclaredInstance((symbol,)), bound)
+            scope = AnnotationScope(self_type=DeclaredInstance((symbol,)), parameters=bound)
             for reference, arguments in zip(
                 declaration.base_references, declaration.base_argument_sources, strict=False
             ):
@@ -1369,8 +1371,9 @@ class _MemberRead(ClassMemberAnswersABC[DeclaredType]):
         """`Self` is the receiver; the owner's type variables are what the receiver's bases bind."""
 
         return AnnotationScope(
-            self.receiver, self.typing.generic_arguments(self.symbol, owner.symbol)
-        )
+            self_type=self.receiver,
+            parameters=self.typing.generic_arguments(self.symbol, owner.symbol),
+               )
 
     def annotated_property(self, owner: CompactIndexedClass, declaration: CompactAnnotatedProperty) -> DeclaredType:
         return self.typing.annotation_source_type(
@@ -1515,12 +1518,12 @@ class ReferenceRoot(ReceiverRoot):
     def attribute_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
         if path.steps:
             return super().attribute_of(path, name)
-        return ReceiverPath(ReferenceRoot(self.module_name, (*self.parts, name)))
+        return ReceiverPath(ReferenceRoot(module_name=self.module_name, parts=(*self.parts, name)))
 
     def method_call_of(self, path: ReceiverPath, name: str) -> ReceiverPath:
         if path.steps:
             return super().method_call_of(path, name)
-        return ReceiverPath(CalledReferenceRoot(self.module_name, (*self.parts, name)))
+        return ReceiverPath(CalledReferenceRoot(module_name=self.module_name, parts=(*self.parts, name)))
 
     def call_of(self, path: ReceiverPath, builder: ReceiverPathBuilder, arguments: Sequence[ast.expr], pending: Pending) -> ReceiverPath:
         if path.steps:
@@ -1590,9 +1593,9 @@ class CollectionDisplayRoot(ReceiverRoot):
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
-            typing.joined(element.declared(typing) for element in self.elements),
-            self.container,
-        )
+            item=typing.joined(element.declared(typing) for element in self.elements),
+            container=self.container,
+               )
 
 
 @dataclass(frozen=True)
@@ -1616,8 +1619,10 @@ class MappingDisplayRoot(ReceiverRoot):
 
     def declared(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredMapping(
-            self.key.declared(typing), self.value.declared(typing), self.DICT_CONTAINER
-        )
+            key=self.key.declared(typing),
+            value=self.value.declared(typing),
+            container=self.DICT_CONTAINER,
+               )
 
 
 @dataclass(frozen=True)
@@ -1698,7 +1703,7 @@ class CollectedStep(ReceiverStep):
     container: ContainerClass
 
     def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
-        return DeclaredCollection(declared.element(typing), self.container)
+        return DeclaredCollection(item=declared.element(typing), container=self.container)
 
 
 @dataclass(frozen=True)
@@ -1707,9 +1712,9 @@ class EnumeratedStep(ReceiverStep):
 
     def applied(self, declared: DeclaredType, typing: DeclaredReceiverTyping) -> DeclaredType:
         return DeclaredCollection(
-            DeclaredTuple((UndeclaredType("an enumerate count"), declared.element(typing))),
-            container_of(enumerate),
-        )
+            item=DeclaredTuple((UndeclaredType("an enumerate count"), declared.element(typing))),
+            container=container_of(enumerate),
+               )
 
 
 @dataclass(frozen=True)
@@ -1720,7 +1725,7 @@ class ReceiverPath:
     steps: tuple[ReceiverStep, ...] = ()
 
     def then(self, step: ReceiverStep) -> ReceiverPath:
-        return ReceiverPath(self.root, (*self.steps, step))
+        return ReceiverPath(root=self.root, steps=(*self.steps, step))
 
     def attribute(self, name: str) -> ReceiverPath:
         return self.root.attribute_of(self, name)
@@ -1870,7 +1875,7 @@ class ReceiverPathBuilder:
                 return ReceiverPath(LiteralRoot("builtins.str"))
             case ast.DictComp(key=key, value=value):
                 return ReceiverPath(
-                    MappingDisplayRoot(self._path(key, pending), self._path(value, pending))
+                    MappingDisplayRoot(key=self._path(key, pending), value=self._path(value, pending))
                 )
             case ast.IfExp(body=body, orelse=orelse):
                 return ReceiverPath(
@@ -1885,8 +1890,8 @@ class ReceiverPathBuilder:
             case ast.List(elts=items) | ast.Set(elts=items) | ast.Tuple(elts=items) if items:
                 return ReceiverPath(
                     CollectionDisplayRoot(
-                        tuple(self._display_element(item, pending) for item in items),
-                        container_of(self.DISPLAY_CLASSES[type(expression)]),
+                        elements=tuple(self._display_element(item, pending) for item in items),
+                        container=container_of(self.DISPLAY_CLASSES[type(expression)]),
                     )
                 )
             case ast.ListComp(elt=element) | ast.SetComp(elt=element) | ast.GeneratorExp(
@@ -1894,8 +1899,8 @@ class ReceiverPathBuilder:
             ):
                 return ReceiverPath(
                     CollectionDisplayRoot(
-                        (self._path(element, pending),),
-                        container_of(self.DISPLAY_CLASSES[type(expression)]),
+                        elements=(self._path(element, pending),),
+                        container=container_of(self.DISPLAY_CLASSES[type(expression)]),
                     )
                 )
         return unresolved(
@@ -1939,8 +1944,8 @@ class ReceiverPathBuilder:
                 return unresolved("`enumerate()` has no iterable")
             return self._path(arguments[0], pending).then(EnumeratedStep())
         if self.aliases.get(name) in self.CAST_FUNCTIONS and len(arguments) == 2:
-            return ReceiverPath(AnnotatedRoot(self.module_name, ast.unparse(arguments[0])))
-        return ReceiverPath(CalledReferenceRoot(self.module_name, parts))
+            return ReceiverPath(AnnotatedRoot(module_name=self.module_name, annotation=ast.unparse(arguments[0])))
+        return ReceiverPath(CalledReferenceRoot(module_name=self.module_name, parts=parts))
 
     # names -----------------------------------------------------------------
 
@@ -1980,7 +1985,7 @@ class ReceiverPathBuilder:
         for scope in self.scopes(node):
             match scope:
                 case ast.Module():
-                    return ReceiverPath(ReferenceRoot(self.module_name, (name,)))
+                    return ReceiverPath(ReferenceRoot(module_name=self.module_name, parts=(name,)))
                 case ast.Lambda(args=arguments):
                     if name in _parameter_names(arguments):
                         return unresolved(f"`{name}` is a lambda parameter")
@@ -2023,7 +2028,7 @@ class ReceiverPathBuilder:
             case [only]:
                 path = only
             case _:
-                path = ReceiverPath(AgreeingRoot(name, tuple(paths)))
+                path = ReceiverPath(AgreeingRoot(name=name, bindings=tuple(paths)))
         if not pending:
             self._bindings[key] = path
         return path
@@ -2181,7 +2186,7 @@ class MethodPlacement(FunctionPlacement):
         yield ReceiverPath(OwnInstanceRoot(self.class_symbol))
 
     def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
-        return MethodAnnotatedRoot(module_name, annotation, self.class_symbol)
+        return MethodAnnotatedRoot(module_name=module_name, annotation=annotation, class_symbol=self.class_symbol)
 
     @staticmethod
     def _decorator_name(decorator: ast.expr) -> str:
@@ -2202,7 +2207,7 @@ class FreeFunctionPlacement(FunctionPlacement):
         return iter(())
 
     def annotated(self, module_name: str, annotation: str) -> ReceiverRoot:
-        return AnnotatedRoot(module_name, annotation)
+        return AnnotatedRoot(module_name=module_name, annotation=annotation)
 
 
 def _parameter_names(arguments: ast.arguments) -> frozenset[str]:

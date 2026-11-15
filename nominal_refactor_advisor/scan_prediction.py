@@ -222,10 +222,10 @@ def build_scan_prediction_report(
         else changed_python_paths(root, compare_ref)
     )
     changed_modules = ModulesPathsAuthority(
-        module_tuple,
-        root,
-        changed_path_tuple,
-    ).modules_for_paths()
+        modules=module_tuple,
+        root=root,
+        paths=changed_path_tuple,
+                      ).modules_for_paths()
     changed_branch = PredictionBranchAuthority(
         label="changed_only",
         modules=changed_modules,

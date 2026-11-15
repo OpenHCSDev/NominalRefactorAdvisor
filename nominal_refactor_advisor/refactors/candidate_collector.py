@@ -122,10 +122,10 @@ class CandidateCollectorMigration:
             self.candidate.collector_descriptor_type,
         )
         ClassBodyReferenceCapture(
-            context.parsed_module_for_source_path(self.target.file_path),
-            self.node,
-            self.candidate_method,
-            self.candidate.forwarding.callee,
+            module=context.parsed_module_for_source_path(self.target.file_path),
+            owner=self.node,
+            method=self.candidate_method,
+            reference=self.candidate.forwarding.callee,
         ).require_preserved()
         if any(
             ClassDeclarationPromotionStatement(statement).name
@@ -176,7 +176,8 @@ class CandidateCollectorMigration:
         )
         insertion_line = (
             NamedDeclarationSourceAuthority(
-                anchor, self.source
+                node=anchor,
+                source=self.source,
             ).declaration_line_span.start_line
             if anchor is not None
             else body.declaration_insert_line + 1
@@ -211,9 +212,9 @@ class CandidateCollectorMigration:
 
     def candidate_method_deletion(self) -> SourceSpanDeletion:
         return NamedDeclarationSourceAuthority(
-            self.candidate_method,
-            self.source,
-        ).declaration_line_span.line_deletion(
+            node=self.candidate_method,
+            source=self.source,
+               ).declaration_line_span.line_deletion(
             file_path=self.target.file_path,
             rationale=self.rationale
             or "Delete candidate traversal now owned by the collector base.",
@@ -282,11 +283,11 @@ class LineWitnessSourceReprovedOperation(
                 f"{type(self).candidate_type.__name__} witnesses"
             )
         return CurrentLineWitness(
-            target,
-            cast(SourceRecipeNodeT, node),
-            cast(SourceRecipeCandidateT, candidates[0]),
-            module,
-        )
+            target=target,
+            node=cast(SourceRecipeNodeT, node),
+            candidate=cast(SourceRecipeCandidateT, candidates[0]),
+            module=module,
+               )
 
     def source_edits_from_snapshot(
         self,
@@ -360,15 +361,15 @@ class DeriveCandidateCollectorOperation(
                 "Collector migration requires one exact native forwarding base"
             )
         SourceNativeClassMro(
-            snapshot,
-            DerivedCandidateCollectorMixin.registered_collector_base_types(),
+            context=snapshot,
+            native_roots=DerivedCandidateCollectorMixin.registered_collector_base_types(),
         ).require_inherited_method(
             NativeClassBaseSubstitution(
-                snapshot.required_class_family_index.classes_by_symbol[
+                owner=snapshot.required_class_family_index.classes_by_symbol[
                     owner.required_symbol(snapshot)
                 ],
-                replaced_bases[0],
-                NativeClassMroDeclaration(candidate.recommended_base_type),
+                base=replaced_bases[0],
+                replacement=NativeClassMroDeclaration(candidate.recommended_base_type),
             ),
             candidate.method_name,
         )

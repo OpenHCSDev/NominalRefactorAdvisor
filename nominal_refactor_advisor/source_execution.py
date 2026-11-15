@@ -609,7 +609,7 @@ class SourceCreatedFunctionCapture(
     def definition_application_activation(
         self, application: SourceDefinitionDecoratorApplicationABC
     ) -> SourceFunctionActivationABC:
-        return SourceDefinitionFunctionActivation(application, self)
+        return SourceDefinitionFunctionActivation(application=application, function=self)
 
     def require_definition_application_argument(self) -> None:
         self.require_descriptor_argument()
@@ -646,7 +646,7 @@ class SourceCreatedFunctionCapture(
         return (
             self,
             *(
-                SourceNativeDecoratorApplication(self, index)
+                SourceNativeDecoratorApplication(creation=self, index=index)
                 for index in range(len(self.definition.target.decorator_uses))
             ),
         )
@@ -796,11 +796,11 @@ class SourceFunctionCall(SignatureCallAuthorityABC, SourceFunctionActivationABC)
         self, child: AdmittedExecutionPrefixABC
     ) -> AdmittedExecutionPrefixABC:
         return FunctionInvocationPrefix(
-            self.caller_prefix,
-            self.call,
-            self.callee.declaration,
-            child,
-        )
+            parent=self.caller_prefix,
+            invocation=self.call,
+            declaration=self.callee.declaration,
+            child=child,
+               )
 
     def require_canonical_activation(self) -> None:
         if self.environment.call_authority(self.context, self.call) is not self:
@@ -879,7 +879,7 @@ class SourceDefinitionDecoratorApplicationABC(
         context = self.creation.parent_context
         self.execution.source_operation(context, self.decorator_use)
         return SourceNativeOperandJoin(
-            self, CompactFlowValue(context, self.decorator_use)
+            self, CompactFlowValue(context=context, use=self.decorator_use)
         ).require_join(native_value.callee)
 
     def function_activation(self) -> SourceFunctionActivationABC:
@@ -1050,10 +1050,10 @@ class SourceDefinitionFunctionActivation(SourceFunctionActivationABC):
     ) -> AdmittedExecutionPrefixABC:
         _ = self.caller_prefix
         return DefinitionApplicationPrefix(
-            self.application,
-            self.callee.declaration,
-            child,
-        )
+            application=self.application,
+            declaration=self.callee.declaration,
+            child=child,
+               )
 
     def require_canonical_activation(self) -> None:
         self.application.require_original_application()
@@ -1126,7 +1126,8 @@ class SourceCreatedClassCapture(
             strict=True,
         ):
             SourceNativeOperandJoin(
-                self, self.execution.source.value_reads_by_node[argument]
+                parent=self,
+                read=self.execution.source.value_reads_by_node[argument],
             ).require_join(operand)
         return value
 
@@ -1252,7 +1253,7 @@ class SourceNativeStorageABC(
     def _typed_native_value_resolution(
         self, value: NativeTypedValue
     ) -> CapturedReferenceResolution:
-        return SourceNativeTypeCapture(self, value)
+        return SourceNativeTypeCapture(entry=self, value=value)
 
     def _preceding_native_local_value(
         self, name: NativeDictionaryKey, offset: int
@@ -1369,7 +1370,7 @@ class SourceNativeNamespaceABC(SourceNativeStorageABC):
         self.native_class_entry.capture.prologue.require_fresh_cell(
             value.name, value.operand_index, value.instruction_offset
         )
-        return SourceFreshCellCapture(self, value)
+        return SourceFreshCellCapture(entry=self, value=value)
 
     @property
     @abstractmethod
@@ -1562,7 +1563,7 @@ class SourceEmptyDictionaryCapture(EmptyDictionaryCreation):
         if (
             initial is not self.initial
             or self.execution.empty_dictionary_creation(
-                CompactFlowValue(self.context, self.use)
+                CompactFlowValue(context=self.context, use=self.use)
             )
             is not self
         ):
@@ -1622,7 +1623,7 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
         previous = None
         for element, input_use in zip(node.elts, use.value.inputs, strict=True):
             original = self.execution.source.value_operation(
-                CompactFlowValue(self.read.context, input_use)
+                CompactFlowValue(context=self.read.context, use=input_use)
             )
             if original.node is not element:
                 raise ValueError("Tuple input is not the original element production")
@@ -1989,7 +1990,7 @@ class SourceNativeExpressionABC(
         result = self.execution.call_result(context, call)
         result.require_closed()
         callee = self.execution.source.reference_reads_by_node[node.func]
-        SourceNativeOperandJoin(self, callee).require_join(value.callee)
+        SourceNativeOperandJoin(parent=self, read=callee).require_join(value.callee)
         arguments = call.arguments
         if any(
             argument.is_unpacked
@@ -2002,7 +2003,7 @@ class SourceNativeExpressionABC(
         )
         for argument, operand in zip(arguments.values, value.arguments, strict=True):
             SourceNativeOperandJoin(
-                self, CompactFlowValue(context, argument)
+                self, CompactFlowValue(context=context, use=argument)
             ).require_join(operand)
         return result
 
@@ -2051,7 +2052,7 @@ class SourceNativeExpressionABC(
             strict=True,
         ):
             SourceNativeOperandJoin(
-                self, CompactFlowValue(self.source_read.context, use)
+                self, CompactFlowValue(context=self.source_read.context, use=use)
             ).require_join(operand)
         return self.source_value
 
@@ -2066,7 +2067,7 @@ class SourceNativeExpressionABC(
         if read is None:
             raise ValueError("Native attribute has no original receiver read")
         (receiver,) = value.inputs
-        SourceNativeOperandJoin(self, read).require_join(receiver)
+        SourceNativeOperandJoin(parent=self, read=read).require_join(receiver)
         return self.source_value
 
     def _tuple_native_value_resolution(
@@ -2082,7 +2083,8 @@ class SourceNativeExpressionABC(
             raise ValueError("Native tuple has different original source operands")
         for use, operand in zip(inputs, value.inputs, strict=True):
             SourceNativeOperandJoin(
-                self, CompactFlowValue(self.source_read.context, use)
+                parent=self,
+                read=CompactFlowValue(context=self.source_read.context, use=use),
             ).require_join(operand)
         return source
 
@@ -2192,7 +2194,7 @@ class SourceDiscardReturn(SourceStackEffectReturnABC):
     def source_read(self) -> CompactFlowValue:
         self.operation
         use = self.result.destination.use.require_discarded_value(self.result.value_use)
-        return CompactFlowValue(self.native_frame_context, use)
+        return CompactFlowValue(context=self.native_frame_context, use=use)
 
     def native_completion_offset(self, prefix: AdmittedExecutionPrefixABC) -> int:
         self.require_event_available_in(prefix, self.result)
@@ -2216,7 +2218,7 @@ class SourceFunctionReturn(SourceEventReturnABC, SourceNativeExpressionABC):
         self.operation
         if self.returned.value_use is None:
             raise ValueError("Bare function return value remains unproved")
-        return CompactFlowValue(self.native_frame_context, self.returned.value_use)
+        return CompactFlowValue(context=self.native_frame_context, use=self.returned.value_use)
 
     @property
     def receipt(self) -> NativeReturn:
@@ -2259,7 +2261,7 @@ class SourceAssignmentValueABC(SourceNativeExpressionABC):
 
     @property
     def source_read(self) -> CompactFlowValue:
-        return CompactFlowValue(self.native_frame_context, self.binding.value_use)
+        return CompactFlowValue(context=self.native_frame_context, use=self.binding.value_use)
 
     @property
     def source_value(self) -> CapturedReferenceResolution:
@@ -2289,7 +2291,8 @@ class SourceItemStoreReturn(SourceStackEffectReturnABC, SourceAssignmentValueABC
             (target.index_use, key),
         ):
             SourceNativeOperandJoin(
-                self, CompactFlowValue(self.native_frame_context, use)
+                parent=self,
+                read=CompactFlowValue(context=self.native_frame_context, use=use),
             ).require_join(operand)
         return effect.instruction_offset
 
@@ -2413,7 +2416,7 @@ class SourceExecutionKernel(
         self.effects.source_operation(read.context, read.use)
         if not isinstance(read.use, CompactValueUse) or read.use.value is not value:
             raise ValueError("Tuple value does not belong to its original source read")
-        result = SourceTupleCapture(self.effects, read, pending)
+        result = SourceTupleCapture(execution=self.effects, read=read, pending=pending)
         try:
             result.require_closed()
         except ValueError as error:
@@ -2433,7 +2436,7 @@ class SourceExecutionKernel(
         ):
             raise ValueError("Compiler operand does not belong to its original read")
         try:
-            return SourceCompilerOperandRead(self.effects, read).result()
+            return SourceCompilerOperandRead(execution=self.effects, read=read).result()
         except ValueError as error:
             return OpenCapturedReference(
                 CapturedReferenceViolation.UNPROVED_BINDING, cause=error
@@ -2448,7 +2451,7 @@ class SourceExecutionKernel(
             raise ValueError(
                 "Compiler value does not belong to its original source read"
             )
-        result = SourceCompilerStoredCapture(self.effects, read)
+        result = SourceCompilerStoredCapture(execution=self.effects, read=read)
         try:
             result.require_closed()
         except ValueError as error:
@@ -2678,7 +2681,7 @@ class SourceCompletionResolver(
         self.execution.source.event_operation(result)
         if not isinstance(self.execution, SourceFunctionExecution):
             raise ValueError("Returned completion requires a function activation")
-        return SourceFunctionReturn(self.execution, result)
+        return SourceFunctionReturn(execution=self.execution, returned=result)
 
     def _discarded_result_completion(
         self, result: CompactEvaluatedResult
@@ -2689,7 +2692,7 @@ class SourceCompletionResolver(
         )
         if dispositions[0].event is not result:
             raise ValueError("Discard completion requires its original disposition")
-        return SourceDiscardReturn(self.execution, result)
+        return SourceDiscardReturn(execution=self.execution, result=result)
 
     def _deleted_binding_resolution(
         self,
@@ -2698,7 +2701,7 @@ class SourceCompletionResolver(
         binding: CompactMutation,
         pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> SourceInstalledReturnABC:
-        return SourceDeletionReturn(self.execution, binding)
+        return SourceDeletionReturn(execution=self.execution, binding=binding)
 
     def resolve(self, binding: CompactMutation) -> SourceCompletedReturnABC:
         operation = self.execution.source.event_operation(binding)
@@ -2720,7 +2723,7 @@ class SourceCompletionResolver(
     ) -> SourceCompletedReturnABC:
         if not isinstance(binding, CompactEvaluatedAssignment):
             raise ValueError("Item completion requires an evaluated source assignment")
-        return SourceItemStoreReturn(self.execution, binding)
+        return SourceItemStoreReturn(execution=self.execution, binding=binding)
 
     def _receiver_mutation_resolution(
         self,
@@ -2737,7 +2740,7 @@ class SourceCompletionResolver(
         binding: CompactEvaluatedAssignment,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> SourceInstalledReturnABC:
-        return SourceAssignmentStore(self.execution, binding)
+        return SourceAssignmentStore(execution=self.execution, binding=binding)
 
     def _definition_binding_resolution(
         self,
@@ -2776,12 +2779,12 @@ class SourceCompletionResolver(
     def _module_import_resolution(
         self, origin: ImportedNameOrigin, binding: CompactMutation
     ) -> SourceInstalledReturnABC:
-        return SourceModuleImportStore(self.execution, binding)
+        return SourceModuleImportStore(execution=self.execution, binding=binding)
 
     def _member_import_resolution(
         self, origin: ImportedNameOrigin, binding: CompactMutation
     ) -> SourceInstalledReturnABC:
-        return SourceMemberImportStore(self.execution, binding)
+        return SourceMemberImportStore(execution=self.execution, binding=binding)
 
     def _possible_binding_resolution(
         self,
@@ -2847,7 +2850,7 @@ class SourceClassBodyEntryABC(
         )
         if len(values) != 1:
             raise ValueError("Class annotation namespace has no unique original setup")
-        return SourceAnnotationNamespace(self, values[0])
+        return SourceAnnotationNamespace(entry=self, value=values[0])
 
     @property
     @abstractmethod
@@ -2869,7 +2872,7 @@ class SourceClassBodyEntryABC(
             self.context
         )
         tail = (
-            PreparedNamespaceTail(self, completion)
+            PreparedNamespaceTail(entry=self, completion=completion)
             if completion is not None
             else EntryOnlyNamespaceContinuation(self)
         )
@@ -2946,7 +2949,7 @@ class SourceClassBodyEntryABC(
         execution.definition_operation(node)
         operand = AstClassProjection.explicit_metaclass(node)
         if operand is None:
-            return SourceClassEntry(execution, node)
+            return SourceClassEntry(execution=execution, node=node)
         family = NativeSourceClassEntryABC.select_from_capture(
             execution.capture_value(operand)
         )
@@ -2966,7 +2969,7 @@ class SourceClassBodyEntryABC(
         return (
             self.created_result,
             *(
-                SourceClassDecoratorApplication(self, index)
+                SourceClassDecoratorApplication(creation=self, index=index)
                 for index in range(len(self.definition.target.decorator_uses))
             ),
         )
@@ -3128,7 +3131,7 @@ class SourceClassBodyEntryABC(
     def frame(self) -> InitialNativeFrame:
         _ = self.initial_entries
         self.require_preparation()
-        return InitialNativeFrame(self, self.globals, self.builtins)
+        return InitialNativeFrame(locals=self, globals=self.globals, builtins=self.builtins)
 
     def require_admitted(self, initial: InitialNativeIsland) -> None:
         if initial is not self.initial:
@@ -3144,12 +3147,12 @@ class SourceClassBodyEntryABC(
         self, position: CompactFlowPosition | None
     ) -> AdmittedExecutionPrefixABC:
         return ChildExecutionPrefix(
-            self.parent_prefix,
-            self.definition,
-            CapturedFlowPrefix(
+            parent=self.parent_prefix,
+            definition=self.definition,
+            child=CapturedFlowPrefix(
                 self.context, self.frame, position, kernel=self.execution.kernel
             ),
-        )
+               )
 
 
 @dataclass(frozen=True, eq=False)
@@ -3178,8 +3181,10 @@ class PreparedNamespaceContinuationABC(SourceNativeNamespaceABC):
     def names(self) -> frozenset[NativeDictionaryKey]:
         _ = self.completed
         source = NamespaceMemberInventory(
-            self.execution.kernel, self.entry, self.native_lookup_prefix
-        ).names
+            kernel=self.execution.kernel,
+            namespace=self.entry,
+            prefix=self.native_lookup_prefix,
+                 ).names
         return source | frozenset(binding.name for binding in self.native_bindings)
 
     def _require_native_production(self, value: NativeProducedValue) -> None:
@@ -3299,7 +3304,7 @@ class EntryOnlyNamespaceContinuation(PreparedNamespaceContinuationABC):
         _ = entry.final_evaluation
         prefix = entry.completion_prefix
         entry.execution.require_empty_interval(
-            SingleFlowPrefix(entry.context, prefix.endpoint.frame, None)
+            SingleFlowPrefix(context=entry.context, frame=prefix.endpoint.frame, position=None)
         )
         receipt = entry.execution.module.native_compilation.return_from(
             entry.capture.body
@@ -3333,10 +3338,10 @@ class SourceClassEntry(SourceClassBodyEntryABC):
         names = frozenset(hook.declaration.__name__ for hook in hooks)
         for ancestor in self.mro_type.declarations:
             actual = NamespaceMemberInventory(
-                self.execution.kernel,
-                ancestor,
-                ancestor.completion_prefix,
-            ).names
+                kernel=self.execution.kernel,
+                namespace=ancestor,
+                prefix=ancestor.completion_prefix,
+                     ).names
             unproved = names & actual
             if unproved:
                 raise ValueError(
@@ -3846,7 +3851,7 @@ class SourceExecutionABC(
 
     @cached_property
     def kernel(self) -> SourceExecutionKernel:
-        return SourceExecutionKernel(self.initial, self)
+        return SourceExecutionKernel(initial=self.initial, effects=self)
 
     @cached_property
     def _empty_dictionary_creations(
@@ -3867,8 +3872,9 @@ class SourceExecutionABC(
         operation = self.source.value_operation(read)
         if operation not in self._empty_dictionary_creations:
             self._empty_dictionary_creations[operation] = SourceEmptyDictionaryCapture(
-                self, operation
-            )
+                execution=self,
+                operation=operation,
+                                                          )
         return self._empty_dictionary_creations[operation]
 
     def class_entry(self, node: ast.ClassDef) -> SourceClassBodyEntryABC:
@@ -3893,8 +3899,11 @@ class SourceExecutionABC(
         context = self.context_for_owner(evaluation.owner)
         prefix = self.required_prefix(context, None)
         remainder = SingleFlowPrefix(
-            context, prefix.endpoint.frame, None, evaluation.exit
-        )
+            context=context,
+            frame=prefix.endpoint.frame,
+            position=None,
+            after=evaluation.exit,
+                    )
         self.require_empty_interval(remainder)
         return prefix
 
@@ -4070,7 +4079,7 @@ class SourceFunctionEntry(
     @cached_property
     def frame(self) -> InitialNativeFrame:
         _ = self.initial_entries
-        return InitialNativeFrame(self, self.globals, self.builtins)
+        return InitialNativeFrame(locals=self, globals=self.globals, builtins=self.builtins)
 
     def prefix(
         self, position: CompactFlowPosition | None, kernel: CapturedReferenceKernel
@@ -4153,7 +4162,7 @@ class SourceFunctionExecution(SourceExecutionABC, CompactBranchPredicateResolver
 
     @cached_property
     def initial_contents(self) -> CapturedEntryContents:
-        return CapturedEntryContents(self.kernel, self.entry)
+        return CapturedEntryContents(kernel=self.kernel, namespace=self.entry)
 
     @property
     def fast_local_bindings(self) -> tuple[NativeBindingTransfer, ...]:
@@ -4179,7 +4188,7 @@ class SourceFunctionExecution(SourceExecutionABC, CompactBranchPredicateResolver
     @cached_property
     def completed_locals(self) -> NamespaceMemberInventory:
         """Derive the local references released by this exact returning frame."""
-        return NamespaceMemberInventory(self.kernel, self.entry, self.completion_prefix)
+        return NamespaceMemberInventory(kernel=self.kernel, namespace=self.entry, prefix=self.completion_prefix)
 
     def require_frame_cleanup(self) -> None:
         """Prove final local decrements or their retention by the return value.

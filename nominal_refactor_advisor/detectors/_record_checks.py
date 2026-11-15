@@ -42,13 +42,13 @@ class RedundantTypeCheckDetector(SemanticProjectionDetector):
             projections_by_family, class_index=CompactClassFamilyIndex.require(context)
         )
         resolver = DeclaredAttributeContractResolver(
-            repository.class_index,
-            repository.class_reference_resolver,
-            {
+            class_index=repository.class_index,
+            class_resolver=repository.class_reference_resolver,
+            modules={
                 module.module_name: module.type_checks
                 for module in repository.semantic_projections
             },
-        )
+                   )
         findings = []
         for module in repository.semantic_projections:
             for check in module.type_checks.checks:

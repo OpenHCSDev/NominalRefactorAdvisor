@@ -89,7 +89,7 @@ class CarrierField:
         if isinstance(value, ast.Attribute) and value.attr == DECLARED_NAME:
             symbol = self.answered.class_symbol(file_path, value.value, parents)
             if symbol in self.members:
-                return CarriedMember(value.value, symbol)
+                return CarriedMember(expression=value.value, symbol=symbol)
         raise ValueError(
             f"{where} writes {ast.unparse(value)!r} to {self.answered.name!r}, not a "
             f"{self.family.qualname} member's declared_name"
@@ -155,7 +155,7 @@ class CarrierFieldBecomesMemberOperation(
             raise ValueError(f"{qualname!r} is not a field declared in {source_path!r}")
         carrier = CarrierField(
             snapshot,
-            AnsweredField(snapshot, source_class, declaration),
+            AnsweredField(snapshot=snapshot, source_class=source_class, method=declaration),
             ResolvedClassTarget.from_rewrite_target(snapshot, self.family),
         )
         carrier.optional  # the annotation must be text before anything is read

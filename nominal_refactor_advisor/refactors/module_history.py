@@ -91,7 +91,7 @@ class _HistoryModuleRedirect(WholeModuleNameRedirect):
         self, context: CodemodSelectorContext, *, excluded_paths: frozenset[str]
     ) -> tuple[NominalSourceEdit, ...]:
         source_name = self.source_module_name(context.module_import_graph)
-        for source, parsed in FilesReachingModule(context, source_name):
+        for source, parsed in FilesReachingModule(context=context, module_name=source_name):
             if source.file_path in excluded_paths:
                 continue
             for statement in parsed.fact(ModuleNodeIndex).import_froms():
@@ -178,8 +178,10 @@ class _RecordedModuleMove:
         return _HistoryModuleRedirect(
             source_path=self.before.file_path,
             destinations=_MovedProviderBindings(
-                names, self.bindings(self.after), self.after.file_path
-            ),
+                source_names=names,
+                destination_names=self.bindings(self.after),
+                destination=self.after.file_path,
+                         ),
             reader_path=self.after.file_path,
             reader_bindings=names,
             home=self.after.module_name,
@@ -235,11 +237,11 @@ class ReplayGitModuleImportsOperation(_CallerManifestScope, RepositorySourceRepr
 
     def recorded_moves(self, callers: tuple[ParsedModule, ...], metadata: tuple[str, ...] = ()) -> tuple[_RecordedModuleMove, ...]:
         repository = Repository(Path(self.provider_repository))
-        before = _GitPythonRevision(repository, self.source_revision)
-        after = _GitPythonRevision(repository, self.target_revision)
+        before = _GitPythonRevision(repository=repository, revision=self.source_revision)
+        after = _GitPythonRevision(repository=repository, revision=self.target_revision)
         caller_sources = (*metadata, *(module.source for module in callers))
         moves = tuple(
-            _RecordedModuleMove(before.module(old), after.module(new))
+            _RecordedModuleMove(before=before.module(old), after=after.module(new))
             for change in repository.changes(self.source_revision, self.target_revision)
             for old, new in change.moved()
             if repository.python(old) and repository.python(new)

@@ -213,9 +213,9 @@ class RepeatedPropertyAliasHookDetector(
         evidence = tuple(
             (
                 SourceLocation(
-                    hook_group.file_path,
-                    line,
-                    f"{class_name}.{hook_group.property_name}",
+                    file_path=hook_group.file_path,
+                    line=line,
+                    symbol=f"{class_name}.{hook_group.property_name}",
                 )
                 for class_name, line in zip(
                     hook_group.class_names, hook_group.line_numbers, strict=True
@@ -521,9 +521,9 @@ class ReflectiveSelfAttributeEscapeDetector(
             ),
             (
                 SourceLocation(
-                    reflective_candidate.file_path,
-                    reflective_candidate.line,
-                    f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
+                    file_path=reflective_candidate.file_path,
+                    line=reflective_candidate.line,
+                    symbol=f"{reflective_candidate.class_name}.{reflective_candidate.method_name}",
                 ),
             ),
             compression_certificate=self._reflective_self_attribute_compression_certificate(

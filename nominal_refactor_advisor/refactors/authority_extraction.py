@@ -182,10 +182,10 @@ class DeclareAuthorityOperation(AuthoritySourceOperation):
         source_path = authority_claim.file_path
         source = context.sources_by_file_path[source_path]
         insertion_line = ModuleImportInsertionPoint(
-            source,
-            source_path,
-            context.module_nodes_by_file_path[source_path],
-        ).line_number
+            source=source,
+            file_path=source_path,
+            module_node=context.module_nodes_by_file_path[source_path],
+                         ).line_number
         return (
             SourceInsertion(
                 file_path=source_path,

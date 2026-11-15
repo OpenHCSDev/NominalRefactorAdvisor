@@ -346,12 +346,12 @@ class OwnTypeTestDetector(
             if base in index.known_symbols
         )
         return DeclaredClassScope(
-            tuple(
+            module_names=tuple(
                 module.module_name
                 for module in TypeTestModuleFamily.modules_in(projections_by_family)
             ),
-            frozenset(symbol for edge in edges for symbol in edge),
-        )
+            family_class_symbols=frozenset(symbol for edge in edges for symbol in edge),
+               )
 
     restated = RestatedFact(
         fact="The test re-derives at the consumer which class the value is, a fact the class already is; every own class added later must find this site.",
@@ -458,7 +458,7 @@ class DeclaredRecords:
         owners: dict[frozenset[str], list[SourceLocation]] = defaultdict(list)
         for (file_path, class_name), found in sorted(names.items()):
             owners[frozenset(found)].append(
-                SourceLocation(file_path, first[(file_path, class_name)], class_name)
+                SourceLocation(file_path=file_path, line=first[(file_path, class_name)], symbol=class_name)
             )
         return cls({fields: tuple(found) for fields, found in owners.items()})
 
@@ -604,13 +604,13 @@ class ProbeOwnerQuery:
         """The type checker's owner for each undeclared receiver; it runs only when there is one."""
 
         if not self.spans:
-            return ProbeOwnerContext(self.classes, {}, self.typing)
+            return ProbeOwnerContext(classes=self.classes, typed={}, typing=self.typing)
         answers = TypeCheckerSession.started(sources).receiver_types(self.spans)
         return ProbeOwnerContext(
-            self.classes,
-            {span: answer.owner(self.classes) for span, answer in answers.items()},
-            self.typing,
-        )
+            classes=self.classes,
+            typed={span: answer.owner(self.classes) for span, answer in answers.items()},
+            typing=self.typing,
+               )
 
 
 class ForeignAbsenceProbeDetector(
@@ -716,7 +716,7 @@ class LegacyPathMarkerDetector(
         site = sites[0]
         kind, why = site.kind, site.why
         consumers = self.consumers(sites, context)
-        where = _listed(SourceLineReference(path, line).where for path, line in consumers)
+        where = _listed(SourceLineReference(file_path=path, line=line).where for path, line in consumers)
         still = (
             f"{len(consumers)} module(s) still use the identifier `{site.group}`: {where}."
             if consumers
@@ -730,7 +730,7 @@ class LegacyPathMarkerDetector(
         return (
             *super().evidence(sites, context),
             *(
-                SourceLocation(path, line, f"uses {sites[0].group}")
+                SourceLocation(file_path=path, line=line, symbol=f"uses {sites[0].group}")
                 for path, line in self.consumers(sites, context)[:EVIDENCED_CONSUMERS]
             ),
         )
@@ -815,7 +815,7 @@ class ForwardingFacadeDetector(
         return (
             facade.location,
             *(
-                SourceLocation(site.file_path, site.lineno, f"{site.symbol}.{site.member}")
+                SourceLocation(file_path=site.file_path, line=site.lineno, symbol=f"{site.symbol}.{site.member}")
                 for site in self.forwards(sites)
             ),
         )

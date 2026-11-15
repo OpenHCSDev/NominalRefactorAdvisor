@@ -71,7 +71,7 @@ class ScannedClasses:
         owner = self.by_symbol[qualified_name]
         where = (
             f"`{qualified_name}` "
-            f"({SourceLineReference(owner.file_path, owner.line).where})"
+            f"({SourceLineReference(file_path=owner.file_path, line=owner.line).where})"
         )
         for member in owner.direct_member_declarations:
             if member.name == field_name:
@@ -160,7 +160,7 @@ class InferredReceiverType(ReceiverType):
     def owner(self, classes: ScannedClasses) -> ProbeOwner:
         match self.classes:
             case (symbol,) if symbol in classes.by_symbol:
-                return TypeCheckerProbeOwner(symbol, self.spelled)
+                return TypeCheckerProbeOwner(qualified_name=symbol, inferred=self.spelled)
             case (_,):
                 return UnresolvedProbeOwner(
                     f"the type checker infers `{self.spelled}`, which is not a scanned class"
@@ -218,7 +218,7 @@ class DeclaredPathProbeOwner(ProbeOwner):
             case (symbol,):
                 return ResolvedProbeOwner(symbol)
             case ():
-                return UndeclaredProbeOwner(declared.why_no_class(), self.span)
+                return UndeclaredProbeOwner(reason=declared.why_no_class(), span=self.span)
             case symbols:
                 return DeclaredFamilyProbeOwner(symbols)
 
@@ -239,17 +239,18 @@ class ProbeOwnerResolver(ParsedModuleFact):
         return cls(
             parsed_module.file_path,
             ReceiverPathBuilder(
-                parsed_module.module_name,
-                parsed_module.module,
-                module_import_aliases(parsed_module),
-                parsed_module.syntax_index.parent_index,
+                module_name=parsed_module.module_name,
+                module=parsed_module.module,
+                aliases=module_import_aliases(parsed_module),
+                parents=parsed_module.syntax_index.parent_index,
             ),
         )
 
     def owner(self, receiver: ast.expr) -> DeclaredPathProbeOwner:
         return DeclaredPathProbeOwner(
-            self.builder.path_of(receiver), ReceiverSpan.of(self.file_path, receiver)
-        )
+            path=self.builder.path_of(receiver),
+            span=ReceiverSpan.of(self.file_path, receiver),
+               )
 
 
 __all__ = (

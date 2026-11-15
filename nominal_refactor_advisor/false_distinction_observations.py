@@ -340,8 +340,8 @@ class StatementArms(IdenticalArms, ABC):
         kept_start = geometry.required_node_offsets(kept[0])[0]
         kept_end = geometry.required_node_offsets(kept[-1])[1]
         if geometry.span_contains_comment(
-            SourceTextSpan(start, kept_start)
-        ) or geometry.span_contains_comment(SourceTextSpan(kept_end, end)):
+            SourceTextSpan(start_offset=start, end_offset=kept_start)
+        ) or geometry.span_contains_comment(SourceTextSpan(start_offset=kept_end, end_offset=end)):
             raise ValueError(f"Collapsing the branch at line {node.lineno} would drop a comment")
         literal_lines = geometry.literal_continuation_lines(node)
         if any(
@@ -493,7 +493,7 @@ class ConditionalExpressionArms(IdenticalArms):
     def replacement(self, geometry: SourceTextGeometry) -> SourceTextSpanReplacement:
         start, end = geometry.required_node_offsets(self.node)
         kept_start, kept_end = geometry.required_node_offsets(self.node.body)
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise ValueError(
                 f"Collapsing the conditional at line {self.node.lineno} would drop a comment"
             )
@@ -522,7 +522,7 @@ class FallThroughArms(IdenticalArms):
         start, end = geometry.line_span_offsets(node.lineno, node.end_lineno or node.lineno)
         if geometry.lines[node.lineno - 1][: node.col_offset].strip():
             raise ValueError(f"Branch at line {node.lineno} does not begin its own line")
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise ValueError(f"Deleting the branch at line {node.lineno} would drop a comment")
         if geometry.source[geometry.required_node_offsets(node)[1] : end].strip():
             raise ValueError(f"Branch at line {node.lineno} shares its last line")
@@ -614,7 +614,7 @@ class UndistinguishedTypeArms(FalseDistinction, ABC):
         if not geometry.lines[line - 1].lstrip().startswith("elif "):
             raise ValueError(f"The rung at line {line} is not written as `elif`")
         start, end = geometry.line_span_offsets(line, rung.body[-1].end_lineno or line)
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise ValueError(f"Deleting the rung at line {line} would drop a comment")
         return SourceTextSpanReplacement.from_offsets(
             start_offset=start, end_offset=end, replacement_source=""
@@ -649,11 +649,11 @@ class UndistinguishedTypeArms(FalseDistinction, ABC):
         if not distinct:
             return
         if distinct < len(rungs):
-            yield TypeArmsLikeElse(rungs, distinct)
+            yield TypeArmsLikeElse(rungs=rungs, first=distinct)
         for _body, group in groupby(enumerate(rungs[:distinct]), key=cls.body_of):
             indices = [index for index, _rung in group]
             if len(indices) > 1:
-                yield AdjacentTypeArms(rungs, indices[0], indices[-1])
+                yield AdjacentTypeArms(rungs=rungs, first=indices[0], last=indices[-1])
 
     @classmethod
     def in_scope(cls, scope: Scope) -> Iterator[UndistinguishedTypeArms]:
@@ -887,7 +887,7 @@ class SiblingTestModules(ParsedModuleSetFact):
         for root in map(Path, sorted(import_roots)):
             paths = tuple(
                 path
-                for path in PythonSourcePathDiscovery(root, policy).paths()
+                for path in PythonSourcePathDiscovery(root=root, source_policy=policy).paths()
                 if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
                 and path.resolve() not in held
             )
@@ -1302,30 +1302,30 @@ class MemberGroup(ABC):
                 ast.Tuple(elts=elements) | ast.List(elts=elements) | ast.Set(elts=elements),
                 ast.Compare(ops=[ast.In() | ast.NotIn()], comparators=[literal]),
             ) if literal is parent:
-                return GroupedMembers(tuple(cls.members_in(elements)), parent)
+                return GroupedMembers(members=tuple(cls.members_in(elements)), node=parent)
             case (ast.MatchValue(), ast.MatchOr(patterns=patterns)):
                 return GroupedMembers(
-                    tuple(
+                    members=tuple(
                         value
                         for pattern in patterns
                         for value in cls.members_in(
                             [pattern.value] if isinstance(pattern, ast.MatchValue) else []
                         )
                     ),
-                    grandparent,
-                )
+                    node=grandparent,
+                       )
             case (
                 ast.Compare(ops=[ast.Is()], comparators=[compared]),
                 ast.BoolOp(op=ast.Or(), values=values),
             ) if compared is member and cls.is_identity_chain(values):
                 return GroupedMembers(
-                    tuple(
+                    members=tuple(
                         comparator
                         for value in values
                         for comparator in cls.members_in(cast(ast.Compare, value).comparators)
                     ),
-                    grandparent,
-                )
+                    node=grandparent,
+                       )
         return LoneMember((member,))
 
     @staticmethod
@@ -1359,7 +1359,7 @@ class GroupedMembers(MemberGroup):
     node: ast.expr | ast.pattern
 
     def use(self, owner: str, member: ast.Attribute) -> EnumMemberUse:
-        return GroupedMemberUse(owner, member.attr, self.names(owner), member.lineno)
+        return GroupedMemberUse(owner=owner, member=member.attr, together=self.names(owner), line=member.lineno)
 
     def folded(
         self,
@@ -1371,7 +1371,7 @@ class GroupedMembers(MemberGroup):
         if folded.isdisjoint(self.names(owner)):
             return
         start, end = geometry.required_node_offsets(self.node)
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise ValueError(f"{file_path}:{self.node.lineno} folding would drop a comment")
         yield SourceTextSpanReplacement.from_offsets(
             start_offset=start,
@@ -1429,7 +1429,7 @@ class LoneMember(MemberGroup):
     """One member spelled outside any grouped test."""
 
     def use(self, owner: str, member: ast.Attribute) -> EnumMemberUse:
-        return LoneMemberUse(owner, member.attr, (member.attr,), member.lineno)
+        return LoneMemberUse(owner=owner, member=member.attr, together=(member.attr,), line=member.lineno)
 
     def folded(
         self,
@@ -1537,7 +1537,7 @@ def enum_uses(
         match node:
             case ast.Name(id=owner) | ast.Attribute(attr=owner) if owners(owner):
                 class_uses.append(
-                    EnumClassUse(owner, EnumUseKind.of(node, parents), node.lineno)
+                    EnumClassUse(owner=owner, kind=EnumUseKind.of(node, parents), line=node.lineno)
                 )
     return member_uses, class_uses, groups
 

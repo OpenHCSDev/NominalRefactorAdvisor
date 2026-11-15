@@ -81,7 +81,7 @@ class TargetAdjacentInsertionOperationABC(SourceReprovedOperation, ABC):
     ) -> tuple[PhysicalSourceEdit, ...]:
         _target_identifier, target, node = self.target_node_from_context(snapshot)
         source = snapshot.sources_by_file_path[target.file_path]
-        declaration = NamedDeclarationSourceAuthority(node, source)
+        declaration = NamedDeclarationSourceAuthority(node=node, source=source)
         insertion_line = self.insertion_line(declaration.declaration_line_span)
         source_lines = declaration.geometry.lines
         boundary = SourceInsertionBoundary.from_declaration_line(
@@ -145,10 +145,10 @@ class InsertAfterImportsOperation(SourcePayloadOperation):
         )
         source = context.sources_by_file_path[source_path]
         insertion_line = ModuleImportInsertionPoint(
-            source,
-            source_path,
-            context.module_nodes_by_file_path[source_path],
-        ).line_number
+            source=source,
+            file_path=source_path,
+            module_node=context.module_nodes_by_file_path[source_path],
+                         ).line_number
         return (
             SourceInsertion(
                 file_path=source_path,

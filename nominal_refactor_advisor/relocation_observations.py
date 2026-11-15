@@ -99,7 +99,7 @@ class ModuleDefinitions(ParsedModuleFact):
     def derive(cls, parsed_module: ParsedModule) -> Self:
         return cls(
             tuple(
-                ScopedDefinition(qualname, node)
+                ScopedDefinition(qualname=qualname, node=node)
                 for qualname, node in parsed_module.syntax_index.declarations(
                     FunctionDefinition.members
                 )
@@ -274,13 +274,13 @@ class ClassBodyReading:
             case ast.Assign(
                 targets=[ast.Name(id=name)], value=ast.Constant(value=bool() as value)
             ) if not name.startswith("__"):
-                self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
+                self.answer(ConstantAnswer(member=name, lineno=statement.lineno, value=repr(value)))
             case ast.AnnAssign(
                 target=ast.Name(id=name),
                 annotation=annotation,
                 value=ast.Constant(value=bool() | str() as value),
             ) if not name.startswith("__") and "ClassVar" in ast.unparse(annotation):
-                self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
+                self.answer(ConstantAnswer(member=name, lineno=statement.lineno, value=repr(value)))
             case ast.AnnAssign(target=ast.Name(id=name), value=ast.expr()) | ast.Assign(
                 targets=[ast.Name(id=name)]
             ):
@@ -303,12 +303,12 @@ class ClassBodyReading:
             case [ast.Return(value=ast.Constant(value=bool() | str() as value))] if (
                 not name.startswith("__") and self.takes_only_receiver(statement)
             ):
-                self.answer(ConstantAnswer(name, statement.lineno, repr(value)))
+                self.answer(ConstantAnswer(member=name, lineno=statement.lineno, value=repr(value)))
                 return
             case [ast.Return(value=ast.Call(func=ast.Name(id=called)))] if (
                 called in parameters and len(parameters) >= 2
             ):
-                self.answer(FoldDeclaration(name, statement.lineno, called))
+                self.answer(FoldDeclaration(member=name, lineno=statement.lineno, called_parameter=called))
         self.computed.add(name)
 
     def read_own_state(self, name: str, statement: ast.FunctionDef) -> None:
@@ -323,12 +323,12 @@ class ClassBodyReading:
             case [first, *_]:
                 self.answer(
                     OwnStateAnswer(
-                        name,
-                        statement.lineno,
-                        "property"
+                        member=name,
+                        lineno=statement.lineno,
+                        accessed="property"
                         if self.bindings.decorated_by(statement, PROPERTY_DECORATORS)
                         else "method",
-                        first,
+                        probe=first,
                     )
                 )
 
@@ -493,8 +493,8 @@ class ClassShapeFamily(ShapeFamily[ClassShapesModule]):
     def collect(cls, parsed_module: ParsedModule) -> list[ClassShapesModule]:
         return [
             ClassShapesModule(
-                parsed_module.module_name,
-                tuple(
+                module_name=parsed_module.module_name,
+                classes=tuple(
                     ClassShape.of(parsed_module.module_name, reading)
                     for reading in parsed_module.fact(ModuleClassReadings).classes
                 ),
@@ -569,12 +569,12 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                 for read, member, called in cls.tested_reads(test):
                     reads.append(
                         BranchRead(
-                            parsed_module.file_path,
-                            read.lineno,
-                            index.evaluating_symbol(node_index),
-                            member,
-                            cls.receiver(read, resolver),
-                            called,
+                            file_path=parsed_module.file_path,
+                            lineno=read.lineno,
+                            symbol=index.evaluating_symbol(node_index),
+                            member=member,
+                            receiver=cls.receiver(read, resolver),
+                            called=called,
                         )
                     )
             match node:
@@ -586,16 +586,16 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
                     if lambdas >= 2:
                         calls.append(
                             LambdaCall(
-                                parsed_module.file_path,
-                                node.lineno,
-                                index.evaluating_symbol(node_index),
-                                member,
-                                cls.receiver(node, resolver),
-                                lambdas,
+                                file_path=parsed_module.file_path,
+                                lineno=node.lineno,
+                                symbol=index.evaluating_symbol(node_index),
+                                member=member,
+                                receiver=cls.receiver(node, resolver),
+                                lambdas=lambdas,
                             )
                         )
         return [
-            ConsumerShapesModule(parsed_module.module_name, tuple(reads), tuple(calls))
+            ConsumerShapesModule(module_name=parsed_module.module_name, branch_reads=tuple(reads), lambda_calls=tuple(calls))
         ]
 
     @staticmethod
@@ -683,12 +683,12 @@ class ZeroOneTupleSiteFamily(RestatingSiteFamily[RestatingSiteModule[RestatingSi
             if definition.absence_tuple_arities != {0, 1}:
                 continue
             yield RestatingSite(
-                parsed_module.file_path,
-                definition.node.lineno,
-                definition.qualname,
-                definition.node.name,
-                (),
-            )
+                file_path=parsed_module.file_path,
+                lineno=definition.node.lineno,
+                symbol=definition.qualname,
+                group=definition.node.name,
+                detail=(),
+                  )
 
 
 class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule[ThreadedAbsenceSite]]):

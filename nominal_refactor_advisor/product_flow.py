@@ -453,7 +453,7 @@ class CompactBindingOperationABC(ABC):
         binding: CompactMutation,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> frozenset[CompactBindingVisit[CompactFlowContext]]:
-        return pending | {CompactBindingVisit(context, binding)}
+        return pending | {CompactBindingVisit(context=context, mutation=binding)}
 
     def validate_import_origin(self, origin: ImportedNameOrigin | None) -> None:
         if origin is not None:
@@ -880,7 +880,7 @@ class CompactCallArguments(Generic[CallValueT], DataclassGraphValue):
                 for argument in node.args
             ),
             keywords=tuple(
-                CompactKeywordArgument(keyword.arg, project_value(keyword.value))
+                CompactKeywordArgument(name=keyword.arg, value=project_value(keyword.value))
                 for keyword in node.keywords
             ),
         )
@@ -1061,7 +1061,8 @@ class LexicalCallTargetReference(CompactCallTargetReference, ABC):
         return resolver._lexical_function_target_resolution(
             context,
             LexicalValueReference(
-                reference.root_name, (*reference.attribute_path, *attribute_path)
+                root_name=reference.root_name,
+                attribute_path=(*reference.attribute_path, *attribute_path),
             ),
             position,
             pending_bindings,
@@ -1106,7 +1107,7 @@ class CurrentClassCallTargetReference(CompactCallTargetReference, ABC):
     @property
     def lexical_reference(self) -> LexicalValueReference | None:
         path = self.lexical_attribute_path
-        return None if path is None else LexicalValueReference(self.receiver_name, path)
+        return None if path is None else LexicalValueReference(root_name=self.receiver_name, attribute_path=path)
 
 
 @dataclass(frozen=True)
@@ -1604,9 +1605,9 @@ class CompactAttributeTarget(CompactReceiverTarget):
             None
             if receiver is None
             else LexicalValueReference(
-                receiver.root_name,
-                (*receiver.attribute_path, self.attribute_name),
-            )
+                root_name=receiver.root_name,
+                attribute_path=(*receiver.attribute_path, self.attribute_name),
+                 )
         )
 
 
@@ -1864,7 +1865,7 @@ class CompactBindingResolverABC(CompactBindingValueResolverABC[TargetResolutionT
         use_position: CompactFlowPosition | None,
         pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> TargetResolutionT:
-        visit = CompactBindingVisit(context, binding)
+        visit = CompactBindingVisit(context=context, mutation=binding)
         if visit in pending_bindings:
             return self._cyclic_binding_resolution(pending_bindings)
         operation = binding.kind.binding_operation
@@ -1965,16 +1966,18 @@ class ExactCompactBindingMutation(CompactBindingSource):
         possible_origins = flow._possible_alias_origins(
             reference, flow.mutations_by_root_name[reference.root_name]
         )
-        visit = CompactBindingVisit(flow, mutation)
+        visit = CompactBindingVisit(context=flow, mutation=mutation)
         if visit in visited_bindings:
             return OpenCompactValueOrigin(
-                possible_origins, CompactValueOriginViolation.CYCLIC_ALIAS
-            )
+                candidates=possible_origins,
+                violation=CompactValueOriginViolation.CYCLIC_ALIAS,
+                   )
         alias = flow.exact_alias_for(mutation)
         if alias is None:
             return OpenCompactValueOrigin(
-                possible_origins, CompactValueOriginViolation.INTERVENING_REBINDING
-            )
+                candidates=possible_origins,
+                violation=CompactValueOriginViolation.INTERVENING_REBINDING,
+                   )
         source_resolution = flow._value_origin_for(
             alias.source, alias.source_position, visited_bindings | {visit}
         )
@@ -2020,11 +2023,11 @@ class OpenCompactBindingMutation(UnresolvedCompactBindingSource):
         visited_bindings: frozenset[CompactBindingVisit[CompactFunctionFlow]],
     ) -> CompactValueOriginResolution:
         return OpenCompactValueOrigin(
-            flow._possible_alias_origins(
+            candidates=flow._possible_alias_origins(
                 reference, flow.mutations_by_root_name[reference.root_name]
             ),
-            CompactValueOriginViolation.AMBIGUOUS_BINDING,
-        )
+            violation=CompactValueOriginViolation.AMBIGUOUS_BINDING,
+               )
 
 
 @dataclass(frozen=True)
@@ -2112,8 +2115,8 @@ class ExactCompactValueOrigin(CompactValueOriginResolution):
     ) -> ExactCompactValueOrigin:
         return type(self)(
             LexicalValueReference(
-                self.origin.root_name,
-                (*self.origin.attribute_path, *suffix),
+                root_name=self.origin.root_name,
+                attribute_path=(*self.origin.attribute_path, *suffix),
             ),
             (*self.alias_chain, binding_mutation),
         )
@@ -2146,8 +2149,8 @@ class OpenCompactValueOrigin(CompactValueOriginResolution):
             tuple(
                 dict.fromkeys(
                     LexicalValueReference(
-                        candidate.root_name,
-                        (*candidate.attribute_path, *suffix),
+                        root_name=candidate.root_name,
+                        attribute_path=(*candidate.attribute_path, *suffix),
                     )
                     for candidate in self.candidates
                 )
@@ -2177,9 +2180,9 @@ class CompactExactValueAlias:
     def source_for(self, reference: LexicalValueReference) -> LexicalValueReference:
         """Project lexical origin syntax without replacing nominal lookup evidence."""
         return LexicalValueReference(
-            self.source.root_name,
-            (*self.source.attribute_path, *reference.attribute_path),
-        )
+            root_name=self.source.root_name,
+            attribute_path=(*self.source.attribute_path, *reference.attribute_path),
+               )
 
 
 class CompactValueResolverABC(
@@ -2331,8 +2334,9 @@ class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
         reference = self.lexical_reference
         if reference is None:
             return OpenCompactValueOrigin(
-                (), CompactValueOriginViolation.OPAQUE_EXPRESSION
-            )
+                candidates=(),
+                violation=CompactValueOriginViolation.OPAQUE_EXPRESSION,
+                   )
         return flow.value_origin_for(reference, self.position)
 
 
@@ -3485,7 +3489,7 @@ class CompactProductFlowModuleProjection(StoredDataclassState, CompactModuleIden
     def value_captures_by_identity(self) -> dict[int, CompactFlowValue]:
         return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
             (
-                CompactFlowValue(context, value)
+                CompactFlowValue(context=context, use=value)
                 for context in self.flow_contexts
                 for value in context.flow.graph_nodes_by_identity.values()
                 if isinstance(value, CompactValueUse)
@@ -3519,7 +3523,7 @@ class CompactProductFlowModuleProjection(StoredDataclassState, CompactModuleIden
         """Only uniquely retained source reads; computed values are not inferred."""
         return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
             (
-                CompactFlowRead(context, use)
+                CompactFlowRead(context=context, use=use)
                 for context in self.flow_contexts
                 for use in context.flow.reference_uses
             ),
@@ -3535,7 +3539,7 @@ class CompactProductFlowModuleProjection(StoredDataclassState, CompactModuleIden
     @cached_property
     def flow_contexts(self) -> tuple[CompactFlowContext, ...]:
         return tuple(
-            CompactFlowContext(self.module_name, self.file_path, flow)
+            CompactFlowContext(module_name=self.module_name, file_path=self.file_path, flow=flow)
             for flow in self.flows
         )
 
@@ -3612,8 +3616,8 @@ class _DeclarationCollector(ast.NodeVisitor):
             _ClassContext(
                 node,
                 CompactClassDeclaration(
-                    qualname,
-                    self.module.native_compilation.class_capture_for(
+                    qualname=qualname,
+                    capture=self.module.native_compilation.class_capture_for(
                         SourceByteSpan.require_node(node)
                     ),
                 ),
@@ -3651,7 +3655,7 @@ class _DeclarationCollector(ast.NodeVisitor):
             for decorator in node.decorator_list
         )
         declaration = CompactFunctionDeclaration(
-            identity=CompactFunctionIdentity(self.module.module_name, qualname),
+            identity=CompactFunctionIdentity(module_name=self.module.module_name, qualname=qualname),
             execution=self.module.native_compilation.execution_for(
                 SourceByteSpan.require_node(node)
             ),
@@ -3702,15 +3706,15 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
 
     def visit_Attribute(self, node: ast.Attribute) -> CompactAttributeTarget:
         return CompactAttributeTarget(
-            self.flow._capture_value(node.value),
-            node.attr,
-        )
+            receiver_use=self.flow._capture_value(node.value),
+            attribute_name=node.attr,
+               )
 
     def visit_Subscript(self, node: ast.Subscript) -> CompactItemTarget:
         return CompactItemTarget(
-            self.flow._capture_value(node.value),
-            self.flow._capture_value(node.slice),
-        )
+            receiver_use=self.flow._capture_value(node.value),
+            index_use=self.flow._capture_value(node.slice),
+               )
 
 
 SourceFlowEvent: TypeAlias = (
@@ -4018,7 +4022,7 @@ class _ClassHeaderCaptureProjection(NativeClassCaptureResolverABC[None]):
         # evaluating bases. Generic wrappers preserve that source phase order,
         # but their actual frame remains the native site's unresolved origin.
         for site in (capture.builder, capture.creation):
-            event = CompactNativeCapture(site, self.collector._position())
+            event = CompactNativeCapture(site=site, position=self.collector._position())
             self.collector.native_captures.append(event)
             self.collector._record_operation(self.node, event)
 
@@ -4104,11 +4108,11 @@ class _CompactFlowCollector(
     def _cursor_position(self) -> CompactFlowPosition:
         """Snapshot the shared event cursor without inventing a source event."""
         return CompactFlowPosition(
-            self.branch_path,
-            self.statement_index,
-            self.event_index,
-            self.evaluation_path,
-        )
+            branch_path=self.branch_path,
+            statement_index=self.statement_index,
+            event_index=self.event_index,
+            evaluation_path=self.evaluation_path,
+               )
 
     def _record_operation(
         self, node: SourcePositionedNode, event: SourceFlowEvent
@@ -4123,7 +4127,7 @@ class _CompactFlowCollector(
             for member, expression in enumerate(roots):
                 self.evaluation_path = (
                     *parent_path,
-                    CompactEvaluationBranch(parent_slot, member),
+                    CompactEvaluationBranch(parent_event_index=parent_slot, member_index=member),
                 )
                 self.event_index = 0
                 self.visit_annotation(expression)
@@ -4149,11 +4153,11 @@ class _CompactFlowCollector(
         statement: SourcePositionedNode,
     ) -> CompactEvaluatedResult:
         result = CompactEvaluatedResult(
-            destination,
-            value_use,
-            self._position(),
-            SourceByteSpan.require_node(statement),
-        )
+            destination=destination,
+            value_use=value_use,
+            position=self._position(),
+            source_span=SourceByteSpan.require_node(statement),
+                 )
         self.evaluated_results.append(result)
         self._record_operation(statement, result)
         return result
@@ -4196,7 +4200,7 @@ class _CompactFlowCollector(
         value = self.visit(expression)
         if value is None:
             value = CompactValueExpression.project(expression)
-        use = CompactValueUse(value, self._position())
+        use = CompactValueUse(value=value, position=self._position())
         self._record_operation(expression, use)
         return use
 
@@ -4280,10 +4284,10 @@ class _CompactFlowCollector(
         self.branch_path = (
             *saved_path,
             CompactControlBranch(
-                self.statement_index,
-                kind,
-                alternative_index,
-                predicate_use,
+                parent_statement_index=self.statement_index,
+                kind=kind,
+                alternative_index=alternative_index,
+                predicate_use=predicate_use,
             ),
         )
         self._collect_statements(statements)
@@ -4331,14 +4335,12 @@ class _CompactFlowCollector(
         if reference is None and isinstance(expression, ast.Attribute):
             receiver = expression.value
             return ReceiverAttributeCallTargetReference(
-                expression.attr,
-                (
-                    self._call_target(receiver.func)
+                attribute_name=expression.attr,
+                receiver_call=self._call_target(receiver.func)
                     if isinstance(receiver, ast.Call)
-                    else None
-                ),
-                receiver.lineno,
-            )
+                    else None,
+                receiver_line=receiver.lineno,
+                   )
         if reference is None:
             return DynamicCallTargetReference()
         if (
@@ -4348,10 +4350,10 @@ class _CompactFlowCollector(
             and len(reference.attribute_path) == 1
         ):
             return CurrentClassMethodReference(
-                self.current_class_receiver_name,
-                self.current_class_qualname,
-                reference.terminal_name,
-            )
+                receiver_name=self.current_class_receiver_name,
+                owner_class_qualname=self.current_class_qualname,
+                method_name=reference.terminal_name,
+                   )
         return QualifiedCallTargetReference(reference)
 
     def _callable_reference_use(self, node: ast.expr) -> CompactCallableReferenceUse:
@@ -4413,13 +4415,13 @@ class _CompactFlowCollector(
         )
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> None:
-        StatementValue.of(node).answer(_AnnotatedAssignmentFlow(self, node))
+        StatementValue.of(node).answer(_AnnotatedAssignmentFlow(collector=self, statement=node))
         self.owner.kind.visit_assignment_annotation(self, node, self.annotation_mode)
 
     def _capture_compiler_operand(
         self, node: ast.AnnAssign, role: NativeItemStoreOperand
     ) -> CompactCompilerOperandUse:
-        use = CompactCompilerOperandUse(CompilerOperandValue(role), self._position())
+        use = CompactCompilerOperandUse(value=CompilerOperandValue(role), position=self._position())
         self._record_operation(node, use)
         return use
 
@@ -4431,7 +4433,7 @@ class _CompactFlowCollector(
         receiver = self._capture_compiler_operand(node, NativeItemStoreOperand.RECEIVER)
         key = self._capture_compiler_operand(node, NativeItemStoreOperand.KEY)
         self._record_mutation(
-            CompactVariableAnnotationTarget(receiver, key, node.target.id),
+            CompactVariableAnnotationTarget(receiver_use=receiver, index_use=key, annotation_name=node.target.id),
             node,
             result=result,
         )
@@ -4487,8 +4489,8 @@ class _CompactFlowCollector(
     def visit_Expr(self, node: ast.Expr) -> None:
         destination = (
             CompactValueDestination(
-                CompactValueDestinationKind.BOUND,
-                LexicalValueReference(
+                use=CompactValueDestinationKind.BOUND,
+                binding=LexicalValueReference(
                     CPythonClassConstructionField.DOCUMENTATION.value
                 ),
             )
@@ -4584,10 +4586,10 @@ class _CompactFlowCollector(
     ) -> None:
         self._record_mutation(
             CompactDefinitionTarget(
-                self.definition_owners[node],
-                decorator_uses,
-                tuple(self.definition_input_uses[input_start:]),
-                self._position(),
+                owner=self.definition_owners[node],
+                decorator_uses=decorator_uses,
+                input_uses=tuple(self.definition_input_uses[input_start:]),
+                header_position=self._position(),
             ),
             node,
             CompactMutationKind.DEFINITION,
@@ -4616,7 +4618,7 @@ class _CompactFlowCollector(
         input_start = len(self.definition_input_uses)
         decorator_uses = self._capture_decorators(node)
         declaration = cast(CompactClassDeclaration, self.definition_owners[node])
-        declaration.capture.resolve(_ClassHeaderCaptureProjection(self, node))
+        declaration.capture.resolve(_ClassHeaderCaptureProjection(collector=self, node=node))
         for base in node.bases:
             self._capture_definition_input(base)
         for keyword in node.keywords:
@@ -4744,14 +4746,14 @@ class _SourceFlowCollector(_CompactFlowCollector):
         entry = self._cursor_position()
         result = super().visit(node)
         self.source_evaluations.append(
-            SourceFlowEvaluation(node, self.owner, entry, self._cursor_position())
+            SourceFlowEvaluation(node=node, owner=self.owner, entry=entry, exit=self._cursor_position())
         )
         return result
 
     def _record_operation(
         self, node: SourcePositionedNode, event: SourceFlowEvent
     ) -> None:
-        self.source_operations.append(SourceFlowOperation(node, self.owner, event))
+        self.source_operations.append(SourceFlowOperation(node=node, owner=self.owner, event=event))
 
 
 def _unique_strings(values: tuple[str, ...]) -> tuple[str, ...]:
@@ -4816,7 +4818,7 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
         collectors = [
             (
                 self.collector_type(
-                    owner=CompactNamespaceFlowOwner(Module, ""),
+                    owner=CompactNamespaceFlowOwner(kind=Module, qualname=""),
                     definition_owners=definition_owners,
                     module_identity=parsed_module.module_path_identity,
                     annotation_mode=annotation_mode,
@@ -4861,7 +4863,7 @@ def compact_product_flow_projection(
     parsed_module: ParsedModule,
 ) -> CompactProductFlowModuleProjection:
     """Project one parsed module into AST-free closed-flow evidence."""
-    return _ProductFlowCollection(parsed_module, _CompactFlowCollector).projection
+    return _ProductFlowCollection(parsed_module=parsed_module, collector_type=_CompactFlowCollector).projection
 
 
 def compact_function_flow_projection(
@@ -4869,7 +4871,7 @@ def compact_function_flow_projection(
     source_span: SourceByteSpan,
 ) -> CompactFunctionFlow:
     """Project one exact function without collecting unrelated module bodies."""
-    return _ProductFlowCollection(parsed_module, _CompactFlowCollector).function_flow(
+    return _ProductFlowCollection(parsed_module=parsed_module, collector_type=_CompactFlowCollector).function_flow(
         source_span
     )
 
@@ -4882,22 +4884,22 @@ def source_product_flow_projection(
     This is observation only. The source node-local effect authorities determine
     which intervals and operations are admitted; collection grants no safety.
     """
-    collection = _ProductFlowCollection(parsed_module, _SourceFlowCollector)
+    collection = _ProductFlowCollection(parsed_module=parsed_module, collector_type=_SourceFlowCollector)
     compact = collection.projection
     return SourceProductFlowProjection(
-        collection.parsed_module,
-        compact,
-        tuple(
+        module=collection.parsed_module,
+        compact=compact,
+        evaluations=tuple(
             site
             for collector, _ in collection.collectors
             for site in collector.source_evaluations
         ),
-        tuple(
+        operations=tuple(
             site
             for collector, _ in collection.collectors
             for site in collector.source_operations
         ),
-    )
+           )
 
 
 class CompactProductFlowModuleProjectionFamily(

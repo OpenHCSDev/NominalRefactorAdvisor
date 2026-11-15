@@ -405,7 +405,7 @@ class CodemodTargetSourceRecord(DataclassJsonReport):
         return cls(
             target=target,
             source="".join(
-                SourceTargetEditor(context.sources_by_file_path, target).target_lines
+                SourceTargetEditor(sources=context.sources_by_file_path, target=target).target_lines
             ),
         )
 

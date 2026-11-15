@@ -339,7 +339,7 @@ class NativePythonFunctionSource:
         ):
             raise ValueError("Native function code changed during source capture")
         _ = compilation.function_source_span(function)
-        return NativePythonFunctionSource(function, compilation)
+        return NativePythonFunctionSource(function=function, compilation=compilation)
 
     @property
     def definition(self) -> ast.FunctionDef | ast.AsyncFunctionDef:
@@ -503,8 +503,10 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
             raise ValueError("MRO registry mapping has non-native protocol hooks")
         namespace.require_dictionary_contents_current(self.environment.kernel.initial)
         inventory = NamespaceMemberInventory(
-            self.environment.kernel, namespace, self.activation_prefix
-        )
+            kernel=self.environment.kernel,
+            namespace=namespace,
+            prefix=self.activation_prefix,
+                    )
         # Validate all resident key protocols before membership/subscription.
         # Native dictionary equality includes boolean/integer aliases, while
         # admitted static classes compare by identity. The actual MRO orders
@@ -860,10 +862,10 @@ class NativeDataclassDefinitionApplicationABC(
         environment = self.application.environment
         namespace = environment.initial.namespace_for_storage(vars(dataclasses))
         value = NamespaceMemberInventory(
-            environment.kernel,
-            namespace,
-            self.application.application_prefix,
-        ).require_member(self.processor_declaration.declaration.__name__)
+            kernel=environment.kernel,
+            namespace=namespace,
+            prefix=self.application.application_prefix,
+                ).require_member(self.processor_declaration.declaration.__name__)
         value.require_native_identity(self.processor_declaration)
 
     def require_factory_activation(self) -> None:
@@ -932,7 +934,7 @@ class NativeDataclassFactoryCall(NativeTypeCapture, NativeCallAuthority):
     def definition_application_authority(
         self, application: SourceDefinitionApplicationAuthorityABC
     ) -> NativeDefinitionApplicationAuthorityABC:
-        return NativeDataclassFactoryDefinitionApplication(application, self)
+        return NativeDataclassFactoryDefinitionApplication(application=application, factory=self)
 
     def require_closed(self) -> None:
         with ScanCache.scope():

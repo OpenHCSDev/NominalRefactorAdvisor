@@ -111,7 +111,7 @@ class SourceRewriteAuthority:
 
     @cached_property
     def fit(self) -> RewrittenLineFit:
-        return RewrittenLineFit(self.geometry, self.line_length)
+        return RewrittenLineFit(geometry=self.geometry, line_length=self.line_length)
 
 
 @dataclass(frozen=True)
@@ -209,7 +209,7 @@ class ComprehensionFilterSite(FilterSiteABC):
             is None
         ):
             raise ValueError("Comprehension filter layout is not a bare `if` clause")
-        if geometry.span_contains_comment(SourceTextSpan(iterable_end, condition_end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=iterable_end, end_offset=condition_end)):
             raise ValueError("Comprehension filter rewrite would discard a comment")
         return (self.within_replacement(fit, family_name, condition_end),)
 
@@ -255,8 +255,8 @@ class ContinueFilterSite(FilterSiteABC):
             raise ValueError("Loop filter rewrite would discard a comment")
         deleted = geometry.statement_deletion_span(
             SourceLineSpan(
-                self.statement.lineno,
-                self.statement.end_lineno or self.statement.lineno,
+                start_line=self.statement.lineno,
+                end_line=self.statement.end_lineno or self.statement.lineno,
             )
         )
         start_offset, end_offset = geometry.line_span_offsets(

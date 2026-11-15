@@ -254,7 +254,7 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
             line=line,
             end_line=end_line,
             source_hash=CodemodSourceRevision.hash_source(
-                SourceLineSpan(line, end_line).source_from(source)
+                SourceLineSpan(start_line=line, end_line=end_line).source_from(source)
             ),
         )
 
@@ -283,7 +283,7 @@ class SourceRewriteContributor(SourceEditOrigin, CodemodPayloadRecord):
     def require_source(self, sources_by_file_path: Mapping[str, str]) -> None:
         source = sources_by_file_path.get(self.file_path)
         if source is None or self.source_hash != CodemodSourceRevision.hash_source(
-            SourceLineSpan(self.line, self.end_line).source_from(source)
+            SourceLineSpan(start_line=self.line, end_line=self.end_line).source_from(source)
         ):
             raise CodemodSourceRevisionError(
                 "Compiled source rewrite contributor no longer matches "
@@ -633,14 +633,14 @@ class SourceSpanEdit(PhysicalSourceEdit, ABC):
         if not replacement_lines:
             return SourceSpanDeletion(
                 file_path=file_path,
-                span=SourceLineSpan(start_line, end_line),
+                span=SourceLineSpan(start_line=start_line, end_line=end_line),
                 rationale=rationale,
                 contributors=contributors,
                 origins=origins,
             )
         return SourceSpanReplacement(
             file_path=file_path,
-            span=SourceLineSpan(start_line, end_line),
+            span=SourceLineSpan(start_line=start_line, end_line=end_line),
             replacement_lines=replacement_lines,
             rationale=rationale,
             contributors=contributors,
@@ -762,8 +762,9 @@ class SourceSpanDeletion(WindowCoalescedSourceEdit, SourceSpanEdit):
             merged = replace(
                 merged,
                 span=SourceLineSpan(
-                    merged.start_line, max(merged.end_line, peer.end_line)
-                ),
+                    start_line=merged.start_line,
+                    end_line=max(merged.end_line, peer.end_line),
+                     ),
             ).with_evidence_from((merged, peer))
         return merged
 
@@ -808,15 +809,15 @@ class SourceSpanDeletion(WindowCoalescedSourceEdit, SourceSpanEdit):
                 context.sources_by_file_path[target_digest.file_path]
             ).node_line_span(
                 SourceNodeSpan(
-                    target_node,
-                    Include,
+                    node=target_node,
+                    decorator_policy=Include,
                 )
             )
             if isinstance(target_node, ast.stmt)
             else SourceLineSpan(
-                target_digest.line,
-                target_digest.end_line,
-            )
+                start_line=target_digest.line,
+                end_line=target_digest.end_line,
+                 )
         )
 
     @classmethod
@@ -869,8 +870,8 @@ class SourceSpanDeletion(WindowCoalescedSourceEdit, SourceSpanEdit):
             source=source,
             statement_span=SourceTextGeometry(source).node_line_span(
                 SourceNodeSpan(
-                    statement,
-                    Include,
+                    node=statement,
+                    decorator_policy=Include,
                 )
             ),
             rationale=rationale,
@@ -908,7 +909,7 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
 
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         offset = geometry.line_anchor_offset(self.insertion_line)
-        return SourceTextSpan(offset, offset)
+        return SourceTextSpan(start_offset=offset, end_offset=offset)
 
     @property
     def coalescence_key(self) -> Hashable:
@@ -1387,8 +1388,8 @@ class SourceTextMutation(WindowCoalescedSourceEdit, KeyedSourceEdit):
         """Bind actual nominal peer groups to the source revision they edit."""
         return tuple(
             ExactSourceEditResolution(
-                group,
-                SourceTextGeometry(
+                mutations=group,
+                geometry=SourceTextGeometry(
                     context.sources_by_file_path[group[0].revision.file_path]
                 ),
             )
@@ -1454,7 +1455,7 @@ class ExactSourceEditResolution:
     @cached_property
     def windows(self) -> tuple[ExactSourceWindow, ...]:
         return tuple(
-            ExactSourceWindow(self, index) for index in range(len(self.projections))
+            ExactSourceWindow(resolution=self, projection_index=index) for index in range(len(self.projections))
         )
 
 
@@ -1512,8 +1513,8 @@ class ExactSourceWindow(SourceEditWindowABC):
             )
         return tuple(
             SourceTextSpan(
-                span.start_offset - domain.start_offset,
-                span.end_offset - domain.start_offset,
+                start_offset=span.start_offset - domain.start_offset,
+                end_offset=span.end_offset - domain.start_offset,
             )
             for span in self.retained_span_index.project(spans)
         )
@@ -1634,7 +1635,7 @@ class SourceRetainedSpanIndex:
 
     @cached_property
     def _domain(self) -> SourceTextSpan:
-        return SourceTextSpan(0, self.geometry.end_offset)
+        return SourceTextSpan(start_offset=0, end_offset=self.geometry.end_offset)
 
     @cached_property
     def _input_spans(self) -> tuple[SourceOffsetSpan, ...]:
@@ -1703,8 +1704,9 @@ class SourceRetainedSpanIndex:
             if preceding == following:
                 delta = self._prefix_deltas[preceding]
                 projected[position] = SourceTextSpan(
-                    span.start_offset + delta, span.end_offset + delta
-                )
+                    start_offset=span.start_offset + delta,
+                    end_offset=span.end_offset + delta,
+                                      )
             elif following == preceding + 1 and span.is_within(
                 self._input_spans[self._disruption_indices[preceding]]
             ):
@@ -1721,7 +1723,7 @@ class SourceRetainedSpanIndex:
             after_start = (
                 self._input_spans[index].start_offset + self._prefix_deltas[event]
             )
-            output_domain = SourceTextSpan(0, self._replacement_lengths[index])
+            output_domain = SourceTextSpan(start_offset=0, end_offset=self._replacement_lengths[index])
             for (position, original), relative in zip(
                 occurrences, relative_spans, strict=True
             ):
@@ -1734,9 +1736,9 @@ class SourceRetainedSpanIndex:
                         "Retained interior must preserve its extent within replacement output"
                     )
                 projected[position] = SourceTextSpan(
-                    after_start + relative.start_offset,
-                    after_start + relative.end_offset,
-                )
+                    start_offset=after_start + relative.start_offset,
+                    end_offset=after_start + relative.end_offset,
+                                      )
         return tuple(projected[position] for position in range(len(spans)))
 
 
@@ -1755,8 +1757,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     ) -> SourceRetainedSpanIndex:
         """Bind one canonical exact edit set for reusable retained-span projection."""
         return SourceRetainedSpanIndex(
-            self, self.replacements_in_span(0, self.end_offset, replacements)
-        )
+            geometry=self,
+            ordered_inputs=self.replacements_in_span(0, self.end_offset, replacements),
+               )
 
     @cached_property
     def logical_lines(self) -> tuple[str, ...]:
@@ -1859,8 +1862,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         """Retain exact spans and their source revision until all peers are known."""
         return SourceTextMutation(
             revision=CodemodSourceRevision(
-                file_path, CodemodSourceRevision.hash_source(self.source)
-            ),
+                file_path=file_path,
+                source_hash=CodemodSourceRevision.hash_source(self.source),
+                     ),
             replacements=replacements,
             rationale=rationale,
         )
@@ -1952,12 +1956,14 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 span = body_span
             elif last + 1 < len(ordered):
                 span = SourceTextSpan(
-                    spans[first].start_offset, spans[last + 1].start_offset
-                )
+                    start_offset=spans[first].start_offset,
+                    end_offset=spans[last + 1].start_offset,
+                       )
             else:
                 span = SourceTextSpan(
-                    spans[first - 1].end_offset, spans[last].end_offset
-                )
+                    start_offset=spans[first - 1].end_offset,
+                    end_offset=spans[last].end_offset,
+                       )
             if self.span_contains_comment(span):
                 raise ValueError("Element deletion would remove a comment")
             replacements.append(
@@ -1986,7 +1992,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
 
         start, end = self.required_node_offsets(node)
         depth = 0
-        for token in reversed(self.tokens_in_span(SourceTextSpan(start, end))):
+        for token in reversed(self.tokens_in_span(SourceTextSpan(start_offset=start, end_offset=end))):
             if token.type != tokenize.OP:
                 continue
             if token.string == ")":
@@ -1995,8 +2001,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 depth -= 1
                 if depth == 0:
                     return SourceTextSpan(
-                        self.token_position_offset(token.end), end - 1
-                    )
+                        start_offset=self.token_position_offset(token.end),
+                        end_offset=end - 1,
+                           )
         raise ValueError("Call argument parentheses are unavailable")
 
     def function_parameter_span(
@@ -2006,7 +2013,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         """Resolve the exact source between one function's parameter parentheses."""
 
         parentheses = self.function_parameter_parentheses(node)
-        return SourceTextSpan(parentheses.start_offset + 1, parentheses.end_offset - 1)
+        return SourceTextSpan(start_offset=parentheses.start_offset + 1, end_offset=parentheses.end_offset - 1)
 
     def function_signature_suffix_span(
         self,
@@ -2029,8 +2036,9 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
                 and token.string == ":"
             ):
                 return SourceTextSpan(
-                    parentheses.start_offset, self.token_position_offset(token.end)
-                )
+                    start_offset=parentheses.start_offset,
+                    end_offset=self.token_position_offset(token.end),
+                       )
         raise ValueError(f"Cannot resolve signature colon for {node.name!r}")
 
     def function_parameter_parentheses(
@@ -2098,7 +2106,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
         return node.lineno
 
     def node_line_span(self, span: SourceNodeSpan) -> SourceLineSpan:
-        return SourceLineSpan(self.node_start_line(span), span.end_line)
+        return SourceLineSpan(start_line=self.node_start_line(span), end_line=span.end_line)
 
     def statement_deletion_span(self, span: SourceLineSpan) -> SourceLineSpan:
         """Include the separator owned by one deleted statement."""
@@ -2112,12 +2120,12 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
             end_line = span.end_line
             while end_line < len(self.lines) and not self.lines[end_line].strip():
                 end_line += 1
-            return SourceLineSpan(span.start_line, end_line)
+            return SourceLineSpan(start_line=span.start_line, end_line=end_line)
 
         start_line = span.start_line
         while start_line > 1 and not self.lines[start_line - 2].strip():
             start_line -= 1
-        return SourceLineSpan(start_line, len(self.lines))
+        return SourceLineSpan(start_line=start_line, end_line=len(self.lines))
 
     def node_offsets(self, node: ast.AST) -> tuple[int, int] | None:
         span = SourceByteSpan.from_node(node)
@@ -2227,8 +2235,8 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     ) -> tuple[SourceTextSpanReplacement, ...]:
         """Return one unambiguous replacement per offset span."""
 
-        target = SourceTextSpan(span_start, span_end)
-        if not target.is_within(SourceTextSpan(0, self.end_offset)):
+        target = SourceTextSpan(start_offset=span_start, end_offset=span_end)
+        if not target.is_within(SourceTextSpan(start_offset=0, end_offset=self.end_offset)):
             raise ValueError(
                 "Replacement target span must fit the source geometry: "
                 f"{span_start}:{span_end}"

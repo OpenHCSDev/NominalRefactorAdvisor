@@ -40,7 +40,7 @@ class CodemodSourceDependencyScope(FieldedStrEnum):
 
 
 def _validate_ast_span_source(source: str, file_path: str) -> None:
-    NativePythonCompilation(source, file_path).compile()
+    NativePythonCompilation(source=source, file_path=file_path).compile()
 
 
 class CodemodBackend(FieldedStrEnum):

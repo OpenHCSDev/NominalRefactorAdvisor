@@ -205,7 +205,7 @@ class ModuleReferenceScope:
                 ):
                     names = self.annotation_names(node.value)
                     if names:
-                        yield QuotedTypeName(node, names, annotation)
+                        yield QuotedTypeName(node=node, names=names, annotation=annotation)
 
     def rewrite_of(self, quoted: QuotedTypeName) -> ReferenceRewrite:
         """Where the whole quoted string can be written as the expression it spells."""
@@ -475,17 +475,17 @@ class SpelledModules:
             case ast.Call(
                 func=callee, args=[ast.Constant(value=str()) as literal], keywords=[]
             ) if (ModuleReferenceScope.called(callee) == self.RETURNS_MODULE):
-                yield SpelledModule(literal, node)
+                yield SpelledModule(literal=literal, replaced=node)
             case ast.Call(
                 func=callee, args=[ast.Constant(value=str()) as literal, *_]
             ) if (ModuleReferenceScope.called(callee) == self.TAKES_MODULE):
-                yield SpelledModule(literal, literal)
+                yield SpelledModule(literal=literal, replaced=literal)
             case ast.Call(
                 func=callee, args=[ast.Constant(value=str()) as literal, *_]
             ) if ModuleReferenceScope.called(callee) in (
                 self.SELECTS_ONLY | {self.RETURNS_MODULE}
             ):
-                yield SpelledModule(literal, None)
+                yield SpelledModule(literal=literal, replaced=None)
             case ast.Call(
                 func=ast.Attribute(value=table, attr=method),
                 args=[ast.Constant(value=str()) as literal, *_],
@@ -493,17 +493,18 @@ class SpelledModules:
                 method in self.MODULE_TABLE_METHODS
                 and ast.unparse(table) == self.MODULE_TABLE
             ):
-                yield SpelledModule(literal, None)
+                yield SpelledModule(literal=literal, replaced=None)
             case ast.Subscript(
                 value=table, slice=ast.Constant(value=str()) as literal, ctx=context
             ) if (ast.unparse(table) == self.MODULE_TABLE):
                 yield SpelledModule(
-                    literal, node if isinstance(context, ast.Load) else None
-                )
+                    literal=literal,
+                    replaced=node if isinstance(context, ast.Load) else None,
+                      )
             case ast.Compare(
                 left=ast.Constant(value=str()) as literal, comparators=comparators
             ) if self.MODULE_TABLE in map(ast.unparse, comparators):
-                yield SpelledModule(literal, None)
+                yield SpelledModule(literal=literal, replaced=None)
             case ast.Tuple(elts=elements) | ast.List(elts=elements):
                 for option, argument in pairwise(elements):
                     if (
@@ -511,4 +512,4 @@ class SpelledModules:
                         and option.value == self.RUN_MODULE
                         and isinstance(argument, ast.Constant)
                     ):
-                        yield SpelledModule(argument, argument, self.NAME_OF_MODULE)
+                        yield SpelledModule(literal=argument, replaced=argument, suffix=self.NAME_OF_MODULE)

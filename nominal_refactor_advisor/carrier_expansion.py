@@ -285,13 +285,13 @@ class DeclaredCarrierExpansionBuilder(
             root_expansion_count_by_call[expansion.call_identity] += 1
         return tuple(
             DeclaredCarrierExpansionAssessment(
-                component,
-                self._authority_proof(
+                component=component,
+                proof=self._authority_proof(
                     component,
                     carrier_symbols_by_participant,
                     root_expansion_count_by_call,
                 ),
-                tuple(
+                participants=tuple(
                     CarrierCollapseParticipant(
                         declaration=(
                             self.repository.function_declarations_by_symbol[
@@ -408,9 +408,9 @@ class DeclaredCarrierExpansionBuilder(
             if value_reference is None or not value_reference.attribute_path:
                 continue
             carrier_reference = LexicalValueReference(
-                value_reference.root_name,
-                value_reference.attribute_path[:-1],
-            )
+                root_name=value_reference.root_name,
+                attribute_path=value_reference.attribute_path[:-1],
+                                )
             carrier_class_symbol = self.repository.declared_bound_value_class_symbol(
                 call.context,
                 carrier_reference,

@@ -174,8 +174,8 @@ class SourceNativeClassMro:
             raise ValueError("Native replacement has no declared method owner")
         expected_owner = NativeClassMroDeclaration(owner)
         ClassMemberLookupProof(
-            projected,
-            (
+            mro_type=projected,
+            namespace_changes=(
                 ClassNamespaceDelta(
                     substitution.owner, removed_names=frozenset((method_name,))
                 ),

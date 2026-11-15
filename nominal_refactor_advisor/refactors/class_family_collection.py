@@ -408,7 +408,7 @@ class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
         projection_module = context.source_index.target_by_id[projection_id]
         if not projection_module.node_kind.is_module:
             raise ValueError("Class-family collection projection must target a module")
-        authority = ResolvedClassTarget(authority_digest, authority_node)
+        authority = ResolvedClassTarget(target=authority_digest, node=authority_node)
         class_index = context.required_class_family_index
         reference_proof = ClassAuthorityReferenceProof.from_context(
             context,
@@ -482,7 +482,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.replacement_source()
                 ),

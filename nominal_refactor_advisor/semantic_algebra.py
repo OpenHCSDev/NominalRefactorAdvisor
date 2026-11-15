@@ -173,7 +173,7 @@ class FiberGeometry(
     def projection_group_member(
         value: ValueT, members: tuple[ObjectT, ...]
     ) -> RepresentationFiber[ObjectT, ValueT]:
-        return RepresentationFiber(value, members)
+        return RepresentationFiber(representation_value=value, members=members)
 
     @property
     def ambiguous_fibers(self) -> RepresentationFibers[ObjectT, ValueT]:
@@ -525,7 +525,7 @@ class FiniteAxisSystem(Generic[ObjectT, AxisT]):
         return FiberGeometry(
             sorted_tuple(
                 (
-                    RepresentationFiber(fiber_key, tuple(members))
+                    RepresentationFiber(representation_value=fiber_key, members=tuple(members))
                     for fiber_key, members in buckets.items()
                 ),
                 key=lambda item: repr(item.representation_value),
@@ -542,7 +542,7 @@ class FiniteAxisSystem(Generic[ObjectT, AxisT]):
             right = self.points[right_index]
             if any((self.axis_equal(left, right, view) for view in view_axis_sets)):
                 edges.append(VertexIndexEdge.from_indices(left_index, right_index))
-        return ConfusabilityGraph(self.semantic_objects, tuple(edges))
+        return ConfusabilityGraph(vertices=self.semantic_objects, edges=tuple(edges))
 
     def confusability_components(
         self, view_axes: Iterable[Iterable[AxisT]]

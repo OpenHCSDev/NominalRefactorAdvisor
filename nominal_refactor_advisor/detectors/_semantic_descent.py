@@ -225,7 +225,7 @@ class SemanticMirrorWithoutDescentDetector(
             if chunk:
                 yield tuple(chunk)
 
-        return CompactFindingStream(len(edge_queue), finding_chunks())
+        return CompactFindingStream(finding_count=len(edge_queue), chunks=finding_chunks())
 
     def _collect_findings_from_graph(
         self,

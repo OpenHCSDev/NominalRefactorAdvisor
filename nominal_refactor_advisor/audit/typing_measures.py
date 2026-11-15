@@ -154,7 +154,7 @@ class DeclaredTypeSites(MroDispatch):
         counted.dispatch_sync(expression)
         owner = ".".join(enclosing.name for enclosing in scope)
         self.counted.update(counted.references)
-        self.uses.extend([AnyUse(expression.lineno, site, owner)] * counted.found)
+        self.uses.extend([AnyUse(line=expression.lineno, site=site, owner=owner)] * counted.found)
 
     @handles(ast.Name, ast.Attribute)
     def reference(self, node: ast.Name | ast.Attribute, scope: Enclosing) -> None:
@@ -165,7 +165,7 @@ class DeclaredTypeSites(MroDispatch):
         if reference.is_any:
             self.counted.add(node)
             owner = ".".join(enclosing.name for enclosing in scope)
-            self.uses.append(AnyUse(node.lineno, "reference", owner))
+            self.uses.append(AnyUse(line=node.lineno, site="reference", owner=owner))
 
     @staticmethod
     def record_class(owner: ast.ClassDef) -> bool:

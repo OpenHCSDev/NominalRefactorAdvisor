@@ -68,7 +68,7 @@ def property_body(adapter: type[ForeignAdapter], name: str) -> PropertyBody | No
             ast.FunctionDef(args=ast.arguments(args=[receiver, *_])),
             [ast.Return(value=ast.expr() as expression)],
         ):
-            return PropertyBody(expression, receiver.arg)
+            return PropertyBody(expression=expression, receiver=receiver.arg)
     return None
 
 
@@ -128,7 +128,7 @@ class AdapterPropertyBodies:
         body = property_body(self.adapters_by_name[class_name], name)
         if body is None:
             return False
-        renamed = SubjectAsNode(subject, body.receiver).visit(deepcopy(expression))
+        renamed = SubjectAsNode(subject=subject, receiver=body.receiver).visit(deepcopy(expression))
         return ast.dump(renamed) == ast.dump(body.expression)
 
 
@@ -378,7 +378,7 @@ class AdapterBindChainAuthority(FunctionRewriteAuthority):
         start, end = self.geometry.line_span_offsets(
             statement.lineno, statement.end_lineno or statement.lineno
         )
-        if self.geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if self.geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise ValueError("Bind chain rewrite would discard a comment")
         line = self.geometry.lines[statement.lineno - 1]
         indentation = line[: statement.col_offset]

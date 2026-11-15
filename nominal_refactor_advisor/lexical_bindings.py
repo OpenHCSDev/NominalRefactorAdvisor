@@ -123,10 +123,12 @@ class FunctionParameterSource(FunctionArgumentSource, ABC):
         )
         return tuple(
             DefaultedParameterSource(
-                parameter.argument, parameter.kind, defaults[parameter.argument]
+                argument=parameter.argument,
+                kind=parameter.kind,
+                default=defaults[parameter.argument],
             )
             if parameter.argument in defaults
-            else UndefaultedParameterSource(parameter.argument, parameter.kind)
+            else UndefaultedParameterSource(argument=parameter.argument, kind=parameter.kind)
             for parameter in FunctionArgumentSource.from_arguments(arguments)
         )
 
@@ -227,7 +229,7 @@ class ImportAlias:
             return StarImportAlias(alias.name)
         if alias.asname is None:
             return ImportAlias(alias.name)
-        return RenamedImportAlias(alias.name, alias.asname)
+        return RenamedImportAlias(name=alias.name, asname=alias.asname)
 
     @property
     def source(self) -> str:
@@ -313,8 +315,9 @@ class RenamedImportAlias(ImportAlias):
         """A foreign `as` binding survives; a re-export follows the new name."""
 
         return RenamedImportAlias(
-            new_name, new_name if self.declares_reexport else self.asname
-        )
+            name=new_name,
+            asname=new_name if self.declares_reexport else self.asname,
+               )
 
     def bound_name_in(self, declaration: ImportDeclarationABC) -> str:
         return self.asname
@@ -475,7 +478,7 @@ class ImportDeclarationABC(ABC):
         self, module_identity: PythonModulePathIdentity
     ) -> tuple[ImportedNameOrigin, ...]:
         return tuple(
-            ImportedNameOrigin(self, index, module_identity)
+            ImportedNameOrigin(declaration=self, alias_index=index, module_identity=module_identity)
             for index, alias in enumerate(self.aliases)
             for _name in alias.bound_names_in(self)
         )
@@ -622,8 +625,9 @@ class ImportBoundNameProjection:
         if isinstance(self.statement, ast.Import):
             return ModuleImportDeclaration(aliases)
         return FromImportDeclaration(
-            aliases, ImportFromModuleName.from_node(self.statement)
-        )
+            aliases=aliases,
+            module_name=ImportFromModuleName.from_node(self.statement),
+               )
 
     def names(self) -> tuple[str, ...]:
         return self.declaration.names()

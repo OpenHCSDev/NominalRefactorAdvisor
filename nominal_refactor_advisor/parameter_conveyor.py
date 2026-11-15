@@ -310,12 +310,12 @@ class ClosedParameterConveyorComponentBuilder(
             if source_reference.lexical_reference is None:
                 continue
             carrier_reference = LexicalValueReference(
-                construction.construction.result_binding.root_name,
-                (
+                root_name=construction.construction.result_binding.root_name,
+                attribute_path=(
                     *construction.construction.result_binding.attribute_path,
                     first_field,
                 ),
-            )
+                                )
             first_field_references = (
                 *source_reference.reference_equivalents_in(construction.context.flow),
                 carrier_reference,
@@ -446,8 +446,8 @@ class ClosedParameterConveyorComponentBuilder(
                             )
                         ),
                         LexicalValueReference(
-                            construction.construction.result_binding.root_name,
-                            (
+                            root_name=construction.construction.result_binding.root_name,
+                            attribute_path=(
                                 *construction.construction.result_binding.attribute_path,
                                 field_name,
                             ),
@@ -889,4 +889,4 @@ class ClosedParameterConveyorComponentBuilder(
         context: CompactFlowContext,
         call: CompactFunctionCall,
     ) -> CompactFunctionCallIdentity:
-        return CompactFunctionCallIdentity(context.owner_symbol, call.position)
+        return CompactFunctionCallIdentity(caller_symbol=context.owner_symbol, position=call.position)

@@ -308,7 +308,10 @@ class CapturedReferenceResolution(NativeScalarValueABC):
         # operands. The newly retained RHS cannot prove receiver retention.
         if not prefix.endpoint.frame.retains_namespace(namespace):
             CapturedSlotQuery(
-                namespace, key, prefix, frozenset()
+                namespace=namespace,
+                key=key,
+                prefix=prefix,
+                pending=frozenset(),
             ).require_independent_reference(resolver, self)
 
     @abstractmethod
@@ -513,8 +516,9 @@ class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
         mutation: CompactMutation[CompactAttributeTarget],
     ) -> OpenCapturedReference | None:
         return OpenCapturedReference(
-            CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation
-        )
+            violation=CapturedReferenceViolation.UNKNOWN_RECEIVER,
+            mutation=mutation,
+               )
 
     def item_write_effect(
         self,
@@ -524,8 +528,9 @@ class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
         key: CapturedReferenceResolution,
     ) -> CapturedReferenceResolution | None:
         return OpenCapturedReference(
-            CapturedReferenceViolation.UNKNOWN_RECEIVER, occurrence.mutation
-        )
+            violation=CapturedReferenceViolation.UNKNOWN_RECEIVER,
+            mutation=occurrence.mutation,
+               )
 
 
 @dataclass(frozen=True)
@@ -736,8 +741,9 @@ class CapturedNativeObject(NativeTypeCapture):
         )
         if isinstance(namespace, OpenCapturedReference):
             return OpenCapturedReference(
-                CapturedReferenceViolation.UNPROVED_EFFECTS, mutation
-            )
+                violation=CapturedReferenceViolation.UNPROVED_EFFECTS,
+                mutation=mutation,
+                   )
         return query.write_effect(namespace, mutation.target.attribute_name, mutation)
 
 
@@ -815,7 +821,7 @@ class NamespaceEvidenceABC(AdmittedEvidenceABC):
         previous = resolver._namespace_resolution(self, key, prefix, frozenset())
         if previous is not None:
             previous.require_release_from(
-                resolver, CapturedSlotQuery(self, key, prefix, frozenset())
+                resolver, CapturedSlotQuery(namespace=self, key=key, prefix=prefix, pending=frozenset())
             )
         return previous
 
@@ -917,7 +923,7 @@ class CreatedNamespaceDictionary(
         slot.prefix.require_admitted(kernel.initial)
         if slot.prefix.endpoint.frame.retains_namespace(self):
             return
-        contents = NamespaceMemberInventory(kernel, self, slot.prefix)
+        contents = NamespaceMemberInventory(kernel=kernel, namespace=self, prefix=slot.prefix)
         for key in contents.names:
             contents.require_member(key).require_release()
 
@@ -1519,7 +1525,7 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
     def _mutation_occurrences(self) -> tuple[ContextualMutation, ...]:
         """Project actual writes at this immutable interval's own cuts once."""
         return tuple(
-            ContextualMutation(self, mutation)
+            ContextualMutation(source=self, mutation=mutation)
             for mutation in self.context.flow.mutations
             if self.contains(mutation)
         )
@@ -1772,7 +1778,7 @@ class CapturedReferenceEffectsABC(ABC):
         prefix: AdmittedExecutionPrefixABC,
     ) -> NamespaceContentsABC:
         """Storage before source operations, including admitted native entry work."""
-        return CapturedEntryContents(kernel, namespace)
+        return CapturedEntryContents(kernel=kernel, namespace=namespace)
 
     def require_interval_effects(self, interval: SingleFlowPrefix) -> None:
         raise ValueError("Original interval effects remain unproved")
@@ -1947,8 +1953,9 @@ class InitialNativeIsland:
         # evaluation. Admission separately closes index/hash/destruction effects.
         if type(receiver.value) is not dict:
             return OpenCapturedReference(
-                CapturedReferenceViolation.UNKNOWN_RECEIVER, occurrence.mutation
-            )
+                violation=CapturedReferenceViolation.UNKNOWN_RECEIVER,
+                mutation=occurrence.mutation,
+                   )
         if query.namespace.is_initial_storage(receiver.value):
             return query.item_key_write_effect(resolver, key, occurrence)
         return None
@@ -1971,8 +1978,9 @@ class CapturedSlotQuery:
     ) -> CapturedReferenceResolution:
         """Effect-only queries retain their original conservative interference law."""
         return OpenCapturedReference(
-            CapturedReferenceViolation.POSSIBLE_SLOT_WRITE, occurrence.mutation
-        )
+            violation=CapturedReferenceViolation.POSSIBLE_SLOT_WRITE,
+            mutation=occurrence.mutation,
+               )
 
     def resolve(
         self, resolver: CapturedReferenceKernel
@@ -1985,7 +1993,7 @@ class CapturedSlotQuery:
             source, binding = candidate
             if binding.mutation is not None:
                 query = replace(
-                    self, installed=ContextualMutation(source, binding.mutation)
+                    self, installed=ContextualMutation(source=source, mutation=binding.mutation)
                 )
                 result = query.intervening_value(resolver)
                 if result is not None:
@@ -2023,7 +2031,7 @@ class CapturedSlotQuery:
             if isinstance(namespace, NamespaceEvidenceABC)
         }
         for namespace in namespaces.values():
-            for name in NamespaceMemberInventory(kernel, namespace, self.prefix).names:
+            for name in NamespaceMemberInventory(kernel=kernel, namespace=namespace, prefix=self.prefix).names:
                 if namespace is self.namespace and name == self.key:
                     continue
                 candidate = kernel._namespace_resolution(
@@ -2055,8 +2063,9 @@ class CapturedSlotQuery:
             )
             if len(matches) != 1:
                 yield OpenCapturedReference(
-                    CapturedReferenceViolation.UNPROVED_BINDING, self.installed.mutation
-                )
+                    violation=CapturedReferenceViolation.UNPROVED_BINDING,
+                    mutation=self.installed.mutation,
+                      )
                 return
             anchor = matches[0]
         for index, interval in enumerate(intervals):
@@ -2080,11 +2089,12 @@ class CapturedSlotQuery:
             if isinstance(occurrence, OpenCapturedReference):
                 return occurrence
             mutation = occurrence.mutation
-            visit = CompactBindingVisit(occurrence.source.context, mutation)
+            visit = CompactBindingVisit(context=occurrence.source.context, mutation=mutation)
             if visit in self.pending and mutation.target.bound_name is None:
                 return OpenCapturedReference(
-                    CapturedReferenceViolation.CYCLIC_BINDING, mutation
-                )
+                    violation=CapturedReferenceViolation.CYCLIC_BINDING,
+                    mutation=mutation,
+                       )
             query = replace(self, pending=self.pending | {visit})
             failure = mutation.resolve(resolver, (query, occurrence))
             if failure is not None:
@@ -2099,8 +2109,9 @@ class CapturedSlotQuery:
     ) -> OpenCapturedReference | None:
         if namespace is self.namespace and key == self.key:
             return OpenCapturedReference(
-                CapturedReferenceViolation.POSSIBLE_SLOT_WRITE, mutation
-            )
+                violation=CapturedReferenceViolation.POSSIBLE_SLOT_WRITE,
+                mutation=mutation,
+                   )
         return None
 
     def item_key_write_effect(
@@ -2114,10 +2125,10 @@ class CapturedSlotQuery:
             name = key.require_dictionary_key()
         except ValueError as error:
             return OpenCapturedReference(
-                CapturedReferenceViolation.POSSIBLE_SLOT_WRITE,
-                occurrence.mutation,
-                error,
-            )
+                violation=CapturedReferenceViolation.POSSIBLE_SLOT_WRITE,
+                mutation=occurrence.mutation,
+                cause=error,
+                   )
         return (
             self.matching_item_write(resolver, occurrence) if name == self.key else None
         )
@@ -2165,7 +2176,7 @@ class InstalledValueSlotQuery(CapturedSlotQuery):
             suffix = replace(
                 self,
                 pending=self.pending
-                - {CompactBindingVisit(occurrence.source.context, occurrence.mutation)},
+                - {CompactBindingVisit(context=occurrence.source.context, mutation=occurrence.mutation)},
                 installed=occurrence,
             ).intervening_value(resolver)
             if suffix is not None:
@@ -2173,10 +2184,10 @@ class InstalledValueSlotQuery(CapturedSlotQuery):
             return resolver.effects.item_installation_value(occurrence)
         except ValueError as error:
             return OpenCapturedReference(
-                CapturedReferenceViolation.UNPROVED_BINDING,
-                occurrence.mutation,
-                error,
-            )
+                violation=CapturedReferenceViolation.UNPROVED_BINDING,
+                mutation=occurrence.mutation,
+                cause=error,
+                   )
 
 
 class NamespaceContentsABC(ABC):
@@ -2399,7 +2410,7 @@ class CapturedReferenceKernel(
         position: CompactFlowPosition,
     ) -> frozenset[NativeDictionaryKey]:
         prefix = self._admitted_prefix(context, position).closed()
-        return NamespaceMemberInventory(self, namespace, prefix).names
+        return NamespaceMemberInventory(kernel=self, namespace=namespace, prefix=prefix).names
 
     def _namespace_resolution(
         self,
@@ -2409,7 +2420,7 @@ class CapturedReferenceKernel(
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution | None:
         """Resolve this exact storage slot through the ordinary value-query law."""
-        return InstalledValueSlotQuery(namespace, key, prefix, pending).resolve(self)
+        return InstalledValueSlotQuery(namespace=namespace, key=key, prefix=prefix, pending=pending).resolve(self)
 
     def read_source_value(
         self,
@@ -2496,7 +2507,7 @@ class CapturedReferenceKernel(
         context: CompactFlowContext,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
-        return use.resolve_value(self, (CompactFlowValue(context, use), pending))
+        return use.resolve_value(self, (CompactFlowValue(context=context, use=use), pending))
 
     def _read_reference(
         self,
@@ -2570,8 +2581,9 @@ class CapturedReferenceKernel(
         pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
         return OpenCapturedReference(
-            CapturedReferenceViolation.UNPROVED_BINDING, binding
-        )
+            violation=CapturedReferenceViolation.UNPROVED_BINDING,
+            mutation=binding,
+               )
 
     def _imported_name_resolution(
         self,
@@ -2655,8 +2667,9 @@ class CapturedReferenceKernel(
         receiver_use: CompactValueUse,
     ) -> OpenCapturedReference:
         return OpenCapturedReference(
-            CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation
-        )
+            violation=CapturedReferenceViolation.UNKNOWN_RECEIVER,
+            mutation=mutation,
+               )
 
     def _attribute_mutation_resolution(
         self,
@@ -2704,9 +2717,9 @@ class CapturedReferenceKernel(
             return self._item_mutation_resolution(context, mutation)
         if not isinstance(annotation_namespace, NamespaceEvidenceABC):
             return OpenCapturedReference(
-                CapturedReferenceViolation.UNKNOWN_RECEIVER,
-                mutation,
-            )
+                violation=CapturedReferenceViolation.UNKNOWN_RECEIVER,
+                mutation=mutation,
+                   )
         return (
             query.matching_item_write(self, occurrence)
             if query.namespace is annotation_namespace

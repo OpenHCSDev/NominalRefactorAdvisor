@@ -40,8 +40,9 @@ class AccumulatorFoldFamilyCandidate(CollectsItself, ClassMethodFamilyCandidate)
     def from_module(cls, module: ParsedModule) -> tuple[Self, ...]:
         candidates: list[Self] = []
         projector = ClassMethodGroupsShapeProjector(
-            cls._accumulator_fold_method, lambda method: method.shape_key
-        )
+            method_parser=cls._accumulator_fold_method,
+            shape_key=lambda method: method.shape_key,
+                    )
         for class_node, ordered in projector.project(module):
             if len({method.step_method_name for method in ordered}) < 2:
                 continue

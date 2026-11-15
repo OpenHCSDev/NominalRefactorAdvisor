@@ -77,12 +77,10 @@ class SourceReproofDiagnostic(SourceRewriteTargetPreflightDetail):
             visited.add(id(current))
             causes.append(
                 ReproofCauseDiagnostic(
-                    (
-                        current.violation
+                        violation=current.violation
                         if isinstance(current, CapturedReferenceRejection)
-                        else None
-                    ),
-                    str(current),
+                        else None,
+                        message=str(current),
                 )
             )
             current = current.__cause__
@@ -197,7 +195,7 @@ class PreflightByReproof(SourceReprovedOperation, ABC):
     def preflight_passed_detail(self) -> JsonReport:
         """What a passed preflight shows beside its sentence: the target, with no refusal."""
 
-        return SourceReproofDiagnostic(self.target, ())
+        return SourceReproofDiagnostic(target=self.target, causes=())
 
 
 @dataclass(frozen=True, kw_only=True)

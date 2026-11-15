@@ -42,7 +42,7 @@ class Rung:
 
     @property
     def entries(self) -> tuple[Entry, ...]:
-        return tuple(Entry(found[1], found[2]) for found in self.ENTRY.finditer(self.text))
+        return tuple(Entry(pattern=found[1], title=found[2]) for found in self.ENTRY.finditer(self.text))
 
     @property
     def link(self) -> str:

@@ -929,10 +929,10 @@ class _EnvironmentBooleanDriftCandidate(SourceLocation):
     @property
     def projection_evidence(self) -> SourceLocation:
         return SourceLocation(
-            self.file_path,
-            self.line,
-            f"{self.symbol}:{self.environment_key}",
-        )
+            file_path=self.file_path,
+            line=self.line,
+            symbol=f"{self.symbol}:{self.environment_key}",
+               )
 
     @property
     def authority_evidence(self) -> SourceLocation | None:
@@ -1026,7 +1026,7 @@ class _EnvironmentBooleanModuleProjection:
         aliases: _EnvironmentImportAliases,
     ) -> tuple[_EnvironmentBooleanParserSite, ...]:
         resolver = _LiteralResolver.for_scope(scope)
-        read_authority = _EnvironmentReadAuthority(aliases, resolver)
+        read_authority = _EnvironmentReadAuthority(aliases=aliases, resolver=resolver)
         lineage = read_authority.lineage(scope)
         overrides = _EnvironmentBooleanModuleProjection._missing_overrides(scope, resolver)
         sites: list[_EnvironmentBooleanParserSite] = []

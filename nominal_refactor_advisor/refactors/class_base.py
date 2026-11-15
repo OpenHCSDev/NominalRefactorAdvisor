@@ -116,7 +116,7 @@ class ClassAuthorityReferenceProof:
             raise ValueError("Native class authority is not a class declaration")
         native.require_source_matches(node)
         return cls.from_context(
-            context, ResolvedClassTarget(target, node), projection_path
+            context, ResolvedClassTarget(target=target, node=node), projection_path
         )
 
     @classmethod
@@ -352,9 +352,9 @@ class DirectClassBaseReplacementOperationABC(
                 "source-resolved replaced bases"
             )
         header = ClassHeaderSpanSourceAuthority(
-            child_node,
-            snapshot.sources_by_file_path[child_target.file_path],
-        )
+            node=child_node,
+            source=snapshot.sources_by_file_path[child_target.file_path],
+                 )
         if not header.can_rewrite:
             raise ValueError(
                 f"Class header for {child_target.qualname!r} is not reconstructible"

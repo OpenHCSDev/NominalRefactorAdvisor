@@ -175,8 +175,9 @@ class RegistryKeyDeclarationRewriteMixin:
         registry_key_attribute: str,
     ) -> SourceTextMutation:
         body = ClassBodyTailSourceAuthority(
-            target.node, targets.source_for(target.file_path)
-        )
+            node=target.node,
+            source=targets.source_for(target.file_path),
+               )
         member = f"{body.indentation}{registry_key_attribute} = {entry.key_source}\n"
         return body.geometry.nominal_edit(
             file_path=target.file_path,
@@ -272,8 +273,9 @@ class DeriveAutoregisterInstanceViewOperation(
                 f"{self.instance_view_method_name!r}"
             )
         body = ClassBodyTailSourceAuthority(
-            component.authority.node, source_by_path[authority_target.file_path]
-        )
+            node=component.authority.node,
+            source=source_by_path[authority_target.file_path],
+               )
         members = [self.instance_method_source(body.indentation)]
         if not component.authority.declares_registry:
             members.insert(0, f"{body.indentation}{REGISTRY_ATTRIBUTE_NAME} = {{}}\n")
@@ -320,7 +322,7 @@ class DeriveAutoregisterInstanceViewOperation(
             assignment_source = f"{component.assignment_name} = {value_source}"
         return SourceSpanReplacement(
             file_path=source_path,
-            span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+            span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
             replacement_lines=SourceTargetEditor.source_lines(assignment_source),
             rationale=self.rationale_text(
                 f"Derive {component.assignment_name!r} from "
@@ -557,8 +559,9 @@ class ConvertManualRegistryToAutoregisterOperation(
         replacements = []
         for target in targets.targets:
             header = ClassHeaderSpanSourceAuthority(
-                target.node, targets.source_for(target.file_path)
-            )
+                node=target.node,
+                source=targets.source_for(target.file_path),
+                     )
             replacements.append(
                 header.geometry.nominal_edit(
                     file_path=target.file_path,
@@ -579,7 +582,7 @@ class ConvertManualRegistryToAutoregisterOperation(
         authority_target: ResolvedClassTarget,
         source: str,
     ) -> tuple[SourceTextMutation, ...]:
-        header = ClassHeaderSpanSourceAuthority(authority_target.node, source)
+        header = ClassHeaderSpanSourceAuthority(node=authority_target.node, source=source)
         metaclass_keywords = tuple(
             keyword
             for keyword in authority_target.node.keywords
@@ -636,9 +639,9 @@ class ConvertManualRegistryToAutoregisterOperation(
         if not missing:
             return ()
         body_authority = ClassBodyTailSourceAuthority(
-            authority_target.node,
-            source,
-        )
+            node=authority_target.node,
+            source=source,
+                         )
         inserted_lines = tuple(
             f"{body_authority.indentation}{name} = {ast.unparse(value)}\n"
             for name, value in missing
@@ -666,7 +669,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             replacements.append(
                 SourceSpanReplacement(
                     file_path=source_path,
-                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                    span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
                     replacement_lines=SourceTargetEditor.source_lines(
                         self.derived_registry_assignment_source(statement, component)
                     ),
@@ -680,7 +683,7 @@ class ConvertManualRegistryToAutoregisterOperation(
             *(
                 SourceSpanDeletion(
                     file_path=source_path,
-                    span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                    span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
                     rationale=self.rationale_text("Delete manual registry write."),
                 )
                 for statement in component.registration_statements

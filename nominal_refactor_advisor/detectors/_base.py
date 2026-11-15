@@ -267,14 +267,16 @@ class FindingSpecFactory(Generic[FindingSpecT]):
         )
 
 
-finding_spec_template = FindingSpecFactory(FindingSpec, "finding_spec_template")
+finding_spec_template = FindingSpecFactory(spec_type=FindingSpec, builder_name="finding_spec_template")
 high_confidence_spec = FindingSpecFactory(
-    HighConfidenceFindingSpec, "high_confidence_spec"
-)
-certified_spec = FindingSpecFactory(CertifiedFindingSpec, "certified_spec")
+    spec_type=HighConfidenceFindingSpec,
+    builder_name="high_confidence_spec",
+                       )
+certified_spec = FindingSpecFactory(spec_type=CertifiedFindingSpec, builder_name="certified_spec")
 high_confidence_certified_spec = FindingSpecFactory(
-    HighConfidenceCertifiedFindingSpec, "high_confidence_certified_spec"
-)
+    spec_type=HighConfidenceCertifiedFindingSpec,
+    builder_name="high_confidence_certified_spec",
+                                 )
 FINDING_SPEC_FACTORIES = (
     finding_spec_template,
     high_confidence_spec,
@@ -483,7 +485,7 @@ class IssueDetector(
                 f"Cannot recover source for {declaration_type.__qualname__}"
             )
         _source_lines, first_line = inspect.getsourcelines(declaration_type)
-        return SourceLocation(source_path, first_line, declaration_type.__qualname__)
+        return SourceLocation(file_path=source_path, line=first_line, symbol=declaration_type.__qualname__)
 
     @classmethod
     def required_relation_pattern_id(cls) -> PatternId:
@@ -1279,9 +1281,9 @@ class ZippedSourceLocationEvidenceProperty(SourceLocationZipEvidenceProperty):
     def _source_locations(self, instance: object) -> Iterable[SourceLocation]:
         return (
             SourceLocation(
-                _attribute_projection(self.file_attribute_name)(instance),
-                line,
-                symbol,
+                file_path=_attribute_projection(self.file_attribute_name)(instance),
+                line=line,
+                symbol=symbol,
             )
             for line, symbol in zip(
                 _attribute_projection(self.line_numbers_attribute_name)(instance),
@@ -1297,7 +1299,7 @@ class MultiFileZippedSourceLocationEvidenceProperty(SourceLocationZipEvidencePro
 
     def _source_locations(self, instance: object) -> Iterable[SourceLocation]:
         return (
-            SourceLocation(file_path, line, symbol)
+            SourceLocation(file_path=file_path, line=line, symbol=symbol)
             for file_path, line, symbol in zip(
                 _attribute_projection(self.file_paths_attribute_name)(instance),
                 _attribute_projection(self.line_numbers_attribute_name)(instance),
@@ -2308,10 +2310,10 @@ class DetectorDeclaration(Generic[CandidateItemT]):
     @property
     def source(self) -> SourceLocation:
         return SourceLocation(
-            self.source_file_path,
-            self.source_line,
-            self.class_name,
-        )
+            file_path=self.source_file_path,
+            line=self.source_line,
+            symbol=self.class_name,
+               )
 
     @classmethod
     def required_class_shell_field_names(cls) -> tuple[str, ...]:
@@ -2423,13 +2425,13 @@ def declare_module_detector(
     return _declare_module_detector_in(
         module_namespace,
         DetectorDeclaration(
-            candidate_type,
-            finding_spec,
-            finding_renderer,
-            module_namespace.module_name,
-            caller.f_code.co_filename,
-            caller.f_lineno,
-            DetectorDeclarationOptions[CandidateItemT].from_kwargs(
+            candidate_type=candidate_type,
+            finding_spec=finding_spec,
+            finding_renderer=finding_renderer,
+            module_name=module_namespace.module_name,
+            source_file_path=caller.f_code.co_filename,
+            source_line=caller.f_lineno,
+            options=DetectorDeclarationOptions[CandidateItemT].from_kwargs(
                 detector_options, candidate_type
             ),
         ),
@@ -2471,13 +2473,13 @@ def declare_candidate_rule_detector(
         return _declare_module_detector_in(
             module_namespace,
             DetectorDeclaration(
-                candidate_type,
-                finding_spec,
-                renderer,
-                module_namespace.module_name,
-                helper_frame.f_code.co_filename,
-                helper_frame.f_lineno,
-                DetectorDeclarationOptions[LocatedCandidateT].from_kwargs(
+                candidate_type=candidate_type,
+                finding_spec=finding_spec,
+                finding_renderer=renderer,
+                module_name=module_namespace.module_name,
+                source_file_path=helper_frame.f_code.co_filename,
+                source_line=helper_frame.f_lineno,
+                options=DetectorDeclarationOptions[LocatedCandidateT].from_kwargs(
                     detector_options, candidate_type
                 ),
             ),
@@ -2799,7 +2801,7 @@ class CandidateCollectionAuthority:
                 module, qualname, function, *projector_args, **projector_kwargs
             )
         )
-        return CandidateStream(projected, sort_key).materialized()
+        return CandidateStream(items=projected, sort_key=sort_key).materialized()
 
     @classmethod
     def ast_node_candidates(

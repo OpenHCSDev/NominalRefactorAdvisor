@@ -258,7 +258,7 @@ class _DependencyGraph:
         dependencies.extend(self._descriptor_dependencies(value))
         if expands_dependencies:
             dependencies.extend(self._callable_dependencies(value))
-        return _DependencyNode(value, tuple(module_names), tuple(dependencies))
+        return _DependencyNode(value=value, module_names=tuple(module_names), dependencies=tuple(dependencies))
 
     @staticmethod
     def _callable_dependencies(value: object) -> tuple[object, ...]:

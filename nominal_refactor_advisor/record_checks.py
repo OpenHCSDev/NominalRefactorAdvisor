@@ -158,7 +158,7 @@ class DeclaredAttributeCheckCollector(ClassFunctionStackNodeVisitor):
             return
         self.checks.append(
             DeclaredAttributeCheck(
-                SourceLocation(self.module.file_path, node.lineno, self.qualname),
+                SourceLocation(file_path=self.module.file_path, line=node.lineno, symbol=self.qualname),
                 subject_type,
                 value.attr,
                 self.module_bindings.reference_for(expected_parts),
@@ -232,7 +232,9 @@ class DeclaredAttributeContractResolver:
             return None
         return (
             SourceLocation(
-                owner.file_path, member.line, f"{owner.qualname}.{member.name}"
+                file_path=owner.file_path,
+                line=member.line,
+                symbol=f"{owner.qualname}.{member.name}",
             ),
             member.annotation_expression,
         )

@@ -85,10 +85,10 @@ def decode_origin(merged_at: int, subject: str) -> ModuleOrigin:
     """A first-parent commit subject, decoded once: a merged pull request, or a direct commit."""
     match MergedPullRequest.github_merge.search(subject), MergedPullRequest.squash_merge.search(subject):
         case re.Match() as merge, _:
-            return MergedPullRequest(merged_at, int(merge.group(1)), merge.group(2))
+            return MergedPullRequest(merged_at=merged_at, number=int(merge.group(1)), branch=merge.group(2))
         case None, re.Match() as squash:
-            return MergedPullRequest(merged_at, int(squash.group(1)), subject)
-    return DirectCommit(merged_at, subject)
+            return MergedPullRequest(merged_at=merged_at, number=int(squash.group(1)), branch=subject)
+    return DirectCommit(merged_at=merged_at, subject=subject)
 
 
 class Timing(Family, ABC, root=True, affix="Foundation"):

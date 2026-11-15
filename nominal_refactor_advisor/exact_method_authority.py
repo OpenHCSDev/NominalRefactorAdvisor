@@ -168,7 +168,7 @@ class ExactMethodRoleComponent(ExactMethodOrbitComponent, EvidenceLocated):
     @cached_property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
-            SourceLocation(self.file_path, line, method_symbol)
+            SourceLocation(file_path=self.file_path, line=line, symbol=method_symbol)
             for line, method_symbol in zip(
                 self.line_numbers,
                 self.method_symbols,
@@ -262,12 +262,12 @@ class ExactLeafMethodAncestorPromotionComponent(
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
             SourceLocation(
-                self.file_path,
-                self.authority.line,
-                self.authority_symbol,
+                file_path=self.file_path,
+                line=self.authority.line,
+                symbol=self.authority_symbol,
             ),
             *(
-                SourceLocation(self.file_path, line, method_symbol)
+                SourceLocation(file_path=self.file_path, line=line, symbol=method_symbol)
                 for line, method_symbol in zip(
                     self.line_numbers,
                     self.method_symbols,

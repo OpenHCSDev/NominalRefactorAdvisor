@@ -311,7 +311,7 @@ class ModuleNameRedirect:
             tuple(sorted(moved_names)),
         )
         edits: list[NominalSourceEdit] = []
-        for source_file, parsed in FilesReachingModule(context, source_module_name):
+        for source_file, parsed in FilesReachingModule(context=context, module_name=source_module_name):
             consumer_path = source_file.file_path
             if consumer_path in excluded_paths:
                 continue
@@ -350,7 +350,7 @@ class ModuleNameRedirect:
             retargets = _SourceModuleAliasRetargets.of(
                 parsed.fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
-                owners=_RedirectOwners(self, import_graph),
+                owners=_RedirectOwners(redirect=self, import_graph=import_graph),
             )
             if retargets.aliases:
                 edits.extend(retargets.rewrite(consumer_path, context.sources_by_file_path[consumer_path]))
@@ -1310,7 +1310,7 @@ class _SourceModuleAliasRetargets:
                 if alias.asname is not None and alias.name == source_module_name
             ),
             *(
-                _FromImportedModule(node.names[0], node)
+                _FromImportedModule(alias=node.names[0], statement=node)
                 for node in index.imports
                 if isinstance(node, ast.ImportFrom)
                 and package
@@ -1320,7 +1320,7 @@ class _SourceModuleAliasRetargets:
                 and node.names[0].name == leaf
             ),
             *(
-                _FromImportedModuleAmong(alias, node, scope)
+                _FromImportedModuleAmong(alias=alias, statement=node, scope=scope)
                 for node in index.imports
                 if isinstance(node, ast.ImportFrom)
                 and package
@@ -1831,7 +1831,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     request.destination_path
                 ).fact(ModuleNodeIndex),
                 source_module_name=source_module_name,
-                owners=_DestinationOwners(destination_module_name, frozenset(moved_symbol_names)),
+                owners=_DestinationOwners(module_name=destination_module_name, names=frozenset(moved_symbol_names)),
             ).localized_edits(
                 destination_index,
                 file_path=request.destination_path,
@@ -2013,7 +2013,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         import_graph = context.module_import_graph
         source_module_name = import_graph.module_name_for_file_path(source_path)
         kept: set[str] = set()
-        for source_file, parsed in FilesReachingModule(context, source_module_name):
+        for source_file, parsed in FilesReachingModule(context=context, module_name=source_module_name):
             if source_file.file_path == source_path:
                 continue
             for node in parsed.fact(ModuleNodeIndex).import_froms():
@@ -2222,35 +2222,35 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             moved_annotation_count=moved_dependencies.annotation_count,
             obstacles=(
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY,
-                    source_local_resolution.unresolved_names,
+                    kind=ModuleMoveObstacleKind.SOURCE_LOCAL_DEPENDENCY,
+                    details=source_local_resolution.unresolved_names,
                 ),
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.SOURCE_MODULE_CONTEXT_DEPENDENCY,
-                    tuple(
+                    kind=ModuleMoveObstacleKind.SOURCE_MODULE_CONTEXT_DEPENDENCY,
+                    details=tuple(
                         operation.module_context_detail(context, name)
                         for name in source_module_context_names
                     ),
                 ),
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.DESTINATION_BUILTIN_CONFLICT,
-                    destination_builtin_conflict_names,
+                    kind=ModuleMoveObstacleKind.DESTINATION_BUILTIN_CONFLICT,
+                    details=destination_builtin_conflict_names,
                 ),
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY,
-                    unresolved_names,
+                    kind=ModuleMoveObstacleKind.UNRESOLVED_DEPENDENCY,
+                    details=unresolved_names,
                 ),
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.DESTINATION_READ_BEFORE_DEFINITION,
-                    destination_table.eager_reads_before(frozenset(moved_names), insertion_line),
+                    kind=ModuleMoveObstacleKind.DESTINATION_READ_BEFORE_DEFINITION,
+                    details=destination_table.eager_reads_before(frozenset(moved_names), insertion_line),
                 ),
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY,
-                    ambiguous_import_names,
+                    kind=ModuleMoveObstacleKind.AMBIGUOUS_IMPORT_DEPENDENCY,
+                    details=ambiguous_import_names,
                 ),
                 ModuleMoveObstacle(
-                    ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT,
-                    tuple(
+                    kind=ModuleMoveObstacleKind.DESTINATION_IMPORT_CONFLICT,
+                    details=tuple(
                         sorted(
                             {
                                 *destination_import_conflict_names,
@@ -2956,7 +2956,7 @@ class _ModuleSiblingData(ABC):
             )
         except UnicodeDecodeError as error:
             return _NoSiblingCarry({**stays, "__file__": f"a file it reads is not UTF-8 text ({error.reason})"})
-        return _CarriedSiblingData(stays, texts)
+        return _CarriedSiblingData(stays=stays, files=texts)
 
 
 @dataclass(frozen=True)
@@ -3285,12 +3285,12 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
     def identity_strings(self, context: CodemodSelectorContext) -> _ModuleIdentityStrings:
         redirect = self.redirect(context)
         return _ModuleIdentityStrings(
-            redirect.source_path,
-            redirect.source_module_name(context.module_import_graph),
-            redirect.destinations,
-            self.destination_path,
-            frozenset(self.retained_calls),
-        )
+            source_path=redirect.source_path,
+            source_module_name=redirect.source_module_name(context.module_import_graph),
+            owners=redirect.destinations,
+            successor_path=self.destination_path,
+            retained_calls=frozenset(self.retained_calls),
+               )
 
     def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileChange, ...]:
         strings = self.identity_strings(context)
@@ -3411,11 +3411,11 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
 
         redirect = self.move_plan(context).name_redirect
         return _RelocatedNameStrings(
-            self.required_source_path(context, self.operation_key()),
-            redirect.source_module_name(context.module_import_graph),
-            redirect.destinations,
-            None,
-        )
+            source_path=self.required_source_path(context, self.operation_key()),
+            source_module_name=redirect.source_module_name(context.module_import_graph),
+            owners=redirect.destinations,
+            successor_path=None,
+               )
 
     def source_local_dependency_resolution(
         self,
@@ -4466,7 +4466,7 @@ class _ModuleIdentityStrings:
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
         embedded = _EmbeddedImportFrom(self.source_module_name)
         edits: list[NominalSourceEdit] = []
-        for source_file, parsed in FilesReachingModule(context, self.source_module_name):
+        for source_file, parsed in FilesReachingModule(context=context, module_name=self.source_module_name):
             file_path = source_file.file_path
             if file_path == self.source_path:
                 continue
@@ -4746,19 +4746,17 @@ class DissolveModuleOperation(RetainedCallOperation):
         if source_module_name is None:
             raise ValueError(f"Source module identity is unavailable for {source_path!r}")
         return _ModuleIdentityStrings(
-            source_path,
-            source_module_name,
-            _DissolvedModuleBindings.of(context, source_path).owners,
-            (
-                None
+            source_path=source_path,
+            source_module_name=source_module_name,
+            owners=_DissolvedModuleBindings.of(context, source_path).owners,
+            successor_path=None
                 if self.successor_path is None
                 else SourcePathResolutionAuthority.from_source_index(
                     self.successor_path,
                     context.source_index,
-                ).optional_path()
-            ),
-            frozenset(self.retained_calls),
-        )
+                ).optional_path(),
+            retained_calls=frozenset(self.retained_calls),
+               )
 
     def source_edits_from_snapshot(
         self,
@@ -4772,7 +4770,7 @@ class DissolveModuleOperation(RetainedCallOperation):
             *self._module_binding_edits(
                 context, excluded, strings.source_module_name, bindings.run_modules(context)
             ),
-            *ModuleNameRedirect(strings.source_path, bindings.owners).consumer_edits(
+            *ModuleNameRedirect(source_path=strings.source_path, destinations=bindings.owners).consumer_edits(
                 context,
                 excluded_paths=excluded,
             ),
@@ -4791,7 +4789,7 @@ class DissolveModuleOperation(RetainedCallOperation):
         source_module_name: str,
         bindings: _DissolvedModuleBindings,
     ) -> None:
-        for source_file, parsed in FilesReachingModule(context, source_module_name):
+        for source_file, parsed in FilesReachingModule(context=context, module_name=source_module_name):
             if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
@@ -4838,7 +4836,7 @@ class DissolveModuleOperation(RetainedCallOperation):
         head = source_module_name.partition(".")[0]
         other_heads = tuple(module for module in run_modules if module.partition(".")[0] != head)
         edits: list[NominalSourceEdit] = []
-        for source_file, parsed in FilesReachingModule(context, source_module_name):
+        for source_file, parsed in FilesReachingModule(context=context, module_name=source_module_name):
             if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
@@ -4942,12 +4940,12 @@ class RetargetModuleMentionsOperation(PreflightByReproof, RetainedCallOperation)
             context.source_index,
         ).required_path()
         return _ModuleIdentityStrings(
-            self.retired_path,
-            self.retired_module_name,
-            {},
-            successor_path,
-            frozenset(self.retained_calls),
-        ).edits(context)
+            source_path=self.retired_path,
+            source_module_name=self.retired_module_name,
+            owners={},
+            successor_path=successor_path,
+            retained_calls=frozenset(self.retained_calls),
+               ).edits(context)
 
 
 @dataclass(frozen=True)

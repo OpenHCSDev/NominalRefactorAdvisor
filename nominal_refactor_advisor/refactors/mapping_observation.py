@@ -94,8 +94,10 @@ class RequireDictionaryCopyMappingOperation(SourceReprovedOperation):
         module = snapshot.parsed_module_for_source_path(before.source.module.file_path)
         after = snapshot.product_flow_repository.native_reference_environment(module)
         correspondence = SourceReadCorrespondence(
-            simulation, before.source, after.source
-        )
+            document_simulation=simulation,
+            before=before.source,
+            after=after.source,
+                         )
         rewritten = correspondence.corresponding_calls(originals)
         for original, current in zip(originals, rewritten, strict=True):
             CopiedNativeNamespace.from_call(before, original).require_same_mapping(

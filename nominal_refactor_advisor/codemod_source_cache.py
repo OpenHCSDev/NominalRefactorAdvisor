@@ -202,7 +202,7 @@ class CodemodSourceContextCache:
         context = entry.context_for(identity)
         if context is None:
             return CodemodSourceContextCacheLookup(Miss)
-        return CodemodSourceContextCacheLookup(Hit, context)
+        return CodemodSourceContextCacheLookup(status=Hit, context=context)
 
     def store(
         self,

@@ -224,7 +224,7 @@ class AutoRegisterClassAuthority:
             keyword.arg == "metaclass" for keyword in node.keywords
         ):
             return declared
-        return KeyedMetaclassFamily(node, key_attribute)
+        return KeyedMetaclassFamily(node=node, key_attribute=key_attribute)
 
     def keyed_family(self) -> KeyedMetaclassFamily:
         """This class as a keyed metaclass family, which a declared shape is not."""

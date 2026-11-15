@@ -358,10 +358,10 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                     )
                     if module is not None:
                         yield FromImport(
-                            index,
-                            module,
-                            ImportBoundNameProjection(statement).names(),
-                        )
+                            index=index,
+                            module=module,
+                            names=ImportBoundNameProjection(statement).names(),
+                              )
 
     SCOPES = (
         ast.FunctionDef,
@@ -1361,9 +1361,9 @@ class EnumMember:
 
     def resolved(self) -> ResolvedIdentity:
         return ResolvedIdentity(
-            f"enum member `{self.enum.rpartition('.')[2]}.{self.member}`",
-            (self.declared_at,),
-        )
+            identity=f"enum member `{self.enum.rpartition('.')[2]}.{self.member}`",
+            declared_at=(self.declared_at,),
+               )
 
 
 # A finding names this many declaring sites of one identity.
@@ -1410,9 +1410,9 @@ class MemberSpellings:
             return None
         boundary = self.CODEC_BOUNDARY if any_member else ""
         return ResolvedIdentity(
-            f"{self.identity}, read off `{receiver}` as text{boundary}",
-            self.declared_at[:LISTED_DECLARATIONS],
-        )
+            identity=f"{self.identity}, read off `{receiver}` as text{boundary}",
+            declared_at=self.declared_at[:LISTED_DECLARATIONS],
+               )
 
     def spelled(self, literal: str) -> ResolvedIdentity | None:
         named = tuple(location for value, location in self.members if value == literal)
@@ -1424,9 +1424,9 @@ class MemberSpellings:
             else "a member whose spelling the family derives"
         )
         return ResolvedIdentity(
-            f"{self.identity} {literal!r} ({who})",
-            (named or self.declared_at)[:LISTED_DECLARATIONS],
-        )
+            identity=f"{self.identity} {literal!r} ({who})",
+            declared_at=(named or self.declared_at)[:LISTED_DECLARATIONS],
+               )
 
 
 @dataclass(frozen=True)
@@ -1469,12 +1469,16 @@ class DeclaredIdentities:
         explicit: list[tuple[str, str, SourceLocation]] = []
         for module in modules:
             module_locations[module.module_name] = SourceLocation(
-                module.file_path, 1, module.module_name
-            )
+                file_path=module.file_path,
+                line=1,
+                symbol=module.module_name,
+                                                   )
             for declared in module.classes:
                 location = SourceLocation(
-                    module.file_path, declared.line, declared.name
-                )
+                    file_path=module.file_path,
+                    line=declared.line,
+                    symbol=declared.name,
+                           )
                 classes[declared.name].append(location)
                 lookups[declared.name].update(declared.lookups)
                 bases[declared.name].update(declared.base_names)
@@ -1548,10 +1552,10 @@ class DeclaredIdentities:
             if not owners.is_enum(qualified):
                 continue
             module = owners.modules[qualified.rpartition(".")[0]]
-            location = SourceLocation(module.file_path, declared.line, declared.name)
+            location = SourceLocation(file_path=module.file_path, line=declared.line, symbol=declared.name)
             for member, value in declared.constants:
                 if EnumMember.names_member(member):
-                    found[value].append(EnumMember(qualified, member, location))
+                    found[value].append(EnumMember(enum=qualified, member=member, declared_at=location))
         return {value: tuple(members) for value, members in found.items()}
 
     def enum_named(self, file_path: str, name: str) -> str:
@@ -1643,13 +1647,13 @@ class DeclaredIdentities:
         declared = self.classes.get(name)
         if declared is None:
             return None
-        return ResolvedIdentity(f"class `{name}`", declared[:LISTED_DECLARATIONS])
+        return ResolvedIdentity(identity=f"class `{name}`", declared_at=declared[:LISTED_DECLARATIONS])
 
     def module_named(self, name: str) -> ResolvedIdentity | None:
         declared = self.modules.get(name)
         if declared is None:
             return None
-        return ResolvedIdentity(f"module `{name}`", (declared,))
+        return ResolvedIdentity(identity=f"module `{name}`", declared_at=(declared,))
 
     def ancestors(self, name: str) -> tuple[str, ...]:
         """The class and every scanned class it inherits from, by name."""
@@ -1742,9 +1746,9 @@ class DeclaredIdentities:
             ):
                 return spellings.spelled(literal)
         return ResolvedIdentity(
-            f"the `{receiver}` member spelled {literal!r}",
-            self.classes[declaring][:LISTED_DECLARATIONS],
-        )
+            identity=f"the `{receiver}` member spelled {literal!r}",
+            declared_at=self.classes[declaring][:LISTED_DECLARATIONS],
+               )
 
     def resolve(self, site: IdentitySpelling) -> IdentitySpelling | None:
         resolved = site.resolve(self)
@@ -2090,8 +2094,11 @@ class IdentityPositions:
                 case ast.Name() | ast.Attribute():
                     instance = self.called(declared)
         return Receiver(
-            ast.unparse(receiver), self.called(receiver), class_object, instance
-        )
+            text=ast.unparse(receiver),
+            name=self.called(receiver),
+            class_object=class_object,
+            instance=instance,
+               )
 
     def declared_type(self, node_index: int, name: str) -> ast.expr | None:
         """The type the nearest binding of `name` around this node declares.

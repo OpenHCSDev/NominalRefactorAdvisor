@@ -215,7 +215,7 @@ class BannedVocabulary(CleanChangedLines, PerFileOccurrenceMeasure):
 
     @classmethod
     def lines(cls, repo: Project, source: bytes, filename: str) -> list[int]:
-        module = ChangedSource(filename, source, frozenset(), b"")
+        module = ChangedSource(path=filename, source=source, lines=frozenset(), base_source=b"")
         return sorted([*super().lines(repo, source, filename), *cls.prose_lines(module)])
 
     @classmethod
@@ -375,7 +375,7 @@ class RawRecordShapes(PerFileMeasure):
         text = source.decode()
         module = ParsedModule(path=Path(filename), module_name=filename,
                               module=cls.tree(source, filename), source=text)
-        package = Package(repo, "", filename, (module,), ())
+        package = Package(repo=repo, rev="", root=filename, modules=(module,), unparsed=())
         return sum(1 for facts in package.functions[filename]
                    for _finding in RawShape.from_facts(facts, package))
 

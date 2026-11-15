@@ -191,7 +191,7 @@ class StaticProjectionSites:
                     and question in self.projection.questions
                     and not isinstance(argument, ast.Starred)
                 ):
-                    sites.append(StaticProjectionSite(node, argument, question, name))
+                    sites.append(StaticProjectionSite(call=node, argument=argument, question=question, name=name))
         return tuple(
             sorted(sites, key=lambda site: (site.call.lineno, site.call.col_offset))
         )
@@ -242,7 +242,7 @@ class StaticProjectionAuthority(SourceRewriteAuthority):
 
     @cached_property
     def found(self) -> StaticProjectionSites:
-        return StaticProjectionSites(self.parsed_module, self.projection)
+        return StaticProjectionSites(parsed_module=self.parsed_module, projection=self.projection)
 
     @cached_property
     def outermost(self) -> tuple[StaticProjectionSite, ...]:
@@ -291,13 +291,13 @@ class StaticProjectionAuthority(SourceRewriteAuthority):
             site.argument
         )
         for gap in (
-            SourceTextSpan(start, argument_start),
-            SourceTextSpan(argument_end, end),
+            SourceTextSpan(start_offset=start, end_offset=argument_start),
+            SourceTextSpan(start_offset=argument_end, end_offset=end),
         ):
             if self.geometry.span_contains_comment(gap):
                 raise ValueError("Static projection rewrite would discard a comment")
         candidate = self.rewritten(site)
-        if self.geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if self.geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             if not self.fit.fits(*self.line_context(start, end, candidate)):
                 raise ValueError(
                     "Static projection rewrite would exceed the line length"
@@ -376,7 +376,7 @@ class StaticProjectionCallModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
         }
         shapes = []
         for projection in cls.loaded_projections(parsed_module):
-            found = StaticProjectionSites(parsed_module, projection)
+            found = StaticProjectionSites(parsed_module=parsed_module, projection=projection)
             for node in (
                 *(site.call for site in found.sites),
                 *found.unused_import_statements,

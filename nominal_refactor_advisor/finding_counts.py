@@ -50,7 +50,7 @@ class FindingSummary(SemanticRecord):
         return cls(
             finding_count=len(findings),
             pattern_counts=tuple(
-                FindingPatternCount(pattern_id, count)
+                FindingPatternCount(pattern_id=pattern_id, count=count)
                 for pattern_id, count in sorted(
                     Counter(int(finding.pattern_id) for finding in findings).items()
                 )

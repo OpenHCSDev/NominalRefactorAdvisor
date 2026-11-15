@@ -2254,8 +2254,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     if not terminal_rejected:
                         terminals_by_source_state_id[state.source_state_id] = (
                             CodemodRefactorTrajectoryTerminal(
-                                state,
-                                terminal_guard_report,
+                                state=state,
+                                guard_report=terminal_guard_report,
                             )
                         )
                     continue
@@ -2452,7 +2452,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             )
         elif not guard_report.is_clean:
             rejection = "its architecture guards fail"
-        return CodemodExactSettlement(exact_scan, guard_report, rejection)
+        return CodemodExactSettlement(scan=exact_scan, guard_report=guard_report, rejection=rejection)
 
     def stages_with_terminal_guards(
         self,

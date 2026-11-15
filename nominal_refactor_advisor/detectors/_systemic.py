@@ -258,9 +258,9 @@ class ImplicitSelfContractMixinCandidate(EvidenceLocated):
     def evidence(self) -> tuple[SourceLocation, ...]:
         fact = self.fact
         return (
-            SourceLocation(fact.file_path, fact.line, self.mixin_name),
+            SourceLocation(file_path=fact.file_path, line=fact.line, symbol=self.mixin_name),
             *(
-                SourceLocation(fact.file_path, line, f"{self.mixin_name}.{name}")
+                SourceLocation(file_path=fact.file_path, line=line, symbol=f"{self.mixin_name}.{name}")
                 for name, line in zip(fact.method_names, fact.method_lines, strict=True)
             ),
             *self.consumers,
@@ -506,8 +506,10 @@ class _DataclassNamespaceProjection(LineWitness):
     @property
     def from_namespace_location(self) -> SourceLocation:
         return SourceLocation(
-            self.file_path, self.from_namespace_line, f"{self.class_name}.from_namespace"
-        )
+            file_path=self.file_path,
+            line=self.from_namespace_line,
+            symbol=f"{self.class_name}.from_namespace",
+               )
 
 
 @dataclass(frozen=True)
@@ -755,7 +757,9 @@ class ProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitnessCandidat
         return tuple(
             (
                 SourceLocation(
-                    self.file_path, line, f"{self.class_name}.{property_name}"
+                    file_path=self.file_path,
+                    line=line,
+                    symbol=f"{self.class_name}.{property_name}",
                 )
                 for line, property_name in zip(
                     self.line_numbers, self.property_names, strict=True
@@ -883,7 +887,7 @@ class CollectionProjectionPropertyFamilyCandidate(CollectsItself, ClassLineWitne
     projected_attribute_names: tuple[str, ...]
     line_count: int
     evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "property_names")
+        ZippedSourceLocationEvidenceProperty(line_numbers_attribute_name="line_numbers", symbol_names_attribute_name="property_names")
     )
 
     @classmethod
@@ -1020,7 +1024,7 @@ class ResidualClosedAxisIndirectionCandidate(CollectsItself,
     @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(self.file_path, self.table_line, self.table_name),
+            SourceLocation(file_path=self.file_path, line=self.table_line, symbol=self.table_name),
             self.named(self.qualname),
         )
 
@@ -1333,11 +1337,11 @@ class DerivedWrapperSpecShadowCandidate(CollectsItself, EvidenceLocationsWitness
                     (name for name in common_keyword_names if name != link_field_name)
                 )
                 evidence: list[SourceLocation] = [
-                    SourceLocation(module.file_path, family_line, family_name)
+                    SourceLocation(file_path=module.file_path, line=family_line, symbol=family_name)
                 ]
                 evidence.extend(
                     (
-                        SourceLocation(module.file_path, constant_bindings[name].line, name)
+                        SourceLocation(file_path=module.file_path, line=constant_bindings[name].line, symbol=name)
                         for name in primary_constant_names[:3]
                         if name in constant_bindings
                     )
@@ -2510,7 +2514,7 @@ class AutoRegisterExplicitPriorityOrderingDetector(
                 if line is None:
                     continue
                 sites_by_axis[axis_name].append(
-                    SourceLocation(candidate.file_path, line, candidate.simple_name)
+                    SourceLocation(file_path=candidate.file_path, line=line, symbol=candidate.simple_name)
                 )
         return {
             axis_name: tuple(locations)
@@ -2616,9 +2620,9 @@ class NominalInstanceExplicitOrderingDetector(_CompactClassIndexDetectorBase):
                         family_root.named(family_root.simple_name),
                         *(
                             SourceLocation(
-                                family_root.file_path,
-                                root_axis_lines[axis_name],
-                                axis_name,
+                                file_path=family_root.file_path,
+                                line=root_axis_lines[axis_name],
+                                symbol=axis_name,
                             )
                             for axis_name in active_axes
                         ),
@@ -2662,16 +2666,16 @@ class NominalInstanceExplicitOrderingDetector(_CompactClassIndexDetectorBase):
         return (
             *(
                 SourceLocation(
-                    owner.file_path,
-                    construction.line,
-                    f"{owner.simple_name}.{construction.assigned_name}",
+                    file_path=owner.file_path,
+                    line=construction.line,
+                    symbol=f"{owner.simple_name}.{construction.assigned_name}",
                 )
                 for owner, construction in constructions[:4]
             ),
             SourceLocation(
-                matching_calls[0].file_path,
-                matching_calls[0].line,
-                f"sorted(..., key=...{axis_name})",
+                file_path=matching_calls[0].file_path,
+                line=matching_calls[0].line,
+                symbol=f"sorted(..., key=...{axis_name})",
             ),
         )
 
@@ -2834,9 +2838,9 @@ def _compact_keyed_registry_axis_facts(
     if class_index is None:
         class_index = build_compact_class_family_index(projections)
     mapping_key_authority = CompactClassMappingKeyAuthority(
-        projections,
-        class_index,
-    )
+        projections=projections,
+        class_index=class_index,
+                            )
     registry_classes = tuple(
         indexed_class
         for indexed_class in class_index.classes_by_symbol.values()
@@ -4220,9 +4224,9 @@ class ImplicitSelfContractMixinDetector(
                     consumers=sorted_tuple(
                         (
                             SourceLocation(
-                                consumer.file_path,
-                                consumer.line,
-                                class_index.display_name(consumer),
+                                file_path=consumer.file_path,
+                                line=consumer.line,
+                                symbol=class_index.display_name(consumer),
                             )
                             for consumer in consumers
                         ),
@@ -4820,7 +4824,7 @@ class SchemaAccessorFamilyCandidate(CollectsItself,
     requirement_modes: tuple[str, ...]
     coercion_kinds: tuple[str, ...]
     evidence: ClassVar[ZippedSourceLocationEvidenceProperty] = (
-        ZippedSourceLocationEvidenceProperty("line_numbers", "method_names")
+        ZippedSourceLocationEvidenceProperty(line_numbers_attribute_name="line_numbers", symbol_names_attribute_name="method_names")
     )
 
     _SCHEMA_ACCESSOR_FETCH_METHOD_NAMES = frozenset({"required", "optional"})
@@ -5655,7 +5659,7 @@ class SemanticWitnessFamilyDetector(
     ) -> RefactorFinding:
         evidence = tuple(
             (
-                SourceLocation(witness_candidate.file_path, line, class_name)
+                SourceLocation(file_path=witness_candidate.file_path, line=line, symbol=class_name)
                 for class_name, line in zip(
                     witness_candidate.class_names,
                     witness_candidate.line_numbers,

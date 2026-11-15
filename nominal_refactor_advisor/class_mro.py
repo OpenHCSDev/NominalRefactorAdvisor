@@ -299,4 +299,4 @@ class ClassMroAuthority:
             projected = DeclarationMroType.from_declaration(declaration, tuple(bases))
         except TypeError:
             return InconsistentHierarchy(symbol)
-        return ResolvedClassMro(symbol, projected)
+        return ResolvedClassMro(class_symbol=symbol, declaration_type=projected)

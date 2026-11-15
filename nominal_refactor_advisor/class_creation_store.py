@@ -228,12 +228,12 @@ class CreatedClassStore:
     def _callee(self, func: ast.expr, receiver: str | None) -> _Callee | None:
         match func:
             case ast.Name(id=name) if name in self.functions:
-                return _Callee(self.functions[name], False)
+                return _Callee(function=self.functions[name], binds_receiver=False)
             case ast.Attribute(value=ast.Name(id=owner), attr=name) if (
                 owner == receiver and name in self.methods
             ):
                 method = self.methods[name]
-                return _Callee(method, not _is_static(method))
+                return _Callee(function=method, binds_receiver=not _is_static(method))
         return None
 
     @staticmethod

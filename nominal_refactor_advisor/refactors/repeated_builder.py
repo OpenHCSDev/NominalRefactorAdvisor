@@ -496,7 +496,7 @@ class ExistingMethodOwner(OwnerCandidate):
         served = tuple(
             call_site for call_site in call_sites if self.is_inherited_by(context, call_site)
         )
-        location = SourceLocation(self.declaration.file_path, self.method.lineno, self.symbol)
+        location = SourceLocation(file_path=self.declaration.file_path, line=self.method.lineno, symbol=self.symbol)
         receipts = [
             Receipt(
                 OwnerReceiptKind.SERVES_CALL_SITES,
@@ -509,10 +509,10 @@ class ExistingMethodOwner(OwnerCandidate):
         if descent is None:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.NO_EXACT_SUBSTITUTION,
-                    f"`{self.symbol}` has no complete exact parameter substitution "
+                    kind=OwnerReceiptKind.NO_EXACT_SUBSTITUTION,
+                    detail=f"`{self.symbol}` has no complete exact parameter substitution "
                     "for its inheriting call sites",
-                    (location,),
+                    evidence=(location,),
                 )
             )
         return replace(
@@ -822,7 +822,7 @@ class RepeatedBuilderSourceDerivation(ABC):
             edits.append(
                 SourceSpanReplacement(
                     file_path=participant.source_path,
-                    span=SourceLineSpan(participant.target.line, participant.target.end_line),
+                    span=SourceLineSpan(start_line=participant.target.line, end_line=participant.target.end_line),
                     replacement_lines=SourceTargetEditor.source_lines(
                         geometry.target_source_with_replacements(
                             participant.target,
@@ -2000,7 +2000,7 @@ class RepeatedBuilderAuthorityDerivation(
         return (
             SourceSpanReplacement(
                 file_path=self.authority.file_path,
-                span=SourceLineSpan(self.authority.target.line, self.authority.target.end_line),
+                span=SourceLineSpan(start_line=self.authority.target.line, end_line=self.authority.target.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(constructor_source),
                 rationale=(
                     "Insert the source-derived builder on its constructor authority."

@@ -214,8 +214,10 @@ class ClassUse:
     @property
     def location(self) -> SourceLocation:
         return SourceLocation(
-            self.file_path, self.reference.line, self.consumer or "<module>"
-        )
+            file_path=self.file_path,
+            line=self.reference.line,
+            symbol=self.consumer or "<module>",
+               )
 
 
 @dataclass(frozen=True)
@@ -287,7 +289,7 @@ class ClassUseIndex:
         found = self.__dict__.setdefault("_uses", {})
         if symbol not in found:
             found[symbol] = tuple(
-                ClassUse(projection.file_path, reference, role)
+                ClassUse(file_path=projection.file_path, reference=reference, role=role)
                 for projection, reference in self.references_by_terminal_name.get(
                     symbol.rpartition(".")[2], ()
                 )
@@ -351,7 +353,7 @@ class ClassUseIndex:
 
 def _location(indexed_class: CompactIndexedClass, line: int | None = None, member: str | None = None) -> SourceLocation:
     symbol = indexed_class.qualname if member is None else f"{indexed_class.qualname}.{member}"
-    return SourceLocation(indexed_class.file_path, indexed_class.line if line is None else line, symbol)
+    return SourceLocation(file_path=indexed_class.file_path, line=indexed_class.line if line is None else line, symbol=symbol)
 
 
 def _shared_locations(shared: SharedClassBodyDeclaration) -> tuple[SourceLocation, SourceLocation]:
@@ -743,28 +745,28 @@ class ClassOverlapVerdicts:
         )
         shared_receipts = tuple(
             Receipt(
-                shared.kind.shared_receipt,
-                shared.receipt_text,
-                _shared_locations(shared),
+                kind=shared.kind.shared_receipt,
+                detail=shared.receipt_text,
+                evidence=_shared_locations(shared),
             )
             for shared in extractable
         )
         differing_receipts = tuple(
             Receipt(
-                OverlapReceiptKind.DECLARATION_DIFFERS,
-                f"`{shared.name}` is declared differently in each class: one "
+                kind=OverlapReceiptKind.DECLARATION_DIFFERS,
+                detail=f"`{shared.name}` is declared differently in each class: one "
                 "declaration cannot serve both, so the repair keeps each declaration",
-                _shared_locations(shared),
+                evidence=_shared_locations(shared),
             )
             for shared in extractable
             if shared.declaration_differs
         )
         axis_receipts = tuple(
             Receipt(
-                OverlapReceiptKind.FAMILY_AXIS_VALUE,
-                f"`{shared.name}` is equal here but `{axis[shared.name]}` answers "
+                kind=OverlapReceiptKind.FAMILY_AXIS_VALUE,
+                detail=f"`{shared.name}` is equal here but `{axis[shared.name]}` answers "
                 "it differently: a row of the family's value table, not a shared block",
-                _shared_locations(shared),
+                evidence=_shared_locations(shared),
             )
             for shared in overlap.shared
             if shared.name in axis
@@ -822,10 +824,10 @@ class ClassOverlapVerdicts:
                     if co_restating is None
                     else (
                         Receipt(
-                            OverlapReceiptKind.EXISTING_OWNER,
-                            f"`{owner.qualname}` already declares the block; both "
+                            kind=OverlapReceiptKind.EXISTING_OWNER,
+                            detail=f"`{owner.qualname}` already declares the block; both "
                             "classes restate it",
-                            (_location(owner),),
+                            evidence=(_location(owner),),
                         ),
                     )
                 ),
@@ -1110,10 +1112,10 @@ class ClassOverlapVerdicts:
 
         return tuple(
             Receipt(
-                OverlapReceiptKind.INHERITED_DECLARATION,
-                f"`{indexed_class.qualname}` inherits `{shared.name}` from "
+                kind=OverlapReceiptKind.INHERITED_DECLARATION,
+                detail=f"`{indexed_class.qualname}` inherits `{shared.name}` from "
                 f"`{owner.qualname}`: the move deletes only declarations a class makes itself",
-                _shared_locations(shared),
+                evidence=_shared_locations(shared),
             )
             for shared in overlap.inherited
             for indexed_class, owner in (
@@ -1133,9 +1135,9 @@ class ClassOverlapVerdicts:
             return ()
         return (
             Receipt(
-                OverlapReceiptKind.FEW_DECLARATIONS,
-                f"only {len(extractable)} shared declaration(s)",
-                (_location(first), _location(second)),
+                kind=OverlapReceiptKind.FEW_DECLARATIONS,
+                detail=f"only {len(extractable)} shared declaration(s)",
+                evidence=(_location(first), _location(second)),
             ),
         )
 
@@ -1150,11 +1152,11 @@ class ClassOverlapVerdicts:
             return ()
         return (
             Receipt(
-                OverlapReceiptKind.IDENTITY_DECLARED,
-                f"{len(shared_members)} shared enum member(s) "
+                kind=OverlapReceiptKind.IDENTITY_DECLARED,
+                detail=f"{len(shared_members)} shared enum member(s) "
                 f"({', '.join(shared.name for shared in shared_members[:4])}) are "
                 "identities of each enum and stay where they are",
-                tuple(
+                evidence=tuple(
                     _location(shared.first_owner, shared.first_line, shared.name)
                     for shared in shared_members[:4]
                 ),
@@ -1167,9 +1169,9 @@ class ClassOverlapVerdicts:
     ) -> tuple[Receipt, ...]:
         return tuple(
             Receipt(
-                OverlapReceiptKind.KEPT_DIFFERENCE,
-                f"`{divergent.name}` answers differently and stays in each class",
-                (
+                kind=OverlapReceiptKind.KEPT_DIFFERENCE,
+                detail=f"`{divergent.name}` answers differently and stays in each class",
+                evidence=(
                     _location(overlap.first, divergent.first.line, divergent.name),
                     _location(overlap.second, divergent.second.line, divergent.name),
                 ),
@@ -1184,11 +1186,11 @@ class ClassOverlapVerdicts:
         if not shared:
             return (
                 Receipt(
-                    OverlapReceiptKind.NO_SHARED_CONSUMER,
-                    f"no function or class uses both (`{first.qualname}`: "
+                    kind=OverlapReceiptKind.NO_SHARED_CONSUMER,
+                    detail=f"no function or class uses both (`{first.qualname}`: "
                     f"{len(self.uses.consumers_of(first))} consumer(s), "
                     f"`{second.qualname}`: {len(self.uses.consumers_of(second))})",
-                    (_location(first), _location(second)),
+                    evidence=(_location(first), _location(second)),
                 ),
             )
         uses = {
@@ -1197,10 +1199,10 @@ class ClassOverlapVerdicts:
         }
         return (
             Receipt(
-                OverlapReceiptKind.SHARED_CONSUMER,
-                f"{len(shared)} consumer(s) use both: "
+                kind=OverlapReceiptKind.SHARED_CONSUMER,
+                detail=f"{len(shared)} consumer(s) use both: "
                 + ", ".join(f"`{consumer}`" for _file_path, consumer in shared[:4]),
-                tuple(uses[key].location for key in shared[:4]),
+                evidence=tuple(uses[key].location for key in shared[:4]),
             ),
         )
 
@@ -1215,16 +1217,16 @@ class ClassOverlapVerdicts:
             ancestor = self.class_index.class_for(common[0])
             return (
                 Receipt(
-                    OverlapReceiptKind.SAME_FAMILY,
-                    f"both descend from scanned `{common[0]}`",
-                    () if ancestor is None else (_location(ancestor),),
+                    kind=OverlapReceiptKind.SAME_FAMILY,
+                    detail=f"both descend from scanned `{common[0]}`",
+                    evidence=() if ancestor is None else (_location(ancestor),),
                 ),
             )
         return (
             Receipt(
-                OverlapReceiptKind.SEPARATE_FAMILIES,
-                "no scanned ancestor in common",
-                (_location(first), _location(second)),
+                kind=OverlapReceiptKind.SEPARATE_FAMILIES,
+                detail="no scanned ancestor in common",
+                evidence=(_location(first), _location(second)),
             ),
         )
 
@@ -1237,9 +1239,9 @@ class ClassOverlapVerdicts:
         if _construction(first) == _construction(second):
             return (
                 Receipt(
-                    OverlapReceiptKind.SAME_CONSTRUCTION,
-                    "same dataclass declaration, metaclass and class keywords",
-                    (_location(first), _location(second)),
+                    kind=OverlapReceiptKind.SAME_CONSTRUCTION,
+                    detail="same dataclass declaration, metaclass and class keywords",
+                    evidence=(_location(first), _location(second)),
                 ),
             )
         differences: list[str] = []
@@ -1269,17 +1271,17 @@ class ClassOverlapVerdicts:
         ):
             return (
                 Receipt(
-                    OverlapReceiptKind.SAME_CONSTRUCTION,
-                    "class keywords differ but a new mixin does not inherit them",
-                    (_location(first), _location(second)),
+                    kind=OverlapReceiptKind.SAME_CONSTRUCTION,
+                    detail="class keywords differ but a new mixin does not inherit them",
+                    evidence=(_location(first), _location(second)),
                 ),
             )
         detail = ", ".join(differences)
         return (
             Receipt(
-                OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
-                f"`{first.qualname}` and `{second.qualname}` differ in {detail}",
-                (_location(first), _location(second)),
+                kind=OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
+                detail=f"`{first.qualname}` and `{second.qualname}` differ in {detail}",
+                evidence=(_location(first), _location(second)),
             ),
         )
 
@@ -1302,19 +1304,19 @@ class ClassOverlapVerdicts:
             if identity_uses:
                 receipts.append(
                     Receipt(
-                        OverlapReceiptKind.IDENTITY_USED,
-                        f"`{indexed_class.qualname}` is told apart by type in "
+                        kind=OverlapReceiptKind.IDENTITY_USED,
+                        detail=f"`{indexed_class.qualname}` is told apart by type in "
                         f"{len(identity_uses)} place(s) "
                         f"({', '.join(sorted({use.role.value for use in identity_uses}))})",
-                        tuple(use.location for use in identity_uses[:4]),
+                        evidence=tuple(use.location for use in identity_uses[:4]),
                     )
                 )
             if reasons := _declared_identity_reasons(indexed_class):
                 receipts.append(
                     Receipt(
-                        OverlapReceiptKind.IDENTITY_DECLARED,
-                        f"`{indexed_class.qualname}`: {'; '.join(reasons)}",
-                        (_location(indexed_class),),
+                        kind=OverlapReceiptKind.IDENTITY_DECLARED,
+                        detail=f"`{indexed_class.qualname}`: {'; '.join(reasons)}",
+                        evidence=(_location(indexed_class),),
                     )
                 )
             for name, line, tag in _literal_tags(
@@ -1322,10 +1324,10 @@ class ClassOverlapVerdicts:
             ):
                 receipts.append(
                     Receipt(
-                        OverlapReceiptKind.IDENTITY_DECLARED,
-                        f"`{indexed_class.qualname}.{name}` is the literal tag "
+                        kind=OverlapReceiptKind.IDENTITY_DECLARED,
+                        detail=f"`{indexed_class.qualname}.{name}` is the literal tag "
                         f"{tag!r}, a wire identity of this class",
-                        (_location(indexed_class, line, name),),
+                        evidence=(_location(indexed_class, line, name),),
                     )
                 )
         return tuple(receipts)
@@ -1335,7 +1337,7 @@ def class_overlap_candidates(
     projections: Iterable[CompactModuleClassProjection],
     class_index: CompactClassFamilyIndex,
 ) -> tuple[ClassOverlapCandidate, ...]:
-    return ClassOverlapVerdicts(tuple(projections), class_index).candidates
+    return ClassOverlapVerdicts(projections=tuple(projections), class_index=class_index).candidates
 
 
 __all__ = (

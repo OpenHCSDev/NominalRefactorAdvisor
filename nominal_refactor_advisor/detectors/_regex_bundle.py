@@ -207,7 +207,7 @@ class RegexBundleModuleProjection(ParsedModuleFact):
         for qualname, function in module.syntax_index.named_functions:
             literals = projection.literals_for(function)
             if literals:
-                bundle = FunctionRegexBundle(qualname, literals)
+                bundle = FunctionRegexBundle(function_name=qualname, literal_lines=literals)
                 grouped[bundle.owner_name].append(bundle)
         candidates = []
         for owner_name, bundles in grouped.items():

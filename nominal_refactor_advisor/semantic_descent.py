@@ -802,10 +802,10 @@ class SemanticFact(SemanticFactReference):
             name=name,
             aliases=(name,),
             location=SourceLocation(
-                indexed_class.file_path,
-                line,
-                f"{indexed_class.qualname}.{name}",
-            ),
+                file_path=indexed_class.file_path,
+                line=line,
+                symbol=f"{indexed_class.qualname}.{name}",
+                     ),
         )
 
     @classmethod
@@ -825,10 +825,10 @@ class SemanticFact(SemanticFactReference):
                 (name,) if string_value is None else sorted_tuple((name, string_value))
             ),
             location=SourceLocation(
-                indexed_class.file_path,
-                line,
-                f"{indexed_class.qualname}.{name}",
-            ),
+                file_path=indexed_class.file_path,
+                line=line,
+                symbol=f"{indexed_class.qualname}.{name}",
+                     ),
         )
 
 
@@ -1639,7 +1639,7 @@ class SemanticAuthorityMatch(DataclassJsonReport):
     def from_facts(cls, facts: tuple[SemanticFact, ...]) -> SemanticAuthorityMatch:
         return cls(
             fact_refs=tuple(
-                SemanticFactReference(fact.authority_id, fact.fact_id) for fact in facts
+                SemanticFactReference(authority_id=fact.authority_id, fact_id=fact.fact_id) for fact in facts
             ),
             tokens=sorted_tuple(
                 {
@@ -1669,7 +1669,7 @@ class SemanticAuthorityMatch(DataclassJsonReport):
                 continue
             fact_ref = active_fact_references.get(fact.fact_id)
             if fact_ref is None:
-                fact_ref = SemanticFactReference(fact.authority_id, fact.fact_id)
+                fact_ref = SemanticFactReference(authority_id=fact.authority_id, fact_id=fact.fact_id)
                 active_fact_references[fact.fact_id] = fact_ref
             fact_refs.append(fact_ref)
         if len(fact_refs) < 2:
@@ -2830,10 +2830,10 @@ class SemanticDescentGraphModuleOverlay:
         ).build()
         projections = self.merged_projections(class_index)
         graph_space = SemanticDescentGraphSpace(
-            authority_catalog.authorities,
-            authority_catalog.facts,
-            projections,
-        )
+            authorities=authority_catalog.authorities,
+            facts=authority_catalog.facts,
+            projections=projections,
+                      )
         resolution = self.merged_resolution(graph_space, class_index)
         return SemanticDescentGraph.from_resolution(
             graph_space,
@@ -2847,11 +2847,11 @@ class SemanticDescentGraphModuleOverlay:
         class_index: ClassFamilyIndex,
     ) -> SemanticAuthorityProjectionResolution:
         return SemanticMirrorResolver(
-            graph_space.authorities,
-            graph_space.facts,
-            graph_space.projections,
-            class_index,
-        ).resolve()
+            authorities=graph_space.authorities,
+            facts=graph_space.facts,
+            projections=graph_space.projections,
+            class_index=class_index,
+               ).resolve()
 
     def merged_class_index(self) -> ClassFamilyIndex:
         return ClassFamilyIndexBuilder(self.modules).build()
@@ -2868,9 +2868,9 @@ class SemanticDescentGraphModuleOverlay:
             not in changed_path_texts
         )
         changed_projections = SemanticProjectionCollector(
-            self.changed_modules,
-            class_index,
-        ).collect()
+            modules=self.changed_modules,
+            class_index=class_index,
+                              ).collect()
         return sorted_tuple(
             (*unchanged_projections, *changed_projections),
             key=lambda item: (item.location.file_path, item.location.line, item.label),
@@ -2974,13 +2974,13 @@ class SemanticDescentGraphReport(SemanticRecord):
             relation_count=len(graph.relations),
             missing_descent_count=len(graph.missing_descent_relations),
             authorities_by_kind=tuple(
-                SemanticDescentAuthorityKindCount(authority_kind, count)
+                SemanticDescentAuthorityKindCount(authority_kind=authority_kind, count=count)
                 for authority_kind, count in sorted(
                     Counter(authority.kind for authority in graph.authorities).items()
                 )
             ),
             projections_by_kind=tuple(
-                SemanticDescentProjectionKindCount(projection_kind, count)
+                SemanticDescentProjectionKindCount(projection_kind=projection_kind, count=count)
                 for projection_kind, count in sorted(
                     Counter(projection.kind for projection in graph.projections).items()
                 )
@@ -3505,7 +3505,7 @@ class SemanticDescentGraphCacheEntry:
             )
         except CacheCheckoutPathError:
             return SemanticDescentGraphCacheMiss()
-        return SemanticDescentGraphCacheHit(graph, requested_identity)
+        return SemanticDescentGraphCacheHit(graph=graph, identity=requested_identity)
 
 
 @dataclass(frozen=True)
@@ -3704,7 +3704,7 @@ class SemanticDescentGraphCache(PublishesCacheFiles):
             self.storage_root.mkdir(parents=True, exist_ok=True)
             self._store_typed_payload_atomic(
                 self._entry_path(identity),
-                SemanticDescentGraphCacheEntry(identity, validated_graph),
+                SemanticDescentGraphCacheEntry(identity=identity, graph=validated_graph),
             )
             pointer = SemanticDescentGraphLatestPointer.from_identity(identity)
             self._store_typed_payload_atomic(
@@ -3768,21 +3768,21 @@ class SemanticDescentGraphBuildRequest:
         ).build()
         scan_deadline_checkpoint("semantic_descent_projections")
         projections = SemanticProjectionCollector(
-            self.modules,
-            class_index,
-        ).collect()
+            modules=self.modules,
+            class_index=class_index,
+                      ).collect()
         scan_deadline_checkpoint("semantic_descent_mirror_edges")
         resolution = SemanticMirrorResolver(
-            authority_catalog.authorities,
-            authority_catalog.facts,
-            projections,
-            class_index,
-        ).resolve()
+            authorities=authority_catalog.authorities,
+            facts=authority_catalog.facts,
+            projections=projections,
+            class_index=class_index,
+                     ).resolve()
         graph_space = SemanticDescentGraphSpace(
-            authority_catalog.authorities,
-            authority_catalog.facts,
-            projections,
-        )
+            authorities=authority_catalog.authorities,
+            facts=authority_catalog.facts,
+            projections=projections,
+                      )
         scan_deadline_checkpoint("semantic_descent_certificates")
         return SemanticDescentGraph.from_resolution(
             graph_space,
@@ -3864,9 +3864,9 @@ class SemanticAuthorityBuilder:
         supplements_by_symbol: Mapping[str, SemanticClassSupplement],
     ) -> SemanticAuthorityBuilder:
         context = CompactSemanticAuthorityBuildContext(
-            class_index,
-            supplements_by_symbol,
-        )
+            class_index=class_index,
+            supplements_by_symbol=supplements_by_symbol,
+                  )
         return cls(
             tuple(
                 context.declaration_for(indexed_class)
@@ -4044,14 +4044,12 @@ class ClassFamilySemanticAuthorityProvider:
             return None
         supplement = declaration.supplement
         return SemanticAuthorityProviderResult(
-            (
-                SemanticAuthorityKind.AUTOREGISTER_FAMILY
+                kind=SemanticAuthorityKind.AUTOREGISTER_FAMILY
                 if declaration.indexed_class.declares_autoregister_meta
                 or (supplement is not None and supplement.declares_registry_shape)
-                else SemanticAuthorityKind.CLASS_FAMILY
-            ),
-            declaration.class_facts,
-        )
+                else SemanticAuthorityKind.CLASS_FAMILY,
+                facts=declaration.class_facts,
+               )
 
 
 class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
@@ -4075,9 +4073,9 @@ class DataclassSemanticAuthorityProvider(ClassFamilySemanticAuthorityProvider):
         )
         if len(facts) >= 2:
             return SemanticAuthorityProviderResult(
-                SemanticAuthorityKind.DATACLASS_SCHEMA,
-                facts,
-            )
+                kind=SemanticAuthorityKind.DATACLASS_SCHEMA,
+                facts=facts,
+                   )
         return super().provide(declaration)
 
 
@@ -4102,9 +4100,9 @@ class SemanticAuthorityProvider(DataclassSemanticAuthorityProvider):
             )
             if len(facts) >= 2:
                 return SemanticAuthorityProviderResult(
-                    SemanticAuthorityKind.ENUM,
-                    facts,
-                )
+                    kind=SemanticAuthorityKind.ENUM,
+                    facts=facts,
+                       )
         return super().provide(declaration)
 
 
@@ -4464,19 +4462,19 @@ class CompactSemanticDescentRepository:
         """Resolve mirror relations without retaining matching-only caches."""
 
         resolver = SemanticMirrorResolver(
-            self.authority_catalog.authorities,
-            self.authority_catalog.facts,
-            self.resolved_projections,
-            self.class_index,
-            self.supplements,
-        )
+            authorities=self.authority_catalog.authorities,
+            facts=self.authority_catalog.facts,
+            projections=self.resolved_projections,
+            class_index=self.class_index,
+            compact_class_supplements=self.supplements,
+                   )
         relation_resolution = resolver.resolve()
         return CompactSemanticDescentResolution(
             graph_space=SemanticDescentGraphSpace(
-                resolver.authorities,
-                resolver.facts,
-                resolver.projections,
-            ),
+                authorities=resolver.authorities,
+                facts=resolver.facts,
+                projections=resolver.projections,
+                        ),
             relation_resolution=relation_resolution,
         )
 
@@ -4553,12 +4551,12 @@ class MappingReadProjectionCollector(OwnScopeNodeVisitor):
             if isinstance(child, ast.keyword):
                 for keyword in CallKeywords.of((child,)).named:
                     constructions.add(
-                        KeywordMappingReadArgument(parts, key, keyword.name)
+                        KeywordMappingReadArgument(reference_parts=parts, key=key, field_name=keyword.name)
                     )
             for position, argument in enumerate(ancestor.args):
                 if argument is child:
                     constructions.add(
-                        PositionalMappingReadArgument(parts, key, position)
+                        PositionalMappingReadArgument(reference_parts=parts, key=key, position=position)
                     )
         self.reads.setdefault(ast.unparse(subject), []).append(
             (node, key, constructions)
@@ -4706,7 +4704,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self.class_reference_resolver = (
             None
             if class_index is None or not include_presentations
-            else ModuleClassReferenceResolver(parsed_module, class_index)
+            else ModuleClassReferenceResolver(parsed_module=parsed_module, class_index=class_index)
         )
         self.deferred_class_reference_collector = (
             DeferredModuleClassReferenceCollector(parsed_module)
@@ -4812,12 +4810,10 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                     )
                     constructors = tuple(
                         MappingReadConstructor(
-                            (
-                                tuple(self.class_stack)
+                                reference_parts=tuple(self.class_stack)
                                 if parts == (classmethod_receiver,)
-                                else parts
-                            ),
-                            tuple(
+                                else parts,
+                                arguments=tuple(
                                 sorted(
                                     {
                                         argument
@@ -4942,13 +4938,13 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        StatementValue.of(node).answer(_AnnotatedPresentation(self, node))
+        StatementValue.of(node).answer(_AnnotatedPresentation(visitor=self, statement=node))
 
     def visit_Return(self, node: ast.Return) -> None:
         if not self.include_presentations:
             self.generic_visit(node)
             return
-        StatementValue.of(node).answer(_ReturnedPresentation(self, node))
+        StatementValue.of(node).answer(_ReturnedPresentation(visitor=self, statement=node))
 
     def visit_If(self, node: ast.If) -> None:
         if not self.include_presentations:
@@ -5172,7 +5168,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                 kind=kind,
                 label=label,
                 owner_symbol=self.qualname,
-                location=SourceLocation(self.parsed_module.file_path, line, label),
+                location=SourceLocation(file_path=self.parsed_module.file_path, line=line, symbol=label),
                 tokens=sorted_tuple(frozenset(tokens), key=PresentationToken.ordering),
                 source_text="",
                 owner_constructions=sorted_tuple(
@@ -6155,7 +6151,7 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
 
     @cached_property
     def projection_class_symbol_lineage(self) -> ProjectionClassSymbolLineageIndex:
-        return ProjectionClassSymbolLineageIndex(self.class_index, self.projections)
+        return ProjectionClassSymbolLineageIndex(class_index=self.class_index, projections=self.projections)
 
     @cached_property
     def construction_resolver(self) -> ConstructionAuthorityResolver:
@@ -6233,11 +6229,11 @@ class SemanticMirrorResolver(SemanticDescentGraphSpace):
                     set(),
                 ).add(token.value)
         for match in ProjectionClassSymbolFactMatcher(
-            projection,
-            self.class_index,
-            self.authority_catalog,
-            self.fact_authority_index,
-        ).matches():
+            projection=projection,
+            class_index=self.class_index,
+            authority_catalog=self.authority_catalog,
+            fact_authority_index=self.fact_authority_index,
+                     ).matches():
             matches_by_authority.setdefault(match.authority_id, {}).setdefault(
                 match.fact_id,
                 set(),

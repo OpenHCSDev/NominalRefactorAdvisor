@@ -54,11 +54,11 @@ class SourceDocumentCorrespondence(CodemodDocumentSimulationCarrier):
         digest = compiler.source_index.target_by_id[
             target.required_target_id(compiler.source_index)
         ]
-        editor = SourceTargetEditor(compiler.sources_by_file_path, digest)
+        editor = SourceTargetEditor(sources=compiler.sources_by_file_path, target=digest)
         windows = editor.ordered_windows(
             window for window in batch.windows if window.physical_edit.file_path == path
         )
-        return SourceRetainedSpanIndex(self.before_geometry, windows)
+        return SourceRetainedSpanIndex(geometry=self.before_geometry, ordered_inputs=windows)
 
     def __post_init__(self) -> None:
         original = self.before.module
@@ -198,7 +198,7 @@ class SourceClassSuiteCorrespondence(SourceDocumentCorrespondence):
     ) -> SourceTextSpan:
         return SourceTextSpan(
             *geometry.node_span_offsets(
-                SourceNodeSpan(statement, Include)
+                SourceNodeSpan(node=statement, decorator_policy=Include)
             )
         )
 

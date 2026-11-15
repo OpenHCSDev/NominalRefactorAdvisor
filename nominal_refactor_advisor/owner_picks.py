@@ -123,19 +123,21 @@ class OwnerPicks:
             if covering is not None:
                 picks_by_finding[finding.stable_id] = covering[1]
                 outcomes[finding.stable_id] = OwnerPickOutcome(
-                    finding.stable_id, "covered", f"by the pick on {covering[0]}"
-                )
+                    finding=finding.stable_id,
+                    outcome="covered",
+                    detail=f"by the pick on {covering[0]}",
+                                              )
                 continue
             outcomes[finding.stable_id] = OwnerPickOutcome(
-                finding.stable_id,
-                "missing",
-                "no pick; candidates: "
+                finding=finding.stable_id,
+                outcome="missing",
+                detail="no pick; candidates: "
                 + ", ".join(
                     f"{owner.candidate_id} ({owner.confidence:.2f})"
                     for owner in finding.metrics.owner_candidates
                     if owner.permitted
                 ),
-            )
+                                          )
         present = frozenset(finding.stable_id for finding in mixins)
         return (
             [

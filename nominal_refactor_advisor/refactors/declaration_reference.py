@@ -299,8 +299,8 @@ class UnquoteResolvedTypeNamesOperation(DeclarationReferenceOperation):
         parents = parsed.syntax_index.parent_by_node
         return tuple(
             SpanRewrite(
-                quoted.node,
-                self.reference_source(quoted, parents.get(quoted.node)),
+                node=quoted.node,
+                replacement_source=self.reference_source(quoted, parents.get(quoted.node)),
             )
             for quoted in parsed.fact(ParsedModuleReferenceScope).unquotable(
                 DeclaredInterpreter.of(Path(path))
@@ -350,7 +350,7 @@ class ReferenceImportedModuleOperation(DeclarationReferenceOperation):
     def rewrites(self, context, parsed, path):
         scope = parsed.fact(ParsedModuleReferenceScope)
         return tuple(
-            SpanRewrite(spelled.replaced, reference)
+            SpanRewrite(node=spelled.replaced, replacement_source=reference)
             for spelled in SpelledModules(scope.nodes)
             if spelled.replaced is not None
             and (reference := scope.module_reference(spelled)) is not None
@@ -383,7 +383,7 @@ class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
             if named is None:
                 continue
             replacement, how = named
-            found[id(node)] = SpanRewrite(node, replacement)
+            found[id(node)] = SpanRewrite(node=node, replacement_source=replacement)
             if how.statement is not None:
                 imported.setdefault(how.statement, {})[how.name] = None
             elif how.created:

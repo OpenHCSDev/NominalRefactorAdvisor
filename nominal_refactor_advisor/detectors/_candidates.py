@@ -54,10 +54,10 @@ class SourceLocationEvidenceProperty:
         if instance is None:
             return self
         return SourceLocation(
-            _attribute_projection(self.file_attribute_name)(instance),
-            _attribute_projection(self.line_attribute_name)(instance),
-            _attribute_projection(self.symbol_attribute_name)(instance),
-        )
+            file_path=_attribute_projection(self.file_attribute_name)(instance),
+            line=_attribute_projection(self.line_attribute_name)(instance),
+            symbol=_attribute_projection(self.symbol_attribute_name)(instance),
+               )
 
 
 @dataclass(frozen=True)
@@ -108,7 +108,7 @@ class ClassMethodFamilyCandidate(
     def evidence(self) -> tuple[SourceLocation, ...]:
         return tuple(
             (
-                SourceLocation(self.file_path, line, f"{self.class_name}.{method_name}")
+                SourceLocation(file_path=self.file_path, line=line, symbol=f"{self.class_name}.{method_name}")
                 for method_name, line in zip(
                     self.method_names, self.line_numbers, strict=True
                 )

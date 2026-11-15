@@ -616,7 +616,7 @@ class ArchitectureGuardSuite:
     def clean_report(self) -> ArchitectureGuardReport:
         """Return the canonical clean report for this suite without source work."""
 
-        return ArchitectureGuardReport(self.rules, ())
+        return ArchitectureGuardReport(rules=self.rules, violations=())
 
     def to_tuple(self) -> tuple[ArchitectureGuardRule, ...]:
         return self.rules
@@ -663,7 +663,7 @@ def evaluate_architecture_guards(
         module = ast.parse(source, filename=file_path)
         for resolution in active_rules:
             for match in resolution.matches(module):
-                location = SourceLocation(file_path, match.node.lineno, match.symbol)
+                location = SourceLocation(file_path=file_path, line=match.node.lineno, symbol=match.symbol)
                 target = source_index.targets_by_file.smallest_enclosing_target(
                     file_path,
                     match.node.lineno,

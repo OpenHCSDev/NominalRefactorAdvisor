@@ -302,7 +302,7 @@ class QuantifiedProbeSite(CollectionProbeSite):
                 f"not {absent} and all({rest} for {self.variable} in "
                 f"{iterable_source})"
             )
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise authority.refusal(self.call, "the quantifier holds a comment")
         replacement = authority.fit.fitted(candidate, start, end)
         if candidate.startswith("not ") and not authority.holds_boolean_operand(
@@ -352,7 +352,7 @@ class ComprehensionFilterProbeSite(CollectionProbeSite):
         iterable_start, iterable_end = geometry.required_node_offsets(self.clause.iter)
         condition_start, condition_end = geometry.required_node_offsets(self.condition)
         if geometry.span_contains_comment(
-            SourceTextSpan(iterable_start, condition_end)
+            SourceTextSpan(start_offset=iterable_start, end_offset=condition_end)
         ):
             raise authority.refusal(self.probe, "the filter holds a comment")
         edits = [
@@ -445,7 +445,7 @@ class AnyPresentProbeSite(CollectionProbeSite):
     def replacements(self, authority):
         geometry = authority.geometry
         start, end = geometry.required_node_offsets(self.generator)
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise authority.refusal(self.probe, "the quantifier holds a comment")
         (clause,) = self.generator.generators
         edits = [
@@ -501,7 +501,8 @@ class LoopGuardProbeSite(CollectionProbeSite):
             raise authority.refusal(self.guard, "the guard holds a comment")
         deleted = geometry.statement_deletion_span(
             SourceLineSpan(
-                self.guard.lineno, self.guard.end_lineno or self.guard.lineno
+                start_line=self.guard.lineno,
+                end_line=self.guard.end_lineno or self.guard.lineno,
             )
         )
         deletion_start, deletion_end = geometry.line_span_offsets(
@@ -650,7 +651,7 @@ class IfPresentProbeSite(SingleNodeProbeSite):
                 ):
                     raise authority.refusal(node, "the body rebinds the probed node")
         header_end = geometry.line_offsets[statement.body[0].lineno - 1]
-        if geometry.span_contains_comment(SourceTextSpan(start, header_end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=header_end)):
             raise authority.refusal(statement, "the `if` header holds a comment")
         reads = [
             node
@@ -786,7 +787,7 @@ class SpliceProbeSite(SingleNodeProbeSite):
             authority.parents[self.expression] if self.starred else self.expression
         )
         start, end = authority.geometry.required_node_offsets(replaced)
-        if authority.geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if authority.geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise authority.refusal(self.expression, "the splice holds a comment")
         return (
             SourceTextSpanReplacement.from_offsets(
@@ -902,7 +903,7 @@ class PairedProbeSite(SingleNodeProbeSite):
         geometry = authority.geometry
         start, _ = geometry.required_node_offsets(self.first)
         _, end = geometry.required_node_offsets(self.second)
-        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+        if geometry.span_contains_comment(SourceTextSpan(start_offset=start, end_offset=end)):
             raise authority.refusal(self.probe, "the pair holds a comment")
         decoded = self.decoder.single(authority.source_of(self.subject))
         boolean = authority.parents[self.first]
@@ -2057,8 +2058,8 @@ class RoutedConsumer(MigrationConsumer):
                 snapshot
             )
         except ValueError as error:
-            return Unroutable(file_path, symbol, decoder, str(error))
-        return RoutedConsumer(file_path, symbol, decoder)
+            return Unroutable(file_path=file_path, symbol=symbol, decoder=decoder, reason=str(error))
+        return RoutedConsumer(file_path=file_path, symbol=symbol, decoder=decoder)
 
 
 @dataclass(frozen=True)

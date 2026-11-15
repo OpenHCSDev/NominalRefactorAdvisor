@@ -119,7 +119,7 @@ class DestinationTable:
     def from_texts(cls, texts: Iterable[str]) -> DestinationTable:
         return cls(
             tuple(
-                DestinationRow(match["package"], match["owners"])
+                DestinationRow(package=match["package"], owners=match["owners"])
                 for text in texts
                 for line in text.splitlines()
                 if (match := cls._ROW.match(line)) is not None
@@ -146,7 +146,7 @@ class DestinationTable:
         if self.reads_classes:
             return class_headers(modules)
         return tuple(
-            CompactModuleIdentity(module.module_name, module.file_path) for module in modules
+            CompactModuleIdentity(module_name=module.module_name, file_path=module.file_path) for module in modules
         )
 
     @staticmethod
@@ -172,7 +172,7 @@ class DestinationTable:
 
         if not self.rows:
             return policy
-        return TableDomain(self, policy, roots).policy()
+        return TableDomain(table=self, policy_base=policy, roots=roots).policy()
 
     def destinations(
         self, modules: Iterable[CompactModuleIdentity]
@@ -379,7 +379,7 @@ class TableDomain:
         return tuple(
             (path.resolve(), PythonModulePathIdentity.analysis_root_for_scan_root(root))
             for root in self.roots
-            for path in PythonSourcePathDiscovery(root, self.policy_base).paths()
+            for path in PythonSourcePathDiscovery(root=root, source_policy=self.policy_base).paths()
         )
 
     @cached_property
@@ -1018,11 +1018,11 @@ class PackageMoveFindingRecipeSynthesizer(
             )
         source_path = evidence.file_path
         layers = ClusterLayers(
-            context,
-            metrics.cluster_paths,
-            metrics.cluster_destination_paths,
-            metrics.cluster_merge_source_paths,
-        )
+            context=context,
+            cluster_paths=metrics.cluster_paths,
+            cluster_destinations=metrics.cluster_destination_paths,
+            merge_sources=metrics.cluster_merge_source_paths,
+                 )
         if source_path not in layers.present_paths:
             return self.rejected_evaluation(f"{source_path!r} is already gone")
         if layers.mutual_imports:

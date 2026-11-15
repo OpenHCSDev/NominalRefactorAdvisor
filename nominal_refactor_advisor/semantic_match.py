@@ -180,7 +180,7 @@ class SingleCompareEffectStep(AstTypedEffectStep[ast.Compare, U]):
         comparator = single_item(node.comparators)
         if not isinstance(operator, operator_type) or comparator is None:
             return None
-        return SingleCompareMatch(node.left, operator, comparator)
+        return SingleCompareMatch(left=node.left, operator=operator, right=comparator)
 
 
 @dataclass(frozen=True)
@@ -251,7 +251,7 @@ class AstNameTemplateMatch:
             return None
         return cls(
             tuple(
-                AstTemplateNameBinding(name, bindings_by_name[name])
+                AstTemplateNameBinding(name=name, value=bindings_by_name[name])
                 for name in ordered_names
                 if name in bindings_by_name
             )
@@ -365,7 +365,7 @@ class _AttributeCallMethodStep(GuardedEffectStep[ast.Call, _AttributeCallParts])
             return None
         if self.method_names is not None and attribute.attr not in self.method_names:
             return None
-        return _AttributeCallParts(value, attribute)
+        return _AttributeCallParts(call=value, attribute=attribute)
 
 
 @dataclass(frozen=True)
@@ -386,7 +386,7 @@ class _AttributeCallOwnerStep(
             not self.node_has_owner_name(owner, self.owner_name)
         ):
             return None
-        return _AttributeCallOwnedParts(value.call, value.attribute, owner)
+        return _AttributeCallOwnedParts(call=value.call, attribute=value.attribute, owner=owner)
 
     @staticmethod
     def node_has_owner_name(node: ast.AST | None, owner_name: str) -> bool:
@@ -419,8 +419,11 @@ class _AttributeCallArgumentStep(
         if argument is None:
             return None
         return AttributeCallMatch(
-            value.call, value.attribute, value.owner, argument.argument
-        )
+            call=value.call,
+            attribute=value.attribute,
+            owner=value.owner,
+            single_argument=argument.argument,
+               )
 
     @staticmethod
     def call_argument_match(
@@ -436,7 +439,7 @@ class _AttributeCallArgumentStep(
         ):
             return None
         if argument_name is None and (not required):
-            return CallArgumentMatch(None, tuple(call.args))
+            return CallArgumentMatch(argument=None, arguments=tuple(call.args))
         return (
             Maybe.of(single_item(call.args))
             .project(
@@ -446,7 +449,7 @@ class _AttributeCallArgumentStep(
                     else None
                 )
             )
-            .map(lambda argument: CallArgumentMatch(argument, tuple(call.args)))
+            .map(lambda argument: CallArgumentMatch(argument=argument, arguments=tuple(call.args)))
             .unwrap_or_none()
         )
 
@@ -563,7 +566,7 @@ def named_call_assignment(node: ast.Assign) -> NamedCallAssignment | None:
     call = as_ast(node.value, ast.Call)
     if target is None or call is None:
         return None
-    return NamedCallAssignment(target.id, call)
+    return NamedCallAssignment(target_name=target.id, call=call)
 
 
 def named_assign_value_binding(node: ast.AST) -> NamedValueBinding | None:
@@ -574,8 +577,10 @@ def named_assign_value_binding(node: ast.AST) -> NamedValueBinding | None:
         )
         .map(
             lambda name: NamedValueBinding(
-                name, cast(ast.Assign, node).value, cast(ast.Assign, node).lineno
-            )
+                name=name,
+                value=cast(ast.Assign, node).value,
+                line=cast(ast.Assign, node).lineno,
+                         )
         )
         .unwrap_or_none()
     )
@@ -587,10 +592,10 @@ def named_ann_assign_value_binding(node: ast.AST) -> NamedValueBinding | None:
         .project(lambda assignment: name_id(assignment.target))
         .map(
             lambda name: NamedValueBinding(
-                name,
-                cast(ast.AnnAssign, node).value,
-                cast(ast.AnnAssign, node).lineno,
-            )
+                name=name,
+                value=cast(ast.AnnAssign, node).value,
+                line=cast(ast.AnnAssign, node).lineno,
+                         )
         )
         .unwrap_or_none()
     )
@@ -625,7 +630,7 @@ def collection_literal(
 ) -> CollectionLiteral | None:
     if not isinstance(node, collection_types):
         return None
-    return CollectionLiteral(node, tuple(node.elts))
+    return CollectionLiteral(node=node, elements=tuple(node.elts))
 
 
 def name_id(node: ast.AST | None) -> str | None:
@@ -674,13 +679,13 @@ def attribute_call_match(
         .bind(
             _AttributeCallMethodStep(attribute_method_names(method_name, method_names))
         )
-        .bind(_AttributeCallOwnerStep(owner_type, owner_name))
+        .bind(_AttributeCallOwnerStep(owner_type=owner_type, owner_name=owner_name))
         .bind(
             _AttributeCallArgumentStep(
-                single_argument_name,
-                single_argument_required,
-                argument_count,
-                allow_keywords,
+                single_argument_name=single_argument_name,
+                single_argument_required=single_argument_required,
+                argument_count=argument_count,
+                allow_keywords=allow_keywords,
             )
         )
         .unwrap_or_none()

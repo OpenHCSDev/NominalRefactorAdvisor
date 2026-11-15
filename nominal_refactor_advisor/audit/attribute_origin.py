@@ -33,10 +33,10 @@ def main() -> int:
     ap.add_argument("--foundation", default="")
     args = ap.parse_args()
     repo = Repository(args.repo)
-    census = CensusRun(repo, Undeclared())
+    census = CensusRun(repo=repo, owners=Undeclared())
     existing = repo.python_paths(args.since, args.root)
     foundation = origin_of(repo, args.rev, args.foundation) if args.foundation else None
-    attribution = Attribution(args.since, args.rev)
+    attribution = Attribution(since=args.since, rev=args.rev)
     for path in sorted(repo.python_paths(args.rev, args.root)):
         if path in existing:
             continue

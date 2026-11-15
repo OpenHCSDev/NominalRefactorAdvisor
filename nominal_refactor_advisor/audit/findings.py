@@ -116,7 +116,7 @@ class Package:
                 match node:
                     case ast.FunctionDef(name=name, lineno=start, end_lineno=int() as end) | \
                          ast.AsyncFunctionDef(name=name, lineno=start, end_lineno=int() as end):
-                        visitor = FunctionFacts(node, f"{module.file_path}::{name}", end - start + 1)
+                        visitor = FunctionFacts(node=node, qualname=f"{module.file_path}::{name}", size=end - start + 1)
                         visitor.generic_visit(node)
                         collected.append(visitor)
             facts[module.file_path] = tuple(collected)
@@ -683,9 +683,9 @@ class Overlay:
 
     def baseline(self) -> Baseline:
         return Baseline(
-            frozenset(f.identity() for kind in ListedFinding.members() for f in self.of(kind)),
-            self.package.sizes,
-        )
+            identities=frozenset(f.identity() for kind in ListedFinding.members() for f in self.of(kind)),
+            sizes=self.package.sizes,
+               )
 
     def render(self, top: int, baseline: Baseline | None) -> str:
         lines = [f"WARNING: {len(self.package.unparsed)} files did not parse; re-run with the project's Python."] \

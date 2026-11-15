@@ -673,9 +673,9 @@ class RecipeCallReplacement(SourceRewriteTargetReference, SourceTextReplacement)
         target_identifier = self.target.required_target_id(context.source_index)
         target_digest = context.source_index.target_by_id[target_identifier]
         return SourceTargetEditor(
-            context.sources_by_file_path,
-            target_digest,
-        ).exact_text_replacement(
+            sources=context.sources_by_file_path,
+            target=target_digest,
+               ).exact_text_replacement(
             self,
             rationale=rationale
             or f"Replace source text inside {target_digest.qualname!r}.",
@@ -732,16 +732,16 @@ class ReplaceTargetOperation(SourceReprovedOperation):
                 f"{type(replacement_node).__name__} {replacement_node.name!r}"
             )
         declaration = NamedDeclarationSourceAuthority(
-            target_node,
-            snapshot.sources_by_file_path[target.file_path],
-        )
+            node=target_node,
+            source=snapshot.sources_by_file_path[target.file_path],
+                      )
         span = declaration.geometry.node_line_span(
-            SourceNodeSpan(target_node, self.decorator_policy),
+            SourceNodeSpan(node=target_node, decorator_policy=self.decorator_policy),
         )
         return (
             SourceSpanReplacement(
                 file_path=target.file_path,
-                span=SourceLineSpan(span.start_line, span.end_line),
+                span=SourceLineSpan(start_line=span.start_line, end_line=span.end_line),
                 replacement_lines=SourceTargetEditor.source_lines(
                     self.replacement_block.indented_source(
                         declaration.declaration_indentation,
@@ -776,7 +776,7 @@ class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
     decorators, so a patch can edit a decorator's arguments."""
 
     decorators: type[SourceNodeDecoratorPolicy] = codemod_payload_field(
-        CasePayloadValueCodec(SourceNodeDecoratorPolicy, Exclude), default=Exclude
+        CasePayloadValueCodec(case_root=SourceNodeDecoratorPolicy, declared_default=Exclude), default=Exclude
     )
 
     def source_edits_from_snapshot(

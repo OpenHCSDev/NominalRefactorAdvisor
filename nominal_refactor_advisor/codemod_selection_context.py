@@ -224,9 +224,9 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         cache = self._class_reference_resolvers_by_file_path
         if parsed_module.file_path not in cache:
             cache[parsed_module.file_path] = ModuleClassReferenceResolver(
-                parsed_module,
-                self.required_class_family_index,
-            )
+                parsed_module=parsed_module,
+                class_index=self.required_class_family_index,
+                                             )
         return cache[parsed_module.file_path]
 
     def target_node_for_rewrite_target(

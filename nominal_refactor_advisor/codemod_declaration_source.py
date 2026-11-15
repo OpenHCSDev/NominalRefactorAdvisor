@@ -203,7 +203,7 @@ class NamedDeclarationSourceAuthority:
     def declaration_line_span(self) -> SourceLineSpan:
         """Own the complete declaration, including every decorator marker."""
 
-        return self.geometry.node_line_span(SourceNodeSpan(self.node, Include))
+        return self.geometry.node_line_span(SourceNodeSpan(node=self.node, decorator_policy=Include))
 
     @cached_property
     def name_span(self) -> SourceTextSpan:
@@ -236,9 +236,9 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
         """Resolve the header suffix, including generic parameters, through the colon."""
 
         return SourceTextSpan(
-            self.name_span.end_offset,
-            self.geometry.token_position_offset(self.source_span.end_position),
-        )
+            start_offset=self.name_span.end_offset,
+            end_offset=self.geometry.token_position_offset(self.source_span.end_position),
+               )
 
     @cached_property
     def declaration_prefix(self) -> str:
@@ -250,7 +250,7 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
         """Replace only the header, retaining inline suites and trailing comments."""
 
         start = self.geometry.required_node_offsets(self.node)[0]
-        span = SourceTextSpan(start, self.signature_span.end_offset)
+        span = SourceTextSpan(start_offset=start, end_offset=self.signature_span.end_offset)
         if not self.source_span.is_reconstructible:
             raise ValueError("Class header replacement would discard comments")
         return SourceTextSpanReplacement.from_offsets(
@@ -280,7 +280,7 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
 
     @cached_property
     def source_span(self) -> ClassHeaderSourceSpan:
-        return ClassHeaderSourceSpan(self.node, self.geometry.lines)
+        return ClassHeaderSourceSpan(node=self.node, source_lines=self.geometry.lines)
 
     @property
     def source_lines(self) -> tuple[str, ...]:
@@ -430,7 +430,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
 
     @cached_property
     def header_span(self) -> ClassHeaderSourceSpan:
-        return ClassHeaderSourceSpan(self.node, self.geometry.lines)
+        return ClassHeaderSourceSpan(node=self.node, source_lines=self.geometry.lines)
 
     @property
     def has_inline_suite(self) -> bool:
@@ -461,7 +461,7 @@ class ClassBodySourceAuthority(ClassSourceAuthority):
         if first_method is None:
             return self.body_end_offset
         insertion_line = self.geometry.node_start_line(
-            SourceNodeSpan(first_method, Include)
+            SourceNodeSpan(node=first_method, decorator_policy=Include)
         )
         source_lines = self.geometry.lines
         method_indent = self.indentation
@@ -758,7 +758,7 @@ class FunctionAliasSourceAuthority(FunctionRegionSourceAuthority):
         )
         if reference is None or reference.attribute_path:
             raise ValueError("Function alias requires one implementation name")
-        node_span = SourceNodeSpan(self.node, Include)
+        node_span = SourceNodeSpan(node=self.node, decorator_policy=Include)
         span = SourceTextSpan(*self.geometry.node_span_offsets(node_span))
         if self.geometry.span_contains_comment(span):
             raise ValueError("Function alias would discard comments")
@@ -781,11 +781,11 @@ class DeclarationDecoratorsSourceAuthority(DeclarationRegionSourceAuthority):
     """Own only the decorator block preceding an unchanged declaration header."""
 
     def replacement(self, decorators_source: str, /) -> SourceTextSpanReplacement:
-        first_line = self.geometry.node_start_line(SourceNodeSpan(self.node, Include))
+        first_line = self.geometry.node_start_line(SourceNodeSpan(node=self.node, decorator_policy=Include))
         span = SourceTextSpan(
-            self.geometry.line_offsets[first_line - 1],
-            self.geometry.line_offsets[self.node.lineno - 1],
-        )
+            start_offset=self.geometry.line_offsets[first_line - 1],
+            end_offset=self.geometry.line_offsets[self.node.lineno - 1],
+               )
         if self.geometry.span_contains_comment(span):
             raise ValueError("Declaration decorator replacement would discard comments")
         header = _SingleLogicalLineSource.parse(
@@ -873,8 +873,8 @@ class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
         header_line = self.geometry.line_number_for_offset(signature_end - 1)
         first_statement_line = self.geometry.node_start_line(
             SourceNodeSpan(
-                self.node.body[0],
-                Include,
+                node=self.node.body[0],
+                decorator_policy=Include,
             )
         )
         header_source = self.geometry.lines[header_line - 1]
@@ -891,9 +891,9 @@ class FunctionSuiteSourceAuthority(FunctionRegionSourceAuthority, ABC):
             indentation = self.geometry.line_indent(first_statement_offset)
         return FunctionSuiteLayout(
             span=SourceTextSpan(
-                start_offset,
-                self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
-            ),
+                start_offset=start_offset,
+                end_offset=self.geometry.node_span_offsets(SourceNodeSpan(self.node))[1],
+                 ),
             indentation=indentation,
             newline=newline,
             is_inline=is_inline,
@@ -958,8 +958,8 @@ class FunctionBodyPrefixSourceAuthority(FunctionSuiteSourceAuthority):
         else:
             first_statement_line = self.geometry.node_start_line(
                 SourceNodeSpan(
-                    self.node.body[0],
-                    Include,
+                    node=self.node.body[0],
+                    decorator_policy=Include,
                 )
             )
             insertion = self.geometry.line_offsets[first_statement_line - 1]
@@ -986,7 +986,7 @@ class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority):
         roots = binding.required_references()
         if not attribute_path:
             return roots
-        selector = LexicalValueReference(binding.binding_name, attribute_path)
+        selector = LexicalValueReference(root_name=binding.binding_name, attribute_path=attribute_path)
         parents = AstParentIndex.of(self.node).parent_by_node
         reads = tuple(
             expression
@@ -1029,8 +1029,8 @@ class FunctionBindingProjectionSourceAuthority(FunctionSourceAuthority):
         )
         carrier_reads = frozenset(
             FunctionParameterBinding(
-                projected_function,
-                reference.root_name,
+                node=projected_function,
+                binding_name=reference.root_name,
             ).required_references()
         )
         projected_roots = tuple(

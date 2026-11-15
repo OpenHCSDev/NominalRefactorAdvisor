@@ -222,9 +222,9 @@ class _TypeKeyedBehaviorMethodDescent:
                 "isinstance guard"
             )
         resolver = ModuleClassReferenceResolver(
-            self.source_module,
-            self.class_family_index,
-        )
+            parsed_module=self.source_module,
+            class_index=self.class_family_index,
+                   )
         guarded_symbol = resolver.symbol_for_reference(guarded_type)
         if guarded_symbol != self.target_class.symbol:
             raise ValueError(
@@ -262,11 +262,13 @@ class _TypeKeyedBehaviorMethodDescent:
     def _require_target_module_bindings(self, method: ast.FunctionDef) -> None:
         DeclarationModuleBindingTransfer(
             source=DeclarationModuleBindingEnvironment(
-                self.source_module, self.projection_class.node
-            ),
+                module=self.source_module,
+                scope=self.projection_class.node,
+                   ),
             destination=DeclarationModuleBindingEnvironment(
-                self.target_module, self.target_class.node
-            ),
+                module=self.target_module,
+                scope=self.target_class.node,
+                        ),
         ).require_preserved(method)
 
     def _rewritten_method_source(
@@ -279,9 +281,9 @@ class _TypeKeyedBehaviorMethodDescent:
         source = self.source_module.source
         geometry = SourceTextGeometry(source)
         method_span = SourceNodeSpan(
-            self.projection_method,
-            Include,
-        )
+            node=self.projection_method,
+            decorator_policy=Include,
+                      )
         method_start, method_end = geometry.node_span_offsets(method_span)
         parameter_span = geometry.function_parameter_span(self.projection_method)
         if parameter_span.contains_comment(source):
@@ -623,9 +625,9 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
                 "registry key annotation does not prove ClassVar[type[Target]]"
             )
         resolver = ModuleClassReferenceResolver(
-            snapshot.parsed_module_for_source_path(projection_root.file_path),
-            snapshot.required_class_family_index,
-        )
+            parsed_module=snapshot.parsed_module_for_source_path(projection_root.file_path),
+            class_index=snapshot.required_class_family_index,
+                   )
         if (
             resolver.symbol_for_reference(annotation.slice.slice)
             != component.target_root.symbol
@@ -761,7 +763,7 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
             and sequence.subject.id == subject_name
         ):
             return None
-        return _TypeKeyedBehaviorFacade(method.name, sequence.behavior_method_name)
+        return _TypeKeyedBehaviorFacade(facade_method_name=method.name, behavior_method_name=sequence.behavior_method_name)
 
     def source_edits(self) -> tuple[NominalSourceEdit, ...]:
         self.require_native_uses()
@@ -830,8 +832,8 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
             )
             offsets = geometry.node_span_offsets(
                 SourceNodeSpan(
-                    indexed_class.node,
-                    Include,
+                    node=indexed_class.node,
+                    decorator_policy=Include,
                 )
             )
             trailing_separator = re.match(
@@ -839,10 +841,10 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
                 geometry.source[offsets[1] :],
             )
             span = SourceTextSpan(
-                offsets[0],
-                offsets[1]
+                start_offset=offsets[0],
+                end_offset=offsets[1]
                 + (0 if trailing_separator is None else trailing_separator.end()),
-            )
+                   )
             spans_by_path[indexed_class.file_path].append(span)
             replacements_by_path[indexed_class.file_path].append(
                 SourceTextSpanReplacement.from_offsets(
@@ -922,9 +924,9 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
             geometry = SourceTextGeometry(module.source)
             deleted_spans = deleted_spans_by_path.get(module.file_path, ())
             resolver = ModuleClassReferenceResolver(
-                module,
-                self.snapshot.required_class_family_index,
-            )
+                parsed_module=module,
+                class_index=self.snapshot.required_class_family_index,
+                       )
             for node in module.syntax_index.instances_of(ast.Call):
                 offsets = geometry.required_node_offsets(node)
                 if self._offsets_within_any(offsets, deleted_spans):
@@ -1008,7 +1010,7 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
                     SourceNodeSpan(sequence[0])
                 )
                 _, end_offset = geometry.node_span_offsets(SourceNodeSpan(sequence[-1]))
-                span = SourceTextSpan(start_offset, end_offset)
+                span = SourceTextSpan(start_offset=start_offset, end_offset=end_offset)
                 if span.contains_comment(module.source):
                     raise ValueError(
                         "type-keyed behavior consumer sequence contains comments"
@@ -1065,9 +1067,9 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
         family_names = frozenset(symbol.rsplit(".", 1)[-1] for symbol in family_symbols)
         for module in self.snapshot.parsed_modules:
             resolver = ModuleClassReferenceResolver(
-                module,
-                self.snapshot.required_class_family_index,
-            )
+                parsed_module=module,
+                class_index=self.snapshot.required_class_family_index,
+                       )
             geometry = SourceTextGeometry(module.source)
             allowed_spans = allowed_spans_by_path.get(module.file_path, ())
             for node in module.syntax_index.breadth_first_nodes:
@@ -1153,10 +1155,10 @@ class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
                 offsets = geometry.node_span_offsets(SourceNodeSpan(statement))
                 module_name = ImportFromModuleName.from_node(statement).source
                 replacement_source = ImportFromSource(
-                    module_name,
-                    remaining_aliases,
-                    ImportLayout.of(statement, module.file_path),
-                ).source
+                    module_name=module_name,
+                    aliases=remaining_aliases,
+                    layout=ImportLayout.of(statement, module.file_path),
+                                     ).source
                 replacements_by_path[module.file_path].append(
                     SourceTextSpanReplacement.from_offsets(
                         start_offset=offsets[0],
@@ -1232,4 +1234,4 @@ class TypedMirror(Mirror, Typed, Descent):
 
     def family_root(self, snapshot: CodemodSourceSnapshot) -> FamilyRoot:
         root = self.required_derivation(snapshot).component.target_root
-        return FamilyRoot(root.file_path, root.qualname)
+        return FamilyRoot(file_path=root.file_path, qualname=root.qualname)

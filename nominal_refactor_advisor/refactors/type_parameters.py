@@ -162,11 +162,11 @@ class ModuleTypeArguments:
     @cached_property
     def arguments(self) -> tuple[DroppedArgument, ...]:
         resolver = ModuleClassReferenceResolver(
-            self.snapshot.parsed_module_for_source_path(self.file_path),
-            self.snapshot.required_class_family_index,
-        )
+            parsed_module=self.snapshot.parsed_module_for_source_path(self.file_path),
+            class_index=self.snapshot.required_class_family_index,
+                   )
         found = tuple(
-            DroppedArgument(node, self.declarations[symbol])
+            DroppedArgument(subscript=node, declaration=self.declarations[symbol])
             for node in nodes_of(ast.Subscript, self.snapshot.module_nodes_by_file_path[self.file_path])
             if (symbol := resolver.symbol_for_reference(node.value)) in self.declarations
         )
@@ -250,7 +250,7 @@ class DropTypeParametersOperation(RepositorySourceReprovedOperation):
         declarations = self.declarations(snapshot)
         names = tuple(declaration.source_class.name for declaration in declarations.values())
         modules = tuple(
-            ModuleTypeArguments(snapshot, file_path, declarations)
+            ModuleTypeArguments(snapshot=snapshot, file_path=file_path, declarations=declarations)
             for file_path, source in snapshot.sources_by_file_path.items()
             if any(name in source for name in names)
         )

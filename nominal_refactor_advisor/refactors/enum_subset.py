@@ -205,7 +205,7 @@ class EnumSubsetDerivation:
         projection_module = context.source_index.target_by_id[projection_id]
         if not projection_module.node_kind.is_module:
             raise ValueError("Enum subset projection must target a module")
-        resolved_authority = ResolvedClassTarget(authority_digest, authority_node)
+        resolved_authority = ResolvedClassTarget(target=authority_digest, node=authority_node)
         authority = EnumStringAuthority.from_target(resolved_authority)
         authority_reference_proof = ClassAuthorityReferenceProof.from_context(
             context,
@@ -294,9 +294,9 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         derivation = self.required_derivation(snapshot)
         authority_target = derivation.authority.target
         body_authority = ClassBodySourceAuthority(
-            authority_target.node,
-            snapshot.sources_by_file_path[authority_target.file_path],
-        )
+            node=authority_target.node,
+            source=snapshot.sources_by_file_path[authority_target.file_path],
+                         )
         edits: list[NominalSourceEdit] = [
             SourceInsertion(
                 file_path=authority_target.file_path,
@@ -322,7 +322,7 @@ class DeriveEnumSubsetOperation(SourceDerivedAuthorityProjectionOperation):
         edits.append(
             SourceSpanReplacement(
                 file_path=derivation.projection_path,
-                span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                span=SourceLineSpan(start_line=statement.lineno, end_line=statement.end_lineno or statement.lineno),
                 replacement_lines=SourceTargetEditor.source_lines(
                     derivation.assignment_source()
                 ),
