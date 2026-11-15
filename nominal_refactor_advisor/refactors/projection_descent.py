@@ -80,6 +80,7 @@ from nominal_refactor_advisor.lexical_bindings import (
     LexicalScopeBindingAuthority,
 )
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.refactors.class_member_authority import SourceRewriteABC
 from nominal_refactor_advisor.registry_identity import (
     REGISTRY_ATTRIBUTE_NAME,
     mro_registry_value,
@@ -481,7 +482,7 @@ class _TypeKeyedBehaviorFacade:
 
 
 @dataclass(frozen=True)
-class _TypeKeyedBehaviorSourceDerivation:
+class _TypeKeyedBehaviorSourceDerivation(SourceRewriteABC):
     """Full-source proof and rewrite for one external type-keyed behavior family."""
 
     snapshot: CodemodSourceSnapshot

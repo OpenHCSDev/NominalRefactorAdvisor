@@ -55,6 +55,7 @@ from nominal_refactor_advisor.codemod_selection_context import (
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_source_edits import (
     Include,
+    NominalSourceEdit,
     PhysicalSourceEdit,
     SourceInsertion,
     SourceLineSpan,
@@ -701,10 +702,14 @@ class DataclassFieldPromotionReplacementPlan(ClassMemberPromotionReplacementPlan
 
 
 class SourceRewriteABC(ABC):
-    """A source rewrite proved on one snapshot: the edits that perform it."""
+    """A source rewrite proved on one snapshot: the edits that perform it.
+
+    Subclasses return physical or nominal edits; the widened return type lets
+    rewrites that compose import mutations (NominalSourceEdit but not
+    PhysicalSourceEdit) inherit without narrowing."""
 
     @abstractmethod
-    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
+    def source_edits(self) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
 
 

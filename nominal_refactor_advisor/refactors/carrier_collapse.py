@@ -62,6 +62,7 @@ from nominal_refactor_advisor.quoted_reference import (
     ModuleReferenceScope,
 )
 from nominal_refactor_advisor.refactor_concepts import SemanticCarrierConcept
+from nominal_refactor_advisor.refactors.class_member_authority import SourceRewriteABC
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.source_index import AstTargetDigest
@@ -190,7 +191,7 @@ class _CarrierCollapseParticipantRewrite:
 
 
 @dataclass(frozen=True)
-class _ClosedCarrierCollapseSourceRewrite:
+class _ClosedCarrierCollapseSourceRewrite(SourceRewriteABC):
     """Derive one atomic physical rewrite from a current proven component."""
 
     context: CodemodSourceSnapshot
