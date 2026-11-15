@@ -17,6 +17,7 @@ from test_native_scalar_store import store_for
 from test_source_function_installation import module_function
 from test_source_function_storage import prepared_function
 from test_source_function_result import execution
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def native_function(source):
@@ -24,7 +25,7 @@ def native_function(source):
     node = next(
         node
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        if isinstance(node, FunctionDefinition)
     )
     return compilation, compilation.execution_for(SourceByteSpan.require_node(node))
 

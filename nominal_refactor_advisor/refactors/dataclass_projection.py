@@ -75,6 +75,7 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 from nominal_refactor_advisor.semantic_match import Maybe
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -155,7 +156,7 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
         return any(
             indexed_class is not None
             and any(
-                isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                isinstance(statement, FunctionDefinition)
                 and statement.name == method_name
                 for statement in indexed_class.node.body
             )
@@ -204,7 +205,7 @@ class DataclassPayloadAuthorityTarget(ResolvedClassTarget):
             "__setattr__",
         }
         if any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            isinstance(statement, FunctionDefinition)
             and statement.name in behavior_changing_methods
             for statement in self.node.body
         ):
@@ -539,7 +540,7 @@ class DataclassInstanceFieldProjection:
         return frozenset(
             statement.name
             for statement in authority.node.body
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            if isinstance(statement, FunctionDefinition)
             and any(
                 ExpressionReference.decoded(decorator).terminal_name == "classmethod"
                 for decorator in statement.decorator_list

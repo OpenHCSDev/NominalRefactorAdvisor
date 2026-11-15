@@ -28,6 +28,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, AnsweredUse
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 @dataclass(frozen=True, kw_only=True)
 class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
@@ -136,7 +137,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
         name: str,
     ) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
         for node in class_node.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            if isinstance(node, FunctionDefinition) and node.name == name:
                 return node
         return None
 
@@ -335,7 +336,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
         for stmt in stmts:
             if isinstance(stmt, ast.Return):
                 into.append(stmt)
-            elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(stmt, FunctionDefinition):
                 pass
             elif isinstance(stmt, (ast.If, ast.With, ast.AsyncWith)):
                 FlattenTupleReturnOperation._collect_returns(stmt.body, into)

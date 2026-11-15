@@ -1004,7 +1004,7 @@ class AutoRegisterMroOrderingDerivation:
                 len(target.node.bases) != 1
                 or direct_assignment_names & AUTOREGISTER_CONFIGURATION_ATTRIBUTE_NAMES
                 or any(
-                    isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                    isinstance(statement, FunctionDefinition)
                     and statement.name == "__init_subclass__"
                     for statement in target.node.body
                 )
@@ -1147,7 +1147,7 @@ class AutoRegisterMroOrderingDerivation:
             in {"ABC", "Generic", "object"}
             for base in root_node.bases
         ) and not any(
-            isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            isinstance(statement, FunctionDefinition)
             and statement.name == "__init_subclass__"
             for statement in root_node.body
         )

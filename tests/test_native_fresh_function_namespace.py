@@ -14,6 +14,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativePythonCompilation,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def compilation(source="def chosen():\n    raise AssertionError('deferred body')\n"):
@@ -21,7 +22,7 @@ def compilation(source="def chosen():\n    raise AssertionError('deferred body')
     node = next(
         node
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, FunctionDefinition)
         and node.name == "chosen"
     )
     return owner, owner.execution_for(SourceByteSpan.require_node(node))

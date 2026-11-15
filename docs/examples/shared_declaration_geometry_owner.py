@@ -17,6 +17,7 @@ from nominal_refactor_advisor.codemod import (
     SourceTextReplacement,
 )
 from nominal_refactor_advisor.codemod_declaration_source import FunctionSourceAuthority
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 GEOMETRY = "nominal_refactor_advisor/source_geometry.py"
 EDITS = "nominal_refactor_advisor/codemod_source_edits.py"
@@ -123,7 +124,7 @@ def _definition_start_line(self, span: SourceByteSpan) -> int:
     definitions = tuple(
         node
         for node in ast.walk(ast.parse(self.source))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, FunctionDefinition)
         and SourceByteSpan.require_node(node) == span
     )
     if len(definitions) != 1:

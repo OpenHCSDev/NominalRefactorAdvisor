@@ -563,7 +563,7 @@ class ExistingMethodOwner(OwnerCandidate):
                 for declaration in (class_index.class_for(symbol),)
                 if declaration is not None
                 if any(
-                    isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                    isinstance(statement, FunctionDefinition)
                     and statement.name == self.method.name
                     for statement in declaration.node.body
                 )
@@ -1102,7 +1102,7 @@ class RepeatedBuilderCallFindingRecipeSynthesizer(
             )
         target = context.source_index.target_by_id[target_ids[0]]
         node = context.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if not isinstance(node, FunctionDefinition):
             raise ValueError("Repeated-builder participant must be a function")
         resolver = context.class_reference_resolver_for_source_path(source_path)
         nominal_calls = tuple(

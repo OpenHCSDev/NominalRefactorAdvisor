@@ -3,6 +3,7 @@
 A method that only builds or asks another family's object belongs to that family; left where it
 is, it makes its own class import the other family, and when that family imports back, a local
 import hides the cycle (agent-comms Thread.native_environment builds a ProjectRuntimeRequest).
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 Two facts decide the move. The method's source shape (a plain method, a staticmethod or a
 classmethod) says what its call sites are spelled on before the move: a receiver of its class
@@ -97,7 +98,7 @@ class MovedMethod(AnsweredMethod):
         method = next(
             (
                 statement for statement in source_class.node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if isinstance(statement, FunctionDefinition)
                 and statement.name == method_name
             ),
             None,

@@ -25,6 +25,7 @@ from nominal_refactor_advisor.native_compilation import (
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_native_function_creation import _case
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @pytest.mark.parametrize(
@@ -103,7 +104,7 @@ def test_application_order_and_result_store_match_actual_execution(
     node = next(
         node
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, FunctionDefinition)
         and node.name == "chosen"
     )
     assert tuple(application.source_span for application in applications) == tuple(

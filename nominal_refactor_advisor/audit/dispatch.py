@@ -18,6 +18,7 @@ from nominal_refactor_advisor.audit.gate import (
     PerFileModuleMeasure,
     PerFileOccurrenceMeasure,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 class MatchArms:
@@ -184,7 +185,7 @@ class DispatchMeasure(PerFileOccurrenceMeasure, NodeCount):
     @classmethod
     def decided(cls, node: ast.AST) -> tuple[tuple[ast.AST, frozenset[str]], ...]:
         """One function's subjects decided case by case; the overlay lists these too."""
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, FunctionDefinition):
             return ()
         return cls.cases().decided_in(node)
 

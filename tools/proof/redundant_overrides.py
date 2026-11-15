@@ -10,6 +10,7 @@ import ast
 import sys
 from collections import defaultdict
 from pathlib import Path
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 ROOT = Path(sys.argv[1])
 classes = defaultdict(list)
@@ -32,7 +33,7 @@ def methods(node):
     return {
         item.name: item
         for item in node.body
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(item, FunctionDefinition)
     }
 
 

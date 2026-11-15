@@ -19,6 +19,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativePythonCompilation,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ def _native_case(
     definitions = [
         node
         for node in ast.walk(ast.parse(source))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, FunctionDefinition)
         and node.name == target_name
     ]
     (definition,) = definitions

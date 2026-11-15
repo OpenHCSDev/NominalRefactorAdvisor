@@ -14,6 +14,7 @@ from functools import lru_cache
 from tree_sitter import Language, Node, Parser, Query, QueryCursor, Tree
 import tree_sitter_python
 from typing import ClassVar
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @lru_cache(maxsize=1)
@@ -212,7 +213,7 @@ class NativePythonSyntaxIndex:
             else node
         )
         statement = self.statement_for(statement_node)
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(statement, FunctionDefinition):
             raise TypeError(f"{node.type} did not parse as a Python function")
         return statement
 
@@ -252,7 +253,7 @@ class NativePythonSyntaxIndex:
         if cached is not None:
             return cached
         function_node = self._definition_header_for(node)
-        if not isinstance(function_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(function_node, FunctionDefinition):
             raise TypeError("function header did not parse as a function")
         function_node.end_lineno = self._definition_end_lineno(node)
         self._function_headers_by_node[node] = function_node

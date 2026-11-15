@@ -19,6 +19,7 @@ from nominal_refactor_advisor.probe_owner import (
     ProbeOwnerResolver,
     ReceiverSpan,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -572,7 +573,7 @@ class _ScopeBindings:
                         last = ImportedModule(alias)
             elif isinstance(node, ast.ClassDef) and node.name == name:
                 last = DeclaredClass(node)
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            elif isinstance(node, FunctionDefinition) and node.name == name:
                 last = NameBinding()
             elif isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, ast.Store):
                 assigned = self.assigned_value(node)

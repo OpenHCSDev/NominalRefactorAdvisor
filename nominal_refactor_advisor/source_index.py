@@ -33,6 +33,7 @@ from nominal_refactor_advisor.models import (
     stable_source_location_id,
 )
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
@@ -710,7 +711,7 @@ class AstTargetNodeIndex:
         return {
             target_id: node
             for target_id, node in self.nodes_by_target_id.items()
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(node, FunctionDefinition)
         }
 
 
@@ -833,7 +834,7 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         qualname = ".".join((*self.class_stack, *self.function_stack, node.name))
         line = node.lineno
         end_line = node.end_lineno or line
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, FunctionDefinition):
             parameters = self._parameters(node)
         else:
             parameters = ()

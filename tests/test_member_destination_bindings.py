@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod_authority_claims import (
 )
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightError
 from nominal_refactor_advisor.codemod_reproof import SourceReproofDiagnostic
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def _plan(path: Path) -> CodemodPlanSequence:
@@ -144,7 +145,7 @@ def _members(path: Path) -> dict[str, dict[str, list[str]]]:
         node.name: {
             member.name: [ast.unparse(decorator) for decorator in member.decorator_list]
             for member in node.body
-            if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(member, FunctionDefinition)
         }
         for node in ast.parse(path.read_text()).body
         if isinstance(node, ast.ClassDef)

@@ -16,6 +16,7 @@ from nominal_refactor_advisor.source_execution import (
     SourceDefinitionEntry,
     SourceModuleExecution,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def execution(source):
@@ -33,7 +34,7 @@ def function(environment, name="chosen"):
     node = next(
         item
         for item in ast.walk(environment.module.module)
-        if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(item, FunctionDefinition)
         and item.name == name
     )
     operation = environment.definition_operation(node)

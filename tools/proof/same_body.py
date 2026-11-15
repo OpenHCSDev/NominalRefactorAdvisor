@@ -7,6 +7,7 @@ import ast
 import sys
 from collections import defaultdict
 from pathlib import Path
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 ROOT = Path(sys.argv[1])
 MIN_OWNERS = int(sys.argv[2]) if len(sys.argv) > 2 else 2
@@ -35,7 +36,7 @@ for path in sorted(ROOT.rglob("*.py")):
         if not isinstance(node, ast.ClassDef):
             continue
         for item in node.body:
-            if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(item, FunctionDefinition):
                 continue
             if trivial(item.body):
                 continue

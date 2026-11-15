@@ -371,7 +371,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
             member_name
             for class_target in self.targets
             for statement in class_target.node.body
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            if isinstance(statement, FunctionDefinition)
             and statement.name in method_names
             for member_name in ClassMethodReceiverRequirements.from_method(
                 statement
@@ -1452,7 +1452,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
 
     @property
     def name(self) -> str | None:
-        if isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(self.statement, FunctionDefinition):
             return self.statement.name
         return None
 
@@ -1461,7 +1461,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
         context: ClassMemberMoveProofContext,
     ) -> None:
         super().require_safe_move(context)
-        if not isinstance(self.statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(self.statement, FunctionDefinition):
             raise ValueError("Class method projection does not contain a method")
         # Its decorators run where its class statement runs now and where the
         # destination's will: both must resolve them to a promotable declaration.

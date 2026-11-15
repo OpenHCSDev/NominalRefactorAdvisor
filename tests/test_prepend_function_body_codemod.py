@@ -12,6 +12,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanDocument, CodemodSourceSnapshot
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @pytest.mark.parametrize(
@@ -75,11 +76,11 @@ def test_prepend_statements_preserves_existing_runtime(
     assert json.loads(subprocess.check_output(command, text=True)) == expected
     before_node = next(
         node for node in ast.walk(ast.parse(original, type_comments=True))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "run"
+        if isinstance(node, FunctionDefinition) and node.name == "run"
     )
     after_node = next(
         node for node in ast.walk(ast.parse(path.read_text(), type_comments=True))
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "run"
+        if isinstance(node, FunctionDefinition) and node.name == "run"
     )
     assert after_node.type_comment == before_node.type_comment
     for comment in ("# retained doc comment", "# retained header", "# retained old body comment"):

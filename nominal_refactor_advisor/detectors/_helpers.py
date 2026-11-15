@@ -102,6 +102,7 @@ from nominal_refactor_advisor.detectors._candidate_records import (
 from nominal_refactor_advisor.detectors._substrate_support import (
     ModuleNamedValues,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 BaseBundleClassGroups: TypeAlias = dict[tuple[str, ...], list[ast.ClassDef]]
 NamedStringSequenceSpec: TypeAlias = tuple[str, int, tuple[str, ...]]
@@ -185,7 +186,7 @@ class _RegisteredUnionSurfaceSource:
 
     @classmethod
     def from_node(cls, node: ast.AST) -> _RegisteredUnionSurfaceSource | None:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, FunctionDefinition):
             for statement in statements_without_docstring(node.body):
                 if isinstance(statement, ast.For):
                     return cls(node.name, statement.iter, statement.lineno)
@@ -1296,7 +1297,7 @@ class HelperSyntaxProjectionAuthority:
                     statement.target.id, ast.unparse(statement.annotation)
                 )
                 continue
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(statement, FunctionDefinition):
                 continue
             if statement.name != "__init__":
                 continue

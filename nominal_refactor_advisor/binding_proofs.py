@@ -25,6 +25,7 @@ from nominal_refactor_advisor.public_exports import (
     CompactPublicNameExposure,
     module_public_export_contract,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -59,7 +60,7 @@ class FunctionNominalParameterBindingAuthority:
                 names.update(
                     ClassNamespaceExecutionEvidence.from_class(parent).binding_names
                 )
-            elif isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(parent, FunctionDefinition):
                 names.update(LexicalScopeBindingAuthority.bound_names(parent.body))
                 names.update(LexicalScopeBindingAuthority.argument_names(parent))
             current = parent

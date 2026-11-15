@@ -88,6 +88,7 @@ from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.product_flow import BareCallTargetReference
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
 from nominal_refactor_advisor.value_expression import LexicalValueReference
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -118,7 +119,7 @@ class AliasFunctionOperation(RepositorySourceReprovedOperation):
             node=node,
             source=snapshot.sources_by_file_path[target.file_path],
         )
-        if not isinstance(implementation_node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if not isinstance(implementation_node, FunctionDefinition):
             raise ValueError("Alias implementation must be a function declaration")
         if (target.file_path, target.qualname.rpartition(".")[0]) != (
             implementation.file_path,
@@ -725,7 +726,7 @@ class InlineForwarderOperation(PreflightByReproof, RepositorySourceReprovedOpera
         method = next(
             (
                 node for node in source_class.node.body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == method_name
+                if isinstance(node, FunctionDefinition) and node.name == method_name
             ),
             None,
         )

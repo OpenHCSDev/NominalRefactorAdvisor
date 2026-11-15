@@ -51,6 +51,7 @@ from nominal_refactor_advisor.detectors._base import (
     SemanticMirrorIssueDetector,
     high_confidence_spec,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 _DECLARED_AUTHORITY_TOKENS = frozenset(
     ("authority", "contract", "declared", "decision", "policy", "resolver")
@@ -265,7 +266,7 @@ class _FunctionScopeCollector(ast.NodeVisitor):
         class_method_count = 0
         if class_node is not None:
             class_method_count = sum(
-                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                isinstance(statement, FunctionDefinition)
                 for statement in class_node.body
             )
         self.scopes.append(

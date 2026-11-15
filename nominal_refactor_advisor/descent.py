@@ -218,7 +218,7 @@ class EnumDeclaration:
         methods = tuple(
             statement
             for statement in node.body
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            if isinstance(statement, FunctionDefinition)
             and statement is not new
         )
         data_fields = () if new is None else cls._data_fields(new)
@@ -1979,7 +1979,7 @@ def _annotations(node: ast.AST) -> tuple[ast.expr, ...]:
         return declared_annotations(node)
     if isinstance(node, ast.AnnAssign):
         return (node.annotation,)
-    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+    if isinstance(node, FunctionDefinition):
         return declared_annotations(node)
     return ()
 

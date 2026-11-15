@@ -111,6 +111,7 @@ from nominal_refactor_advisor.product_flow import (
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.value_expression import LexicalValueReference
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 # Hooks through which a class or module answers any attribute name.
 DYNAMIC_ATTRIBUTE_HOOKS = frozenset(("__getattr__", "__getattribute__"))
@@ -2549,7 +2550,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             parent = syntax.parent_by_node.get(current)
             if parent is None:
                 return None
-            if isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(parent, FunctionDefinition):
                 function = parent
                 break
             if isinstance(parent, (ast.Lambda, ast.ClassDef)):
@@ -2782,7 +2783,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             constructors = [
                 method
                 for method in node.body
-                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if isinstance(method, FunctionDefinition)
                 and method.name == "__init__"
             ]
             if len(constructors) > 1:
@@ -2820,7 +2821,7 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
             methods = [
                 method
                 for method in node.body
-                if isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if isinstance(method, FunctionDefinition)
                 and method.name == name
             ]
             if not methods:

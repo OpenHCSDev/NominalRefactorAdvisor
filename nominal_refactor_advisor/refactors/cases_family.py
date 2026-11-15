@@ -75,6 +75,7 @@ from nominal_refactor_advisor.semantic_descent import (
     SemanticAuthorityKind,
 )
 from nominal_refactor_advisor.value_expression import CompactValueExpression
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 BOOLEAN_CALLS = frozenset(
     (
@@ -1892,7 +1893,7 @@ class CasesFamily(Cases, Descent):
                     isinstance(node, ast.ClassDef)
                     and node is not model.enum.node
                     and any(
-                        isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+                        isinstance(statement, FunctionDefinition)
                         and statement.name in model.called
                         or isinstance(statement, ast.AnnAssign | ast.Assign)
                         and names_bound(statement) & model.called
@@ -1926,7 +1927,7 @@ class CasesFamily(Cases, Descent):
             return declared_annotations(node)
         if isinstance(node, ast.AnnAssign):
             return (node.annotation,)
-        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if isinstance(node, FunctionDefinition):
             return declared_annotations(node)
         return ()
 
@@ -2546,7 +2547,7 @@ class ValueReads:
             }
             for function in owner.body:
                 if not (
-                    isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef)
+                    isinstance(function, FunctionDefinition)
                     and function.args.args
                     and fields
                 ):

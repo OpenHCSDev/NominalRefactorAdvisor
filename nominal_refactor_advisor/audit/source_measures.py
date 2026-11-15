@@ -45,6 +45,7 @@ from nominal_refactor_advisor.audit.gate import (
     RosterPosition,
 )
 from nominal_refactor_advisor.audit.repository import ChangedSource
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 class MetadataKeys(ast.NodeVisitor):
@@ -389,7 +390,7 @@ class FunctionLocalImport(PerFileMeasure, LocatedSource):
             self.found: list[int] = []
 
         def generic_visit(self, node: ast.AST) -> None:
-            nested = isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            nested = isinstance(node, FunctionDefinition)
             self.depth += nested
             if self.depth and isinstance(node, (ast.Import, ast.ImportFrom)):
                 self.found.append(node.lineno)
@@ -884,7 +885,7 @@ class UnannotatedParameter(PerFileOccurrenceMeasure):
 
     @staticmethod
     def occurrences(node: ast.AST) -> int:
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, FunctionDefinition):
             return 0
         arguments = node.args
         return sum(

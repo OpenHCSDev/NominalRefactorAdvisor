@@ -2413,7 +2413,7 @@ class LatentRosterObservation(SourceLineReference):
         *,
         roster_prefix: str | None = None,
     ) -> tuple[LatentRosterObservation, ...]:
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(statement, FunctionDefinition):
             body = _trim_leading_docstring(list(statement.body))
             if len(body) != 1 or not isinstance(body[0], ast.Return):
                 return ()
@@ -4137,7 +4137,7 @@ class ClassBodyNormalForm:
         class_bound_names = LexicalScopeBindingAuthority.bound_names(node.body)
         declarations: list[ClassBodyNormalForm] = []
         for statement in node.body:
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(statement, FunctionDefinition):
                 declarations.append(cls.of_method(statement, scope, class_bound_names))
             elif isinstance(statement, (ast.AnnAssign, ast.Assign)):
                 declarations.extend(
@@ -5090,7 +5090,7 @@ class CompactModuleClassProjectionFamily(
             return None
         function_index = scope.function_node_indices[-1]
         function = nodes[function_index]
-        if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(function, FunctionDefinition):
             return None
         if not isinstance(nodes[parent_indices[function_index]], ast.ClassDef):
             return None

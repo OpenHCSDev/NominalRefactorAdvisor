@@ -209,7 +209,7 @@ def _compact_manual_subclass_roster_roots(
             (
                 statement
                 for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if isinstance(statement, FunctionDefinition)
                 and statement.name == "__init_subclass__"
             ),
             None,

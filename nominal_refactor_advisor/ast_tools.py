@@ -2992,7 +2992,7 @@ class FunctionObservationSpec(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
     ) -> ShapeEmission[ShapeItemT] | None:
         node = observation.node
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, FunctionDefinition):
             return None
         return self.build_from_function(parsed_module, node, observation)
 
@@ -3569,7 +3569,7 @@ class ModuleSyntaxIndex:
         if function_index < 0:
             return None
         function = self.depth_first_nodes[function_index]
-        assert isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        assert isinstance(function, FunctionDefinition)
         return function.name
 
     def ancestor_nodes(self, node_index: int) -> tuple[ast.AST, ...]:
@@ -3653,7 +3653,7 @@ class ModuleSyntaxIndex:
             parent_indices.append(parent_index)
             scope_ids.append(scope_id)
 
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, FunctionDefinition):
                 named_functions.append(
                     (".".join((*scope.class_names, node.name)), node)
                 )
@@ -3671,7 +3671,7 @@ class ModuleSyntaxIndex:
                         executable_function_index=-1,
                     )
                 )
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif isinstance(node, FunctionDefinition):
                 child_scope_id = len(scopes)
                 scopes.append(
                     LexicalSyntaxScope(

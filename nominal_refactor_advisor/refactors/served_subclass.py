@@ -50,6 +50,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
 from nominal_refactor_advisor.lexical_bindings import LexicalScopeBindingAuthority
 from nominal_refactor_advisor.semantic_algebra import DirectedGraph
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -343,7 +344,7 @@ class ServedMemberScope:
         annotations, or a class attribute's whole statement. Method bodies run later and cannot see
         class scope."""
 
-        if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(statement, FunctionDefinition):
             arguments = statement.args
             evaluated: tuple[ast.AST, ...] = (
                 *statement.decorator_list,
@@ -404,7 +405,7 @@ class FamilyMemberReads:
                         continue
                     if (
                         member in ancestors
-                        and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                        and isinstance(statement, FunctionDefinition)
                         and statement.name in served.moved
                         and any(map(self._names_abstractmethod, statement.decorator_list))
                     ):

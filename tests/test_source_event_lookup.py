@@ -20,6 +20,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from test_registry_original_values import authored_runtime
 from test_source_definition_result import execution
 from test_source_mutation_operations import project
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @pytest.mark.parametrize(
@@ -224,7 +225,7 @@ def test_execution_declaration_no_longer_duplicates_the_source_definition_event_
     assert "definition_nodes_by_event" not in {
         member.name
         for member in declaration.body
-        if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(member, FunctionDefinition)
     }
 
 

@@ -18,6 +18,7 @@ from nominal_refactor_advisor.lexical_bindings import (
     FunctionParameterSource,
     UndefaultedParameterSource,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def _declared_default(source: FunctionParameterSource) -> ast.expr | None:
@@ -31,7 +32,7 @@ def _arguments(source: str) -> ast.arguments:
     if isinstance(statement, ast.Expr):
         assert isinstance(statement.value, ast.Lambda)
         return statement.value.args
-    assert isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+    assert isinstance(statement, FunctionDefinition)
     return statement.args
 
 

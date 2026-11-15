@@ -24,6 +24,7 @@ from nominal_refactor_advisor.refactors.dispatch_polymorphism import LiteralDisp
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def test_repository_has_no_external_enum_case_recovery(
@@ -45,7 +46,7 @@ def test_repository_has_no_function_local_imports_or_ast_name_projection_duplica
         (module.file_path, nested.lineno, ast.unparse(nested))
         for module in modules
         for function in ast.walk(module.module)
-        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(function, FunctionDefinition)
         for nested in ast.walk(function)
         if isinstance(nested, (ast.Import, ast.ImportFrom))
     )

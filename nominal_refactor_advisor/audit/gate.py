@@ -604,7 +604,7 @@ class DeclaredClass:
     def methods(self) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
         """The class body's functions bound by that definition alone."""
         return {name: statement for name, (_, statement) in self.declarations.items()
-                if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)}
+                if isinstance(statement, FunctionDefinition)}
 
     def binds(self, name: str) -> bool:
         """Whether the class scope still binds ``name`` in any form."""

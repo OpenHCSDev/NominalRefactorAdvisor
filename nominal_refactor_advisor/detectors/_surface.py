@@ -433,7 +433,7 @@ class FindingAssemblyPipelineCandidate(CollectsItself, WitnessCarrierCandidate):
             (
                 statement
                 for statement in node.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                if isinstance(statement, FunctionDefinition)
                 and statement.name == "_findings_for_module"
             ),
             None,

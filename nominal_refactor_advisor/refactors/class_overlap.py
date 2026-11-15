@@ -386,7 +386,7 @@ def source_rewrite_target(indexed_class: CompactIndexedClass) -> SourceRewriteTa
 def declared_names(statement: ast.stmt) -> frozenset[str]:
     """The class-scope names one declaration statement binds."""
 
-    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+    if isinstance(statement, FunctionDefinition):
         return frozenset((statement.name,))
     if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
         return frozenset((statement.target.id,))
@@ -565,7 +565,7 @@ class ClassReferenceSites:
             if (
                 (isinstance(parent, (ast.arg, ast.AnnAssign)) and parent.annotation is child)
                 or (
-                    isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    isinstance(parent, FunctionDefinition)
                     and parent.returns is child
                 )
             ):
@@ -2273,7 +2273,7 @@ class MixinCreation(ClassOverlapRewrite):
             member = StatementSource(source=source, node=statement).member_source(
                 member_indentation
             )
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and members:
+            if isinstance(statement, FunctionDefinition) and members:
                 members.append("\n")
             members.append(member if member.endswith("\n") else member + "\n")
         return (

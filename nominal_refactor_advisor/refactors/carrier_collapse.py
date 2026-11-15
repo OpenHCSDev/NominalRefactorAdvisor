@@ -66,6 +66,7 @@ from nominal_refactor_advisor.refactors.class_member_authority import SourceRewr
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.source_index import AstTargetDigest
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 class _CarrierCollapseNameLoadTransformer(ast.NodeTransformer):
@@ -397,7 +398,7 @@ class _ClosedCarrierCollapseSourceRewrite(SourceRewriteABC):
             )
         target = matches[0]
         node = self.context.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if not isinstance(node, FunctionDefinition):
             raise ValueError(f"Participant {participant.symbol!r} has no function node")
         return target, node
 

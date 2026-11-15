@@ -20,6 +20,7 @@ bindings, dunders and visitor hooks, and the theory modules, which are Tristan's
 import ast, io, json, re, sys, tokenize
 from collections import defaultdict
 from pathlib import Path
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 ROOT = Path(".")
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache", ".ruff_cache", "build", "dist"}
@@ -89,7 +90,7 @@ for file, tree in trees.items():
     def start(node):
         return min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", ()))])
     for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, FunctionDefinition):
             defs.append((file, node.name, start(node), node.end_lineno, node.name, "function"))
         elif isinstance(node, ast.ClassDef):
             bases = [ast.unparse(b) for b in node.bases]
@@ -97,7 +98,7 @@ for file, tree in trees.items():
                 defs.append((file, node.name, start(node), node.end_lineno, node.name, "class"))
             foreign = any(b.split("[")[0].split(".")[-1] not in package_classes and b.split("[")[0] not in {"ABC", "Generic", "Protocol", "object"} for b in bases)
             for member in node.body:
-                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)) and not HOOK.match(member.name) and not foreign:
+                if isinstance(member, FunctionDefinition) and not HOOK.match(member.name) and not foreign:
                     defs.append((file, member.name, start(member), member.end_lineno, f"{node.name}.{member.name}", "method"))
         elif isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
             value = node.value

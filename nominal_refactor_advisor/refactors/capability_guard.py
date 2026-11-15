@@ -25,6 +25,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,7 @@ class CapabilityGuardToOverrideOperation(
             (
                 node
                 for node in body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name
+                if isinstance(node, FunctionDefinition) and node.name == function_name
             ),
             None,
         )

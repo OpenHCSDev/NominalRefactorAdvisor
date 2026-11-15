@@ -25,6 +25,7 @@ from nominal_refactor_advisor.native_compilation import (
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.source_identity import python_source_cache_signature
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def _module(source: str) -> ParsedModule:
@@ -40,7 +41,7 @@ def _definitions(module: ParsedModule) -> list[ast.FunctionDef | ast.AsyncFuncti
     return [
         node
         for node in ast.walk(module.module)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        if isinstance(node, FunctionDefinition)
     ]
 
 

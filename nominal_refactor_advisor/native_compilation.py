@@ -88,6 +88,7 @@ from nominal_refactor_advisor.value_graph import (
     DataclassGraphValue,
     StoredDataclassState,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 if TYPE_CHECKING:
     from nominal_refactor_advisor.native_subscription import InertNativeArgumentWitness
@@ -4793,7 +4794,7 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         definitions = tuple(
             node
             for node in ast.walk(ast.parse(self.source))
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(node, FunctionDefinition)
             and SourceByteSpan.require_node(node) == span
         )
         if len(definitions) != 1:
@@ -4882,7 +4883,7 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         definitions = tuple(
             node
             for node in ast.walk(parsed)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(node, FunctionDefinition)
             and SourceByteSpan.require_node(node) == span
         )
         if len(definitions) != 1:

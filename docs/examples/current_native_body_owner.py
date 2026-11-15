@@ -26,6 +26,7 @@ from nominal_refactor_advisor.codemod_declaration_source import (
     FunctionBodySourceAuthority,
     FunctionSourceAuthority,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 PATH = "nominal_refactor_advisor/native_call.py"
 
@@ -295,7 +296,7 @@ ast.increment_lineno(parsed, start_line_index - bool(span.start_byte))
 definitions = tuple(
     node
     for node in ast.walk(parsed)
-    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    if isinstance(node, FunctionDefinition)
     and SourceByteSpan.require_node(node) == span
 )
 if len(definitions) != 1:

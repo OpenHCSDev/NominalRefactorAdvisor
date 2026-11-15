@@ -73,6 +73,7 @@ from nominal_refactor_advisor.public_exports import (
 )
 from nominal_refactor_advisor.semantic_match import single_item
 from nominal_refactor_advisor.source_index import SourceFileDigest
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
     (
@@ -377,7 +378,7 @@ class ModuleSymbolTable:
                 if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names:
                     found.append(f"{node.id} at line {node.lineno}")
                     break
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if isinstance(node, FunctionDefinition):
                     pending.extend((*node.decorator_list, *node.args.defaults, *(
                         default for default in node.args.kw_defaults if default is not None
                     )))

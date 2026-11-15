@@ -13,6 +13,7 @@ from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.source_index import AstTargetDigest
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -121,7 +122,7 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
         target: AstTargetDigest,
     ) -> ResolvedFunctionProjectionTarget | None:
         node = context.ast_target_nodes_by_id.get(target.target_id)
-        if not isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+        if not isinstance(node, FunctionDefinition):
             return None
         return ResolvedFunctionProjectionTarget(
             source_path=source_path,
