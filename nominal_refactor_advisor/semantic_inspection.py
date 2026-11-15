@@ -739,8 +739,9 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         return self.scope_stack[-1]
 
     def _refresh_function_record(self, target_id: str) -> None:
-        function = next(item for item in self.functions if item.target_id == target_id)
-        index = self.functions.index(function)
+        index, function = next(
+            (i, item) for i, item in enumerate(self.functions) if item.target_id == target_id
+        )
         self.functions[index] = FunctionSummary(
             target_id=function.target_id,
             file_path=function.file_path,
@@ -761,10 +762,9 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
         )
 
     def _refresh_class_record(self, target_id: str) -> None:
-        class_summary = next(
-            item for item in self.classes if item.target_id == target_id
+        index, class_summary = next(
+            (i, item) for i, item in enumerate(self.classes) if item.target_id == target_id
         )
-        index = self.classes.index(class_summary)
         method_ids = self._target_values(
             self.method_ids_by_class_target_id,
             target_id,
@@ -788,10 +788,9 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
             finding_ids=class_summary.finding_ids,
         )
         if class_summary.is_dataclass:
-            dataclass_summary = next(
-                item for item in self.dataclasses if item.target_id == target_id
+            dataclass_index, dataclass_summary = next(
+                (i, item) for i, item in enumerate(self.dataclasses) if item.target_id == target_id
             )
-            dataclass_index = self.dataclasses.index(dataclass_summary)
             self.dataclasses[dataclass_index] = DataclassSummary(
                 target_id=dataclass_summary.target_id,
                 file_path=dataclass_summary.file_path,
