@@ -217,15 +217,22 @@ class FindingSummary(SemanticInspectionRecord):
 
 
 @dataclass(frozen=True)
-class SemanticInspectionReport(SemanticInspectionRecord):
-    roots: tuple[str, ...]
-    modules: tuple[ModuleSummary, ...]
-    classes: tuple[ClassSummary, ...]
-    functions: tuple[FunctionSummary, ...]
-    dataclasses: tuple[DataclassSummary, ...]
+class _DeclarationInventory:
+    """The six declaration collections a module inspection yields, shared by the
+    per-module inspection and the aggregated report."""
+
     imports: tuple[ImportSummary, ...]
     calls: tuple[CallSummary, ...]
     assignments: tuple[AssignmentSummary, ...]
+    classes: tuple[ClassSummary, ...]
+    functions: tuple[FunctionSummary, ...]
+    dataclasses: tuple[DataclassSummary, ...]
+
+
+@dataclass(frozen=True)
+class SemanticInspectionReport(SemanticInspectionRecord, _DeclarationInventory):
+    roots: tuple[str, ...]
+    modules: tuple[ModuleSummary, ...]
     findings: tuple[FindingSummary, ...]
     evidence: tuple[EvidenceDigest, ...]
     source_index: SourceIndex
@@ -242,13 +249,8 @@ class _TargetKey(SourceLineReference):
 
 
 @dataclass(frozen=True)
-class _ModuleInspection:
-    imports: tuple[ImportSummary, ...]
-    calls: tuple[CallSummary, ...]
-    assignments: tuple[AssignmentSummary, ...]
-    classes: tuple[ClassSummary, ...]
-    functions: tuple[FunctionSummary, ...]
-    dataclasses: tuple[DataclassSummary, ...]
+class _ModuleInspection(_DeclarationInventory):
+    """One module's inspected declarations."""
 
 
 class SemanticAstInspector(ABC):
