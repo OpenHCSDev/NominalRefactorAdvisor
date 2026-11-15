@@ -11,6 +11,7 @@ from nominal_refactor_advisor.detectors._restated_facts import ForeignAbsencePro
 from nominal_refactor_advisor.detectors._runtime import ManualClassRegistrationDetector
 from nominal_refactor_advisor.ast_tools import SourceModule, parse_python_modules
 from nominal_refactor_advisor.refactors.optional_ast_field import (
+    AliasAsNameDecoder,
     KeywordNameDecoder,
     CaptureNameDecoder,
     DeclaredAnnotationDecoder,
@@ -156,6 +157,19 @@ def test_present_guard_on_a_proved_node_loops_over_its_decoded_names() -> None:
         "    for capture_name in capture_names(node):\n"
         "        self.names.add(capture_name)\n"
         "    self.generic_visit(node)\n"
+    )
+
+
+def test_alias_as_name_present_guard_reads_the_decoder() -> None:
+    source = (
+        "def visit_alias(self, node: ast.alias):\n"
+        "    if node.asname is not None:\n"
+        "        self.renames.add(node.asname)\n"
+    )
+    assert _rewritten(source, AliasAsNameDecoder) == (
+        "def visit_alias(self, node: ast.alias):\n"
+        "    for alias_as_name in alias_as_names(node):\n"
+        "        self.renames.add(alias_as_name)\n"
     )
 
 
@@ -361,9 +375,10 @@ def test_generated_owners_register_nothing_by_hand(tmp_path: Path) -> None:
     sources = {
         str(package / "__init__.py"): "",
         str(package / "mod.py"): (
-            "def f(k, h, a, p, fn):\n"
+            "def f(k, h, a, p, fn, al):\n"
             "    return (k.arg is None, h.name is None, a.vararg is None,"
-            " a.kwarg is None, p.annotation is None, fn.returns is None)\n"
+            " a.kwarg is None, p.annotation is None, fn.returns is None,"
+            " al.asname is None)\n"
         ),
     }
     for path, source in sources.items():

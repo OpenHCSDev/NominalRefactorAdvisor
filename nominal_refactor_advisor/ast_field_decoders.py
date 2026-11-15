@@ -28,6 +28,15 @@ def capture_names(
     return ()
 
 
+def alias_as_names(node: ast.alias) -> tuple[str, ...]:
+    """The name an import binds with ``as``: none for a plain ``import x``."""
+
+    match node:
+        case ast.alias(asname=str() as name):
+            return (name,)
+    return ()
+
+
 def declared_annotations(
     node: ast.arg | ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> tuple[ast.expr, ...]:

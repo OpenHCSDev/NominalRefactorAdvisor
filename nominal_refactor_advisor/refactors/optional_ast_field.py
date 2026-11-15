@@ -1065,6 +1065,18 @@ class CaptureNameDecoder(OptionalAstFieldDecoder):
         return f"capture_names({subject_source})"
 
 
+class AliasAsNameDecoder(OptionalAstFieldDecoder):
+    """The name an import binds with ``as``: ``import x as y``, ``from m import x as y``."""
+
+    fields = {ast.alias: "asname"}
+    owners = (ast_field_decoders.alias_as_names,)
+    shapes = (IfPresentProbeSite, SpliceProbeSite)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"alias_as_names({subject_source})"
+
+
 class DeclaredAnnotationDecoder(CollectionDecoder):
     """The annotation a parameter declares, or the return annotation of a function.
 
