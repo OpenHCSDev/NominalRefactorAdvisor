@@ -2554,7 +2554,7 @@ class SourceExecutionKernel(
         result = super()._read_use(use, context, pending)
         # An open result may reflect an in-progress recursive effect admission.
         # Never publish a partial or failed proof as a reusable completed query.
-        if not isinstance(result, OpenCapturedReference):
+        if not result.is_open:
             self._value_resolutions[key] = result
         return result
 
@@ -2603,7 +2603,7 @@ class SourceExecutionKernel(
     ) -> CapturedReferenceResolution:
         del pending_bindings
         prefix = self._admitted_prefix(context, use_position)
-        if isinstance(prefix, OpenCapturedReference):
+        if prefix.is_open:
             return prefix
         endpoint = prefix.endpoint
         if (

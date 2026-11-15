@@ -495,7 +495,7 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
             declaration.value
         )
         namespace = registry.dictionary_namespace(self.environment.kernel.initial)
-        if isinstance(namespace, OpenCapturedReference):
+        if namespace.is_open:
             raise ValueError(
                 "MRO registry mapping storage or key protocols remain unproved"
             )

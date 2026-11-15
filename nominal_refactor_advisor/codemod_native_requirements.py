@@ -245,7 +245,7 @@ class NativeUseRequirement:
     def inspect(self) -> NativeUseResolution:
         """Keep captured identity distinct from original-operation behavior proof."""
         capture = self.environment.capture(self.node)
-        if isinstance(capture, OpenCapturedReference):
+        if capture.is_open:
             return NativeUseResolution(
                 receipt=self.receipt,
                 provenance=NativeUseProvenance.UNRESOLVED,

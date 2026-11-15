@@ -2518,7 +2518,7 @@ class CapturedReferenceKernel(
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
         prefix = self._admitted_prefix(context, position)
-        if isinstance(prefix, OpenCapturedReference):
+        if prefix.is_open:
             return prefix
         resolution = self._root_resolution(
             prefix, LexicalValueReference(reference.root_name), pending
@@ -2537,7 +2537,7 @@ class CapturedReferenceKernel(
         namespaces = endpoint.frame.initial_lookup_namespaces(
             endpoint.context, root.root_name
         )
-        if isinstance(namespaces, OpenCapturedReference):
+        if namespaces.is_open:
             return namespaces
         return self._namespaces_resolution(prefix, namespaces, root.root_name, pending)
 
@@ -2711,10 +2711,10 @@ class CapturedReferenceKernel(
         if not flow.entry_annotation_namespace_is_active(mutation):
             return self._item_mutation_resolution(context, mutation)
         local_namespace = occurrence.source.frame.locals
-        if isinstance(local_namespace, OpenCapturedReference):
+        if local_namespace.is_open:
             return local_namespace
         annotation_namespace = local_namespace.annotation_namespace
-        if isinstance(annotation_namespace, OpenCapturedReference):
+        if annotation_namespace.is_open:
             return self._item_mutation_resolution(context, mutation)
         if not isinstance(annotation_namespace, NamespaceEvidenceABC):
             return OpenCapturedReference(
