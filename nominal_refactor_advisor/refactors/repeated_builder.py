@@ -671,6 +671,7 @@ class ConsumerFamilyBuilderCallProjection:
         )
 
 
+@dataclass(frozen=True)
 class RepeatedBuilderSourceDerivation(ABC):
     """Source-reproved execution route for one repeated constructor family."""
 
@@ -842,9 +843,7 @@ class InheritedConsumerBuilderAuthorityDescent(
 ):
     """Route duplicated construction through one existing inherited method."""
 
-    authority: DataclassPayloadAuthorityTarget
     candidate: ExistingMethodOwner
-    call_sites: tuple[RepeatedBuilderCallSite, ...]
     projections: tuple[ConsumerFamilyBuilderCallProjection, ...]
 
     @classmethod
@@ -1809,9 +1808,7 @@ class RepeatedBuilderAuthorityDerivation(
 ):
     """Current-source proof for one batched constructor-authority extraction."""
 
-    authority: DataclassPayloadAuthorityTarget
     participants: tuple[ResolvedFunctionProjectionTarget, ...]
-    call_sites: tuple[RepeatedBuilderCallSite, ...]
     method: RepeatedBuilderAuthorityMethod
 
     @classmethod

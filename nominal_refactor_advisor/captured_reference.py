@@ -1121,6 +1121,7 @@ class InitialNativeFrame:
         )
 
 
+@dataclass(frozen=True, eq=False)
 class SourceActivationAuthorityABC(ABC):
     """One original operation at its declaration-owned activation cut.
 
@@ -1190,9 +1191,6 @@ class SourceOperationAuthority(SourceActivationAuthorityABC):
     Operation families supply only their node/event obligations; the canonical
     source join, activation context and prefix remain owned here.
     """
-
-    environment: NativeReferenceEnvironment
-    operation: SourceFlowOperation
 
     activation_context = AliasProperty[CompactFlowContext]("context")
 
@@ -2231,6 +2229,7 @@ class NamespaceContentsABC(ABC):
                 raise ValueError("Mapping value identity remains unproved")
 
 
+@dataclass(frozen=True)
 class InitialNamespaceContents(NamespaceContentsABC):
     """A view of supplied entry evidence, preserving its namespace identity."""
 
@@ -2252,8 +2251,7 @@ class InitialNamespaceContents(NamespaceContentsABC):
 
 @dataclass(frozen=True)
 class CapturedEntryContents(InitialNamespaceContents):
-    kernel: CapturedReferenceKernel
-    namespace: NamespaceEvidenceABC
+    pass
 
 
 @dataclass(frozen=True)
