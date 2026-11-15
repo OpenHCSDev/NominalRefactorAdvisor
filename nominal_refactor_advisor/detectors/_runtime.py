@@ -318,7 +318,7 @@ class FormalBoundaryStringRegistryAuthority:
                             FormalBoundaryStringRegistryConstant(
                                 target_name=target_name,
                                 value=value,
-                                line=statement.lineno,
+                                line=assignment.node.lineno,
                             )
                         )
         return tuple(constants)
@@ -940,7 +940,7 @@ class GeneratedBoundarySemanticConstantAuthority:
                         file_path=file_path,
                         target_name=target.id,
                         value=value,
-                        line=statement.lineno,
+                        line=assignment.node.lineno,
                         generated_boundary=generated_boundary,
                     )
                 )
