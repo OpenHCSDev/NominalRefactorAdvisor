@@ -747,7 +747,7 @@ def require_verdict(
     refusals = tuple(receipt for candidate in matches for receipt in candidate.refusals)
     if refusals:
         raise ValueError(
-            "The verdict refuses the move: "
+            "resolve these before this fold applies: "
             + "; ".join(dict.fromkeys(receipt.detail for receipt in refusals))
         )
     return matches[0]
@@ -2134,12 +2134,12 @@ def require_owner_candidate(
                 )
                 if blocking:
                     raise ValueError(
-                        "The verdict refuses the move: "
+                        "resolve these before this fold applies: "
                         + "; ".join(receipt.detail for receipt in blocking)
                     )
                 if not owner.permitted:
                     raise ValueError(
-                        f"`{owner.candidate_id}` is refused: "
+                        f"`{owner.candidate_id}` needs these resolved first: "
                         + "; ".join(receipt.detail for receipt in owner.refusals)
                     )
                 return verdict, owner
@@ -2566,7 +2566,7 @@ class ClassOverlapFindingRecipeSynthesizer(
         metrics: ClassOverlapMetrics,
         verdicts: ClassOverlapVerdicts,
     ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
-        """The operation the picker's owner calls for, or why there is none.
+        """The operation the picker's owner calls for, or the choice that yields one.
 
         A new mixin is declared before a composing class in its module; an
         existing class first gains the block declarations it lacks; a shared
@@ -2577,7 +2577,10 @@ class ClassOverlapFindingRecipeSynthesizer(
 
         pick = metrics.owner_pick
         if pick is None:
-            return "an extract-mixin move needs an owner pick (--codemod-owner-picks)"
+            return (
+                "choose the owner for these shared declarations and this folds them: "
+                "pass one ranked candidate in --codemod-owner-picks"
+            )
         if pick.finding != finding.stable_id:
             return f"covered by the owner pick on {pick.finding}"
         owner = pick.candidate
@@ -2742,7 +2745,7 @@ class ClassOverlapFindingRecipeSynthesizer(
         if not metrics.permitted:
             if not metrics.keyword_cure:
                 return self.rejected_evaluation(
-                    "the verdict refuses the move: "
+                    "resolve these before this fold applies: "
                     + "; ".join(receipt.detail for receipt in metrics.refusals)
                 )
             return self.keywording_evaluation(finding, metrics.keyword_cure, verdicts, context)

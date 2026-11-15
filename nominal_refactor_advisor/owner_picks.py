@@ -1,7 +1,7 @@
 """A picker's choice of owner for each verdict that needs one (#67).
 
-NRA ranks where an extracted block could live; it does not choose. A picker
-(a person or an agent) writes a picks file::
+NRA ranks where an extracted block could live and leaves the choice to you:
+a picker (a person or an agent) writes a picks file and the fold completes::
 
     {"picks": [
       {"finding": "<finding stable id>",

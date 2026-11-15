@@ -168,7 +168,9 @@ def test_composition_refuses_a_type_test_on_the_owner(tmp_path: Path) -> None:
         },
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    with pytest.raises(CodemodOperationPreflightError, match="refuses the move"):
+    with pytest.raises(
+        CodemodOperationPreflightError, match="resolve these before this fold applies"
+    ):
         _compose(tmp_path).source_edits(snapshot)
 
 

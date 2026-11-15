@@ -49,7 +49,7 @@ def test_a_goal_with_a_refused_target_stops_partially_and_says_why(
     (group,) = terminal["remaining_targets"]
     assert group["status"] == "rejected_by_safety_check"
     assert group["reason"] == (
-        "the verdict refuses the move: `Span` is told apart by type in 1 place(s) (type_test)"
+        "resolve these before this fold applies: `Span` is told apart by type in 1 place(s) (type_test)"
     )
     assert group["finding_ids"] == list(report["final_target_finding_ids"])
     delta = terminal["reaching_stages"][0]["finding_delta"]

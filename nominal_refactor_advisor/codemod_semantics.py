@@ -113,7 +113,7 @@ class CurrentSnapshotFindingRecipePlanningHorizon(
 
     @property
     def application_block_reason(self) -> str:
-        return "application requires a proof across reachable refactor trajectories"
+        return "run the goal search to prove this across reachable trajectories, then apply"
 
 
 class CompleteFindingRecipePlanningHorizon(
@@ -149,27 +149,30 @@ class FindingRecipeSynthesisStatus(FieldedStrEnum):
     )
     NO_EVALUATOR = (
         "no_evaluator",
-        "detector declaration has no finding recipe evaluation behavior",
+        "author this fold from the registered operations: the finding names the "
+        "restated fact and its owner, and each operation's preflight proves the move",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     NO_ACTION_KEYS = (
         "no_action_keys",
-        "executable recipe has no stable source action keys",
+        "select this recipe's sites by declaration (file_path and qualname) so the "
+        "edits survive an earlier stage's rewrite",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     CONFLICTING_TRAJECTORY_BRANCHES = (
         "conflicting_trajectory_branches",
-        "conflicting current-snapshot candidates require trajectory exploration",
+        "run the goal search to order these current-snapshot candidates into one "
+        "proved trajectory",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     UNPROVED_RECIPE_PLAN = (
         "unproved_recipe_plan",
-        "recipe compatibility or batch simulation is unproved",
+        "prove this plan by simulating the batch from the branch head",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
     )
     NO_EFFECTIVE_REWRITES = (
         "no_effective_rewrites",
-        "synthesizer recipe produced no effective source rewrites",
+        "the current source already satisfies this finding; move to the next one",
         FindingRecipeSynthesisDisposition.REJECTED,
     )
     REJECTED_BY_SAFETY_CHECK = (
