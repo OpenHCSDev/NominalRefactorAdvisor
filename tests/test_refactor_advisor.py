@@ -27825,6 +27825,10 @@ def test_detects_phantom_family(tmp_path: Path) -> None:
     finding = phantom_findings[0]
     assert finding.pattern_id == PatternId.PHANTOM_FAMILY
     assert "record_progress" in finding.summary
+    # Only the two classes are owners. pkg.gamma's free top-level function has no
+    # receiver type to dispatch through, so it is never a phantom-family member.
+    assert "2 owners" in finding.summary
+    assert "pkg.gamma" not in finding.summary
 
 
 def test_phantom_family_counts_an_override_with_what_it_overrides(tmp_path: Path) -> None:

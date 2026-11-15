@@ -722,22 +722,13 @@ class LoopRelookupDetector(PerModuleIssueDetector):
 
 
 # ---------------------------------------------------------------------------
-# Detector 5: same function/method name in 2+ modules, no shared ancestor
+# Detector 5: same method name in 2+ modules, no shared ancestor
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class PublicDefinitionSite(TypedRestatingSite, ABC):
-    """One public def: `group` is its name."""
-
-    @abstractmethod
-    def owner(self, module_name: str, families: MemberFamilies) -> str | None:
-        """The declaration owning this name, or None when it is left uncounted."""
-
-
-@dataclass(frozen=True)
-class PublicMethodSite(PublicDefinitionSite):
-    """A public method of a top-level class."""
+class PublicMethodSite(TypedRestatingSite):
+    """A public method of a top-level class: `group` is its name."""
 
     declaring_class: str
 
@@ -745,26 +736,17 @@ class PublicMethodSite(PublicDefinitionSite):
         return (self.declaring_class,)
 
     def owner(self, module_name: str, families: MemberFamilies) -> str | None:
+        """The declaration owning this name, or None when it is left uncounted."""
         symbol = f"{module_name}.{self.declaring_class}"
         if not families.declares_all_ancestors(symbol):
             return None
         return families.family(symbol, self.group) or symbol
 
 
-@dataclass(frozen=True)
-class PublicFunctionSite(PublicDefinitionSite):
-    """A public top-level function: it owns its own name."""
-
-    def spelled(self) -> tuple[str, ...]:
-        return ()
-
-    def owner(self, module_name: str, families: MemberFamilies) -> str | None:
-        return f"{module_name}.{self.group}"
-
-
-class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicDefinitionSite]]):
-    """Each public top-level function and each public method of a top-level
-    class, one site per def."""
+class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicMethodSite]]):
+    """Each public method of a top-level class, one site per def. Free top-level
+    functions are excluded: they have no receiver type, so they can never be a
+    dispatch family (there is no common type to dispatch through)."""
 
 
     @classmethod
@@ -780,20 +762,15 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicD
                         PublicMethodSite,
                         declaring_class=declared.name,
                     )
-        for function in FunctionDefinition.within(parsed_module.module.body):
-            if not function.name.startswith("_"):
-                yield cls.site(
-                    parsed_module, function, function.name, function.name, PublicFunctionSite
-                )
 
 
 class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDetector):
     """One public name declared by owners that share no declaring ancestor.
 
     A method's owner is the topmost classes declaring its name above it, so an
-    override and the declaration it overrides are one owner. A module function
-    is its own owner. A class with an ancestor the scan does not declare is left
-    out: that ancestor may declare the name, so nothing is claimed.
+    override and the declaration it overrides are one owner. A class with an
+    ancestor the scan does not declare is left out: that ancestor may declare
+    the name, so nothing is claimed.
     """
 
     _SKIP_COMMON_NAMES = frozenset({
@@ -816,7 +793,7 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
         PatternId.PHANTOM_FAMILY,
         "Same name across modules with no shared declaration",
         (
-            "A function or method name appears in multiple modules of one package "
+            "A method name appears in multiple modules of one package "
             "with no shared ancestor declaring it. The name promises a family that "
             "does not exist. Each body is independently maintained and can drift; "
             "callers cannot dispatch through a common type."
@@ -838,7 +815,7 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
     ) -> list[RefactorFinding]:
         del config
         families = MemberFamilies.require(context)
-        owners_by_name: dict[str, dict[str, list[PublicDefinitionSite]]] = defaultdict(
+        owners_by_name: dict[str, dict[str, list[PublicMethodSite]]] = defaultdict(
             lambda: defaultdict(list)
         )
         for module in PublicDefinitionSiteFamily.modules_in(projections_by_family):
@@ -858,7 +835,7 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
         ]
 
     def _finding_for_name(
-        self, name: str, owners: dict[str, list[PublicDefinitionSite]]
+        self, name: str, owners: dict[str, list[PublicMethodSite]]
     ) -> RefactorFinding:
         first_sites = sorted(
             (min(sites, key=attrgetter("file_path", "lineno")) for sites in owners.values()),
