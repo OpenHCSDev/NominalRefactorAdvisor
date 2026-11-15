@@ -160,10 +160,6 @@ class TopLevelBindingRenameTarget:
         return self.source_module.file_path
 
     @property
-    def module_name(self) -> str:
-        return self.source_module.module_name
-
-    @property
     def name(self) -> str:
         return self.declaration.name
 
@@ -242,8 +238,8 @@ class DeclarationAuthorityRenameBindingClosure:
         for reference in import_references:
             consumers_by_origin[reference.imported_module_name].append(reference)
 
-        renamed_module_names = {target.module_name}
-        pending_module_names = deque((target.module_name,))
+        renamed_module_names = {target.source_module.module_name}
+        pending_module_names = deque((target.source_module.module_name,))
         while pending_module_names:
             origin_module_name = pending_module_names.popleft()
             for reference in consumers_by_origin[origin_module_name]:

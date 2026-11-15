@@ -885,7 +885,7 @@ class Descent(RepositorySourceReprovedOperation, ABC):
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[ParsedModule, ast.ClassDef]:
         _identifier, target, _node = self.target_node_from_context(snapshot)
-        if not target.is_class:
+        if not target.node_kind.is_class:
             raise ValueError("descent target must be a class")
         for module in snapshot.parsed_modules:
             if module.file_path != target.file_path:

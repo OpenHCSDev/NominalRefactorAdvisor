@@ -279,7 +279,7 @@ class RepeatedBuilderCallSite:
     def owner_class_symbol(self, context: CodemodSelectorContext) -> str | None:
         """Return the nominal class that owns this participant method."""
 
-        if not self.participant.target.is_method:
+        if not self.participant.target.node_kind.is_method:
             return None
         if self.participant.owner_qualname is None:
             return None
@@ -1936,7 +1936,7 @@ class RepeatedBuilderAuthorityDerivation(
         resolver = context.class_reference_resolver_for_source_path(authority.file_path)
         call_sites: list[RepeatedBuilderCallSite] = []
         for target in context.source_index.targets_by_file[authority.file_path]:
-            if not target.is_function_like or target.qualname.startswith(
+            if not target.node_kind.is_function_like or target.qualname.startswith(
                 f"{authority.target.qualname}."
             ):
                 continue

@@ -95,7 +95,7 @@ def test_generated_requirement_owns_actual_candidate_node_environment_and_revisi
     tmp_path, source
 ):
     before, operation, simulation = conversion(tmp_path, source)
-    assert simulation.simulation.parse_valid
+    assert simulation.simulation.parse_validation.parse_valid
     assert not simulation.is_clean
     (requirement,) = operation.candidate_native_use_requirements(simulation)
     authority = authority_for(operation, simulation)

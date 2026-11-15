@@ -494,7 +494,7 @@ class _CallSiteSelectorVisitor(ast.NodeVisitor):
             for target in self.source_index.ast_targets
             if target.file_path == self.file_path
             and target.contains_line(line)
-            and not target.is_module
+            and not target.node_kind.is_module
         ]
         if not candidates:
             return None

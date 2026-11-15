@@ -68,7 +68,7 @@ def test_batch_retains_origin_records_before_physical_coalescing():
     assert batch.planned_rewrites is batch.planned_rewrites
     assert batch.edits is original
     result = owner.simulate_rewrites(batch.planned_rewrites)
-    assert result.parse_valid
+    assert result.parse_validation.parse_valid
     assert "renamed = object" in result.rewritten_sources[PATH]
     assert "import typing" in result.rewritten_sources[PATH]
     assert "import builtins" in result.rewritten_sources[PATH]

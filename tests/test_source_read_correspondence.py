@@ -463,7 +463,7 @@ def test_failed_candidate_native_gate_preserves_read_origin_but_blocks_applicati
     document = CodemodPlanDocument(
         recipes=(RefactorRecipe("native-candidate", operations=(operation,)),)
     ).simulate(snapshot)
-    assert document.simulation.parse_valid
+    assert document.simulation.parse_validation.parse_valid
     assert not document.preflight_report.is_clean
     assert not document.is_clean
     assert "AutoRegisterMeta" in document.simulation.rewritten_sources[path.as_posix()]

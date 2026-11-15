@@ -308,7 +308,7 @@ class ResolvedClassTarget:
         _target_id, target, node = context.target_node_for_rewrite_target(
             target_reference
         )
-        if not target.is_class or not isinstance(node, ast.ClassDef):
+        if not target.node_kind.is_class or not isinstance(node, ast.ClassDef):
             raise ValueError("Source rewrite target must identify one class")
         return cls(target=target, node=node)
 

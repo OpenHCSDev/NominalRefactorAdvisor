@@ -129,12 +129,7 @@ class DataclassPayloadProjectionDerivation(
         if (
             field_run is None
             or dataclasses_reference is None
-            or not field_run.owner_has_nominal_authority_type(
-                context,
-                authority,
-                projection,
-                authority_import_source,
-            )
+            or not field_run.instance.owner_has_nominal_authority_type(context, authority, projection, authority_import_source)
         ):
             return None
         source_replacement = cls.projection_replacement(
@@ -164,7 +159,7 @@ class DataclassPayloadProjectionDerivation(
         source = context.sources_by_file_path[projection.source_path]
         geometry = SourceTextGeometry(source)
         replacement_span = field_run.replacement_span(geometry)
-        owner_source = geometry.segment_for_node(field_run.owner_node)
+        owner_source = geometry.segment_for_node(field_run.instance.owner_node)
         if replacement_span is None or owner_source is None:
             return None
         if replacement_span.contains_comment(source):

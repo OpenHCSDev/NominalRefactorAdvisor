@@ -311,8 +311,8 @@ def test_proven_finding_compiles_to_an_authority_keyed_atomic_rewrite() -> None:
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
-    assert len(plan.records) == 1
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert len(plan.report.records) == 1
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert len(plan.document.recipes) == 1
     operation = plan.document.recipes[0].operations[0]
     authority_target = next(
@@ -536,13 +536,13 @@ def test_parameter_conveyor_recipe_reproves_current_source_before_rewriting() ->
     plan = codemod_plan_from_findings(findings, selector_context=current_snapshot)
 
     assert plan.document.recipes == ()
-    assert len(plan.records) == 1
-    assert plan.records[0].status is (
+    assert len(plan.report.records) == 1
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
     assert (
         "parameter-conveyor rewrite requires a proven component"
-        in plan.records[0].reason
+        in plan.report.records[0].reason
     )
 
 
@@ -773,10 +773,10 @@ def test_parameter_conveyor_recipe_rejects_lossy_source_reconstruction(
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
     assert plan.document.recipes == ()
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert rejection_fragment in plan.records[0].reason
+    assert rejection_fragment in plan.report.records[0].reason
 
 
 def test_multistep_forwarding_forms_one_maximal_component_not_per_edge() -> None:

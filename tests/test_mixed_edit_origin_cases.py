@@ -43,7 +43,7 @@ def render(*edits):
     compiler = owner()
     batch = NominalEditBatch(compiler, tuple(edits))
     result = compiler.simulate_rewrites(batch.planned_rewrites)
-    assert result.parse_valid
+    assert result.parse_validation.parse_valid
     return batch, result.rewritten_sources[PATH]
 
 
@@ -113,7 +113,7 @@ def test_empty_source_keeps_distinct_logical_insertion_anchors(reverse):
     assert len(batch.physical_edits) == 2
     assert {edit.insertion_line for edit in batch.physical_edits} == {1, 2}
     result = compiler.simulate_rewrites(batch.planned_rewrites)
-    assert result.parse_valid
+    assert result.parse_validation.parse_valid
     assert result.rewritten_sources[PATH] == "first = object\nsecond = type\n"
 
 
@@ -181,7 +181,7 @@ def test_equal_exact_outputs_can_have_different_retained_interiors(reverse):
     compiler = CodemodSourceSnapshot.from_source_mapping({PATH: source}).execution_snapshot()
     batch = NominalEditBatch(compiler, (second, first) if reverse else (first, second))
     result = compiler.simulate_rewrites(batch.planned_rewrites)
-    assert result.parse_valid
+    assert result.parse_validation.parse_valid
     assert result.rewritten_sources[PATH] == source
     assert len(batch.edits) == 2 and len(batch.physical_edits) == 1
     shared = SourceTextSpan(source.index("sorted"), source.index("sorted") + 6)

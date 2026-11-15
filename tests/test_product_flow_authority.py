@@ -175,7 +175,7 @@ def test_reexport_chain_resolves_declaring_function() -> None:
         if r.context.owner_symbol == "probe.run"
     )
     assert resolution.resolved_call is not None
-    assert resolution.resolved_call.callee.identity.symbol == "library.consume"
+    assert resolution.resolved_call.resolved_target.declaration.identity.symbol == "library.consume"
 
 
 @pytest.mark.parametrize("class_scope", (False, True))
@@ -214,7 +214,7 @@ def test_callable_alias_captures_source_before_assignment_targets(
         if r.context.owner_symbol == "probe.run"
     )
     assert resolution.resolved_call is not None
-    assert resolution.resolved_call.callee.identity.symbol == (
+    assert resolution.resolved_call.resolved_target.declaration.identity.symbol == (
         "probe.Owner.first" if class_scope else "probe.first"
     )
 
@@ -237,7 +237,7 @@ def test_local_alias_resolves_module_function_and_local_function() -> None:
         for r in repository.resolved_function_calls
         if r.context.owner_symbol == "probe.run"
     )
-    assert tuple(r.callee.identity.symbol for r in calls) == (
+    assert tuple(r.resolved_target.declaration.identity.symbol for r in calls) == (
         "probe.first",
         "probe.run.second",
     )
@@ -270,9 +270,9 @@ def test_inherited_method_alias_preserves_descriptor_binding(
         if r.context.owner_symbol == "probe.Child.run"
     )
     assert resolution.resolved_call is not None
-    assert resolution.resolved_call.callee.identity.symbol == "probe.Parent.first"
+    assert resolution.resolved_call.resolved_target.declaration.identity.symbol == "probe.Parent.first"
     call = resolution.resolved_call.call
-    assert resolution.resolved_call.callee.bind_call(
+    assert resolution.resolved_call.resolved_target.declaration.bind_call(
         call.arguments.positional, call.arguments.keywords
     ).is_exact
 
@@ -339,7 +339,7 @@ def test_import_alias_is_selected_at_its_source_position() -> None:
         for r in repository.function_call_resolutions
         if r.context.owner_symbol == "probe"
     )
-    assert tuple(r.resolved_call.callee.identity.symbol for r in resolutions) == (
+    assert tuple(r.resolved_call.resolved_target.declaration.identity.symbol for r in resolutions) == (
         "first.consume",
         "second.consume",
     )
@@ -382,7 +382,7 @@ def test_reexported_class_resolves_its_method() -> None:
     )
     assert resolution.resolved_call is not None
     assert (
-        resolution.resolved_call.callee.identity.symbol == "pkg.library.Owner.consume"
+        resolution.resolved_call.resolved_target.declaration.identity.symbol == "pkg.library.Owner.consume"
     )
 
 
@@ -422,7 +422,7 @@ def test_imported_nested_class_resolves_each_namespace_binding() -> None:
     )
     assert resolution.resolved_call is not None
     assert (
-        resolution.resolved_call.callee.identity.symbol == "library.Outer.Inner.consume"
+        resolution.resolved_call.resolved_target.declaration.identity.symbol == "library.Outer.Inner.consume"
     )
 
 
@@ -1066,7 +1066,7 @@ def test_repository_resolves_multiple_inheritance_by_native_mro() -> None:
 
     resolution = repository.function_call_resolutions[0].resolved_call
     assert resolution is not None
-    assert resolution.callee.identity.symbol == "pkg.ambiguous_methods.Left.consume"
+    assert resolution.resolved_target.declaration.identity.symbol == "pkg.ambiguous_methods.Left.consume"
 
 
 @pytest.mark.parametrize(
@@ -1170,7 +1170,7 @@ def test_method_selection_uses_final_class_binding(before: str, after: str) -> N
         if r.context.owner_symbol == "probe.run"
     )
     assert resolution.resolved_call is not None
-    assert resolution.resolved_call.callee.identity.symbol == "probe.Owner.consume"
+    assert resolution.resolved_call.resolved_target.declaration.identity.symbol == "probe.Owner.consume"
 
 
 def test_repository_rejects_duplicate_nominal_function_declaration() -> None:

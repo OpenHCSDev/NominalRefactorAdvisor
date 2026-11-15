@@ -119,8 +119,8 @@ def test_source_applications_join_each_original_native_input():
     result.require_closed()
     native = result.creation.native_execution
     applications = native.require_applications()
-    assert result.native_value is applications[-1].operand_in(result.production)
-    assert result.argument.native_value is applications[0].operand_in(result.production)
+    assert result.native_value is applications[-1].operand_in(result.creation.native_result_store)
+    assert result.argument.native_value is applications[0].operand_in(result.creation.native_result_store)
     assert applications[0].argument is native.require_creation()
     assert applications[1].argument is applications[0]
 

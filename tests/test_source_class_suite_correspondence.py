@@ -79,7 +79,7 @@ def conversion(tmp_path, source=SOURCE, *, edits=()):
         del RefactorRecipeOperation.__registry__[
             ClassSuiteFixtureEditOperation.operation_key()
         ]
-    assert simulation.simulation.parse_valid
+    assert simulation.simulation.parse_validation.parse_valid
     assert not simulation.is_clean, "Origin evidence must not admit registration"
     after = simulation.required_after_snapshot
     relation = SourceClassSuiteCorrespondence(

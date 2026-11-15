@@ -58,7 +58,7 @@ def test_actual_windows_keep_logical_anchor_order_and_renderer_output(source, re
     assert editor.replacement_source(batch.windows) == expected
     assert editor.replacement_source(batch.physical_edits) == expected
     report = compiler.simulate_rewrites(batch.planned_rewrites)
-    assert report.parse_valid
+    assert report.parse_validation.parse_valid
     assert report.rewritten_sources[PATH] == expected
 
 

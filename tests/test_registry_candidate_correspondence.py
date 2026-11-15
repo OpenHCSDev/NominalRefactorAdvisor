@@ -50,7 +50,7 @@ def _convert(tmp_path, *, change_body=False):
     simulation = CodemodPlanDocument(
         recipes=(RefactorRecipe("candidate-classes", operations=operations),)
     ).simulate(before)
-    assert simulation.simulation.parse_valid
+    assert simulation.simulation.parse_validation.parse_valid
     assert not simulation.is_clean
     return path, before, original_targets, simulation
 

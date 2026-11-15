@@ -831,12 +831,8 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         )
 
     @property
-    def authority_node(self) -> ast.ClassDef:
-        return self.authority.node
-
-    @property
     def authority_name(self) -> str:
-        return self.authority_node.name
+        return self.authority.node.name
 
     @property
     def assignment_name(self) -> str:
@@ -846,10 +842,6 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         if assignment_name is None:
             raise ValueError("Instance-view assignment target is not a name")
         return assignment_name
-
-    @property
-    def registry_key_attribute(self) -> str:
-        return self.authority.key_attribute
 
     def require_complete(self, class_graph: DirectModuleClassGraph) -> None:
         if self.authority.declares_registry:
@@ -885,7 +877,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
                 )
                 or _class_declares_non_null_name(
                     node,
-                    self.registry_key_attribute,
+                    self.authority.key_attribute,
                 )
             )
         )

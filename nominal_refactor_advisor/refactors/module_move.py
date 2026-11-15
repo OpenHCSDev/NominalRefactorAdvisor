@@ -2158,7 +2158,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                     not destination_table.satisfies_import_binding(
                         name,
                         identity,
-                        binding.scope,
+                        binding.request.scope,
                         import_graph=import_graph,
                     )
                 ),
@@ -2171,9 +2171,9 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 source_scopes=tuple(
                     dict.fromkeys(
                         (
-                            binding.scope,
+                            binding.request.scope,
                             *(
-                                bound.scope
+                                bound.request.scope
                                 for bound in source_table.import_bindings_by_name.get(
                                     name, ()
                                 )
@@ -3812,7 +3812,7 @@ class _ScriptEntry:
             if identity.is_destination_declaration(
                 import_graph, destination_path=successor_path, bound_name=name
             ) or successor_table.satisfies_import_binding(
-                name, identity, binding.scope, import_graph=import_graph
+                name, identity, binding.request.scope, import_graph=import_graph
             ):
                 continue
             if successor_table.conflicts_with_import_binding(name, identity, import_graph=import_graph):
@@ -3825,7 +3825,7 @@ class _ScriptEntry:
                     import_source=identity.source_for(
                         import_graph,
                         importing_file_path=successor_path,
-                        scope=binding.scope,
+                        scope=binding.request.scope,
                         bound_name=name,
                     ),
                     rationale=f"The script entry moved from {source_path!r} runs {name!r}.",

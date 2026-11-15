@@ -842,14 +842,6 @@ class SourceDefinitionDecoratorApplicationABC(
     )
 
     @property
-    def creation_results(self) -> tuple[SourceDefinitionResultABC, ...]:
-        return self.creation.creation_results
-
-    @property
-    def production(self) -> NativeValueStore:
-        return self.creation.native_result_store
-
-    @property
     @abstractmethod
     def _native_application_path(
         self,
@@ -879,7 +871,7 @@ class SourceDefinitionDecoratorApplicationABC(
 
     @property
     def argument(self) -> SourceDefinitionResultABC:
-        return self.creation_results[self.index]
+        return self.creation.creation_results[self.index]
 
     @property
     def callee(self) -> CapturedReferenceResolution:
@@ -905,18 +897,18 @@ class SourceDefinitionDecoratorApplicationABC(
         self.require_available_in(prefix)
         if self is not self.creation.creation_results[-1]:
             raise ValueError("Only the final definition result has an installation")
-        return self.require_installation_name(self.production.binding)
+        return self.require_installation_name(self.creation.native_result_store.binding)
 
     def return_continuation(self, prefix: AdmittedExecutionPrefixABC) -> NativeReturn:
         self.require_native_installation(prefix)
         self.require_complete_source_cut(prefix)
-        return self.production.require_return()
+        return self.creation.native_result_store.require_return()
 
     def _require_native_production(self, value: NativeProducedValue) -> None:
-        self.production.require_value(value)
+        self.creation.native_result_store.require_value(value)
 
     def require_original_application(self) -> None:
-        results = self.creation_results
+        results = self.creation.creation_results
         decorators = self.creation.decorator_nodes
         if (
             not 0 <= self.index < len(decorators)
@@ -959,7 +951,7 @@ class SourceNativeDecoratorApplication(
     ) -> tuple[NativeProducedValue, tuple[NativeCallValue, ...]]:
         native = self.creation.native_execution
         installed = native.require_applied_installation()
-        store = self.production
+        store = self.creation.native_result_store
         if (
             store.binding is not installed
             or store.frame is not native.require_creation().frame
@@ -3405,7 +3397,7 @@ class SourceClassDecoratorApplication(
     def _native_application_path(
         self,
     ) -> tuple[NativeProducedValue, tuple[NativeCallValue, ...]]:
-        store = self.production
+        store = self.creation.native_result_store
         raw = self.creation.capture.definition_construction_in(store)
         return raw, store.applications_after(raw)
 

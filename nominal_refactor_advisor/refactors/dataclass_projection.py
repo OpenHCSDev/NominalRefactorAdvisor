@@ -272,16 +272,8 @@ class DataclassAuthorityReferenceProof:
         return self.reference.authority.name
 
     @property
-    def target_symbol(self) -> str:
-        return self.reference.authority_symbol
-
-    @property
     def resolver(self) -> ModuleClassReferenceResolver:
         return self.reference.resolver
-
-    @property
-    def symbol_table(self) -> ModuleSymbolTable:
-        return self.reference.symbol_table
 
     @classmethod
     def from_target(
@@ -314,17 +306,17 @@ class DataclassAuthorityReferenceProof:
     def resolves(self, reference: ast.expr) -> bool:
         if (
             isinstance(reference, ast.Name)
-            and reference.id in self.symbol_table.top_level_names
+            and reference.id in self.reference.symbol_table.top_level_names
             and not self.top_level_target_binding_is_nominal
         ):
             return False
-        if self.resolver.symbol_for_reference(reference) == self.target_symbol:
+        if self.resolver.symbol_for_reference(reference) == self.reference.authority_symbol:
             return True
         return bool(
             self.generated_import_source is not None
             and isinstance(reference, ast.Name)
             and reference.id == self.target_name
-            and reference.id not in self.symbol_table.available_names
+            and reference.id not in self.reference.symbol_table.available_names
         )
 
     @staticmethod
@@ -610,10 +602,6 @@ class DataclassInstanceFieldRunProjection:
             return None
         return SourceTextSpan(start_offset=first[0], end_offset=last[1])
 
-    @property
-    def owner_node(self) -> ast.expr:
-        return self.instance.owner_node
-
     @classmethod
     def from_targets(
         cls,
@@ -653,20 +641,6 @@ class DataclassInstanceFieldRunProjection:
             dict_node=projection.dict_node,
         )
 
-    def owner_has_nominal_authority_type(
-        self,
-        context: CodemodSelectorContext,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnDictProjectionTarget,
-        authority_import_source: str | None,
-    ) -> bool:
-        return self.instance.owner_has_nominal_authority_type(
-            context,
-            authority,
-            projection,
-            authority_import_source,
-        )
-
 
 @dataclass(frozen=True)
 class WholeDataclassPayloadProjection(DataclassInstanceFieldRunProjection):
@@ -688,10 +662,6 @@ class DataclassKeyValueElementRunProjection:
     instance: DataclassInstanceFieldProjection
     first_element_node: ast.Tuple | ast.List
     last_element_node: ast.Tuple | ast.List
-
-    @property
-    def owner_node(self) -> ast.expr:
-        return self.instance.owner_node
 
     @classmethod
     def from_targets(
@@ -728,20 +698,6 @@ class DataclassKeyValueElementRunProjection:
             instance=instance,
             first_element_node=first_element,
             last_element_node=last_element,
-        )
-
-    def owner_has_nominal_authority_type(
-        self,
-        context: CodemodSelectorContext,
-        authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnKeyValueSequenceProjectionTarget,
-        authority_import_source: str | None,
-    ) -> bool:
-        return self.instance.owner_has_nominal_authority_type(
-            context,
-            authority,
-            projection,
-            authority_import_source,
         )
 
 

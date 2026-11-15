@@ -61,7 +61,7 @@ def insertion(name):
 
 def rendered(batch):
     simulation = batch.compiler.simulate_rewrites(batch.planned_rewrites)
-    assert simulation.parse_valid
+    assert simulation.parse_validation.parse_valid
     return simulation.rewritten_sources[PATH]
 
 

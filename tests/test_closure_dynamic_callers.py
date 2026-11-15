@@ -137,7 +137,7 @@ def test_a_classmethod_declared_to_return_self_types_its_call():
     context = repository.flow_contexts_by_owner_symbol["pkg.calls._run"]
     resolved = repository.resolve_function_call(context, context.flow.calls[-1])
     assert resolved.resolved_call is not None
-    assert resolved.resolved_call.callee.identity.symbol == "pkg.calls._Built._label"
+    assert resolved.resolved_call.resolved_target.declaration.identity.symbol == "pkg.calls._Built._label"
     assert _closed(repository, "pkg.calls._Other._label")
 
 

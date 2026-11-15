@@ -423,7 +423,7 @@ def _capture_name_records(tmp_path: Path, other_source: str = ""):
         if finding.detector_id == "foreign_absence_probe"
     )
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
-    return codemod_plan_from_findings(findings, selector_context=snapshot).records
+    return codemod_plan_from_findings(findings, selector_context=snapshot).report.records
 
 
 def test_an_unrelated_declaration_with_an_owner_name_is_refused(

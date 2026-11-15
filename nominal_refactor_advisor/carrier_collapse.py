@@ -73,7 +73,7 @@ class CarrierCollapseCallEdge(ABC):
 
     @property
     def callee_symbol(self) -> str:
-        return self.resolved_call.callee.identity.symbol
+        return self.resolved_call.resolved_target.declaration.identity.symbol
 
     @property
     def field_names(self) -> tuple[str, ...]:

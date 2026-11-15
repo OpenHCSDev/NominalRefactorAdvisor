@@ -316,7 +316,7 @@ def test_empty_module_sentinel_span_is_used_by_the_actual_batch_renderer():
     )
     batch = NominalEditBatch(compiler, (edit,))
     rendered = compiler.simulate_rewrites(batch.planned_rewrites)
-    assert rendered.parse_valid
+    assert rendered.parse_validation.parse_valid
     assert rendered.rewritten_sources[PATH] == "written = object\n"
     assert edit.original_span(SourceTextGeometry("")) == SourceTextSpan(0, 0)
 

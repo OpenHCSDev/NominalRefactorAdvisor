@@ -50,7 +50,7 @@ class ModuleMoveImportDependency(DataclassJsonReport):
 
     @json_report_property()
     def scope(self) -> ModuleImportScope:
-        return self.binding.scope
+        return self.binding.request.scope
 
     def destination_source(
         self,

@@ -126,7 +126,7 @@ def test_outer_and_inner_deltas_apply_once_with_unicode_and_actual_rendering(
     )
     projected = index.project(iter(originals))
     actual = owner.simulate_rewrites(batch.planned_rewrites)
-    assert actual.parse_valid
+    assert actual.parse_validation.parse_valid
     output = actual.rewritten_sources[PATH]
     assert output == editor.replacement_source(ordered)
     assert projected == tuple(

@@ -348,7 +348,7 @@ ExactLeafMethodAncestorPromotionDetector = declare_candidate_rule_detector(
     summary=lambda candidate: (
         f"{candidate.participant_class_names} repeat exact methods "
         f"{candidate.method_names} across every direct leaf of "
-        f"`{candidate.authority_name}`; the closed inheritance relation proves "
+        f"`{candidate.authority.qualname}`; the closed inheritance relation proves "
         "that existing class as the unique owner."
     ),
     authority_evidence=lambda candidate: candidate.evidence[0],

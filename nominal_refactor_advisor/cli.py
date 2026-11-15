@@ -3511,7 +3511,7 @@ class CodemodSynthesisExecution(
         return {
             **self.simulation_result_payload(simulation),
             "applied": applied,
-            "unified_diff": self.snapshot.unified_diff(simulation.simulation),
+            "unified_diff": self.snapshot.unified_diff(simulation.document_simulation.simulation),
         }
 
     def operation_preflight_failure_payload(
@@ -3583,7 +3583,7 @@ class CodemodSynthesisExecution(
         payload = self.simulation_payload(simulation, applied=applied)
         projected_findings = self.execution_request.projected_finding_report(
             self.workflow_scan,
-            simulation.simulation,
+            simulation.document_simulation.simulation,
             source_sequence=sequence_simulation.sequence,
             expected_removed_finding_ids=(
                 self.finding_plan.expected_removed_finding_ids

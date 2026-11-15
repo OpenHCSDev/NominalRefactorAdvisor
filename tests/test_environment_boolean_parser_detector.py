@@ -205,12 +205,12 @@ class FeatureEnvironmentAuthority:
     )
     plan = snapshot.plan_from_findings(findings)
     records_by_symbol = {
-        record.finding.evidence[0].subject_symbol: record for record in plan.records
+        record.finding.evidence[0].subject_symbol: record for record in plan.report.records
     }
-    assert all(record.action_keys for record in plan.records)
+    assert all(record.action_keys for record in plan.report.records)
     assert all(
         record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-        for record in plan.records
+        for record in plan.report.records
     )
     assert "token and absent-state semantics are not proven equivalent" in (
         records_by_symbol["RuntimeProfileEnvironmentAuthority.enabled"].reason

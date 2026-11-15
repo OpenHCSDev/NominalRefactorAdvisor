@@ -202,26 +202,6 @@ class AstTargetDigest(_IdentifiedTarget, DataclassJsonReport, SourceLineReferenc
     decorators: tuple[str, ...] = ()
     base_names: tuple[str, ...] = ()
 
-    @property
-    def is_module(self) -> bool:
-        return self.node_kind.is_module
-
-    @property
-    def is_class(self) -> bool:
-        return self.node_kind.is_class
-
-    @property
-    def is_function(self) -> bool:
-        return self.node_kind.is_function
-
-    @property
-    def is_method(self) -> bool:
-        return self.node_kind.is_method
-
-    @property
-    def is_function_like(self) -> bool:
-        return self.node_kind.is_function_like
-
     def require_kind(
         self,
         required_kind: AstTargetNodeKind,
@@ -502,7 +482,7 @@ class SourceIndex(DataclassJsonReport):
     def symbol_for_target(self, target: AstTargetDigest) -> str:
         """Derive a target's repository symbol from its owning source file."""
 
-        if target.is_module:
+        if target.node_kind.is_module:
             return target.qualname
         return f"{self.file_by_id[target.file_id].module_name}.{target.qualname}"
 
@@ -1026,7 +1006,7 @@ class EvidenceTargetResolver:
             line_matches.append(target)
             if target.matches_symbol(symbol):
                 symbol_matches.append(target)
-            if target.is_module:
+            if target.node_kind.is_module:
                 module_matches.append(target)
             else:
                 non_module_matches.append(target)

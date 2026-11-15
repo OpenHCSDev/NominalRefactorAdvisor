@@ -61,6 +61,6 @@ def test_editing_original_line_does_not_consume_a_separate_append(
     batch = NominalEditBatch(compiler, edits)
     assert len(batch.physical_edits) == 2
     actual = compiler.simulate_rewrites(batch.planned_rewrites)
-    assert actual.parse_valid
+    assert actual.parse_validation.parse_valid
     expected = ("" if delete else "first = object\n") + "second = type\n"
     assert actual.rewritten_sources[path] == expected

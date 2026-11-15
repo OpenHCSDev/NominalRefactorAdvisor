@@ -85,7 +85,7 @@ class FindingRecipeClassPlan(DataclassJsonReport):
         finding_ids = frozenset(self.execution_class.finding_ids)
         return tuple(
             record
-            for record in self.finding_plan.records
+            for record in self.finding_plan.report.records
             if record.finding_id in finding_ids
         )
 

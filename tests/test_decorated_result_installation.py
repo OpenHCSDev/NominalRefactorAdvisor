@@ -51,11 +51,11 @@ def test_final_wrapped_result_supplies_its_original_store_and_return(
     prefix = env.required_prefix(context, None)
     installed = result.require_native_installation(prefix)
     assert installed is result.creation.native_execution.require_applied_installation()
-    assert installed is result.production.binding
+    assert installed is result.creation.native_result_store.binding
     assert installed.value is result.native_value
     assert isinstance(result, SourceInstalledReturnABC)
     assert not isinstance(result, SourceDefinitionCapture)
-    assert result.return_continuation(prefix) is result.production.require_return()
+    assert result.return_continuation(prefix) is result.creation.native_result_store.require_return()
     selected = SourceCompletionResolver(env).resolve(binding)
     assert selected.require_native_installation(prefix) is installed
     assert selected.return_continuation(prefix) is result.return_continuation(prefix)
@@ -113,10 +113,10 @@ def test_warmed_original_receipts_reject_substituted_native_operands(damage):
             NativeCallMarker(value.instruction_offset, value.source_span),
         )
     elif damage == "frame":
-        object.__setattr__(result.production, "frame", copy(result.production.frame))
+        object.__setattr__(result.creation.native_result_store, "frame", copy(result.creation.native_result_store.frame))
     else:
         object.__setattr__(
-            result.production, "binding", replace(result.production.binding)
+            result.creation.native_result_store, "binding", replace(result.creation.native_result_store.binding)
         )
     with pytest.raises(ValueError):
         result.require_native_installation(prefix)

@@ -48,7 +48,7 @@ def test_source_definition_selects_the_original_final_store(kind, decorated):
         else:
             assert entry.result().production is store
     elif decorated:
-        assert entry.result().production is store
+        assert entry.result().creation.native_result_store is store
 
 
 @pytest.mark.parametrize("kind", ("class", "function"))

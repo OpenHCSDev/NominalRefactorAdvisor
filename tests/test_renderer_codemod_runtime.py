@@ -128,7 +128,7 @@ def test_renderer_and_detector_collapse_preserve_runtime(
             parse_python_modules(tmp_path), findings,
         )
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
-        assert plan.records[0].status is (
+        assert plan.report.records[0].status is (
             FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
         ), plan.records[0].reason
         simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -172,13 +172,13 @@ def test_detector_collapse_keeps_class_dependent_renderers(
         )
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
         if detector_id == "declarative_detector_class":
-            assert plan.records[0].status is not (
+            assert plan.report.records[0].status is not (
                 FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
             )
-            assert "class scope" in plan.records[0].reason
+            assert "class scope" in plan.report.records[0].reason
             assert _execute(module_path) == expected
             break
-        assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
         simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
         assert simulation.is_clean
         simulation.document_simulation.apply()
@@ -216,8 +216,8 @@ def test_detector_rewrites_require_nominal_base_identity(
     assert len(findings) == 1
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
     plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-    assert "nominal collector base" in plan.records[0].reason
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert "nominal collector base" in plan.report.records[0].reason
 
 
 @pytest.mark.parametrize(
@@ -258,7 +258,7 @@ def test_detector_rewrites_follow_nominal_base_aliases(
         assert len(findings) == 1
         snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
         plan = snapshot.plan_from_findings(findings, detector_ids=(detector_id,))
-        assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE, (
+        assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE, (
             plan.records[0].reason
         )
         simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -307,8 +307,8 @@ def test_detector_rewrite_retains_unresolved_binding_evidence(
     assert len(findings) == 1
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
     plan = snapshot.plan_from_findings(findings, detector_ids=("declarative_detector_class",))
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-    assert "nominal collector base" in plan.records[0].reason
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert "nominal collector base" in plan.report.records[0].reason
 
 
 @pytest.mark.parametrize("detector_id", ("direct_build_finding_renderer", "declarative_detector_class"))
@@ -322,7 +322,7 @@ def test_saved_detector_plan_reproves_imports_on_execution(
         findings = detector_findings(parse_python_modules(tmp_path), current_id)
         snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path), findings)
         plan = snapshot.plan_from_findings(findings, detector_ids=(current_id,))
-        assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
         if current_id != detector_id:
             plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN).document_simulation.apply()
             continue

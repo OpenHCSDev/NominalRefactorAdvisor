@@ -557,22 +557,14 @@ class CompactResolvedFunctionCall(CompactFunctionCallResolution):
         """Single supplied values selected by the existing binding result."""
         return {
             parameter.name: argument.values[0]
-            for parameter in self.call_signature.parameters
+            for parameter in self.resolved_target.call_signature.parameters
             if (argument := self.binding.argument_for(parameter.name)) is not None
             and len(argument.values) == 1
         }
 
     @property
-    def callee(self) -> CompactFunctionDeclaration:
-        return self.resolved_target.declaration
-
-    @property
     def target_resolution(self) -> ResolvedCompactFunctionTarget:
         return self.resolved_target
-
-    @property
-    def call_signature(self) -> CompactFunctionSignature:
-        return self.resolved_target.call_signature
 
     @cached_property
     def binding(self) -> CompactCallBinding[CompactValueUse]:
@@ -2065,7 +2057,7 @@ class ProductFlowRepository(
         return tuple(
             edge
             for edge in self.resolved_function_calls
-            if edge.callee.identity.symbol == function_symbol
+            if edge.resolved_target.declaration.identity.symbol == function_symbol
         )
 
     def declared_return_class_symbol_for(
@@ -2074,11 +2066,11 @@ class ProductFlowRepository(
     ) -> str | None:
         """Resolve one callee-owned nominal return annotation as a class."""
 
-        reference_parts = call.callee.return_annotation_reference_parts
+        reference_parts = call.resolved_target.declaration.return_annotation_reference_parts
         if reference_parts is None:
             return None
         return self.class_resolver.symbol_for(
-            module_name=call.callee.identity.module_name,
+            module_name=call.resolved_target.declaration.identity.module_name,
             reference_parts=reference_parts,
             allow_unique_unqualified=False,
         )

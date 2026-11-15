@@ -195,7 +195,7 @@ class EnumSubsetDerivation:
         _authority_id, authority_digest, authority_node = (
             context.target_node_for_rewrite_target(authority_reference)
         )
-        if not authority_digest.is_class or not isinstance(
+        if not authority_digest.node_kind.is_class or not isinstance(
             authority_node, ast.ClassDef
         ):
             raise ValueError("Enum subset authority must target a class")
@@ -203,7 +203,7 @@ class EnumSubsetDerivation:
             raise ValueError("Enum subset authority must be top level")
         projection_id = projection_reference.required_target_id(context.source_index)
         projection_module = context.source_index.target_by_id[projection_id]
-        if not projection_module.is_module:
+        if not projection_module.node_kind.is_module:
             raise ValueError("Enum subset projection must target a module")
         resolved_authority = ResolvedClassTarget(authority_digest, authority_node)
         authority = EnumStringAuthority.from_target(resolved_authority)

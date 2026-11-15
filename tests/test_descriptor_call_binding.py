@@ -79,7 +79,7 @@ def test_resolved_call_signature_agrees_with_python_descriptor_lookup(
     assert resolved is not None
     assert resolved.binding.is_exact
     assert tuple(
-        parameter.name for parameter in resolved.call_signature.parameters
+        parameter.name for parameter in resolved.resolved_target.call_signature.parameters
     ) == tuple(native_signature.parameters)
     assert resolved.target_resolution is resolved.resolved_target
     replacement = CompactCallArguments.from_call(
@@ -102,7 +102,7 @@ def test_raw_classmethod_descriptor_retains_identity_but_is_not_callable() -> No
     )
     resolved = _run_call(source, "Owner")
     assert resolved is not None
-    assert resolved.callee.identity.symbol == "probe.Owner.consume"
+    assert resolved.resolved_target.declaration.identity.symbol == "probe.Owner.consume"
     assert (
         resolved.binding.violation
         is CompactCallBindingViolation.INVALID_DESCRIPTOR_ACCESS

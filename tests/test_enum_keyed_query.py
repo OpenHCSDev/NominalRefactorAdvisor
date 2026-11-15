@@ -182,7 +182,7 @@ def test_keyed_mirror_deletes_enum_and_map_and_preserves_behavior(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, KeyedMirror)
     assert (
@@ -191,7 +191,7 @@ def test_keyed_mirror_deletes_enum_and_map_and_preserves_behavior(
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert simulation.is_clean is True
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     assert "class Mode" not in rewritten
     assert "handler_types_by_mode" not in rewritten
     assert "StrEnum" not in rewritten
@@ -360,9 +360,9 @@ def test_keyed_mirror_refuses_reads_the_family_cannot_answer(
 
     assert len(findings) == 1
     assert (
-        plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+        plan.report.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert reason in plan.records[0].reason
+    assert reason in plan.report.records[0].reason
 
 
 def test_enum_keyed_facade_rejects_non_value_map_slice(tmp_path: Path) -> None:
@@ -398,5 +398,5 @@ def test_keyed_mirror_refuses_an_enum_keying_two_maps(
     assert all(
         record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
         and "Mode keys 2 proven map(s)" in record.reason
-        for record in plan.records
+        for record in plan.report.records
     )

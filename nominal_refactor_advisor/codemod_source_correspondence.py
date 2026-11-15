@@ -66,7 +66,7 @@ class SourceDocumentCorrespondence(CodemodDocumentSimulationCarrier):
         if original.module_path_identity != rewritten.module_path_identity:
             raise ValueError("Read correspondence requires the same module identity")
         document = self.document_simulation
-        if not document.simulation.parse_valid:
+        if not document.simulation.parse_validation.parse_valid:
             raise ValueError("Read correspondence requires a parsed rendering")
         revision = document.simulation.base_revision_by_file_path[original.file_path]
         if not revision.matches_source(original.source):

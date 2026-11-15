@@ -378,10 +378,10 @@ class _SemanticInspectionProjection:
         else:
             targets = ()
         class_ids = tuple(
-            target.target_id for target in targets if target.is_class
+            target.target_id for target in targets if target.node_kind.is_class
         )
         function_ids = tuple(
-            target.target_id for target in targets if target.is_function_like
+            target.target_id for target in targets if target.node_kind.is_function_like
         )
         return ModuleSummary(
             file_id=file_digest.file_id,
@@ -654,7 +654,7 @@ class _ModuleSemanticVisitor(ast.NodeVisitor):
                 ),
             )
         )
-        if self.scope_stack and self.scope_stack[-1].is_class:
+        if self.scope_stack and self.scope_stack[-1].node_kind.is_class:
             class_target_id = self.scope_stack[-1].target_id
             self._append_target_value(
                 self.method_ids_by_class_target_id,

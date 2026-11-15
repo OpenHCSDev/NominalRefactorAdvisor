@@ -33,10 +33,6 @@ class ModuleImportBinding:
         return self.request.one_name_source
 
     @property
-    def scope(self) -> ModuleImportScope:
-        return self.request.scope
-
-    @property
     def supports_bound_name_removal(self) -> bool:
         """Return whether this declaration explicitly owns the bound alias."""
 

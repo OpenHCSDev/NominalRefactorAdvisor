@@ -140,7 +140,7 @@ class _ModuleImportDependencyResolution:
             list[tuple[ModuleImportBinding, ModuleImportBindingIdentity]],
         ] = defaultdict(list)
         for binding, identity in self.candidates:
-            candidates_by_identity_and_scope[(identity, binding.scope)].append(
+            candidates_by_identity_and_scope[(identity, binding.request.scope)].append(
                 (binding, identity)
             )
         return tuple(
@@ -456,7 +456,7 @@ class ModuleSymbolTable:
         return {
             binding.name: binding.source
             for binding in reversed(self.import_bindings)
-            if not binding.scope.is_guarded
+            if not binding.request.scope.is_guarded
         }
 
     def import_binding_for_dependency(
@@ -529,7 +529,7 @@ class ModuleSymbolTable:
         return tuple(
             (binding, identity)
             for binding in self.import_bindings_by_name.get(name, ())
-            if permits_guarded_import or not binding.scope.is_guarded
+            if permits_guarded_import or not binding.request.scope.is_guarded
             if (identity := binding.identity(import_graph, self.file_path)) is not None
         )
 
@@ -558,7 +558,7 @@ class ModuleSymbolTable:
             not resolution.is_ambiguous
             and any(
                 available_identity.means_same_object(identity)
-                and required_scope.is_satisfied_by(binding.scope)
+                and required_scope.is_satisfied_by(binding.request.scope)
                 for binding, available_identity in resolution.unique_candidates
             )
         )

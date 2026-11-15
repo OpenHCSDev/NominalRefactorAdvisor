@@ -86,7 +86,7 @@ def _native_output(source, monkeypatch, name):
 
 def test_actual_synthesis_retains_proposal_and_all_typed_native_obligations(subject):
     _, snapshot, _, plan = subject
-    (record,) = plan.records
+    (record,) = plan.report.records
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert isinstance(record.evaluation, RejectedRecipeProposalEvaluation)
     assert record.recipe is None
@@ -124,7 +124,7 @@ def test_actual_synthesis_retains_proposal_and_all_typed_native_obligations(subj
 
 def test_json_proposal_can_be_deliberately_enriched_and_replayed(subject, monkeypatch):
     source, snapshot, _, plan = subject
-    (record,) = plan.records
+    (record,) = plan.report.records
     wire = json.loads(json.dumps(json_report_object(record)))
     assert wire["recipe"] is None
     assert wire["status"] == "rejected_by_safety_check"
@@ -156,14 +156,14 @@ def test_json_proposal_can_be_deliberately_enriched_and_replayed(subject, monkey
 
 def test_partial_enrichment_does_not_promote_blocked_proposal(subject):
     _, snapshot, _, plan = subject
-    accepted = _enrich(plan.records[0].proposal, snapshot, count=1)
+    accepted = _enrich(plan.report.records[0].proposal, snapshot, count=1)
     with pytest.raises(CodemodOperationPreflightError):
         CodemodPlanDocument(recipes=(accepted,)).simulate(snapshot)
 
 
 def test_changed_source_rejects_old_proposal_native_receipts(subject):
     source, snapshot, _, plan = subject
-    accepted = _enrich(plan.records[0].proposal, snapshot)
+    accepted = _enrich(plan.report.records[0].proposal, snapshot)
     changed = snapshot.with_virtual_sources(
         {"/repo/subject.py": source.replace("value: str", "value: int")}
     )
@@ -184,7 +184,7 @@ def test_rejection_before_source_context_has_no_fabricated_proposal(subject):
 def test_shared_gate_retains_actual_failed_authority_report_once(subject, monkeypatch):
     _, snapshot, _, plan = subject
     proposal = replace(
-        _enrich(plan.records[0].proposal, snapshot),
+        _enrich(plan.report.records[0].proposal, snapshot),
         authority_claims=(AuthorityClaim(claimed_symbol="AbsentAuthority"),),
     )
     observed = []
@@ -214,7 +214,7 @@ def test_shared_gate_retains_actual_failed_authority_report_once(subject, monkey
 
 def test_semantic_descent_preserves_authority_and_explicit_candidate(subject):
     _, snapshot, finding, plan = subject
-    proposal = _enrich(plan.records[0].proposal, snapshot)
+    proposal = _enrich(plan.report.records[0].proposal, snapshot)
     evaluation = SemanticDescentRecipeEvaluation(
         executable_recipe=proposal,
         evaluation_declaration_type=TypedMirror,

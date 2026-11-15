@@ -181,7 +181,7 @@ def test_complete_document_mapping_relation_matches_eight_actual_rewrites(
     reports = mapping_reports(simulation)
     assert reports
     assert all(report.status.is_passed for report in reports) is case.admitted
-    assert simulation.simulation.parse_valid
+    assert simulation.simulation.parse_validation.parse_valid
     assert path.read_text() == case.source
     after = simulation.required_after_snapshot.sources_by_file_path[path.as_posix()]
     old_mapping, new_mapping = native_mapping(case.source), native_mapping(after)

@@ -339,7 +339,7 @@ def test_actual_multi_attribute_consumer_uses_exact_definition_body(monkeypatch)
     (resolution,) = repository.function_call_resolutions
     assert resolution.resolved_call is not None
     assert (
-        resolution.resolved_call.callee.identity.symbol
+        resolution.resolved_call.resolved_target.declaration.identity.symbol
         == "source_linkage.Other.Holder.saved"
     )
     parent, binding = _row(projection, "Other")

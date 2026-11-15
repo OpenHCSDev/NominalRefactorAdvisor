@@ -1700,7 +1700,7 @@ class CodemodSimulationReport(DataclassJsonReport):
                 ).source_hash
                 first = text_file_rewrites.get(rewrite.file_path, rewrite)
                 text_file_rewrites[rewrite.file_path] = replace(first, after=rewrite.after)
-            validated_file_paths.update(report.validated_file_paths)
+            validated_file_paths.update(report.parse_validation.validated_file_paths)
         # A file the sequence created and later deleted was never on disk: absent
         # at the base and absent at the end is no deletion.
         deleted_file_paths.difference_update(
@@ -1717,7 +1717,7 @@ class CodemodSimulationReport(DataclassJsonReport):
             parse_validation=CodemodParseValidationReport(
                 backend=backend,
                 validated_file_paths=tuple(sorted(validated_file_paths)),
-                parse_valid=all(report.parse_valid for report in report_tuple),
+                parse_valid=all(report.parse_validation.parse_valid for report in report_tuple),
             ),
             base_revisions=tuple(
                 initial_revisions[file_path] for file_path in sorted(initial_revisions)
@@ -1876,14 +1876,6 @@ class CodemodSimulationReport(DataclassJsonReport):
             ).encode("utf-8"),
             digest_size=16,
         ).hexdigest()
-
-    @property
-    def validated_file_paths(self) -> tuple[str, ...]:
-        return self.parse_validation.validated_file_paths
-
-    @property
-    def parse_valid(self) -> bool:
-        return self.parse_validation.parse_valid
 
 
 @dataclass(frozen=True)
@@ -2519,22 +2511,6 @@ class FindingRecipeSynthesisBoundary(DataclassJsonReport):
         default_factory=FindingRecipeSynthesisReport,
     )
 
-    @property
-    def records(self) -> tuple[FindingRecipeSynthesisRecord, ...]:
-        return self.report.records
-
-    @property
-    def candidate_count(self) -> int:
-        return self.report.candidate_count
-
-    @property
-    def rejected_count(self) -> int:
-        return self.report.rejected_count
-
-    @property
-    def unsupported_count(self) -> int:
-        return self.report.unsupported_count
-
 
 @dataclass(frozen=True, kw_only=True)
 class FindingRecipeEvaluation(ABC):
@@ -2930,7 +2906,7 @@ class FindingRecipePlan(FindingRecipeSynthesisBoundary):
     @json_report_property()
     def expected_removed_finding_ids(self) -> tuple[str, ...]:
         return tuple(
-            record.finding_id for record in self.records if record.candidate_recipes
+            record.finding_id for record in self.report.records if record.candidate_recipes
         )
 
     @json_report_property()
@@ -2988,10 +2964,6 @@ class FindingRecipePlanPreflight(DataclassJsonReport):
     def is_clean(self) -> bool:
         return self.preflight_report.is_clean
 
-    @property
-    def preflight_failed(self) -> bool:
-        return self.preflight_report.preflight_failed
-
 
 @dataclass(frozen=True)
 class FindingRecipePlanSimulation(
@@ -3026,10 +2998,6 @@ class FindingRecipePlanSimulation(
                 sequence_simulation.stage_reports[0].document_simulation
             ),
         )
-
-    @property
-    def simulation(self) -> CodemodSimulationReport:
-        return self.document_simulation.simulation
 
     @property
     def architecture_guard_report(self) -> ArchitectureGuardReport:
@@ -4192,7 +4160,7 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
         target = resolved_rewrite.target
         start_index = target.line - 1
         end_index = target.end_line
-        if target.is_module and not lines and target.line == 1 and target.end_line == 1:
+        if target.node_kind.is_module and not lines and target.line == 1 and target.end_line == 1:
             start_index = 0
             end_index = 0
         if start_index < 0 or end_index > len(lines):

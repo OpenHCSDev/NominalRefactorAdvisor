@@ -61,7 +61,7 @@ class DeclaredCallRewriteABC(ABC):
             resolved
             for resolution in calls
             if (resolved := resolution.resolved_call) is not None
-            and resolved.callee.identity.symbol == callee_symbol
+            and resolved.resolved_target.declaration.identity.symbol == callee_symbol
         )
         if any(
             resolution.resolved_call is None
@@ -133,7 +133,7 @@ class DeclaredCallArgumentsRewrite(DeclaredCallRewriteABC):
         binding = call.target_resolution.bind_arguments(self.arguments)
         if not binding.is_exact:
             raise ValueError(
-                f"Replacement arguments do not bind to {call.callee.identity.symbol!r}: {binding.violation}"
+                f"Replacement arguments do not bind to {call.resolved_target.declaration.identity.symbol!r}: {binding.violation}"
             )
         return self.replacement_source
 

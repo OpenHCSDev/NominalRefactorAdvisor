@@ -1541,7 +1541,7 @@ def test_semantic_mirror_registry_finding_retains_unproved_autoregister_recipe(
 
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     recipe = record.recipe
     assert recipe is not None
     operation = json_report_object(recipe.operations[0])
@@ -1576,7 +1576,7 @@ def test_semantic_mirror_registry_finding_retains_unproved_autoregister_recipe(
     assert plan.document.recipes == ()
     assert plan.application_blocked
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.document_simulation.simulation.applied_rewrite_count == 0
 
 
 def test_codemod_source_context_hydrates_selected_finding_files_only(
@@ -1678,14 +1678,14 @@ def test_inherited_autoregister_config_synthesizes_assignment_deletions(
         json_report_object(operation)
         for operation in plan.document.recipes[0].operations
     )
-    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+    rewritten = next(iter(simulation.document_simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert (
-        plan.records[0].evaluation_declaration_name
+        plan.report.records[0].evaluation_declaration_name
         == "InheritedAutoRegisterConfigBoilerplateDetector"
     )
-    assert plan.records[0].refactor_concept == "auto_register"
+    assert plan.report.records[0].refactor_concept == "auto_register"
     assert len(operations) == 1
     assert set(operations[0]) == {"operation", "target_id", "rationale"}
     assert operations[0]["operation"] == (
@@ -1834,14 +1834,14 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+    rewritten = next(iter(simulation.document_simulation.simulation.rewritten_sources.values()))
     operations = tuple(
         json_report_object(operation)
         for operation in plan.document.recipes[0].operations
     )
     projected_findings = analyze_modules(
         ParsedModuleSet.of(snapshot.with_virtual_sources(
-            simulation.simulation.rewritten_sources
+            simulation.document_simulation.simulation.rewritten_sources
         ).parsed_modules),
         DetectorConfig(),
     )
@@ -1849,12 +1849,12 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
     exec(rewritten, namespace)
     ordered_types = namespace["Phase"].ordered_types()
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert (
-        plan.records[0].evaluation_declaration_name
+        plan.report.records[0].evaluation_declaration_name
         == "AutoRegisterExplicitPriorityOrderingDetector"
     )
-    assert plan.records[0].refactor_concept == "auto_register_mro_ordering"
+    assert plan.report.records[0].refactor_concept == "auto_register_mro_ordering"
     assert [operation["operation"] for operation in operations] == [
         "derive_auto_register_mro_ordering"
     ]
@@ -1869,7 +1869,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         "resolution_class_name",
         "resolution_class_source",
     }.intersection(operations[0])
-    assert len(plan.records[0].action_keys) == 4
+    assert len(plan.report.records[0].action_keys) == 4
     recipe = plan.document.recipes[0]
     assert recipe.authority_claims == ()
     declared_claims = recipe.declared_authority_claims(snapshot)
@@ -1912,7 +1912,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         json_report_object(plan.document)
     ).simulate(snapshot)
     assert (
-        replay.simulation.rewritten_sources == simulation.simulation.rewritten_sources
+        replay.simulation.rewritten_sources == simulation.document_simulation.simulation.rewritten_sources
     )
 
     module_path.write_text(
@@ -1992,8 +1992,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         ),
     )
 
-    assert unsafe_plan.records[0].status.value == "rejected_by_safety_check"
-    assert "incomparable single-inheritance leaves" in unsafe_plan.records[0].reason
+    assert unsafe_plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert "incomparable single-inheritance leaves" in unsafe_plan.report.records[0].reason
 
     open_key_plan = plan_for_source(
         tmp_path / "open_key",
@@ -2003,8 +2003,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         .replace("PhaseKey.FINAL", "'final'"),
     )
 
-    assert open_key_plan.records[0].status.value == "rejected_by_safety_check"
-    assert "exhaust one local enum key" in open_key_plan.records[0].reason
+    assert open_key_plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert "exhaust one local enum key" in open_key_plan.report.records[0].reason
 
     custom_key_plan = plan_for_source(
         tmp_path / "custom_key",
@@ -2016,8 +2016,8 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         ),
     )
 
-    assert custom_key_plan.records[0].status.value == "rejected_by_safety_check"
-    assert "without a custom key extractor" in custom_key_plan.records[0].reason
+    assert custom_key_plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert "without a custom key extractor" in custom_key_plan.report.records[0].reason
 
 
 def test_repeated_builder_call_rejects_identity_constructor_wrapper(
@@ -2070,9 +2070,9 @@ def test_repeated_builder_call_rejects_identity_constructor_wrapper(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.report.records[0].status.value == "rejected_by_safety_check"
     assert "requires a source projection or invariant selector axis" in (
-        plan.records[0].reason
+        plan.report.records[0].reason
     )
     assert plan.document.recipes == ()
 
@@ -2131,9 +2131,9 @@ def test_repeated_builder_call_keeps_repeated_local_values_as_parameters(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    rewritten = next(iter(simulation.simulation.rewritten_sources.values()))
+    rewritten = next(iter(simulation.document_simulation.simulation.rewritten_sources.values()))
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert "def for_function_or_method(" in rewritten
     assert "file_path: str" in rewritten
     assert "qualname: str" in rewritten
@@ -2231,7 +2231,7 @@ def test_finding_recipe_synthesis_detector_scope_excludes_unselected_findings(
         detector_ids=("semantic_mirror_without_descent",),
     )
 
-    assert tuple(record.detector_id for record in plan.records) == (
+    assert tuple(record.detector_id for record in plan.report.records) == (
         "semantic_mirror_without_descent",
     )
 
@@ -2283,7 +2283,7 @@ def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
         selector_context=snapshot,
     )
     simulation = plan.simulate(snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     recipe = record.recipe
     assert recipe is not None
     operation = json_report_object(recipe.operations[0])
@@ -2300,7 +2300,7 @@ def test_semantic_mirror_registry_proposal_resolves_absolute_finding_paths(
     assert operation["target_id"]
     assert plan.document.recipes == ()
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.document_simulation.simulation.applied_rewrite_count == 0
 
 
 def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
@@ -2348,7 +2348,7 @@ def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     recipe = record.proposal
     assert recipe is not None
     operation = json_report_object(recipe.operations[0])
@@ -2372,7 +2372,7 @@ def test_semantic_mirror_autoregister_instance_view_retains_unproved_proposal(
     assert RefactorRecipeOperation.from_json_value(operation) == recipe.operations[0]
     assert plan.document.recipes == ()
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.document_simulation.simulation.applied_rewrite_count == 0
 
 
 def test_an_aliased_registering_metaclass_still_owns_the_instance_view(
@@ -2420,7 +2420,7 @@ def test_an_aliased_registering_metaclass_still_owns_the_instance_view(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
     recipe = codemod_plan_from_findings(
         (finding,), selector_context=snapshot
-    ).records[0].proposal
+    ).report.records[0].proposal
 
     assert recipe is not None
     assert [
@@ -2587,7 +2587,7 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    record = plan.records[0]
+    record = plan.report.records[0]
     obstacles_by_declaration = {
         obstacle.executable_declaration_name: obstacle.reason
         for obstacle in record.proof_obstacles
@@ -2814,9 +2814,9 @@ def test_semantic_mirror_return_dict_synthesizes_dataclass_payload_recipe(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     simulation = plan.simulate(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten_source = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "executable_candidate"
@@ -3144,15 +3144,15 @@ def test_semantic_mirror_synthesizes_dataclass_field_name_collection_recipe(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten_source = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert (
-        plan.records[0].evaluation_declaration_name
+        plan.report.records[0].evaluation_declaration_name
         == "DataclassFieldNameCollectionProjectionMappingRecipeBuilder"
     )
-    assert plan.records[0].refactor_concept == "dataclass_payload_projection"
+    assert plan.report.records[0].refactor_concept == "dataclass_payload_projection"
     assert simulation.is_clean is True
     assert tuple(operation.operation_key() for operation in recipe.operations) == (
         "derive_dataclass_field_name_collection_projection",
@@ -3242,7 +3242,7 @@ def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    record = plan.records[0]
+    record = plan.report.records[0]
     assert record.status.value == "rejected_by_safety_check"
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
@@ -3291,7 +3291,7 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    record = plan.records[0]
+    record = plan.report.records[0]
     assert record.status.value == "rejected_by_safety_check"
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
@@ -3338,9 +3338,9 @@ def test_semantic_mirror_key_value_sequence_synthesizes_dataclass_payload_recipe
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     simulation = plan.simulate(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten_source = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "executable_candidate"
@@ -3475,7 +3475,7 @@ def test_key_value_sequence_recipe_rejects_interleaving_and_comments(
         snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-        record = plan.records[0]
+        record = plan.report.records[0]
         assert record.status.value == "rejected_by_safety_check"
         assert not record.recipe_id
         assert tuple(
@@ -3533,10 +3533,10 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     simulation = plan.simulate(snapshot)
     recipe = plan.document.recipes[0]
-    rewritten_report = simulation.simulation.rewritten_sources[
+    rewritten_report = simulation.document_simulation.simulation.rewritten_sources[
         (package_dir / "report.py").as_posix()
     ]
 
@@ -3551,7 +3551,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
     assert "for field in dataclasses.fields(" in rewritten_report
     assert "getattr(\n                    self.action," in rewritten_report
     assert (package_dir / "model.py").as_posix() not in (
-        simulation.simulation.rewritten_sources
+        simulation.document_simulation.simulation.rewritten_sources
     )
     assert "'emitted': self.emitted" in rewritten_report
 
@@ -3587,7 +3587,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         for operation in imported_plan.document.recipes[0].operations
     ) == ("derive_dataclass_payload_projection",)
     imported_simulation = imported_plan.simulate(imported_snapshot)
-    imported_rewritten_report = imported_simulation.simulation.rewritten_sources[
+    imported_rewritten_report = imported_simulation.document_simulation.simulation.rewritten_sources[
         report_path.as_posix()
     ]
     assert imported_rewritten_report.count("from pkg.model import RefactorAction") == 1
@@ -3619,8 +3619,8 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         selector_context=shadowed_snapshot,
     )
 
-    assert shadowed_plan.records[0].status.value == "rejected_by_safety_check"
-    assert not shadowed_plan.records[0].recipe_id
+    assert shadowed_plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert not shadowed_plan.report.records[0].recipe_id
 
 
 def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
@@ -3678,7 +3678,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
 
     assert record.status.value == "rejected_by_safety_check"
     assert "module cycle" in record.reason
@@ -3797,7 +3797,7 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-        record = plan.records[0]
+        record = plan.report.records[0]
         obstacles_by_declaration = {
             obstacle.executable_declaration_name: obstacle.reason
             for obstacle in record.proof_obstacles
@@ -3894,9 +3894,9 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
     snapshot = CodemodSourceSnapshot.from_modules(modules, (finding,))
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
-    record = plan.records[0]
+    record = plan.report.records[0]
     simulation = plan.simulate(snapshot)
-    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten_source = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     recipe = plan.document.recipes[0]
 
     assert record.status.value == "executable_candidate"
@@ -4014,7 +4014,7 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
     record = codemod_plan_from_findings(
         (finding,),
         selector_context=snapshot,
-    ).records[0]
+    ).report.records[0]
 
     assert record.status.value == "rejected_by_safety_check"
     assert tuple(
@@ -4095,7 +4095,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
     record = codemod_plan_from_findings(
         (finding,),
         selector_context=snapshot,
-    ).records[0]
+    ).report.records[0]
 
     assert record.status.value == "rejected_by_safety_check"
     assert tuple(
@@ -4181,8 +4181,8 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
     recipe_payload = json_report_object(plan.document)["recipes"][0]
     operations = recipe_payload["operations"]
 
-    assert plan.records[0].status.value == "executable_candidate"
-    assert plan.records[0].refactor_concept == "derived_projection"
+    assert plan.report.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].refactor_concept == "derived_projection"
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "ConfidenceLevel"
@@ -4215,10 +4215,10 @@ def test_semantic_mirror_enum_subset_synthesizes_authority_method_recipe(
                 "source": "copied projection source",
             }
         )
-    rewritten_taxonomy = simulation.simulation.rewritten_sources[
+    rewritten_taxonomy = simulation.document_simulation.simulation.rewritten_sources[
         (package_dir / "taxonomy.py").as_posix()
     ]
-    rewritten_codemod = simulation.simulation.rewritten_sources[
+    rewritten_codemod = simulation.document_simulation.simulation.rewritten_sources[
         (package_dir / "codemod.py").as_posix()
     ]
     assert (
@@ -4247,7 +4247,7 @@ def _enum_subset_operation(
     projection_target = next(
         target
         for target in snapshot.source_index.ast_targets
-        if target.is_module and target.file_path == projection_path.as_posix()
+        if target.node_kind.is_module and target.file_path == projection_path.as_posix()
     )
     return DeriveEnumSubsetOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
@@ -4506,7 +4506,7 @@ def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
     record = codemod_plan_from_findings(
         (finding,),
         selector_context=snapshot,
-    ).records[0]
+    ).report.records[0]
 
     assert record.status.value == "rejected_by_safety_check"
     assert tuple(
@@ -4562,11 +4562,11 @@ def test_semantic_mirror_class_collection_synthesizes_authority_query_recipe(
     operations = recipe_payload["operations"]
     rewritten = next(
         source
-        for path, source in simulation.simulation.rewritten_sources.items()
+        for path, source in simulation.document_simulation.simulation.rewritten_sources.items()
         if path.endswith("detector.py")
     )
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert len(recipe.authority_claims) == 1
     claim = recipe.authority_claims[0]
     assert claim.claimed_symbol == "LabeledMode"
@@ -4655,11 +4655,11 @@ def test_semantic_mirror_class_name_collection_synthesizes_authority_query_recip
     operation = json_report_object(plan.document)["recipes"][0]["operations"][0]
     rewritten = next(
         source
-        for path, source in simulation.simulation.rewritten_sources.items()
+        for path, source in simulation.document_simulation.simulation.rewritten_sources.items()
         if path.endswith("detector.py")
     )
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert plan.expected_removed_finding_count == 1
     assert simulation.is_clean is True
     assert operation["operation"] == "derive_class_family_collection"
@@ -4686,7 +4686,7 @@ def _class_family_collection_operation(
     projection_target = next(
         target
         for target in snapshot.source_index.ast_targets
-        if target.is_module and target.file_path == projection_path.as_posix()
+        if target.node_kind.is_module and target.file_path == projection_path.as_posix()
     )
     return DeriveClassFamilyCollectionOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
@@ -4966,7 +4966,7 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    record = plan.records[0]
+    record = plan.report.records[0]
     obstacles_by_declaration = {
         obstacle.executable_declaration_name: obstacle.reason
         for obstacle in record.proof_obstacles
@@ -5472,13 +5472,13 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
         selector_context=snapshot,
     )
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, DeriveEnumSubsetOperation)
     assert json_report_object(operation)["projection_target"]["target_id"] == next(
         target.target_id
         for target in snapshot.source_index.ast_targets
-        if target.is_module and target.file_path == "pkg/codemod.py"
+        if target.node_kind.is_module and target.file_path == "pkg/codemod.py"
     )
 
 
@@ -5886,9 +5886,9 @@ def test_semantic_mirror_owned_dataclass_payload_synthesizes_derivation_recipe(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     simulation = plan.simulate(snapshot)
     operation = plan.document.recipes[0].operations[0]
-    rewritten_source = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten_source = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert isinstance(operation, DeriveDataclassPayloadProjectionOperation)
     assert simulation.is_clean is True
     assert "for field in dataclasses.fields(" in rewritten_source

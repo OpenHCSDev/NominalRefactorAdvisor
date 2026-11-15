@@ -2495,14 +2495,6 @@ class CompactFunctionCall(DataclassGraphValue):
 
     line = AliasProperty[int]("source_span.start_line")
 
-    @property
-    def result_use(self) -> CompactValueDestinationKind:
-        return self.result.use
-
-    @property
-    def result_binding(self) -> LexicalValueReference | None:
-        return self.result.binding
-
     def bind_to(
         self, declaration: CompactFunctionDeclaration
     ) -> CompactCallBinding[CompactValueUse]:

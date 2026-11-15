@@ -52,7 +52,7 @@ def test_class_decorator_topology_is_derived_from_the_definition_store():
     assert outer.decorator_use is entry.definition.target.decorator_uses[0]
     assert inner.native_value.require_definition_argument() is raw.native_construction
     assert outer.native_value.require_definition_argument() is inner.native_value
-    assert outer.native_value is outer.production.value
+    assert outer.native_value is outer.creation.native_result_store.value
 
 
 @pytest.mark.native_proof
@@ -251,12 +251,12 @@ def test_compiler_version_independent_application_path_uses_owned_topology(kind)
     if kind == "class":
         results = environment.class_entry(node).creation_results
     else:
-        results = environment.capture_definition(node).creation_results
+        results = environment.capture_definition(node).creation.creation_results
     raw, inner, outer = results
     native_raw = (
         raw.native_construction
         if kind == "class"
-        else inner.production.production_at(
+        else inner.creation.native_result_store.production_at(
             raw.native_execution.require_creation().instruction_offset
         )
     )
@@ -279,5 +279,5 @@ def test_annotated_function_activation_uses_compiler_predecessor_receipt():
     native = raw.native_execution
     receipt = native.require_applications()[0]
     assert receipt.argument is native.require_creation()
-    assert application.native_value is receipt.operand_in(application.production)
+    assert application.native_value is receipt.operand_in(application.creation.native_result_store)
     assert application.function_activation().initial_entries["value"] is raw

@@ -46,7 +46,7 @@ def _replayed(root: Path) -> tuple[list, dict[str, str]]:
     simulation = snapshot.simulate_rewrites(
         plan.document.source_rewrite_batch(snapshot)
     )
-    return list(plan.records), dict(simulation.rewritten_sources)
+    return list(plan.report.records), dict(simulation.rewritten_sources)
 
 
 QUOTED = (

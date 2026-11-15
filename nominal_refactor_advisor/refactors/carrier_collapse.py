@@ -226,7 +226,7 @@ class _ClosedCarrierCollapseSourceRewrite:
             for target in self.context.source_index.targets_matching_repository_symbol(
                 authority_symbol
             )
-            if target.is_class
+            if target.node_kind.is_class
         )
         if len(matches) != 1:
             raise ValueError(
@@ -385,7 +385,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         matches = tuple(
             target
             for target in self.context.source_index.ast_targets
-            if target.is_function_like
+            if target.node_kind.is_function_like
             and target.file_path == participant.context.file_path
             and target.qualname == declaration.identity.qualname
             and target.line == declaration.line
@@ -477,7 +477,7 @@ class _ClosedCarrierCollapseSourceRewrite:
         )
         positional_parameter_names = tuple(
             parameter.name
-            for parameter in resolved_call.call_signature.parameters
+            for parameter in resolved_call.resolved_target.call_signature.parameters
             if parameter.kind.accepts_positional and not parameter.kind.variadic
         )
         rewritten.args = [
@@ -593,7 +593,7 @@ class CarrierCollapseOperationABC(RepositorySourceReprovedOperation, ABC):
             authority_target,
             _authority_node,
         ) = self.target_node_from_context(snapshot)
-        if not authority_target.is_class:
+        if not authority_target.node_kind.is_class:
             raise ValueError("carrier-collapse authority target must be a class")
         components = self.current_components_for_authority(
             snapshot,

@@ -863,12 +863,12 @@ class _ForwardedNames:
             binding, identity = resolved
             if identity.is_destination_declaration(
                 graph, destination_path=consumer.file_path, bound_name=name,
-            ) or consumer.satisfies_import_binding(name, identity, binding.scope, import_graph=graph):
+            ) or consumer.satisfies_import_binding(name, identity, binding.request.scope, import_graph=graph):
                 return
             if consumer.conflicts_with_import_binding(name, identity, import_graph=graph):
                 raise ValueError(f"{consumer.file_path!r} binds {name!r}, which the inlined call reads, to another object")
             yield identity.source_for(
-                graph, importing_file_path=consumer.file_path, scope=binding.scope, bound_name=name,
+                graph, importing_file_path=consumer.file_path, scope=binding.request.scope, bound_name=name,
             )
             return
         if name not in self.tables[1].declared_names:

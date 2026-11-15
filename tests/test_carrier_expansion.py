@@ -444,8 +444,8 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
     snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of((module,)), findings)
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
 
-    assert len(plan.records) == 1
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert len(plan.report.records) == 1
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
     assert isinstance(operation, CollapseDeclaredCarrierExpansionOperation)
     simulation = plan.document.simulate(snapshot)
@@ -524,7 +524,7 @@ def test_declared_carrier_operation_imports_cross_module_authority() -> None:
         .source_rewrite_batch(snapshot)
     )
 
-    assert simulation.parse_valid
+    assert simulation.parse_validation.parse_valid
     rewritten_worker = simulation.rewritten_sources[worker_module.file_path]
     assert "from pkg.models import Context\n" in rewritten_worker
     assert "def _consume(*, context: 'Context'):" in rewritten_worker

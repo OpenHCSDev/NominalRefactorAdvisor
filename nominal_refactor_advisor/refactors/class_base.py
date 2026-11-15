@@ -106,7 +106,7 @@ class ClassAuthorityReferenceProof:
         targets = context.source_index.targets_matching_repository_symbol(
             native.qualified_name
         )
-        if len(targets) != 1 or not targets[0].is_class:
+        if len(targets) != 1 or not targets[0].node_kind.is_class:
             raise ValueError(
                 f"Native class authority {native.qualified_name!r} requires one source declaration"
             )

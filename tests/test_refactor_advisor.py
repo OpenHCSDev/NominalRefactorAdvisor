@@ -1692,7 +1692,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
         _FINDING_RECIPE_TEST_REGISTRY.pop(strong_detector_id, None)
 
     for plan in plans:
-        records_by_detector = {record.detector_id: record for record in plan.records}
+        records_by_detector = {record.detector_id: record for record in plan.report.records}
         assert {record.status for record in records_by_detector.values()} == {
             FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
         }
@@ -1716,7 +1716,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
                 for assessment in record.conflict_evidence.pair_assessments
             ),
         )
-        for record in plans[0].records
+        for record in plans[0].report.records
         if record.conflict_evidence is not None
     } == {
         record.finding_id: (
@@ -1727,7 +1727,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
                 for assessment in record.conflict_evidence.pair_assessments
             ),
         )
-        for record in plans[1].records
+        for record in plans[1].report.records
         if record.conflict_evidence is not None
     }
 
@@ -3017,7 +3017,7 @@ def test_patch_target_operation_can_target_module_source(
     module_target = next(
         target
         for target in source_index.target_by_id.values()
-        if target.file_path == module_path.as_posix() and target.is_module
+        if target.file_path == module_path.as_posix() and target.node_kind.is_module
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -3988,15 +3988,15 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
     finally:
         _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
 
-    record = plan.records[0]
+    record = plan.report.records[0]
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.reason == "nominal authority proof is incomplete"
     assert record.evaluation_declaration_name == (
         "RejectedRecipeWithoutActionKeysSynthesizer"
     )
     assert record.action_keys == ()
-    assert plan.rejected_count == 1
-    assert plan.unsupported_count == 0
+    assert plan.report.rejected_count == 1
+    assert plan.report.unsupported_count == 0
 
 
 def test_executable_synthesis_requires_action_keys_before_planning(
@@ -4048,7 +4048,7 @@ def test_executable_synthesis_requires_action_keys_before_planning(
     finally:
         _FINDING_RECIPE_TEST_REGISTRY.pop(detector_id, None)
 
-    record = plan.records[0]
+    record = plan.report.records[0]
     assert record.status is FindingRecipeSynthesisStatus.NO_ACTION_KEYS
     assert record.action_keys == ()
     assert record.recipe_id == "unidentified-executable-recipe"
@@ -4057,8 +4057,8 @@ def test_executable_synthesis_requires_action_keys_before_planning(
     )
     assert plan.document.recipes == ()
     assert plan.expected_removed_finding_ids == ()
-    assert plan.rejected_count == 0
-    assert plan.unsupported_count == 1
+    assert plan.report.rejected_count == 0
+    assert plan.report.unsupported_count == 1
 
 
 def test_unregistered_finding_has_no_recipe_evaluator() -> None:
@@ -4315,7 +4315,7 @@ def test_exact_tiny_method_role_does_not_invent_an_authority(
         findings,
         detector_ids=(_EXACT_TINY_METHOD_ROLE_DETECTOR_ID,),
     )
-    record = plan.records[0]
+    record = plan.report.records[0]
 
     assert plan.expected_removed_finding_count == 0
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
@@ -4452,9 +4452,9 @@ def test_exact_leaf_methods_promote_to_one_proved_existing_authority(
     )
     operation = json_report_object(plan.document.recipes[0].operations[0])
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     assert plan.report.application_blocked is True
     assert plan.report.planning_horizon is (
         FindingRecipePlanningHorizon.CURRENT_SNAPSHOT
@@ -4556,7 +4556,7 @@ def test_exact_leaf_method_promotion_preserves_multiple_inheritance_mros(
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[
         (tmp_path / "pkg/mod.py").as_posix()
     ]
 
@@ -4781,10 +4781,10 @@ def test_exact_leaf_method_promotion_revalidates_a_stale_family(
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
 
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "complete direct-child family" in plan.records[0].reason
+    assert "complete direct-child family" in plan.report.records[0].reason
     assert plan.document.recipes == ()
 
 
@@ -4825,10 +4825,10 @@ def test_exact_leaf_method_promotion_revalidates_declaration_hooks(
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
 
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "class decorator or metaclass boundary" in plan.records[0].reason
+    assert "class decorator or metaclass boundary" in plan.report.records[0].reason
     assert plan.document.recipes == ()
 
 
@@ -4863,7 +4863,7 @@ def test_exact_leaf_method_promotion_preserves_authority_method_comments(
         detector_ids=(_EXACT_LEAF_METHOD_ANCESTOR_PROMOTION_DETECTOR_ID,),
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert simulation.is_clean is True
     assert (
@@ -5191,7 +5191,7 @@ def test_repeated_property_alias_findings_do_not_invent_a_mixin_authority(
 
     assert len(findings) == 1
     assert plan.expected_removed_finding_count == 0
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.NO_EVALUATOR
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.NO_EVALUATOR
     assert plan.document.recipes == ()
 
 
@@ -5248,7 +5248,7 @@ def test_semantic_overlap_method_evidence_has_no_local_recipe_synthesizer(
     assert plan.document.recipes == ()
     assert all(
         record.status is FindingRecipeSynthesisStatus.NO_EVALUATOR
-        for record in plan.records
+        for record in plan.report.records
     )
 
 
@@ -15406,26 +15406,26 @@ def test_detects_candidate_collector_boilerplate(
         detector_ids=("candidate_collector_boilerplate",),
     )
 
-    assert len(plan.records) == 2
+    assert len(plan.report.records) == 2
     assert all(
         record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-        for record in plan.records
+        for record in plan.report.records
     ), tuple((record.status, record.reason) for record in plan.records)
     assert all(
         record.proposal is not None
         and isinstance(record.proposal.operations[0], DeriveCandidateCollectorOperation)
-        for record in plan.records
+        for record in plan.report.records
     )
     assert all(
         tuple(json_report_object(record.proposal.operations[0]))
         == ("operation", "target_id", "rationale")
-        for record in plan.records
+        for record in plan.report.records
         if record.proposal is not None
     )
     assert plan.document.recipes == ()
     local_operation = next(
         record.proposal.operations[0]
-        for record in plan.records
+        for record in plan.report.records
         if record.proposal is not None
         if snapshot.source_index.target_by_id[
             record.proposal.operations[0].target.required_target_id(
@@ -15520,8 +15520,8 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
         detector_ids=("declarative_detector_class",),
     )
 
-    assert len(plan.records) == 1
-    assert plan.records[0].status is (
+    assert len(plan.report.records) == 1
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), plan.records[0].reason
     assert tuple(
@@ -15542,7 +15542,7 @@ def test_detects_declarative_detector_class_shell(tmp_path: Path) -> None:
     ):
         plan.document.recipes[0].operations[-1].source_edits(drifted_snapshot)
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[source_path]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[source_path]
     assert simulation.is_clean is True
     assert "class ProjectDetector" not in rewritten
     assert "declare_module_detector(" in rewritten
@@ -15630,9 +15630,9 @@ def test_declarative_detector_collapse_keeps_unrepresented_source(
         findings, detector_ids=("declarative_detector_class",)
     )
     assert (
-        plan.records[0].status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        plan.report.records[0].status is not FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     )
-    assert reason in plan.records[0].reason
+    assert reason in plan.report.records[0].reason
 
 
 def test_detects_static_typed_observation_detector_shell(tmp_path: Path) -> None:
@@ -15727,15 +15727,15 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
         detector_ids=("direct_build_finding_renderer",),
     )
 
-    assert len(plan.records) == 1
-    assert plan.records[0].status is (
+    assert len(plan.report.records) == 1
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), plan.records[0].reason
     assert tuple(
         type(operation) for operation in plan.document.recipes[0].operations
     ) == (DeclareCandidateFindingRendererOperation,)
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[source_path]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[source_path]
     assert simulation.is_clean is True
     assert "def _finding_for_candidate" not in rewritten
     assert "finding_renderer = CallableCandidateFindingRenderer(" in rewritten
@@ -15761,7 +15761,7 @@ def test_detects_direct_build_finding_renderer(tmp_path: Path) -> None:
         declarative_findings,
         detector_ids=("declarative_detector_class",),
     )
-    assert next_plan.records[0].status is (
+    assert next_plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     ), next_plan.records[0].reason
     next_plan.simulate(
@@ -15813,11 +15813,11 @@ def test_direct_build_finding_renderer_preserves_source_comments(
         detector_ids=("direct_build_finding_renderer",),
     )
 
-    assert len(plan.records) == 1
-    assert plan.records[0].status is (
+    assert len(plan.report.records) == 1
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert plan.records[0].reason == "declaration source contains comments"
+    assert plan.report.records[0].reason == "declaration source contains comments"
 
 
 def test_finding_spec_construction_detector_owns_canonical_builder_guidance(
@@ -16458,16 +16458,16 @@ def test_repeated_builder_synthesizes_single_source_constructor_projection(
     )
     operation_payload = json_report_object(plan.document.recipes[0].operations[0])
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
         json_report_object(plan.document)
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
-    assert plan.records[0].status.value == "executable_candidate"
-    assert plan.records[0].evaluation_declaration_name == (
+    assert plan.report.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].evaluation_declaration_name == (
         "RepeatedBuilderSourceProjectionAuthorityMethod"
     )
-    assert plan.records[0].refactor_concept == "constructor_kwarg_carrier_projection"
+    assert plan.report.records[0].refactor_concept == "constructor_kwarg_carrier_projection"
     assert operation_payload["operation"] == "derive_repeated_builder_authority"
     assert set(operation_payload) == {
         "operation",
@@ -16592,7 +16592,7 @@ def build_{index}(source: PlanSource):
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
 
     assert len(findings[0].evidence) == 6
     assert rewritten.count("RuntimePlan.from_source(source=") == 9
@@ -16639,11 +16639,11 @@ def delta(source: PlanSource):
 
     assert len(findings) == 2
     assert all(
-        record.status.value == "rejected_by_safety_check" for record in plan.records
+        record.status.value == "rejected_by_safety_check" for record in plan.report.records
     )
     assert all(
         "has 2 current proven repeated-builder families" in record.reason
-        for record in plan.records
+        for record in plan.report.records
     )
 
 
@@ -16670,10 +16670,10 @@ def test_repeated_builder_resolves_existing_forward_reference_annotations(
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert (
         'source: "PlanSource"'
-        in simulation.simulation.rewritten_sources[module_path.as_posix()]
+        in simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     )
 
 
@@ -16723,8 +16723,8 @@ def test_repeated_builder_rejects_same_named_distinct_source_types(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "source projection or invariant selector axis" in plan.records[0].reason
+    assert plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert "source projection or invariant selector axis" in plan.report.records[0].reason
 
 
 def test_repeated_builder_preserves_inherited_builder_implementation(
@@ -16758,8 +16758,8 @@ def test_repeated_builder_preserves_inherited_builder_implementation(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "will not overwrite or shadow from_source" in plan.records[0].reason
+    assert plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert "will not overwrite or shadow from_source" in plan.report.records[0].reason
 
 
 _REPEATED_CONSUMER_BUILDER_SOURCE = """
@@ -16827,7 +16827,7 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[
         (tmp_path / "pkg/mod.py").as_posix()
     ]
     replay = CodemodPlanDocument.from_json_value(
@@ -16835,11 +16835,11 @@ def test_repeated_builder_descends_through_existing_consumer_family_authority(
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "executable_candidate"
-    assert plan.records[0].evaluation_declaration_name == (
+    assert plan.report.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].evaluation_declaration_name == (
         "InheritedConsumerBuilderAuthorityDescent"
     )
-    assert plan.records[0].refactor_concept == "constructor_kwarg_collapse"
+    assert plan.report.records[0].refactor_concept == "constructor_kwarg_collapse"
     assert rewritten.count("return self.rejected(reason=reason)") == 3
     assert rewritten.count("return Evaluation(") == 1
     assert (
@@ -16882,8 +16882,8 @@ def test_repeated_builder_rejects_shadowed_consumer_family_authority(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
-    assert "complete exact parameter substitution" in plan.records[0].reason
+    assert plan.report.records[0].status.value == "rejected_by_safety_check"
+    assert "complete exact parameter substitution" in plan.report.records[0].reason
 
 
 def test_repeated_builder_descends_only_the_inheriting_consumer_subset(
@@ -16915,9 +16915,9 @@ class External:
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
 
-    assert plan.records[0].status.value == "executable_candidate"
+    assert plan.report.records[0].status.value == "executable_candidate"
     assert rewritten.count("return self.rejected(reason=reason)") == 3
     assert rewritten.count("return Evaluation(") == 2
     simulation.document_simulation.apply()
@@ -16990,8 +16990,8 @@ def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
-    reason = plan.records[0].reason
+    assert plan.report.records[0].status.value == "rejected_by_safety_check"
+    reason = plan.report.records[0].reason
     assert "several executable consumer-family constructor authorities" in reason
     assert reason.count("existing method `") == 2
     assert "serves_call_sites" in reason
@@ -17019,9 +17019,9 @@ def test_repeated_builder_rejects_unproved_source_projection_type(
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.report.records[0].status.value == "rejected_by_safety_check"
     assert "requires a source projection or invariant selector axis" in (
-        plan.records[0].reason
+        plan.report.records[0].reason
     )
 
 
@@ -18520,7 +18520,7 @@ def test_ast_target_node_index_joins_stable_target_geometry_after_source_edit(
     module_path = tmp_path / "pkg/mod.py"
     source_index = build_source_index(parse_python_modules(tmp_path), ())
 
-    target = next(target for target in source_index.ast_targets if target.is_function)
+    target = next(target for target in source_index.ast_targets if target.node_kind.is_function)
     node_index = AstTargetNodeIndex.from_source_mapping(
         source_index,
         {
@@ -18617,7 +18617,7 @@ def test_codemod_plan_sequence_synthesizes_continuation_from_final_snapshot(
     assert continuation_report.continuation_sequence.documents == ()
     assert continuation_report.extended_sequence == sequence
     assert continuation_report.plan.document.recipes == ()
-    record = continuation_report.plan.records[0]
+    record = continuation_report.plan.report.records[0]
     assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
     assert record.recipe is not None
     assert json_report_object(record.recipe.operations[0])["operation"] == (
@@ -22810,8 +22810,8 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 0
     assert plan.document.recipes == ()
-    assert len(plan.records) == 1
-    record = plan.records[0]
+    assert len(plan.report.records) == 1
+    record = plan.report.records[0]
     assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
     assert record.recipe is not None
     recipe = record.recipe
@@ -22858,7 +22858,7 @@ def test_manual_class_registration_findings_synthesize_recipe_plan(
             }
         )
     assert simulation.is_clean is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.document_simulation.simulation.applied_rewrite_count == 0
     assert json_report_object(simulation)["expected_removed_finding_count"] == 0
     assert (
         json_report_object(simulation)["simulation"]["parse_validation"]["parse_valid"]
@@ -22928,8 +22928,8 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
 
     assert plan.expected_removed_finding_count == 0
     assert plan.document.recipes == ()
-    assert len(plan.records) == 1
-    record = plan.records[0]
+    assert len(plan.report.records) == 1
+    record = plan.report.records[0]
     assert record.status is FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
     assert record.recipe is not None
     recipe = record.recipe
@@ -22951,8 +22951,8 @@ def test_semantic_mirror_registration_findings_synthesize_recipe_plan(
     )
     assert declared_claims[0].authority_id
     assert simulation.is_clean is True
-    assert simulation.simulation.parse_valid is True
-    assert simulation.simulation.applied_rewrite_count == 0
+    assert simulation.document_simulation.simulation.parse_validation.parse_valid is True
+    assert simulation.document_simulation.simulation.applied_rewrite_count == 0
     simulation.document_simulation.apply()
     rewritten = module_path.read_text()
     assert "class RegisteredStep" not in rewritten
@@ -23653,9 +23653,9 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
         findings,
         detector_ids=("parallel_mirrored_leaf_family",),
     )
-    assert plan.records[0].status is (FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE)
+    assert plan.report.records[0].status is (FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE)
     expected_class_count = len(domains) * (len(_PARALLEL_LEAF_ROLES) + 1)
-    assert len(plan.records[0].action_keys) == expected_class_count
+    assert len(plan.report.records[0].action_keys) == expected_class_count
     recipe = plan.document.recipes[0]
     assert recipe.authority_claims == ()
     assert len(recipe.operations) == 1
@@ -23685,7 +23685,7 @@ def test_parallel_mirrored_leaf_recipe_factors_runtime_equivalent_mi_product(
 
     simulation = plan.simulate(snapshot, backend=CodemodBackend.AST_SPAN)
     assert simulation.is_clean is True
-    rewritten = simulation.simulation.rewritten_sources[module_path.as_posix()]
+    rewritten = simulation.document_simulation.simulation.rewritten_sources[module_path.as_posix()]
     replay = CodemodPlanDocument.from_json_value(
         json_report_object(plan.document)
     ).simulate(snapshot, backend=CodemodBackend.AST_SPAN)
@@ -23774,10 +23774,10 @@ def test_parallel_mirrored_leaf_recipe_rejects_stale_method_proof(
         detector_ids=("parallel_mirrored_leaf_family",),
     )
 
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "0 current exact parallel leaf-family components" in plan.records[0].reason
+    assert "0 current exact parallel leaf-family components" in plan.report.records[0].reason
     assert preflight.preflight_failed is True
     assert preflight.reports[0].operation == "authority_claims"
 
@@ -23805,10 +23805,10 @@ def test_parallel_mirrored_leaf_recipe_rejects_bound_role_authority_name(
         detector_ids=("parallel_mirrored_leaf_family",),
     )
 
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "Role authority names are already bound" in plan.records[0].reason
+    assert "Role authority names are already bound" in plan.report.records[0].reason
 
 
 def test_parallel_leaf_names_without_shared_implementations_are_not_mirrored(
@@ -23939,7 +23939,7 @@ def test_behavior_bearing_registration_syntax_is_detected_but_not_deleted(
 
     assert len(findings) == 1
     assert plan.expected_removed_finding_count == 0
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
     assert module_path.read_text() == source
@@ -25514,7 +25514,7 @@ def test_numeric_literal_dispatch_function_synthesis_uses_evidence_target(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
     render_target = next(
         target
@@ -25587,7 +25587,7 @@ def test_numeric_literal_dispatch_method_target_uses_evidence_target(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    assert plan.report.records[0].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
     operation = plan.document.recipes[0].operations[0]
     method_target = next(
         target
@@ -25628,9 +25628,9 @@ def test_literal_dispatch_synthesis_refuses_class_cell_method(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
     assert (
-        plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+        plan.report.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert plan.records[0].reason == (
+    assert plan.report.records[0].reason == (
         "literal dispatch: method target 'Renderer.render' uses the class cell "
         "(super or __class__), which a module strategy leaf cannot bind"
     )
@@ -27242,13 +27242,13 @@ def test_type_keyed_behavior_recipe_descends_behavior_and_consumers(
 
     assert len(findings) == 1
     assert (
-        plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+        plan.report.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "explicit supported-execution invariant" in plan.records[0].reason
-    proposal = plan.records[0].proposal
+    assert "explicit supported-execution invariant" in plan.report.records[0].reason
+    proposal = plan.report.records[0].proposal
     assert proposal is not None
-    assert plan.records[0].recipe is None
-    assert plan.records[0].candidate_recipes == ()
+    assert plan.report.records[0].recipe is None
+    assert plan.report.records[0].candidate_recipes == ()
     (operation,) = proposal.operations
     assert isinstance(operation, TypedMirror)
     operation = _with_fixture_native_invariants(operation, snapshot)
@@ -27316,10 +27316,10 @@ def test_type_keyed_behavior_recipe_requires_mro_equivalent_lookup(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "MRO-aware registry lookup" in plan.records[0].reason
+    assert "MRO-aware registry lookup" in plan.report.records[0].reason
 
 
 @pytest.mark.parametrize(
@@ -27565,10 +27565,10 @@ def test_type_keyed_behavior_recipe_rejects_unrewritten_family_reference(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status is (
+    assert plan.report.records[0].status is (
         FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
-    assert "explicit supported-execution invariant" in plan.records[0].reason
+    assert "explicit supported-execution invariant" in plan.report.records[0].reason
     operation = _authored_fixture_descent(snapshot, tmp_path / "pkg/mod.py")
     with pytest.raises(ValueError, match="projection family reference remains"):
         operation.source_edits_from_snapshot(snapshot)

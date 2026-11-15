@@ -161,7 +161,7 @@ def test_modules_importing_each_other_are_refused_by_name(tmp_path: Path) -> Non
     reasons = " ".join(
         record.evaluation.rejection_reason
         for terminal in report.trajectory_proof.dead_ends
-        for record in terminal.class_plan_report.finding_plan.records
+        for record in terminal.class_plan_report.finding_plan.report.records
     )
     assert "presentation.py and" in reasons and "session_load.py import each other" in reasons
     assert "merges into" in reasons
@@ -220,7 +220,7 @@ def test_a_package_shadowed_by_a_module_file_is_refused(tmp_path: Path) -> None:
     reasons = " ".join(
         record.evaluation.rejection_reason
         for dead_end in report.trajectory_proof.dead_ends
-        for record in dead_end.class_plan_report.finding_plan.records
+        for record in dead_end.class_plan_report.finding_plan.report.records
     )
     assert "pkg/messaging.py' is the module of that name" in reasons
 
