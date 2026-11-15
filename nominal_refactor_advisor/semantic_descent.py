@@ -14,7 +14,6 @@ import hashlib
 import os
 import pickle
 import re
-import tempfile
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import (
@@ -33,6 +32,7 @@ from typing import ClassVar, Generic, TypeAlias, TypeVar
 from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.published_cache import PublishesCacheFiles
 from nominal_refactor_advisor.ast_projection import (
     ExpressionReference,
     names_read,
@@ -3549,7 +3549,7 @@ SemanticDescentGraphCachePayloadT = TypeVar("SemanticDescentGraphCachePayloadT")
 
 
 @dataclass(frozen=True)
-class SemanticDescentGraphCache:
+class SemanticDescentGraphCache(PublishesCacheFiles):
     """Persistent graph cache for repo-wide semantic descent context."""
 
     storage_root: Path | None
@@ -3661,43 +3661,21 @@ class SemanticDescentGraphCache:
                 identities.append(identity)
         return tuple(identities)
 
-    @staticmethod
     def _store_typed_payload_atomic(
+        self,
         cache_path: Path,
         payload: SemanticDescentGraphCachePayloadT,
     ) -> None:
         """Publish one pickle only after its complete bytes are durable."""
 
-        file_descriptor, temporary_path_text = tempfile.mkstemp(
-            dir=cache_path.parent,
-            prefix=f".{cache_path.name}.",
-            suffix=".tmp",
-        )
-        temporary_path = Path(temporary_path_text)
-        try:
-            with os.fdopen(file_descriptor, "wb") as handle:
-                pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary_path, cache_path)
-            SemanticDescentGraphCache._sync_directory_if_supported(cache_path.parent)
-        except BaseException:
-            try:
-                os.close(file_descriptor)
-            except OSError:
-                pass
-            try:
-                temporary_path.unlink()
-            except FileNotFoundError:
-                pass
-            raise
+        with self.published(cache_path) as handle:
+            pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-    @staticmethod
-    def _sync_directory_if_supported(directory_path: Path) -> None:
-        """Durably sync a cache directory where the host filesystem permits it."""
+    def _sync_published_directory(self, directory: Path) -> None:
+        """A repo-wide graph cache also makes the rename itself durable."""
 
         try:
-            directory_descriptor = os.open(directory_path, os.O_RDONLY)
+            directory_descriptor = os.open(directory, os.O_RDONLY)
         except OSError:
             return
         try:

@@ -11,13 +11,12 @@ import json
 import os
 from pathlib import Path
 import pickle
-from time import monotonic, sleep, time
+from time import sleep, time
 from types import TracebackType
 from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
 from nominal_refactor_advisor.interpreter import PythonVersion
 from nominal_refactor_advisor.ast_tools import (
-    CollectedFamilyCacheContext,
     FileStat,
     ParsedModule,
     PythonSourcePathPolicy,
@@ -49,6 +48,7 @@ from nominal_refactor_advisor.implementation_identity import (
 )
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.planner import RefactorExecutionPlanReport
+from nominal_refactor_advisor.published_cache import PublishesCacheFiles
 from nominal_refactor_advisor.quoted_reference import DeclaredInterpreter
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.semantic_descent import (
@@ -583,7 +583,7 @@ def detector_implementation_module_names(
 
 
 @dataclass(frozen=True)
-class StoredImplementationClosure:
+class StoredImplementationClosure(PublishesCacheFiles):
     """One declaration set's implementation closure, kept across processes.
 
     Which modules a closure reaches is decided by the code of the modules already
@@ -631,8 +631,8 @@ class StoredImplementationClosure:
             ]
         ).encode("utf-8")
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            CollectedFamilyCacheContext._replace_atomically(self.path, payload)
+            with self.published(self.path) as handle:
+                handle.write(payload)
         except OSError:
             return
 
@@ -1419,7 +1419,7 @@ AnalysisCacheStoragePayloadT = TypeVar("AnalysisCacheStoragePayloadT")
 
 
 @dataclass(frozen=True)
-class AnalysisCacheStorage:
+class AnalysisCacheStorage(PublishesCacheFiles):
     """Filesystem storage authority for serialized analysis-cache payloads."""
 
     storage_root: Path
@@ -1616,16 +1616,8 @@ class AnalysisCacheStorage:
         cache_path: Path,
         payload: AnalysisCacheStoragePayloadT,
     ) -> None:
-        self.ensure_directory()
-        started = monotonic()
-        temp_path = cache_path.with_name(
-            f".{cache_path.name}.{os.getpid()}.{started:.9f}.tmp"
-        )
-        with temp_path.open("wb") as handle:
+        with self.published(cache_path) as handle:
             pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, cache_path)
 
     def store_finding_payload_atomic(
         self,
@@ -1634,17 +1626,12 @@ class AnalysisCacheStorage:
     ) -> None:
         if self.finding_chunk_size < 1:
             raise ValueError("finding cache chunk size must be positive")
-        self.ensure_directory()
-        started = monotonic()
-        temp_path = cache_path.with_name(
-            f".{cache_path.name}.{os.getpid()}.{started:.9f}.tmp"
-        )
         header = AnalysisFindingCacheChunkStreamHeader(
             identity=payload.identity,
             finding_count=len(payload.findings),
             chunk_size=self.finding_chunk_size,
         )
-        with temp_path.open("wb") as handle:
+        with self.published(cache_path) as handle:
             pickle.dump(header, handle, protocol=pickle.HIGHEST_PROTOCOL)
             for offset in range(0, len(payload.findings), self.finding_chunk_size):
                 pickle.dump(
@@ -1652,9 +1639,6 @@ class AnalysisCacheStorage:
                     handle,
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp_path, cache_path)
 
     def store_finding_chunks_atomic(
         self,
@@ -1669,40 +1653,26 @@ class AnalysisCacheStorage:
             raise ValueError("finding cache chunk size must be positive")
         if finding_count < 0:
             raise ValueError("finding cache stream count must be non-negative")
-        self.ensure_directory()
-        started = monotonic()
-        temp_path = cache_path.with_name(
-            f".{cache_path.name}.{os.getpid()}.{started:.9f}.tmp"
-        )
         stored_count = 0
-        try:
-            with temp_path.open("wb") as handle:
-                pickle.dump(
-                    AnalysisFindingCacheChunkStreamHeader(
-                        identity=identity,
-                        finding_count=finding_count,
-                        chunk_size=self.finding_chunk_size,
-                    ),
-                    handle,
-                    protocol=pickle.HIGHEST_PROTOCOL,
-                )
-                for chunk in chunks:
-                    if not chunk or len(chunk) > self.finding_chunk_size:
-                        raise ValueError(
-                            "finding cache stream emitted an invalid chunk"
-                        )
-                    stored_count += len(chunk)
-                    if stored_count > finding_count:
-                        raise ValueError("finding cache stream exceeded its count")
-                    pickle.dump(chunk, handle, protocol=pickle.HIGHEST_PROTOCOL)
-                if stored_count != finding_count:
-                    raise ValueError("finding cache stream did not reach its count")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, cache_path)
-        except BaseException:
-            temp_path.unlink(missing_ok=True)
-            raise
+        with self.published(cache_path) as handle:
+            pickle.dump(
+                AnalysisFindingCacheChunkStreamHeader(
+                    identity=identity,
+                    finding_count=finding_count,
+                    chunk_size=self.finding_chunk_size,
+                ),
+                handle,
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            for chunk in chunks:
+                if not chunk or len(chunk) > self.finding_chunk_size:
+                    raise ValueError("finding cache stream emitted an invalid chunk")
+                stored_count += len(chunk)
+                if stored_count > finding_count:
+                    raise ValueError("finding cache stream exceeded its count")
+                pickle.dump(chunk, handle, protocol=pickle.HIGHEST_PROTOCOL)
+            if stored_count != finding_count:
+                raise ValueError("finding cache stream did not reach its count")
 
     def store_partial_finding_payload_atomic(
         self,

@@ -41,6 +41,7 @@ from nominal_refactor_advisor.ast_field_decoders import (
 )
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.interpreter import PythonVersion
+from nominal_refactor_advisor.published_cache import PublishesCacheFiles
 from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValue
 from nominal_refactor_advisor.ast_projection import (
     AstNameFamily,
@@ -377,7 +378,7 @@ class CollectedFamilyDemandCacheIdentity(CollectedFamilyCacheIdentity):
 collected_family_cache_schema = CollectedFamilyCacheSchema()
 
 
-class CollectedFamilyContentSignatureIndex:
+class CollectedFamilyContentSignatureIndex(PublishesCacheFiles):
     """One-read derived view over per-source family signature receipts."""
 
     collected_family_content_signature_index_schema = (
@@ -480,17 +481,12 @@ class CollectedFamilyContentSignatureIndex:
             # key by its repr cost each one-edit scan a pass over all entries.
             entries=tuple((key, *entry) for key, entry in self._entries.items()),
         )
-        temp_path = self.cache_dir / f".{self._file_name}.{os.getpid()}.tmp"
         try:
-            self.cache_dir.mkdir(parents=True, exist_ok=True)
-            with temp_path.open("wb") as handle:
+            with self.published(self.cache_dir / self._file_name) as handle:
                 pickle.dump(payload, handle, protocol=pickle.HIGHEST_PROTOCOL)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temp_path, self.cache_dir / self._file_name)
             self._dirty = False
         except (OSError, pickle.PickleError, TypeError, AttributeError):
-            temp_path.unlink(missing_ok=True)
+            pass
 
 
 @dataclass(frozen=True)
@@ -2534,7 +2530,7 @@ def collected_family_demand_cache_signature(demand: object) -> str:
 
 
 @dataclass(frozen=True)
-class CollectedFamilyCacheContext:
+class CollectedFamilyCacheContext(PublishesCacheFiles):
     """One source-owned authority for collected-family cache operations."""
 
     path: Path
@@ -2760,11 +2756,10 @@ class CollectedFamilyCacheContext:
             )
             if len(payload_bytes) > payload_max_bytes:
                 return None
-            self.family_cache_dir.mkdir(parents=True, exist_ok=True)
-            self._replace_atomically(
-                _collected_family_cache_path(self.family_cache_dir, identity),
-                payload_bytes,
-            )
+            with self.published(
+                _collected_family_cache_path(self.family_cache_dir, identity)
+            ) as handle:
+                handle.write(payload_bytes)
             return encoded.signature
         except (OSError, pickle.PickleError, TypeError, AttributeError, ValueError):
             return None
@@ -2829,27 +2824,12 @@ class CollectedFamilyCacheContext:
         except OSError:
             return False
 
-    @staticmethod
-    def _store_bundle_marker(marker_path: Path) -> None:
+    def _store_bundle_marker(self, marker_path: Path) -> None:
         try:
-            marker_path.parent.mkdir(parents=True, exist_ok=True)
-            CollectedFamilyCacheContext._replace_atomically(marker_path, b"complete-v4\n")
+            with self.published(marker_path) as handle:
+                handle.write(b"complete-v4\n")
         except OSError:
             pass
-
-    @staticmethod
-    def _replace_atomically(path: Path, data: bytes) -> None:
-        """Write to a private temporary file, then rename: a concurrent reader sees
-        the old entry or the new one, never a partial write."""
-
-        temp_path = path.with_name(f".{path.name}.{os.getpid()}.{id(data):x}.tmp")
-        try:
-            with temp_path.open("wb") as handle:
-                handle.write(data)
-            os.replace(temp_path, path)
-        except BaseException:
-            temp_path.unlink(missing_ok=True)
-            raise
 
 
 @dataclass(frozen=True)
