@@ -767,18 +767,73 @@ ParsedModuleFactT = TypeVar("ParsedModuleFactT", bound=ParsedModuleFact)
 
 
 @dataclass(frozen=True)
-class ParsedModule(SourceFileIdentity):
+class SourceModule(SourceFileIdentity):
+    """Source-only module identity available before Python AST construction."""
+
+    path: Path
+    module_name: str
+    source: str = field(repr=False)
+    family_cache_dir: Path | None = None
+
+    @classmethod
+    def from_path_identity(
+        cls,
+        identity: PythonModulePathIdentity,
+        source: str,
+        *,
+        family_cache_dir: Path | None = None,
+    ) -> SourceModule:
+        """Bind source to one already-derived Python module identity."""
+
+        return cls(
+            path=identity.path,
+            module_name=identity.import_name,
+            source=source,
+            family_cache_dir=family_cache_dir,
+        )
+
+    @classmethod
+    def from_source_path(
+        cls,
+        path: Path,
+        source: str,
+        *,
+        family_cache_dir: Path | None = None,
+    ) -> SourceModule:
+        """Bind source when no project-level module declarations are available."""
+
+        return cls.from_path_identity(
+            PythonModulePathIdentity.from_source_path(path),
+            source,
+            family_cache_dir=family_cache_dir,
+        )
+
+    def parsed_module(self, module: ast.Module) -> ParsedModule:
+        """Attach an exact AST projection without rebuilding source identity."""
+
+        return ParsedModule(
+            path=self.path,
+            module_name=self.module_name,
+            module=module,
+            source=self.source,
+            family_cache_dir=self.family_cache_dir,
+        )
+
+    def parse(self) -> ParsedModule:
+        """Parse this exact in-memory source into its nominal module record."""
+
+        return self.parsed_module(ast.parse(self.source, filename=str(self.path)))
+
+
+@dataclass(frozen=True)
+class ParsedModule(SourceModule):
     """Parsed Python module together with its source text and path.
 
     Its path and module name identify it; the repr leaves out the syntax tree
     and source text, whose size grows with the module."""
 
-    path: Path
-    module_name: str
-    module: ast.Module = field(repr=False)
-    source: str = field(repr=False)
-    semantic_hash: str | None = None
-    family_cache_dir: Path | None = None
+    module: ast.Module = field(repr=False, kw_only=True)
+    semantic_hash: str | None = field(default=None, kw_only=True)
 
     @cached_property
     def bound_names(self) -> frozenset[str]:
@@ -1061,65 +1116,6 @@ class AstParentIndex(Mapping[ast.AST, ast.AST]):
             ),
             None,
         )
-
-
-@dataclass(frozen=True)
-class SourceModule(SourceFileIdentity):
-    """Source-only module identity available before Python AST construction."""
-
-    path: Path
-    module_name: str
-    source: str
-    family_cache_dir: Path | None = None
-
-    @classmethod
-    def from_path_identity(
-        cls,
-        identity: PythonModulePathIdentity,
-        source: str,
-        *,
-        family_cache_dir: Path | None = None,
-    ) -> SourceModule:
-        """Bind source to one already-derived Python module identity."""
-
-        return cls(
-            path=identity.path,
-            module_name=identity.import_name,
-            source=source,
-            family_cache_dir=family_cache_dir,
-        )
-
-    @classmethod
-    def from_source_path(
-        cls,
-        path: Path,
-        source: str,
-        *,
-        family_cache_dir: Path | None = None,
-    ) -> SourceModule:
-        """Bind source when no project-level module declarations are available."""
-
-        return cls.from_path_identity(
-            PythonModulePathIdentity.from_source_path(path),
-            source,
-            family_cache_dir=family_cache_dir,
-        )
-
-    def parsed_module(self, module: ast.Module) -> ParsedModule:
-        """Attach an exact AST projection without rebuilding source identity."""
-
-        return ParsedModule(
-            path=self.path,
-            module_name=self.module_name,
-            module=module,
-            source=self.source,
-            family_cache_dir=self.family_cache_dir,
-        )
-
-    def parse(self) -> ParsedModule:
-        """Parse this exact in-memory source into its nominal module record."""
-
-        return self.parsed_module(ast.parse(self.source, filename=str(self.path)))
 
 
 @dataclass(frozen=True)
