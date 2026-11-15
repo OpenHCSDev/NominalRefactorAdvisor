@@ -987,19 +987,18 @@ class ExistingDataclassFieldAuthorityTargets:
             source=self.participants.source_for(self.authority.file_path),
             declaration=self.authority.node,
             insertion_line=self.participants.insertion_line,
+            rationale=f"Move field authority {self.authority_name!r} before its users.",
         )
 
     def require_safe_relocation(self, snapshot: CodemodSourceSnapshot) -> None:
         self.relocation.require_safe(snapshot)
 
     def relocation_edits(self) -> tuple[PhysicalSourceEdit, ...]:
-        return self.relocation.source_edits(
-            f"Move field authority {self.authority_name!r} before its users."
-        )
+        return self.relocation.source_edits()
 
 
 @dataclass(frozen=True)
-class ModuleDeclarationRelocation:
+class ModuleDeclarationRelocation(SourceRewriteABC):
     """Move one top-level declaration up to a line before its first user.
 
     The move is safe when nothing between the two lines reads the declared
@@ -1011,6 +1010,7 @@ class ModuleDeclarationRelocation:
     source: str
     declaration: ast.ClassDef
     insertion_line: int
+    rationale: str
 
     @classmethod
     def before_user(
@@ -1087,7 +1087,7 @@ class ModuleDeclarationRelocation:
                 "only after the new position"
             )
 
-    def source_edits(self, rationale: str) -> tuple[PhysicalSourceEdit, ...]:
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         if not self.requires_relocation:
             return ()
         return (
@@ -1099,12 +1099,12 @@ class ModuleDeclarationRelocation:
                     "\n",
                     "\n",
                 ),
-                rationale=rationale,
+                rationale=self.rationale,
             ),
             SourceSpanDeletion(
                 file_path=self.file_path,
                 span=SourceLineSpan(self.span.start_line - 2, self.span.end_line),
-                rationale=rationale,
+                rationale=self.rationale,
             ),
         )
 
@@ -1536,11 +1536,12 @@ class ClassMemberMoveProofContext(SourceTextGeometry):
 
 
 @dataclass(frozen=True)
-class ClassMemberMoveSelection:
+class ClassMemberMoveSelection(SourceRewriteABC):
     """One source-proved member set moving upward to an existing authority."""
 
     context: ClassMemberMoveProofContext
     members: tuple[ClassMemberPromotionStatement, ...]
+    rationale: str
 
     @classmethod
     def require(
@@ -1549,6 +1550,8 @@ class ClassMemberMoveSelection:
         source_class: ResolvedClassTarget,
         destination_class: ResolvedClassTarget,
         member_names: tuple[str, ...],
+        *,
+        rationale: str = "",
     ) -> ClassMemberMoveSelection:
         if source_class.file_path != destination_class.file_path:
             raise ValueError(
@@ -1604,9 +1607,9 @@ class ClassMemberMoveSelection:
                         if previous_owner is source_declaration
                         else previous_owner,
                     )
-        return cls(context=context, members=members)
+        return cls(context=context, members=members, rationale=rationale)
 
-    def source_edits(self, rationale: str) -> tuple[PhysicalSourceEdit, ...]:
+    def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         source = self.context.source
         destination = self.context.destination_class
         body_authority = ClassBodySourceAuthority(destination.node, source)
@@ -1628,7 +1631,7 @@ class ClassMemberMoveSelection:
                         )
                     ),
                 ),
-                rationale=rationale
+                rationale=self.rationale
                 or f"Promote class members into {destination.qualname!r}.",
             ),
             *deletion.physical_edits(
@@ -1636,7 +1639,7 @@ class ClassMemberMoveSelection:
                 replacements=deletion.replacements_for_statements(
                     tuple(member.statement for member in self.members)
                 ),
-                rationale=rationale
+                rationale=self.rationale
                 or f"Remove promoted members from {self.context.source_class.qualname!r}.",
             ),
         )
@@ -1670,13 +1673,14 @@ class PromoteClassMembersToAncestorOperation(RepositorySourceReprovedOperation):
             ResolvedClassTarget.from_rewrite_target(snapshot, self.target),
             ResolvedClassTarget.from_rewrite_target(snapshot, self.destination),
             self.member_names,
+            rationale=self.rationale,
         )
 
     def source_edits_from_snapshot(
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> tuple[PhysicalSourceEdit, ...]:
-        return self.selection(snapshot).source_edits(self.rationale)
+        return self.selection(snapshot).source_edits()
 
     def current_source_authority_claims(
         self,
