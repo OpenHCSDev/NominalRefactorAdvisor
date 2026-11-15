@@ -72,18 +72,37 @@ Not all 1500 findings are equally actionable.  Batch by detector:
     keyed by name is O(1).  Add a ``@cached_property`` dict and replace
     the scan.
 
-``missing_mixin`` (dataclass-to-dataclass only)
-    Classes that share 2+ field declarations with another class.  Extract a
-    shared base declaring those fields; each class inherits it.  This is
-    blocked when callers construct positionally — convert to keyword first.
+``missing_mixin``
+    Classes that share 2+ field declarations with another class.  The fix
+    depends on the parent:
+
+    - **Parent is a dataclass:** delete the redeclared fields from the child.
+    - **Parent is a non-dataclass ABC:** promote it to ``@dataclass(frozen=True)``
+      and delete.  The NRA now emits a ``PARENT_NOT_DATACLASS`` blocker receipt
+      naming the fix.
+    - **Child uses ClassVar hack** (``kind = SomeClass`` instead of a field
+      default): convert to ``field(default=SomeClass, init=False)``.
+    - **Child narrows Optional to non-Optional:** use ``kw_only=True`` on the
+      narrowed child fields so the parent's defaults don't propagate.
+    - **Parent annotations are abstract contracts** (different children derive
+      them from different sources: stored field vs AliasProperty vs property):
+      NOT a dataclass promotion.  The parent's annotations declare a contract,
+      not stored fields.
 
 **Tier 2 — per-site design, high leverage**
 
 ``own_type_test``
-    ``isinstance(x, OwnClass)`` in consumers of a family.  The fix is a
-    virtual method on the base, overridden per member.  The largest
-    cluster (``OpenCapturedReference``, 18 sites) requires understanding
-    what each site does after the check.
+    ``isinstance(x, OwnClass)`` in consumers of a family.  Three sub-patterns:
+
+    - **Dispatchable:** the branches do independent work per type.  Fix: add a
+      boolean property on the base (``is_open``, ``is_present``), override on
+      the tested class, replace ``isinstance`` with the property.  The 18-site
+      ``OpenCapturedReference`` cluster was converted this way in one commit.
+    - **Boundary decoder:** the value arrives as ``object`` or a broad union
+      from a generic store, and the isinstance narrows it before accessing
+      type-specific fields.  This IS the one permitted type test.
+    - **Narrowing guard:** ``if not isinstance(x, Expected): raise ValueError``.
+      Also a boundary decoder; the isinstance stays.
 
 ``phantom_family``
     Two+ classes declare the same method with no shared ancestor.  The fix
@@ -133,9 +152,17 @@ possible.  Each one registers AST classes and provides:
 
 Existing families and their registered members:
 
-``FunctionDefinition``
-    ``ast.FunctionDef``, ``ast.AsyncFunctionDef``.  Fields: ``name``,
-    ``args``, ``body``, ``decorator_list``, ``lineno``, ``col_offset``.
+``DefinitionStatement``
+    ``ast.ClassDef``, ``ast.FunctionDef``, ``ast.AsyncFunctionDef``.
+    Fields: ``name``, ``body``, ``decorator_list``, ``lineno``,
+    ``col_offset``.
+
+``FunctionDefinition`` (inherits ``DefinitionStatement``)
+    ``ast.FunctionDef``, ``ast.AsyncFunctionDef``.  Own field: ``args``.
+
+``ImportDefinition``
+    ``ast.Import``, ``ast.ImportFrom``.  Fields: ``names``, ``lineno``,
+    ``col_offset``.
 
 ``AssignmentStatement`` (adapter)
     ``ast.Assign``, ``ast.AnnAssign``.  Properties: ``.targets``,
@@ -148,9 +175,10 @@ Existing families and their registered members:
 To find candidates for a new foreign family, count how many sites spell the
 same isinstance tuple::
 
-    grep -rn 'isinstance.*ast\.Import.*ast\.ImportFrom' src/ | wc -l
+    grep -rn 'isinstance.*(ast\.X.*ast\.Y' src/ | wc -l
 
-If the count is 10+, the family pays for itself.
+If the count is 10+, the family pays for itself.  The ``Import|ImportFrom``
+and ``FunctionDef|AsyncFunctionDef`` patterns are already families.
 
 
 Batch Scripting Pitfalls
