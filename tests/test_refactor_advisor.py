@@ -27948,6 +27948,30 @@ def test_phantom_family_splits_a_name_into_its_shared_shapes(tmp_path: Path) -> 
     assert all("2 owners" in finding.summary for finding in phantom_findings)
 
 
+def test_phantom_family_skips_self_returning_factories(tmp_path: Path) -> None:
+    # `build` returning each class's own type is a per-class factory: its return
+    # type differs per class, so no consumer dispatches `.build()` through a
+    # common type. A shared name here is coincidence, not a family (Cor 4.10).
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    for module, name in (("alpha", "Alpha"), ("beta", "Beta")):
+        _write_module(
+            tmp_path,
+            f"pkg/{module}.py",
+            (
+                f"class {name}:\n"
+                "    @classmethod\n"
+                f'    def build(cls, raw) -> "{name}":\n'
+                "        return cls()\n"
+            ),
+        )
+    phantom_findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "phantom_family"
+    ]
+    assert phantom_findings == []
+
+
 def test_unused_method_parameter_reads_every_declaration_of_the_method(
     tmp_path: Path,
 ) -> None:

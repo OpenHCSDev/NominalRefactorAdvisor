@@ -759,23 +759,41 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicM
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
         for declared in parsed_module.fact(ModuleClassStatements).top_level:
             for method in declared.methods:
-                if not method.name.startswith("_"):
-                    arguments = method.node.args
-                    yield cls.site(
-                        parsed_module,
-                        method.node,
-                        f"{declared.name}.{method.name}",
-                        method.name,
-                        PublicMethodSite,
-                        declaring_class=declared.name,
-                        call_shape=(
-                            any(
-                                name.endswith("property")
-                                for name in method.decorator_names
-                            ),
-                            len(arguments.posonlyargs) + len(arguments.args),
+                if method.name.startswith("_") or cls._returns_own_type(
+                    method, declared.name
+                ):
+                    continue
+                arguments = method.node.args
+                yield cls.site(
+                    parsed_module,
+                    method.node,
+                    f"{declared.name}.{method.name}",
+                    method.name,
+                    PublicMethodSite,
+                    declaring_class=declared.name,
+                    call_shape=(
+                        any(
+                            name.endswith("property")
+                            for name in method.decorator_names
                         ),
-                    )
+                        len(arguments.posonlyargs) + len(arguments.args),
+                    ),
+                )
+
+    @staticmethod
+    def _returns_own_type(method: FunctionStatement, class_name: str) -> bool:
+        """A method whose return is its own declaring class (or ``Self``) is a
+        factory: its return type differs per class, so no consumer dispatches its
+        name through a common type (paper1 Cor 4.10). ``X.of() -> X`` on many
+        classes is a naming coincidence, not a family."""
+
+        returns = method.node.returns
+        if returns is None:
+            return False
+        spelled = ast.unparse(returns).strip("\"'")
+        return spelled in (class_name, "Self", "typing.Self") or spelled.startswith(
+            f"{class_name}["
+        )
 
 
 class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDetector):
