@@ -2422,7 +2422,17 @@ class CompactCompilerOperandUse(CompactValueUse):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactEvaluatedResult(DataclassGraphValue):
+class CompactSpannedGraphValue(DataclassGraphValue):
+    """A graph value with a flow position and source span."""
+
+    position: CompactFlowPosition
+    source_span: SourceByteSpan
+
+    line = AliasProperty[int]("source_span.start_line")
+
+
+@dataclass(frozen=True, eq=False)
+class CompactEvaluatedResult(CompactSpannedGraphValue):
     """An evaluated value and its immediate disposition, not a completed path proof.
 
     A missing value use denotes the implicit None of a bare return.
@@ -2432,10 +2442,6 @@ class CompactEvaluatedResult(DataclassGraphValue):
 
     destination: CompactValueDestination
     value_use: CompactValueUse | None
-    position: CompactFlowPosition
-    source_span: SourceByteSpan
-
-    line = AliasProperty[int]("source_span.start_line")
 
     @property
     def lexical_reference(self) -> LexicalValueReference | None:
@@ -2488,16 +2494,12 @@ class CompactCallableReferenceUse(CompactPositionedReference):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactFunctionCall(DataclassGraphValue):
+class CompactFunctionCall(CompactSpannedGraphValue):
     target_use: CompactCallableReferenceUse
     arguments: CompactCallArguments[CompactValueUse]
     result: CompactValueDestination
-    position: CompactFlowPosition
-    source_span: SourceByteSpan
 
     target = AliasProperty[CompactCallTargetReference]("target_use.target")
-
-    line = AliasProperty[int]("source_span.start_line")
 
     def bind_to(
         self, declaration: CompactFunctionDeclaration
@@ -2523,15 +2525,11 @@ class CompactFunctionCall(DataclassGraphValue):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactSubscription(DataclassGraphValue):
+class CompactSubscription(CompactSpannedGraphValue):
     """One load subscription, after capturing its original receiver and argument."""
 
     receiver_use: CompactValueUse
     argument_use: CompactValueUse
-    position: CompactFlowPosition
-    source_span: SourceByteSpan
-
-    line = AliasProperty[int]("source_span.start_line")
 
 
 @dataclass(frozen=True, eq=False)
