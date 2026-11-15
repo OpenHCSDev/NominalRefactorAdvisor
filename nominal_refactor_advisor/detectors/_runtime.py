@@ -27,6 +27,7 @@ from nominal_refactor_advisor.detectors._regex_bundle import (
 
 from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard, annotation_type_names
 from nominal_refactor_advisor.detectors._registry_candidates import ClassLineWitnessCandidate
+from nominal_refactor_advisor.foreign_family import AssignmentStatement
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import (
     AstDemandCollectedFamily,
@@ -304,23 +305,13 @@ class FormalBoundaryStringRegistryAuthority:
         statements: Sequence[ast.stmt],
     ) -> tuple[FormalBoundaryStringRegistryConstant, ...]:
         constants: list[FormalBoundaryStringRegistryConstant] = []
-        for statement in statements:
-            assignment_targets: tuple[ast.AST, ...]
-            assignment_value: ast.AST | None
-            if isinstance(statement, ast.Assign):
-                assignment_targets = tuple(statement.targets)
-                assignment_value = statement.value
-            elif isinstance(statement, ast.AnnAssign):
-                assignment_targets = (statement.target,)
-                assignment_value = statement.value
-            else:
+        for assignment in AssignmentStatement.within(statements):
+            if assignment.value is None:
                 continue
-            if assignment_value is None:
-                continue
-            value = _constant_string(assignment_value)
+            value = _constant_string(assignment.value)
             if value is None:
                 continue
-            for target in assignment_targets:
+            for target in assignment.targets:
                 for target_name in cls.target_names(target):
                     if cls.is_registry_constant(target_name, value):
                         constants.append(
@@ -933,23 +924,13 @@ class GeneratedBoundarySemanticConstantAuthority:
         generated_boundary: bool,
     ) -> tuple[GeneratedBoundarySemanticConstantSite, ...]:
         sites: list[GeneratedBoundarySemanticConstantSite] = []
-        for statement in statements:
-            assignment_targets: tuple[ast.AST, ...]
-            assignment_value: ast.AST | None
-            if isinstance(statement, ast.Assign):
-                assignment_targets = tuple(statement.targets)
-                assignment_value = statement.value
-            elif isinstance(statement, ast.AnnAssign):
-                assignment_targets = (statement.target,)
-                assignment_value = statement.value
-            else:
+        for assignment in AssignmentStatement.within(statements):
+            if assignment.value is None:
                 continue
-            if assignment_value is None:
-                continue
-            value = _constant_string(assignment_value)
+            value = _constant_string(assignment.value)
             if value is None:
                 continue
-            for target in assignment_targets:
+            for target in assignment.targets:
                 if not isinstance(target, ast.Name):
                     continue
                 if not cls.is_semantic_constant_name(target.id):
