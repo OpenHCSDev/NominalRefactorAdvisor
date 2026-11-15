@@ -2864,13 +2864,9 @@ class SourceClassBodyEntryABC(
         """Require the selected native construction over its actual completed body."""
         raise NotImplementedError
 
-    @cached_property
+    @property
     def completed(self) -> None:
-        """Validate the original source boundary before reusing construction proof.
-
-        An entry is an immutable proof object (its `completion_prefix` is likewise
-        cached), so this validation runs once: the preceding-entry completion loop
-        in `_prefix` re-touches it per later class, which was quadratic."""
+        """Validate the original source boundary before reusing construction proof."""
         _ = self.frame
         _ = self.final_evaluation
         _ = self.construction_admission
