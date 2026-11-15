@@ -32,7 +32,6 @@ from nominal_refactor_advisor.class_index import (
     RegisteringMetaclassAuthority,
     _class_scope_qualified_import_name,
     _dataclass_declaration,
-    _single_assignment_target_name,
     module_import_aliases,
 )
 from nominal_refactor_advisor.class_namespace import ClassNamespaceExecutionEvidence
@@ -47,7 +46,7 @@ from nominal_refactor_advisor.collection_algebra import (
     sorted_tuple,
 )
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import AssignmentStatement, FunctionDefinition
 from nominal_refactor_advisor.native_declarations import ClassNamespaceDeclaration
 
 
@@ -336,13 +335,11 @@ class ModuleClassReferenceResolver:
     @cached_property
     def constructor_assignment_symbols(self) -> dict[str, str]:
         assignments: dict[str, str] = {}
-        for statement in self.parsed_module.module.body:
-            if not isinstance(statement, ast.Assign | ast.AnnAssign):
-                continue
-            target_name = _single_assignment_target_name(statement)
+        for assignment in AssignmentStatement.within(self.parsed_module.module.body):
+            target_name = assignment.single_name
             if target_name is None:
                 continue
-            value = statement.value
+            value = assignment.value
             if value is None:
                 continue
             symbol = self._direct_constructor_symbol(value)

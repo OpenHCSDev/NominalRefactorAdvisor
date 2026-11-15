@@ -129,7 +129,7 @@ from nominal_refactor_advisor.fail_closed_proof import FailClosedProof, ProofObl
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import LineWitness, SourceLineReference
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import AssignmentStatement, FunctionDefinition
 from nominal_refactor_advisor.product_declarations import (
     CompactProductAuthorityFailure,
     CompactProductAuthorityViolation,
@@ -3685,10 +3685,11 @@ class ModuleNominalBindingAuthority:
                     kind=CompactNominalBindingKind.LOCAL_DECLARATION,
                 )
             }
-        if not isinstance(statement, ast.Assign | ast.AnnAssign):
+        assignment = AssignmentStatement.decoded(statement)
+        if assignment is None:
             return {}
-        local_name = _single_assignment_target_name(statement)
-        value = statement.value
+        local_name = assignment.single_name
+        value = assignment.value
         if local_name is None or value is None:
             return {}
         if local_name in self.declared_assignment_authority_names:
