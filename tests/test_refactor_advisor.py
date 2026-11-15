@@ -27879,6 +27879,75 @@ def test_phantom_family_counts_an_override_with_what_it_overrides(tmp_path: Path
     assert "AlphaTracker" not in finding.summary
 
 
+def test_phantom_family_requires_a_shared_call_shape(tmp_path: Path) -> None:
+    # Same public name, incompatible call shapes: a property read as `x.status`
+    # against a method called `x.status(verbose)`. No consumer can dispatch one
+    # name through both, so they share no type a base could declare and are no
+    # phantom family (paper1 Cor 4.10).
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    _write_module(
+        tmp_path,
+        "pkg/alpha.py",
+        (
+            "class Alpha:\n"
+            "    @property\n"
+            "    def status(self):\n"
+            "        return self._status\n"
+        ),
+    )
+    _write_module(
+        tmp_path,
+        "pkg/beta.py",
+        (
+            "class Beta:\n"
+            "    def status(self, verbose):\n"
+            "        return self._compute(verbose)\n"
+        ),
+    )
+    phantom_findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "phantom_family"
+    ]
+    assert phantom_findings == []
+
+
+def test_phantom_family_splits_a_name_into_its_shared_shapes(tmp_path: Path) -> None:
+    # Two classes answer `label` as a zero-argument property and two others as a
+    # one-argument method. Each shape is its own dispatchable family; the detector
+    # reports them separately and never lumps the four into one phantom family.
+    _write_module(tmp_path, "pkg/__init__.py", "")
+    for module, name in (("alpha", "Alpha"), ("beta", "Beta")):
+        _write_module(
+            tmp_path,
+            f"pkg/{module}.py",
+            (
+                f"class {name}:\n"
+                "    @property\n"
+                "    def label(self):\n"
+                "        return self._label\n"
+            ),
+        )
+    for module, name in (("gamma", "Gamma"), ("delta", "Delta")):
+        _write_module(
+            tmp_path,
+            f"pkg/{module}.py",
+            (
+                f"class {name}:\n"
+                "    def label(self, style):\n"
+                "        return self._render(style)\n"
+            ),
+        )
+    phantom_findings = [
+        finding
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == "phantom_family"
+    ]
+    assert len(phantom_findings) == 2
+    assert all("label" in finding.summary for finding in phantom_findings)
+    assert all("2 owners" in finding.summary for finding in phantom_findings)
+
+
 def test_unused_method_parameter_reads_every_declaration_of_the_method(
     tmp_path: Path,
 ) -> None:

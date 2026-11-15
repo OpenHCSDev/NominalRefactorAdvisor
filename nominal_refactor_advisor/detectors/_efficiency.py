@@ -728,9 +728,15 @@ class LoopRelookupDetector(PerModuleIssueDetector):
 
 @dataclass(frozen=True)
 class PublicMethodSite(TypedRestatingSite):
-    """A public method of a top-level class: `group` is its name."""
+    """A public method of a top-level class: `group` is its name.
+
+    `call_shape` is how a consumer would reach it: whether it is a property
+    (accessed as `x.name`) or a called method (`x.name(...)`), and its positional
+    arity. Owners whose shapes differ share no type a consumer could dispatch
+    `name` through, so they are no family (paper1 Cor 4.10)."""
 
     declaring_class: str
+    call_shape: tuple[bool, int]
 
     def spelled(self) -> tuple[str, ...]:
         return (self.declaring_class,)
@@ -754,6 +760,7 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicM
         for declared in parsed_module.fact(ModuleClassStatements).top_level:
             for method in declared.methods:
                 if not method.name.startswith("_"):
+                    arguments = method.node.args
                     yield cls.site(
                         parsed_module,
                         method.node,
@@ -761,6 +768,13 @@ class PublicDefinitionSiteFamily(RestatingSiteFamily[RestatingSiteModule[PublicM
                         method.name,
                         PublicMethodSite,
                         declaring_class=declared.name,
+                        call_shape=(
+                            any(
+                                name.endswith("property")
+                                for name in method.decorator_names
+                            ),
+                            len(arguments.posonlyargs) + len(arguments.args),
+                        ),
                     )
 
 
@@ -815,9 +829,9 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
     ) -> list[RefactorFinding]:
         del config
         families = MemberFamilies.require(context)
-        owners_by_name: dict[str, dict[str, list[PublicMethodSite]]] = defaultdict(
-            lambda: defaultdict(list)
-        )
+        owners_by_shape: dict[
+            tuple[str, tuple[bool, int]], dict[str, list[PublicMethodSite]]
+        ] = defaultdict(lambda: defaultdict(list))
         for module in PublicDefinitionSiteFamily.modules_in(projections_by_family):
             for site in module.sites:
                 if site.group in self._SKIP_COMMON_NAMES:
@@ -825,17 +839,20 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
                 owner = site.owner(module.module_name, families)
                 if owner is None:
                     continue
-                owners_by_name[site.group][owner].append(site)
+                owners_by_shape[(site.group, site.call_shape)][owner].append(site)
         return [
-            self._finding_for_name(name, owners)
-            for name, owners in sorted(owners_by_name.items())
+            self._finding_for_name(name, shape, owners)
+            for (name, shape), owners in sorted(owners_by_shape.items())
             if len(owners) >= 2
             and len({site.file_path for sites in owners.values() for site in sites})
             >= self._MIN_PHANTOM_MODULES
         ]
 
     def _finding_for_name(
-        self, name: str, owners: dict[str, list[PublicMethodSite]]
+        self,
+        name: str,
+        shape: tuple[bool, int],
+        owners: dict[str, list[PublicMethodSite]],
     ) -> RefactorFinding:
         first_sites = sorted(
             (min(sites, key=attrgetter("file_path", "lineno")) for sites in owners.values()),
@@ -845,8 +862,15 @@ class PhantomFamilyDetector(CompactMultiModuleProjectionDetectorMixin, IssueDete
             {site.file_path for sites in owners.values() for site in sites}
         )
         declared_by = ", ".join(f"`{owner}`" for owner in sorted(owners))
+        is_property, arity = shape
+        form = (
+            "a property"
+            if is_property
+            else f"a method of {arity} positional parameter(s)"
+        )
         summary = (
-            f"`{name}` is declared by {len(owners)} owners across {module_count} "
-            f"modules with no shared declaring ancestor: {declared_by}"
+            f"`{name}` ({form}) is declared by {len(owners)} owners across "
+            f"{module_count} modules with no shared declaring ancestor, though the "
+            f"owners share one call shape a single base could declare: {declared_by}"
         )
         return self.build_finding(summary, tuple(site.location for site in first_sites))
