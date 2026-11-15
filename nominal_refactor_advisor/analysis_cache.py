@@ -1200,6 +1200,7 @@ AnalysisLatestFindingLookup: TypeAlias = tuple[
 ]
 
 
+@dataclass(frozen=True)
 class FindingCachePayloadValidationMixin:
     """Shared validation for persisted finding-cache payload records."""
 
@@ -1247,7 +1248,6 @@ class AnalysisFindingCacheEntryPayload(FindingCachePayloadValidationMixin):
     """Persisted exact detector-finding cache payload."""
 
     identity: AnalysisCacheEntryIdentity
-    findings: tuple[RefactorFinding, ...]
 
     @classmethod
     def from_findings(
@@ -1291,7 +1291,6 @@ class PerModuleDetectorFindingBundle(FindingCachePayloadValidationMixin):
     """Findings owned by one independently invalidated detector-module bundle."""
 
     detector_registry: DetectorRegistrySignature
-    findings: tuple[RefactorFinding, ...]
 
 
 @dataclass(frozen=True)
@@ -1342,7 +1341,6 @@ class AnalysisPartialFindingCachePayload(FindingCachePayloadValidationMixin):
 
     identity: AnalysisCacheIdentity
     previous_identity: AnalysisCacheIdentity
-    findings: tuple[RefactorFinding, ...]
 
     @classmethod
     def from_findings(
@@ -1380,7 +1378,6 @@ class AnalysisLatestFindingCachePayload(FindingCachePayloadValidationMixin):
 
     family_identity: AnalysisCacheFamilyIdentity
     identity: AnalysisCacheIdentity
-    findings: tuple[RefactorFinding, ...]
 
     @classmethod
     def from_findings(
