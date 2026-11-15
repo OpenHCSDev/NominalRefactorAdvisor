@@ -852,6 +852,7 @@ class ClassOverlapVerdicts:
                     if move is not ExtractMixin
                     else ()
                 ),
+                *self._promotion_blocker_receipts(move, owner, restating),
             ),
         )
 
@@ -1038,6 +1039,36 @@ class ClassOverlapVerdicts:
                         constructed=(indexed_class.symbol,),
                     )
                 )
+        return tuple(receipts)
+
+    def _promotion_blocker_receipts(
+        self,
+        move: type[ClassOverlapMove],
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+    ) -> tuple[Receipt, ...]:
+        """Concrete blockers for a promote/compose move: parent not a dataclass,
+        or a child using class-attribute assignments instead of field defaults."""
+
+        if move is ExtractMixin:
+            return ()
+        receipts: list[Receipt] = []
+        target = owner
+        if move is PromoteToSharedBase:
+            base = self.sole_shared_base(owner, restating)
+            if base is not None:
+                target = base
+        if not target.is_dataclass:
+            receipts.append(
+                Receipt(
+                    kind=OverlapReceiptKind.PARENT_NOT_DATACLASS,
+                    detail=(
+                        f"`{target.qualname}` is not a @dataclass; promote it to "
+                        "@dataclass(frozen=True) so its children inherit its fields"
+                    ),
+                    evidence=(_location(target),),
+                )
+            )
         return tuple(receipts)
 
     def family_axis_names(

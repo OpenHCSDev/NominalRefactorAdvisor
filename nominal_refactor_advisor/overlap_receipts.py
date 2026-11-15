@@ -25,5 +25,7 @@ class OverlapReceiptKind(ReceiptKind):
     IDENTITY_USED = "identity_used", 0.0, True
     IDENTITY_DECLARED = "identity_declared", 0.0, True
     POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
+    PARENT_NOT_DATACLASS = "parent_not_dataclass", 0.0, True
+    CHILD_CLASSVAR_HACK = "child_classvar_hack", 0.0, True
     INHERITED_DECLARATION = "inherited_declaration", 0.0, True
     DECLARATION_DIFFERS = "declaration_differs", 0.0, True
