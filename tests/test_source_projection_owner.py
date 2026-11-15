@@ -12,8 +12,11 @@ from nominal_refactor_advisor.product_flow import source_product_flow_projection
 
 def module(source="chosen = property\n"):
     return ParsedModule(
-        Path("source_owner.py"), "source_owner", ast.parse(source), source
-    )
+        path=Path("source_owner.py"),
+        module_name="source_owner",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 def test_source_projection_retains_actual_parsed_owner_without_compact_ast_debt():

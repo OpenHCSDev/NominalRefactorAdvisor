@@ -19,10 +19,10 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def _execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("discard_effects.py"),
-            "discard_effects",
-            ast.parse(source),
-            source,
+            path=Path("discard_effects.py"),
+            module_name="discard_effects",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

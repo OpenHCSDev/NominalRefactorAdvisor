@@ -27,7 +27,10 @@ from nominal_refactor_advisor.class_namespace import SourceExecutionEffectEviden
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("membership.py"), "membership", ast.parse(source), source
+            path=Path("membership.py"),
+            module_name="membership",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

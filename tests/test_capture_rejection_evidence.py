@@ -54,7 +54,7 @@ def test_plain_unknown_does_not_invent_a_cause():
 
 def test_source_admission_retains_failure_without_executing_source(capsys):
     source = "print('must not run in analyzer')\nselected = property\n"
-    module = ParsedModule(Path("cause.py"), "cause", ast.parse(source), source)
+    module = ParsedModule(path=Path("cause.py"), module_name="cause", module=ast.parse(source), source=source)
     execution = SourceModuleExecution.from_module(module)
     node = module.module.body[-1].value
     capture = execution.capture_value(node)
@@ -99,8 +99,11 @@ def test_capture_owner_discards_traceback_but_keeps_the_original_exception():
 def test_native_call_rejection_retains_its_specific_obligation():
     source = "result = globals(1)\n"
     module = ParsedModule(
-        Path("call_cause.py"), "call_cause", ast.parse(source), source
-    )
+        path=Path("call_cause.py"),
+        module_name="call_cause",
+        module=ast.parse(source),
+        source=source,
+             )
     execution = SourceModuleExecution.from_module(module)
     node = module.module.body[0].value
     capture = execution.capture_value(node)

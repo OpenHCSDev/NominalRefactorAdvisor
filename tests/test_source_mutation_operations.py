@@ -16,7 +16,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def project(text):
     return source_product_flow_projection(
-        ParsedModule(Path("mutations.py"), "mutations", ast.parse(text), text)
+        ParsedModule(path=Path("mutations.py"), module_name="mutations", module=ast.parse(text), source=text)
     )
 
 

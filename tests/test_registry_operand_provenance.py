@@ -17,8 +17,11 @@ from nominal_refactor_advisor.registry_identity import AutoRegisterClassAuthorit
 
 def parsed(source):
     return ParsedModule(
-        Path("/repo/operands.py"), "operands", ast.parse(source), source
-    )
+        path=Path("/repo/operands.py"),
+        module_name="operands",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 @pytest.mark.parametrize(

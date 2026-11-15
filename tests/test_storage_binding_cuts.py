@@ -18,7 +18,7 @@ from nominal_refactor_advisor.product_flow import (
 
 
 def context(source, qualname=""):
-    module = ParsedModule(Path("cuts.py"), "cuts", ast.parse(source), source)
+    module = ParsedModule(path=Path("cuts.py"), module_name="cuts", module=ast.parse(source), source=source)
     return next(
         item
         for item in source_product_flow_projection(module).compact.flow_contexts

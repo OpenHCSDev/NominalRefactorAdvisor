@@ -23,11 +23,11 @@ from nominal_refactor_advisor.type_keyed_behavior import (
 
 def _projections(source):
     module = ParsedModule(
-        Path("/repo/member_provenance.py"),
-        "member_provenance",
-        ast.parse(source),
-        source,
-    )
+        path=Path("/repo/member_provenance.py"),
+        module_name="member_provenance",
+        module=ast.parse(source),
+        source=source,
+             )
     return CompactModuleClassProjectionFamily.collect_modules((module,))
 
 

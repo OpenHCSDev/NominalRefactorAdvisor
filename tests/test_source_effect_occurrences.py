@@ -26,10 +26,10 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("effects.py"),
-            "effects",
-            ast.parse(source),
-            source,
+            path=Path("effects.py"),
+            module_name="effects",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

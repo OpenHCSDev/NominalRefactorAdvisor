@@ -28,8 +28,11 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def module(source="selected = property\n"):
     return ParsedModule(
-        Path("entry_owner.py"), "entry_owner", ast.parse(source), source
-    )
+        path=Path("entry_owner.py"),
+        module_name="entry_owner",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 def supplied_entry(parsed):

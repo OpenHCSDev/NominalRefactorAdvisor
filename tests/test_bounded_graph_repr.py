@@ -22,7 +22,10 @@ def _execution(count: int) -> SourceModuleExecution:
     )
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("/repo/bounded_repr.py"), "bounded_repr", ast.parse(source), source
+            path=Path("/repo/bounded_repr.py"),
+            module_name="bounded_repr",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

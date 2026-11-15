@@ -17,8 +17,11 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def execution(source):
     parsed = ParsedModule(
-        Path("/repo/retained.py"), "retained", ast.parse(source), source
-    )
+        path=Path("/repo/retained.py"),
+        module_name="retained",
+        module=ast.parse(source),
+        source=source,
+             )
     return SourceModuleExecution.from_module(parsed)
 
 

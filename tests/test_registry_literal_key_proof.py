@@ -34,11 +34,11 @@ from nominal_refactor_advisor.value_expression import UnassignedValueExpression,
 
 def parsed(source):
     return ParsedModule(
-        Path("/repo/literal_registry.py"),
-        "literal_registry",
-        ast.parse(source),
-        source,
-    )
+        path=Path("/repo/literal_registry.py"),
+        module_name="literal_registry",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 def findings(source):

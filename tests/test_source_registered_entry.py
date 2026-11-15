@@ -51,7 +51,7 @@ def direct_file_evidence(tmp_path_factory):
 
 
 def source(text="class Plain: pass\n", name="ast"):
-    parsed = ParsedModule(Path("entry_probe.py"), name, ast.parse(text), text)
+    parsed = ParsedModule(path=Path("entry_probe.py"), module_name=name, module=ast.parse(text), source=text)
     return source_product_flow_projection(parsed)
 
 

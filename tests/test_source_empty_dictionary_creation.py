@@ -31,10 +31,10 @@ from nominal_refactor_advisor.value_expression import (
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("empty_creation.py"),
-            "empty_creation",
-            ast.parse(source),
-            source,
+            path=Path("empty_creation.py"),
+            module_name="empty_creation",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

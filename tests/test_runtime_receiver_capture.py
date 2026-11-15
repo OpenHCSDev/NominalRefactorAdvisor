@@ -20,8 +20,11 @@ from nominal_refactor_advisor.product_flow_authority import (
 
 def module(source):
     return ParsedModule(
-        Path("/repo/receiver.py"), "receiver", ast.parse(source), source
-    )
+        path=Path("/repo/receiver.py"),
+        module_name="receiver",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 @pytest.mark.native_proof

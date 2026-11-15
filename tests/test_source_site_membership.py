@@ -14,8 +14,11 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def projection(source="result = property\n"):
     module = ParsedModule(
-        Path("membership.py"), "membership", ast.parse(source), source
-    )
+        path=Path("membership.py"),
+        module_name="membership",
+        module=ast.parse(source),
+        source=source,
+             )
     return source_product_flow_projection(module)
 
 

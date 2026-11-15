@@ -17,7 +17,10 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def execution(source="first = {}\nsecond = {}\n"):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("prefix_event.py"), "prefix_event", ast.parse(source), source
+            path=Path("prefix_event.py"),
+            module_name="prefix_event",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

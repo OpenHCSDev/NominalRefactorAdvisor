@@ -98,11 +98,11 @@ def _simulate(
     support_rendered_creator: bool = False,
 ):
     parsed = ParsedModule(
-        Path("/repo/registry_policy_fixture.py"),
-        "registry_policy_fixture",
-        ast.parse(source),
-        source,
-    )
+        path=Path("/repo/registry_policy_fixture.py"),
+        module_name="registry_policy_fixture",
+        module=ast.parse(source),
+        source=source,
+             )
     snapshot = CodemodSourceSnapshot.from_indexed_sources(
         build_source_index([parsed], ()), {parsed.file_path: source}
     )

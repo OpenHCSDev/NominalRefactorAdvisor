@@ -23,8 +23,11 @@ from nominal_refactor_advisor.product_flow import (
 
 def _module(source: str) -> ParsedModule:
     return ParsedModule(
-        Path("pkg/dict_order.py"), "pkg.dict_order", ast.parse(source), source
-    )
+        path=Path("pkg/dict_order.py"),
+        module_name="pkg.dict_order",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 @pytest.mark.parametrize(

@@ -21,10 +21,10 @@ from test_positioned_import_effects import imports
 def environment(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("relative_probe.py"),
-            "typing.synthetic",
-            ast.parse(source),
-            source,
+            path=Path("relative_probe.py"),
+            module_name="typing.synthetic",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

@@ -18,7 +18,7 @@ from nominal_refactor_advisor.value_graph import DataclassGraphValue
 
 
 def execution(source):
-    module = ParsedModule(Path("reuse.py"), "reuse", ast.parse(source), source)
+    module = ParsedModule(path=Path("reuse.py"), module_name="reuse", module=ast.parse(source), source=source)
     return SourceModuleExecution.from_module(module)
 
 

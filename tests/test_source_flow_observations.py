@@ -34,8 +34,11 @@ class ExtendedTransportFlow(CompactFunctionFlow):
 
 def _project(source):
     module = ParsedModule(
-        Path("observations.py"), "observations", ast.parse(source), source
-    )
+        path=Path("observations.py"),
+        module_name="observations",
+        module=ast.parse(source),
+        source=source,
+             )
     return module, source_product_flow_projection(module)
 
 

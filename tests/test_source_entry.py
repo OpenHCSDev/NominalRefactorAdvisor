@@ -31,7 +31,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
 def _source(text="result = property\n"):
-    module = ParsedModule(Path("entry.py"), "entry", ast.parse(text), text)
+    module = ParsedModule(path=Path("entry.py"), module_name="entry", module=ast.parse(text), source=text)
     return module, source_product_flow_projection(module)
 
 

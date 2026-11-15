@@ -107,11 +107,11 @@ def _native_keys(source: str, aliases: bool, key_count: int) -> ModuleType:
 
 def _parsed(source: str) -> ParsedModule:
     return ParsedModule(
-        Path("/repo/registry_key_equivalence.py"),
-        "registry_key_equivalence",
-        ast.parse(source),
-        source,
-    )
+        path=Path("/repo/registry_key_equivalence.py"),
+        module_name="registry_key_equivalence",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 @pytest.mark.parametrize("enum_source,aliases,key_count", _KEY_CASES)

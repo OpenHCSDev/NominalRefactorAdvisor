@@ -38,11 +38,11 @@ def test_computed_exports_do_not_prove_absence_from_lexical_bindings(installatio
     exec(source, vars(native))
     assert "Injected" in native.__all__
     module = ParsedModule(
-        Path("computed_exports.py"),
-        "computed_exports",
-        ast.parse(source),
-        source,
-    )
+        path=Path("computed_exports.py"),
+        module_name="computed_exports",
+        module=ast.parse(source),
+        source=source,
+             )
     policy = module_public_export_contract(module)
     assert policy.exposure_for("Injected").blocks_closed_boundary
 

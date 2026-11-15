@@ -32,11 +32,11 @@ pytestmark = pytest.mark.native_proof
 
 def _project(source):
     module = ParsedModule(
-        Path("source_class_captures.py"),
-        "source_class_captures",
-        ast.parse(source),
-        source,
-    )
+        path=Path("source_class_captures.py"),
+        module_name="source_class_captures",
+        module=ast.parse(source),
+        source=source,
+             )
     return module, source_product_flow_projection(module)
 
 

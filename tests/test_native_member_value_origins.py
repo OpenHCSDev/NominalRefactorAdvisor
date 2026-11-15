@@ -14,8 +14,11 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def execution(source, **bindings):
     module = ParsedModule(
-        Path("members.py"), "members", ast.parse(source), source
-    )
+        path=Path("members.py"),
+        module_name="members",
+        module=ast.parse(source),
+        source=source,
+             )
     seed = SourceModuleExecution.from_module(module)
     return SourceModuleExecution(
         SourceModuleEntryPremise(

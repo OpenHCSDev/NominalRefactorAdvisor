@@ -20,7 +20,7 @@ from nominal_refactor_advisor.source_entry import ImportedSourceModuleEntryPremi
 @pytest.mark.native_proof
 def test_standard_source_entry_retains_types_without_metadata_object_identity():
     text = "raise AssertionError('analyzed code must never execute')\n"
-    module = ParsedModule(Path("example.py"), "example", ast.parse(text), text)
+    module = ParsedModule(path=Path("example.py"), module_name="example", module=ast.parse(text), source=text)
     source = source_product_flow_projection(module)
     initial = InitialNativeIsland((builtins,))
     namespace = initial.namespace_for_storage(vars(builtins))
@@ -49,8 +49,11 @@ def test_standard_source_entry_retains_types_without_metadata_object_identity():
 
 def test_package_entry_derives_package_metadata_from_native_loader():
     module = ParsedModule(
-        Path("package/__init__.py"), "package", ast.parse(""), ""
-    )
+        path=Path("package/__init__.py"),
+        module_name="package",
+        module=ast.parse(""),
+        source="",
+             )
     source = source_product_flow_projection(module)
     initial = InitialNativeIsland((builtins,))
     entry = ImportedSourceModuleEntryPremise.from_standard_source_loader(

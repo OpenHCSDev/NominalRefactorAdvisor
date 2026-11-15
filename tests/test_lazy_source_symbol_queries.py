@@ -22,11 +22,11 @@ from nominal_refactor_advisor.source_identity import source_path_text
 
 def module(name, source, path=None):
     return ParsedModule(
-        Path(path or name.replace(".", "/") + ".py"),
-        name,
-        ast.parse(source),
-        source,
-    )
+        path=Path(path or name.replace(".", "/") + ".py"),
+        module_name=name,
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 def test_one_scope_keeps_all_modules_available_without_building_unrelated_flows():

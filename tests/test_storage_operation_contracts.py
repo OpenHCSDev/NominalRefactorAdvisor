@@ -18,7 +18,7 @@ from nominal_refactor_advisor.value_expression import LexicalValueReference
 
 
 def flow(source):
-    module = ParsedModule(Path("stores.py"), "stores", ast.parse(source), source)
+    module = ParsedModule(path=Path("stores.py"), module_name="stores", module=ast.parse(source), source=source)
     return compact_product_flow_projection(module).flows[0]
 
 

@@ -15,7 +15,10 @@ def execution():
     source = "value = property\n"
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("read_identity.py"), "read_identity", ast.parse(source), source
+            path=Path("read_identity.py"),
+            module_name="read_identity",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

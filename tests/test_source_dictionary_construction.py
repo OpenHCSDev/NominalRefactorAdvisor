@@ -26,11 +26,11 @@ def _execution(expression, *, prefix=""):
         "class Beta:\n    pass\n" + prefix + f"REGISTRY = {expression}\n"
     )
     module = ParsedModule(
-        Path("/repo/dictionary_construction.py"),
-        "dictionary_construction",
-        ast.parse(source),
-        source,
-    )
+        path=Path("/repo/dictionary_construction.py"),
+        module_name="dictionary_construction",
+        module=ast.parse(source),
+        source=source,
+             )
     execution = SourceModuleExecution.from_module(module)
     assignment = module.module.body[-1]
     assert isinstance(assignment, ast.Assign)

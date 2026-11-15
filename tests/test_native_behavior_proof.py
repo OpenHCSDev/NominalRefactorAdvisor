@@ -271,11 +271,11 @@ def test_dsl_dependency_edit_invalidates_reused_local_native_execution(
     provider_path = registry_identity.__file__
     provider_source = Path(registry_identity.__file__).read_text()
     provider = ParsedModule(
-        Path(provider_path),
-        registry_identity.__name__,
-        ast.parse(provider_source),
-        provider_source,
-    )
+        path=Path(provider_path),
+        module_name=registry_identity.__name__,
+        module=ast.parse(provider_source),
+        source=provider_source,
+               )
     modules = (*initial.parsed_modules, provider)
     snapshot = CodemodSourceSnapshot.from_modules(ParsedModuleSet.of(modules))
     repository = ExplicitEnvironmentRepository.from_modules(snapshot.parsed_modules)

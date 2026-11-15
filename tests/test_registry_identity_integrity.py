@@ -25,8 +25,11 @@ def test_injective_registry_claim_respects_native_key_identity(alias_keys) -> No
         len({runtime.AlphaModeRunner.mode, runtime.BetaModeRunner.mode}) == 2
     )
     parsed = ParsedModule(
-        Path("/repo/family.py"), "family", ast.parse(source), source
-    )
+        path=Path("/repo/family.py"),
+        module_name="family",
+        module=ast.parse(source),
+        source=source,
+             )
     detectors = tuple(
         d
         for d in IssueDetector.registered_detector_types()

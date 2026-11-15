@@ -18,7 +18,7 @@ from nominal_refactor_advisor.public_exports import (
 
 def _module(expression):
     source = f"Known = 1\n__all__ = {expression}\n"
-    return ParsedModule(Path("exports.py"), "exports", ast.parse(source), source)
+    return ParsedModule(path=Path("exports.py"), module_name="exports", module=ast.parse(source), source=source)
 
 
 @pytest.mark.parametrize(

@@ -113,11 +113,11 @@ class PlainChildFixtureEffects(CapturedReferenceEffectsABC):
 
 def fixture(source, globals_storage=None):
     module = ParsedModule(
-        Path("contextual_fixture.py"),
-        "contextual_fixture",
-        ast.parse(source),
-        source,
-    )
+        path=Path("contextual_fixture.py"),
+        module_name="contextual_fixture",
+        module=ast.parse(source),
+        source=source,
+             )
     projection = compact_product_flow_projection(module)
     parent, child = projection.flow_contexts
     definition = next(

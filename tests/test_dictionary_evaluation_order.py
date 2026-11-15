@@ -27,8 +27,11 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def module(source):
     return ParsedModule(
-        Path("/repo/dict_order.py"), "dict_order", ast.parse(source), source
-    )
+        path=Path("/repo/dict_order.py"),
+        module_name="dict_order",
+        module=ast.parse(source),
+        source=source,
+           )
 
 
 @pytest.mark.parametrize(

@@ -81,11 +81,14 @@ def join(
     path=PATH,
     mutation_source=None,
 ):
-    before_module = ParsedModule(Path(PATH), "probe", ast.parse(source), source)
+    before_module = ParsedModule(path=Path(PATH), module_name="probe", module=ast.parse(source), source=source)
     after_source = prefix + source if rewritten is None else rewritten
     after_module = ParsedModule(
-        Path(path), "probe", ast.parse(after_source), after_source
-    )
+        path=Path(path),
+        module_name="probe",
+        module=ast.parse(after_source),
+        source=after_source,
+                   )
     before = SourceModuleExecution.from_module(before_module)
     after = SourceModuleExecution.from_module(after_module)
     document_source = source if mutation_source is None else mutation_source
@@ -302,7 +305,7 @@ REGISTRY['beta'] = Beta
 
 def source_environment(source, path=PATH):
     return SourceModuleExecution.from_module(
-        ParsedModule(Path(path), "probe", ast.parse(source), source)
+        ParsedModule(path=Path(path), module_name="probe", module=ast.parse(source), source=source)
     )
 
 

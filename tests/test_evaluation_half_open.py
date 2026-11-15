@@ -25,8 +25,11 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 def execution(source="value = object[int]\nselected = property\n"):
     module = ParsedModule(
-        Path("/repo/halfopen.py"), "halfopen", ast.parse(source), source
-    )
+        path=Path("/repo/halfopen.py"),
+        module_name="halfopen",
+        module=ast.parse(source),
+        source=source,
+             )
     return SourceModuleExecution.from_module(module)
 
 

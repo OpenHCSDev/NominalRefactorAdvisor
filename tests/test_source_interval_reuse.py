@@ -17,10 +17,10 @@ def _execution(count: int = 6) -> SourceModuleExecution:
     )
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("/repo/interval_reuse.py"),
-            "interval_reuse",
-            ast.parse(source),
-            source,
+            path=Path("/repo/interval_reuse.py"),
+            module_name="interval_reuse",
+            module=ast.parse(source),
+            source=source,
         )
     )
 
@@ -55,10 +55,10 @@ def test_failed_interval_is_not_recorded_as_closed():
     source = "unknown()\n"
     execution = SourceModuleExecution.from_module(
         ParsedModule(
-            Path("/repo/open_interval.py"),
-            "open_interval",
-            ast.parse(source),
-            source,
+            path=Path("/repo/open_interval.py"),
+            module_name="open_interval",
+            module=ast.parse(source),
+            source=source,
         )
     )
     interval = SingleFlowPrefix(execution.entry.context, execution.entry.frame, None)
@@ -142,10 +142,10 @@ def test_forward_prerequisites_never_admit_a_future_class():
     )
     execution = SourceModuleExecution.from_module(
         ParsedModule(
-            Path("/repo/future_class.py"),
-            "future_class",
-            ast.parse(source),
-            source,
+            path=Path("/repo/future_class.py"),
+            module_name="future_class",
+            module=ast.parse(source),
+            source=source,
         )
     )
     earlier, assignment, later = execution.module.module.body
@@ -160,10 +160,10 @@ def test_forward_prerequisites_keep_prior_unknown_effects_open():
     source = "class Earlier:\n    unknown()\nclass Later: pass\n"
     execution = SourceModuleExecution.from_module(
         ParsedModule(
-            Path("/repo/prior_class.py"),
-            "prior_class",
-            ast.parse(source),
-            source,
+            path=Path("/repo/prior_class.py"),
+            module_name="prior_class",
+            module=ast.parse(source),
+            source=source,
         )
     )
     with pytest.raises(ValueError):

@@ -26,10 +26,10 @@ from nominal_refactor_advisor.value_expression import LexicalValueReference
 def execution(source: str) -> SourceModuleExecution:
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("assigned_values.py"),
-            "assigned_values",
-            ast.parse(source),
-            source,
+            path=Path("assigned_values.py"),
+            module_name="assigned_values",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

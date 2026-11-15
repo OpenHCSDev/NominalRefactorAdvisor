@@ -20,7 +20,10 @@ BASE = "REGISTRY = {}\nclass Alpha: pass\nclass Beta: pass\n"
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("item_stores.py"), "item_stores", ast.parse(source), source
+            path=Path("item_stores.py"),
+            module_name="item_stores",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

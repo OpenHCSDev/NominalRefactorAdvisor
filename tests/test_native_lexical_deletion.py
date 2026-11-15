@@ -14,7 +14,7 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 
 def execution(source):
-    parsed = ParsedModule(Path("delete.py"), "delete", ast.parse(source), source)
+    parsed = ParsedModule(path=Path("delete.py"), module_name="delete", module=ast.parse(source), source=source)
     return SourceModuleExecution.from_module(parsed)
 
 

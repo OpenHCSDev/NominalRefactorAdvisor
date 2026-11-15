@@ -70,8 +70,11 @@ def test_counterfeit_helper_is_not_implicitly_admitted(tmp_path, monkeypatch) ->
 
 def _helper_method_source(source: str):
     parsed = ParsedModule(
-        Path("/repo/helper.py"), "helper", ast.parse(source), source
-    )
+        path=Path("/repo/helper.py"),
+        module_name="helper",
+        module=ast.parse(source),
+        source=source,
+             )
     (method,) = tuple(
         node
         for node in ast.walk(parsed.module)

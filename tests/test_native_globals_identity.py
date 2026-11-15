@@ -29,7 +29,10 @@ from nominal_refactor_advisor.source_entry import SourceModuleEntryPremise
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("globals_owner.py"), "globals_owner", ast.parse(source), source
+            path=Path("globals_owner.py"),
+            module_name="globals_owner",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

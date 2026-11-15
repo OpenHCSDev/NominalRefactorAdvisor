@@ -25,10 +25,10 @@ from nominal_refactor_advisor.source_execution import SourceModuleExecution
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("assignment_provenance.py"),
-            "assignment_provenance",
-            ast.parse(source),
-            source,
+            path=Path("assignment_provenance.py"),
+            module_name="assignment_provenance",
+            module=ast.parse(source),
+            source=source,
         )
     )
 

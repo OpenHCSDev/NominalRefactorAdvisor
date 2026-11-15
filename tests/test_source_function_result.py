@@ -22,10 +22,10 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 def execution(source):
     return SourceModuleExecution.from_module(
         ParsedModule(
-            Path("function_result.py"),
-            "function_result",
-            ast.parse(source),
-            source,
+            path=Path("function_result.py"),
+            module_name="function_result",
+            module=ast.parse(source),
+            source=source,
         )
     )
 
