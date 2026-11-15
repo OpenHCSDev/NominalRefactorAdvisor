@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 
 from nominal_refactor_advisor.ast_projection import name_nodes
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.audit.measures import MechanismOwners
 
 
@@ -52,7 +53,7 @@ class BuiltinHandlerDeclarations:
         primitives = {f"builtins.{kind.__name__}" for kind in cls.builtin_types}
         total = 0
         for function in ast.walk(node):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(function, FunctionDefinition):
                 continue
             for decorator in function.decorator_list:
                 match decorator:

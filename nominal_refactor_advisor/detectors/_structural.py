@@ -37,6 +37,7 @@ from nominal_refactor_advisor.ast_tools import (
     NamespaceCall,
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
@@ -104,7 +105,7 @@ class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCand
     @classmethod
     def _for_class(cls, module: ParsedModule, node: ast.ClassDef) -> Iterable[Self]:
         for statement in node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(statement, FunctionDefinition):
                 continue
             for subnode in ast.walk(statement):
                 if not isinstance(subnode, ast.Call):
@@ -1288,7 +1289,7 @@ class DynamicSelfFieldSelectionCandidate(CollectsItself, SelfReflectiveBuiltinCa
     @classmethod
     def _for_class(cls, module: ParsedModule, node: ast.ClassDef) -> Iterable[Self]:
         for statement in node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(statement, FunctionDefinition):
                 continue
             for subnode in module.syntax_index.function_walks[statement]:
                 if not isinstance(subnode, ast.Call):

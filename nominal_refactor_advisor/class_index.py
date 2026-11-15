@@ -1913,7 +1913,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
         declarations: list[CompactCallableMemberDeclaration] = []
         property_names: set[str] = set()
         for statement in node.body:
-            if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
+            if not isinstance(statement, FunctionDefinition):
                 continue
             if module_binding_snapshot.decorated_by(
                 statement, (OVERLOAD_DECORATOR,)
@@ -4885,7 +4885,7 @@ class CompactModuleClassProjectionFamily(
                         return_annotation_expression=ast.unparse(returns),
                     )
                     for node in parsed_module.module.body
-                    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                    if isinstance(node, FunctionDefinition)
                     for returns in declared_annotations(node)
                 ),
                 exact_type_guards=syntax_facets.exact_type_guards,

@@ -96,6 +96,7 @@ from nominal_refactor_advisor.codemod_statement_source import (
     StatementDeletionSource,
     StatementSource,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     LexicalScopeBindingAuthority,
@@ -1556,7 +1557,7 @@ class KeywordOnlyComposition:
             owner = OverlapClass.for_symbol(self.snapshot, symbol)
             module = self.snapshot.parsed_module_for_source_path(owner.file_path)
             for method in owner.node.body:
-                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                if not isinstance(method, FunctionDefinition):
                     continue
                 digest = FieldOrderDigest.in_method(self.snapshot, module, method)
                 if digest is not None:
@@ -1886,8 +1887,7 @@ class ConstructionKeywording(ClassOverlapRewrite):
         )
         calls = tuple(
             call
-            for function in self.target.node.body
-            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for function in FunctionDefinition.within(self.target.node.body)
             for call in _receiver_class_calls(function, module_bound)
         )
         if not calls:

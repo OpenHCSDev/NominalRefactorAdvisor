@@ -30,6 +30,7 @@ from pathlib import Path
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from nominal_refactor_advisor.ast_projection import nodes_of
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.json_reports import (
     DataclassJsonReport,
     JsonText,
@@ -675,8 +676,7 @@ class DeclaredDefinition:
     def every(cls, module: ModuleScope) -> dict[str, DeclaredDefinition]:
         """The module's definitions by the scope each opens; a scope two definitions open
         names neither."""
-        found = [node for node in ast.walk(module.tree)
-                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        found = list(FunctionDefinition.within(ast.walk(module.tree)))
         opened = Counter(module.scope(node) for node in found)
         return {module.scope(node): cls(module, node) for node in found if opened[module.scope(node)] == 1}
 

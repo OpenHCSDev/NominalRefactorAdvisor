@@ -61,6 +61,7 @@ from nominal_refactor_advisor.restated_fact_observations import (
     TypedRestatingSite,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 @dataclass(frozen=True)
@@ -424,11 +425,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     def declared_class(
         cls, node: ast.ClassDef, names: QualifiedNames, top_level: bool
     ) -> DeclaredClass:
-        methods = [
-            statement
-            for statement in node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
+        methods = list(FunctionDefinition.within(node.body))
         return DeclaredClass(
             name=node.name,
             line=node.lineno,
@@ -2282,7 +2279,7 @@ class IdentityPositions:
                 (
                     ancestor
                     for ancestor in reversed(self.index.ancestor_nodes(node_index))
-                    if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    if isinstance(ancestor, FunctionDefinition)
                 ),
                 None,
             )

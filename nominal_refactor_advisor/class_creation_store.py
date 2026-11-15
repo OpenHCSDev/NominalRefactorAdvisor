@@ -29,6 +29,7 @@ from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar, TypeAlias
 from nominal_refactor_advisor.ast_projection import nodes_of
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -37,7 +38,7 @@ def _functions(statements: list[ast.stmt]) -> dict[str, FunctionNode]:
     return {
         statement.name: statement
         for statement in statements
-        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+        if isinstance(statement, FunctionDefinition)
     }
 
 

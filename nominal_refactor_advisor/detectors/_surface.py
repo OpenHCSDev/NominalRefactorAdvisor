@@ -41,6 +41,7 @@ from nominal_refactor_advisor.detectors._helpers import (
     NamedStringSequenceSpecsByName,
 )
 from nominal_refactor_advisor.detectors._substrate_support import ModuleNamedValues
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 import ast
 from nominal_refactor_advisor.class_families.parsed_index import ClassStatement, ModuleClassStatements
 from nominal_refactor_advisor.ast_projection import StatementValues, CallKeywords, ExpressionReference, nodes_of
@@ -702,7 +703,7 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
         node = declared.node
         guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
         for statement in node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            if not isinstance(statement, FunctionDefinition):
                 continue
             if statement.name not in {
                 "build_from_function",

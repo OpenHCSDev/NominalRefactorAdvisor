@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Self
 
 from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_families.parsed_index import ModuleClassStatements
 from nominal_refactor_advisor.descriptor_algebra import AliasProperty, ConstantProperty
@@ -423,11 +424,7 @@ class ManualFiberTagCandidate(
         from a parameter, for each such tag."""
 
         candidates: list[Self] = []
-        methods = {
-            item.name: item
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
-        }
+        methods = {item.name: item for item in FunctionDefinition.within(node.body)}
         init_method = methods.get("__init__")
         if init_method is None:
             return ()
