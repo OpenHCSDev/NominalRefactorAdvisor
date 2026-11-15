@@ -3321,6 +3321,7 @@ class FindingAuthorityNamePolicy:
         )
 
 
+@dataclass(frozen=True)
 class SemanticDescentGraphCacheLookup:
     """Base result of loading one semantic-descent graph cache entry."""
 
@@ -3342,8 +3343,8 @@ class SemanticDescentGraphCacheMiss(SemanticDescentGraphCacheLookup):
 class SemanticDescentGraphCacheHit(SemanticDescentGraphCacheLookup):
     """Graph cache lookup result with a valid graph payload."""
 
-    graph: SemanticDescentGraph
-    identity: SemanticDescentGraphCacheIdentity
+    graph: SemanticDescentGraph = field(kw_only=True)
+    identity: SemanticDescentGraphCacheIdentity = field(kw_only=True)
 
 
 def _rebase_source_location(
