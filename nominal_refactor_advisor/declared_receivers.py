@@ -217,6 +217,7 @@ class DeclaredType(NamesClasses):
         )
 
 
+@dataclass(frozen=True)
 class DeclaredScannedClasses(DeclaredType):
     """Scanned classes of one family, as instances or as class objects: two of
     the same kind join when the scan gives their classes one common family."""
@@ -242,8 +243,6 @@ class DeclaredScannedClasses(DeclaredType):
 @dataclass(frozen=True)
 class DeclaredInstance(DeclaredScannedClasses):
     """An instance of one of these scanned classes, all of one family."""
-
-    symbols: tuple[str, ...]
 
     def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
@@ -299,8 +298,6 @@ class DeclaredClassObject(DeclaredScannedClasses):
     """Scanned classes themselves, not instances: calling their methods passes
     the class as `cls`. Their `class_symbols` are the classes they denote, so a
     class-level answer read off one is that class's."""
-
-    symbols: tuple[str, ...]
 
     def attribute(self, typing: DeclaredReceiverTyping, name: str) -> DeclaredType:
         return typing.joined(
