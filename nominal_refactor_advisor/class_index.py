@@ -248,12 +248,13 @@ class NotStandardDataclass(ValueError):
     """A class that is not a standard `dataclasses.dataclass` declaration."""
 
 
+@dataclass(frozen=True)
 class CompactDataclassFacet(ABC):
     """A class's dataclass facet: a dataclass-like declaration, or none."""
 
-    runtime_declaration: DataclassRuntimeDeclaration | None
-    fields: tuple[CompactDataclassFieldDeclaration, ...]
-    failures: tuple[CompactProductDeclarationFailure, ...]
+    runtime_declaration: DataclassRuntimeDeclaration | None = None
+    fields: tuple[CompactDataclassFieldDeclaration, ...] = ()
+    failures: tuple[CompactProductDeclarationFailure, ...] = ()
 
     def with_settled_field_declarations(self, index: FieldDeclarationIndex) -> Self:
         settled = tuple(member.settled(index) for member in self.fields)
@@ -303,10 +304,6 @@ class CompactDataclassFacet(ABC):
 class CompactDataclassDeclaration(CompactDataclassFacet):
     """One dataclass-like declaration, including fail-closed unknown semantics."""
 
-    runtime_declaration: DataclassRuntimeDeclaration | None
-    fields: tuple[CompactDataclassFieldDeclaration, ...]
-    failures: tuple[CompactProductDeclarationFailure, ...] = ()
-
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         if (
             self.runtime_declaration is None
@@ -345,10 +342,6 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
 @dataclass(frozen=True)
 class NoDataclassDeclaration(CompactDataclassFacet):
     """A class no dataclass-like decorator declares: no runtime, no fields."""
-
-    runtime_declaration = None
-    fields = ()
-    failures = ()
 
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         raise NotStandardDataclass(reason)
