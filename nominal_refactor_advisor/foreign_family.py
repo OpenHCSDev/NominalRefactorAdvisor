@@ -51,20 +51,31 @@ class ForeignFamily(DeclaredFamily, metaclass=ForeignFamilyMeta):
         return (node for node in nodes if isinstance(node, cls))
 
 
-class FunctionDefinition(ForeignFamily):
-    """A def or async def statement.
+class DefinitionStatement(ForeignFamily):
+    """A class, function or async function definition.
 
-    Both members store these fields; the family declares the ones its sites read.
+    All three members store ``name``, ``body``, ``decorator_list`` and positions.
     """
 
-    members = (ast.FunctionDef, ast.AsyncFunctionDef)
+    members = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
 
     name: str
-    args: ast.arguments
     body: list[ast.stmt]
     decorator_list: list[ast.expr]
     lineno: int
     col_offset: int
+
+
+class FunctionDefinition(DefinitionStatement):
+    """A def or async def statement.
+
+    A DefinitionStatement whose members are the two function forms; adds
+    ``args`` which only functions carry.
+    """
+
+    members = (ast.FunctionDef, ast.AsyncFunctionDef)
+
+    args: ast.arguments
 
 
 class ImportDefinition(ForeignFamily):
@@ -78,21 +89,6 @@ class ImportDefinition(ForeignFamily):
     members = (ast.Import, ast.ImportFrom)
 
     names: list[ast.alias]
-    lineno: int
-    col_offset: int
-
-
-class DefinitionStatement(ForeignFamily):
-    """A class, function or async function definition.
-
-    All three members store ``name``, ``body``, ``decorator_list`` and positions.
-    """
-
-    members = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
-
-    name: str
-    body: list[ast.stmt]
-    decorator_list: list[ast.expr]
     lineno: int
     col_offset: int
 
