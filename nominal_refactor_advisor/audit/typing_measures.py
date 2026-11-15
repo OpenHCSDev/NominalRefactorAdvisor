@@ -17,6 +17,7 @@ from nominal_refactor_advisor.audit.gate import (
     PerFileMeasure,
 )
 from nominal_refactor_advisor.audit.typing_names import TypingImports, TypingReference
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, ImportDefinition
 
 type Enclosing = tuple[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef, ...]
 
@@ -142,7 +143,7 @@ class DeclaredTypeSites(MroDispatch):
         while pending:
             node, scope = pending.pop()
             self.dispatch_sync(node, scope)
-            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(node, DefinitionStatement):
                 scope = (*scope, node)
             pending.extend((child, scope) for child in ast.iter_child_nodes(node))
 
@@ -252,7 +253,7 @@ class TypeCheckingImport(PerFileMeasure, LocatedSource):
                 case ast.If(test=test, body=body, orelse=orelse):
                     for statement in cls.checker_branch(test, body, orelse, imports):
                         guarded.update((id(inner), inner) for inner in ast.walk(statement)
-                                       if isinstance(inner, (ast.Import, ast.ImportFrom)))
+                                       if isinstance(inner, ImportDefinition))
         return sorted(statement.lineno for statement in guarded.values()
                       for _ in statement.names)
 

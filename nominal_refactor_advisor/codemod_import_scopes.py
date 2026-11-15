@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeAlias
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 
 
@@ -21,7 +22,7 @@ def _runtime_import_statements(module: ast.Module) -> tuple[ImportStatement, ...
     return tuple(
         statement
         for statement in module.body
-        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        if isinstance(statement, ImportDefinition)
     )
 
 
@@ -32,7 +33,7 @@ def _type_checking_import_statements(
         statement
         for guard in TypeCheckingGuardProjection.from_module(module).guards
         for statement in guard.body
-        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        if isinstance(statement, ImportDefinition)
     )
 
 
@@ -185,7 +186,7 @@ class TypeCheckingGuardProjection:
         return tuple(
             reference
             for statement in module.body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
+            if isinstance(statement, ImportDefinition)
             for reference in cls._references_for_statement(statement)
         )
 

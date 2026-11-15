@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from nominal_refactor_advisor.ast_projection import name_nodes
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 from nominal_refactor_advisor.codemod_import_scopes import (
     ImportStatement,
     ModuleImportScope,
@@ -314,7 +315,7 @@ class TypeCheckingGuardImportInsertionPoint(ImportBlockInsertionPointABC):
     def leading_import_statements(self) -> tuple[ImportStatement, ...]:
         imports: list[ImportStatement] = []
         for statement in self.guard.body:
-            if not isinstance(statement, (ast.Import, ast.ImportFrom)):
+            if not isinstance(statement, ImportDefinition):
                 break
             imports.append(statement)
         return tuple(imports)
@@ -797,7 +798,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             id(statement): guard
             for guard in guard_projection.guards
             for statement in guard.body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
+            if isinstance(statement, ImportDefinition)
         }
         has_guarded_pending_additions = any(
             addition.scope.is_guarded for addition in pending_additions
@@ -814,7 +815,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             and not guard.orelse
             and guard.body
             and all(
-                isinstance(statement, (ast.Import, ast.ImportFrom))
+                isinstance(statement, ImportDefinition)
                 and not aliases_by_statement[id(statement)]
                 for statement in guard.body
             )
@@ -831,7 +832,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             and guard.body
             and id(guard) not in deletable_guards
             and all(
-                isinstance(statement, (ast.Import, ast.ImportFrom))
+                isinstance(statement, ImportDefinition)
                 and not aliases_by_statement[id(statement)]
                 for statement in guard.body
             )
@@ -1253,7 +1254,7 @@ class RequestedImportStatement:
     ) -> tuple[RequestedImportStatement, ...]:
         module = ast.parse(source, filename="<requested-import>")
         if not all(
-            isinstance(statement, (ast.Import, ast.ImportFrom))
+            isinstance(statement, ImportDefinition)
             for statement in module.body
         ):
             return ()

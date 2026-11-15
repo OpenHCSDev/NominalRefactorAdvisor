@@ -64,7 +64,7 @@ from nominal_refactor_advisor.enum_keyed_query import (
     EnumKeyedDerivedMapFacadeComponent,
     EnumKeyedDerivedMapFacadeComponentBuilder,
 )
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import FunctionDefinition, ImportDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     ImportFromModuleName,
@@ -682,7 +682,7 @@ class Rewrite:
             anchor = next(
                 statement
                 for statement in module.module.body
-                if isinstance(statement, ast.Import | ast.ImportFrom)
+                if isinstance(statement, ImportDefinition)
                 and not (
                     isinstance(statement, ast.ImportFrom)
                     and statement.module == "__future__"

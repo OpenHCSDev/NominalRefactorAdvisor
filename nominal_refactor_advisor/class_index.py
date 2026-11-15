@@ -129,7 +129,7 @@ from nominal_refactor_advisor.fail_closed_proof import FailClosedProof, ProofObl
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
 from nominal_refactor_advisor.models import LineWitness, SourceLineReference
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
-from nominal_refactor_advisor.foreign_family import AssignmentStatement, FunctionDefinition
+from nominal_refactor_advisor.foreign_family import AssignmentStatement, DefinitionStatement, FunctionDefinition, ImportDefinition
 from nominal_refactor_advisor.product_declarations import (
     CompactProductAuthorityFailure,
     CompactProductAuthorityViolation,
@@ -3661,7 +3661,7 @@ class ModuleNominalBindingAuthority:
         statement: ast.stmt,
         preceding_bindings: dict[str, CompactNominalBinding],
     ) -> dict[str, CompactNominalBinding]:
-        if isinstance(statement, ast.Import | ast.ImportFrom):
+        if isinstance(statement, ImportDefinition):
             # `import x` always binds a module; `from x import y` may bind anything.
             kind = (
                 CompactNominalBindingKind.MODULE_IMPORT
@@ -3678,7 +3678,7 @@ class ModuleNominalBindingAuthority:
                 )
                 if origin.qualified_name is not None
             }
-        if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+        if isinstance(statement, DefinitionStatement):
             return {
                 statement.name: CompactNominalBinding(
                     qualified_name=f"{self.parsed_module.module_name}.{statement.name}",
@@ -4421,9 +4421,9 @@ def _direct_binding_target_names(target: ast.AST) -> tuple[str, ...]:
 def _direct_statement_bound_names(statement: ast.stmt) -> frozenset[str]:
     """Project common direct bindings without allocating a scope visitor."""
 
-    if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+    if isinstance(statement, DefinitionStatement):
         return frozenset((statement.name,))
-    if isinstance(statement, ast.Import | ast.ImportFrom):
+    if isinstance(statement, ImportDefinition):
         return frozenset(ImportBoundNameProjection(statement).names())
     if isinstance(statement, ast.Assign):
         return frozenset(

@@ -61,7 +61,7 @@ from nominal_refactor_advisor.restated_fact_observations import (
     TypedRestatingSite,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import FunctionDefinition, ImportDefinition
 
 
 @dataclass(frozen=True)
@@ -314,7 +314,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                     (
                         index
                         for index, statement in enumerate(parsed_module.module.body)
-                        if isinstance(statement, (ast.Import, ast.ImportFrom))
+                        if isinstance(statement, ImportDefinition)
                     ),
                     default=-1,
                 ),

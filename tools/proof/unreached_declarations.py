@@ -20,7 +20,7 @@ bindings, dunders and visitor hooks, and the theory modules, which are Tristan's
 import ast, io, json, re, sys, tokenize
 from collections import defaultdict
 from pathlib import Path
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition
 
 ROOT = Path(".")
 SKIP_DIRS = {".git", ".venv", "node_modules", "__pycache__", ".mypy_cache", ".ruff_cache", "build", "dist"}
@@ -135,7 +135,7 @@ _PLAIN_BASES = {"ABC", "Generic", "object", "Protocol"}
 def _node(file, qual):
     body, node = trees[file].body, None
     for part in qual.split("."):
-        node = next((n for n in body if isinstance(n, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == part), None)
+        node = next((n for n in body if isinstance(n, DefinitionStatement) and n.name == part), None)
         if node is None:
             return None
         body = node.body

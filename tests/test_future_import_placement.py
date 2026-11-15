@@ -21,6 +21,7 @@ from nominal_refactor_advisor.codemod_imports import (
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 
 
 @pytest.mark.parametrize(
@@ -124,7 +125,7 @@ def test_ensure_import_preserves_native_future_placement(
     updated = result.final_snapshot.sources_by_file_path[module.file_path]
     tree = ast.parse(updated)
     imports = [
-        node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))
+        node for node in tree.body if isinstance(node, ImportDefinition)
     ]
     assert isinstance(imports[0], ast.ImportFrom)
     assert isinstance(imports[1], ast.Import)

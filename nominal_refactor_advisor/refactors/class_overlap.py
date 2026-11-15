@@ -96,7 +96,7 @@ from nominal_refactor_advisor.codemod_statement_source import (
     StatementDeletionSource,
     StatementSource,
 )
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     LexicalScopeBindingAuthority,
@@ -1982,7 +1982,7 @@ def _receiver_class_calls(
                 else (node.arg,)
                 if isinstance(node, ast.arg) and node is not positional[0]
                 else (node.name,)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                if isinstance(node, DefinitionStatement)
                 else tuple(node.names)
                 if isinstance(node, (ast.Global, ast.Nonlocal))
                 else ()

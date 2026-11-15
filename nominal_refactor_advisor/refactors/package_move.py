@@ -47,6 +47,7 @@ from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.models import PackageDestinationMetrics, RefactorFinding
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 from nominal_refactor_advisor.refactor_concepts import PackageMoveConcept
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
@@ -578,7 +579,7 @@ class ClusterLayers:
         )
         names: dict[str, None] = {}
         for statement in table.module.body:
-            if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            if isinstance(statement, ImportDefinition):
                 continue
             for name in table.bound_names_for_statement(statement):
                 names.setdefault(name)

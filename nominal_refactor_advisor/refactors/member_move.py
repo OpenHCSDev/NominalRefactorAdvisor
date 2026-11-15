@@ -3,7 +3,7 @@
 A method that only builds or asks another family's object belongs to that family; left where it
 is, it makes its own class import the other family, and when that family imports back, a local
 import hides the cycle (agent-comms Thread.native_environment builds a ProjectRuntimeRequest).
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition
 
 Two facts decide the move. The method's source shape (a plain method, a staticmethod or a
 classmethod) says what its call sites are spelled on before the move: a receiver of its class
@@ -850,7 +850,7 @@ def _binding(snapshot: CodemodSourceSnapshot, file_path: str, name: str) -> Modu
     for statement in module.body:
         if isinstance(statement, ast.ImportFrom) and (declaration := imported(statement)):
             return ModuleBinding(declaration, ModuleImportScope.RUNTIME)
-        if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name:
+        if isinstance(statement, DefinitionStatement) and statement.name == name:
             return ModuleBinding(
                 (str(snapshot.module_import_graph.module_name_for_file_path(file_path)), name),
                 ModuleImportScope.RUNTIME,

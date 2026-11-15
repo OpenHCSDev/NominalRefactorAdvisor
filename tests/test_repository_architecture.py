@@ -24,7 +24,7 @@ from nominal_refactor_advisor.refactors.dispatch_polymorphism import LiteralDisp
 from nominal_refactor_advisor.semantic_descent import (
     CompactSemanticModuleProjectionFamily,
 )
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import FunctionDefinition, ImportDefinition
 
 
 def test_repository_has_no_external_enum_case_recovery(
@@ -48,7 +48,7 @@ def test_repository_has_no_function_local_imports_or_ast_name_projection_duplica
         for function in ast.walk(module.module)
         if isinstance(function, FunctionDefinition)
         for nested in ast.walk(function)
-        if isinstance(nested, (ast.Import, ast.ImportFrom))
+        if isinstance(nested, ImportDefinition)
     )
     legacy_declaration_names = {
         "AttributeChainAuthority",

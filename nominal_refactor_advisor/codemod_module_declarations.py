@@ -73,7 +73,7 @@ from nominal_refactor_advisor.public_exports import (
 )
 from nominal_refactor_advisor.semantic_match import single_item
 from nominal_refactor_advisor.source_index import SourceFileDigest
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition, ImportDefinition
 
 _PYTHON_RUNTIME_GLOBAL_NAMES = frozenset(
     (
@@ -227,7 +227,7 @@ class _ModuleExportBindingAuthority:
         local_bindings = tuple(
             statement
             for statement in self.symbol_table.binding_statements(name)
-            if not isinstance(statement, ast.Import | ast.ImportFrom)
+            if not isinstance(statement, ImportDefinition)
         )
         if len(local_bindings) == 1:
             return _ModuleImportDependencyResolution.from_candidates(
@@ -350,7 +350,7 @@ class ModuleSymbolTable:
         return frozenset(
             name
             for statement in module.body
-            if not isinstance(statement, (ast.Import, ast.ImportFrom))
+            if not isinstance(statement, ImportDefinition)
             for name in cls.bound_names_for_statement(statement)
         )
 
@@ -422,7 +422,7 @@ class ModuleSymbolTable:
 
     @staticmethod
     def bound_names_for_statement(statement: ast.stmt) -> tuple[str, ...]:
-        if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef):
+        if isinstance(statement, DefinitionStatement):
             return (statement.name,)
         if isinstance(statement, ast.TypeAlias):
             return (statement.name.id,)
@@ -625,7 +625,7 @@ class ModuleSymbolTable:
         return frozenset(
             alias.name
             for statement in self.module.body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
+            if isinstance(statement, ImportDefinition)
             for alias in statement.names
             if ImportAlias.from_alias(alias).declares_reexport
         )
@@ -923,7 +923,7 @@ def stays_in_shell(statement: ast.stmt, *, first: bool) -> bool:
     imports (guarded by a bare `if` included), a script guard, its docstring and
     `__all__`. Anything else would stop running once nothing imports the shell."""
 
-    if isinstance(statement, (ast.Import, ast.ImportFrom)) or is_script_guard(statement):
+    if isinstance(statement, ImportDefinition) or is_script_guard(statement):
         return True
     if first and isinstance(statement, ast.Expr) and isinstance(
         statement.value, ast.Constant
@@ -937,7 +937,7 @@ def stays_in_shell(statement: ast.stmt, *, first: bool) -> bool:
     return (
         isinstance(statement, ast.If)
         and not statement.orelse
-        and all(isinstance(inner, (ast.Import, ast.ImportFrom)) for inner in statement.body)
+        and all(isinstance(inner, ImportDefinition) for inner in statement.body)
     )
 
 

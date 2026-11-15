@@ -30,6 +30,7 @@ from nominal_refactor_advisor.assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
 from nominal_refactor_advisor.fielded_enum import FieldedStrEnum
+from nominal_refactor_advisor.foreign_family import DefinitionStatement
 from nominal_refactor_advisor.lexical_scopes import (
     ClassNamespaceScope,
     FunctionBindingProjection as FunctionBindingProjection,
@@ -61,7 +62,7 @@ def _has_private_identifiers(nodes: tuple[ast.AST, ...]) -> bool:
         *(
             node.name
             for node in nodes
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            if isinstance(node, DefinitionStatement)
         ),
     )
     return any(name.startswith("__") and not name.endswith("__") for name in names)

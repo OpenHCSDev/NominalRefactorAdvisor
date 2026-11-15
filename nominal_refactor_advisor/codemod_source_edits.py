@@ -41,6 +41,7 @@ from typing import (
 )
 
 from nominal_refactor_advisor.case_root import Case
+from nominal_refactor_advisor.foreign_family import DefinitionStatement
 from nominal_refactor_advisor.codemod_paths import (
     SourceCreationPathAuthority as SourceCreationPathAuthority,
 )
@@ -131,7 +132,7 @@ class Include(SourceNodeDecoratorPolicy):
 
     @classmethod
     def start_line(cls, node: ast.stmt) -> int:
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(node, DefinitionStatement):
             decorator_lines = tuple(
                 decorator.lineno for decorator in node.decorator_list
             )

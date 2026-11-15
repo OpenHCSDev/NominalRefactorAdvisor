@@ -33,7 +33,7 @@ from nominal_refactor_advisor.models import (
     stable_source_location_id,
 )
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition
 
 SourceTargetIdentityValueT = TypeVar(
     "SourceTargetIdentityValueT",
@@ -884,7 +884,7 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         """Yield nested class/function statements without visiting expression trees."""
 
         for statement in statements:
-            if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if isinstance(statement, DefinitionStatement):
                 yield statement
                 continue
             for child in ast.iter_child_nodes(statement):

@@ -21,6 +21,7 @@ import pytest
 
 from tests.detector_findings import detector_findings
 from nominal_refactor_advisor.codemod_imports import ImportFromSource, ImportLayout
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.ast_projection import CallKeyword
 from metaclass_registry import DuplicateRegistryKeyError
@@ -7644,7 +7645,7 @@ def test_relocation_keeps_star_and_module_object_readers_working(
     assert {
         alias.asname or alias.name.split(".")[0]
         for statement in reader.body
-        if isinstance(statement, (ast.Import, ast.ImportFrom))
+        if isinstance(statement, ImportDefinition)
         for alias in statement.names
     } <= loaded
     simulation.apply()

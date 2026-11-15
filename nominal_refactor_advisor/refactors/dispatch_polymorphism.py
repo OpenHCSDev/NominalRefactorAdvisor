@@ -62,6 +62,7 @@ from nominal_refactor_advisor.codemod_target_selectors import (
 )
 from nominal_refactor_advisor.collection_algebra import sorted_tuple
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportBoundNameProjection,
     LexicalScopeBindingAuthority,
@@ -77,6 +78,7 @@ from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
 )
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, ImportDefinition
 from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNode,
@@ -660,7 +662,7 @@ class ClassMethodDispatchHost(DispatchPolymorphismHost):
                 names.add(child.arg)
             elif isinstance(child, ast.alias):
                 names.add(child.asname or child.name)
-            elif isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            elif isinstance(child, DefinitionStatement):
                 names.add(child.name)
         return frozenset(names)
 
@@ -788,12 +790,12 @@ class DispatchPolymorphismSource:
             name: source
             for import_source in self.support_import_sources
             for statement in ast.parse(import_source).body
-            if isinstance(statement, (ast.Import, ast.ImportFrom))
+            if isinstance(statement, ImportDefinition)
             for name, source in ImportBoundNameProjection(statement).name_sources()
         }
         conflicts: set[str] = set()
         for statement in module.body:
-            if isinstance(statement, (ast.Import, ast.ImportFrom)):
+            if isinstance(statement, ImportDefinition):
                 if any(alias.name == "*" for alias in statement.names):
                     conflicts.update(required_sources)
                     continue

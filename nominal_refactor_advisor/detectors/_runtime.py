@@ -27,7 +27,7 @@ from nominal_refactor_advisor.detectors._regex_bundle import (
 
 from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard, annotation_type_names
 from nominal_refactor_advisor.detectors._registry_candidates import ClassLineWitnessCandidate
-from nominal_refactor_advisor.foreign_family import AssignmentStatement
+from nominal_refactor_advisor.foreign_family import AssignmentStatement, DefinitionStatement
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import (
     AstDemandCollectedFamily,
@@ -2926,7 +2926,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
                 (
                     ancestor
                     for ancestor in reversed(ancestors)
-                    if isinstance(ancestor, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+                    if isinstance(ancestor, DefinitionStatement)
                 ),
                 module.module,
             )

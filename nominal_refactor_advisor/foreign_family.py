@@ -67,10 +67,12 @@ class FunctionDefinition(ForeignFamily):
     col_offset: int
 
 
-class ImportStatement(ForeignFamily):
+class ImportDefinition(ForeignFamily):
     """An import or from-import statement.
 
     Both members store ``names``; the family declares the fields its sites read.
+    Named ImportDefinition to avoid collision with the existing ImportStatement
+    type alias in codemod_import_scopes.
     """
 
     members = (ast.Import, ast.ImportFrom)

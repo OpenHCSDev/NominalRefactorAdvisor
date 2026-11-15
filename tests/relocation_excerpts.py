@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import ast
 import subprocess
+
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, ImportDefinition
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,12 +37,12 @@ class Excerpt:
             cwd=ROOT, check=True, capture_output=True, text=True,
         ).stdout
         tree = ast.parse(text)
-        imports = [node for node in tree.body if isinstance(node, ast.Import | ast.ImportFrom)]
+        imports = [node for node in tree.body if isinstance(node, ImportDefinition)]
         chosen = [
             node
             for node in tree.body
             if (
-                isinstance(node, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+                isinstance(node, DefinitionStatement)
                 and (node.name in self.names or self.contains(node))
             )
             or (isinstance(node, ast.Assign) and _assigned_names(node) & set(self.names))

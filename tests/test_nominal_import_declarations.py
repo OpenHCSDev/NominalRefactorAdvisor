@@ -24,12 +24,13 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportFromModuleName,
     ModuleImportDeclaration,
 )
+from nominal_refactor_advisor.foreign_family import ImportDefinition
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
 
 def _projection(source: str) -> ImportBoundNameProjection:
     statement = ast.parse(source).body[0]
-    assert isinstance(statement, (ast.Import, ast.ImportFrom))
+    assert isinstance(statement, ImportDefinition)
     return ImportBoundNameProjection(statement)
 
 

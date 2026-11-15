@@ -45,7 +45,7 @@ from nominal_refactor_advisor.audit.gate import (
     RosterPosition,
 )
 from nominal_refactor_advisor.audit.repository import ChangedSource
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition, ImportDefinition
 
 
 class MetadataKeys(ast.NodeVisitor):
@@ -392,7 +392,7 @@ class FunctionLocalImport(PerFileMeasure, LocatedSource):
         def generic_visit(self, node: ast.AST) -> None:
             nested = isinstance(node, FunctionDefinition)
             self.depth += nested
-            if self.depth and isinstance(node, (ast.Import, ast.ImportFrom)):
+            if self.depth and isinstance(node, ImportDefinition):
                 self.found.append(node.lineno)
             super().generic_visit(node)
             self.depth -= nested
@@ -625,9 +625,9 @@ class FamilyFlattened(PerFileModuleMeasure):
         writes = collections.Counter(item.id for item in nodes
                                      if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)))
         writes.update(item.arg for item in nodes if isinstance(item, ast.arg))
-        writes.update(item.name for item in nodes if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)))
+        writes.update(item.name for item in nodes if isinstance(item, DefinitionStatement))
         for item in nodes:
-            if isinstance(item, (ast.Import, ast.ImportFrom)):
+            if isinstance(item, ImportDefinition):
                 writes.update(alias.asname or alias.name.split('.')[0] for alias in item.names)
         strings = {}
         for statement in node.body:

@@ -88,7 +88,7 @@ from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.product_flow import BareCallTargetReference
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
 from nominal_refactor_advisor.value_expression import LexicalValueReference
-from nominal_refactor_advisor.foreign_family import FunctionDefinition
+from nominal_refactor_advisor.foreign_family import FunctionDefinition, ImportDefinition
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -544,7 +544,7 @@ class _ForwarderBody(_Forwarder):
             )
         ]
         imports = tuple(
-            statement for statement in body if isinstance(statement, (ast.Import, ast.ImportFrom))
+            statement for statement in body if isinstance(statement, ImportDefinition)
         )
         arguments = method.args
         if (
