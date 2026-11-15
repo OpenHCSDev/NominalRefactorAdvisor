@@ -61,8 +61,10 @@ from nominal_refactor_advisor.codemod import (
 from nominal_refactor_advisor.detectors._base import (
     CallableCandidateFindingRenderer,
     DetectorDeclaration,
-    DirectBuildFindingRendererCandidate,
     ModuleCollectorCandidateDetector,
+)
+from nominal_refactor_advisor.detectors._systemic_candidates import (
+    DirectBuildFindingRendererCandidate,
 )
 
 
