@@ -947,18 +947,29 @@ class CountedDispatchMetrics(DispatchFindingMetrics, ABC, metaclass=AutoRegister
 
 
 @dataclass(frozen=True)
-class BranchCountMetrics(CountedDispatchMetrics):
-    count_field_name: ClassVar[str] = "branch_site_count"
-    branch_site_count: int
-    dispatch_axis: str | None = None
-    literal_cases: tuple[str, ...] = ()
-    count_value = AliasProperty[int]("branch_site_count")
+class DispatchAxisCountMetrics(CountedDispatchMetrics):
+    """Dispatch-count metrics carrying the dispatch axis and its literal cases.
+
+    Branch and dispatch counts both declare the same axis and cases; they live
+    here once. The two fields are keyword-only so a child's required count field
+    stays positional.
+    """
+
+    dispatch_axis: str | None = field(default=None, kw_only=True)
+    literal_cases: tuple[str, ...] = field(default=(), kw_only=True)
     plan_dispatch_axis: ClassVar[AliasProperty[str | None]] = AliasProperty(
         "dispatch_axis"
     )
     plan_literal_cases: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
         "literal_cases"
     )
+
+
+@dataclass(frozen=True)
+class BranchCountMetrics(DispatchAxisCountMetrics):
+    count_field_name: ClassVar[str] = "branch_site_count"
+    branch_site_count: int
+    count_value = AliasProperty[int]("branch_site_count")
 
 
 @dataclass(frozen=True)
@@ -974,11 +985,9 @@ class ProbeCountMetrics(CountedDispatchMetrics):
 
 
 @dataclass(frozen=True)
-class DispatchCountMetrics(CountedDispatchMetrics):
+class DispatchCountMetrics(DispatchAxisCountMetrics):
     count_field_name: ClassVar[str] = "dispatch_site_count"
     dispatch_site_count: int
-    dispatch_axis: str | None = None
-    literal_cases: tuple[str, ...] = ()
 
     count_value: ClassVar[AliasProperty[int]] = AliasProperty("dispatch_site_count")
 
@@ -991,13 +1000,6 @@ class DispatchCountMetrics(CountedDispatchMetrics):
             dispatch_axis=dispatch_axis,
             literal_cases=literal_cases,
         )
-
-    plan_dispatch_axis: ClassVar[AliasProperty[str | None]] = AliasProperty(
-        "dispatch_axis"
-    )
-    plan_literal_cases: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "literal_cases"
-    )
 
 
 @dataclass(frozen=True)
