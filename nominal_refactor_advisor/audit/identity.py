@@ -214,8 +214,8 @@ class DeclaredSpellings:
                      if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
         classes = nodes_of(ast.ClassDef, tree)
         return ModuleDeclarations(
-            module_name=tuple(filter(cls.multiword, functions)),
-            file_path=tuple((node.name, tuple(base.id if isinstance(base, ast.Name) else base.attr
+            functions=tuple(filter(cls.multiword, functions)),
+            classes=tuple((node.name, tuple(base.id if isinstance(base, ast.Name) else base.attr
                                     for base in node.bases
                                     if isinstance(base, (ast.Name, ast.Attribute))))
                   for node in classes),

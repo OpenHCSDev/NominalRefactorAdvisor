@@ -78,7 +78,7 @@ class ParameterAnnotations:
         for parameter in parameters:
             match parameter:
                 case ast.arg(annotation=ast.expr() as annotation):
-                    annotated.append(AnnotatedParameter(name=parameter, kind=annotation))
+                    annotated.append(AnnotatedParameter(node=parameter, annotation=annotation))
                 case _:
                     unannotated.append(parameter)
         return cls(tuple(annotated), tuple(unannotated))

@@ -420,7 +420,7 @@ class LocatedSource(CountedSource):
         found: dict[MeasureCount, list[Site]] = {}
         for path, source in sources:
             (key,) = cls.tally([(path, 1)])
-            found.setdefault(key, []).extend(Site(module=path, owner=line) for line in cls.lines(repo, source, path))
+            found.setdefault(key, []).extend(Site(path=path, line=line) for line in cls.lines(repo, source, path))
         return found
 
 
