@@ -2775,7 +2775,7 @@ class ClassOverlapFindingRecipeSynthesizer(
                 else verdicts.sole_shared_base(first, second)
             )
             if base is None:
-                return self.rejected_evaluation("the two classes share no sole base")
+                return self.rejected_evaluation("give the two classes a sole shared base and this folds their declarations into it")
             operations = (
                 FoldSharedDeclarationsIntoBaseOperation(
                     target=source_rewrite_target(base),

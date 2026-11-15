@@ -577,7 +577,7 @@ class DescentFindingRecipeSynthesizer(
             return self.rejected_evaluation(f"{keys} requires source context")
         authority_location = finding.authority_evidence
         if authority_location is None:
-            return self.rejected_evaluation(f"{keys} finding lacks authority evidence")
+            return self.rejected_evaluation(f"supply authority evidence for the {keys} finding and this fold applies")
         try:
             authority = context.required_class_target_for_authority_evidence(
                 authority_location

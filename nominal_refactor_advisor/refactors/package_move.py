@@ -1058,7 +1058,7 @@ class PackageMoveFindingRecipeSynthesizer(
                 return self.rejected_evaluation(f"moves in {batch[0]}'s batch")
             return self.executable_evaluation(layers.batch_recipe())
         if source_path in layers.top_refusals:
-            return self.rejected_evaluation(f"refused: {layers.top_refusals[source_path]}")
+            return self.rejected_evaluation(f"resolve first: {layers.top_refusals[source_path]}")
         if layers.next_path is None:
             return self.rejected_evaluation(
                 "every flat module of the table is imported by another one that "

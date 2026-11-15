@@ -343,7 +343,7 @@ class ClassTargetFindingRecipeSynthesizer(
             qualnames=(evidence.symbol,),
         ).target_ids(context)
         if len(target_ids) != 1:
-            return self.rejected_evaluation(f"`{evidence.symbol}` is not one class")
+            return self.rejected_evaluation(f"resolve `{evidence.symbol}` to exactly one class and this fold applies")
         try:
             operation = self.operation_for(SourceRewriteTarget(target_id=target_ids[0]), context)
             operation.source_edits(context)

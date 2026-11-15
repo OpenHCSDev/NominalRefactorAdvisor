@@ -60,7 +60,7 @@ class ForwarderInlineFindingRecipeSynthesizer(
                 continue
             proved.append(operation)
         if not proved:
-            return self.rejected_evaluation("; ".join(refused))
+            return self.rejected_evaluation("resolve these and the inline applies: " + "; ".join(refused))
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-inline-forwarders",
             reason="Consumers read the held object; the forwards are deleted.",

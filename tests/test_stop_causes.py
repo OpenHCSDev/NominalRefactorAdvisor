@@ -32,9 +32,9 @@ def test_a_refused_move_names_the_refusal_on_the_stop_line(tmp_path: Path) -> No
         guard_suite=ArchitectureGuardSuite(),
     ).run()
     stop_line = report.to_markdown().splitlines()[2]
-    assert stop_line.startswith("   - Stop reason: no_proved_trajectory; refused: Alpha is a member")
+    assert stop_line.startswith("   - Stop reason: no_proved_trajectory; resolve first: Alpha is a member")
     refusal = (
-        "refused: Alpha is a member of the Plugin family, and moving it to "
+        "resolve first: Alpha is a member of the Plugin family, and moving it to "
         "pkg.messaging.alpha would stop it registering: it walks pkg's direct "
         "modules (the walk is flat), and pkg.messaging.alpha is outside it"
     )
