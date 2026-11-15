@@ -1069,6 +1069,7 @@ class LexicalCallTargetReference(CompactCallTargetReference, ABC):
         )
 
 
+@dataclass(frozen=True)
 class CurrentClassCallTargetReference(CompactCallTargetReference, ABC):
     """Call target whose terminal method is selected from the current class."""
 
@@ -1139,9 +1140,6 @@ class BareCallTargetReference(LexicalCallTargetReference):
 
 @dataclass(frozen=True)
 class CurrentClassMethodReference(CurrentClassCallTargetReference):
-    receiver_name: str
-    owner_class_qualname: str
-    method_name: str
 
     def receiver_access(
         self, caller: CompactFunctionDeclaration | None
@@ -1165,10 +1163,7 @@ class CurrentClassMethodReference(CurrentClassCallTargetReference):
 class CurrentClassMemberMethodReference(CurrentClassCallTargetReference):
     """Method reached through an annotated member of the current class."""
 
-    receiver_name: str
-    owner_class_qualname: str
     member_name: str
-    method_name: str
     uses_runtime_class_lookup: bool
 
     @property
