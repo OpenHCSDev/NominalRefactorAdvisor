@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field, fields, is_dataclass
-from functools import lru_cache
 import hashlib
 from pathlib import Path
 import sys
@@ -300,15 +299,8 @@ class _DependencyGraph:
         return tuple(dependencies)
 
 
-@lru_cache(maxsize=None)
+@ScanCache.cached
 def _dependency_graph(expansion_roots: frozenset[str]) -> _DependencyGraph:
-    """Built once per process, not once per scan. The roots are always this
-    package's own executable declarations (detectors, families, graph builders),
-    which never change while the process lives, so the walk they drive and the
-    reach memo it fills are shared across every scan instead of rebuilt cold. A
-    target package's declarations never reach this producer, so no edited source
-    is served a stale graph."""
-
     return _DependencyGraph(expansion_roots)
 
 
