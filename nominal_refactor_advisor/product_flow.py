@@ -1675,6 +1675,14 @@ class SourceFlowEvent(ABC):
 
         return tuple(operation for operation in operations if isinstance(operation.event, cls))
 
+    @classmethod
+    def required(cls, event: SourceFlowEvent, refusal: str) -> Self:
+        """`event` as one of this class's events, or `refusal` raised."""
+
+        if not isinstance(event, cls):
+            raise ValueError(refusal)
+        return event
+
 
 @dataclass(frozen=True)
 class CompactMutation(DataclassGraphNode, SourceFlowEvent, Generic[AssignmentTargetT]):

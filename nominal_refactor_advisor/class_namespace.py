@@ -281,12 +281,12 @@ class AssignmentSourceEffect(ClassNamespaceEffect):
         turn an opaque but effect-free name load into an execution effect.
         """
         source = environment.source
-        if (
-            operation.node is not self.node
-            or not isinstance(operation.event, CompactEvaluatedResult)
-            or source.event_operation(operation.event) is not operation
-        ):
-            raise ValueError("Assignment requires its original evaluated result")
+        refusal = "Assignment requires its original evaluated result"
+        if operation.node is not self.node:
+            raise ValueError(refusal)
+        result = CompactEvaluatedResult.required(operation.event, refusal)
+        if source.event_operation(result) is not operation:
+            raise ValueError(refusal)
 
     def require_closed(self, environment: NativeReferenceEnvironment) -> None:
         del environment
