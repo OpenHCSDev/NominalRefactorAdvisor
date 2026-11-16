@@ -53,7 +53,6 @@ from nominal_refactor_advisor.assignment_projection import (
 )
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
-    NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
@@ -3479,22 +3478,33 @@ def rebase_semantic_descent_graph(
     )
 
 
+class SemanticDescentGraphCachePayload(ABC):
+    """A record the graph cache unpickles from disk. Until decoded it is
+    foreign: an interrupted writer or an older schema can leave any object
+    under its fields, so the loader admits it only when it is well formed."""
+
+    @abstractmethod
+    def is_well_formed(self) -> bool:
+        """Whether every field holds the type it declares."""
+
+
 @dataclass(frozen=True)
-class SemanticDescentGraphCacheEntry:
+class SemanticDescentGraphCacheEntry(SemanticDescentGraphCachePayload):
     """Persisted exact semantic graph and its invalidation identity."""
 
     identity: SemanticDescentGraphCacheIdentity
     graph: SemanticDescentGraph
 
+    def is_well_formed(self) -> bool:
+        return isinstance(self.identity, SemanticDescentGraphCacheIdentity) and isinstance(
+            self.graph, SemanticDescentGraph
+        )
+
     def lookup(
         self,
         requested_identity: SemanticDescentGraphCacheIdentity,
     ) -> SemanticDescentGraphCacheLookup:
-        if (
-            not isinstance(self.identity, SemanticDescentGraphCacheIdentity)
-            or not isinstance(self.graph, SemanticDescentGraph)
-            or self.identity != requested_identity
-        ):
+        if self.identity != requested_identity:
             return SemanticDescentGraphCacheMiss()
         try:
             graph = rebase_semantic_descent_graph(
@@ -3508,7 +3518,7 @@ class SemanticDescentGraphCacheEntry:
 
 
 @dataclass(frozen=True)
-class SemanticDescentGraphLatestPointer:
+class SemanticDescentGraphLatestPointer(SemanticDescentGraphCachePayload):
     """Persisted lightweight pointer to the latest exact graph in one family."""
 
     family_identity: SemanticDescentGraphCacheFamilyIdentity
@@ -3524,17 +3534,17 @@ class SemanticDescentGraphLatestPointer:
             identity,
         )
 
+    def is_well_formed(self) -> bool:
+        return isinstance(
+            self.family_identity, SemanticDescentGraphCacheFamilyIdentity
+        ) and isinstance(self.identity, SemanticDescentGraphCacheIdentity)
+
     def identity_for(
         self,
         requested_family_identity: SemanticDescentGraphCacheFamilyIdentity,
     ) -> SemanticDescentGraphCacheIdentity | None:
         if (
-            not isinstance(
-                self.family_identity,
-                SemanticDescentGraphCacheFamilyIdentity,
-            )
-            or not isinstance(self.identity, SemanticDescentGraphCacheIdentity)
-            or self.family_identity != requested_family_identity
+            self.family_identity != requested_family_identity
             or SemanticDescentGraphCacheFamilyIdentity.from_identity(self.identity)
             != self.family_identity
         ):
@@ -3544,7 +3554,9 @@ class SemanticDescentGraphLatestPointer:
         )
 
 
-SemanticDescentGraphCachePayloadT = TypeVar("SemanticDescentGraphCachePayloadT")
+SemanticDescentGraphCachePayloadT = TypeVar(
+    "SemanticDescentGraphCachePayloadT", bound=SemanticDescentGraphCachePayload
+)
 
 
 @dataclass(frozen=True)
@@ -3582,7 +3594,11 @@ class SemanticDescentGraphCache(PublishesCacheFiles):
             # source instead.
             return None
         scan_deadline_checkpoint("semantic_descent_cache_validation")
-        return payload if isinstance(payload, payload_type) else None
+        return (
+            payload
+            if isinstance(payload, payload_type) and payload.is_well_formed()
+            else None
+        )
 
     def load(
         self,
