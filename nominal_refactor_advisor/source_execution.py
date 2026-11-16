@@ -426,6 +426,7 @@ class SourceDefinitionEntry(
         raise ValueError("Definition result application chain remains unproved")
 
 
+@dataclass(frozen=True, eq=False)
 class SourceDefinitionResultABC(CapturedReferenceResolution, SourceInstalledReturnABC):
     """Availability of a definition result, independent of raw object identity."""
 
@@ -822,7 +823,6 @@ class SourceDefinitionDecoratorApplicationABC(
 ):
     """Shared source/compiler topology for one original decorator application."""
 
-    creation: SourceDefinitionEntry
     index: int
 
     execution = AliasProperty["SourceExecutionABC"]("creation.execution")
