@@ -133,6 +133,8 @@ class CapturedReferenceRejection(ValueError):
 
 class CapturedReferenceResolution(NativeScalarValueABC):
 
+    is_open: ClassVar[bool] = False
+
     def require_dictionary_key(self) -> NativeDictionaryKey:
         """Scalar contents supply a key; other identities need their own evidence."""
         return self.require_native_scalar()
@@ -433,7 +435,7 @@ class CaptureOutcome(ABC):
     unproved state up unchanged.
     """
 
-    is_open: bool = field(default=False, init=False, repr=False, compare=False)
+    is_open: ClassVar[bool] = False
 
     def and_then(
         self, step: Callable[[Self], _CaptureStepT]
@@ -441,7 +443,6 @@ class CaptureOutcome(ABC):
         return step(self)
 
 
-@dataclass(frozen=True)
 class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
     """An explicit captured kind can leave particular object protocols unknown."""
 
@@ -539,7 +540,8 @@ class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
 
 @dataclass(frozen=True)
 class OpenCapturedReference(OpaqueCapturedObjectOperations, CaptureOutcome):
-    is_open: bool = field(default=True, init=False, repr=False, compare=False)
+    is_open: ClassVar[bool] = True
+    violation: CapturedReferenceViolation
     mutation: CompactMutation | None = None
     cause: ValueError | None = field(default=None, compare=False, repr=False)
 
@@ -582,9 +584,7 @@ class NativeTypePremise(NativeTypeCapture, OpaqueCapturedObjectOperations):
 
     declared_type: type
     native_type = AliasProperty[type]("declared_type")
-    violation: CapturedReferenceViolation = field(
-        default=CapturedReferenceViolation.UNPROVED_ACCESS, init=False, repr=False
-    )
+    violation = CapturedReferenceViolation.UNPROVED_ACCESS
 
     def require_closed(self) -> None:
         pass
@@ -875,7 +875,6 @@ class NamespaceEvidenceABC(AdmittedEvidenceABC):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
 class RecordedNamespace(NamespaceEvidenceABC, ABC):
     """Complete initial keys derive from the existing admitted entry record."""
 
@@ -919,9 +918,7 @@ class CreatedNamespaceDictionary(
 ):
     """An admitted fresh dictionary keeps its namespace and value identity together."""
 
-    violation: CapturedReferenceViolation = field(
-        default=CapturedReferenceViolation.UNPROVED_ACCESS, init=False, repr=False
-    )
+    violation = CapturedReferenceViolation.UNPROVED_ACCESS
 
     native_type: ClassVar[type] = dict
 
@@ -1131,7 +1128,6 @@ class InitialNativeFrame:
         )
 
 
-@dataclass(frozen=True, eq=False)
 class SourceActivationAuthorityABC(ABC):
     """One original operation at its declaration-owned activation cut.
 
@@ -1202,6 +1198,9 @@ class SourceOperationAuthority(SourceActivationAuthorityABC):
     source join, activation context and prefix remain owned here.
     """
 
+    environment: NativeReferenceEnvironment
+    operation: SourceFlowOperation
+
     activation_context = AliasProperty[CompactFlowContext]("context")
 
     activation_position = AliasProperty[CompactFlowPosition]("operation.position")
@@ -1234,9 +1233,7 @@ class CompletedSourceOperation(
     exact type nor same-object identity, hashing, member hooks or safe release.
     """
 
-    violation: CapturedReferenceViolation = field(
-        default=CapturedReferenceViolation.UNPROVED_ACCESS, init=False, repr=False
-    )
+    violation = CapturedReferenceViolation.UNPROVED_ACCESS
 
     def result(self) -> CapturedReferenceResolution:
         self.require_original_operation()
@@ -2201,7 +2198,6 @@ class InstalledValueSlotQuery(CapturedSlotQuery):
                    )
 
 
-@dataclass(frozen=True)
 class NamespaceContentsABC(ABC):
     """Complete contents of one admitted observation, not a new storage identity."""
 
@@ -2250,6 +2246,8 @@ class InitialNamespaceContents(NamespaceContentsABC):
     its execution's entry, so the parent cannot own it as a constructor field.
     """
 
+    kernel: CapturedReferenceKernel
+
     namespace: NamespaceEvidenceABC
 
     def require_closed(self) -> None:
@@ -2277,6 +2275,8 @@ class NamespaceMemberInventory(
     NamespaceContentsABC,
 ):
     """Derived complete namespace contents at one admitted execution cut."""
+
+    kernel: CapturedReferenceKernel
 
     namespace: NamespaceEvidenceABC
     prefix: AdmittedExecutionPrefixABC

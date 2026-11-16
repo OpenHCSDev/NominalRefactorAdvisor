@@ -700,7 +700,6 @@ class DataclassFieldPromotionReplacementPlan(ClassMemberPromotionReplacementPlan
         )
 
 
-@dataclass(frozen=True)
 class SourceRewriteABC(ABC):
     """A source rewrite proved on one snapshot: the edits that perform it.
 
@@ -720,6 +719,7 @@ class _ExactLeafMethodAncestorPromotionSourceRewrite(SourceRewriteABC):
     """Source edits derived from one currently proven method component."""
 
     targets: ExactLeafMethodAncestorPromotionTargets
+    rationale: str
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         return (
@@ -764,6 +764,7 @@ class NamedClassMemberAuthoritySourceRewriteABC(SourceRewriteABC):
 
     targets: ClassMemberPromotionTargets
     base_name: str
+    rationale: str
     component: ClassCohort
 
     @classmethod
@@ -1015,6 +1016,7 @@ class ModuleDeclarationRelocation(SourceRewriteABC):
     source: str
     declaration: ast.ClassDef
     insertion_line: int
+    rationale: str
 
     @classmethod
     def before_user(
@@ -1118,6 +1120,7 @@ class _ExistingDataclassFieldAuthoritySourceRewrite(SourceRewriteABC):
     """Physical rewrite descending a field cohort from its existing owner."""
 
     targets: ExistingDataclassFieldAuthorityTargets
+    rationale: str
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         return (
@@ -1250,6 +1253,7 @@ class _ParallelMirroredLeafFamilySourceRewrite(SourceRewriteABC):
     """Generic promotion plans composed for every proved role axis."""
 
     targets: ParallelMirroredLeafFamilyTargets
+    rationale: str
 
     def source_edits(self) -> tuple[PhysicalSourceEdit, ...]:
         return tuple(
@@ -1543,6 +1547,7 @@ class ClassMemberMoveSelection(SourceRewriteABC):
 
     context: ClassMemberMoveProofContext
     members: tuple[ClassMemberPromotionStatement, ...]
+    rationale: str
 
     @classmethod
     def require(

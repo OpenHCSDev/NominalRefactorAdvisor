@@ -99,7 +99,6 @@ class DeclaredNativeOperationBehavior(DeclaredOperationCompletion):
             raise ValueError("Native behavior condition belongs to another protocol")
 
 
-@dataclass(frozen=True, eq=False)
 class SourceExecutionEntryABC(NamespaceEvidenceABC):
     """Original entry namespace and frame of one source activation.
 
@@ -176,6 +175,8 @@ class SourceModuleEntryPremise(
     returned identity. The immutable condition index is normalized once from
     explicit inputs; default loaders never infer or transport these premises.
     """
+
+    source: SourceProductFlowProjection
 
     native_island: InitialNativeIsland
     bindings: InitVar[dict[NativeDictionaryKey, CapturedReferenceResolution]]
@@ -381,7 +382,6 @@ class ImportedSourceModuleEntryPremise(RegisteredSourceModuleEntryPremise):
         bindings[cls.bootstrap_binding_name()] = CapturedNativeObject(builtins.storage)
         return cls(
             source=source,
-            initial=initial,
             bindings=bindings,
             native_island=initial,
             builtins=builtins,

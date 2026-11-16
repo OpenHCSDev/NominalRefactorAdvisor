@@ -196,7 +196,6 @@ SourceDefinitionNodeT = TypeVar(
 )
 
 
-@dataclass(frozen=True, eq=False)
 class SourceNativeFrameResolver(NativeFrameOriginResolverABC[CompactFlowContext]):
     """Match native origin to the actual admitted activation at a source cut."""
 
@@ -343,6 +342,8 @@ class SourceDefinitionEntry(
     creators retain their separate open obligations.
     """
 
+    execution: SourceExecutionABC
+
     node: SourceDefinitionNodeT
 
     native_frame_context = AliasProperty[CompactFlowContext]("parent_context")
@@ -426,7 +427,6 @@ class SourceDefinitionEntry(
         raise ValueError("Definition result application chain remains unproved")
 
 
-@dataclass(frozen=True, eq=False)
 class SourceDefinitionResultABC(CapturedReferenceResolution, SourceInstalledReturnABC):
     """Availability of a definition result, independent of raw object identity."""
 
@@ -823,6 +823,8 @@ class SourceDefinitionDecoratorApplicationABC(
     ABC,
 ):
     """Shared source/compiler topology for one original decorator application."""
+
+    creation: SourceDefinitionEntry
 
     index: int
 
@@ -1653,6 +1655,8 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
 @dataclass(frozen=True, eq=False)
 class SourceReadFrame(SourceNativeFrameResolver):
     """One original read and its admitted executing frame."""
+
+    execution: SourceExecutionABC
     read: CompactFlowValue
     native_frame_context = AliasProperty[CompactFlowContext]("read.context")
 
@@ -1808,6 +1812,8 @@ class SourceCompilerOperandRead(SourceReadFrame, SourceNativePrefixStorageABC):
 class SourceEventReturnABC(SourceCompletedReturnABC):
     """One original source event and its canonical executing frame."""
 
+    execution: SourceExecutionABC
+
     source_completion_prefix = AliasProperty[AdmittedExecutionPrefixABC](
         "native_frame_prefix"
     )
@@ -1835,6 +1841,8 @@ class SourceEventReturnABC(SourceCompletedReturnABC):
 @dataclass(frozen=True, eq=False)
 class SourceBindingReturnABC(SourceEventReturnABC, SourceInstalledReturnABC):
     """A canonical source binding and its original executing frame."""
+
+    execution: SourceExecutionABC
 
     binding: CompactMutation
     event = AliasProperty[CompactMutation]("binding")
@@ -2255,6 +2263,7 @@ class SourceFunctionReturn(SourceEventReturnABC, SourceNativeExpressionABC):
 class SourceAssignmentValueABC(SourceNativeExpressionABC):
     """An assignment's RHS belongs to its original evaluated source read."""
 
+    execution: SourceExecutionABC
     binding: CompactEvaluatedAssignment
 
     @property
