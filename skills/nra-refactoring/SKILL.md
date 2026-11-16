@@ -343,20 +343,43 @@ this session went 7 → 0 by doing exactly this every time.
 doesn't, the derivation doesn't cover every site — grep the literal and
 fix the remaining copies.
 
-## Remaining finding categories by batch leverage (2026-11-16)
+## How to compound: attack certified findings first
 
-Full scan: ~1,591 findings. Work them by batch leverage, not by count:
+NRA flags each finding as `certified` (provably correct from the code's
+own declarations) or `strong_heuristic` (likely correct, needs review).
+**801 of 1,571 findings are certified.** These are mechanical kills — NRA
+already proved the restated fact. An agent doesn't need to re-triage.
+
+Filter the JSON output: `[f for f in findings if f['certification'] == 'certified']`
+
+The certified categories (all high confidence, all provably correct):
+
+| Detector | Certified | What NRA proved | The move |
+|---|---|---|---|
+| `own_type_test` | 324 | isinstance repeats a type the context already knows | Method on base, dispatch through MRO |
+| `foreign_absence_probe` | 247 | probes another object for absence it should report itself | Property on the owner |
+| `threaded_absence` | 112 | Optional threaded through calls where owner holds the value | Owner holds it, callers ask it |
+| `zero_one_tuple` | 33 | `()` or `(x,)` spells present/absent as a collection | Return `None` or value directly |
+| `constant_subtype_answer` | 21 | method returns a constant in every subclass | ClassVar on each member |
+| `named_attribute` | 20 | getattr/hasattr with literal name string | Typed attribute or Protocol |
+| `string_kind_dispatch` | 11 | string compared against known set of kind literals | Extract to frozenset constant, or family |
+| `own_state_branch_answer` | 9 | property probes own attribute for absence | Direct attribute or family member |
+| `forwarding_facade` | 8 | class holds another and forwards properties | Inherit or compose |
+| `restated_identity` | 6 | module or family member identity spelled as string | Use the declaration |
+| `redundant_type_check` | 2 | isinstance repeats declared field annotation | Delete the check (done: 15→2) |
+
+The strong_heuristic categories (likely correct, need per-site review):
 
 | Detector | Count | Leverage | The move |
 |---|---|---|---|
-| `phantom_family` | 411 | HIGH — one ABC kills N findings | Declare the ABC, make N classes inherit it |
-| `own_type_test` | 336 | HIGH per file — one method on base kills N isinstance | Method on base, dispatch through MRO |
-| `foreign_absence_probe` | 247 | MEDIUM — owner should report its state | Property on the owner |
-| `threaded_absence` | 112 | MEDIUM — threaded Optional through calls | Owner holds the value, callers ask it |
-| `long_condition_factoring_lead` | 107 | MEDIUM — boolean chains → rule families | Named rules (IMPL-14) |
-| `missing_mixin` | ~31 | DIMINISHING — remaining are builder→product pairs, NamedTuple barriers, or 2-field domain overlap | Parent extraction (done for siblings); NamedTuple→dataclass needed for some |
+| `phantom_family` | 412 | HIGH — one ABC kills N findings; some are name coincidence | Declare the ABC, make N classes inherit it |
+| `long_condition_factoring_lead` | 106 | MEDIUM — boolean chains → rule families | Named rules (IMPL-14) |
 | `unused_method_parameter` | 65 | LOW — each is one deletion | Delete the param |
-| `loop_relookup` | 62→~50 | LOW — each is one dict | Add @cached_property dict |
+| `loop_relookup` | 62 | LOW — AST detector, not runtime (runtime fixes don't move count) | Add @cached_property dict |
+| `callback_threading` | 40 | LOW — biggest is `rationale` (64 signatures), a redesign | Owner holds the value |
+| `missing_mixin` | ~30 | DIMINISHING — builder→product pairs, NamedTuple barriers | Parent extraction; NamedTuple→dataclass for some |
+| `duplicate_class` | 18 | MEDIUM — per-site design decision | Share via inheritance or merge |
+| `repeated_module_expression_lead` | 13 | LOW — literal tuples (done for AST types) | Extract to constant |
 
 ### loop_relookup: the mechanical pattern
 
@@ -379,9 +402,26 @@ The class must be frozen for `@cached_property`. Always check.
 `unresolved_authority_claim` (1→0), `missing_mixin` sibling pairs
 (38→31), `loop_relookup` in 4 hotspot files (≥12 sites fixed: finding_counts,
 _systemic, class_identity_observations, class_body, class_overlap,
-product_flow_authority). The `phantom_family` and `own_type_test`
-categories are the next high-leverage frontier — each ABC or base method
-eliminates multiple findings per class.
+product_flow_authority). `redundant_type_check` 15→2 (boundary decoders
+kept). `repeated_module_expression_lead` AST tuple constants extracted
+(7 consumer files). Next high-leverage frontier: the 324 certified
+`own_type_test` findings — each is a provably redundant isinstance.
+
+### Making each scan pay off for the next
+
+1. **Save the JSON.** `--json 2>/dev/null > findings.json`. The next agent
+   doesn't rescan — it reads the file and filters.
+2. **Filter by certification first.** `[f for f in findings if f['certification'] == 'certified']`
+   gives 801 provably correct findings. Do those before touching heuristics.
+3. **Kill a whole detector if you can.** `redundant_type_check` went 15→2
+   in one batch. The remaining 2 are irreducible (boundary decoders).
+   That detector is now noise-free — every future finding from it is real.
+4. **Update this skill after each batch.** Document the pattern, the
+   mechanical recipe, and what's irreducible. The next agent reads this
+   instead of re-discovering it.
+5. **Note when findings don't move.** `loop_relookup` stayed at 62 after
+   15 runtime fixes because the AST detector measures syntax, not runtime.
+   The perf win is real; the count is wrong. Say so here, not silently.
 
 ## Known NRA tool issues (2026-11-16, updated)
 
