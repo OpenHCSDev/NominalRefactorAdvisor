@@ -364,7 +364,6 @@ class TypedLiteralObservationSpec(
 class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     _registry_root = True
     _registry_skip = True
-    literal_kind: ClassVar[LiteralKind]
 
     def collect(self, parsed_module: ParsedModule) -> list[LiteralDispatchObservation]:
         return list(
@@ -377,7 +376,6 @@ class LiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
 class InlineLiteralDispatchObservationSpec(TypedLiteralObservationSpec, ABC):
     _registry_root = True
     _registry_skip = True
-    literal_kind: ClassVar[LiteralKind]
 
     def collect(self, parsed_module: ParsedModule) -> list[LiteralDispatchObservation]:
         return list(
