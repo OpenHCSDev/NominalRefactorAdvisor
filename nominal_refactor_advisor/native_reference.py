@@ -110,7 +110,7 @@ class NativeReferenceEnvironment(ABC):
         rebound later. This query does not prove a later namespace slot stable.
         """
         self.source_operation(context, binding)
-        if not isinstance(binding.target, CompactDefinitionTarget):
+        if not binding.target.binds_definition:
             raise ValueError("Definition result requires an actual definition binding")
         return self.kernel._definition_binding_resolution(
             context, binding.target.lexical_reference, binding, frozenset()

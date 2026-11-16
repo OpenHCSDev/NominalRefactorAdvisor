@@ -141,7 +141,6 @@ from nominal_refactor_advisor.product_flow import (
     CompactBindingValueResolverABC,
     CompactBindingVisit,
     CompactCallableReferenceUse,
-    CompactClassDeclaration,
     CompactCompilerOperandUse,
     CompactDefinitionResolverABC,
     CompactDefinitionSource,
@@ -3779,8 +3778,7 @@ class SourceExecutionABC(
         entries = []
         for event in context.flow.mutations:
             if not (
-                isinstance(event.target, CompactDefinitionTarget)
-                and isinstance(event.target.owner, CompactClassDeclaration)
+                event.target.declares_class
                 and (position is None or event.position.dominates(position))
             ):
                 continue

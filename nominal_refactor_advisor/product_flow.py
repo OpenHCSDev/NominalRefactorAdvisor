@@ -1453,6 +1453,15 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
 class CompactAssignmentTargetABC(DataclassGraphNode):
     """An evaluated write destination, distinct from the later write event."""
 
+    binds_definition: ClassVar[bool] = False
+    """Whether the write binds a `def` or `class` statement's result."""
+
+    @property
+    def declares_class(self) -> bool:
+        """Whether the write binds a `class` statement's result."""
+
+        return False
+
     @property
     def imported_origin(self) -> ImportedNameOrigin | None:
         """Only an import binds a name to an imported origin."""
@@ -1545,6 +1554,8 @@ class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
     header_position: CompactFlowPosition
 
     bound_name = AliasProperty[str]("owner.bound_name")
+    binds_definition = True
+    declares_class = AliasProperty[bool]("owner.declares_class")
 
     @property
     def header_uses(self) -> tuple[CompactValueUse, ...]:
@@ -1720,9 +1731,7 @@ class CompactMutation(DataclassGraphNode, SourceFlowEvent, Generic[AssignmentTar
 
     def __post_init__(self) -> None:
         self.kind.validate_import_origin(self.imported_origin)
-        if self.kind.is_definition_binding != isinstance(
-            self.target, CompactDefinitionTarget
-        ):
+        if self.kind.is_definition_binding != self.target.binds_definition:
             raise TypeError(
                 "Definition mutations require a definition target exclusively"
             )
@@ -2802,6 +2811,8 @@ class CompactFlowOwner(ABC):
 class CompactDefinitionFlowOwner(CompactFlowOwner, ABC):
     """One exact source body shared by its binding event and separate flow."""
 
+    declares_class: ClassVar[bool] = False
+
     @property
     @abstractmethod
     def source_span(self) -> SourceByteSpan:
@@ -2831,6 +2842,7 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
     capture: NativeClassCapture
 
     kind = ClassBody
+    declares_class = True
 
     source_span = AliasProperty[SourceByteSpan]("capture.source_span")
 
@@ -3867,9 +3879,7 @@ class SourceProductFlowProjection:
     def definition_operation(self, node: ast.AST) -> SourceFlowOperation:
         """Join an actual source definition to its canonical creation binding."""
         operation = self.mutation_operation(node)
-        if not isinstance(
-            cast(CompactMutation, operation.event).target, CompactDefinitionTarget
-        ):
+        if not cast(CompactMutation, operation.event).target.binds_definition:
             raise ValueError("Source definition requires an actual definition binding")
         return operation
 
