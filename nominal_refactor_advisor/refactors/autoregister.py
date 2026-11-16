@@ -95,6 +95,7 @@ from nominal_refactor_advisor.manual_registry import (
     RegistryAssignment,
     SourceClassKeyEntry,
 )
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.models import (
     MappingMetrics,
     RefactorFinding,
@@ -1334,8 +1335,10 @@ class ManualClassRegistrationFindingRecipeSynthesizer(
             )
         try:
             parts = self.recipe_parts_for_finding(finding, context)
-        except ValueError as refusal:
-            return self.rejected_evaluation(f"manual-registry conversion: {refusal}")
+        except ValueError as stopped:
+            return self.rejected_evaluation(
+                f"manual-registry conversion: {stopped}", NeedsInput.needs_of(stopped)
+            )
         return self.executable_evaluation(self.recipe_from_parts(finding, parts))
 
     def recipe_parts_for_finding(
@@ -1496,11 +1499,12 @@ class RegistrationSemanticMirrorRecipeStrategy(
         )
         return RejectedRecipeEvaluation(
             reason=(
-                "no class-family recipe declaration proved an executable exact "
-                "derivation"
+                "a class-family recipe needs a proof of an executable exact "
+                "derivation; no declaration has one yet"
             ),
             evaluation_declaration_type=type(self),
             obstacles=obstacles,
+            needs=(NeededInput.PROOF,),
         )
 
 

@@ -78,14 +78,14 @@ should answer once. m consumers × n cases of restated decisions become m + n.
    `CONCEPT` is the concept key (class name minus `Concept`, snake case: e.g.
    `foreign_family_routing`, `foreign_adapter_bind_chain`). The fold must prove
    each site (e.g. AST-equality of each arm's expression to the adapter
-   property's body) and refuse anything it cannot prove; refusals are the next
-   widening, not a reason to hand-edit.
+   property's body) and name the input any site it cannot prove still needs;
+   each such site is the next widening, not a reason to hand-edit.
 4. **CI is the behaviour proof.** Commit the applied diff alone, with the command,
    wall time and stop reason in the message. Re-run the census: the group must
    shrink.
 5. **Every refactor also improves NRA.** A script you needed becomes an NRA
-   command, a dodge an agent used becomes a detector, a refusal that blocked a
-   real site becomes a proved widening, two near-copies you touched collapse
+   command, a dodge an agent used becomes a detector, a site that needed more
+   input becomes a proved widening, two near-copies you touched collapse
    into a shared base. A refactor that leaves the tool unchanged left the next
    one just as expensive.
 
@@ -97,9 +97,14 @@ report is a claim.
 - **Fill the plan, simulate once, apply once.** Compose every plan with
   `--codemod-compose-sequence A.json B.json …` and simulate the whole sequence
   from the branch head. A simulate per slice is the incremental loop. Inside
-  that one simulate, a refusal is the only evidence that an operation is
-  missing.
-- **`no_evaluator` does not mean no operation.** Before calling something a
+  that one simulate, a record whose `needs` names `operation` is the only
+  evidence that an operation is missing. Every synthesis record carries
+  `needs`, typed by who supplies it: `owner_pick` (a picker, in
+  `--codemod-owner-picks`), `source_change` (the target code, changed before
+  the move), `proof` and `operation` (NRA itself), `untyped` (a check whose
+  reason is still free text: type it). Group one scan by `needs` and supply
+  each kind in one pass.
+- **`needs_operation` does not mean no operation.** Before calling something a
   gap, grep the registered operations and the ones nothing constructs.
   `CreateMixinOperation` + `ComposeExistingClassOperation` was the
   extract-new-base that people kept asking for, and
@@ -356,8 +361,8 @@ Report separately:
 
 `is_clean` means the configured operation preflights and guards passed. Inspect
 which guards were present; an empty suite does not certify global architecture.
-For a refused operation, inspect the complete causal chain. A class-creation
-refusal names the original class and line; that class may precede the selected
+For an operation whose preflight stops, inspect the complete causal chain. A
+class-creation stop names the original class and line; that class may precede the selected
 target in its module. Do not report the target itself as having an unproved hook
 when the named earlier declaration is what opened its binding evidence.
 Valid Python, resolved callees or signature binding do not prove an authored

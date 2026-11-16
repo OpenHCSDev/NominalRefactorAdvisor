@@ -976,6 +976,30 @@ def test_a_test_on_a_value_annotated_object_is_the_decoder_not_slop(tmp_path: Pa
     assert _lines(findings) == [12]
 
 
+def test_a_comparison_methods_operand_is_the_decoder_annotated_or_not(tmp_path: Path):
+    # The data model hands `__eq__` any object; `merge` receives what its
+    # callers pass, so its test still restates the family.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle\n"
+                "class Ring(Circle):\n"
+                "    def __eq__(self, other):\n"
+                "        if not isinstance(other, Circle):\n"
+                "            return NotImplemented\n"
+                "        return True\n"
+                "    def merge(self, other):\n"
+                "        return isinstance(other, Circle)\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [8]
+
+
 def test_identity_on_a_sentinel_class_is_not_a_type_test(tmp_path: Path):
     # `class MISSING: pass` extends no scanned class and no scanned class
     # extends it: `value is MISSING` asks which object the value is, not which

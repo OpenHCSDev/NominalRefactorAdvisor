@@ -52,6 +52,7 @@ from nominal_refactor_advisor.receipts import (
     ScoredByReceipts,
 )
 from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.needed_input import NeededInput
 
 
 class OwnerReceiptKind(ReceiptKind):
@@ -66,20 +67,20 @@ class OwnerReceiptKind(ReceiptKind):
     ALSO_RESTATED_BY = "also_restated_by", 0.5, False
     NEW_CLASS = "new_class", -0.5, False
     BRINGS_DECLARATIONS = "brings_declarations", -0.25, False
-    CYCLE_CREATED = "cycle_created", 0.0, True
-    CONSTRUCTION_CHANGED = "construction_changed", 0.0, True
-    FIELD_ORDER_CHANGED = "field_order_changed", 0.0, True
+    CYCLE_CREATED = "cycle_created", 0.0, True, NeededInput.SOURCE_CHANGE
+    CONSTRUCTION_CHANGED = "construction_changed", 0.0, True, NeededInput.SOURCE_CHANGE
+    FIELD_ORDER_CHANGED = "field_order_changed", 0.0, True, NeededInput.SOURCE_CHANGE
     KEYWORD_ONLY_COMPOSITION = "keyword_only_composition", -0.25, False
-    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
-    BASE_SERVES_OTHERS = "base_serves_others", 0.0, True
-    OWNER_NOT_CONTAINED = "owner_not_contained", 0.0, True
-    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
-    CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True
-    COPIED_FROM = "copied_from", 0.0, True
+    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True, NeededInput.SOURCE_CHANGE
+    BASE_SERVES_OTHERS = "base_serves_others", 0.0, True, NeededInput.OWNER_PICK
+    OWNER_NOT_CONTAINED = "owner_not_contained", 0.0, True, NeededInput.OWNER_PICK
+    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True, NeededInput.SOURCE_CHANGE
+    CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True, NeededInput.SOURCE_CHANGE
+    COPIED_FROM = "copied_from", 0.0, True, NeededInput.OPERATION
     COPIES_ONE_VALUE = "copies_one_value", 1.0, False
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
-    NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True
-    OWNED_BY_EXISTING_CLASSES = "owned_by_existing_classes", 0.0, True
+    NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True, NeededInput.PROOF
+    OWNED_BY_EXISTING_CLASSES = "owned_by_existing_classes", 0.0, True, NeededInput.OWNER_PICK
     PLAYS_SAME_ROLE = "plays_same_role", 1.0, False
 
 
@@ -130,7 +131,7 @@ class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
         """Why ``pick`` cannot choose this candidate; nothing when it can."""
 
         if not self.permitted and not self.keyword_cure:
-            yield f"`{pick.owner}` is refused: " + "; ".join(
+            yield f"`{pick.owner}` needs: " + "; ".join(
                 receipt.detail for receipt in self.refusals
             )
         if pick.because not in {receipt.kind.value for receipt in self.receipts}:
@@ -346,7 +347,7 @@ class DeclinedPick(OwnerPickResolution):
 
 @dataclass(frozen=True)
 class RejectedPick(OwnerPickResolution):
-    """A pick naming no candidate, a refused one, or one it cannot cite."""
+    """A pick naming no candidate, one that needs more input, or one it cannot cite."""
 
     reason: str
 

@@ -42,6 +42,7 @@ from nominal_refactor_advisor.codemod_semantics import (
     CodemodSourceDependencyScope,
 )
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
+from nominal_refactor_advisor.needed_input import NeedsInput
 from nominal_refactor_advisor.semantic_descent import AuthorityClaim
 
 SourceReproofValueT = TypeVar("SourceReproofValueT")
@@ -59,7 +60,7 @@ class ReproofCauseDiagnostic(CodemodPayloadRecord):
 
 @dataclass(frozen=True)
 class SourceReproofDiagnostic(SourceRewriteTargetPreflightDetail):
-    """Source target and ordered refusal evidence, without runtime object graphs."""
+    """Source target and the ordered evidence that stopped it, without runtime object graphs."""
 
     causes: tuple[ReproofCauseDiagnostic, ...] = codemod_payload_field(
         PayloadRecordArrayValueCodec(ReproofCauseDiagnostic)
@@ -156,6 +157,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
                 status=CodemodPreflightStatus.FAILED,
                 message=str(error),
                 detail=SourceReproofDiagnostic.from_error(self.target, error),
+                needs=NeedsInput.needs_of(error),
             )
         )
 

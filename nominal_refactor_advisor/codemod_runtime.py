@@ -142,6 +142,7 @@ from nominal_refactor_advisor.json_reports import (
     json_report_property,
 )
 from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 from nominal_refactor_advisor.semantic_algebra import (
     ConfusabilityGraph,
@@ -2317,6 +2318,12 @@ class FindingRecipeSynthesisRecord(DataclassJsonReport):
         return self.evaluation.status
 
     @json_report_property()
+    def needs(self) -> tuple[NeededInput, ...]:
+        """The kinds of input this finding's fix needs before NRA can apply it."""
+
+        return self.evaluation.needs
+
+    @json_report_property()
     def finding_id(self) -> str:
         return self.finding.stable_id
 
@@ -2479,13 +2486,20 @@ class FindingRecipeSynthesisReport(DataclassJsonReport):
     def candidate_count(self) -> int:
         return sum(1 for record in self.records if record.status.candidate)
 
-    @json_report_property()
+    @json_report_property(field_name="needs_input_count")
     def rejected_count(self) -> int:
         return sum(1 for record in self.records if record.status.rejected)
 
-    @json_report_property()
+    @json_report_property(field_name="needs_nra_count")
     def unsupported_count(self) -> int:
         return sum(1 for record in self.records if record.status.unsupported)
+
+    @json_report_property()
+    def needs_counts(self) -> dict[NeededInput, int]:
+        """How many records need each kind of input: what one pass per kind supplies."""
+
+        needs = Counter(need for record in self.records for need in record.needs)
+        return {need: needs[need] for need in NeededInput if needs[need]}
 
     @property
     def requires_trajectory_proof(self) -> bool:
@@ -2565,6 +2579,12 @@ class FindingRecipeEvaluation(ABC):
     planning_horizon = ConstantProperty[FindingRecipePlanningHorizon](
         FindingRecipePlanningHorizon.NONE
     )
+
+    @property
+    def needs(self) -> tuple[NeededInput, ...]:
+        """The kinds of input this outcome needs before NRA can apply a fix."""
+
+        return self.status.default_needs
 
     @property
     def required_recipe(self) -> RefactorRecipe:
@@ -2653,6 +2673,7 @@ class RejectedRecipeEvaluation(DeclaredRecipeEvaluation):
     status = FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     reason: str
     obstacles: tuple[FindingRecipeProofObstacle, ...] = ()
+    needs: tuple[NeededInput, ...] = (NeededInput.UNTYPED,)
 
     @property
     def rejection_reason(self) -> str:
@@ -2701,6 +2722,15 @@ class RejectedRecipeProposalEvaluation(DeclaredRecipeEvaluation):
             report.message
             for report in self.preflight.reports
             if report.status.is_failed
+        )
+
+    @property
+    def needs(self) -> tuple[NeededInput, ...]:
+        return NeededInput.distinct(
+            need
+            for report in self.preflight.reports
+            if report.status.is_failed
+            for need in report.needs
         )
 
 
@@ -3145,11 +3175,30 @@ class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
         del finding, context
         return type(self)
 
-    def rejected_evaluation(self, reason: str) -> RejectedRecipeEvaluation:
+    def rejected_evaluation(
+        self,
+        reason: str,
+        needs: tuple[NeededInput, ...] = (NeededInput.UNTYPED,),
+    ) -> RejectedRecipeEvaluation:
+        """The outcome of a check that stops this fix, with the input it needs."""
+
         return RejectedRecipeEvaluation(
             reason=reason,
             evaluation_declaration_type=type(self),
+            needs=NeededInput.distinct(needs),
         )
+
+    def needs_input_evaluation(self, missing: NeedsInput) -> RejectedRecipeEvaluation:
+        """The outcome of a typed check: its message and the kind it names."""
+
+        return self.rejected_evaluation(str(missing), missing.needs)
+
+    def preflight_evaluation(
+        self, error: CodemodOperationPreflightError
+    ) -> RejectedRecipeEvaluation:
+        """The outcome of an operation whose preflight stopped, with its needs."""
+
+        return self.rejected_evaluation(error.report.message, error.report.needs)
 
     def covered_evaluation(self, covering: str) -> CoveredRecipeEvaluation:
         return CoveredRecipeEvaluation(

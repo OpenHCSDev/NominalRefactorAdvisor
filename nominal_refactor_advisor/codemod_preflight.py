@@ -9,16 +9,19 @@ from nominal_refactor_advisor.json_reports import (
     json_report_field,
     json_report_property,
 )
+from nominal_refactor_advisor.needed_input import NeededInput
 
 
 @dataclass(frozen=True)
 class CodemodOperationPreflightReport(DataclassJsonReport):
-    """Machine-readable failed preflight for one codemod operation."""
+    """Machine-readable failed preflight for one codemod operation, with the
+    kinds of input it needs to go ahead."""
 
     operation: str
     status: CodemodPreflightStatus
     message: str
     detail: JsonReport = json_report_field(field_name="details")
+    needs: tuple[NeededInput, ...] = (NeededInput.UNTYPED,)
 
 
 class CodemodOperationPreflightError(ValueError):
@@ -58,7 +61,7 @@ class CodemodPlanPreflightError(CodemodOperationPreflightError):
 
     @property
     def presented(self) -> JsonReport:
-        """The whole plan's preflight: every recipe's report, refused or not."""
+        """The whole plan's preflight: every recipe's report, stopped or not."""
 
         return self.plan
 
