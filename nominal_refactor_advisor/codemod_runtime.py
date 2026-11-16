@@ -3196,17 +3196,12 @@ class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
             needs=NeededInput.distinct(needs),
         )
 
-    def needs_input_evaluation(self, missing: NeedsInput) -> RejectedRecipeEvaluation:
-        """The outcome of a typed check: its message and the kind it names."""
+    def stopped_evaluation(self, error: BaseException) -> RejectedRecipeEvaluation:
+        """The outcome of a check that raised: its message, and the kinds every
+        `NeedsInput` along its cause chain names."""
 
-        return self.rejected_evaluation(str(missing), missing.needs)
+        return self.rejected_evaluation(str(error), NeedsInput.needs_of(error))
 
-    def preflight_evaluation(
-        self, error: CodemodOperationPreflightError
-    ) -> RejectedRecipeEvaluation:
-        """The outcome of an operation whose preflight stopped, with its needs."""
-
-        return self.rejected_evaluation(error.report.message, error.report.needs)
 
     def covered_evaluation(self, covering: str) -> CoveredRecipeEvaluation:
         return CoveredRecipeEvaluation(

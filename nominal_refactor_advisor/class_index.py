@@ -44,6 +44,7 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
@@ -2772,7 +2773,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
 
         mro = self.mro_authority.resolve(symbol).mro_type
         if mro is None:
-            raise ValueError(f"`{symbol}` has no closed runtime MRO")
+            raise NeedsInput(f"`{symbol}` has no closed runtime MRO: NRA needs a proof of its order", NeededInput.PROOF)
         for declaration in mro.declarations:
             if "__new__" in declaration.member_binding_names:
                 raise ValueError(

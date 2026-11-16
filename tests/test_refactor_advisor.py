@@ -27926,7 +27926,7 @@ def test_carrier_replacement_refuses_an_abstract_carrier_with_members(tmp_path: 
         field_projections=(CarrierFieldProjection("count", "count"),),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    with pytest.raises(CodemodOperationPreflightError, match="cannot be decoded back"):
+    with pytest.raises(CodemodOperationPreflightError, match="decodes back to the member it held"):
         operation.source_edits(snapshot)
 
 

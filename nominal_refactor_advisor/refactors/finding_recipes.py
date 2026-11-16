@@ -481,7 +481,7 @@ class ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer(
                 authority_location
             )
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         operation = PromoteExactLeafMethodsToAncestorOperation(
             target=SourceRewriteTarget(target_id=authority_target.target_id),
             rationale="",
@@ -527,7 +527,7 @@ class ParallelMirroredLeafFamilyFindingRecipeSynthesizer(
                 authority_location
             )
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-factor-parallel-leaf-family",
@@ -586,7 +586,7 @@ class DescentFindingRecipeSynthesizer(
                 self.target_evidence(finding, authority_location)
             )
         except (CodemodOperationPreflightError, ValueError) as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         refusals: list[str] = []
         for descent_type in self.descent_types:
             operation = descent_type(

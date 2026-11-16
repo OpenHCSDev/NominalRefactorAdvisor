@@ -649,7 +649,11 @@ def require_static_c3(
                     f"`{current.qualname}` has base `{qualified_name}` outside the index"
                 )
         if set(current.class_keyword_names) - {"metaclass"}:
-            raise ValueError(f"`{current.qualname}` passes class creation keywords")
+            raise NeedsInput(
+                f"`{current.qualname}` passes class creation keywords: NRA needs a proof "
+                "that the new base leaves what its class creation sees unchanged",
+                NeededInput.PROOF,
+            )
         if any(
             declaration.name in CLASS_METHOD_OWNERSHIP_HOOK_NAMES
             for declaration in current.body_declarations
@@ -963,8 +967,9 @@ class ClassComposition:
         if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
             restating
         ):
-            raise ValueError(
-                f"`{owner.qualname}` and `{restating.qualname}` differ as dataclasses"
+            raise NeedsInput(
+                f"`{owner.qualname}` and `{restating.qualname}` differ as dataclasses",
+                NeededInput.SOURCE_CHANGE,
             )
         header = ClassHeaderSpanSourceAuthority(
             restating.node, self.snapshot.sources_by_file_path[restating.file_path]
@@ -1147,8 +1152,9 @@ class CoveringComposition:
                 if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
                     composer
                 ):
-                    raise ValueError(
-                        f"`{owner.qualname}` and `{composer.qualname}` differ as dataclasses"
+                    raise NeedsInput(
+                        f"`{owner.qualname}` and `{composer.qualname}` differ as dataclasses",
+                        NeededInput.SOURCE_CHANGE,
                     )
                 if owner.file_path == composer.file_path and (
                     owner.node.lineno > composer.node.lineno
@@ -2348,8 +2354,9 @@ class OwnerExtension:
         if dunders:
             raise ValueError(f"Adding {dunders} could shadow a native declaration")
         if owner.dataclass_options_key != anchor.dataclass_options_key:
-            raise ValueError(
-                f"`{owner.qualname}` and `{anchor.qualname}` differ as dataclasses"
+            raise NeedsInput(
+                f"`{owner.qualname}` and `{anchor.qualname}` differ as dataclasses",
+                NeededInput.SOURCE_CHANGE,
             )
         restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
         movable_members(snapshot, anchor, owner, restated.statements)
@@ -2611,7 +2618,21 @@ class ClassOverlapFindingRecipeSynthesizer(
 
         pick = metrics.owner_pick
         if pick is None:
-            raise NeedsInput("an extract-mixin move needs an owner pick (--codemod-owner-picks)", NeededInput.OWNER_PICK)
+            if not any(
+                owner.permitted or owner.keyword_cure for owner in metrics.owner_candidates
+            ):
+                blocking = tuple(
+                    receipt for owner in metrics.owner_candidates for receipt in owner.refusals
+                )
+                raise NeedsInput(
+                    "every owner candidate needs: "
+                    + "; ".join(dict.fromkeys(receipt.detail for receipt in blocking)),
+                    *(receipt.kind.needs for receipt in blocking),
+                )
+            raise NeedsInput(
+                "an extract-mixin move needs an owner pick (--codemod-owner-picks)",
+                NeededInput.OWNER_PICK,
+            )
         owner = pick.candidate
         if owner.keyword_cure:
             return ClassOverlapFindingRecipeSynthesizer.keywordings(owner.keyword_cure, verdicts)
@@ -2749,7 +2770,7 @@ class ClassOverlapFindingRecipeSynthesizer(
         try:
             operations = self.keywordings(symbols, verdicts)
         except NeedsInput as missing:
-            return self.needs_input_evaluation(missing)
+            return self.stopped_evaluation(missing)
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-keywordize",
             reason="Build the classes this move reorders by keyword, so the move can prove.",
@@ -2758,7 +2779,7 @@ class ClassOverlapFindingRecipeSynthesizer(
             try:
                 operation.source_edits(context)
             except CodemodOperationPreflightError as error:
-                return self.preflight_evaluation(error)
+                return self.stopped_evaluation(error)
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)
 
@@ -2820,7 +2841,7 @@ class ClassOverlapFindingRecipeSynthesizer(
             try:
                 operations = self.picked_operations(finding, metrics, verdicts)
             except NeedsInput as missing:
-                return self.needs_input_evaluation(missing)
+                return self.stopped_evaluation(missing)
         else:
             return self.rejected_evaluation(
                 f"`{metrics.move.value}` changes a class identity; it stays a finding"
@@ -2832,6 +2853,6 @@ class ClassOverlapFindingRecipeSynthesizer(
             try:
                 operation.source_edits(context)
             except CodemodOperationPreflightError as error:
-                return self.preflight_evaluation(error)
+                return self.stopped_evaluation(error)
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)

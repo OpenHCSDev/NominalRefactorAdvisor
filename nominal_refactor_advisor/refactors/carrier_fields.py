@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
@@ -289,9 +290,10 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
         carrier = compact.classes_by_symbol.get(binding.symbol)
         members = compact.descendant_symbols(binding.symbol)
         if carrier is not None and carrier.is_abstract and members:
-            raise ValueError(
-                f"`{annotation.id}` is abstract with members {sorted(members)!r}: a record "
-                "holding it cannot be decoded back to the member it held"
+            raise NeedsInput(
+                f"`{annotation.id}` is abstract with members {sorted(members)!r}: NRA needs "
+                "a proof that a record holding it decodes back to the member it held",
+                NeededInput.PROOF,
             )
 
     def construction_replacements(
@@ -302,13 +304,13 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
 
         where = f"{file_path}:{call.lineno}"
         if call.args:
-            raise ValueError(f"{where} constructs the class by position; keyword it first")
+            raise NeedsInput(f"{where} constructs the class by position; keyword it first", NeededInput.SOURCE_CHANGE)
         projected = tuple(keyword for keyword in call.keywords if keyword.arg in self.field_projection_map)
         if len(projected) != len(self.field_projection_map):
-            raise ValueError(f"{where} does not pass every projected field")
+            raise NeedsInput(f"{where} does not pass every projected field", NeededInput.SOURCE_CHANGE)
         carrier = self.projected_keyword_carrier_source(projected, geometry)
         if carrier is None:
-            raise ValueError(f"{where} does not read every projected field off one carrier value")
+            raise NeedsInput(f"{where} does not read every projected field off one carrier value", NeededInput.SOURCE_CHANGE)
         lines = [keyword.value.lineno for keyword in call.keywords]
         if len(set(lines)) == len(lines) and call.lineno not in lines:
             first, *rest = projected
