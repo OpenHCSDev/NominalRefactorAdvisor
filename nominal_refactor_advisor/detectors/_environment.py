@@ -32,6 +32,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.refactors.finding_recipes import (
     EnvironmentBooleanAuthorityDriftFindingRecipeEvaluator,
 )
+from nominal_refactor_advisor.refactors.member_move import SourceShape
 from nominal_refactor_advisor.models import (
     EnvironmentBooleanDriftMetrics,
     EnvironmentReadKind,
@@ -969,7 +970,7 @@ def _wrapper_candidate(
 
 @dataclass(frozen=True)
 class _EnvironmentBooleanModuleProjection:
-    _INSTANCE_PARAMETER_NAMES = frozenset(("cls", "self"))
+    _INSTANCE_PARAMETER_NAMES = frozenset(SourceShape._leading_names)
     _ENVIRONMENT_KEY_PARAMETER_TOKENS = frozenset(
         ("env", "environment", "flag", "key", "name", "variable")
     )

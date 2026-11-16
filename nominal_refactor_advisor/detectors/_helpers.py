@@ -117,7 +117,9 @@ DerivedQuerySpecsBySignature: TypeAlias = dict[
 MethodFamilyCandidateItemT = TypeVar("MethodFamilyCandidateItemT", covariant=True)
 
 
-_IMPLICIT_METHOD_PARAMETER_NAMES = frozenset({"self", "cls"})
+from nominal_refactor_advisor.refactors.member_move import SourceShape
+
+_IMPLICIT_METHOD_PARAMETER_NAMES = frozenset(SourceShape._leading_names)
 class HelperSupportProjectionAuthority:
     @classmethod
     def expression_root_names(cls, node: ast.AST) -> set[str]:
