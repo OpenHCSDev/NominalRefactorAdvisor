@@ -278,9 +278,12 @@ class NativeClassCaptureResolverABC(ABC, Generic[NativeResolutionT]):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
 class NativeFrameOrigin(ABC):
-    """Compiler container provenance, not an admitted execution activation."""
+    """Compiler container provenance, not an admitted execution activation.
+
+    Every origin names its compilation; a source or generated-class origin
+    reads it from its execution, the others store it.
+    """
 
     compilation: NativeCompilationIdentity
 
@@ -301,6 +304,7 @@ class NativeFrameOrigin(ABC):
 
 @dataclass(frozen=True)
 class ModuleNativeFrameOrigin(NativeFrameOrigin):
+    compilation: NativeCompilationIdentity
 
     def resolve(
         self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
@@ -311,10 +315,8 @@ class ModuleNativeFrameOrigin(NativeFrameOrigin):
 @dataclass(frozen=True)
 class SourceNativeFrameOrigin(NativeFrameOrigin):
     execution: ExactNativeFunctionExecution
-    compilation: NativeCompilationIdentity = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "compilation", self.execution.compilation)
+    compilation = AliasProperty[NativeCompilationIdentity]("execution.compilation")
 
     def is_body_of(self, execution: NativeFunctionExecution) -> bool:
         return self.execution is execution
@@ -337,10 +339,8 @@ class GeneratedClassNativeFrameOrigin(NativeFrameOrigin):
     execution: CreatedNativeFunctionExecution
     activation: NativeCaptureSite
     bindings: tuple[NativeGeneratedFrameBinding, ...]
-    compilation: NativeCompilationIdentity = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "compilation", self.execution.compilation)
+    compilation = AliasProperty[NativeCompilationIdentity]("execution.compilation")
 
     def resolve(
         self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
@@ -368,6 +368,7 @@ class OpenNativeFrameOrigin(NativeFrameOrigin):
     Their code is not equated to a source parent by overlapping source ranges.
     """
 
+    compilation: NativeCompilationIdentity
     reason: NativeExecutionUnavailable
 
     def resolve(

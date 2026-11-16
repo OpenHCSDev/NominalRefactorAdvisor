@@ -2710,7 +2710,6 @@ class FlowFrameResolverABC(ABC, Generic[TargetResolutionT]):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
 class CompactFlowOwner(ABC):
     """Nominal scope owner, retaining its declaration when it is a function."""
 
@@ -2735,7 +2734,6 @@ class CompactFlowOwner(ABC):
         raise NotImplementedError
 
 
-@dataclass(frozen=True)
 class CompactDefinitionFlowOwner(CompactFlowOwner, ABC):
     """One exact source body shared by its binding event and separate flow."""
 
@@ -2766,7 +2764,8 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 
     qualname: str
     capture: NativeClassCapture
-    kind: type[CompactFlowOwnerKind] = field(default=ClassBody, init=False, repr=False)
+
+    kind = ClassBody
 
     source_span = AliasProperty[SourceByteSpan]("capture.source_span")
 
@@ -2794,6 +2793,9 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 @dataclass(frozen=True)
 class CompactNamespaceFlowOwner(CompactFlowOwner):
     """A module scope; definition flows retain their actual source declaration."""
+
+    kind: type[CompactFlowOwnerKind]
+    qualname: str
 
     def resolve_frame(
         self,
@@ -2954,14 +2956,11 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     signature: CompactFunctionSignature
     decorators: tuple[CompactValueExpression, ...] = ()
     return_annotation_expression: str | None = None
-    kind: type[CompactFlowOwnerKind] = field(default=Function, init=False, repr=False)
-    qualname: str = field(init=False, repr=False)
+    kind = Function
+    qualname = AliasProperty[str]("identity.qualname")
     source_span = AliasProperty[SourceByteSpan]("execution.source_span")
     line = AliasProperty[int]("source_span.start_line")
     end_line = AliasProperty[int]("source_span.end_line")
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "qualname", self.identity.qualname)
 
     def resolve_frame(
         self,

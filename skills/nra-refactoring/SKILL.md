@@ -10,6 +10,14 @@ Don't hand someone a checklist. Collapse the slop: repeated decisions,
 forwarding layers, duplicated implementation. The goal is fewer facts
 maintained by hand, not fewer lines or more stages.
 
+**Run tests with `.venv/bin/python` (CPython 3.14), never bare `python`.**
+`native_proof` tests skip unless the interpreter is a contracted
+`NativeCreationBackend` (3.11 or 3.14). The container's `python` is 3.13,
+so on 2026-11-16 every run of the day skipped ~half the native-execution
+tests (112 of 223 in one targeted run) while reporting green. Read the
+`skipped` count: a large one is a wrong interpreter, not a pass. The repo's
+`addopts` already pass `-n auto`, so `-p no:xdist` fails to parse; use `-n0`.
+
 ## Goal: polymorphism over switches
 
 For families with behavior, **use an ABC and concrete subclasses** —
@@ -263,6 +271,24 @@ repository guard `test_repository_dataclass_fields_are_not_derived_by_a_child`;
 run `pytest tests -k test_repository_dataclass_fields`. A parent whose
 children answer a field two ways (stored vs derived) cannot own it as a
 constructor field: that is the irreducible bar, proved by the sweep.
+
+**The sweep misses the backfill disguise.** A deriving child that
+redeclares the field `init=False` and fills it in `__post_init__` with
+`object.__setattr__(self, "x", self.a.b)` is not "shadowed by a non-field",
+so the guard passes it. Five of these were found and folded on 2026-11-16
+(`imported_origin`, `source_span` twice, `qualname`, `compilation` twice,
+`environment`, `callee`). The fold: drop `@dataclass` from the parent and
+keep its annotation as a bare contract (a non-dataclass parent's annotations
+are not fields, and create no descriptor); storing children declare the
+field, deriving children write `x = AliasProperty[T]("a.b")`, and a constant
+like `kind = Function` stops being a field at all. Do NOT put an abstract
+`@property` on the parent instead: a storing child's field has no class
+attribute, so the parent's property stays abstract and, being a data
+descriptor, beats the instance dict on every read. To find them, walk
+every `__post_init__` for statements `object.__setattr__(self, NAME,
+self.<attribute path>)`. Two remain, on
+`ProvedWorkflowScan`, whose parent `CodemodWorkflowScan` is concrete and
+built at nine sites; folding them means a stored/proved sibling split.
 
 **Non-dataclass parent promotions are done.** 11 parents promoted this
 session; the diagnostic tool (`tools/diagnose_missing_mixins.py`) now
