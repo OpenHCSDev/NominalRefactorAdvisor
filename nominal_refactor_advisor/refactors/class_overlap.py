@@ -57,8 +57,8 @@ from nominal_refactor_advisor.class_overlap import (
     ClassOverlapMetrics,
     ClassOverlapMove,
     ClassOverlapVerdicts,
+    ClassOverlapMoveBuilder,
     ComposeExisting,
-    ExtractMixin,
     PromoteToSharedBase,
 )
 from nominal_refactor_advisor.class_references import ClassReferenceRole
@@ -2559,6 +2559,64 @@ class KeywordizeConstructionOperation(RepositorySourceReprovedOperation):
         )
 
 
+@dataclass(frozen=True)
+class ClassOverlapMoveOperations(
+    ClassOverlapMoveBuilder[tuple[RepositorySourceReprovedOperation, ...] | str]
+):
+    """The operations each overlap move applies to one finding, or why it cannot."""
+
+    synthesizer: ClassOverlapFindingRecipeSynthesizer
+    finding: RefactorFinding
+    metrics: ClassOverlapMetrics
+    verdicts: ClassOverlapVerdicts
+
+    def delete_and_redirect(self) -> str:
+        return f"`{self.metrics.move.value}` changes a class identity; it stays a finding"
+
+    def compose_existing(self) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+        index = self.verdicts.class_index
+        owner = index.class_for(self.metrics.owner_symbol)
+        restating = tuple(
+            index.class_for(symbol) for symbol in self.metrics.restating_symbols
+        )
+        if owner is None or None in restating:
+            return "the overlap's classes left the source"
+        return tuple(
+            ComposeExistingClassOperation(
+                target=source_rewrite_target(indexed_class),
+                owner=source_rewrite_target(owner),
+            )
+            for indexed_class in restating
+            if indexed_class is not None
+        )
+
+    def promote_to_shared_base(
+        self,
+    ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+        first, second = (
+            self.verdicts.class_index.class_for(symbol)
+            for symbol in (self.metrics.owner_symbol, *self.metrics.restating_symbols)
+        )
+        base = (
+            None
+            if first is None or second is None
+            else self.verdicts.sole_shared_base(first, second)
+        )
+        if base is None:
+            return "give the two classes a sole shared base and this folds their declarations into it"
+        return (
+            FoldSharedDeclarationsIntoBaseOperation(
+                target=source_rewrite_target(base),
+                member_names=self.metrics.shared_declaration_names,
+            ),
+        )
+
+    def extract_mixin(self) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+        return self.synthesizer.picked_operations(
+            self.finding, self.metrics, self.verdicts
+        )
+
+
 class ClassOverlapFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
@@ -2762,48 +2820,13 @@ class ClassOverlapFindingRecipeSynthesizer(
                     + "; ".join(receipt.detail for receipt in metrics.refusals)
                 )
             return self.keywording_evaluation(finding, metrics.keyword_cure, verdicts, context)
-        if metrics.move is ComposeExisting:
-            owner = verdicts.class_index.class_for(metrics.owner_symbol)
-            restating = tuple(
-                verdicts.class_index.class_for(symbol) for symbol in metrics.restating_symbols
+        operations = metrics.move.built_by(
+            ClassOverlapMoveOperations(
+                synthesizer=self, finding=finding, metrics=metrics, verdicts=verdicts
             )
-            if owner is None or None in restating:
-                return self.rejected_evaluation("the overlap's classes left the source")
-            operations: tuple[RepositorySourceReprovedOperation, ...] = tuple(
-                ComposeExistingClassOperation(
-                    target=source_rewrite_target(indexed_class),
-                    owner=source_rewrite_target(owner),
-                )
-                for indexed_class in restating
-                if indexed_class is not None
-            )
-        elif metrics.move is PromoteToSharedBase:
-            first, second = (
-                verdicts.class_index.class_for(symbol)
-                for symbol in (metrics.owner_symbol, *metrics.restating_symbols)
-            )
-            base = (
-                None
-                if first is None or second is None
-                else verdicts.sole_shared_base(first, second)
-            )
-            if base is None:
-                return self.rejected_evaluation("give the two classes a sole shared base and this folds their declarations into it")
-            operations = (
-                FoldSharedDeclarationsIntoBaseOperation(
-                    target=source_rewrite_target(base),
-                    member_names=metrics.shared_declaration_names,
-                ),
-            )
-        elif metrics.move is ExtractMixin:
-            picked = self.picked_operations(finding, metrics, verdicts)
-            if isinstance(picked, str):
-                return self.rejected_evaluation(picked)
-            operations = picked
-        else:
-            return self.rejected_evaluation(
-                f"`{metrics.move.value}` changes a class identity; it stays a finding"
-            )
+        )
+        if isinstance(operations, str):
+            return self.rejected_evaluation(operations)
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-class-overlap", reason=finding.summary
         )

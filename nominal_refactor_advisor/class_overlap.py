@@ -40,10 +40,11 @@ import ast
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import StrEnum
 from functools import cached_property
+from typing import Generic, TypeVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.case_root import Case
@@ -84,6 +85,30 @@ class ClassOverlapShape(StrEnum):
     MISSING_MIXIN = "missing_mixin"
 
 
+MoveBuildT = TypeVar("MoveBuildT")
+
+
+class ClassOverlapMoveBuilder(ABC, Generic[MoveBuildT]):
+    """What a consumer builds for each overlap move, one method per move.
+
+    The moves live here and their codemod operations in `refactors/`; each
+    move calls its own method, so a new move is an unimplemented method in
+    every builder rather than a silent fall-through in a chain.
+    """
+
+    @abstractmethod
+    def delete_and_redirect(self) -> MoveBuildT: ...
+
+    @abstractmethod
+    def compose_existing(self) -> MoveBuildT: ...
+
+    @abstractmethod
+    def promote_to_shared_base(self) -> MoveBuildT: ...
+
+    @abstractmethod
+    def extract_mixin(self) -> MoveBuildT: ...
+
+
 class ClassOverlapMove(Case):
     """The factoring an overlap calls for, and whose identities it changes.
 
@@ -95,6 +120,21 @@ class ClassOverlapMove(Case):
 
     reorders_fields: bool
     needs_new_owner: bool = False
+
+    @classmethod
+    @abstractmethod
+    def built_by(cls, builder: ClassOverlapMoveBuilder[MoveBuildT]) -> MoveBuildT:
+        """What `builder` builds for this move."""
+
+    @classmethod
+    def fields_receiver(
+        cls,
+        verdicts: ClassOverlapVerdicts,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+    ) -> CompactIndexedClass:
+        """The class whose fields the restating class inherits after the move."""
+        return owner
 
     @classmethod
     def obligation_classes(
@@ -122,6 +162,10 @@ class DeleteAndRedirect(ClassOverlapMove):
     """Delete the restating class and point its uses at the owner: its identity is gone."""
 
     value = "delete_and_redirect"
+
+    @classmethod
+    def built_by(cls, builder: ClassOverlapMoveBuilder[MoveBuildT]) -> MoveBuildT:
+        return builder.delete_and_redirect()
     reorders_fields = False
 
     @classmethod
@@ -141,6 +185,10 @@ class ComposeExisting(ClassOverlapMove):
     """
 
     value = "compose_existing"
+
+    @classmethod
+    def built_by(cls, builder: ClassOverlapMoveBuilder[MoveBuildT]) -> MoveBuildT:
+        return builder.compose_existing()
     reorders_fields = False
 
     @classmethod
@@ -154,6 +202,19 @@ class PromoteToSharedBase(ClassOverlapMove):
     """The block moves into the base the two alone share: no identity changes."""
 
     value = "promote_to_shared_base"
+
+    @classmethod
+    def fields_receiver(
+        cls,
+        verdicts: ClassOverlapVerdicts,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+    ) -> CompactIndexedClass:
+        return verdicts.sole_shared_base(owner, restating) or owner
+
+    @classmethod
+    def built_by(cls, builder: ClassOverlapMoveBuilder[MoveBuildT]) -> MoveBuildT:
+        return builder.promote_to_shared_base()
     reorders_fields = True
 
     @classmethod
@@ -175,6 +236,10 @@ class ExtractMixin(ClassOverlapMove):
     """Both compose a new mixin nobody tests yet: no identity changes."""
 
     value = "extract_mixin"
+
+    @classmethod
+    def built_by(cls, builder: ClassOverlapMoveBuilder[MoveBuildT]) -> MoveBuildT:
+        return builder.extract_mixin()
     reorders_fields = True
     needs_new_owner = True
 
@@ -1056,11 +1121,7 @@ class ClassOverlapVerdicts:
         if move.needs_new_owner:
             return ()
         receipts: list[Receipt] = []
-        target = owner
-        if move is PromoteToSharedBase:
-            base = self.sole_shared_base(owner, restating)
-            if base is not None:
-                target = base
+        target = move.fields_receiver(self, owner, restating)
         if not target.is_dataclass:
             receipts.append(
                 Receipt(
