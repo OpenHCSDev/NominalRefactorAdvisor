@@ -98,6 +98,7 @@ from nominal_refactor_advisor.lexical_bindings import (
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
+from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
 from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
     ExistingClassOwner,
@@ -436,7 +437,10 @@ class RestatedDeclarations:
 
         Moving it changes which class that hook receives, so a moved value that
         calls anything is admitted only when the callee is a class whose whole
-        C3 order is indexed and none of those classes declares the hook.
+        C3 order is indexed and none of those classes declares the hook. The one
+        other callee admitted is `dataclasses.field`: the dataclass decorator
+        consumes its `Field`, whose own `__set_name__` only forwards to its
+        `default`, and a default that calls anything is a call this walk checks.
         """
 
         class_index = snapshot.class_overlap_verdicts.class_index
@@ -452,6 +456,10 @@ class RestatedDeclarations:
                 callee = (
                     call.func.value if isinstance(call.func, ast.Subscript) else call.func
                 )
+                if DataclassRuntimeDeclaration.FIELD.matches(
+                    resolver.imported_name_for_node(callee)
+                ):
+                    continue
                 symbol = resolver.symbol_for_node(callee)
                 if symbol is None or class_index.class_for(symbol) is None:
                     raise ValueError(

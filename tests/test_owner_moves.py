@@ -599,3 +599,71 @@ def test_holding_the_source_rewrites_a_reader_in_another_file(
     assert simulation.is_clean, simulation.preflight_report
     report = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/report.py")]
     assert "return second.first.beta\n" in report
+
+
+
+FIELD_RECORDS = (
+    "from collections import OrderedDict\n"
+    "from dataclasses import dataclass, field\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class First:\n"
+    "    alpha: int\n"
+    "    beta: str\n"
+    "    items: list = field(default_factory=list, compare=False)\n"
+    "    own_first: int = 0\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class Second:\n"
+    "    alpha: int\n"
+    "    beta: str\n"
+    "    items: list = field(default_factory=list, compare=False)\n"
+    "    own_second: int = 0\n"
+)
+
+FIELD_PROBE = (
+    "from pkg.records import First, Second\n"
+    "a, b = First(alpha=1, beta='x'), Second(alpha=2, beta='y')\n"
+    "a.items.append(1)\n"
+    "print(a, b, a.items is not First(alpha=1, beta='x').items)\n"
+)
+
+
+def _field_mixin(records: str) -> CreateMixinOperation:
+    return CreateMixinOperation(
+        target=SourceRewriteTarget(file_path=records, qualname="First"),
+        member_names=("alpha", "beta", "items"),
+        mixin_name="Lettered",
+        docstring="A lettered record with its items.",
+        composers=(
+            SourceRewriteTarget(file_path=records, qualname="First"),
+            SourceRewriteTarget(file_path=records, qualname="Second"),
+        ),
+    )
+
+
+def test_a_field_default_moves_into_the_new_mixin(tmp_path: Path) -> None:
+    """`dataclasses.field` builds no value that learns its class: the decorator
+    consumes it, so the block moves and each instance still gets its own list."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": FIELD_RECORDS})
+    before = _run(tmp_path, FIELD_PROBE)
+
+    _apply(tmp_path, _field_mixin(str(tmp_path / "pkg/records.py")))
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert source.count("field(default_factory=list, compare=False)") == 1
+    assert "class First(Lettered):" in source and "class Second(Lettered):" in source
+    assert _run(tmp_path, FIELD_PROBE) == before
+
+
+def test_a_moved_value_from_an_unindexed_class_still_refuses(tmp_path: Path) -> None:
+    """Only `dataclasses.field` is admitted: any other call may build a field or a
+    value that learns its class, so the order stays unproved and the move refuses."""
+
+    records = FIELD_RECORDS.replace(
+        "field(default_factory=list, compare=False)", "OrderedDict()"
+    ).replace("    items: list", "    items: OrderedDict")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    with pytest.raises(CodemodOperationPreflightError, match="field order .* is unknown"):
+        _field_mixin(str(tmp_path / "pkg/records.py")).source_edits(snapshot)
