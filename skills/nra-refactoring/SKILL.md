@@ -552,6 +552,15 @@ Next moves, each traced and parked with its reason:
   too); 9717774d chained its last two hand-written `is_open` returns. The
   remaining `is_open` reads translate an open value into something else (a
   different open reference, a codemod report) and are not short-circuits.
+- *`zero_one_tuple` (34) contradicts `foreign_absence_probe`'s fix.* It
+  certifies the decoders in `ast_field_decoders.py` (`capture_names`,
+  `alias_as_names`, `declared_annotations`), which turn a foreign optional
+  AST field into an iterable: the prescribed fix for absence probes. Likely
+  rule: a 0/1 tuple decoding a *foreign* optional field is the boundary
+  projection (same reasoning as the ForeignFamily decoder fix, 333b4709);
+  raised with Tristan, not settled. Also skipped for this reason:
+  `RepeatedBuilderInvariantFieldPlan` (parameter xor constant, 4 probes),
+  whose subclass split would add `zero_one_tuple` findings.
 - *`phantom_family`* (415) is two-owner pairs on generic method names
   (`resolve`, `of`, `read`, `names`, at most 3 per name): mostly name
   coincidence, no batch.
