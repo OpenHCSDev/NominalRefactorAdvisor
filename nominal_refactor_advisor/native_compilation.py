@@ -508,6 +508,7 @@ class NativeCompletionResolverABC(ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class NativeCallSlotABC(ABC):
     """An original CALL prefix operand: protocol NULL or an implicit argument."""
 
@@ -561,7 +562,6 @@ class NativeGlobalLoadForm(Enum):
 class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
     """One original native production and its inputs, not runtime identity."""
 
-    instruction_offset: int
     inputs: tuple[NativeProducedValue, ...]
 
     graph_children = AliasProperty["tuple[NativeProducedValue, ...]"]("inputs")
@@ -1365,7 +1365,6 @@ class OpenNativeClassPrologue(NativeClassPrologue):
 class NativeCallMarker(NativeCallSlotABC):
     """Original protocol NULL, which is not a produced Python value."""
 
-    instruction_offset: int
     source_span: SourceByteSpan | None
 
     implicit_arguments: ClassVar[tuple[NativeProducedValue, ...]] = ()

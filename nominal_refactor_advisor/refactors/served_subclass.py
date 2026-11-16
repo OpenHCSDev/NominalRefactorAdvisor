@@ -214,14 +214,19 @@ class ResolvedServedClass:
 
 
 @dataclass(frozen=True)
-class ServedHeaderBindings:
+class ServedSubclassContext:
+    """Shared snapshot and served-class scope for one served-subclass validation."""
+
+    snapshot: CodemodSourceSnapshot
+    served: tuple[ResolvedServedClass, ...]
+
+
+@dataclass(frozen=True)
+class ServedHeaderBindings(ServedSubclassContext):
     """Every name a served header reads is bound where the served class is declared: by its
     module, by a served class this operation declares earlier in that module, or by a served
     class it declares in a module this one may import without closing a cycle, which the
     operation then imports."""
-
-    snapshot: CodemodSourceSnapshot
-    served: tuple[ResolvedServedClass, ...]
 
     @cached_property
     def served_by_name(self) -> Mapping[str, ResolvedServedClass]:
@@ -270,12 +275,9 @@ class ServedHeaderBindings:
 
 
 @dataclass(frozen=True)
-class SubclassKeywords:
+class SubclassKeywords(ServedSubclassContext):
     """A served class is created under its declaration's lineage, so every keyword-only
     argument an __init_subclass__ there requires must be in the served header."""
-
-    snapshot: CodemodSourceSnapshot
-    served: tuple[ResolvedServedClass, ...]
 
     def require_given(self) -> None:
         index = self.snapshot.required_class_family_index
@@ -376,14 +378,11 @@ class ServedMemberScope:
 
 
 @dataclass(frozen=True)
-class FamilyMemberReads:
+class FamilyMemberReads(ServedSubclassContext):
     """Each served class's family, read for the members that leave it: a class that stays plain
     must not read them through its own receiver, and an ancestor's abstract declaration of one
     would leave the declaration uninstantiable once the concrete member leaves. Statements this
     operation moves are not plain, so a chain served together answers its own super() calls."""
-
-    snapshot: CodemodSourceSnapshot
-    served: tuple[ResolvedServedClass, ...]
 
     def require_none(self) -> None:
         index = self.snapshot.required_class_family_index

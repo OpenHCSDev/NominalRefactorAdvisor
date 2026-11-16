@@ -496,6 +496,7 @@ class CompactClassValueConstruction:
     line: int
 
 
+@dataclass(frozen=True)
 class CompactNominalReference(ABC):
     """One source reference; its subtype says whether a declaration-time binding roots it."""
 
@@ -572,7 +573,6 @@ class CompactNominalReference(ABC):
 
 @dataclass(frozen=True)
 class BoundNominalReference(CompactNominalReference):
-    source_parts: tuple[str, ...]
     root_binding: CompactNominalBinding
 
     @property
@@ -622,8 +622,6 @@ class BoundNominalReference(CompactNominalReference):
 @dataclass(frozen=True)
 class UnboundNominalReference(CompactNominalReference):
     """A reference no binding in scope roots: only its source spelling is known."""
-
-    source_parts: tuple[str, ...]
 
     @property
     def resolved_parts(self) -> tuple[str, ...]:

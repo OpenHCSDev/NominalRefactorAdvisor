@@ -53,11 +53,8 @@ class DeclaredCarrierExpansion(ResolvedFieldBindingCall, CarrierCollapseCallEdge
 
 
 @dataclass(frozen=True)
-class ForwardedCarrierExpansion(CarrierCollapseCallEdge):
+class ForwardedCarrierExpansion(ResolvedFieldBindingCall, CarrierCollapseCallEdge):
     """One downstream call forwarding every field through flat parameters."""
-
-    resolved_call: CompactResolvedFunctionCall
-    field_bindings: tuple[CarrierCollapseFieldBinding, ...]
 
     @property
     def carrier_source_participant_symbols(self) -> tuple[str, ...]:

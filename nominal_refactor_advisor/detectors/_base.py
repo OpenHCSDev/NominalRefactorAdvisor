@@ -727,6 +727,7 @@ class ContextualModuleIssueDetector(IssueDetector):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class PreparedContextualGlobalAnalysis(ABC):
     """One immutable context projection shared by cache lookup and detection."""
 
@@ -744,7 +745,6 @@ class DeferredContextualGlobalAnalysis(PreparedContextualGlobalAnalysis):
     detector: IssueDetector
     modules: ParsedModuleSet
     config: DetectorConfig
-    context_signature: str
 
     def findings(self) -> list[RefactorFinding]:
         return self.detector.detect(self.modules, self.config)
@@ -1895,7 +1895,6 @@ class PreparedCrossModuleCandidateAnalysis(
     detector: CrossModuleCandidateDetector[CandidateItemT]
     candidates: tuple[CandidateItemT, ...]
     config: DetectorConfig
-    context_signature: str
 
     def findings(self) -> list[RefactorFinding]:
         return self.detector._findings_for_candidates(
@@ -2656,7 +2655,6 @@ class PreparedGroupedShapeAnalysis(
     detector: GroupedShapeIssueDetector[ShapeT, GroupKeyT]
     shapes: tuple[ShapeT, ...]
     config: DetectorConfig
-    context_signature: str
 
     def findings(self) -> list[RefactorFinding]:
         return self.detector._findings_for_shapes(self.shapes, self.config)
