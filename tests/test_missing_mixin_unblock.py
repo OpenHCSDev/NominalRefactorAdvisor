@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
@@ -82,14 +84,15 @@ def _carrier_snapshot(tmp_path: Path) -> CodemodSourceSnapshot:
     return CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
 
-def test_inherited_declaration_does_not_block_mixin_creation(
+def test_a_mixin_of_the_declared_rest_needs_enough_of_it_to_compose(
     tmp_path: Path,
 ) -> None:
-    """First inherits shared_a from Ancestor but declares shared_b and shared_c
-    itself. Second declares all three. The overlap verdict has INHERITED_DECLARATION
-    for shared_a on First, but a mixin for shared_b + shared_c should work because
-    tolerate_inherited lets them through."""
+    """First inherits shared_a from Ancestor; both declare shared_b and shared_c.
+    The verdict tolerates the inherited declaration, but a mixin of the two
+    annotations both declare weighs too little for the composers to compose it,
+    so the move needs an operation. A third declared annotation is enough."""
 
+    from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
     from nominal_refactor_advisor.refactors.class_overlap import MixinCreation
 
     package = tmp_path / "pkg"
@@ -97,26 +100,26 @@ def test_inherited_declaration_does_not_block_mixin_creation(
     (package / "__init__.py").write_text("")
     (package / "classes.py").write_text(INHERITED_SHARED)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-
-    verdicts = snapshot.class_overlap_verdicts
-    candidates = verdicts.candidates
-    assert any(c.inherited_names for c in candidates), (
-        "fixture must produce at least one verdict with inherited declarations"
-    )
-    for c in candidates:
-        if c.inherited_names:
-            assert "shared_a" in c.inherited_names
-            assert c.owned_shared_names
-
+    assert any("shared_a" in c.inherited_names for c in snapshot.class_overlap_verdicts.candidates)
     target = SourceRewriteTarget(
-        file_path=(tmp_path / "pkg/classes.py").as_posix(),
-        qualname="First",
+        file_path=(tmp_path / "pkg/classes.py").as_posix(), qualname="First"
     )
+    with pytest.raises(NeedsInput) as stopped:
+        MixinCreation.require(
+            snapshot, target, ("shared_b", "shared_c"), "SharedBC", "Shared integer fields."
+        )
+    assert stopped.value.needs == (NeededInput.OPERATION,)
+
+    (package / "classes.py").write_text(
+        INHERITED_SHARED.replace(
+            "    shared_c: int\n", "    shared_c: int\n    shared_d: int\n"
+        )
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     creation = MixinCreation.require(
-        snapshot, target, ("shared_b", "shared_c"), "SharedBC", "Shared integer fields."
+        snapshot, target, ("shared_b", "shared_c", "shared_d"), "SharedBCD", "Shared integer fields."
     )
-    edits = creation.source_edits("Extract shared_b and shared_c into SharedBC.")
-    assert edits
+    assert creation.source_edits("Extract shared_b, shared_c and shared_d into SharedBCD.")
 
 
 def test_all_inherited_block_refuses_mixin(
