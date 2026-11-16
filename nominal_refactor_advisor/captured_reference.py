@@ -442,6 +442,14 @@ class CaptureOutcome(ABC):
         return step(self)
 
 
+@dataclass(frozen=True)
+class SelectedBindingSource(CaptureOutcome):
+    """A selected write of one name, at the execution interval that installed it."""
+
+    interval: SingleFlowPrefix
+    binding: CompactBindingSource
+
+
 class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
     """An explicit captured kind can leave particular object protocols unknown."""
 
@@ -1437,9 +1445,7 @@ class AdmittedExecutionPrefixABC(AdmittedEvidenceABC):
 
     def binding_sources(
         self, namespace: NamespaceEvidenceABC, name: NativeDictionaryKey
-    ) -> Iterator[
-        tuple[SingleFlowPrefix, CompactBindingSource] | OpenCapturedReference
-    ]:
+    ) -> Iterator[SelectedBindingSource | OpenCapturedReference]:
         """Resolve selected writes at their actual execution interval, not a later cut.
 
         A resumed parent's selected binding can precede a completed child's global
@@ -1464,7 +1470,7 @@ class AdmittedExecutionPrefixABC(AdmittedEvidenceABC):
                 continue
             if binding.mutation is not None and not interval.contains(binding.mutation):
                 continue
-            yield interval, binding
+            yield SelectedBindingSource(interval=interval, binding=binding)
 
     def mutation_occurrences(self) -> Iterator[ContextualMutation]:
         for interval in self.intervals:
@@ -1740,7 +1746,7 @@ class DefinitionApplicationPrefix(AdmittedExecutionPrefixABC):
 
 
 @dataclass(frozen=True)
-class ContextualMutation:
+class ContextualMutation(CaptureOutcome):
     """An existing write observed in an admitted activation interval."""
 
     source: SingleFlowPrefix
@@ -1992,29 +1998,35 @@ class CapturedSlotQuery:
     ) -> CapturedReferenceResolution | None:
         """Select lexical installation and subsequent writes under this query's law."""
         self.namespace.require_key(self.key)
-        for candidate in self.prefix.binding_sources(self.namespace, self.key):
-            if isinstance(candidate, OpenCapturedReference):
-                return candidate
-            source, binding = candidate
-            if binding.mutation is not None:
-                query = replace(
-                    self, installed=ContextualMutation(source=source, mutation=binding.mutation)
-                )
-                result = query.intervening_value(resolver)
-                if result is not None:
-                    return result
-            return binding.resolve_binding(
-                source.capture_kernel(resolver),
-                source.context,
-                LexicalValueReference(self.key),
-                source.position,
-                self.pending,
-            )
+        selected = next(self.prefix.binding_sources(self.namespace, self.key), None)
+        if selected is not None:
+            return selected.and_then(partial(self._selected_resolution, resolver))
         result = self.intervening_value(resolver)
         return (
             self.prefix.entry_contents(resolver, self.namespace).member(self.key)
             if result is None
             else result
+        )
+
+    def _selected_resolution(
+        self, resolver: CapturedReferenceKernel, selected: SelectedBindingSource
+    ) -> CapturedReferenceResolution | None:
+        """The value the selected write leaves, or a later write over it."""
+
+        source, binding = selected.interval, selected.binding
+        if binding.mutation is not None:
+            query = replace(
+                self, installed=ContextualMutation(source=source, mutation=binding.mutation)
+            )
+            result = query.intervening_value(resolver)
+            if result is not None:
+                return result
+        return binding.resolve_binding(
+            source.capture_kernel(resolver),
+            source.context,
+            LexicalValueReference(self.key),
+            source.position,
+            self.pending,
         )
 
     def require_independent_reference(
@@ -2091,20 +2103,25 @@ class CapturedSlotQuery:
         self, resolver: CapturedReferenceKernel
     ) -> CapturedReferenceResolution | None:
         for occurrence in self.mutations_after_installation():
-            if isinstance(occurrence, OpenCapturedReference):
-                return occurrence
-            mutation = occurrence.mutation
-            visit = CompactBindingVisit(context=occurrence.source.context, mutation=mutation)
-            if visit in self.pending and mutation.target.bound_name is None:
-                return OpenCapturedReference(
-                    violation=CapturedReferenceViolation.CYCLIC_BINDING,
-                    mutation=mutation,
-                       )
-            query = replace(self, pending=self.pending | {visit})
-            failure = mutation.resolve(resolver, (query, occurrence))
+            failure = occurrence.and_then(partial(self._intervening_failure, resolver))
             if failure is not None:
                 return failure
         return None
+
+    def _intervening_failure(
+        self, resolver: CapturedReferenceKernel, occurrence: ContextualMutation
+    ) -> CapturedReferenceResolution | None:
+        """What a later write does to the selected value, or None when it leaves it."""
+
+        mutation = occurrence.mutation
+        visit = CompactBindingVisit(context=occurrence.source.context, mutation=mutation)
+        if visit in self.pending and mutation.target.bound_name is None:
+            return OpenCapturedReference(
+                violation=CapturedReferenceViolation.CYCLIC_BINDING,
+                mutation=mutation,
+            )
+        query = replace(self, pending=self.pending | {visit})
+        return mutation.resolve(resolver, (query, occurrence))
 
     def write_effect(
         self,
