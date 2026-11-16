@@ -450,7 +450,7 @@ class ModuleNameRedirect:
                 *(
                     id(statement)
                     for statement in ModuleImportInsertionPoint(
-                        source, file_path, module_node=module
+                        source=source, file_path=file_path, module_node=module
                     ).leading_import_statements
                 ),
                 *(

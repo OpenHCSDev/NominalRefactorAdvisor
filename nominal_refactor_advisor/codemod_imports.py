@@ -967,8 +967,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         additions: tuple[RequestedImportStatement, ...],
     ) -> tuple[SourceInsertion, ...]:
         insertion_point = ModuleImportInsertionPoint(
-            source,
-            self.file_path,
+            source=source,
+            file_path=self.file_path,
             module_node=module,
         )
         existing_imports = insertion_point.leading_import_statements
@@ -1082,8 +1082,8 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         if reference_source is None:
             reference_source = "TYPE_CHECKING"
         insertion_point = ModuleImportInsertionPoint(
-            source,
-            self.file_path,
+            source=source,
+            file_path=self.file_path,
             module_node=module,
         )
         import_boundary_index = len(insertion_point.leading_import_statements)
