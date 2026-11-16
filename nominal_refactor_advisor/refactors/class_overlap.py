@@ -99,6 +99,7 @@ from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
     ExistingClassOwner,
@@ -751,11 +752,12 @@ def require_verdict(
             f"The current source has {len(matches)} `{move.value}` verdicts over "
             f"{sorted(wanted)}"
         )
-    refusals = tuple(receipt for candidate in matches for receipt in candidate.refusals)
-    if refusals:
-        raise ValueError(
-            "The verdict refuses the move: "
-            + "; ".join(dict.fromkeys(receipt.detail for receipt in refusals))
+    blocking = tuple(receipt for candidate in matches for receipt in candidate.refusals)
+    if blocking:
+        raise NeedsInput(
+            "The move needs: "
+            + "; ".join(dict.fromkeys(receipt.detail for receipt in blocking)),
+            *(receipt.kind.needs for receipt in blocking),
         )
     return matches[0]
 
@@ -941,13 +943,19 @@ class ClassComposition:
     def require_owner_is_a_root(self) -> None:
         owner, restating = self.owner, self.restating
         if owner.node.keywords:
-            raise ValueError(f"`{owner.qualname}` passes class creation keywords")
+            raise NeedsInput(
+                f"`{owner.qualname}` passes class creation keywords: NRA needs a proof "
+                "that the new base leaves what its class creation sees unchanged",
+                NeededInput.PROOF,
+            )
         if not owner.facts.base_references_are_complete or any(
             ".".join(reference.resolved_parts) != NativeMroBase.OBJECT.value
             for reference in owner.facts.base_references
         ):
-            raise ValueError(
-                f"`{owner.qualname}` has bases; its C3 order is not [owner, object]"
+            raise NeedsInput(
+                f"`{owner.qualname}` has bases: NRA needs a proof for a C3 order "
+                "other than [owner, object]",
+                NeededInput.PROOF,
             )
         ancestry = require_static_c3(self.snapshot, restating.facts)
         if any(ancestor.symbol == owner.symbol for ancestor in ancestry):
@@ -1117,13 +1125,19 @@ class CoveringComposition:
     def require_roots(self) -> None:
         for owner in self.owners:
             if owner.node.keywords:
-                raise ValueError(f"`{owner.qualname}` passes class creation keywords")
+                raise NeedsInput(
+                f"`{owner.qualname}` passes class creation keywords: NRA needs a proof "
+                "that the new base leaves what its class creation sees unchanged",
+                NeededInput.PROOF,
+            )
             if not owner.facts.base_references_are_complete or any(
                 ".".join(reference.resolved_parts) != NativeMroBase.OBJECT.value
                 for reference in owner.facts.base_references
             ):
-                raise ValueError(
-                    f"`{owner.qualname}` has bases; its C3 order is not [owner, object]"
+                raise NeedsInput(
+                    f"`{owner.qualname}` has bases: NRA needs a proof for a C3 order "
+                    "other than [owner, object]",
+                    NeededInput.PROOF,
                 )
         for composer in self.composers:
             ancestry = {ancestor.symbol for ancestor in require_static_c3(self.snapshot, composer.facts)}
@@ -2150,14 +2164,16 @@ def require_owner_candidate(
                     )
                 )
                 if blocking:
-                    raise ValueError(
-                        "The verdict refuses the move: "
-                        + "; ".join(receipt.detail for receipt in blocking)
+                    raise NeedsInput(
+                        "The move needs: "
+                        + "; ".join(receipt.detail for receipt in blocking),
+                        *(receipt.kind.needs for receipt in blocking),
                     )
                 if not owner.permitted:
-                    raise ValueError(
-                        f"`{owner.candidate_id}` is refused: "
-                        + "; ".join(receipt.detail for receipt in owner.refusals)
+                    raise NeedsInput(
+                        f"`{owner.candidate_id}` needs: "
+                        + "; ".join(receipt.detail for receipt in owner.refusals),
+                        *(receipt.kind.needs for receipt in owner.refusals),
                     )
                 return verdict, owner
     raise ValueError(
@@ -2582,8 +2598,9 @@ class ClassOverlapFindingRecipeSynthesizer(
         finding: RefactorFinding,
         metrics: ClassOverlapMetrics,
         verdicts: ClassOverlapVerdicts,
-    ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
-        """The operation the picker's owner calls for, or why there is none.
+    ) -> tuple[RepositorySourceReprovedOperation, ...]:
+        """The operations the picker's owner calls for; `NeedsInput` names what a
+        pick still needs when there are none.
 
         A new mixin is declared before a composing class in its module; an
         existing class first gains the block declarations it lacks; a shared
@@ -2594,9 +2611,7 @@ class ClassOverlapFindingRecipeSynthesizer(
 
         pick = metrics.owner_pick
         if pick is None:
-            return "an extract-mixin move needs an owner pick (--codemod-owner-picks)"
-        if pick.finding != finding.stable_id:
-            return f"covered by the owner pick on {pick.finding}"
+            raise NeedsInput("an extract-mixin move needs an owner pick (--codemod-owner-picks)", NeededInput.OWNER_PICK)
         owner = pick.candidate
         if owner.keyword_cure:
             return ClassOverlapFindingRecipeSynthesizer.keywordings(owner.keyword_cure, verdicts)
@@ -2616,9 +2631,9 @@ class ClassOverlapFindingRecipeSynthesizer(
                     None,
                 )
                 if anchor is None or pick.name is None:
-                    return f"no composing class lives in `{owner.module_name}`"
+                    raise NeedsInput(f"no composing class lives in `{owner.module_name}`", NeededInput.OWNER_PICK)
                 if pick.judgement is None:
-                    return "a new mixin needs the pick's judgement for its docstring"
+                    raise NeedsInput("a new mixin needs the pick's judgement for its docstring", NeededInput.OWNER_PICK)
                 verdict_match = next(
                     (
                         v for v in verdicts.candidates_touching(
@@ -2634,7 +2649,7 @@ class ClassOverlapFindingRecipeSynthesizer(
                     name for name in owner.block if name not in inherited
                 )
                 if not block:
-                    return "every shared declaration is inherited; nothing to extract"
+                    raise NeedsInput("every shared declaration is inherited; nothing to extract", NeededInput.OWNER_PICK)
                 return (
                     CreateMixinOperation(
                         target=source_rewrite_target(anchor),
@@ -2651,9 +2666,9 @@ class ClassOverlapFindingRecipeSynthesizer(
                 existing = verdicts.class_index.class_for(owner.symbol)
                 missing = tuple(name for name in owner.block if name not in owner.held)
                 if existing is None or not composers:
-                    return "the picked owner left the source"
+                    raise NeedsInput("the picked owner left the source", NeededInput.OWNER_PICK)
                 if not missing:
-                    return f"`{owner.symbol}` already declares the whole block"
+                    raise NeedsInput(f"`{owner.symbol}` already declares the whole block", NeededInput.OWNER_PICK)
                 return (
                     ExtendOwnerOperation(
                         target=source_rewrite_target(existing),
@@ -2668,7 +2683,7 @@ class ClassOverlapFindingRecipeSynthesizer(
                     if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
                 )
                 if len(owners) != len(owner.symbols) or not composers:
-                    return "the picked owners left the source"
+                    raise NeedsInput("the picked owners left the source", NeededInput.OWNER_PICK)
                 return (
                     ComposeExistingClassesOperation(
                         target=source_rewrite_target(composers[0]),
@@ -2681,7 +2696,7 @@ class ClassOverlapFindingRecipeSynthesizer(
             case SharedBaseOwner():
                 base = verdicts.class_index.class_for(owner.symbol)
                 if base is None:
-                    return "the picked base left the source"
+                    raise NeedsInput("the picked base left the source", NeededInput.OWNER_PICK)
                 return (
                     FoldSharedDeclarationsIntoBaseOperation(
                         target=source_rewrite_target(base),
@@ -2691,9 +2706,9 @@ class ClassOverlapFindingRecipeSynthesizer(
             case HoldSourceOwner():
                 source = verdicts.class_index.class_for(owner.symbol)
                 if source is None or not composers:
-                    return "the picked source left the source"
+                    raise NeedsInput("the picked source left the source", NeededInput.OWNER_PICK)
                 if not (pick.name or "").isidentifier():
-                    return "a hold-source pick needs the held field's `name`"
+                    raise NeedsInput("a hold-source pick needs the held field's `name`", NeededInput.OWNER_PICK)
                 return tuple(
                     ReplaceFieldsWithCarrierOperation(
                         target=source_rewrite_target(copier),
@@ -2705,19 +2720,19 @@ class ClassOverlapFindingRecipeSynthesizer(
                     )
                     for copier in composers
                 )
-        return f"`{owner.kind}` owners have no move"
+        raise NeedsInput(f"`{owner.kind}` owners have no move", NeededInput.OPERATION)
 
     @staticmethod
     def keywordings(
         symbols: tuple[str, ...], verdicts: ClassOverlapVerdicts
-    ) -> tuple[RepositorySourceReprovedOperation, ...] | str:
+    ) -> tuple[RepositorySourceReprovedOperation, ...]:
         """The stage that clears a positional-construction guard: every construction
         of these classes bound by keyword. The move itself is proved at the next
         stage, on the source this one leaves, where the guard no longer fires."""
 
         classes = tuple(verdicts.class_index.class_for(symbol) for symbol in symbols)
         if None in classes:
-            return "a class built by position left the source"
+            raise NeedsInput("a class built by position left the source", NeededInput.SOURCE_CHANGE)
         return tuple(
             KeywordizeConstructionOperation(target=source_rewrite_target(indexed_class))
             for indexed_class in classes
@@ -2731,9 +2746,10 @@ class ClassOverlapFindingRecipeSynthesizer(
         verdicts: ClassOverlapVerdicts,
         context: CodemodSelectorContext,
     ) -> FindingRecipeEvaluation:
-        operations = self.keywordings(symbols, verdicts)
-        if isinstance(operations, str):
-            return self.rejected_evaluation(operations)
+        try:
+            operations = self.keywordings(symbols, verdicts)
+        except NeedsInput as missing:
+            return self.needs_input_evaluation(missing)
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-keywordize",
             reason="Build the classes this move reorders by keyword, so the move can prove.",
@@ -2741,8 +2757,8 @@ class ClassOverlapFindingRecipeSynthesizer(
         for operation in operations:
             try:
                 operation.source_edits(context)
-            except (CodemodOperationPreflightError, ValueError) as error:
-                return self.rejected_evaluation(str(error))
+            except CodemodOperationPreflightError as error:
+                return self.preflight_evaluation(error)
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)
 
@@ -2759,8 +2775,9 @@ class ClassOverlapFindingRecipeSynthesizer(
         if not metrics.permitted:
             if not metrics.keyword_cure:
                 return self.rejected_evaluation(
-                    "the verdict refuses the move: "
-                    + "; ".join(receipt.detail for receipt in metrics.refusals)
+                    "the move needs: "
+                    + "; ".join(receipt.detail for receipt in metrics.refusals),
+                    tuple(receipt.kind.needs for receipt in metrics.refusals),
                 )
             return self.keywording_evaluation(finding, metrics.keyword_cure, verdicts, context)
         if metrics.move is ComposeExisting:
@@ -2797,10 +2814,13 @@ class ClassOverlapFindingRecipeSynthesizer(
                 ),
             )
         elif metrics.move is ExtractMixin:
-            picked = self.picked_operations(finding, metrics, verdicts)
-            if isinstance(picked, str):
-                return self.rejected_evaluation(picked)
-            operations = picked
+            pick = metrics.owner_pick
+            if pick is not None and pick.finding != finding.stable_id:
+                return self.covered_evaluation(f"the owner pick on {pick.finding}")
+            try:
+                operations = self.picked_operations(finding, metrics, verdicts)
+            except NeedsInput as missing:
+                return self.needs_input_evaluation(missing)
         else:
             return self.rejected_evaluation(
                 f"`{metrics.move.value}` changes a class identity; it stays a finding"
@@ -2812,6 +2832,6 @@ class ClassOverlapFindingRecipeSynthesizer(
             try:
                 operation.source_edits(context)
             except CodemodOperationPreflightError as error:
-                return self.rejected_evaluation(error.report.message)
+                return self.preflight_evaluation(error)
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)

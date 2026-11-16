@@ -127,7 +127,7 @@ def test_json_proposal_can_be_deliberately_enriched_and_replayed(subject, monkey
     (record,) = plan.records
     wire = json.loads(json.dumps(json_report_object(record)))
     assert wire["recipe"] is None
-    assert wire["status"] == "rejected_by_safety_check"
+    assert wire["status"] == FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     restored = RefactorRecipe.from_json_value(wire["proposal"])
     assert restored == record.proposal
     assert len(wire["proposal_preflight"]["reports"]) == len(

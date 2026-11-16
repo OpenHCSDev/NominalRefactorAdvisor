@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.refactors.class_overlap import (
     ClassReferenceSites,
     ComposeExistingClassOperation,
@@ -158,7 +159,7 @@ def test_a_restating_class_composes_the_owner_and_runs_the_same(tmp_path: Path) 
     ]
 
 
-def test_composition_refuses_a_type_test_on_the_owner(tmp_path: Path) -> None:
+def test_composition_needs_a_type_test_on_the_owner_changed_first(tmp_path: Path) -> None:
     _write(
         tmp_path,
         {
@@ -169,8 +170,9 @@ def test_composition_refuses_a_type_test_on_the_owner(tmp_path: Path) -> None:
         },
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    with pytest.raises(CodemodOperationPreflightError, match="refuses the move"):
+    with pytest.raises(CodemodOperationPreflightError, match="The move needs") as stopped:
         _compose(tmp_path).source_edits(snapshot)
+    assert stopped.value.report.needs == (NeededInput.SOURCE_CHANGE,)
 
 
 def test_composition_refuses_a_field_order_it_would_change(tmp_path: Path) -> None:

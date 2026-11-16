@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from dataclasses import replace
 from pathlib import Path
 
@@ -1991,7 +1993,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         ),
     )
 
-    assert unsafe_plan.records[0].status.value == "rejected_by_safety_check"
+    assert unsafe_plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "incomparable single-inheritance leaves" in unsafe_plan.records[0].reason
 
     open_key_plan = plan_for_source(
@@ -2002,7 +2004,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         .replace("PhaseKey.FINAL", "'final'"),
     )
 
-    assert open_key_plan.records[0].status.value == "rejected_by_safety_check"
+    assert open_key_plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "exhaust one local enum key" in open_key_plan.records[0].reason
 
     custom_key_plan = plan_for_source(
@@ -2015,7 +2017,7 @@ def test_autoregister_priority_ordering_synthesizes_one_proven_mro_batch(
         ),
     )
 
-    assert custom_key_plan.records[0].status.value == "rejected_by_safety_check"
+    assert custom_key_plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "without a custom key extractor" in custom_key_plan.records[0].reason
 
 
@@ -2069,7 +2071,7 @@ def test_repeated_builder_call_rejects_identity_constructor_wrapper(
 
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "requires a source projection or invariant selector axis" in (
         plan.records[0].reason
     )
@@ -2592,10 +2594,12 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
         for obstacle in record.proof_obstacles
     }
 
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.reason == (
-        "no class-family recipe declaration proved an executable exact derivation"
+        "a class-family recipe needs a proof of an executable exact derivation; "
+        "no declaration has one yet"
     )
+    assert record.needs == (NeededInput.PROOF,)
     assert (
         "source does not prove one complete zero-argument constructor view"
         in obstacles_by_declaration["AutoregisterInstanceViewRecipeBuilder"]
@@ -3242,7 +3246,7 @@ def test_semantic_mirror_rejects_reordered_dataclass_field_name_collection(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
     record = plan.records[0]
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
     ) == ("DataclassFieldNameCollectionProjectionMappingRecipeBuilder",)
@@ -3291,7 +3295,7 @@ def test_semantic_mirror_field_name_collection_rejects_new_runtime_import(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
     record = plan.records[0]
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
     ) == ("DataclassFieldNameCollectionProjectionMappingRecipeBuilder",)
@@ -3475,7 +3479,7 @@ def test_key_value_sequence_recipe_rejects_interleaving_and_comments(
         plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
 
         record = plan.records[0]
-        assert record.status.value == "rejected_by_safety_check"
+        assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
         assert not record.recipe_id
         assert tuple(
             obstacle.executable_declaration_name for obstacle in record.proof_obstacles
@@ -3618,7 +3622,7 @@ def test_semantic_mirror_cross_file_return_dict_synthesizes_dataclass_payload_re
         selector_context=shadowed_snapshot,
     )
 
-    assert shadowed_plan.records[0].status.value == "rejected_by_safety_check"
+    assert shadowed_plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert not shadowed_plan.records[0].recipe_id
 
 
@@ -3679,7 +3683,7 @@ def test_semantic_mirror_cross_file_payload_recipe_rejects_import_cycle(
     plan = codemod_plan_from_findings((finding,), selector_context=snapshot)
     record = plan.records[0]
 
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "module cycle" in record.reason
 
     authority_target = next(
@@ -3802,11 +3806,13 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
             for obstacle in record.proof_obstacles
         }
 
-        assert record.status.value == "rejected_by_safety_check"
+        assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
         assert not record.recipe_id
         assert record.reason == (
-            "no inferred mapping recipe builder proved an executable exact derivation"
+            "a mapping recipe builder needs a proof of an executable exact "
+            "derivation; none of the inferred builders has one"
         )
+        assert record.needs == (NeededInput.PROOF,)
         assert (
             "dataclass payload projection requires one contiguous, exhaustive"
             in obstacles_by_declaration[
@@ -4015,7 +4021,7 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
         selector_context=snapshot,
     ).records[0]
 
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
     ) == ("DataclassConstructorProjectionMappingRecipeBuilder",)
@@ -4096,7 +4102,7 @@ def test_constructor_projection_requires_same_nominal_constructor(
         selector_context=snapshot,
     ).records[0]
 
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
     ) == ("DataclassConstructorProjectionMappingRecipeBuilder",)
@@ -4507,7 +4513,7 @@ def test_semantic_mirror_enum_rejection_reports_only_enum_builder(
         selector_context=snapshot,
     ).records[0]
 
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert tuple(
         obstacle.executable_declaration_name for obstacle in record.proof_obstacles
     ) == ("EnumSubsetSemanticMirrorRecipeBuilder",)
@@ -4971,7 +4977,7 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
         for obstacle in record.proof_obstacles
     }
 
-    assert record.status.value == "rejected_by_safety_check"
+    assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert (
         "exactly one complete literal collection"
         in obstacles_by_declaration["ClassFamilyCollectionSemanticMirrorRecipeBuilder"]
