@@ -121,6 +121,10 @@ stronger than a synthesized recipe that hedged its way to silence.
   carry their code in strings. Hoisting `ParsedModule.module` to kw-only
   silently turned `ParsedModule(path, name, ast.parse(s), s)` in three such
   strings into `source=<Module>, family_cache_dir=<text>`.
+  Renaming a constructor keyword: select the files to rewrite by the
+  constructor's name (every file that calls it), never by a text filter
+  on nearby words; on 2026-11-16 `after=` -> `start=AfterCut(...)` missed
+  two of seven test files that way.
 - **A mixin that must come first in the MRO goes in with `patch_target`.**
   `add_class_base` appends. A mixin whose own parent is already further
   down the class's MRO (it specialises a mixin the class inherits) has to
