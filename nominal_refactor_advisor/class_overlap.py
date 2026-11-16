@@ -419,18 +419,23 @@ def _declared_identity_reasons(indexed_class: CompactIndexedClass) -> tuple[str,
     return tuple(reasons)
 
 
-@dataclass(frozen=True)
-class ClassOverlapCandidate(ScoredByReceipts):
-    """One verdict: which class owns the block, which restates it, the move, the receipts."""
+@dataclass(frozen=True, kw_only=True)
+class ClassOverlapVerdictCore(ScoredByReceipts):
+    """The shape, move and owner candidates shared by candidate and metrics."""
 
     shape: ClassOverlapShape
     move: type[ClassOverlapMove]
+    owner_candidates: tuple[OwnerCandidate, ...] = ()
+
+
+@dataclass(frozen=True)
+class ClassOverlapCandidate(ClassOverlapVerdictCore):
+    """One verdict: which class owns the block, which restates it, the move, the receipts."""
+
     owner: CompactIndexedClass
     restating: CompactIndexedClass
     overlap: ClassBodyOverlap
     co_restating: CompactIndexedClass | None = None
-    owner_candidates: tuple[OwnerCandidate, ...] = ()
-    """For a move that needs an owner decision, where the block could live (#67)."""
 
     @property
     def confidence(self) -> float:
@@ -481,16 +486,13 @@ class ClassOverlapCandidate(ScoredByReceipts):
 
 
 @dataclass(frozen=True)
-class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
+class ClassOverlapMetrics(FindingMetrics, ClassOverlapVerdictCore):
     """One verdict as finding metrics: the move, the confidence score and every receipt."""
 
-    shape: ClassOverlapShape
-    move: type[ClassOverlapMove]
     owner_symbol: str
     restating_symbols: tuple[str, ...]
     shared_declaration_names: tuple[str, ...]
     confidence_score: float
-    owner_candidates: tuple[OwnerCandidate, ...] = ()
     owner_pick: PickedOwner | None = None
     """The picker's choice among `owner_candidates`, from a picks file (#67)."""
 
