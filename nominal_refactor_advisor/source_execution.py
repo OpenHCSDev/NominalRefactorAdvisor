@@ -678,7 +678,7 @@ class _UnboundEntryParameter(ParameterDefaultQuestion[CapturedReferenceResolutio
         raise ValueError("Function entry has no bound parameter value")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class SourceFunctionActivationABC(ABC):
     """One exact source-function activation, independent of invocation syntax."""
 

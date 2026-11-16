@@ -2342,7 +2342,7 @@ class NativeEntryReturn(NativeReturn):
         return self
 
 
-@dataclass
+@dataclass(eq=False)
 class NativeOperandObservation(ABC):
     """The observation's original code supplies its transient operand interpreter."""
 

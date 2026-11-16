@@ -423,7 +423,6 @@ class NativeTypeCapture(CapturedReferenceResolution, ABC):
 _CaptureStepT = TypeVar("_CaptureStepT")
 
 
-@dataclass(frozen=True)
 class CaptureOutcome(ABC):
     """A capture lookup's result: resolved evidence, or an open reference that
     propagates. Owns the short-circuit so each step composes instead of every
