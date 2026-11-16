@@ -518,9 +518,13 @@ Next moves, each traced and parked with its reason:
   `TypeAlias`; declaring it as a plain ABC mixin retired 12 event-kind
   `isinstance` sites (1928c8e9, 01e9c35f, 0e0db166). Grep for other
   `X: TypeAlias = (A | B | ...)` over our own classes: each is the same move.
-- *`NativeCodeEmission.creation is None`* (8 probes) is a mutable
-  observation that gains its creation instruction later: the fold is a
-  pending/created state split in the native core, not an `is_created`
+- *`NativeCodeEmission.creation is None`* (8 probes) is a streaming
+  accumulator: `advance()` (~native_compilation.py:3407) fills `creation`,
+  then installation and applications arrive. The finished emission already
+  has its state family (Exact/Created/Applied/Installed executions, built
+  ~3260-3290); the probes live only during the stream. The fold:
+  `advance()` returns a created emission replacing the pending one in the
+  observer's state, so "not created yet" is a type. Not an `is_created`
   property (that only renames the probe).
 - *`CompactClassMemberDeclaration.annotation_expression: str | None`*
   (4 probes) is an annotated/unannotated family inside a cached
