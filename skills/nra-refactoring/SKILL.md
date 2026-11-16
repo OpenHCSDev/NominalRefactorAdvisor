@@ -452,3 +452,5 @@ and clean them after workers exit, retaining recipes and validation evidence.
     `ModuleNodeIndex.binder_of` first: a scope's own import names the class, its
     own parameter or local names none. Check: probe a module whose only import
     of the class sits inside a function.
+
+11. **Member rename (2026-11-16).** `rename_class_member` (target the class, `member_name`, `new_name`) renames a method, property, field or enum member across its family's declarations, `super()` reads and every read typed to the family by `AnsweredMethod`'s receiver typing; it names what it needs (untyped receiver, MRO collision, a string read, an unseen dataclass construction, a stored record) instead of editing.

@@ -30,11 +30,11 @@ class AnsweredMethod:
     """A method of a class family, and the calls it answers: every call spelled on
     a receiver of the family, each typed by the class binding, the declarations
     or the type checker. A call on another class is that class's own method; a
-    call this proof cannot type refuses."""
+    call this proof cannot type needs the receiver's type as input."""
 
     snapshot: CodemodSourceSnapshot
     source_class: ResolvedClassTarget
-    method: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign
+    method: ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign | ast.Assign
     """The member's declaration in the class body."""
 
     @property
@@ -83,7 +83,7 @@ class AnsweredMethod:
         return self.snapshot.required_class_family_index.overridden_declarations(self.symbol, self.name)
 
     def require_sole_dispatch(self, verb: str) -> None:
-        """Refuse when the method takes part in dispatch: a descendant overrides it, or
+        """Raise (needs input) when the method takes part in dispatch: a descendant overrides it, or
         it overrides an ancestor. Either way a receiver this proof cannot see reaches it
         through the MRO, so removing it from this class changes what that call does."""
 
@@ -151,6 +151,11 @@ class AnsweredMethod:
             return True
         if symbols and not inside:
             return False
+        if not symbols:
+            raise ValueError(
+                f"{where} reads {self.name!r} on a receiver typed by no declaration; "
+                "it needs an annotation that says which class answers"
+            )
         raise ValueError(f"{where} calls {self.name!r} on a receiver typed {symbols!r}")
 
     def bound_class(
@@ -164,7 +169,7 @@ class AnsweredMethod:
         return self.named_class(file_path, receiver.id, scopes)
 
     def admits(self, binding: ReceiverBinding, where: str) -> None:
-        """Refuse a call whose receiver would change what the method means."""
+        """Raise for a call whose receiver would change what the method means: it needs input."""
 
     def answer(self, site: MethodReference, binding: ReceiverBinding) -> AnsweredUse:
         """The reference as a use the method answers: a method is answered by a call
@@ -186,7 +191,7 @@ class AnsweredMethod:
     def answered_uses(
         self, reached: Sequence[tuple[TypedReceiver, ReceiverBinding]]
     ) -> tuple[AnsweredUse, ...]:
-        """The reached references as uses the member answers; one nested in another refuses."""
+        """The reached references as uses the member answers; one nested in another needs input."""
 
         answering = [self.answer(receiver.site, binding) for receiver, binding in reached if receiver.site]
         nested = [
@@ -200,7 +205,8 @@ class AnsweredMethod:
 
     def references(self) -> list[TypedReceiver]:
         """Every attribute reference spelling the member's name, each with its receiver
-        to type; a string reaching it or a `super()` read from the family refuses."""
+        to type; a string reaching it needs input, and a `super()` read from the family
+        is `super_read`'s to answer."""
 
         snapshot = self.snapshot
         receivers: list[TypedReceiver] = []
@@ -228,10 +234,16 @@ class AnsweredMethod:
                     node.value.func.id == "super"
                 ):
                     if _enclosing_class(snapshot, parsed.file_path, node, parents) in self.family:
-                        raise ValueError(f"{where} reaches {self.name!r} through super()")
+                        receivers.append(self.super_read(TypedReceiver(parsed, node.value, node, where, site)))
                     continue
                 receivers.append(TypedReceiver(parsed, node.value, node, where, site))
         return receivers
+
+    def super_read(self, receiver: TypedReceiver) -> TypedReceiver:
+        """A `super()` read of the member from inside the family: by default the proof
+        needs it gone, since the call leaves the family's dispatch for an ancestor's."""
+
+        raise ValueError(f"{receiver.where} reaches {self.name!r} through super()")
 
     def reaching(
         self,
@@ -240,7 +252,7 @@ class AnsweredMethod:
     ) -> list[tuple[TypedReceiver, ReceiverBinding]]:
         """The receivers that are the family, each with what binds it: by the class
         binding, the declarations, then one type-checker session for the rest. A
-        receiver typed as some family classes and some others refuses.
+        receiver typed as some family classes and some others needs input.
 
         With `session`, reuse an existing build instead of starting a new one;
         this lets a caller that checks several methods pay the build cost once."""

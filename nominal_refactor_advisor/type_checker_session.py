@@ -225,6 +225,31 @@ class UnavailableTypeChecker(TypeCheckerSession):
         return f"no type checker: {self.reason}"
 
 
+@dataclass
+class DeferredTypeChecker(TypeCheckerSession):
+    """One build of these sources, started by the first question asked of it, so a caller
+    with several checks pays for the build once and only when a receiver needs it."""
+
+    sources: TypeCheckerSources
+    _started: TypeCheckerSession | None = None
+
+    def receiver_types(
+        self, spans: Iterable[ReceiverSpan]
+    ) -> Mapping[ReceiverSpan, ReceiverType]:
+        if self._started is None:
+            self._started = TypeCheckerSession.started(self.sources)
+        return self._started.receiver_types(spans)
+
+    def stop(self) -> None:
+        if self._started is not None:
+            self._started.stop()
+            self._started = None
+
+    @property
+    def status(self) -> str:
+        return "not started" if self._started is None else self._started.status
+
+
 def _classes_of(found: Type) -> tuple[str, ...]:
     """The classes a mypy type is: the decoder at the type checker's boundary."""
 
