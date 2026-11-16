@@ -3233,11 +3233,8 @@ def python_source_paths_for_roots(
 
 
 @dataclass(frozen=True)
-class PythonModuleRootParser(PythonModuleParseContext):
-    root: Path
-    source_policy: PythonSourcePathPolicy = field(
-        default_factory=PythonSourcePathPolicy
-    )
+class PythonModuleRootParser(PythonSourcePathDiscovery, PythonModuleParseContext):
+    pass
 
     @classmethod
     def for_root(
@@ -3280,7 +3277,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         return parser.parsed_modules()
 
     def parsed_modules(self) -> list[ParsedModule]:
-        paths = PythonSourcePathDiscovery(root=self.root, source_policy=self.source_policy).paths()
+        paths = self.paths()
         return self.parsed_source_paths(paths)
 
     def parsed_source_path(
@@ -3300,7 +3297,7 @@ class PythonModuleRootParser(PythonModuleParseContext):
         )
 
     def source_path_identities(self) -> tuple[PythonModulePathIdentity, ...]:
-        paths = PythonSourcePathDiscovery(root=self.root, source_policy=self.source_policy).paths()
+        paths = self.paths()
         return self.source_path_identities_for_paths(paths)
 
     def source_path_identities_for_paths(
