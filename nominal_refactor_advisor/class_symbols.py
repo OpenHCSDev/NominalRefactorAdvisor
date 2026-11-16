@@ -138,17 +138,12 @@ class ClassSymbolResolutionAuthority:
         parts = ExpressionReference.decoded(reference).attribute_chain
         if parts is None:
             return None
-        scoped = self.parsed_module.fact(ScopedImportBindings)
-        if parts[0] in scoped.inner_bound_names:
-            root = reference
-            while isinstance(root, ast.Attribute):
-                root = root.value
-            scope = scoped.node_index.binder_of(root, parts[0])
-            if scope is not None:
-                imported_name = scoped.imported_names[scope].get(parts[0])
-                if imported_name is None:
-                    return None
-                return self._imported_symbol(imported_name, parts[1:])
+        scope = self._inner_binding_scope(reference, parts[0])
+        if scope is not None:
+            imported_name = self._scoped_imports.imported_names[scope].get(parts[0])
+            if imported_name is None:
+                return None
+            return self._imported_symbol(imported_name, parts[1:])
         alias_symbol = self._import_alias_symbol(parts)
         if alias_symbol is not None:
             return alias_symbol
@@ -158,6 +153,38 @@ class ClassSymbolResolutionAuthority:
         if self.allow_unique_unqualified:
             return self._unique_unqualified_symbol(parts)
         return None
+
+    def imported_name_for_node(self, node: ast.AST) -> str | None:
+        """The qualified name `node` spells through the import binding its root name,
+        read in the scope whose variable that name is; `None` when no import binds it."""
+
+        reference = self.reference_node(node)
+        parts = ExpressionReference.decoded(reference).attribute_chain
+        if parts is None:
+            return None
+        scope = self._inner_binding_scope(reference, parts[0])
+        imported_name = (
+            self.import_aliases.get(parts[0])
+            if scope is None
+            else self._scoped_imports.imported_names[scope].get(parts[0])
+        )
+        return None if imported_name is None else ".".join((imported_name, *parts[1:]))
+
+    @property
+    def _scoped_imports(self) -> ScopedImportBindings:
+        return self.parsed_module.fact(ScopedImportBindings)
+
+    def _inner_binding_scope(self, reference: ast.AST, name: str) -> ast.AST | None:
+        """The class, function, lambda or comprehension whose own variable `name`
+        at `reference` reads; `None` for the module's."""
+
+        scoped = self._scoped_imports
+        if name not in scoped.inner_bound_names:
+            return None
+        root = reference
+        while isinstance(root, ast.Attribute):
+            root = root.value
+        return scoped.node_index.binder_of(root, name)
 
     @staticmethod
     def reference_node(node: ast.AST) -> ast.AST:
