@@ -2057,15 +2057,21 @@ class ProductFlowRepository(
             self, context, call
         )
 
+    @cached_property
+    def _incoming_calls_by_symbol(
+        self,
+    ) -> dict[str, tuple[CompactResolvedFunctionCall, ...]]:
+        grouped: dict[str, list[CompactResolvedFunctionCall]] = {}
+        for edge in self.resolved_function_calls:
+            symbol = edge.resolved_target.declaration.identity.symbol
+            grouped.setdefault(symbol, []).append(edge)
+        return {symbol: tuple(edges) for symbol, edges in grouped.items()}
+
     def incoming_calls_for(
         self,
         function_symbol: str,
     ) -> tuple[CompactResolvedFunctionCall, ...]:
-        return tuple(
-            edge
-            for edge in self.resolved_function_calls
-            if edge.resolved_target.declaration.identity.symbol == function_symbol
-        )
+        return self._incoming_calls_by_symbol.get(function_symbol, ())
 
     def declared_return_class_symbol_for(
         self,

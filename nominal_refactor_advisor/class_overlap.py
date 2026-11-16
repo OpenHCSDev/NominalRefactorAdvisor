@@ -1094,7 +1094,7 @@ class ClassOverlapVerdicts:
                 if (
                     name not in axis
                     and name in first_declarations
-                    and any(shared.name == name for shared in overlap.shared)
+                    and name in overlap.shared_names
                     and not declaration.same_declaration_as(first_declarations[name])
                 ):
                     axis[name] = sibling.rsplit(".", 1)[-1]

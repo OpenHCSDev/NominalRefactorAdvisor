@@ -194,6 +194,14 @@ class ClassBodyOverlap:
     first_only: tuple[ClassBodyDeclaration, ...]
     second_only: tuple[ClassBodyDeclaration, ...]
 
+    @cached_property
+    def shared_names(self) -> frozenset[str]:
+        return frozenset(shared.name for shared in self.shared)
+
+    @cached_property
+    def shared_by_name(self) -> dict[str, SharedClassBodyDeclaration]:
+        return {shared.name: shared for shared in self.shared}
+
     @classmethod
     def of(
         cls,
