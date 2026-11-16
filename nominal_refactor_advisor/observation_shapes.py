@@ -132,6 +132,7 @@ class StructuralObservationTemplate(StructuralObservationCarrier, ABC):
                )
 
 
+@dataclass(frozen=True)
 class ExecutionLevelObservationMixin(ABC):
     execution_level: StructuralExecutionLevel
     observation_execution_level = AliasProperty[StructuralExecutionLevel](
@@ -155,16 +156,19 @@ class ModuleBodyExecutionMixin(StaticExecutionLevelMixin):
     OBSERVATION_EXECUTION_LEVEL = StructuralExecutionLevel.MODULE_BODY
 
 
+@dataclass(frozen=True)
 class LineObservationMixin(ABC):
     line: int
     observation_line = AliasProperty[int]("line")
 
 
+@dataclass(frozen=True)
 class LinenoObservationMixin(ABC):
     lineno: int
     observation_line = AliasProperty[int]("lineno")
 
 
+@dataclass(frozen=True)
 class SymbolOwnerMixin(ABC):
     symbol: str
 
@@ -242,6 +246,7 @@ class FunctionNameOwnerMixin(ABC):
     owner_symbol = AliasProperty[str]("function_name")
 
 
+@dataclass(frozen=True)
 class ClassNameNominalWitnessMixin(ABC):
     class_name: str
     nominal_witness = AliasProperty[str]("class_name")
@@ -266,10 +271,7 @@ class FieldObservation(
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.FIELD
-    class_name: str
     field_name: str
-    lineno: int
-    execution_level: StructuralExecutionLevel
     origin_kind: FieldOriginKind
     is_dataclass_family: bool
     value_fingerprint: str | None = None
@@ -293,12 +295,9 @@ class LiteralDispatchObservation(
     StructuralObservationTemplate,
 ):
     OBSERVATION_KIND = ObservationKind.LITERAL_DISPATCH
-    line: int
-    symbol: str
     axis_fingerprint: str
     literal_cases: tuple[str, ...]
     literal_kind: LiteralKind
-    execution_level: StructuralExecutionLevel
     branch_lines: tuple[int, ...] = ()
     scope_owner: str | None = None
 
