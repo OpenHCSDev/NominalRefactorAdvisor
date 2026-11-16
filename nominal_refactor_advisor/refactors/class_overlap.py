@@ -2779,7 +2779,7 @@ class ClassOverlapFindingRecipeSynthesizer(
             try:
                 operation.source_edits(context)
             except CodemodOperationPreflightError as error:
-                return self.preflight_evaluation(error)
+                return self.stopped_evaluation(error)
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)
 
@@ -2853,6 +2853,6 @@ class ClassOverlapFindingRecipeSynthesizer(
             try:
                 operation.source_edits(context)
             except CodemodOperationPreflightError as error:
-                return self.preflight_evaluation(error)
+                return self.stopped_evaluation(error)
             recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)

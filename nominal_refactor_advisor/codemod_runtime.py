@@ -3202,12 +3202,6 @@ class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
 
         return self.rejected_evaluation(str(error), NeedsInput.needs_of(error))
 
-    def preflight_evaluation(
-        self, error: CodemodOperationPreflightError
-    ) -> RejectedRecipeEvaluation:
-        """The outcome of an operation whose preflight stopped, with its needs."""
-
-        return self.rejected_evaluation(error.report.message, error.report.needs)
 
     def covered_evaluation(self, covering: str) -> CoveredRecipeEvaluation:
         return CoveredRecipeEvaluation(

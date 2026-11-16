@@ -9,7 +9,7 @@ from nominal_refactor_advisor.json_reports import (
     json_report_field,
     json_report_property,
 )
-from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 
 @dataclass(frozen=True)
@@ -24,11 +24,12 @@ class CodemodOperationPreflightReport(DataclassJsonReport):
     needs: tuple[NeededInput, ...] = (NeededInput.UNTYPED,)
 
 
-class CodemodOperationPreflightError(ValueError):
-    """Raised when a codemod operation can report why it is not executable yet."""
+class CodemodOperationPreflightError(NeedsInput):
+    """Raised when a codemod operation can report why it is not executable yet,
+    naming the kinds of input its report needs."""
 
     def __init__(self, report: CodemodOperationPreflightReport) -> None:
-        super().__init__(report.message)
+        super().__init__(report.message, *report.needs)
         self.report = report
 
     @property
@@ -46,13 +47,14 @@ class CodemodOperationPreflightError(ValueError):
 
 class CodemodPlanPreflightError(CodemodOperationPreflightError):
     """Raised when a plan has failed preflights: it carries every one of them, so
-    one run names every refused recipe. `report` is the first, for callers that
-    act on one."""
+    one run names every stopped recipe and every input they need. `report` is
+    the first, for callers that act on one."""
 
     def __init__(self, plan: CodemodPlanPreflightReport) -> None:
         failed = plan.failed_reports
         super().__init__(failed[0])
         self.args = ("; ".join(report.message for report in failed),)
+        self.needs = NeededInput.distinct(need for report in failed for need in report.needs)
         self.plan = plan
 
     @property
