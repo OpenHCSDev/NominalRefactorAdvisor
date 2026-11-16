@@ -1630,15 +1630,31 @@ class DeclaredIdentities:
 
         return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
+    @cached_property
+    def _all_instance_attribute_names(self) -> frozenset[str]:
+        return frozenset(
+            attr
+            for declared in self.instance_attributes.values()
+            for attr in declared
+        )
+
+    @cached_property
+    def _members_by_literal(self) -> dict[str, MemberSpellings]:
+        return {
+            value: spellings
+            for spellings in self.members.values()
+            for value, _location in spellings.members
+        }
+
     def member_named(self, literal: str) -> ResolvedIdentity | None:
         """The family member whose explicit spelling the literal is."""
 
         if self.protocol_name(literal):
             return None
-        for spellings in self.members.values():
-            if any(value == literal for value, _location in spellings.members):
-                return spellings.spelled(literal)
-        return None
+        spellings = self._members_by_literal.get(literal)
+        if spellings is None:
+            return None
+        return spellings.spelled(literal)
 
     def class_named(self, name: str) -> ResolvedIdentity | None:
         declared = self.classes.get(name)
@@ -1652,9 +1668,26 @@ class DeclaredIdentities:
             return None
         return ResolvedIdentity(identity=f"module `{name}`", declared_at=(declared,))
 
+    @cached_property
+    def _ancestors_by_name(self) -> dict[str, tuple[str, ...]]:
+        result: dict[str, tuple[str, ...]] = {}
+        for name in self.classes:
+            found = {name: None}
+            frontier = [name]
+            for current in frontier:
+                for base in self.bases.get(current, ()):
+                    if base not in found:
+                        found[base] = None
+                        frontier.append(base)
+            result[name] = tuple(found)
+        return result
+
     def ancestors(self, name: str) -> tuple[str, ...]:
         """The class and every scanned class it inherits from, by name."""
 
+        cached = self._ancestors_by_name.get(name)
+        if cached is not None:
+            return cached
         found = {name: None}
         frontier = [name]
         for current in frontier:
@@ -1702,7 +1735,7 @@ class DeclaredIdentities:
                 and not self.per_object(receiver.instance, attribute)
                 else None
             )
-        if any(attribute in declared for declared in self.instance_attributes.values()):
+        if attribute in self._all_instance_attribute_names:
             return None
         return spellings if spellings.members else None
 
@@ -1737,11 +1770,9 @@ class DeclaredIdentities:
         )
         if declaring is None:
             return None
-        for spellings in self.members.values():
-            if self.in_family(receiver, spellings) and any(
-                value == literal for value, _location in spellings.members
-            ):
-                return spellings.spelled(literal)
+        spellings = self._members_by_literal.get(literal)
+        if spellings is not None and self.in_family(receiver, spellings):
+            return spellings.spelled(literal)
         return ResolvedIdentity(
             identity=f"the `{receiver}` member spelled {literal!r}",
             declared_at=self.classes[declaring][:LISTED_DECLARATIONS],

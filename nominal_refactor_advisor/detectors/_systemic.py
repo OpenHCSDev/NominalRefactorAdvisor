@@ -1699,6 +1699,16 @@ class ResidualClosedAxisBranchingCandidate(CollectsItselfFromCompactContext[Comp
             authoritative_specs_by_key[spec.key_type_name].append(spec)
         if not authoritative_specs_by_key:
             return ()
+        spec_file_paths_by_key: dict[str, frozenset[str]] = {
+            key: frozenset(spec.file_path for spec in specs)
+            for key, specs in authoritative_specs_by_key.items()
+        }
+        case_names_by_key: dict[str, frozenset[str]] = {
+            key: frozenset(
+                case_name for spec in specs for case_name in spec.case_names
+            )
+            for key, specs in authoritative_specs_by_key.items()
+        }
         candidates: list[Self] = []
         seen: set[ResidualClosedAxisBranchingIdentity] = set()
         for projection in projections:
@@ -1706,16 +1716,14 @@ class ResidualClosedAxisBranchingCandidate(CollectsItselfFromCompactContext[Comp
                 if "/tests/" in function.file_path:
                     continue
                 for axis in function.axes:
-                    specs = authoritative_specs_by_key.get(axis.key_type_name, ())
-                    if not specs or any(
-                        spec.file_path == function.file_path for spec in specs
+                    spec_file_paths = spec_file_paths_by_key.get(axis.key_type_name)
+                    if (
+                        spec_file_paths is None
+                        or function.file_path in spec_file_paths
                     ):
                         continue
-                    authoritative_case_names = {
-                        case_name for spec in specs for case_name in spec.case_names
-                    }
                     shared_case_names = sorted_tuple(
-                        set(axis.case_names) & authoritative_case_names
+                        set(axis.case_names) & case_names_by_key[axis.key_type_name]
                     )
                     if not shared_case_names:
                         continue
@@ -4290,6 +4298,7 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
             if len(grouped) >= 2
         ]
         filtered_candidates: list[Self] = []
+        accepted_by_names: dict[tuple[str, ...], int] = {}
         for candidate in sorted(
             candidates,
             key=lambda item: (
@@ -4299,17 +4308,15 @@ class RepeatedResultAssemblyPipelineCandidate(CollectsItselfUnderConfig, Evidenc
             ),
         ):
             candidate_function_names = tuple(
-                (function.qualname for function in candidate.functions)
+                function.qualname for function in candidate.functions
             )
-            if any(
-                (
-                    len(existing.shared_tail) >= len(candidate.shared_tail)
-                    and candidate_function_names
-                    == tuple((function.qualname for function in existing.functions))
-                    for existing in filtered_candidates
-                )
+            accepted_tail_len = accepted_by_names.get(candidate_function_names)
+            if (
+                accepted_tail_len is not None
+                and accepted_tail_len >= len(candidate.shared_tail)
             ):
                 continue
+            accepted_by_names[candidate_function_names] = len(candidate.shared_tail)
             filtered_candidates.append(candidate)
         return tuple(filtered_candidates)
 
