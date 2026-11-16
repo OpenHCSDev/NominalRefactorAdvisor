@@ -102,15 +102,22 @@ class TopLevelBindingRenameTarget:
         bound_name: str,
     ) -> TopLevelBindingRenameTarget:
         """The declaration a redirect deletes: its consumers read `bound_name`,
-        which its module already binds."""
+        which its module already binds or which resolves, unshadowed, to a builtin."""
 
         if target.qualname != target.name:
             raise ValueError("Declaration redirect requires a top-level target")
         source_module, declaration_index = cls._located(parsed_modules, target.file_path)
         if bound_name == target.name:
             raise ValueError("Declaration redirect requires a distinct name")
-        if bound_name not in declaration_index.binding_statements_by_name:
-            raise ValueError(f"Redirect name {bound_name!r} is not bound at the top level")
+        if bound_name not in declaration_index.binding_statements_by_name and not (
+            ModuleNominalBindingAuthority(source_module)
+            .snapshot_before()
+            .resolves_unshadowed_builtin(bound_name)
+        ):
+            raise ValueError(
+                f"Redirect name {bound_name!r} needs a binding: the module binds no "
+                "such name at the top level and it is no unshadowed builtin"
+            )
         redirected = cls._exported(source_module, declaration_index, target.name)
         if redirected.declaration.node is not node:
             raise ValueError("Declaration redirect target is not one exact binding")
@@ -738,6 +745,13 @@ class DeclarationAuthorityModuleRenameProof:
             ),
         )
 
+    def qualified_reference_offsets(
+        self, geometry: SourceTextGeometry, reference: ast.Attribute
+    ) -> tuple[int, int]:
+        """The span a redirect writes the new name over: the declaration's name token."""
+
+        return self._qualified_name_offsets(geometry, reference)
+
     @staticmethod
     def _qualified_name_offsets(
         geometry: SourceTextGeometry,
@@ -811,6 +825,54 @@ class DeclarationAuthorityModuleRedirectProof(DeclarationAuthorityModuleRenamePr
             raise ValueError(
                 f"Redirect name {new_name!r} binds another object in {module.file_path!r}"
             )
+
+
+@dataclass(frozen=True)
+class DeclarationAuthorityModuleBuiltinRedirectProof(DeclarationAuthorityModuleRedirectProof):
+    """Rename surfaces of one module for a declaration deleted in favour of a builtin.
+
+    The builtin needs no import: a consumer drops its imports of the deleted
+    declaration, and a qualified read `module.Deleted` becomes the bare builtin
+    name. Every read must then resolve to the builtin: the module binds no such
+    name, and no enclosing scope at the read binds it either.
+    """
+
+    @classmethod
+    def require(
+        cls,
+        module: ParsedModule,
+        new_name: str,
+        binding_closure: DeclarationAuthorityRenameBindingClosure,
+        repository_bindings: RepositoryModuleBindingProof,
+    ) -> Self:
+        proof = super().require(module, new_name, binding_closure, repository_bindings)
+        if not (
+            ModuleNominalBindingAuthority(module)
+            .snapshot_before()
+            .resolves_unshadowed_builtin(new_name)
+        ):
+            raise ValueError(
+                f"{module.file_path} binds {new_name!r} itself; the redirect needs "
+                "its reads there to resolve to the builtin"
+            )
+        index = module.fact(ModuleNodeIndex)
+        for reference in (*proof.direct_references, *proof.qualified_references):
+            if index.binding_scope(reference, new_name) is not None:
+                raise ValueError(
+                    f"{module.file_path}:{reference.lineno} sits in a scope that binds "
+                    f"{new_name!r}; the redirect needs the builtin there"
+                )
+        return replace(
+            proof,
+            redirected_imports_are_removed=module.file_path != binding_closure.target.file_path,
+        )
+
+    def qualified_reference_offsets(
+        self, geometry: SourceTextGeometry, reference: ast.Attribute
+    ) -> tuple[int, int]:
+        """`module.Deleted` becomes the bare builtin name: the whole read."""
+
+        return geometry.required_node_offsets(reference)
 
 
 @dataclass(frozen=True)
@@ -985,4 +1047,22 @@ class DeclarationRedirectProof(DeclarationAuthorityRenameProof):
         redirected = TopLevelBindingRenameTarget.require_redirect(
             parsed_modules, target, node, bound_name=bound_name
         )
-        return cls._from_target(parsed_modules, redirected, new_name=bound_name)
+        proof_type = (
+            cls
+            if bound_name
+            in SourceTopLevelDeclarationIndex(
+                source_path=redirected.file_path, module=redirected.source_module.module
+            ).binding_statements_by_name
+            else DeclarationBuiltinRedirectProof
+        )
+        return proof_type._from_target(parsed_modules, redirected, new_name=bound_name)
+
+
+@dataclass(frozen=True)
+class DeclarationBuiltinRedirectProof(DeclarationRedirectProof):
+    """Closed repository proof that one declaration can be deleted and every
+    consumer read, unshadowed, the builtin it differs from only by name."""
+
+    module_proof_type: ClassVar[type[DeclarationAuthorityModuleRenameProof]] = (
+        DeclarationAuthorityModuleBuiltinRedirectProof
+    )

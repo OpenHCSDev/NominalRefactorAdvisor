@@ -618,3 +618,71 @@ def test_fold_refuses_members_a_stored_row_can_hold(tmp_path: Path):
     )
     with pytest.raises(ValueError, match="pkg.runs.Run.mode can hold it"):
         operation.source_edits(_snapshot(tmp_path))
+
+
+BUILTIN_ERRORS = (
+    "class ConfigError(ValueError):\n    pass\n\n\ndef parse(text):\n    if not text:\n"
+    "        raise ConfigError('empty')\n    return text\n"
+)
+BUILTIN_LOADER = (
+    "from pkg.errors import ConfigError\n\n\ndef load(text):\n    if text == '?':\n"
+    "        raise ConfigError('unknown')\n    return text\n"
+)
+BUILTIN_OTHER = "from pkg import errors\n\n\ndef fail():\n    raise errors.ConfigError('other')\n"
+BUILTIN_MAIN = (
+    "from pkg.errors import parse\nfrom pkg.loader import load\nfrom pkg.other import fail\n\n"
+    "for call in (lambda: parse(''), lambda: load('?'), fail):\n"
+    "    try:\n        call()\n    except ValueError as error:\n"
+    "        print(type(error).__mro__[-3].__name__, error)\n"
+)
+BUILTIN_PACKAGE = {
+    "pkg/__init__.py": "",
+    "pkg/errors.py": BUILTIN_ERRORS,
+    "pkg/loader.py": BUILTIN_LOADER,
+    "pkg/other.py": BUILTIN_OTHER,
+    "main.py": BUILTIN_MAIN,
+}
+
+
+def test_an_empty_subclass_of_a_builtin_redirects_to_the_builtin(tmp_path: Path):
+    """A builtin base needs no binding: its consumers drop their imports and read it."""
+
+    _write(tmp_path, BUILTIN_PACKAGE)
+    expected = _run(tmp_path)
+    _apply_every_recipe(NameOnlySubclassDetector, tmp_path, 1)
+
+    assert (tmp_path / "pkg/errors.py").read_text() == (
+        "def parse(text):\n    if not text:\n        raise ValueError('empty')\n    return text\n"
+    )
+    assert (tmp_path / "pkg/loader.py").read_text() == (
+        "\n\ndef load(text):\n    if text == '?':\n        raise ValueError('unknown')\n    return text\n"
+    )
+    assert (tmp_path / "pkg/other.py").read_text() == (
+        "from pkg import errors\n\n\ndef fail():\n    raise ValueError('other')\n"
+    )
+    assert _run(tmp_path) == expected
+    assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    ("shadow", "reason"),
+    (
+        (
+            BUILTIN_LOADER + "\n\nValueError = KeyError\n",
+            "Redirect name 'ValueError' binds another object in 'pkg/loader.py'",
+        ),
+        (
+            BUILTIN_LOADER.replace("def load(text):", "def load(text, ValueError=KeyError):"),
+            "pkg/loader.py:6 sits in a scope that binds 'ValueError'",
+        ),
+    ),
+    ids=("module-binding", "local-binding"),
+)
+def test_a_consumer_that_shadows_the_builtin_needs_its_binding(
+    tmp_path: Path, shadow: str, reason: str
+):
+    _write(tmp_path, {**BUILTIN_PACKAGE, "pkg/loader.py": shadow})
+    operation = RedirectEmptySubclassOperation(target=_target(tmp_path, "ConfigError"))
+    with pytest.raises(ValueError) as needs:
+        operation.source_edits(_snapshot(tmp_path))
+    assert reason in str(needs.value).replace(tmp_path.as_posix() + "/", "")
