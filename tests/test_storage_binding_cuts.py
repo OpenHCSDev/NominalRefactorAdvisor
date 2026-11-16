@@ -74,7 +74,7 @@ def test_future_function_local_storage_can_be_empty_without_global_fallback():
     use = scope.flow.callable_reference_uses[0]
     assert scope.flow.stored_binding_resolution_for("property", use.position) is None
     actual = frame()
-    assert actual.initial_lookup_namespaces(scope, "property") == (actual.locals,)
+    assert actual.initial_lookup_namespaces(scope, "property").namespaces == (actual.locals,)
 
 
 def test_parameter_entry_remains_explicit_and_hides_outer_lookup():
@@ -85,7 +85,7 @@ def test_parameter_entry_remains_explicit_and_hides_outer_lookup():
         InitialCompactParameterBinding,
     )
     actual = frame()
-    assert actual.initial_lookup_namespaces(scope, "property") == (actual.locals,)
+    assert actual.initial_lookup_namespaces(scope, "property").namespaces == (actual.locals,)
 
 
 def test_declared_global_does_not_become_a_function_local():
@@ -94,7 +94,7 @@ def test_declared_global_does_not_become_a_function_local():
         "run",
     )
     actual = frame()
-    assert actual.initial_lookup_namespaces(scope, "property") == (
+    assert actual.initial_lookup_namespaces(scope, "property").namespaces == (
         actual.globals,
         actual.builtins,
     )

@@ -2431,9 +2431,9 @@ class CapturedReferenceKernel(
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
         for namespace in namespaces:
-            if namespace.is_open:
-                return namespace
-            result = self._namespace_resolution(namespace, name, prefix, pending)
+            result = namespace.and_then(
+                lambda found: self._namespace_resolution(found, name, prefix, pending)
+            )
             if result is not None:
                 return result
         return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
