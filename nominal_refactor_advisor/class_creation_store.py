@@ -92,6 +92,12 @@ class CreatedClassStore:
             and self._stores(init, self._receiver(init), 0)
         )
 
+    def checks_instances(self) -> bool:
+        """As a metaclass: it answers `isinstance` itself, so a test against a
+        class it creates decodes a value rather than asking which class it is."""
+
+        return "__instancecheck__" in self.methods
+
     def stores_subclass(self) -> bool:
         """As a base: `__init_subclass__` stores the subclass being created."""
 

@@ -351,6 +351,11 @@ class OwnTypeTestDetector(
                 for module in TypeTestModuleFamily.modules_in(projections_by_family)
             ),
             family_class_symbols=frozenset(symbol for edge in edges for symbol in edge),
+            decoder_class_symbols=frozenset(
+                symbol
+                for symbol, indexed_class in index.classes_by_symbol.items()
+                if indexed_class.decodes_instances
+            ),
                )
 
     restated = RestatedFact(

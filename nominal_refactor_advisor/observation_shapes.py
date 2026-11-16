@@ -442,7 +442,11 @@ class TypeTestShape(RestatingSite):
         """The tested classes declared in the scan's modules: the syntax already
         proves each is a class."""
 
-        return tuple(name for name in self.type_names if scope.declares_module_of(name))
+        return tuple(
+            name
+            for name in self.type_names
+            if scope.declares_module_of(name) and name not in scope.decoder_class_symbols
+        )
 
     def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
         """The declared tested classes whose membership this test restates."""
@@ -484,6 +488,9 @@ class DeclaredClassScope:
 
     module_names: tuple[str, ...]
     family_class_symbols: frozenset[str] = frozenset()
+    decoder_class_symbols: frozenset[str] = frozenset()
+    """Declared classes whose metaclass answers `isinstance`: testing a value
+    against one decodes it at the boundary, it does not restate the class."""
 
     def declares_module_of(self, name: str) -> bool:
         """Whether a scanned module is, contains, or sits inside the module of `name`."""

@@ -217,6 +217,8 @@ class ClassRegistryFacts(NamedTuple):
     base_references: tuple[CompactNominalReference, ...] = ()
     stores_created_class: bool = False
     stores_subclass: bool = False
+    checks_instances: bool = False
+    """Whether, used as a metaclass, it defines `__instancecheck__`."""
     walk_root: FamilyWalkRoot = NoWalkRoot()
     """Where the family the class declares looks for its members (`FamilyWalkRoot`)."""
 
@@ -243,6 +245,7 @@ class ClassRegistryFacts(NamedTuple):
             base_references=_compact_base_references(node, module_binding_snapshot),
             stores_created_class=creation.stores_created_class(),
             stores_subclass=creation.stores_subclass(),
+            checks_instances=creation.checks_instances(),
             walk_root=registry_config_walk_root(parsed_module, node),
         )
 
@@ -437,6 +440,9 @@ class ClassDeclaration(QualifiedDeclaration, LineWitness):
     )
     declares_autoregister_meta: bool = field(default=False, kw_only=True)
     """Whether its metaclass registers the classes it creates; set by the index."""
+    decodes_instances: bool = field(default=False, kw_only=True)
+    """Whether its metaclass, declared or inherited, answers `isinstance`: a test
+    against it decodes a foreign value; set by the index."""
     is_abstract: bool = field(default=False, kw_only=True)
     """Whether a base is spelled `ABC` or `ABCMeta`, or a direct method is decorated
     with something bound to `abc.abstractmethod` where the class is declared."""
@@ -484,9 +490,10 @@ class ClassDeclaration(QualifiedDeclaration, LineWitness):
         self, authority: RegisteringMetaclassAuthority[Any]
     ) -> Self:
         registers = authority.registers_remembered(self)
-        if registers == self.declares_autoregister_meta:
+        decodes = authority.decodes_instances(self)
+        if (registers, decodes) == (self.declares_autoregister_meta, self.decodes_instances):
             return self
-        return replace(self, declares_autoregister_meta=registers)
+        return replace(self, declares_autoregister_meta=registers, decodes_instances=decodes)
 
 
 @dataclass(frozen=True)
@@ -1244,6 +1251,7 @@ class CompactIndexedClass(CompactClassHeader):
         return replace(
             self,
             declares_autoregister_meta=registers,
+            decodes_instances=authority.decodes_instances(self),
             is_registration_authority=(
                 self.is_registration_authority or authority.is_registry_family(self)
             ),
@@ -6327,6 +6335,27 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         return _unique_known_symbol_by_suffix(frozenset(self.scanned))
 
     def registers(self, declaration: ClassDeclaration) -> bool:
+        return self.metaclass_holds(
+            declaration, lambda found: found.registry_facts.stores_created_class
+        )
+
+    def decodes_instances(self, declaration: ClassDeclaration) -> bool:
+        """Whether the metaclass it is created with, its own or a base's, answers `isinstance`."""
+
+        def checks(found: ClassDeclaration) -> bool:
+            return found.registry_facts.checks_instances
+
+        return self.metaclass_holds(declaration, checks) or self.some_ancestor(
+            declaration, lambda found: self.metaclass_holds(found, checks)
+        )
+
+    def metaclass_holds(
+        self,
+        declaration: ClassDeclaration,
+        holds: Callable[[ClassDeclaration], bool],
+    ) -> bool:
+        """Whether `holds` is true of its declared metaclass or one of that metaclass's bases."""
+
         pending = [
             (reference, declaration.module_name)
             for reference in declaration.registry_facts.metaclass_references
@@ -6340,7 +6369,7 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
             if found is None or found.symbol in seen:
                 continue
             seen.add(found.symbol)
-            if found.registry_facts.stores_created_class:
+            if holds(found):
                 return True
             pending.extend(
                 (base, found.module_name)

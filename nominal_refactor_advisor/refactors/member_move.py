@@ -102,9 +102,10 @@ class MovedMethod(AnsweredMethod):
         )
         method = next(
             (
-                statement for statement in source_class.node.body
-                if isinstance(statement, FunctionDefinition)
-                and statement.name == method_name
+                statement for statement in FunctionDefinition.within(
+                    source_class.node.body
+                )
+                if statement.name == method_name
             ),
             None,
         )
