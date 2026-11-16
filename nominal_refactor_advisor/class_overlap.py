@@ -127,14 +127,22 @@ class ClassOverlapMove(Case):
         """What `builder` builds for this move."""
 
     @classmethod
-    def fields_receiver(
-        cls,
-        verdicts: ClassOverlapVerdicts,
-        owner: CompactIndexedClass,
-        restating: CompactIndexedClass,
-    ) -> CompactIndexedClass:
-        """The class whose fields the restating class inherits after the move."""
-        return owner
+    def receiver_blockers(cls, owner: CompactIndexedClass) -> tuple[Receipt, ...]:
+        """The restating class inherits the owner's fields as they are, so the
+        owner must already be a dataclass."""
+
+        if owner.is_dataclass:
+            return ()
+        return (
+            Receipt(
+                kind=OverlapReceiptKind.PARENT_NOT_DATACLASS,
+                detail=(
+                    f"`{owner.qualname}` is not a @dataclass; promote it to "
+                    "@dataclass(frozen=True) so its children inherit its fields"
+                ),
+                evidence=(_location(owner),),
+            ),
+        )
 
     @classmethod
     def obligation_classes(
@@ -204,13 +212,10 @@ class PromoteToSharedBase(ClassOverlapMove):
     value = "promote_to_shared_base"
 
     @classmethod
-    def fields_receiver(
-        cls,
-        verdicts: ClassOverlapVerdicts,
-        owner: CompactIndexedClass,
-        restating: CompactIndexedClass,
-    ) -> CompactIndexedClass:
-        return verdicts.sole_shared_base(owner, restating) or owner
+    def receiver_blockers(cls, owner: CompactIndexedClass) -> tuple[Receipt, ...]:
+        """The fold makes the shared base a dataclass itself."""
+
+        return ()
 
     @classmethod
     def built_by(cls, builder: ClassOverlapMoveBuilder[MoveBuildT]) -> MoveBuildT:
@@ -242,6 +247,12 @@ class ExtractMixin(ClassOverlapMove):
         return builder.extract_mixin()
     reorders_fields = True
     needs_new_owner = True
+
+    @classmethod
+    def receiver_blockers(cls, owner: CompactIndexedClass) -> tuple[Receipt, ...]:
+        """The new mixin is born a dataclass."""
+
+        return ()
 
     @classmethod
     def obligation_classes(
@@ -920,7 +931,7 @@ class ClassOverlapVerdicts:
                     if not move.needs_new_owner
                     else ()
                 ),
-                *self._promotion_blocker_receipts(move, owner, restating),
+                *move.receiver_blockers(owner),
             ),
         )
 
@@ -1107,32 +1118,6 @@ class ClassOverlapVerdicts:
                         constructed=(indexed_class.symbol,),
                     )
                 )
-        return tuple(receipts)
-
-    def _promotion_blocker_receipts(
-        self,
-        move: type[ClassOverlapMove],
-        owner: CompactIndexedClass,
-        restating: CompactIndexedClass,
-    ) -> tuple[Receipt, ...]:
-        """Concrete blockers for a promote/compose move: parent not a dataclass,
-        or a child using class-attribute assignments instead of field defaults."""
-
-        if move.needs_new_owner:
-            return ()
-        receipts: list[Receipt] = []
-        target = move.fields_receiver(self, owner, restating)
-        if not target.is_dataclass:
-            receipts.append(
-                Receipt(
-                    kind=OverlapReceiptKind.PARENT_NOT_DATACLASS,
-                    detail=(
-                        f"`{target.qualname}` is not a @dataclass; promote it to "
-                        "@dataclass(frozen=True) so its children inherit its fields"
-                    ),
-                    evidence=(_location(target),),
-                )
-            )
         return tuple(receipts)
 
     def family_axis_names(

@@ -1035,6 +1035,7 @@ class ModuleDeclarationRelocation(SourceRewriteABC):
             insertion_line=min(
                 (*(decorator.lineno for decorator in user.node.decorator_list), user.line)
             ),
+            rationale=f"Declare `{declaration.node.name}` before `{user.node.name}` uses it.",
         )
 
     @property

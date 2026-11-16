@@ -103,7 +103,7 @@ def test_any_changed_call_interior_rejects_even_identical_replacement(old, new):
     edit = SourceTextGeometry(source).nominal_edit(
         file_path=PATH,
         replacements=(
-            SourceTextSpanReplacement(start, start + len(old), replacement_source=new),
+            SourceTextSpanReplacement(start_offset=start, end_offset=start + len(old), replacement_source=new),
         ),
     )
     relation = relation_for(source, (edit,))
@@ -123,7 +123,7 @@ def test_comment_change_inside_multiline_call_is_not_retained_full_call():
     edit = SourceTextGeometry(source).nominal_edit(
         file_path=PATH,
         replacements=(
-            SourceTextSpanReplacement(start, start + 13, replacement_source="new note"),
+            SourceTextSpanReplacement(start_offset=start, end_offset=start + 13, replacement_source="new note"),
         ),
     )
     relation = relation_for(source, (edit,))
@@ -141,7 +141,7 @@ def test_target_name_edit_outside_call_retains_the_complete_call():
     edit = SourceTextGeometry(source).nominal_edit(
         file_path=PATH,
         replacements=(
-            SourceTextSpanReplacement(0, 6, replacement_source="renamed_result"),
+            SourceTextSpanReplacement(start_offset=0, end_offset=6, replacement_source="renamed_result"),
         ),
     )
     relation = relation_for(source, (edit,))

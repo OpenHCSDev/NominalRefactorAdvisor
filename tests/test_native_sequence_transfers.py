@@ -21,7 +21,7 @@ from test_source_native_expression_join import assignment
 
 def test_sequence_contract_requires_a_concrete_native_declaration():
     with pytest.raises(TypeError, match="abstract"):
-        NativeSequenceValue(0, ())
+        NativeSequenceValue(instruction_offset=0, inputs=())
 
 
 @pytest.mark.native_proof

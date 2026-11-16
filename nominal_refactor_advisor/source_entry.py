@@ -261,7 +261,7 @@ class SourceModuleEntryPremise(
     def prefix(
         self, position: CompactFlowPosition | None, kernel: CapturedReferenceKernel
     ) -> AdmittedExecutionPrefixABC:
-        return CapturedFlowPrefix(self.context, self.frame, position, kernel=kernel)
+        return CapturedFlowPrefix(context=self.context, frame=self.frame, position=position, kernel=kernel)
 
     def require_admitted(self, initial: InitialNativeIsland) -> None:
         if initial is not self.initial:

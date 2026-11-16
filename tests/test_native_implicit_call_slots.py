@@ -22,7 +22,7 @@ from nominal_refactor_advisor.value_graph import DataclassGraphValue
 
 @pytest.mark.parametrize("order", tuple(NativeCallOperandOrder))
 def test_implicit_prefix_uses_original_values_in_native_order(order):
-    callee, argument = NativeProducedValue(instruction_offset=2, inputs=()), NativeConstantValue(4, (), None)
+    callee, argument = NativeProducedValue(instruction_offset=2, inputs=()), NativeConstantValue(instruction_offset=4, inputs=(), value=None)
     actual_callee, actual_argument = order.split((callee, argument))
     assert actual_callee is callee
     assert actual_argument is argument
@@ -116,7 +116,7 @@ def call_chain(count):
     callee = NativeProducedValue(instruction_offset=0, inputs=())
     value = callee
     for offset in range(1, count + 1):
-        value = NativeCallValue(offset, (callee, value), value)
+        value = NativeCallValue(instruction_offset=offset, inputs=(callee, value), argument_slot=value)
     return value
 
 

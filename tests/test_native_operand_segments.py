@@ -42,7 +42,7 @@ def test_each_ordinary_native_production_is_emitted_once(monkeypatch):
     source = "".join(f"field_{index} = (object, {index})\n" for index in range(200))
     code = compile(source, "one-walk.py", "exec")
     backend = NativeCreationBackend.current()
-    stream = NativeValueStoreStream(code, backend.primitive_operations)
+    stream = NativeValueStoreStream(code=code, operations=backend.primitive_operations)
     offsets = []
     original = NativeOperandStack.emit
 
@@ -101,7 +101,7 @@ def test_instruction_order_failure_cannot_borrow_prefix_operands(disturbance):
             if hasattr(interruption, "label")
             else interruption._replace(is_jump_target=True)
         )
-    stream = NativeValueStoreStream(code, backend.primitive_operations)
+    stream = NativeValueStoreStream(code=code, operations=backend.primitive_operations)
     for instruction in (load, interruption, store):
         stream.observe(instruction)
     assert not any(segment.stores for segment in stream.segments)

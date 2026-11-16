@@ -106,9 +106,9 @@ def test_snapshot_does_not_recollect_flows_for_its_second_consumer(monkeypatch):
     calls = []
     original = product_flow._ProductFlowCollection
 
-    def counted(*args, **kwargs):
-        calls.append(args[0])
-        return original(*args, **kwargs)
+    def counted(*, parsed_module, collector_type):
+        calls.append(parsed_module)
+        return original(parsed_module=parsed_module, collector_type=collector_type)
 
     monkeypatch.setattr(product_flow, "_ProductFlowCollection", counted)
     repository = state.product_flow_repository

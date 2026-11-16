@@ -1852,11 +1852,11 @@ class NativePrimitiveOperation(Enum):
             raise ValueError("Native prologue binding has no exact string operand")
         return (
             NativeBindingTransfer(
-                self,
-                name,
-                instruction.offset,
-                instruction.arg,
-                value,
+                operation=self,
+                name=name,
+                instruction_offset=instruction.offset,
+                operand_index=instruction.arg,
+                value=value,
                 source_span=NativeInstructionSite.span_for(instruction),
             ),
         )
@@ -2601,9 +2601,9 @@ class NativeValueStoreStream(NativeStoreStream):
     ) -> tuple[NativeValueStore, ...]:
         return tuple(
             NativeValueStore(
-                frame,
-                binding.value.source_span,
-                binding,
+                frame=frame,
+                production_span=binding.value.source_span,
+                binding=binding,
                 continuation=(
                     continuation
                     if continuation is not None and continuation.continues(binding)
@@ -2640,7 +2640,7 @@ class NativeScopeObservation(NativeCodeObservation):
 
     @cached_property
     def value_stream(self) -> NativeValueStoreStream:
-        return NativeValueStoreStream(self.code, self.operations, creation_context=self)
+        return NativeValueStoreStream(code=self.code, operations=self.operations, creation_context=self)
 
     def observe_values(
         self,

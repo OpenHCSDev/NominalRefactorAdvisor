@@ -49,9 +49,9 @@ def test_constant_key_dictionary_requires_matching_original_tuple_contents(keys)
     stack = NativeOperandStack()
     stack.stack.extend(
         (
-            NativeConstantValue(0, (), 1),
-            NativeConstantValue(2, (), 2),
-            NativeConstantValue(4, (), keys),
+            NativeConstantValue(instruction_offset=0, inputs=(), value=1),
+            NativeConstantValue(instruction_offset=2, inputs=(), value=2),
+            NativeConstantValue(instruction_offset=4, inputs=(), value=keys),
         )
     )
     with pytest.raises(ValueError, match="original constant key tuple"):

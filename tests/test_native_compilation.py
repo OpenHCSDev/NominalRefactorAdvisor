@@ -299,7 +299,7 @@ from nominal_refactor_advisor.native_compilation import NativePythonCompilation,
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 source = "def sample():\\n    return None\\n"
 span = SourceByteSpan.require_node(ast.parse(source).body[0])
-result = NativePythonCompilation(source, "no_ranges.py").execution_for(span)
+result = NativePythonCompilation(source=source, file_path="no_ranges.py").execution_for(span)
 assert result.mode is None
 assert result.violation is NativeExecutionUnavailable.INCOMPLETE_SOURCE_RANGES
 """

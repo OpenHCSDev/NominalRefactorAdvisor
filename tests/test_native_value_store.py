@@ -154,7 +154,7 @@ def test_pair_stream_records_one_pair_inventory():
         "".join(f"value_{i} = object\n" for i in range(200)), "linear.py", "exec"
     )
     backend = NativeCreationBackend.current()
-    stream = NativeValueStoreStream(code, backend.primitive_operations)
+    stream = NativeValueStoreStream(code=code, operations=backend.primitive_operations)
     instructions = tuple(backend.instructions(code))
     for instruction in instructions:
         stream.observe(instruction)

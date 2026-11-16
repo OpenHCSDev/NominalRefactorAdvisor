@@ -67,7 +67,7 @@ def test_ordering_preserves_exact_resolution_not_only_its_physical_bytes():
     compiler, editor = context(source)
     exact = SourceTextGeometry(source).nominal_edit(
         file_path=PATH,
-        replacements=(SourceTextSpanReplacement(0, 4, replacement_source="renamed"),),
+        replacements=(SourceTextSpanReplacement(start_offset=0, end_offset=4, replacement_source="renamed"),),
     )
     prefix = SourceInsertion(
         file_path=PATH, insertion_line=1, inserted_lines=("import typing\n",)

@@ -474,10 +474,10 @@ class ConvertManualRegistryToAutoregisterOperation(
         )
         return (
             NativeDefinitionUseRequirement(
-                type(self),
-                authority.metaclass_operand,
-                (authority.native_metaclass,),
-                environment,
+                operation=type(self),
+                node=authority.metaclass_operand,
+                declarations=(authority.native_metaclass,),
+                environment=environment,
                 source_state=snapshot.product_flow_repository,
             ),
         )

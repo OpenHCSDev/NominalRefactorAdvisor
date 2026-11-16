@@ -1532,13 +1532,13 @@ class Fold(Cases, ABC):
         if subject in names_read(ast.Module(body=body, type_ignores=[])):
             raise ValueError(f"handback: {site}: fall-through reads the branch subject")
         return External(
-            module,
-            function,
-            subject,
-            arms,
-            Tail(body),
-            root,
-            owner,
+            module=module,
+            function=function,
+            subject=subject,
+            arms=arms,
+            tail=Tail(body),
+            root=root,
+            owner=owner,
             prelude=prelude,
             method=answer(MethodName(module, function)),
             receiver=answer(ReceiverName(module, function)),

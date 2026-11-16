@@ -49,7 +49,7 @@ def render(*edits):
 
 @pytest.mark.parametrize("reverse", (False, True))
 def test_distinct_mixed_insertions_share_an_anchor_in_actual_lowering(reverse):
-    text = SourceTextSpanReplacement(0, 0, replacement_source="import typing\n")
+    text = SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source="import typing\n")
     line = SourceInsertion(
         file_path=PATH, insertion_line=1, inserted_lines=("import builtins\n",)
     )
@@ -69,7 +69,7 @@ def test_distinct_mixed_insertions_share_an_anchor_in_actual_lowering(reverse):
             len(SOURCE),
             (
                 text,
-                SourceTextSpanReplacement(0, 0, replacement_source="import builtins\n"),
+                SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source="import builtins\n"),
             ),
         )
 
@@ -77,7 +77,7 @@ def test_distinct_mixed_insertions_share_an_anchor_in_actual_lowering(reverse):
 def test_identical_mixed_insertions_are_deduplicated_by_existing_owner():
     prefix = "import typing\n"
     batch, output = render(
-        exact(SourceTextSpanReplacement(0, 0, replacement_source=prefix)),
+        exact(SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source=prefix)),
         SourceInsertion(file_path=PATH, insertion_line=1, inserted_lines=(prefix,)),
     )
     assert output == prefix + SOURCE
@@ -90,7 +90,7 @@ def test_two_phase_lowering_preserves_declaration_group_encounter_order():
         file_path=PATH, insertion_line=1, inserted_lines=("import typing\n",)
     )
     middle = exact(
-        SourceTextSpanReplacement(0, 0, replacement_source="import collections\n")
+        SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source="import collections\n")
     )
     last = SourceInsertion(
         file_path=PATH, insertion_line=1, inserted_lines=("import builtins\n",)
@@ -118,14 +118,14 @@ def test_empty_source_keeps_distinct_logical_insertion_anchors(reverse):
 
 
 def test_disjoint_exact_and_line_edits_have_a_complete_fine_projection():
-    replacement = SourceTextSpanReplacement(0, 4, replacement_source="renamed")
+    replacement = SourceTextSpanReplacement(start_offset=0, end_offset=4, replacement_source="renamed")
     prefix = "import typing\n"
     _, output = render(
         exact(replacement),
         SourceInsertion(file_path=PATH, insertion_line=1, inserted_lines=(prefix,)),
     )
     geometry = SourceTextGeometry(SOURCE)
-    complete = (SourceTextSpanReplacement(0, 0, replacement_source=prefix), replacement)
+    complete = (SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source=prefix), replacement)
     assert geometry.source_with_replacements_in_span(0, len(SOURCE), complete) == output
     read = SourceTextSpan(start_offset=SOURCE.index("type"), end_offset=SOURCE.index("type") + 4)
     (retained,) = geometry.project_unchanged_spans((read,), complete)
@@ -133,7 +133,7 @@ def test_disjoint_exact_and_line_edits_have_a_complete_fine_projection():
 
 
 def test_equal_opaque_replacement_does_not_supply_fine_read_origin():
-    replacement = SourceTextSpanReplacement(0, 4, replacement_source="renamed")
+    replacement = SourceTextSpanReplacement(start_offset=0, end_offset=4, replacement_source="renamed")
     rewritten = SOURCE.replace("left", "renamed")
     batch, output = render(
         exact(replacement),
@@ -149,7 +149,7 @@ def test_equal_opaque_replacement_does_not_supply_fine_read_origin():
     read = SourceTextSpan(start_offset=SOURCE.index("type"), end_offset=SOURCE.index("type") + 4)
     geometry = SourceTextGeometry(SOURCE)
     assert geometry.project_unchanged_spans((read,), (replacement,))
-    opaque = SourceTextSpanReplacement(0, len(SOURCE), replacement_source=rewritten)
+    opaque = SourceTextSpanReplacement(start_offset=0, end_offset=len(SOURCE), replacement_source=rewritten)
     with pytest.raises(ValueError, match="unchanged-text correspondence"):
         geometry.project_unchanged_spans((read,), (opaque,))
 
@@ -166,8 +166,8 @@ def test_equal_exact_outputs_can_have_different_retained_interiors(reverse):
             file_path=PATH,
             replacements=(
                 SourceTextSpanReplacement(
-                    source.index(name),
-                    source.index(name) + len(name),
+                    start_offset=source.index(name),
+                    end_offset=source.index(name) + len(name),
                     replacement_source=name,
                 ),
             ),

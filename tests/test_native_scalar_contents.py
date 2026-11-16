@@ -45,7 +45,7 @@ def test_actual_and_source_scalars_preserve_contents_and_exact_type(value):
 def test_type_only_evidence_never_supplies_scalar_contents(declaration):
     for evidence in (
         NativeTypePremise(declaration),
-        NativeTypedValue(0, (), NativeTypeDeclaration(declaration)),
+        NativeTypedValue(instruction_offset=0, inputs=(), declaration=NativeTypeDeclaration(declaration)),
     ):
         with pytest.raises(ValueError, match="scalar contents remain unproved"):
             evidence.require_native_scalar()
@@ -87,7 +87,7 @@ def test_type_admission_does_not_hash_compare_or_convert_foreign_values():
 
 @pytest.mark.parametrize("value", [None, True, 120, "Owner"])
 def test_native_constant_type_is_derived_and_survives_serialization(value):
-    original = NativeConstantValue(4, (), value)
+    original = NativeConstantValue(instruction_offset=4, inputs=(), value=value)
     assert "declaration" not in {item.name for item in fields(original)}
     restored = pickle.loads(pickle.dumps(original))
     assert restored.require_native_scalar() == value
@@ -137,7 +137,7 @@ def test_unsupported_constants_keep_only_type_and_no_executable_code(source):
 def test_existing_entry_store_window_does_not_broaden_to_nontext(literal):
     code = compile(f"result = {literal}", "authored-entry.py", "exec")
     window = NativeEntryValueWindow(
-        code, NativeCreationBackend.current().primitive_operations
+        code=code, operations=NativeCreationBackend.current().primitive_operations
     )
     for instruction in dis.get_instructions(code):
         window.observe(instruction)

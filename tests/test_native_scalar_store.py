@@ -131,7 +131,7 @@ def test_instruction_pair_rejects_intervening_work_or_jump_entry(disturbance):
         selected = (
             (marked, store) if disturbance == "producer-entry" else (production, marked)
         )
-    stream = NativeValueStoreStream(code, backend.primitive_operations)
+    stream = NativeValueStoreStream(code=code, operations=backend.primitive_operations)
     for instruction in selected:
         stream.observe(instruction)
     assert not any(segment.stores for segment in stream.segments)

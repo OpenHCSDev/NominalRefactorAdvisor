@@ -71,10 +71,10 @@ def invocation_requirement(snapshot, path, declaration):
     environment = snapshot.product_flow_repository.native_reference_environment(module)
     node = module.module.body[-1].value
     return NativeInvocationUseRequirement(
-        PatchTargetOperation,
-        node.func,
-        (NativeDeclaration(declaration),),
-        environment,
+        operation=PatchTargetOperation,
+        node=node.func,
+        declarations=(NativeDeclaration(declaration),),
+        environment=environment,
         source_state=snapshot.product_flow_repository,
     )
 
@@ -134,10 +134,10 @@ def test_standalone_classmethod_definition_uses_actual_application_and_descripto
     environment = snapshot.product_flow_repository.native_reference_environment(module)
     definition = module.module.body[-1]
     requirement = NativeDefinitionUseRequirement(
-        PatchTargetOperation,
-        definition.decorator_list[0],
-        (NativeDeclaration(classmethod),),
-        environment,
+        operation=PatchTargetOperation,
+        node=definition.decorator_list[0],
+        declarations=(NativeDeclaration(classmethod),),
+        environment=environment,
         source_state=snapshot.product_flow_repository,
     )
     assert requirement.inspect().provenance is NativeUseProvenance.PROVED
@@ -163,7 +163,7 @@ def test_other_applications_and_rebound_descriptor_operands_do_not_gain_proof(
     environment = snapshot.product_flow_repository.native_reference_environment(module)
     node = module.module.body[-1].decorator_list[-1]
     requirement = NativeDefinitionUseRequirement(
-        PatchTargetOperation, node, (NativeDeclaration(classmethod),), environment
+        operation=PatchTargetOperation, node=node, declarations=(NativeDeclaration(classmethod),), environment=environment
     )
     try:
         resolution = requirement.inspect()

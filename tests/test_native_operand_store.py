@@ -91,10 +91,10 @@ def test_ambiguous_operand_address_cannot_identify_an_original_value():
 
 
 def test_operand_graph_traversal_is_iterative_and_rejects_cycles():
-    root = NativeTypedValue(0, (), NativeTypeDeclaration(tuple))
+    root = NativeTypedValue(instruction_offset=0, inputs=(), declaration=NativeTypeDeclaration(tuple))
     nodes = [root]
     for offset in range(1, 4096):
-        root = NativeTypedValue(offset, (root,), NativeTypeDeclaration(tuple))
+        root = NativeTypedValue(instruction_offset=offset, inputs=(root,), declaration=NativeTypeDeclaration(tuple))
         nodes.append(root)
     assert len(root.productions()) == len(nodes)
     object.__setattr__(nodes[0], "inputs", (root,))

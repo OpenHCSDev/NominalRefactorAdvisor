@@ -97,7 +97,7 @@ def join(
             file_path=PATH,
             source_hash=CodemodSourceRevision.hash_source(document_source),
                  ),
-        replacements=(SourceTextSpanReplacement(0, 0, replacement_source=prefix),),
+        replacements=(SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source=prefix),),
     )
     return (
         before,
@@ -242,7 +242,7 @@ def test_replaced_identical_text_has_no_retained_read_origin():
             file_path=PATH,
             source_hash=CodemodSourceRevision.hash_source(before.module.source),
                  ),
-        replacements=(SourceTextSpanReplacement(8, 14, replacement_source="object"),),
+        replacements=(SourceTextSpanReplacement(start_offset=8, end_offset=14, replacement_source="object"),),
     )
     relation = replace(
         relation, document_simulation=document_for(before.module.source, (mutation,))
@@ -329,10 +329,10 @@ def test_mixed_document_projects_multiple_windows_and_gap_reads_once():
         geometry.nominal_edit(
             file_path=PATH,
             replacements=(
-                SourceTextSpanReplacement(0, 5, replacement_source="renamed_first"),
+                SourceTextSpanReplacement(start_offset=0, end_offset=5, replacement_source="renamed_first"),
                 SourceTextSpanReplacement(
-                    source.index("left"),
-                    source.index("left") + 4,
+                    start_offset=source.index("left"),
+                    end_offset=source.index("left") + 4,
                     replacement_source="renamed_left",
                 ),
             ),
@@ -362,7 +362,7 @@ def test_equal_opaque_document_output_does_not_create_exact_read_provenance(reve
     source = "left = object; right = type\n"
     exact = SourceTextGeometry(source).nominal_edit(
         file_path=PATH,
-        replacements=(SourceTextSpanReplacement(0, 4, replacement_source="renamed"),),
+        replacements=(SourceTextSpanReplacement(start_offset=0, end_offset=4, replacement_source="renamed"),),
     )
     opaque = SourceSpanReplacement(
         file_path=PATH,

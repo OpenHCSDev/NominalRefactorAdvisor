@@ -171,7 +171,7 @@ def test_jump_entry_after_store_invalidates_whole_continuation():
         if hasattr(returned, "label")
         else returned._replace(is_jump_target=True)
     )
-    stream = NativeValueStoreStream(code, backend.primitive_operations)
+    stream = NativeValueStoreStream(code=code, operations=backend.primitive_operations)
     for instruction in instructions:
         stream.observe(instruction)
     assert stream.continuation is None

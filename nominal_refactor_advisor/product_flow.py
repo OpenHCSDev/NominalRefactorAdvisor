@@ -2739,7 +2739,12 @@ class CompactFlowOwner(ABC):
 class CompactDefinitionFlowOwner(CompactFlowOwner, ABC):
     """One exact source body shared by its binding event and separate flow."""
 
-    source_span: SourceByteSpan
+    @property
+    @abstractmethod
+    def source_span(self) -> SourceByteSpan:
+        """The body's bytes, as its native receipt recorded them."""
+
+        raise NotImplementedError
 
     @property
     def bound_name(self) -> str:
@@ -2761,11 +2766,9 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 
     qualname: str
     capture: NativeClassCapture
-    source_span: SourceByteSpan = field(init=False, repr=False)
     kind: type[CompactFlowOwnerKind] = field(default=ClassBody, init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "source_span", self.capture.source_span)
+    source_span = AliasProperty[SourceByteSpan]("capture.source_span")
 
     def resolve_frame(
         self,
@@ -2953,13 +2956,12 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     return_annotation_expression: str | None = None
     kind: type[CompactFlowOwnerKind] = field(default=Function, init=False, repr=False)
     qualname: str = field(init=False, repr=False)
-    source_span: SourceByteSpan = field(init=False, repr=False)
+    source_span = AliasProperty[SourceByteSpan]("execution.source_span")
     line = AliasProperty[int]("source_span.start_line")
     end_line = AliasProperty[int]("source_span.end_line")
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "qualname", self.identity.qualname)
-        object.__setattr__(self, "source_span", self.execution.source_span)
 
     def resolve_frame(
         self,

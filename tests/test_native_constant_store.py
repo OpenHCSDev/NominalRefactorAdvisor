@@ -196,7 +196,7 @@ def test_entry_window_does_not_skip_an_intervening_operation(disturbance):
         if instruction.opname == "STORE_NAME"
     )
     window = NativeEntryValueWindow(
-        code, NativeCreationBackend.current().primitive_operations
+        code=code, operations=NativeCreationBackend.current().primitive_operations
     )
     window.observe(load)
     branch_code = compile(

@@ -44,7 +44,7 @@ SOURCE = "first = object\nleft = 1; right = type\nlast = 3\n"
 def mutation(source, old, new, index=0, path=PATH):
     start = source.index(old)
     replacement = SourceTextSpanReplacement(
-        start, start + len(old), replacement_source=new
+        start_offset=start, end_offset=start + len(old), replacement_source=new
     )
     result = SourceTextGeometry(source).nominal_edit(
         file_path=path, replacements=(replacement,), rationale=f"change {index}"
@@ -122,7 +122,7 @@ def test_opaque_physical_edit_is_the_window_but_cannot_claim_an_exact_interior()
 
 def test_identical_replacement_bytes_have_no_retained_interior():
     start = SOURCE.index("type")
-    replacement = SourceTextSpanReplacement(start, start + 4, replacement_source="type")
+    replacement = SourceTextSpanReplacement(start_offset=start, end_offset=start + 4, replacement_source="type")
     edit = SourceTextGeometry(SOURCE).nominal_edit(
         file_path=PATH, replacements=(replacement,)
     )
@@ -152,7 +152,7 @@ def test_insertion_windows_have_no_original_interiors(offset):
     edit = SourceTextGeometry(SOURCE).nominal_edit(
         file_path=PATH,
         replacements=(
-            SourceTextSpanReplacement(offset, offset, replacement_source="new = 1\n"),
+            SourceTextSpanReplacement(start_offset=offset, end_offset=offset, replacement_source="new = 1\n"),
         ),
     )
     window = SourceTextMutation.peer_resolutions((edit,), context())[0].windows[0]
@@ -269,7 +269,7 @@ def test_empty_source_exact_insertion_uses_the_original_empty_interval():
     edit = geometry.nominal_edit(
         file_path=PATH,
         replacements=(
-            SourceTextSpanReplacement(0, 0, replacement_source="value = object\n"),
+            SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source="value = object\n"),
         ),
     )
     window = SourceTextMutation.peer_resolutions((edit,), context(""))[0].windows[0]

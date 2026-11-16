@@ -21,7 +21,7 @@ def observed_store():
     compilation = NativePythonCompilation(source="chosen = object\n", file_path="convergence.py")
     code = compilation.compile()
     stream = NativeValueStoreStream(
-        code, NativeCreationBackend.current().primitive_operations
+        code=code, operations=NativeCreationBackend.current().primitive_operations
     )
     instructions = iter(dis.get_instructions(code))
     for instruction in instructions:
@@ -74,7 +74,7 @@ def test_same_offset_cannot_merge_conflicting_instruction_metadata(field_name):
 
 def test_value_free_first_observation_cannot_borrow_a_later_distinct_value():
     _, original, _, binding = observed_store()
-    stream = NativeValueStoreStream(original.code, original.operations)
+    stream = NativeValueStoreStream(code=original.code, operations=original.operations)
     observation = replace(binding, value=None)
     assert stream.record_store(observation) is observation
     with pytest.raises(ValueError, match="original operand"):
@@ -87,7 +87,7 @@ def test_stores_at_distinct_offsets_remain_distinct_even_with_equal_names():
         source="chosen = object\nchosen = str\n", file_path="repeated.py"
     )
     stream = NativeValueStoreStream(
-        compilation.compile(), NativeCreationBackend.current().primitive_operations
+        code=compilation.compile(), operations=NativeCreationBackend.current().primitive_operations
     )
     for instruction in dis.get_instructions(stream.code):
         stream.observe(instruction)

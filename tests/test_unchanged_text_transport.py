@@ -15,7 +15,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
 
 
 def edit(start, end, text):
-    return SourceTextSpanReplacement(start, end, replacement_source=text)
+    return SourceTextSpanReplacement(start_offset=start, end_offset=end, replacement_source=text)
 
 
 def previous_overlap(first, second):

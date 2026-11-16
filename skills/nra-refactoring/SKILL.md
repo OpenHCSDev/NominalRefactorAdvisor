@@ -101,8 +101,15 @@ stronger than a synthesized recipe that hedged its way to silence.
 - **`add_class_base` changes field order.** Base fields come first in
   the MRO. Any positional constructor call breaks. After applying, grep
   every changed class for positional construction and convert to kwargs.
-  Script: `ast.walk` for `ast.Call` with `node.args` and func name in
-  the changed set.
+  `tests/test_repository_keyword_construction.py` now does the grep for
+  the whole tree: it flags any call passing 2+ positionals that fit the
+  signature, compares positional parameters against the init fields that
+  are not `kw_only` (`fields()` lists kw-only fields in declaration order,
+  so a kw-only field in the middle hides the class from a prefix test),
+  and parses string constants that are programs, because subprocess tests
+  carry their code in strings. Hoisting `ParsedModule.module` to kw-only
+  silently turned `ParsedModule(path, name, ast.parse(s), s)` in three such
+  strings into `source=<Module>, family_cache_dir=<text>`.
 - **A mixin that must come first in the MRO goes in with `patch_target`.**
   `add_class_base` appends. A mixin whose own parent is already further
   down the class's MRO (it specialises a mixin the class inherits) has to
@@ -408,7 +415,16 @@ The certified categories (all high confidence, all provably correct):
 | `own_state_branch_answer` | 9 | property probes own attribute for absence | Direct attribute or family member |
 | `forwarding_facade` | 8 | class holds another and forwards properties | Inherit or compose |
 | `restated_identity` | 6 | module or family member identity spelled as string | Use the declaration |
-| `redundant_type_check` | 2 | isinstance repeats declared field annotation | Delete the check (done: 15→2) |
+
+`redundant_type_check` is NOT in this table: it is strong_heuristic, and its
+own message says why. A dataclass never enforces its annotations, so an
+`isinstance` in `__post_init__` is the only thing keeping `CompilerOperandValue(0)`
+from building. Commit 4e9ba3ba deleted ten such checks on that false premise
+and left a bare `pass` behind; seven tests caught it and d8c20198 reverted it.
+Delete a check only when something else rejects the bad value first (a
+decoder at the boundary, a narrower type that cannot be built wrong). The
+real fold is one base that checks plain-class field annotations once; until
+it exists, the checks stay.
 
 The strong_heuristic categories (likely correct, need per-site review):
 

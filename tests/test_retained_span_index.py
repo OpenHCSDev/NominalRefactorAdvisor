@@ -43,7 +43,7 @@ def exact(source, old, new):
         file_path=PATH,
         replacements=(
             SourceTextSpanReplacement(
-                offset, offset + len(old), replacement_source=new
+                start_offset=offset, end_offset=offset + len(old), replacement_source=new
             ),
         ),
     )
@@ -55,7 +55,7 @@ def span(source, text):
 
 
 def test_direct_interval_contract_and_physical_mro_keep_one_geometry_owner():
-    item = SourceTextSpanReplacement(0, 1, replacement_source="xy")
+    item = SourceTextSpanReplacement(start_offset=0, end_offset=1, replacement_source="xy")
     assert isinstance(item, SourceIntervalProjectionABC)
     assert item.original_span(SourceTextGeometry("abc")) is item
     assert item.replacement_length == 2
@@ -75,7 +75,7 @@ def test_direct_interval_contract_and_physical_mro_keep_one_geometry_owner():
 )
 def test_direct_index_rejects_out_of_bounds_or_nonmonotone_intervals(offsets):
     inputs = tuple(
-        SourceTextSpanReplacement(start, end, replacement_source="x")
+        SourceTextSpanReplacement(start_offset=start, end_offset=end, replacement_source="x")
         for start, end in offsets
     )
     with pytest.raises(ValueError, match="fit|monotone"):
@@ -93,7 +93,7 @@ def test_neutral_insertions_remain_actual_inputs_without_interrupting_a_read(phy
         index = SourceRetainedSpanIndex(geometry=geometry, ordered_inputs=ordered)
         assert index.ordered_inputs is ordered
     else:
-        item = SourceTextSpanReplacement(5, 5, replacement_source="")
+        item = SourceTextSpanReplacement(start_offset=5, end_offset=5, replacement_source="")
         index = geometry.exact_span_index((item,))
     assert index.ordered_inputs[0] is item
     original = SourceTextSpan(start_offset=0, end_offset=len(source))

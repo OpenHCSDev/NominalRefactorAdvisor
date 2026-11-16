@@ -49,7 +49,7 @@ class SplitNamespaceEntry(
         return InitialNativeFrame(locals=self, globals=self.globals_namespace, builtins=self.builtins_namespace)
 
     def prefix(self, position, kernel):
-        return CapturedFlowPrefix(self.context, self.frame, position, kernel=kernel)
+        return CapturedFlowPrefix(context=self.context, frame=self.frame, position=position, kernel=kernel)
 
     def require_admitted(self, initial):
         if initial is not self.initial:

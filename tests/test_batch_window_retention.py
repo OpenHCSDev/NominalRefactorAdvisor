@@ -47,7 +47,7 @@ def exact(source=SOURCE, old="left", new="renamed"):
         file_path=PATH,
         replacements=(
             SourceTextSpanReplacement(
-                offset, offset + len(old), replacement_source=new
+                start_offset=offset, end_offset=offset + len(old), replacement_source=new
             ),
         ),
     )
@@ -70,7 +70,7 @@ def test_two_phase_groups_keep_actual_occurrences_and_rendering_order():
     middle = SourceTextGeometry(SOURCE).nominal_edit(
         file_path=PATH,
         replacements=(
-            SourceTextSpanReplacement(0, 0, replacement_source="import collections\n"),
+            SourceTextSpanReplacement(start_offset=0, end_offset=0, replacement_source="import collections\n"),
         ),
     )
     batch = NominalEditBatch(compiler=compiler(), edits=(first, middle, last, first))

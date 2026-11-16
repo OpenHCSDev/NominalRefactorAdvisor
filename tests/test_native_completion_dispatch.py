@@ -33,9 +33,9 @@ def test_completion_contract_requires_both_obligation_families():
 
 
 def test_values_and_effects_select_their_own_completion_contract():
-    value = NativeConstantValue(2, (), None)
-    discard = NativeDiscardValue(4, (value,))
-    item = NativeItemStoreValue(6, (value, value, value))
+    value = NativeConstantValue(instruction_offset=2, inputs=(), value=None)
+    discard = NativeDiscardValue(instruction_offset=4, inputs=(value,))
+    item = NativeItemStoreValue(instruction_offset=6, inputs=(value, value, value))
     recorder = CompletionRecorder()
     for production in (value, discard, item):
         assert production.require_completion(recorder) is None

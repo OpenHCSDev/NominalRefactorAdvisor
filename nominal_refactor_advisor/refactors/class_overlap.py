@@ -1018,10 +1018,7 @@ class ClassComposition(ClassOverlapRewrite):
         same_module = self.owner.file_path == restating.file_path
         return (
             *(
-                self.relocation.source_edits(
-                    f"Declare `{self.owner.qualname}` before `{restating.qualname}` "
-                    "composes it."
-                )
+                self.relocation.source_edits()
                 if same_module
                 else self.owner_import_edits(rationale)
             ),

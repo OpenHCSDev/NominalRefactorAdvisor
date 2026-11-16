@@ -100,7 +100,7 @@ def test_later_lexical_store_wins_over_an_earlier_item_store():
 
 def test_stack_effect_contract_requires_a_concrete_operand_declaration():
     with pytest.raises(TypeError, match="abstract"):
-        NativeStackEffectABC(0, ())
+        NativeStackEffectABC(instruction_offset=0, inputs=())
 
 
 @pytest.mark.native_proof

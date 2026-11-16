@@ -3148,7 +3148,7 @@ class SourceClassBodyEntryABC(
             parent=self.parent_prefix,
             definition=self.definition,
             child=CapturedFlowPrefix(
-                self.context, self.frame, position, kernel=self.execution.kernel
+                context=self.context, frame=self.frame, position=position, kernel=self.execution.kernel
             ),
                )
 
@@ -3953,10 +3953,10 @@ class SourceExecutionABC(
                 (
                     previous,
                     CapturedFlowPrefix(
-                        context,
-                        prefix.endpoint.frame,
-                        position,
-                        last.target.header_position,
+                        context=context,
+                        frame=prefix.endpoint.frame,
+                        position=position,
+                        after=last.target.header_position,
                         kernel=self.kernel,
                     ),
                 )
@@ -4077,7 +4077,7 @@ class SourceFunctionEntry(
     ) -> AdmittedExecutionPrefixABC:
         self.require_admitted(kernel.initial)
         return self.activation.activation_prefix(
-            CapturedFlowPrefix(self.context, self.frame, position, kernel=kernel)
+            CapturedFlowPrefix(context=self.context, frame=self.frame, position=position, kernel=kernel)
         )
 
     def require_admitted(self, initial: InitialNativeIsland) -> None:
