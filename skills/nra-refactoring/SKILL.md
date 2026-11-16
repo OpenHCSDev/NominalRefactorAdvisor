@@ -197,7 +197,13 @@ stronger than a synthesized recipe that hedged its way to silence.
   `EconomicsProofReport.from_root`). The command line reads the domain and
   never owns it.
 
-## ABC→dataclass promotion: unblocking techniques (2026-11-16)
+## ABC→dataclass promotion: COMPLETED (2026-11-16)
+
+**Status: all promotable parents have been promoted.** 11 parents promoted
+this session; the diagnostic tool (`tools/diagnose_missing_mixins.py`) now
+reports 0 PROMOTE, 2 BLOCKED (confirmed irreducible), 22 NARROWS (type
+narrowing), 12 COMPUTED (init=False), 6 DEFAULT_DIFFERS. Basic scan went
+from 1,605 findings to 7. The mechanical frontier is exhausted.
 
 The `missing_mixin` detector finds ABC parents whose children redeclare
 the same fields. Promoting the parent to `@dataclass(frozen=True)` lets
@@ -251,26 +257,27 @@ always inherits CaptureOutcome. On union types like
 decoder (Proposition 3.3). Two bugs from overcorrecting were fixed on
 2026-11-16.
 
-## Known NRA tool issues (2026-11-16)
+## Known NRA tool issues (2026-11-16, updated)
 
-- **Codemod synthesis CLI had a positional argument swap** at cli.py:4715
-  that put `args` in `source_snapshot`'s slot. Fixed by converting to
-  keyword construction (commit cf39547c). Both `--codemod-synthesize-plan`
-  and `--codemod-synthesize-class-plan` were broken.
+- **Codemod synthesis CLI positional argument swap** — FIXED (cf39547c).
+  Converted to keyword construction at cli.py:4715.
 
-- **Source-index `__init__.py` gap blocks plan application.** The plan
-  auto-apply (`--codemod-apply`) fails with "Source module ... is
-  unavailable" because `AstTargetDigest.file_path` is absolute while
-  `ParsedModule.file_path` is relative. The lookup at
-  `declaration_authority_rename.py:130` fails on the mismatch. The scan
-  and synthesis JSON output work fine; only the apply step breaks.
-  Fix: normalize paths in `_located()` or make both absolute.
+- **Source-index `__init__.py` path normalization** — FIXED in two places:
+  1. `declaration_authority_rename.py:130` (4e10d10a): `_located()` falls
+     back to `os.path.relpath` when absolute path lookup fails.
+  2. `codemod_selection_context.py:205` (a0fb64df): `parsed_module_for_source_path`
+     falls back to `os.path.relpath` when `source_file.file_path` is absolute
+     but `sources_by_file_path` keys are relative.
 
-- **Trajectory completeness gate blocks simulation.** The synthesis
-  correctly finds 6 executable candidates, but `--codemod-simulate`
-  rejects the plan because it's not a "complete proof across reachable
-  refactor trajectories." Author and apply manually from the synthesis
-  output until this gate is relaxed.
+- **Trajectory completeness gate** — NOT A BLOCKER in practice. The gate
+  blocks `--codemod-synthesize-class-plan --codemod-apply` because
+  `CurrentSnapshotBatchCandidateEvaluation` has `CURRENT_SNAPSHOT` horizon
+  (requires trajectory proof). But the 6 executable candidates that
+  existed before the ABC→dataclass work were consumed by manual promotions.
+  After 11 parent promotions this session, basic scan shows 7 findings
+  (down from 1,605) and synthesis produces 0 executable candidates.
+  The mechanical ABC→dataclass promotion frontier is exhausted.
+  Use `--codemod-refactor-goal <concept>` for trajectory-proved plans.
 
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
