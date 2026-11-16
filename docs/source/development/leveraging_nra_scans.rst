@@ -101,12 +101,22 @@ Not all 1500 findings are equally actionable.  Batch by detector:
       as ``@dataclass`` (without ``frozen=True``).  The parent gets no
       ``__setattr__`` override, and mutable children can still set attributes.
       This unblocked NativeOperandObservation.
-    - **Parent annotations are abstract contracts** (different children derive
-      them from different sources: stored field vs AliasProperty vs property,
-      AND the computation depends on lazy object graph state):
-      genuinely NOT a dataclass promotion.  4 remaining: ClassStatement,
-      LexicalScopeABC, OpaqueCapturedObjectOperations,
-      SourceFunctionActivationABC.
+    - **Non-dataclass children with bare assigns:** make the children
+      dataclasses too and convert their bare assigns to
+      ``field(default=..., init=False)``.  This unblocked
+      OpaqueCapturedObjectOperations (3 children, none directly constructed).
+    - **"Lazy" properties that are actually eager-safe:** a property
+      depending on stored fields of frozen dataclasses CAN be computed
+      at ``__post_init__`` time.  Test it — the validation runs fine
+      eagerly.  This unblocked SourceFunctionActivationABC.
+    - **Parent annotations are abstract contracts** (children compute from
+      fundamentally different sources AND the computation cannot succeed
+      at ``__post_init__`` because a child doesn't own the source field):
+      genuinely NOT a dataclass promotion.  2 remaining:
+      ClassStatement (``is_dataclass`` computed from different fields in
+      different children, confirmed by test failure),
+      LexicalScopeABC (frozen parent prevents non-frozen child,
+      Python language limitation).
     - **``__setattr__`` MRO conflict:** the parent's MRO includes a class that
       already defines ``__setattr__`` (e.g. a frozen dataclass ancestor).
       ``@dataclass(frozen=True)`` cannot override it.  Fix: restructure the
