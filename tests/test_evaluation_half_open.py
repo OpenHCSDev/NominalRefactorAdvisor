@@ -9,6 +9,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.captured_reference import (
+    AfterCut,
     CapturedReferenceRejection,
     OpenCapturedReference,
     SingleFlowPrefix,
@@ -99,7 +100,7 @@ def test_original_observer_bounds_exclude_equal_outside_cuts(boundary):
             context=env.entry.context,
             frame=env.entry.frame,
             position=None,
-            after=evaluation.exit,
+            start=AfterCut(position=evaluation.exit),
                    )
     assert not interval.may_overlap_evaluation(evaluation)
 
@@ -118,7 +119,7 @@ def test_empty_continuation_does_not_revisit_enclosing_evaluation():
     midpoint = replace(evaluation.entry, event_index=evaluation.entry.event_index + 1)
     assert evaluation.entry.dominates(midpoint)
     assert midpoint.dominates(evaluation.exit)
-    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=midpoint, after=midpoint)
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=midpoint, start=AfterCut(position=midpoint))
     assert not interval.may_overlap_evaluation(evaluation)
 
 
@@ -141,7 +142,7 @@ def test_equal_loop_cut_retains_possible_other_iteration(side):
     interval = (
         SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=observed.entry)
         if side == "entry"
-        else SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None, after=observed.exit)
+        else SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None, start=AfterCut(position=observed.exit))
     )
     assert interval.may_overlap_evaluation(observed)
 
@@ -155,6 +156,6 @@ def test_unordered_sibling_observer_is_not_dropped(side):
     interval = (
         SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=second)
         if side == "entry"
-        else SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None, after=second)
+        else SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=None, start=AfterCut(position=second))
     )
     assert interval.may_overlap_evaluation(observed)

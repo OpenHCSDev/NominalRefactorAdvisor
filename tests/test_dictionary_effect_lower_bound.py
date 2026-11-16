@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 
 from nominal_refactor_advisor.captured_reference import (
+    AfterCut,
     OpenCapturedReference,
     SingleFlowPrefix,
 )
@@ -191,7 +192,7 @@ def test_refined_overlap_keeps_half_open_and_continuation_boundaries():
     during = SingleFlowPrefix(context=context, frame=environment.entry.frame, position=whole.exit)
     assert during.may_overlap_positions(entry, whole.exit)
     completed = SingleFlowPrefix(
-        context=context, frame=environment.entry.frame, position=None, after=whole.exit
+        context=context, frame=environment.entry.frame, position=None, start=AfterCut(position=whole.exit)
     )
     assert not completed.may_overlap_positions(entry, whole.exit)
 
