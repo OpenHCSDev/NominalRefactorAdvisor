@@ -84,10 +84,29 @@ Not all 1500 findings are equally actionable.  Batch by detector:
       default): convert to ``field(default=SomeClass, init=False)``.
     - **Child narrows Optional to non-Optional:** use ``kw_only=True`` on the
       narrowed child fields so the parent's defaults don't propagate.
+    - **Child uses AliasProperty:** convert to
+      ``field(init=False)`` + ``__post_init__`` that computes from the alias
+      source.  E.g. ``source_span = AliasProperty("capture.source_span")``
+      becomes ``source_span: T = field(init=False, repr=False)`` and
+      ``object.__setattr__(self, "source_span", self.capture.source_span)``
+      in ``__post_init__``.  This unblocked CompactFlowOwner,
+      CompactDefinitionFlowOwner and CompactAssignmentTargetABC.
+    - **Child uses @property:** same conversion IF the computation succeeds
+      at ``__post_init__`` time (all inputs are frozen dataclass fields already
+      set).  This unblocked NativeFrameOrigin where both property children
+      computed ``self.execution.compilation``.  DOES NOT WORK when the
+      property is lazy (``@cached_property``) and depends on object graph
+      state not yet available at construction.
+    - **Children are mutable (non-frozen @dataclass):** promote the parent
+      as ``@dataclass`` (without ``frozen=True``).  The parent gets no
+      ``__setattr__`` override, and mutable children can still set attributes.
+      This unblocked NativeOperandObservation.
     - **Parent annotations are abstract contracts** (different children derive
-      them from different sources: stored field vs AliasProperty vs property):
-      NOT a dataclass promotion.  The parent's annotations declare a contract,
-      not stored fields.
+      them from different sources: stored field vs AliasProperty vs property,
+      AND the computation depends on lazy object graph state):
+      genuinely NOT a dataclass promotion.  4 remaining: ClassStatement,
+      LexicalScopeABC, OpaqueCapturedObjectOperations,
+      SourceFunctionActivationABC.
     - **``__setattr__`` MRO conflict:** the parent's MRO includes a class that
       already defines ``__setattr__`` (e.g. a frozen dataclass ancestor).
       ``@dataclass(frozen=True)`` cannot override it.  Fix: restructure the
