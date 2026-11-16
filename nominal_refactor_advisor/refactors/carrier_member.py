@@ -7,6 +7,7 @@ import copy
 from dataclasses import dataclass
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     codemod_payload_field,
@@ -229,7 +230,7 @@ class CarrierFieldBecomesMemberOperation(
             return
         if call.args:
             raise ValueError(f"{where} constructs {answered.symbol} positionally; keyword it first")
-        if any(keyword.arg is None for keyword in call.keywords):
+        if CallKeywords.of(call.keywords).splats:
             raise ValueError(f"{where} splats keywords into {answered.symbol}")
         for keyword in call.keywords:
             if keyword.arg == answered.name:

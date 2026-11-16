@@ -484,6 +484,17 @@ extract one method per group. That's how these move.
 batch. Each is `other.attr is None` that should be a property on the
 owner. Same pattern: group by owner class, add one property per group.
 
+Tried 2026-11-16: `--codemod-refactor-goal optional_ast_field_decoder
+--codemod-goal-detector foreign_absence_probe --codemod-apply` routes the
+*spread* shape (`*((x,) if x is not None else ())`) through the decoders
+in `ast_field_decoders.py` and stops after a handful of sites. Most probes
+are boolean questions (`node.returns is not None` as a condition), which no
+decoder carries; routing them to `bool(declared_annotations(node))` would
+trade the finding for a `zero_one_tuple` one, since those decoders return
+`()`/`(x,)` and are themselves the 33 `zero_one_tuple` findings. The owner
+of "does this function declare a return?" is an adapter on the foreign
+node (`ForeignAdapter`): that is the next design, not a batch.
+
 ## Known NRA tool issues (2026-11-16, updated)
 
 - **Codemod synthesis CLI positional argument swap** — FIXED (cf39547c).

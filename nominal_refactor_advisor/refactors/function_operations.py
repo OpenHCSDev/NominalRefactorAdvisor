@@ -12,7 +12,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
-from nominal_refactor_advisor.ast_projection import name_nodes, names_mentioned, names_read
+from nominal_refactor_advisor.ast_projection import (
+    CallKeywords,
+    name_nodes,
+    names_mentioned,
+    names_read,
+)
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod,
     AnsweredProperty,
@@ -585,9 +590,7 @@ class _ForwarderBody(_Forwarder):
         """The forwarded call with self and each parameter replaced by the call
         site's receiver and arguments."""
 
-        if any(isinstance(argument, ast.Starred) for argument in call_site.args) or any(
-            keyword.arg is None for keyword in call_site.keywords
-        ):
+        if any(isinstance(argument, ast.Starred) for argument in call_site.args) or CallKeywords.of(call_site.keywords).splats:
             raise ValueError(f"{file_path!r}:{call_site.lineno} passes unpacked arguments")
         positional = self.method.args.args[1:]
         if len(call_site.args) > len(positional):
