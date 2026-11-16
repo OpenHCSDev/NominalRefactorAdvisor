@@ -532,13 +532,14 @@ Next moves, each traced and parked with its reason:
   sites (`analysis.py`, `codemod_workflow.py`) always answer False in
   production. Raised with Tristan: land a detector on it or delete the
   graph-detector path. Do not polish it meanwhile.
-- *Next real move: route capture producers through `CaptureOutcome`.*
-  `binding_sources`, `mutations_after_installation` and the namespace
-  lookup in `captured_reference.py` return bare `X | OpenCapturedReference`
-  unions, so three consumers re-test `isinstance(..., OpenCapturedReference)`
-  (lines ~1996, ~2094, ~2550). `CaptureOutcome.and_then` (line ~427)
-  exists to own that short-circuit; make the producers return outcomes
-  and the consumers chain.
+- *Done (8173f6ca, c94391f8, 2ee9fb3b): capture producers return
+  `CaptureOutcome`s.* `binding_sources` yields `SelectedBindingSource`,
+  `ContextualMutation` is an outcome, `initial_lookup_namespaces` returns
+  `LookupNamespaces`; consumers chain `and_then`, and no
+  `isinstance(..., OpenCapturedReference)` remains in the package. Left:
+  `_admitted_prefix` returns `AdmittedExecutionPrefixABC | Open`; making the
+  prefix family an outcome adds an import from `source_execution` to
+  `captured_reference`, so check the import graph first.
 - *`phantom_family`* (415) is two-owner pairs on generic method names
   (`resolve`, `of`, `read`, `names`, at most 3 per name): mostly name
   coincidence, no batch.
