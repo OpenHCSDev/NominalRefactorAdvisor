@@ -909,7 +909,6 @@ class NamespaceCreationEvidenceABC(NamespaceEvidenceABC):
         return False
 
 
-@dataclass(frozen=True, eq=False)
 class CreatedNamespaceDictionary(
     NamespaceCreationEvidenceABC,
     NativeTypeCapture,
@@ -1222,7 +1221,6 @@ class SourceOperationAuthority(SourceActivationAuthorityABC):
         return prefix
 
 
-@dataclass(frozen=True, eq=False)
 class CompletedSourceOperation(
     OpaqueCapturedObjectOperations, SourceOperationAuthority
 ):
