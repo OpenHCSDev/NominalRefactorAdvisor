@@ -2243,9 +2243,12 @@ class NamespaceContentsABC(ABC):
                 raise ValueError("Mapping value identity remains unproved")
 
 
-@dataclass(frozen=True)
 class InitialNamespaceContents(NamespaceContentsABC):
-    """A view of supplied entry evidence, preserving its namespace identity."""
+    """A view of supplied entry evidence, preserving its namespace identity.
+
+    Not a dataclass: one member stores ``namespace``, another derives it from
+    its execution's entry, so the parent cannot own it as a constructor field.
+    """
 
     namespace: NamespaceEvidenceABC
 
@@ -2264,7 +2267,8 @@ class InitialNamespaceContents(NamespaceContentsABC):
 
 @dataclass(frozen=True)
 class CapturedEntryContents(InitialNamespaceContents):
-    pass
+    kernel: CapturedReferenceKernel
+    namespace: NamespaceEvidenceABC
 
 
 @dataclass(frozen=True)
