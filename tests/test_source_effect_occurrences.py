@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.captured_reference import AfterCut, SingleFlowPrefix
+from nominal_refactor_advisor.captured_reference import AfterCut, FromEntry, SingleFlowPrefix
 from nominal_refactor_advisor.class_namespace import (
     EvaluationEffectOccurrence,
     ExpressionStatementEffect,
@@ -127,13 +127,13 @@ def test_operation_selection_retains_half_open_boundaries(part):
     )
     first, second = calls
     starts_ends = {
-        "before": (None, first.position, ()),
-        "between": (first.position, second.position, (first,)),
-        "after": (second.position, None, (second,)),
-        "empty": (first.position, first.position, ()),
+        "before": (FromEntry(), first.position, ()),
+        "between": (AfterCut(position=first.position), second.position, (first,)),
+        "after": (AfterCut(position=second.position), None, (second,)),
+        "empty": (AfterCut(position=first.position), first.position, ()),
     }
     start, end, expected = starts_ends[part]
-    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=end, start=AfterCut(position=start))
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=end, start=start)
     actual = tuple(
         item.operation
         for item in occurrences(env, interval)
@@ -150,12 +150,12 @@ def test_unresolved_evaluation_uses_original_observer_bounds(part):
     node = env.module.module.body[0].value
     evaluation = next(item for item in env.source.evaluations if item.node is node)
     bounds = {
-        "before": (None, evaluation.entry),
-        "during": (None, evaluation.exit),
-        "after": (evaluation.exit, None),
+        "before": (FromEntry(), evaluation.entry),
+        "during": (FromEntry(), evaluation.exit),
+        "after": (AfterCut(position=evaluation.exit), None),
     }
     start, end = bounds[part]
-    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=end, start=AfterCut(position=start))
+    interval = SingleFlowPrefix(context=env.entry.context, frame=env.entry.frame, position=end, start=start)
     selected = tuple(
         item
         for item in occurrences(env, interval)
