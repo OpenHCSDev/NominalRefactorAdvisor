@@ -11,6 +11,7 @@ from typing import ClassVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.module_node_index import ScopedImportBindings
 
 
 def iter_class_definitions(
@@ -133,9 +134,21 @@ class ClassSymbolResolutionAuthority:
     allow_unique_unqualified: bool
 
     def symbol_for_node(self, node: ast.AST) -> str | None:
-        parts = ExpressionReference.decoded(self.reference_node(node)).attribute_chain
+        reference = self.reference_node(node)
+        parts = ExpressionReference.decoded(reference).attribute_chain
         if parts is None:
             return None
+        scoped = self.parsed_module.fact(ScopedImportBindings)
+        if parts[0] in scoped.inner_bound_names:
+            root = reference
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            scope = scoped.node_index.binder_of(root, parts[0])
+            if scope is not None:
+                imported_name = scoped.imported_names[scope].get(parts[0])
+                if imported_name is None:
+                    return None
+                return self._imported_symbol(imported_name, parts[1:])
         alias_symbol = self._import_alias_symbol(parts)
         if alias_symbol is not None:
             return alias_symbol
@@ -157,7 +170,10 @@ class ClassSymbolResolutionAuthority:
         alias_target = self.import_aliases.get(first)
         if alias_target is None:
             return None
-        candidate = ".".join((alias_target, *rest)) if rest else alias_target
+        return self._imported_symbol(alias_target, tuple(rest))
+
+    def _imported_symbol(self, imported_name: str, rest: tuple[str, ...]) -> str | None:
+        candidate = ".".join((imported_name, *rest)) if rest else imported_name
         if candidate in self.known_symbols:
             return candidate
         # A scan may start at a package subdirectory, making indexed symbols

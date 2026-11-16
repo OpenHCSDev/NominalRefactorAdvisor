@@ -96,6 +96,7 @@ from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
 )
 from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.module_node_index import ScopedImportBindings
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
@@ -514,7 +515,10 @@ class ClassReferenceSites:
         aliases = module_import_aliases(parsed_module)
         identifiers = terminal_names | frozenset(
             alias
-            for alias, qualified_name in aliases.items()
+            for alias, qualified_name in (
+                *aliases.items(),
+                *parsed_module.fact(ScopedImportBindings).aliases(),
+            )
             if qualified_name.rsplit(".", 1)[-1] in terminal_names
         )
         syntax_index = parsed_module.syntax_index
