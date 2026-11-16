@@ -1100,8 +1100,7 @@ class InitialNativeFrame:
         """Actual active frame slots retain their namespace dictionaries, not arbitrary entries."""
         return any(
             namespace.is_initial_storage(value)
-            for namespace in self.namespace_values
-            if isinstance(namespace, NamespaceEvidenceABC)
+            for namespace in self.evidence_namespaces
         )
 
     @property
@@ -1109,6 +1108,14 @@ class InitialNativeFrame:
         self,
     ) -> tuple[NamespaceEvidenceABC | OpenCapturedReference, ...]:
         return (self.locals, self.globals, self.builtins)
+
+    @property
+    def evidence_namespaces(self) -> tuple[NamespaceEvidenceABC, ...]:
+        """The frame's namespaces that are proved; an open one is left out."""
+
+        return tuple(
+            namespace for namespace in self.namespace_values if not namespace.is_open
+        )
 
     def binding_namespace(
         self,
@@ -1907,9 +1914,8 @@ class InitialNativeIsland:
 
     def require_frame(self, frame: InitialNativeFrame) -> None:
         """Validate exact evidence without demanding unused unresolved fallbacks."""
-        for namespace in frame.namespace_values:
-            if not namespace.is_open:
-                namespace.require_admitted(self)
+        for namespace in frame.evidence_namespaces:
+            namespace.require_admitted(self)
 
     def __post_init__(
         self, extra_storages: tuple[dict[NativeDictionaryKey, object], ...]
@@ -2096,8 +2102,7 @@ class CapturedSlotQuery:
         value.require_closed()
         namespaces = {
             id(namespace): namespace
-            for namespace in self.prefix.endpoint.frame.namespace_values
-            if isinstance(namespace, NamespaceEvidenceABC)
+            for namespace in self.prefix.endpoint.frame.evidence_namespaces
         }
         for namespace in namespaces.values():
             for name in NamespaceMemberInventory(kernel=kernel, namespace=namespace, prefix=self.prefix).names:
