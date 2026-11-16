@@ -441,6 +441,7 @@ class CaptureOutcome(ABC):
         return step(self)
 
 
+@dataclass(frozen=True)
 class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
     """An explicit captured kind can leave particular object protocols unknown."""
 
@@ -539,7 +540,6 @@ class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
 @dataclass(frozen=True)
 class OpenCapturedReference(OpaqueCapturedObjectOperations, CaptureOutcome):
     is_open: bool = field(default=True, init=False, repr=False, compare=False)
-    violation: CapturedReferenceViolation
     mutation: CompactMutation | None = None
     cause: ValueError | None = field(default=None, compare=False, repr=False)
 
@@ -582,7 +582,9 @@ class NativeTypePremise(NativeTypeCapture, OpaqueCapturedObjectOperations):
 
     declared_type: type
     native_type = AliasProperty[type]("declared_type")
-    violation = CapturedReferenceViolation.UNPROVED_ACCESS
+    violation: CapturedReferenceViolation = field(
+        default=CapturedReferenceViolation.UNPROVED_ACCESS, init=False, repr=False
+    )
 
     def require_closed(self) -> None:
         pass
@@ -909,6 +911,7 @@ class NamespaceCreationEvidenceABC(NamespaceEvidenceABC):
         return False
 
 
+@dataclass(frozen=True, eq=False)
 class CreatedNamespaceDictionary(
     NamespaceCreationEvidenceABC,
     NativeTypeCapture,
@@ -916,7 +919,9 @@ class CreatedNamespaceDictionary(
 ):
     """An admitted fresh dictionary keeps its namespace and value identity together."""
 
-    violation = CapturedReferenceViolation.UNPROVED_ACCESS
+    violation: CapturedReferenceViolation = field(
+        default=CapturedReferenceViolation.UNPROVED_ACCESS, init=False, repr=False
+    )
 
     native_type: ClassVar[type] = dict
 
@@ -1219,6 +1224,7 @@ class SourceOperationAuthority(SourceActivationAuthorityABC):
         return prefix
 
 
+@dataclass(frozen=True, eq=False)
 class CompletedSourceOperation(
     OpaqueCapturedObjectOperations, SourceOperationAuthority
 ):
@@ -1228,7 +1234,9 @@ class CompletedSourceOperation(
     exact type nor same-object identity, hashing, member hooks or safe release.
     """
 
-    violation = CapturedReferenceViolation.UNPROVED_ACCESS
+    violation: CapturedReferenceViolation = field(
+        default=CapturedReferenceViolation.UNPROVED_ACCESS, init=False, repr=False
+    )
 
     def result(self) -> CapturedReferenceResolution:
         self.require_original_operation()
