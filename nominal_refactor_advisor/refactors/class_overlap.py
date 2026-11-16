@@ -874,11 +874,14 @@ def required_name_imports(
     return tuple(imports)
 
 
+@dataclass(frozen=True)
 class ClassOverlapRewrite(ABC):
     """One proved class-overlap source rewrite: validate then emit edits.
 
     Six independent helpers all declared `source_edits(self, rationale)` with no
     shared ancestor. This ABC is the family the phantom_family detector found."""
+
+    snapshot: CodemodSourceSnapshot
 
     @abstractmethod
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]: ...
@@ -897,7 +900,6 @@ class ClassComposition(ClassOverlapRewrite):
     order is compared, not assumed.
     """
 
-    snapshot: CodemodSourceSnapshot
     owner: OverlapClass
     restating: OverlapClass
     restated: RestatedDeclarations
@@ -1061,7 +1063,6 @@ class CoveringComposition(ClassOverlapRewrite):
     the same: no keyword-only route is taken for owners other classes use.
     """
 
-    snapshot: CodemodSourceSnapshot
     owners: tuple[OverlapClass, ...]
     composers: tuple[OverlapClass, ...]
     restated: tuple[tuple[RestatedDeclarations, ...], ...]
@@ -1258,7 +1259,6 @@ class BaseFold(ClassOverlapRewrite):
     or `self.__class__(...)` in their family passes positions.
     """
 
-    snapshot: CodemodSourceSnapshot
     base: OverlapClass
     children: tuple[OverlapClass, ...]
     restated: tuple[RestatedDeclarations, ...]
@@ -1850,7 +1850,6 @@ class ConstructionKeywording(ClassOverlapRewrite):
     or an unknown caller, not this call.
     """
 
-    snapshot: CodemodSourceSnapshot
     target: OverlapClass
 
     @classmethod
@@ -2196,7 +2195,6 @@ class MixinCreation(ClassOverlapRewrite):
     class then composes it through its own compose-existing verdict.
     """
 
-    snapshot: CodemodSourceSnapshot
     anchor: OverlapClass
     restated: RestatedDeclarations
     name: str
@@ -2307,7 +2305,6 @@ class OwnerExtension(ClassOverlapRewrite):
     in its MRO that declares an added name is unchanged.
     """
 
-    snapshot: CodemodSourceSnapshot
     owner: OverlapClass
     anchor: OverlapClass
     restated: RestatedDeclarations
