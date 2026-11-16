@@ -828,12 +828,11 @@ class ClosedParameterConveyorComponentBuilder(
                 resolution.exact_origin is None
                 for resolution in construction_origin_resolutions.values()
             )
-            for resolution in self.repository.function_call_resolutions:
-                if (
-                    resolution.context.owner_symbol != construction.context.owner_symbol
-                    or not construction.call.position.dominates(
-                        resolution.call.position
-                    )
+            for resolution in self.repository.function_call_resolutions_by_owner.get(
+                construction.context.owner_symbol, ()
+            ):
+                if not construction.call.position.dominates(
+                    resolution.call.position
                 ):
                     continue
                 identity = self._raw_call_identity(

@@ -1581,6 +1581,16 @@ class ProductFlowRepository(
         )
 
     @cached_property
+    def function_call_resolutions_by_owner(
+        self,
+    ) -> dict[str, tuple[CompactFunctionCallResolution, ...]]:
+        grouped: dict[str, list[CompactFunctionCallResolution]] = {}
+        for resolution in self.function_call_resolutions:
+            symbol = resolution.context.owner_symbol
+            grouped.setdefault(symbol, []).append(resolution)
+        return {symbol: tuple(resolutions) for symbol, resolutions in grouped.items()}
+
+    @cached_property
     def resolved_function_calls(self) -> tuple[CompactResolvedFunctionCall, ...]:
         return tuple(
             resolved

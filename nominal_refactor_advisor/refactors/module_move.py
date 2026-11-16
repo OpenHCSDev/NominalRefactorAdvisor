@@ -1902,11 +1902,11 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         name through the source reads it once the stage has run: a declaration a
         peer of the batch moves reads from its new home."""
 
+        homes = BatchModuleMove.home_map(batch)
         return {
-            dependency.name: BatchModuleMove.home(
-                batch, cls._removed_binding_owner(context, dependency, destination_path)
-            )
+            dependency.name: homes.get(owner, owner)
             for dependency in report.source_removal_dependencies
+            for owner in (cls._removed_binding_owner(context, dependency, destination_path),)
         }
 
     @staticmethod
@@ -2450,6 +2450,11 @@ class BatchModuleMove(CodemodPayloadRecord):
             BatchModuleMove.modules(batch, context.module_import_graph),
             partial(ImportedNameOwner.declaring_module, context),
         )
+
+    @staticmethod
+    def home_map(batch: tuple[BatchModuleMove, ...]) -> dict[str, str]:
+        """Source → destination for every move in the batch."""
+        return {move.source_path: move.destination_path for move in batch}
 
     @staticmethod
     def home(batch: tuple[BatchModuleMove, ...], path: str) -> str:
