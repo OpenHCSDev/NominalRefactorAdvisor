@@ -102,6 +102,7 @@ class _HistoryModuleRedirect(WholeModuleNameRedirect):
         return super().consumer_edits(context, excluded_paths=excluded_paths)
 
 
+@dataclass(frozen=True)
 class _CallerManifestScope:
     """Only manifests governing physical caller sources belong to this replay."""
 
@@ -119,7 +120,6 @@ class _CallerManifestScope:
 
 @dataclass(frozen=True, kw_only=True)
 class _EntryPointGroupStrings(_CallerManifestScope, _ModuleIdentityStrings):
-    caller_root: str
 
     def manifest_string_spans(self, source: str) -> tuple[tuple[int, int], ...]:
         spans = tuple(_TomlStrings.entry_point_group_spans(source))

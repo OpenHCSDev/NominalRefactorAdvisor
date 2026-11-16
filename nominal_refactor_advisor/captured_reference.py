@@ -872,6 +872,7 @@ class NamespaceEvidenceABC(AdmittedEvidenceABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class RecordedNamespace(NamespaceEvidenceABC, ABC):
     """Complete initial keys derive from the existing admitted entry record."""
 
@@ -2237,7 +2238,6 @@ class NamespaceContentsABC(ABC):
 class InitialNamespaceContents(NamespaceContentsABC):
     """A view of supplied entry evidence, preserving its namespace identity."""
 
-    kernel: CapturedReferenceKernel
     namespace: NamespaceEvidenceABC
 
     def require_closed(self) -> None:
