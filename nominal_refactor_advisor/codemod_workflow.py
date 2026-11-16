@@ -54,6 +54,7 @@ from nominal_refactor_advisor.codemod_runtime import (
     FindingRecipeTrajectoryObstacle,
     apply_codemod_simulation,
 )
+from nominal_refactor_advisor.descriptor_algebra import AliasProperty
 from nominal_refactor_advisor.detectors._base import (
     DetectorCacheGranularity,
     DetectorConfig,
@@ -1644,17 +1645,16 @@ class EvidenceLocalCoverage(NamedDetectorCoverage):
     source = "an evidence-local rerun"
 
 
-@dataclass(frozen=True)
-class CodemodWorkflowScan:
+class CodemodWorkflowScan(ABC):
     """Parsed modules and findings for one migration state. A later scan of
     the same parses carries the same module set, so the set's facts are
     shared."""
 
     modules: ParsedModuleSet
     findings: list[RefactorFinding]
-    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False)
+    text_files: Mapping[str, FileText]
     """The files outside the Python index the stages so far have rewritten."""
-    coverage: FindingCoverage = EveryDetectorCoverage()
+    coverage: FindingCoverage
     """What this scan's findings are current for; a scan of every detector by default."""
 
     @property
@@ -1704,6 +1704,15 @@ class CodemodWorkflowScan:
             )
         return by_concept[concept_type]
 
+@dataclass(frozen=True)
+class ParsedWorkflowScan(CodemodWorkflowScan):
+    """A scan holding the parses it made or was handed."""
+
+    modules: ParsedModuleSet
+    findings: list[RefactorFinding]
+    text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False)
+    coverage: FindingCoverage = EveryDetectorCoverage()
+
     @classmethod
     def parsed(
         cls,
@@ -1713,7 +1722,7 @@ class CodemodWorkflowScan:
         cache_dir: Path | None,
         use_parse_cache: bool,
         analysis_workers: int = 1,
-    ) -> CodemodWorkflowScan:
+    ) -> ParsedWorkflowScan:
         """Parse ``roots`` and run every detector over them."""
         modules = parse_python_module_roots(
             roots,
@@ -1732,13 +1741,12 @@ class ProvedWorkflowScan(CodemodWorkflowScan):
     text files and indexes are that snapshot's, never built again; only the
     evidence rows follow this scan's own findings."""
 
+    findings: list[RefactorFinding]
+    coverage: FindingCoverage = EveryDetectorCoverage()
     proved: CodemodSourceSnapshot = field(kw_only=True, repr=False)
-    modules: ParsedModuleSet = field(init=False)
-    text_files: Mapping[str, FileText] = field(init=False, repr=False)
 
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "modules", self.proved.module_set)
-        object.__setattr__(self, "text_files", self.proved.text_files)
+    modules = AliasProperty[ParsedModuleSet]("proved.module_set")
+    text_files = AliasProperty[Mapping[str, FileText]]("proved.text_files")
 
     @cached_property
     def source_snapshot(self) -> CodemodSourceSnapshot:
@@ -1779,7 +1787,7 @@ class CodemodSimulationFindingProjection:
         if self.report_roots:
             return self.evidence_local_projected_scan(projected_modules)
         module_set = ParsedModuleSet.of(projected_modules)
-        return CodemodWorkflowScan(
+        return ParsedWorkflowScan(
             modules=module_set,
             findings=analyze_modules(
                 module_set, self.config, analysis_workers=self.analysis_workers
@@ -1793,7 +1801,7 @@ class CodemodSimulationFindingProjection:
     ) -> CodemodWorkflowScan:
         changed_paths = self.changed_paths
         if not changed_paths:
-            return CodemodWorkflowScan(
+            return ParsedWorkflowScan(
                 modules=ParsedModuleSet.of(projected_modules),
                 findings=list(self.findings),
                 coverage=EvidenceLocalCoverage(()),
@@ -1828,7 +1836,7 @@ class CodemodSimulationFindingProjection:
                 ]
             )
         )
-        return CodemodWorkflowScan(
+        return ParsedWorkflowScan(
             modules=ParsedModuleSet.of(projected_modules),
             findings=findings,
             coverage=EvidenceLocalCoverage(
@@ -1978,7 +1986,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
         )
 
     def fresh_scan(self) -> CodemodWorkflowScan:
-        scan = CodemodWorkflowScan.parsed(
+        scan = ParsedWorkflowScan.parsed(
             self.roots,
             self.config,
             cache_dir=self.resolved_dir,

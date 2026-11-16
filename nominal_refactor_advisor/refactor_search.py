@@ -29,6 +29,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodRefactorTrajectoryBudget,
     CodemodWorkflowScan,
+    ParsedWorkflowScan,
 )
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import (
@@ -328,7 +329,7 @@ class RefactorSearch:
         """Search the roots for the refactors that remove the most slop and derive
         the most."""
 
-        scan = CodemodWorkflowScan.parsed(
+        scan = ParsedWorkflowScan.parsed(
             self.roots,
             self.config,
             cache_dir=cache_dir,

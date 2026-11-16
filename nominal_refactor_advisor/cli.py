@@ -138,6 +138,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorTrajectoryBudget,
     CodemodSimulationFindingProjection,
     CodemodWorkflowScan,
+    ParsedWorkflowScan,
 )
 from nominal_refactor_advisor.deadline import (
     ScanDeadline,
@@ -3432,7 +3433,7 @@ class CodemodSynthesizePlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
+            workflow_scan=ParsedWorkflowScan(modules=self.modules, findings=self.findings),
             plan=plan,
         )
 
@@ -3462,7 +3463,7 @@ class CodemodSynthesizeClassPlanCliCommand(CodemodSynthesisExecutionCliCommand):
                 CodemodPlanSequence.from_document(report.finding_plan.document)
             ),
             plan_out=self.args.codemod_plan_out,
-            workflow_scan=CodemodWorkflowScan(modules=self.modules, findings=self.findings),
+            workflow_scan=ParsedWorkflowScan(modules=self.modules, findings=self.findings),
             report=report,
         )
 
@@ -3830,7 +3831,7 @@ class CodemodRefactorGoalCliCommand(
             analysis_workers=self.args.analysis_workers,
             guard_suite=self.execution_request.sequence.guard_suite,
             dry_run=not self.execution_request.mode.applies_changes,
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=self.modules,
                 findings=self.findings,
             ),
@@ -4760,7 +4761,7 @@ def _scan_main(
         args=args,
         source_snapshot=source_snapshot,
         execution_request=codemod_execution_request,
-        workflow_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        workflow_scan=ParsedWorkflowScan(modules=modules, findings=findings),
     ).run()
     if codemod_execution_result is not None:
         return codemod_execution_result

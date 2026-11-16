@@ -34,6 +34,7 @@ from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGua
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodWorkflowScan,
+    ParsedWorkflowScan,
 )
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -217,7 +218,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
         config=DetectorConfig(),
         dry_run=True,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        initial_scan=ParsedWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(path="picks.json", digest="0", picks=()),
     ).run()
@@ -229,7 +230,7 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
         config=DetectorConfig(),
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        initial_scan=ParsedWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
             path="picks.json",
@@ -355,7 +356,7 @@ def _goal_with_pick(root: Path, name: str) -> object:
         config=DetectorConfig(),
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        initial_scan=ParsedWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
             path="picks.json",
@@ -448,7 +449,7 @@ def test_a_picks_file_makes_the_picked_findings_the_only_targets(tmp_path: Path)
         config=DetectorConfig(),
         dry_run=True,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(
+        initial_scan=ParsedWorkflowScan(
             modules=modules, findings=analyze_modules(modules, DetectorConfig())
         ),
         migration_type=ClassBodyCompositionConcept,
@@ -551,7 +552,7 @@ def test_a_hold_source_pick_holds_the_value_it_copied(tmp_path: Path) -> None:
         config=DetectorConfig(),
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        initial_scan=ParsedWorkflowScan(modules=modules, findings=findings),
         migration_type=ClassBodyCompositionConcept,
         owner_picks=OwnerPicks(
             path="picks.json",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan, ParsedWorkflowScan
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.refactor_concepts import NominalBoundaryConcept
 from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
@@ -19,7 +19,7 @@ def test_a_scan_selects_concept_findings_once(tmp_path: Path, monkeypatch) -> No
         "    if kind == 'beta':\n        return 2\n"
         "    return 0\n"
     )
-    scan = CodemodWorkflowScan.parsed(
+    scan = ParsedWorkflowScan.parsed(
         (tmp_path,), DetectorConfig(), cache_dir=None, use_parse_cache=False
     )
     passes: list[int] = []

@@ -165,11 +165,34 @@ from nominal_refactor_advisor.json_reports import (
     json_report_object,
 )
 from nominal_refactor_advisor.codemod_workflow import (
+    CodemodClassPlanProjectedDelta,
+    CodemodClassPlanSiteProjectedDelta,
+    CodemodFindingClassChange,
+    CodemodFindingClassDelta,
+    CodemodFindingClassStatus,
+    CodemodFindingDelta,
+    CodemodFindingIdTransition,
     CodemodProjectedScanMode,
+    CodemodRefactorDepthBudgetObstacle,
+    CodemodRefactorGoalProgress,
     CodemodRefactorGoalRunner,
+    CodemodRefactorGuardEvaluatedTerminal,
+    CodemodRefactorGuardRejectedTerminal,
     CodemodRefactorTrajectoryBudget,
+    CodemodRefactorTrajectoryObstacle,
     CodemodRefactorTrajectoryObstacleKind,
+    CodemodRefactorTrajectoryProof,
+    CodemodRefactorTrajectoryState,
     CodemodRefactorTrajectoryStatus,
+    CodemodRefactorTrajectoryTerminal,
+    CodemodSimulationFindingProjection,
+    CodemodWorkflowScan,
+    CodemodWorkflowStopReason,
+    EveryDetectorCoverage,
+    ParsedWorkflowScan,
+    ProjectedScanModuleSet,
+    ProvedWorkflowScan,
+    StageProofCoverage,
 )
 from nominal_refactor_advisor.exact_method_authority import (
     ParallelMirroredLeafFamilyComponentBuilder,
@@ -2433,7 +2456,6 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
     from nominal_refactor_advisor.cli import FindingRecipePlanSynthesisExecution
     from nominal_refactor_advisor.codemod import FindingRecipePlan
     from nominal_refactor_advisor.codemod import FindingRecipeSynthesisReport
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
 
     module_path = tmp_path / "pkg/mod.py"
     plan_path = tmp_path / "unproved-plan.json"
@@ -2476,7 +2498,7 @@ def test_synthesized_plan_apply_and_export_require_trajectory_proof(
             mode=CodemodExecutionMode.APPLY,
         ),
         plan_out=plan_path,
-        workflow_scan=CodemodWorkflowScan(modules=modules, findings=[]),
+        workflow_scan=ParsedWorkflowScan(modules=modules, findings=[]),
         plan=plan,
     )
 
@@ -2762,9 +2784,6 @@ def test_projected_finding_report_uses_focused_partial_scan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor import codemod_workflow
-    from nominal_refactor_advisor.codemod_workflow import (
-        CodemodSimulationFindingProjection,
-    )
 
     changed_path = tmp_path / "pkg/changed.py"
     other_path = tmp_path / "pkg/other.py"
@@ -2864,9 +2883,6 @@ def test_projected_finding_report_omits_compact_global_detectors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor import codemod_workflow
-    from nominal_refactor_advisor.codemod_workflow import (
-        CodemodSimulationFindingProjection,
-    )
 
     changed_path = tmp_path / "pkg/changed.py"
     _write_module(
@@ -18458,11 +18474,10 @@ def test_codemod_sequence_preflight_reuses_each_document_proof(
 def test_codemod_workflow_scan_reuses_source_snapshot(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
 
     _write_module(tmp_path, "pkg/mod.py", "\nclass Alpha:\n    pass\n")
     modules = parse_python_modules(tmp_path)
-    scan = CodemodWorkflowScan(modules=modules, findings=[])
+    scan = ParsedWorkflowScan(modules=modules, findings=[])
 
     first_snapshot = scan.source_snapshot
     second_snapshot = scan.source_snapshot
@@ -20168,7 +20183,6 @@ def test_codemod_projected_scan_reuses_unchanged_modules(
 ) -> None:
     from nominal_refactor_advisor.codemod import CodemodParseValidationReport
     from nominal_refactor_advisor.codemod import CodemodSimulationReport
-    from nominal_refactor_advisor.codemod_workflow import ProjectedScanModuleSet
 
     _write_module(tmp_path, "pkg/alpha.py", "\nclass Alpha:\n    pass\n")
     beta_path = tmp_path / "pkg/beta.py"
@@ -20207,9 +20221,6 @@ def test_codemod_projected_scan_analyzes_created_modules(
 ) -> None:
     from nominal_refactor_advisor.codemod import CodemodParseValidationReport
     from nominal_refactor_advisor.codemod import CodemodSimulationReport
-    from nominal_refactor_advisor.codemod_workflow import (
-        CodemodSimulationFindingProjection,
-    )
 
     _write_module(
         tmp_path,
@@ -20258,9 +20269,6 @@ def test_codemod_projected_scan_analyzes_created_modules(
 def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     report = CodemodRefactorGoalRunner(
         roots=(tmp_path,),
@@ -20268,7 +20276,7 @@ def test_codemod_refactor_goal_runner_derives_zero_stage_achievement(
         dry_run=True,
         migration_type=SemanticCarrierConcept,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=ParsedModuleSet.of([]), findings=[]),
+        initial_scan=ParsedWorkflowScan(modules=ParsedModuleSet.of([]), findings=[]),
     ).run()
 
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED
@@ -20285,10 +20293,6 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     detector_id = "new_obligation_goal_test_detector"
     module_path = tmp_path / "pkg/mod.py"
@@ -20373,7 +20377,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
             dry_run=True,
             migration_type=SemanticCarrierConcept,
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=parse_python_modules(tmp_path),
                 findings=[initial],
             ),
@@ -20410,20 +20414,9 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
 
 
 def test_trajectory_status_members_own_proof_classification() -> None:
-    from nominal_refactor_advisor.codemod_workflow import (
-        CodemodRefactorDepthBudgetObstacle,
-        CodemodRefactorGuardEvaluatedTerminal,
-        CodemodRefactorGuardRejectedTerminal,
-        CodemodRefactorTrajectoryObstacle,
-        CodemodRefactorTrajectoryProof,
-        CodemodRefactorTrajectoryState,
-        CodemodRefactorTrajectoryTerminal,
-        CodemodWorkflowScan,
-        CodemodWorkflowStopReason,
-    )
 
     state = CodemodRefactorTrajectoryState(
-        scan=CodemodWorkflowScan(modules=ParsedModuleSet.of([]), findings=[])
+        scan=ParsedWorkflowScan(modules=ParsedModuleSet.of([]), findings=[])
     )
     terminal = CodemodRefactorTrajectoryTerminal(
         state=state,
@@ -20504,9 +20497,6 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     detector_id = "goal_test_detector"
     module_path = tmp_path / "pkg/mod.py"
@@ -20593,7 +20583,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=modules,
                 findings=[finding],
             ),
@@ -20608,7 +20598,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
                 max_states=1,
             ),
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=modules,
                 findings=[finding],
             ),
@@ -20682,9 +20672,6 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
 ) -> None:
     import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     weak_detector_id = "goal_runner_local_minimum_weak_test"
     strong_detector_id = "goal_runner_local_minimum_strong_test"
@@ -20799,7 +20786,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=parse_python_modules(tmp_path),
                 findings=[weak, strong],
             ),
@@ -20829,12 +20816,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
     from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
-    from nominal_refactor_advisor.codemod_workflow import EveryDetectorCoverage
-    from nominal_refactor_advisor.codemod_workflow import ProvedWorkflowScan
 
     detector_ids = (
         "equivalent_trajectory_left_test",
@@ -20927,7 +20909,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=parse_python_modules(tmp_path),
                 findings=list(findings),
             ),
@@ -20952,15 +20934,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
     from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
-    from nominal_refactor_advisor.codemod_workflow import (
-        EveryDetectorCoverage,
-        ProvedWorkflowScan,
-        StageProofCoverage,
-    )
 
     module_path = tmp_path / "pkg/mod.py"
     original_source = "value = 1\n"
@@ -21160,7 +21134,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=3),
             guard_suite=terminal_guard_suite,
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=parse_python_modules(tmp_path),
                 findings=list(initial_findings),
             ),
@@ -21234,8 +21208,6 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
 def test_class_family_migration_rejects_unproved_external_class_creation(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
@@ -21272,8 +21244,6 @@ def test_class_family_migration_never_commits_an_unproved_first_stage(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     module_path = tmp_path / "pkg/mod.py"
     original_source = _staged_class_family_source()
@@ -21325,8 +21295,6 @@ def test_class_family_migration_reports_native_proof_before_depth_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import nominal_refactor_advisor.codemod_runtime as codemod_runtime_module
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     module_path = tmp_path / "pkg/mod.py"
     original_source = _staged_class_family_source()
@@ -21400,8 +21368,6 @@ def test_class_family_goal_does_not_project_an_unproved_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import nominal_refactor_advisor.codemod_workflow as workflow_module
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     _write_module(tmp_path, "pkg/mod.py", _staged_class_family_source())
     exact_scan_count = 0
@@ -21455,9 +21421,6 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     detector_id = "goal_scope_test_detector"
     report_path = tmp_path / "pkg/report.py"
@@ -21538,7 +21501,7 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
             migration_type=SemanticCarrierConcept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(max_depth=2),
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=modules,
                 findings=[report_finding, context_finding],
             ),
@@ -21562,9 +21525,6 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
 ) -> None:
     from nominal_refactor_advisor.codemod import FindingRecipeActionKey
     from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
-    from nominal_refactor_advisor.codemod_workflow import CodemodRefactorGoalRunner
-    from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowStopReason
 
     detector_id = "unsupported_goal_test_detector"
     module_path = tmp_path / "pkg/mod.py"
@@ -21615,7 +21575,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
             config=DetectorConfig(),
             dry_run=True,
             guard_suite=ArchitectureGuardSuite(),
-            initial_scan=CodemodWorkflowScan(
+            initial_scan=ParsedWorkflowScan(
                 modules=modules,
                 findings=[finding],
             ),
@@ -21866,7 +21826,6 @@ def test_module_cli_simulates_projected_findings_for_created_files(
 def test_codemod_finding_class_delta_distinguishes_replaced_from_eliminated(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
 
     moved_spec = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -21931,7 +21890,6 @@ def test_codemod_finding_class_delta_distinguishes_replaced_from_eliminated(
 def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
 
     spec = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -21972,7 +21930,6 @@ def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes
 def test_codemod_finding_class_delta_rejects_unknown_relation_declaration(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
 
     finding = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -21993,8 +21950,6 @@ def test_codemod_finding_class_delta_rejects_unknown_relation_declaration(
 def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
 
     before_spec = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -22054,8 +22009,6 @@ def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
 def test_codemod_finding_class_delta_reports_increased_obligations(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
 
     spec = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -22096,8 +22049,6 @@ def test_codemod_finding_class_delta_reports_increased_obligations(
 def test_finding_class_status_members_own_transition_classification(
     tmp_path: Path,
 ) -> None:
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassDelta
-    from nominal_refactor_advisor.codemod_workflow import CodemodFindingClassStatus
 
     spec = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -22519,17 +22470,6 @@ def test_codemod_workflow_reports_derive_json_from_declarations() -> None:
 
 def test_codemod_workflow_types_keep_their_family_relations() -> None:
     from nominal_refactor_advisor.codemod import ReplaceTargetOperation
-    from nominal_refactor_advisor.codemod_workflow import (
-        CodemodClassPlanProjectedDelta,
-        CodemodClassPlanSiteProjectedDelta,
-        CodemodFindingClassChange,
-        CodemodFindingClassDelta,
-        CodemodFindingClassStatus,
-        CodemodFindingDelta,
-        CodemodFindingIdTransition,
-        CodemodRefactorGoalProgress,
-        CodemodWorkflowStopReason,
-    )
     from nominal_refactor_advisor.refactor_concepts import NominalBoundaryConcept
 
     delta = CodemodFindingDelta(
@@ -27580,10 +27520,6 @@ def test_proved_scan_index_names_its_own_findings(tmp_path: Path) -> None:
     scan of that state names the findings its reproof found, never the parent's."""
 
     from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
-    from nominal_refactor_advisor.codemod_workflow import (
-        EveryDetectorCoverage,
-        ProvedWorkflowScan,
-    )
     from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
     from nominal_refactor_advisor.patterns import PatternId
 

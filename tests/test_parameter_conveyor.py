@@ -26,6 +26,7 @@ from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodRefactorTrajectoryStatus,
     CodemodWorkflowScan,
+    ParsedWorkflowScan,
     CodemodWorkflowStopReason,
 )
 from nominal_refactor_advisor.detectors._carrier_collapse import ClosedParameterConveyorDetector
@@ -91,7 +92,7 @@ def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
 ) -> None:
     _write_source(tmp_path, "pkg/complete.py", _base_source())
     search = RefactorSearch(roots=(tmp_path,), config=DetectorConfig(), budget=SearchBudget(depth=2, width=1))
-    scan = CodemodWorkflowScan.parsed(
+    scan = ParsedWorkflowScan.parsed(
         (tmp_path,),
         DetectorConfig(),
         cache_dir=None,
@@ -412,7 +413,7 @@ def test_parameter_conveyor_goal_runner_proves_one_terminal_replay(
         dry_run=True,
         migration_type=SemanticCarrierConcept,
         guard_suite=ArchitectureGuardSuite(),
-        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        initial_scan=ParsedWorkflowScan(modules=modules, findings=findings),
     ).run()
 
     assert report.stop_reason is CodemodWorkflowStopReason.ACHIEVED

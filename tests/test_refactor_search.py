@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
-from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
+from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan, ParsedWorkflowScan
 from nominal_refactor_advisor.refactor_search import (
     ScoredMove,
     SearchTurn,
@@ -11,7 +11,7 @@ from nominal_refactor_advisor.refactor_search import (
 )
 
 START = StateScore(findings=10, derived=100, add_member_edits=5)
-EMPTY = CodemodWorkflowScan(modules=ParsedModuleSet.of([]), findings=[])
+EMPTY = ParsedWorkflowScan(modules=ParsedModuleSet.of([]), findings=[])
 
 
 def scored(
