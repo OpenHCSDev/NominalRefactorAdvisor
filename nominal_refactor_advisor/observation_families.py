@@ -1222,23 +1222,31 @@ def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
 
 
 def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> SubjectReading:
-    """`ForeignSubject` when the tested value is a parameter annotated `object`
-    that nothing rebinds (`LexicalScopeBindingAuthority.parameter_annotation`);
-    otherwise the value is held as itself.
+    """`ForeignSubject` when the tested value is a parameter nothing rebinds
+    (`LexicalScopeBindingAuthority.bound_parameter`) that is annotated `object`
+    or is a comparison method's operand; otherwise the value is held as itself.
 
     `ancestors` run from the module down to the test expression holding the
     subject (the comparison or call); no scope lies between it and the subject.
     """
 
-    match subject:
-        case ast.Name():
-            match LEXICAL_SCOPE_BINDING_AUTHORITY.parameter_annotation(
-                subject, ancestors
-            ):
-                case ast.Name(id=declared) | ast.Constant(value=declared) if (
-                    declared == object.__name__
-                ):
-                    return ForeignSubject()
+    if not isinstance(subject, ast.Name):
+        return SubjectReading()
+    function = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_parameter(subject, ancestors)
+    if function is None:
+        return SubjectReading()
+    match LEXICAL_SCOPE_BINDING_AUTHORITY.declared_annotation(function, subject.id):
+        case ast.Name(id=declared) | ast.Constant(value=declared) if (
+            declared == object.__name__
+        ):
+            return ForeignSubject()
+    match function:
+        case ast.FunctionDef(name=name, args=arguments) if (
+            name in ForeignSubject.COMPARISON_METHODS
+            and [argument.arg for argument in (*arguments.posonlyargs, *arguments.args)][1:2]
+            == [subject.id]
+        ):
+            return ForeignSubject()
     return SubjectReading()
 
 

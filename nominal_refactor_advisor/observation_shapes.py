@@ -417,9 +417,18 @@ class SubjectReading:
 
 @dataclass(frozen=True)
 class ForeignSubject(SubjectReading):
-    """A parameter annotated `object`: the value is foreign until this test
-    decodes it (`__eq__(self, other: object)`, a codec's input). Nothing in the
-    language derives its membership, so the test is the decoder and restates nothing."""
+    """A parameter annotated `object`, or the operand of a comparison method: the
+    value is foreign until this test decodes it (`__eq__(self, other)`, a codec's
+    input). Nothing in the language derives its membership, so the test is the
+    decoder and restates nothing.
+
+    The data model hands a comparison method's operand any object, annotated or
+    not, and asks it to answer `NotImplemented` for one it cannot compare.
+    """
+
+    COMPARISON_METHODS: ClassVar[frozenset[str]] = frozenset(
+        ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__")
+    )
 
     def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
         return ()
