@@ -17,7 +17,7 @@ from typing import (
 from nominal_refactor_advisor.refactors.function_projection_targets import (
     ProjectionTargetT,
     ResolvedFunctionProjectionTarget,
-    ReturnCollectionProjectionTarget,
+    FunctionReturnProjectionTarget,
     ReturnDictProjectionTarget,
     ReturnFieldValue,
     ReturnKeyValueSequenceProjectionTarget,
@@ -404,7 +404,7 @@ class DataclassInstanceFieldProjection:
         self,
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnCollectionProjectionTarget,
+        projection: FunctionReturnProjectionTarget,
         authority_import_source: str | None,
     ) -> bool:
         proof = DataclassAuthorityReferenceProof.from_target(
@@ -443,7 +443,7 @@ class DataclassInstanceFieldProjection:
         name: str,
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnCollectionProjectionTarget,
+        projection: FunctionReturnProjectionTarget,
         proof: DataclassAuthorityReferenceProof,
     ) -> bool:
         if name == "self":
@@ -498,7 +498,7 @@ class DataclassInstanceFieldProjection:
         value: ast.expr,
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnCollectionProjectionTarget,
+        projection: FunctionReturnProjectionTarget,
         proof: DataclassAuthorityReferenceProof,
     ) -> bool:
         if not isinstance(value, ast.Call):
@@ -516,7 +516,7 @@ class DataclassInstanceFieldProjection:
     @staticmethod
     def unshadowed_reference_resolves(
         reference: ast.expr,
-        projection: ReturnCollectionProjectionTarget,
+        projection: FunctionReturnProjectionTarget,
         proof: DataclassAuthorityReferenceProof,
     ) -> bool:
         roots = RootNameProjection.root_names(reference)
@@ -556,7 +556,7 @@ class DataclassInstanceFieldProjection:
         cls,
         context: CodemodSelectorContext,
         authority: DataclassPayloadAuthorityTarget,
-        projection: ReturnCollectionProjectionTarget,
+        projection: FunctionReturnProjectionTarget,
     ) -> bool:
         enclosing_class = cls.enclosing_class_node(context, projection)
         if enclosing_class is None or projection.owner_qualname is None:
@@ -570,7 +570,7 @@ class DataclassInstanceFieldProjection:
     @staticmethod
     def enclosing_class_node(
         context: CodemodSelectorContext,
-        projection: ReturnCollectionProjectionTarget,
+        projection: FunctionReturnProjectionTarget,
     ) -> ast.ClassDef | None:
         if projection.owner_qualname is None:
             return None
@@ -818,7 +818,7 @@ class DataclassesModuleReference:
         cls,
         context: CodemodSelectorContext,
         projection: (
-            ReturnCollectionProjectionTarget
+            FunctionReturnProjectionTarget
             | DataclassFieldNameCollectionProjectionTarget
         ),
     ) -> DataclassesModuleReference | None:

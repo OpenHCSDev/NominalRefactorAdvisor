@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from typing import (
-    TypeAlias,
     TypeVar,
 )
 
@@ -193,11 +192,6 @@ class ReturnKeyValueSequenceProjectionTarget(FunctionReturnProjectionTarget):
 
     sequence_node: ast.Tuple | ast.List
     field_values: tuple[ReturnKeyValueSequenceFieldValue, ...]
-
-
-ReturnCollectionProjectionTarget: TypeAlias = (
-    ReturnDictProjectionTarget | ReturnKeyValueSequenceProjectionTarget
-)
 
 
 class ReturnDictFieldValueExtractor:
