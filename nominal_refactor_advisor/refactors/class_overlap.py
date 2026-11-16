@@ -2131,7 +2131,7 @@ def require_owner_candidate(
     for verdict in snapshot.class_overlap_verdicts.candidates_touching(
         frozenset((anchor_symbol,))
     ):
-        if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
+        if not verdict.move.needs_new_owner or not wanted <= frozenset(verdict.shared_names):
             continue
         for owner in verdict.owner_candidates:
             if (
@@ -2623,7 +2623,7 @@ class ClassOverlapFindingRecipeSynthesizer(
                         v for v in verdicts.candidates_touching(
                             frozenset(owner.composers[:2])
                         )
-                        if v.move is ExtractMixin
+                        if v.move.needs_new_owner
                         and frozenset(owner.block) <= frozenset(v.shared_names)
                     ),
                     None,

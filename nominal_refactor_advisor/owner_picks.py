@@ -29,7 +29,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics, ExtractMixin
+from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics
 from nominal_refactor_advisor.json_reports import SemanticRecord
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.owner_candidates import (
@@ -89,7 +89,7 @@ class OwnerPicks:
             finding
             for finding in findings
             if isinstance(finding.metrics, ClassOverlapMetrics)
-            and finding.metrics.move is ExtractMixin
+            and finding.metrics.move.needs_new_owner
         ]
         outcomes: dict[str, OwnerPickOutcome] = {}
         chosen: dict[str, PickedOwner] = {}

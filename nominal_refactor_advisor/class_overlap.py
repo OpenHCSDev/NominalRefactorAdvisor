@@ -89,10 +89,12 @@ class ClassOverlapMove(Case):
 
     `reorders_fields` says whether the move puts moved dataclass fields ahead of
     the class's own, so a call passing fields by position would bind them to
-    other parameters.
+    other parameters. `needs_new_owner` says whether the block moves into a
+    class that does not exist yet, which an owner pick has to name.
     """
 
     reorders_fields: bool
+    needs_new_owner: bool = False
 
     @classmethod
     def obligation_classes(
@@ -174,6 +176,7 @@ class ExtractMixin(ClassOverlapMove):
 
     value = "extract_mixin"
     reorders_fields = True
+    needs_new_owner = True
 
     @classmethod
     def obligation_classes(
@@ -814,7 +817,7 @@ class ClassOverlapVerdicts:
                 self.owner_question(
                     first, second, tuple(shared.name for shared in extractable)
                 ).candidates()
-                if move is ExtractMixin
+                if move.needs_new_owner
                 else ()
             ),
             receipts=(
@@ -835,7 +838,7 @@ class ClassOverlapVerdicts:
                 *differing_receipts,
                 *(
                     self._inherited_receipts(overlap)
-                    if move is not ExtractMixin
+                    if not move.needs_new_owner
                     else ()
                 ),
                 *self._size_receipts(extractable, first, second),
@@ -849,7 +852,7 @@ class ClassOverlapVerdicts:
                     self._positional_construction_receipts(
                         move, (first, second)
                     )
-                    if move is not ExtractMixin
+                    if not move.needs_new_owner
                     else ()
                 ),
                 *self._promotion_blocker_receipts(move, owner, restating),
@@ -1050,7 +1053,7 @@ class ClassOverlapVerdicts:
         """Concrete blockers for a promote/compose move: parent not a dataclass,
         or a child using class-attribute assignments instead of field defaults."""
 
-        if move is ExtractMixin:
+        if move.needs_new_owner:
             return ()
         receipts: list[Receipt] = []
         target = owner
@@ -1297,7 +1300,7 @@ class ClassOverlapVerdicts:
             differences.append("decorator safety")
         if not differences:
             differences.append("class creation")
-        if move is ExtractMixin and all(
+        if move.needs_new_owner and all(
             d.startswith("class keywords") for d in differences
         ):
             return (
