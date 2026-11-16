@@ -937,9 +937,10 @@ def test_every_form_of_type_test_on_an_own_class_is_a_finding(tmp_path: Path):
 
 
 def test_a_test_against_a_class_whose_metaclass_answers_isinstance_decodes(tmp_path: Path):
-    """A family whose metaclass defines `__instancecheck__` decodes foreign values
-    (here `ast` nodes); testing one against it is the boundary, not a restated
-    class. A plain family beside it is still a finding."""
+    """A family whose metaclass answers `isinstance` for foreign classes, by
+    `__instancecheck__` or by registering them as virtual subclasses, decodes
+    foreign values (here `ast` nodes); testing one against it is the boundary,
+    not a restated class. A plain family beside them is still a finding."""
 
     findings = _findings(
         tmp_path,
@@ -947,12 +948,22 @@ def test_a_test_against_a_class_whose_metaclass_answers_isinstance_decodes(tmp_p
         {
             "families": (
                 "import ast\n"
-                "class DecoderMeta(type):\n"
+                "from abc import ABCMeta\n"
+                "class CheckingMeta(type):\n"
                 "    def __instancecheck__(cls, value):\n"
                 "        return isinstance(value, cls.members)\n"
-                "class Foreign(metaclass=DecoderMeta):\n"
+                "class Checked(metaclass=CheckingMeta):\n"
                 "    members = ()\n"
-                "class Function(Foreign):\n"
+                "class Import(Checked):\n"
+                "    members = (ast.Import, ast.ImportFrom)\n"
+                "class RegisteringMeta(ABCMeta):\n"
+                "    def __init__(cls, name, bases, namespace):\n"
+                "        super().__init__(name, bases, namespace)\n"
+                "        for member in namespace.get('members', ()):\n"
+                "            cls.register(member)\n"
+                "class Registered(metaclass=RegisteringMeta):\n"
+                "    pass\n"
+                "class Function(Registered):\n"
                 "    members = (ast.FunctionDef, ast.AsyncFunctionDef)\n"
                 "class Shape:\n"
                 "    pass\n"
@@ -960,16 +971,18 @@ def test_a_test_against_a_class_whose_metaclass_answers_isinstance_decodes(tmp_p
                 "    pass\n"
             ),
             "use": (
-                "from families import Circle, Function\n"
+                "from families import Circle, Function, Import\n"
                 "def functions(nodes):\n"
                 "    return [node for node in nodes if isinstance(node, Function)]\n"
+                "def imports(nodes):\n"
+                "    return [node for node in nodes if isinstance(node, Import)]\n"
                 "def round(shape):\n"
                 "    return isinstance(shape, Circle)\n"
             ),
         },
     )
 
-    assert _lines(findings) == [5]
+    assert _lines(findings) == [7]
 
 
 def test_a_constant_compared_by_identity_is_not_a_type_test(tmp_path: Path):

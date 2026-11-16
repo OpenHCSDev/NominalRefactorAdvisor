@@ -93,10 +93,21 @@ class CreatedClassStore:
         )
 
     def checks_instances(self) -> bool:
-        """As a metaclass: it answers `isinstance` itself, so a test against a
-        class it creates decodes a value rather than asking which class it is."""
+        """As a metaclass: `isinstance` against a class it creates answers for
+        classes outside that class's hierarchy, so the test decodes a value
+        rather than asking which class it is. It defines `__instancecheck__`,
+        or its `__init__` registers virtual subclasses on the created class."""
 
-        return "__instancecheck__" in self.methods
+        if "__instancecheck__" in self.methods:
+            return True
+        init = self.methods.get("__init__")
+        if init is None:
+            return False
+        receiver = self._receiver(init)
+        return any(
+            isinstance(call.func.value, ast.Name) and call.func.value.id in receiver
+            for call in self._calls_of(init, "register")
+        )
 
     def stores_subclass(self) -> bool:
         """As a base: `__init_subclass__` stores the subclass being created."""
