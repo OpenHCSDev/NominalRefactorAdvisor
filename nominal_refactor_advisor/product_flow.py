@@ -683,8 +683,7 @@ class CompactValueDestinationKind(StrEnum):
         return tuple(
             operation
             for operation in operations
-            if isinstance(operation.event, CompactEvaluatedAssignment)
-            and operation.event.result is result
+            if operation.event.assigns(result)
         )
 
     def _open_expression(
@@ -1646,8 +1645,31 @@ class CompactVariableAnnotationTarget(CompactItemTarget):
 AssignmentTargetT = TypeVar("AssignmentTargetT", bound=CompactAssignmentTargetABC)
 
 
+class SourceFlowEvent(ABC):
+    """One event a source flow records at a position, whatever produced it.
+
+    Each question a consumer asks of an event is answered here by default and
+    overridden by the one member it is true of.
+    """
+
+    def require_value_use(self, refusal: str) -> CompactValueUse:
+        """This event as the evaluated value use it is; only a value use is one."""
+
+        raise ValueError(refusal)
+
+    def mutates(self, target_kind: type[CompactAssignmentTargetABC]) -> bool:
+        """Whether this event writes a `target_kind` target; only a mutation writes."""
+
+        return False
+
+    def assigns(self, result: CompactEvaluatedResult) -> bool:
+        """Whether this event stores exactly `result`; only an evaluated assignment does."""
+
+        return False
+
+
 @dataclass(frozen=True)
-class CompactMutation(DataclassGraphNode, Generic[AssignmentTargetT]):
+class CompactMutation(DataclassGraphNode, SourceFlowEvent, Generic[AssignmentTargetT]):
     target: AssignmentTargetT
     kind: CompactMutationKind
     position: CompactFlowPosition
@@ -1655,6 +1677,14 @@ class CompactMutation(DataclassGraphNode, Generic[AssignmentTargetT]):
     imported_origin = AliasProperty[ImportedNameOrigin | None]("target.imported_origin")
 
     reference = AliasProperty[LexicalValueReference | None]("target.lexical_reference")
+
+    def mutates(self, target_kind: type[CompactAssignmentTargetABC]) -> bool:
+        return isinstance(self.target, target_kind)
+
+    def require_evaluated(self, refusal: str) -> CompactEvaluatedAssignment[AssignmentTargetT]:
+        """This write as the evaluated assignment it is; only one that owns its RHS is."""
+
+        raise ValueError(refusal)
 
     def resolve(
         self,
@@ -1688,6 +1718,12 @@ class CompactEvaluatedAssignment(CompactMutation[AssignmentTargetT]):
 
     result: CompactEvaluatedResult
     value_use = AliasProperty["CompactValueUse"]("result.value_use")
+
+    def assigns(self, result: CompactEvaluatedResult) -> bool:
+        return self.result is result
+
+    def require_evaluated(self, refusal: str) -> CompactEvaluatedAssignment[AssignmentTargetT]:
+        return self
 
     def __post_init__(self) -> None:
         super().__post_init__()
@@ -2312,6 +2348,16 @@ class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
 
         raise ValueError(refusal)
 
+    def require_source_origin(
+        self,
+        source: SourceProductFlowProjection,
+        read: CompactFlowValue,
+        operation: SourceFlowOperation,
+    ) -> None:
+        """Only an evaluated value use has a unique original expression operation."""
+
+        raise ValueError("Value read has no unique original expression operation")
+
     def require_native_origin(
         self,
         source: SourceProductFlowProjection,
@@ -2351,7 +2397,7 @@ class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
+class CompactValueUse(DataclassGraphValue, CompactPositionedReference, SourceFlowEvent):
     """One evaluated expression value, retaining its source event."""
 
     value: CompactValueExpression | CompactResolvableValue
@@ -2363,6 +2409,9 @@ class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
 
     def reads_value(self, value: object) -> bool:
         return self.value is value
+
+    def require_value_use(self, refusal: str) -> CompactValueUse:
+        return self
 
     def evaluated(self, kind: type[EvaluatedT], refusal: str) -> EvaluatedT:
         if not isinstance(self.value, kind):
@@ -2449,7 +2498,7 @@ class CompactSpannedGraphValue(DataclassGraphValue):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactEvaluatedResult(CompactSpannedGraphValue):
+class CompactEvaluatedResult(CompactSpannedGraphValue, SourceFlowEvent):
     """An evaluated value and its immediate disposition, not a completed path proof.
 
     A missing value use denotes the implicit None of a bare return.
@@ -2466,7 +2515,7 @@ class CompactEvaluatedResult(CompactSpannedGraphValue):
 
 
 @dataclass(frozen=True)
-class CompactCallableReferenceUse(CompactPositionedReference):
+class CompactCallableReferenceUse(CompactPositionedReference, SourceFlowEvent):
     target: CompactCallTargetReference
     source_span: SourceByteSpan
 
@@ -2510,7 +2559,7 @@ class CompactCallableReferenceUse(CompactPositionedReference):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactFunctionCall(CompactSpannedGraphValue):
+class CompactFunctionCall(CompactSpannedGraphValue, SourceFlowEvent):
     target_use: CompactCallableReferenceUse
     arguments: CompactCallArguments[CompactValueUse]
     result: CompactValueDestination
@@ -2541,7 +2590,7 @@ class CompactFunctionCall(CompactSpannedGraphValue):
 
 
 @dataclass(frozen=True, eq=False)
-class CompactSubscription(CompactSpannedGraphValue):
+class CompactSubscription(CompactSpannedGraphValue, SourceFlowEvent):
     """One load subscription, after capturing its original receiver and argument."""
 
     receiver_use: CompactValueUse
@@ -3085,7 +3134,7 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
 
 
 @dataclass(frozen=True)
-class CompactNativeCapture(DataclassGraphNode):
+class CompactNativeCapture(DataclassGraphNode, SourceFlowEvent):
     """An actual native capture positioned within source header evaluation.
 
     The site's actual native frame origin is independent of the enclosing
@@ -3734,15 +3783,6 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
                )
 
 
-SourceFlowEvent: TypeAlias = (
-    CompactSubscription
-    | CompactFunctionCall
-    | CompactMutation
-    | CompactCallableReferenceUse
-    | CompactEvaluatedResult
-    | CompactValueUse
-    | CompactNativeCapture
-)
 
 
 @dataclass(frozen=True)
@@ -3775,10 +3815,7 @@ class SourceFlowOperation:
     def mutates(self, target_kind: type[CompactAssignmentTargetABC]) -> bool:
         """Whether this operation's event mutates a `target_kind` target."""
 
-        match self.event:
-            case CompactMutation(target=target):
-                return isinstance(target, target_kind)
-        return False
+        return self.event.mutates(target_kind)
 
 
 @dataclass(frozen=True)
@@ -3940,8 +3977,6 @@ class SourceProductFlowProjection:
     def value_operation(self, read: CompactFlowValue) -> SourceFlowOperation:
         """Join an original evaluated value, not an earlier callable-reference read."""
         operation = self.source_operation(read.context, read.use)
-        if not isinstance(read.use, CompactValueUse):
-            raise ValueError("Value read has no unique original expression operation")
         read.use.require_source_origin(self, read, operation)
         return operation
 

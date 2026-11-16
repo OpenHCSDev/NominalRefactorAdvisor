@@ -1547,10 +1547,9 @@ class SourceEmptyDictionaryCapture(EmptyDictionaryCreation):
 
     @property
     def use(self) -> CompactValueUse:
-        event = self.operation.event
-        if not isinstance(event, CompactValueUse):
-            raise ValueError("Empty dictionary requires its original value production")
-        return event
+        return self.operation.event.require_value_use(
+            "Empty dictionary requires its original value production"
+        )
 
     @cached_property
     def creation_admission(self) -> None:
@@ -2720,9 +2719,12 @@ class SourceCompletionResolver(
     def _item_mutation_resolution(
         self, context: CompactFlowContext, binding: CompactMutation[CompactItemTarget]
     ) -> SourceCompletedReturnABC:
-        if not isinstance(binding, CompactEvaluatedAssignment):
-            raise ValueError("Item completion requires an evaluated source assignment")
-        return SourceItemStoreReturn(execution=self.execution, binding=binding)
+        return SourceItemStoreReturn(
+            execution=self.execution,
+            binding=binding.require_evaluated(
+                "Item completion requires an evaluated source assignment"
+            ),
+        )
 
     def _receiver_mutation_resolution(
         self,
@@ -3710,10 +3712,9 @@ class SourceExecutionABC(
         context: CompactFlowContext,
         mutation: CompactMutation[CompactItemTarget],
     ) -> None:
-        if not isinstance(mutation, CompactEvaluatedAssignment):
-            raise ValueError(
-                "Source item store requires an actual evaluated item assignment"
-            )
+        mutation = mutation.require_evaluated(
+            "Source item store requires an actual evaluated item assignment"
+        )
         self.kernel.assignment_value(context, mutation).require_closed()
         receiver = self.kernel._read_use(
             mutation.target.receiver_use, context, frozenset()

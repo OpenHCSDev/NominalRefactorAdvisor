@@ -42,7 +42,6 @@ from nominal_refactor_advisor.product_flow import (
     CompactFunctionCall,
     CompactMutation,
     CompactSubscription,
-    CompactValueUse,
     SourceFlowEvaluation,
     SourceFlowEvent,
     SourceFlowOperation,
@@ -215,11 +214,10 @@ class DefinitionHeaderEffect(ClassNamespaceEffect):
         source = environment.source
         definition = source.definition_operation(self.node)
         target: CompactDefinitionTarget = cast(CompactMutation, definition.event).target
-        use = operation.event
-        if not isinstance(use, CompactValueUse) or not any(
-            original is use for original in target.header_uses
-        ):
-            raise ValueError("Definition input requires its original header receipt")
+        refusal = "Definition input requires its original header receipt"
+        use = operation.event.require_value_use(refusal)
+        if not any(original is use for original in target.header_uses):
+            raise ValueError(refusal)
         context = source.context_for_owner(definition.owner)
         if source.source_operation(context, use) is not operation:
             raise ValueError("Definition input requires its original source operation")
