@@ -527,6 +527,17 @@ Next moves, each traced and parked with its reason:
   `NamedTuple`; converting it is a cache-format move first.
 - *`threaded_absence`* (112) has no batch lever: the top parameter name
   covers 6. Per-function work only.
+- *`SemanticDescentGraphIssueDetector`* has no production implementer;
+  only three test-local detectors inherit it, so its four `issubclass`
+  sites (`analysis.py`, `codemod_workflow.py`) always answer False in
+  production. Raised with Tristan: land a detector on it or delete the
+  graph-detector path. Do not polish it meanwhile.
+- *`phantom_family`* (415) is two-owner pairs on generic method names
+  (`resolve`, `of`, `read`, `names`, at most 3 per name): mostly name
+  coincidence, no batch.
+- Scan at 513cce2e: 1,442 findings (1,532 at 1ef91a94), `own_type_test`
+  191 (281). One scan per output path: two scans into one file give
+  concatenated JSON, and reading an unfinished scan's file gives empty.
 
 **Mechanical kills are exhausted.** `redundant_type_check` (15→2),
 `repeated_module_expression_lead` (AST constants extracted), and
