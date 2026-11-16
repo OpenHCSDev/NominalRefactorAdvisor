@@ -150,6 +150,13 @@ class InsertedImportsRewrite(SpanRewrite):
 class DeclarationReferenceOperation(SourceReprovedOperation, ABC):
     """Rewrite one file's spelled declarations as references, from its current source."""
 
+    _concrete_operations: ClassVar[list[type[DeclarationReferenceOperation]]] = []
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        if not getattr(cls, "__abstractmethods__", None) and hasattr(cls, "position_tags"):
+            DeclarationReferenceOperation._concrete_operations.append(cls)
+
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
@@ -493,12 +500,9 @@ class DeclarationReferenceFindingRecipeSynthesizer(
     and a finding with no rewritable site is rejected.
     """
 
-    reference_operations: tuple[type[DeclarationReferenceOperation], ...] = (
-        UnquoteResolvedTypeNamesOperation,
-        ReferenceImportedModuleOperation,
-        ReferenceClassNameOperation,
-        ReferenceEnumMemberOperation,
-    )
+    @property
+    def reference_operations(self) -> tuple[type[DeclarationReferenceOperation], ...]:
+        return tuple(DeclarationReferenceOperation._concrete_operations)
 
     @staticmethod
     def reference_metrics(finding: RefactorFinding) -> DeclarationReferenceMetrics:
