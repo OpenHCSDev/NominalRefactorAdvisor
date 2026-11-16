@@ -61,10 +61,6 @@ from nominal_refactor_advisor.refactors.answered_method import (
 )
 from nominal_refactor_advisor.refactors.class_overlap import ClassReferenceSites
 from nominal_refactor_advisor.stored_records import StoredRecords
-from nominal_refactor_advisor.type_checker_session import (
-    DeferredTypeChecker,
-    SourceTexts,
-)
 
 _Declaration = ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign | ast.Assign
 _CLASS_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
@@ -117,14 +113,10 @@ class RenamedMember(AnsweredMethod):
                 NeededInput.SOURCE_CHANGE,
             )
         renamed = cls(snapshot, source_class, declaration, member_name, new_name)
-        try:
-            renamed.require_dispatch_inside_family()
-            renamed.require_free_new_name()
-            renamed.require_no_name_strings()
-            renamed.require_field_constructions()
-        except BaseException:
-            renamed.session.stop()
-            raise
+        renamed.require_dispatch_inside_family()
+        renamed.require_free_new_name()
+        renamed.require_no_name_strings()
+        renamed.require_field_constructions()
         return renamed
 
     @property
@@ -211,7 +203,7 @@ class RenamedMember(AnsweredMethod):
                     )
         probe = replace(self, member_name=self.new_name)
         try:
-            reached = probe.reaching(probe.references(), self.session)
+            reached = probe.reaching(probe.references())
         except ValueError as error:
             raise NeedsInput(f"{self.where} needs another name: {error}", NeededInput.SOURCE_CHANGE) from error
         if reached:
@@ -246,7 +238,7 @@ class RenamedMember(AnsweredMethod):
                         f"member by its name {self.member_name!r}",
                         NeededInput.SOURCE_CHANGE,
                     )
-        lookup = self.lookup_reaching_family(self.session)
+        lookup = self.lookup_reaching_family()
         if lookup is not None:
             raise NeedsInput(f"{self.where} needs {lookup} shown not to look the member up by name", NeededInput.PROOF)
 
@@ -349,7 +341,7 @@ class RenamedMember(AnsweredMethod):
                 elif _constructs_own_class(call, parsed, index.parents, self):
                     found.extend((parsed.file_path, keyword) for keyword in self.passed(call, where))
         try:
-            reached = self.reaching(receivers, self.session)
+            reached = self.reaching(receivers)
         except ValueError as error:
             raise NeedsInput(f"{self.where} needs {error}", NeededInput.SOURCE_CHANGE) from error
         for receiver, _binding in reached:
@@ -366,10 +358,6 @@ class RenamedMember(AnsweredMethod):
                 raise NeedsInput(f"{self.where} needs the keywords {where} unpacks with `**`", NeededInput.PROOF)
             if keyword.arg == self.member_name:
                 yield keyword
-
-    @cached_property
-    def session(self) -> DeferredTypeChecker:
-        return DeferredTypeChecker(SourceTexts(self.snapshot.parsed_modules))
 
     @cached_property
     def family_bodies(self) -> tuple[tuple[str, ast.ClassDef], ...]:
@@ -440,7 +428,7 @@ class RenamedMember(AnsweredMethod):
             spans.setdefault(file_path, set()).add((start, start + length))
 
         try:
-            uses = self.answering_calls(self.session)
+            uses = self.answering_calls()
         except ValueError as error:
             raise NeedsInput(f"{self.where} needs {error}", NeededInput.SOURCE_CHANGE) from error
         for use in uses:
@@ -599,10 +587,7 @@ class RenameClassMemberOperation(RepositorySourceReprovedOperation):
             self.member_name,
             self.new_name,
         )
-        try:
-            replacements = renamed.replacements()
-        finally:
-            renamed.session.stop()
+        replacements = renamed.replacements()
         edits: list[NominalSourceEdit] = []
         for file_path, file_replacements in sorted(replacements.items()):
             edits.extend(SourceTextGeometry(snapshot.sources_by_file_path[file_path]).physical_edits(
