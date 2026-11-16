@@ -62,6 +62,7 @@ from nominal_refactor_advisor.ast_tools import (
     CollectedFamilyCacheContext,
     CollectedFamilyContentSignatureIndex,
     CollectedFamilyPresenceDemand,
+    FamilyDemand,
     dataclass_field_names,
     parse_python_module_roots,
     parse_python_modules,
@@ -861,7 +862,7 @@ class CompactProjectionBuildRequest:
     missing_families: tuple[type[CollectedFamily], ...]
     config: DetectorConfig
     local_detector_types: tuple[type[IssueDetector], ...] = ()
-    family_demands: tuple[tuple[type[CollectedFamily], object], ...] = ()
+    family_demands: tuple[tuple[type[CollectedFamily], FamilyDemand], ...] = ()
     family_demand_signatures: tuple[tuple[type[CollectedFamily], str], ...] = ()
     bundle_families: tuple[type[CollectedFamily], ...] = ()
 
@@ -1172,7 +1173,7 @@ class BoundedCompactProjectionManifest:
     runtime_projections: dict[tuple[type[CollectedFamily], str], tuple[object, ...]] = (
         field(default_factory=dict)
     )
-    family_demands: dict[type[CollectedFamily], object] = field(default_factory=dict)
+    family_demands: dict[type[CollectedFamily], FamilyDemand] = field(default_factory=dict)
     report_scope: AnalysisPathScope | None = None
     _materialized_source_counts: dict[tuple[type[CollectedFamily], str], int] = field(
         default_factory=dict,
@@ -2074,7 +2075,7 @@ def analyze_compact_roots_with_cache(
             else ()
         ),
     )
-    report_family_demands: dict[type[CollectedFamily], object] = {}
+    report_family_demands: dict[type[CollectedFamily], FamilyDemand] = {}
     demand_families = projection_manifest.projection_families
     if demand_families and report_scope is not None and report_scope.has_report_filter:
         target_families = projection_manifest.projection_families
