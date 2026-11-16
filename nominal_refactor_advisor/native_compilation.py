@@ -514,6 +514,11 @@ class NativeCallSlotABC(ABC):
 
     instruction_offset: int
 
+    def require_operand(self, refusal: str) -> NativeProducedValue:
+        """This slot as the Python operand it holds; a protocol marker holds none."""
+
+        raise ValueError(refusal)
+
     @property
     @abstractmethod
     def implicit_arguments(self) -> tuple[NativeProducedValue, ...]:
@@ -571,6 +576,14 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
     def require_completion(self, resolver: NativeCompletionResolverABC) -> None:
         resolver._native_value_completion(self)
 
+    def require_operand(self, refusal: str) -> NativeProducedValue:
+        return self
+
+    def require_constant(self, refusal: str) -> NativeConstantValue:
+        """This production as the constant it is; only a constant production is one."""
+
+        raise ValueError(refusal)
+
     def call_at(self, source_span: SourceByteSpan | None) -> bool:
         """Whether this is a call whose source is exactly `source_span`; only a call is."""
 
@@ -591,9 +604,10 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
         # Both supported ABIs place an implicit object after its callable.
         # The enum selects the dispatch operand using its NULL layout; neither
         # position can then contain a protocol marker in this object form.
-        if any(not isinstance(value, NativeProducedValue) for value in operands):
-            raise ValueError("Native implicit call prefix requires Python operands")
-        callee, argument = operands
+        callee, argument = (
+            value.require_operand("Native implicit call prefix requires Python operands")
+            for value in operands
+        )
         return callee, argument
 
     def productions(self) -> tuple[NativeProducedValue, ...]:
@@ -833,8 +847,10 @@ class NativeListExtensionValue(NativeListValue):
 
     def require_literal_contents(self, expected: object) -> None:
         receiver, iterable = self.inputs
-        if type(expected) is not list or not isinstance(iterable, NativeConstantValue):
-            raise ValueError("Native literal list extension has no constant iterable")
+        refusal = "Native literal list extension has no constant iterable"
+        if type(expected) is not list:
+            raise ValueError(refusal)
+        iterable = iterable.require_constant(refusal)
         items = iterable.value
         if type(items) is not tuple or len(items) > len(expected):
             raise ValueError("Native literal list extension has incompatible items")
@@ -861,6 +877,9 @@ class NativeConstantValue(NativeTypedValue):
 
     declaration: ClassVar[NativeTypeDeclaration]
     value: object
+
+    def require_constant(self, refusal: str) -> NativeConstantValue:
+        return self
 
     def _native_constant_value(self) -> object:
         return self.value
@@ -1386,9 +1405,9 @@ class NativeCallMarker(NativeCallSlotABC):
     def split_call_prefix(
         self, order: NativeCallOperandOrder, operands: tuple[NativeCallSlotABC, ...]
     ) -> tuple[NativeProducedValue, NativeCallMarker]:
-        callee = operands[order.callee_index]
-        if not isinstance(callee, NativeProducedValue):
-            raise ValueError("Native call prefix differs from the backend protocol")
+        callee = operands[order.callee_index].require_operand(
+            "Native call prefix differs from the backend protocol"
+        )
         return callee, self
 
     @classmethod
@@ -1477,10 +1496,10 @@ class NativeOperandStack:
             raise ValueError("Native operand has no admitted instruction observation")
 
     def pop(self, count: int) -> tuple[NativeProducedValue, ...]:
-        operands = self.take(count)
-        if any(not isinstance(value, NativeProducedValue) for value in operands):
-            raise ValueError("A call protocol marker is not a Python operand")
-        return cast(tuple[NativeProducedValue, ...], operands)
+        return tuple(
+            value.require_operand("A call protocol marker is not a Python operand")
+            for value in self.take(count)
+        )
 
     def invoke(
         self, operation: NativePrimitiveOperation, instruction: dis.Instruction
@@ -1529,10 +1548,9 @@ class NativeOperandStack:
         self, operation: NativePrimitiveOperation, instruction: dis.Instruction
     ) -> None:
         (names,) = self.pop(1)
-        if not isinstance(names, NativeConstantValue):
-            raise ValueError(
-                "Native keyword metadata requires its original constant tuple"
-            )
+        names = names.require_constant(
+            "Native keyword metadata requires its original constant tuple"
+        )
         self.call_factory = partial(NativeKeywordCallValue, keyword_names=names)
         self.invoke(operation, instruction)
 
@@ -1575,15 +1593,10 @@ class NativeOperandStack:
         if type(instruction.arg) is not int or instruction.arg < 0:
             raise ValueError("Native dictionary has no exact nonnegative input count")
         inputs = self.pop(instruction.arg + 1)
-        keys = inputs[-1]
-        if (
-            not isinstance(keys, NativeConstantValue)
-            or type(keys.value) is not tuple
-            or len(keys.value) != instruction.arg
-        ):
-            raise ValueError(
-                "Native dictionary requires its original constant key tuple"
-            )
+        refusal = "Native dictionary requires its original constant key tuple"
+        keys = inputs[-1].require_constant(refusal)
+        if type(keys.value) is not tuple or len(keys.value) != instruction.arg:
+            raise ValueError(refusal)
         self.stack.append(
             self.emit(
                 NativeTypedValue(
