@@ -4564,7 +4564,7 @@ class _CompactFlowCollector(
     def visit_Import(self, node: ast.Import | ast.ImportFrom) -> None:
         for origin in ImportBoundNameProjection(node).origins(self.module_identity):
             self._record_mutation(
-                CompactImportTarget(origin), node, CompactMutationKind.IMPORT
+                CompactImportTarget(origin=origin), node, CompactMutationKind.IMPORT
             )
 
     visit_ImportFrom = visit_Import
