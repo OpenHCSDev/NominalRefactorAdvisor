@@ -197,13 +197,23 @@ stronger than a synthesized recipe that hedged its way to silence.
   `EconomicsProofReport.from_root`). The command line reads the domain and
   never owns it.
 
-## ABC→dataclass promotion: COMPLETED (2026-11-16)
+## ABC→dataclass promotion: parent promotions done, missing_mixin work continues (2026-11-16)
 
-**Status: all promotable parents have been promoted.** 11 parents promoted
-this session; the diagnostic tool (`tools/diagnose_missing_mixins.py`) now
-reports 0 PROMOTE, 2 BLOCKED (confirmed irreducible), 22 NARROWS (type
-narrowing), 12 COMPUTED (init=False), 6 DEFAULT_DIFFERS. Basic scan went
-from 1,605 findings to 7. The mechanical frontier is exhausted.
+**Non-dataclass parent promotions are done.** 11 parents promoted this
+session; the diagnostic tool (`tools/diagnose_missing_mixins.py`) now
+reports 0 PROMOTE for parent-level promotions.
+
+**38 `missing_mixin` findings remain** across the full scan (1,603 total
+findings). These are class-to-class declaration restatements — one class
+restates fields from another class that should be its parent or mixin.
+NOT the same as "promote ABC parent to dataclass" — these require
+examining each pair and deciding whether to inherit, compose, or extract.
+
+**Run the FULL scan** (`--json` with no detector filter) to see all
+findings. A filtered subset will make you think you're done when you're
+not. The earlier "7 findings" was only `semantic_mirror_without_descent`
++ `unresolved_authority_claim`. The full picture is 1,603 across 20+
+detectors. Always check `Total:` in the output.
 
 The `missing_mixin` detector finds ABC parents whose children redeclare
 the same fields. Promoting the parent to `@dataclass(frozen=True)` lets
