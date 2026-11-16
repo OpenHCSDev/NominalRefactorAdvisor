@@ -512,6 +512,22 @@ kept). `repeated_module_expression_lead` AST tuple constants extracted
 
 ### Where the frontier is now (2026-11-16)
 
+**Checkpoint 2e619cf2: full suite green on 3.14** (8684 passed, 37 skipped).
+Next moves, each traced and parked with its reason:
+- *Undeclared unions are families.* `SourceFlowEvent` was a 7-way
+  `TypeAlias`; declaring it as a plain ABC mixin retired 12 event-kind
+  `isinstance` sites (1928c8e9, 01e9c35f, 0e0db166). Grep for other
+  `X: TypeAlias = (A | B | ...)` over our own classes: each is the same move.
+- *`NativeCodeEmission.creation is None`* (8 probes) is a mutable
+  observation that gains its creation instruction later: the fold is a
+  pending/created state split in the native core, not an `is_created`
+  property (that only renames the probe).
+- *`CompactClassMemberDeclaration.annotation_expression: str | None`*
+  (4 probes) is an annotated/unannotated family inside a cached
+  `NamedTuple`; converting it is a cache-format move first.
+- *`threaded_absence`* (112) has no batch lever: the top parameter name
+  covers 6. Per-function work only.
+
 **Mechanical kills are exhausted.** `redundant_type_check` (15→2),
 `repeated_module_expression_lead` (AST constants extracted), and
 `loop_relookup` (15+ runtime fixes) were the mechanical categories.
