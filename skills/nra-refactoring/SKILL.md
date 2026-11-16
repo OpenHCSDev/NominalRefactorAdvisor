@@ -217,6 +217,26 @@ design" fell in under 15 minutes. The blade is simple. Use it.
 
 ## ABC→dataclass promotion: parent promotions done, missing_mixin work continues (2026-11-16)
 
+**Correction, later on 2026-11-16: 9 of those promotions broke the
+native-execution kernel and were taken back.** Promoting a parent turns
+its annotations into required constructor arguments. Where one child
+*stores* the field and another *derives* it (`AliasProperty`,
+`cached_property`, `property`, or a class constant like
+`violation = CapturedReferenceViolation.X`), the deriving child's
+constructor now demands a value its own body computes, and every
+construction crashes with `__init__() missing N required positional
+arguments`. 48 shadowed fields across 9 parents (`OpaqueCapturedObjectOperations`
+alone had 15), ~65 red tests, unnoticed because the runs that checked
+the promotions were already red elsewhere and nobody diffed red sets.
+
+**Mandatory after any promotion, before commit:** the shadow sweep —
+every dataclass init field that a class in its MRO shadows with a
+non-field attribute. Zero is the only passing answer. It is the
+repository guard `test_repository_dataclass_fields_are_not_derived_by_a_child`;
+run `pytest tests -k test_repository_dataclass_fields`. A parent whose
+children answer a field two ways (stored vs derived) cannot own it as a
+constructor field: that is the irreducible bar, proved by the sweep.
+
 **Non-dataclass parent promotions are done.** 11 parents promoted this
 session; the diagnostic tool (`tools/diagnose_missing_mixins.py`) now
 reports 0 PROMOTE for parent-level promotions.
@@ -275,7 +295,9 @@ Five techniques that unblock what looks blocked:
    `@dataclass(frozen=True)` with
    `violation: T = field(default=..., init=False)`.
    If it's never directly constructed (only its subclasses are), it's
-   safe. Unblocked OpaqueCapturedObjectOperations.
+   safe. **Wrong for OpaqueCapturedObjectOperations:** it converted two
+   children and missed 15 others that still answer `violation` with a
+   class constant; all 15 constructors broke. Run the shadow sweep.
 
 5. **Check grandchildren, not just direct children.**
    A parent's blocker might be on a grandchild through an intermediate
