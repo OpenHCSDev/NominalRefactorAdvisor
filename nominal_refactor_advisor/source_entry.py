@@ -379,7 +379,13 @@ class ImportedSourceModuleEntryPremise(RegisteredSourceModuleEntryPremise):
             for name, value in vars(template).items()
         }
         bindings[cls.bootstrap_binding_name()] = CapturedNativeObject(builtins.storage)
-        return cls(source, initial, bindings, builtins)
+        return cls(
+            source=source,
+            initial=initial,
+            bindings=bindings,
+            native_island=initial,
+            builtins=builtins,
+        )
 
 
 class DirectScriptEntryPremise(RegisteredSourceModuleEntryPremise):

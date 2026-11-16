@@ -10,7 +10,7 @@ from __future__ import annotations
 import ast
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, ClassVar, cast
@@ -277,10 +277,10 @@ class FieldObservation(
     value_fingerprint: str | None = None
     annotation_text: str | None = None
     annotation_fingerprint: str | None = None
+    symbol: str = field(init=False, repr=False)
 
-    @property
-    def symbol(self) -> str:
-        return f"{self.class_name}.{self.field_name}"
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "symbol", f"{self.class_name}.{self.field_name}")
 
     observed_name: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
     fiber_key: ClassVar[AliasProperty[str]] = AliasProperty("field_name")
@@ -347,10 +347,10 @@ class BuilderCallShape(FunctionBodyCallLikeShape):
     OBSERVATION_KIND = ObservationKind.BUILDER_CALL
     callee_name: str
     field_names: tuple[str, ...]
+    symbol: str = field(init=False, repr=False)
 
-    @property
-    def symbol(self) -> str:
-        return f"{self.owner_prefix}:{self.callee_name}"
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "symbol", f"{self.owner_prefix}:{self.callee_name}")
 
     @property
     def is_nominal_owner_projection(self) -> bool:
