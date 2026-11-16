@@ -442,3 +442,13 @@ and clean them after workers exit, retaining recipes and validation evidence.
    `TextFileEdit.folded`. The line-span counterpart at
    `_coalesced_group:729` already raised the typed error; these five
    were the oversight.
+
+10. **Scoped class reads (2026-11-16).** Class references resolved every name
+    through the module's import aliases, so `from pkg import Point as P` inside
+    a function made `P(...)` no read of `Point`, and the keyword-only guard let
+    a positional construction behind a local import break at runtime (the
+    agent-comms P39 batch, 13 failures). `ScopedImportBindings` now answers what
+    an inner scope's own imports bind, and the resolver asks
+    `ModuleNodeIndex.binder_of` first: a scope's own import names the class, its
+    own parameter or local names none. Check: probe a module whose only import
+    of the class sits inside a function.
