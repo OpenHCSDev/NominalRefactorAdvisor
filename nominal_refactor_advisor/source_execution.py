@@ -1007,20 +1007,23 @@ class SourceDefinitionFunctionActivation(SourceFunctionActivationABC):
 
     application: SourceDefinitionDecoratorApplicationABC
     function: SourceCreatedFunctionCapture
-    caller_prefix: AdmittedExecutionPrefixABC = field(init=False, repr=False)
 
     environment = AliasProperty[NativeReferenceEnvironment]("application.execution")
-    callee = AliasProperty[SourceCreatedFunctionCapture]("function")
 
-    def __post_init__(self) -> None:
+    @property
+    def callee(self) -> SourceCreatedFunctionCapture:
         if not self.application.callee.proves_same_object(self.function):
             raise ValueError(
                 "Definition application activation has a different source callee"
             )
+        return self.function
+
+    @property
+    def caller_prefix(self) -> AdmittedExecutionPrefixABC:
         self.application.require_original_application()
         prefix = self.application.application_prefix
         self.callee.execution.entry.require_external_noninterference(prefix)
-        object.__setattr__(self, "caller_prefix", prefix)
+        return prefix
 
     @cached_property
     def bound_arguments(

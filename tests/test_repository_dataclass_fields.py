@@ -35,7 +35,7 @@ def test_repository_dataclass_fields_are_not_derived_by_a_child() -> None:
             : next(
                 index
                 for index, ancestor in enumerate(cls.__mro__)
-                if field.name in ancestor.__dict__.get("__annotations__", {})
+                if field.name in inspect.get_annotations(ancestor)
             )
         ]
         if field.name in owner.__dict__
