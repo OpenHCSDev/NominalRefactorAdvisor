@@ -61,7 +61,6 @@ from nominal_refactor_advisor.ast_projection import (
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     KeyT,
-    NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     StatementValues,
@@ -3210,9 +3209,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanCo
                 raise ValueError(
                     f"`{declaration.symbol}` defines `__new__`, which sees the arguments as passed"
                 )
-        for entry in mro.__mro__:
-            if not isinstance(entry, DeclarationMroType):
-                continue
+        for entry in mro.declared_mro:
             if "__init__" in entry.declaration.member_binding_names:
                 raise ValueError(
                     f"`{entry.declaration.symbol}` defines the `__init__` `{symbol}` runs"
@@ -3243,9 +3240,8 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanCo
         owner = next(
             (
                 entry
-                for entry in mro.__mro__
-                if isinstance(entry, DeclarationMroType)
-                and entry.declaration.dataclass_declaration.generates_construction
+                for entry in mro.declared_mro
+                if entry.declaration.dataclass_declaration.generates_construction
             ),
             None,
         )
@@ -3261,9 +3257,8 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass], ScanCo
                     f"{failure.violation.explanation}"
                 )
         fields: dict[str, CompactDataclassFieldDeclaration] = {}
-        for base in reversed(owner.__mro__[1:]):
-            if isinstance(base, DeclarationMroType):
-                fields.update(self.dataclass_fields(base))
+        for base in reversed(owner.declared_mro[1:]):
+            fields.update(self.dataclass_fields(base))
         fields.update((field.name, field) for field in declaration.fields)
         return fields
 

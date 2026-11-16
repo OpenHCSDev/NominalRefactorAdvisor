@@ -58,8 +58,17 @@ class DeclarationMroType(ABCMeta, Generic[MroDeclarationT]):
         return cls(declaration.qualified_name, bases, {"declaration": declaration})
 
     @property
+    def declared_mro(self) -> tuple[DeclarationMroType[MroDeclarationT], ...]:
+        """The entries of this MRO that carry a source declaration, in order;
+        Python's own bases (`object`, `ABC`, ...) are left out."""
+
+        return tuple(
+            owner for owner in self.__mro__ if isinstance(owner, DeclarationMroType)
+        )
+
+    @property
     def declarations(self) -> tuple[MroDeclarationT, ...]:
-        return self.declarations_before(lambda entry: False)
+        return tuple(owner.declaration for owner in self.declared_mro)
 
     def declarations_before(
         self, stops: Callable[[type], bool]
