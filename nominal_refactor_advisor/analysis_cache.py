@@ -829,18 +829,18 @@ class AnalysisCacheEntryContext:
 class AnalysisOrchestrationContext(AnalysisCacheEntryContext):
     """An entry over a whole run, which orchestration and persistence assemble too."""
 
+    roots: tuple[str, ...]
     engine: AnalysisEngineSignature = field(
         default_factory=AnalysisEngineSignature.current
     )
+    report_filter_roots: tuple[str, ...] = field(default=(), repr=False)
 
 
 @dataclass(frozen=True, kw_only=True)
 class AnalysisCacheIdentity(AnalysisOrchestrationContext):
     """Complete invalidation identity for one detector-output cache entry."""
 
-    roots: tuple[str, ...]
     source_files: tuple[SourceFileSignature, ...]
-    report_filter_roots: tuple[str, ...] = field(default=(), repr=False)
 
     @classmethod
     def from_roots(
@@ -958,9 +958,7 @@ class AnalysisCacheIdentity(AnalysisOrchestrationContext):
 class AnalysisCacheFamilyIdentity(AnalysisOrchestrationContext):
     """Stable cache family for source-set comparisons across partial misses."""
 
-    roots: tuple[str, ...]
     source_file_paths: tuple[str, ...]
-    report_filter_roots: tuple[str, ...] = field(default=(), repr=False)
 
     @classmethod
     def from_roots(
