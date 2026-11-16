@@ -450,6 +450,13 @@ class SelectedBindingSource(CaptureOutcome):
     binding: CompactBindingSource
 
 
+@dataclass(frozen=True)
+class LookupNamespaces(CaptureOutcome):
+    """The namespaces a name lookup searches, innermost first."""
+
+    namespaces: tuple[NamespaceEvidenceABC | OpenCapturedReference, ...]
+
+
 class OpaqueCapturedObjectOperations(CapturedReferenceResolution, ABC):
     """An explicit captured kind can leave particular object protocols unknown."""
 
@@ -1118,19 +1125,19 @@ class InitialNativeFrame:
         self,
         context: CompactFlowContext,
         name: str,
-    ) -> (
-        tuple[NamespaceEvidenceABC | OpenCapturedReference, ...] | OpenCapturedReference
-    ):
+    ) -> LookupNamespaces | OpenCapturedReference:
         binding_namespace = self.binding_namespace(context, name)
         if binding_namespace.is_open:
             return binding_namespace
         if context.flow.local_binding_hides_outer_lookup(name):
-            return (binding_namespace,)
-        return tuple(
-            {
-                id(namespace): namespace
-                for namespace in (binding_namespace, self.globals, self.builtins)
-            }.values()
+            return LookupNamespaces(namespaces=(binding_namespace,))
+        return LookupNamespaces(
+            namespaces=tuple(
+                {
+                    id(namespace): namespace
+                    for namespace in (binding_namespace, self.globals, self.builtins)
+                }.values()
+            )
         )
 
 
@@ -2564,9 +2571,11 @@ class CapturedReferenceKernel(
         namespaces = endpoint.frame.initial_lookup_namespaces(
             endpoint.context, root.root_name
         )
-        if isinstance(namespaces, OpenCapturedReference):
-            return namespaces
-        return self._namespaces_resolution(prefix, namespaces, root.root_name, pending)
+        return namespaces.and_then(
+            lambda lookup: self._namespaces_resolution(
+                prefix, lookup.namespaces, root.root_name, pending
+            )
+        )
 
     def _captured_alias_resolution(
         self,
