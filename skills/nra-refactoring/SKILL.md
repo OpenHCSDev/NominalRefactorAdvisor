@@ -207,8 +207,15 @@ from 1,605 findings to 7. The mechanical frontier is exhausted.
 
 The `missing_mixin` detector finds ABC parents whose children redeclare
 the same fields. Promoting the parent to `@dataclass(frozen=True)` lets
-children inherit instead of copy. **Don't label a parent "irreducible"
-without trying.** Five techniques unblock what looks blocked:
+children inherit instead of copy.
+
+**The rule: try every technique below before calling anything irreducible.**
+On 2026-11-16, 4 parents were labeled BLOCKED. Tristan asked "are you
+sure?" Two fell in under 10 minutes each. The other 2 were confirmed by
+actual test failures — that's the bar. "Looks hard" is not a blocker.
+A test that blows up is.
+
+Five techniques that unblock what looks blocked:
 
 1. **AliasProperty → field(init=False) + __post_init__.**
    `source_span = AliasProperty("capture.source_span")` becomes
@@ -243,12 +250,16 @@ without trying.** Five techniques unblock what looks blocked:
    labeled PROMOTE until the tool caught CompactClassDeclaration's
    bare assign two levels down.
 
-**What's genuinely irreducible (confirmed by test failure):**
-- Children compute the same-named field from different constructor
-  sources (ClassStatement: `is_dataclass` from `dataclass_declaration`
-  in one child, from `dataclass_decorator` in another — test blows up).
-- Python forbids frozen parent + non-frozen child (LexicalScopeABC:
-  `TypeError: cannot inherit frozen dataclass from a non-frozen one`).
+**What "genuinely irreducible" means — and the bar to claim it:**
+You must have a failing test or a Python TypeError. Not "looks complex."
+Not "the children differ." Not "I'd need to think about it." A test that
+blows up, or the interpreter that refuses. Only 2 of 13 candidates met
+this bar:
+- ClassStatement: `is_dataclass` computed from `dataclass_declaration`
+  in IndexedClass vs `dataclass_decorator` in UnindexedClassStatement.
+  Promotion attempted, test failed, reverted. The test IS the proof.
+- LexicalScopeABC: `TypeError: cannot inherit frozen dataclass from a
+  non-frozen one`. Python itself refuses. The interpreter IS the proof.
 
 **The is_open virtual dispatch pattern** replaces `isinstance(x, T)` with
 `x.is_open` on the base class. BUT: only safe when the variable's type
@@ -256,6 +267,47 @@ always inherits CaptureOutcome. On union types like
 `tuple | OpenCapturedReference`, the isinstance stays — it's a boundary
 decoder (Proposition 3.3). Two bugs from overcorrecting were fixed on
 2026-11-16.
+
+## Semantic mirror findings: the move is always the same (2026-11-16)
+
+NRA reports `semantic_mirror_without_descent` when a literal, dict read,
+or collection repeats what a class family already declares. **Every one
+of these is the same fix.** Don't analyze. Don't call it a design decision.
+Don't call it irreducible. Just do the move:
+
+**The move:** find the literal the finding names → find the family or
+dataclass that owns the fact → derive the literal from the owner.
+
+Three shapes, one pattern:
+
+1. **Literal roster restating a family (MEMB-1).**
+   `frozenset({"self", "cls"})` → `frozenset(SourceShape._leading_names)`.
+   The family registers its members via `__init_subclass__`; the set is
+   derived, not spelled. If the family doesn't have a registry yet, add
+   `__init_subclass__` — it's 4 lines. Did this for
+   `DeclarationReferenceOperation._concrete_operations` and
+   `SourceShape._leading_names`.
+
+2. **Hand-decoded dict restating field names (BOUND-1 / MEMB-5).**
+   `cls(str(payload["distribution"]), str(payload["version"]), ...)`
+   → `cls(**payload)` with a `__post_init__` that coerces nested types.
+   The encoding is `asdict()` — the decoding should be symmetric. Did
+   this for `InstalledDistributionOwners.decoded`.
+
+3. **Validation invariant living in the factory instead of the class.**
+   `if max_count < min_count: raise` in `from_manifest` → same check in
+   `__post_init__`. The invariant is true for ALL constructions, not just
+   manifest parsing. Did this for `DetectorExpectation`.
+
+**The flinch:** "this is a design decision" / "this needs Tristan" /
+"inherent to the format." These are the words that come before NOT doing
+the 5-line fix. Ask: does a family or dataclass already declare this
+fact? If yes, derive. If no, declare it and derive. The finding count
+this session went 7 → 0 by doing exactly this every time.
+
+**How to verify:** rescan after the fix. The finding disappears. If it
+doesn't, the derivation doesn't cover every site — grep the literal and
+fix the remaining copies.
 
 ## Known NRA tool issues (2026-11-16, updated)
 
