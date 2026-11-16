@@ -181,11 +181,21 @@ class Member:
 
 
 @dataclass(frozen=True)
-class EnumDeclaration:
-    """An enum class decoded once from its declaration, behaviour included."""
+class ParsedClassContext:
+    """A class node in a parsed module — the shared identity for any class reference."""
 
     module: ParsedModule
     node: ast.ClassDef
+
+    @property
+    def name(self) -> str:
+        return self.node.name
+
+
+@dataclass(frozen=True)
+class EnumDeclaration(ParsedClassContext):
+    """An enum class decoded once from its declaration, behaviour included."""
+
     members: tuple[Member, ...]
     new: ast.FunctionDef | None
     methods: tuple[ast.FunctionDef | ast.AsyncFunctionDef, ...]
@@ -264,10 +274,6 @@ class EnumDeclaration:
         return tuple(
             (argument.arg, default) for argument, default in zip(positional, defaults)
         )
-
-    @property
-    def name(self) -> str:
-        return self.node.name
 
     @property
     def symbol(self) -> str:
@@ -1132,17 +1138,11 @@ class Cases(Enumerated, ABC):
     """Input form: an enum read through member comparisons and member data."""
 
 
-@dataclass
-class Holder:
+@dataclass(frozen=True)
+class Holder(ParsedClassContext):
     """The one class whose field holds the enum, and where it is declared."""
 
-    module: ParsedModule
-    node: ast.ClassDef
     field: ast.AnnAssign
-
-    @property
-    def name(self) -> str:
-        return self.node.name
 
     @property
     def field_name(self) -> str:
