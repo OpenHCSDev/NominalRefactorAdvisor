@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import os
 from abc import (
     ABC,
     abstractmethod,
@@ -202,8 +203,13 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         cache = self._parsed_modules_by_file_path
         if source_file.file_path in cache:
             return cache[source_file.file_path]
-        module = self.module_nodes_by_file_path.get(source_file.file_path)
-        source = self.sources_by_file_path.get(source_file.file_path)
+        lookup_path = source_file.file_path
+        module = self.module_nodes_by_file_path.get(lookup_path)
+        source = self.sources_by_file_path.get(lookup_path)
+        if module is None or source is None:
+            rel_path = os.path.relpath(lookup_path)
+            module = self.module_nodes_by_file_path.get(rel_path)
+            source = self.sources_by_file_path.get(rel_path)
         if module is None or source is None:
             raise ValueError(f"Source module {source_path!r} is unavailable")
         cache[source_file.file_path] = SourceModule.from_path_identity(
