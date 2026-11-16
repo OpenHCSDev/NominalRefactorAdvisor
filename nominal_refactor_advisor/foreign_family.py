@@ -45,6 +45,19 @@ class ForeignFamily(DeclaredFamily, metaclass=ForeignFamilyMeta):
         )
 
     @classmethod
+    def tested_members(cls, tested: Iterable[str]) -> frozenset[str]:
+        """The member classes a type test covers; a named family stands for its members."""
+
+        families = {family.import_path(): family for family in cls.concrete_families()}
+        return frozenset(
+            member
+            for name in tested
+            for member in (
+                families[name].member_names() if name in families else (name,)
+            )
+        )
+
+    @classmethod
     def within(cls, nodes: Iterable[object]) -> Iterator[Self]:
         """Lazily keep the members of this family, in order; the one `isinstance`."""
 

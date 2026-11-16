@@ -161,6 +161,13 @@ class FilterSiteABC(ABC):
         """Wrap the iterable in `family.within` and delete the type test."""
         raise NotImplementedError
 
+    def tested_members(self, resolver: TypeArgumentResolver) -> frozenset[str]:
+        """The member classes this site keeps; empty when its test does not resolve."""
+
+        return ForeignFamily.tested_members(
+            resolver.qualified_names_of_test(self.condition) or ()
+        )
+
     @staticmethod
     def tested_variable(call: ast.expr, variable: ast.expr) -> bool:
         match (BuiltinCallName.isinstance_arguments(call), variable):
@@ -212,6 +219,52 @@ class ComprehensionFilterSite(FilterSiteABC):
         if geometry.span_contains_comment(SourceTextSpan(start_offset=iterable_end, end_offset=condition_end)):
             raise ValueError("Comprehension filter rewrite would discard a comment")
         return (self.within_replacement(fit, family_name, condition_end),)
+
+
+@dataclass(frozen=True)
+class ConjunctionFilterSite(FilterSiteABC):
+    """`for V in ITER if isinstance(V, T) and REST` keeps `REST` as its condition."""
+
+    rest: ast.expr
+
+    @classmethod
+    def in_scope(cls, root: ast.AST) -> tuple[Self, ...]:
+        sites = []
+        for clause in nodes_of(ast.comprehension, root):
+            match clause:
+                case ast.comprehension(
+                    target=ast.Name() as target,
+                    ifs=[ast.BoolOp(op=ast.And(), values=[call, rest, *_]), *_],
+                ) if cls.tested_variable(call, target):
+                    sites.append(cls(target.id, call, clause.iter, rest))
+        return tuple(sites)
+
+    def replacements(
+        self, fit: RewrittenLineFit, family_name: str
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        geometry = fit.geometry
+        condition_start, condition_end = geometry.required_node_offsets(self.condition)
+        rest_start, _ = geometry.required_node_offsets(self.rest)
+        _, iterable_end = geometry.required_node_offsets(self.iterable)
+        if (
+            re.fullmatch(r"\s+if\s+", geometry.source[iterable_end:condition_start])
+            is None
+            or re.fullmatch(r"\s+and\s+", geometry.source[condition_end:rest_start])
+            is None
+        ):
+            raise ValueError("Comprehension filter layout is not a bare `if A and B`")
+        if geometry.span_contains_comment(
+            SourceTextSpan(start_offset=iterable_end, end_offset=rest_start)
+        ):
+            raise ValueError("Comprehension filter rewrite would discard a comment")
+        return (
+            self.within_replacement(fit, family_name, iterable_end),
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=condition_start,
+                end_offset=rest_start,
+                replacement_source="",
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -296,10 +349,10 @@ class ForeignFamilyFilterAuthority(FunctionRewriteAuthority):
         refusals: list[ValueError] = []
         for shape in FilterSiteABC.__subclasses__():
             for site in shape.in_scope(self.function):
-                tested = self.resolver.qualified_names_of_test(site.condition)
-                if tested is None or not set(tested) <= members:
+                tested = site.tested_members(self.resolver)
+                if not tested or not tested <= members:
                     continue
-                missing = members - set(tested)
+                missing = members - tested
                 if missing and not self.accept_widening:
                     refusals.append(
                         handback(
@@ -345,8 +398,7 @@ class ForeignFamilyFilterModuleFamily(ShapeFamily[ForeignFamilySiteModule]):
         shapes = []
         for site_type in FilterSiteABC.__subclasses__():
             for site in site_type.in_scope(parsed_module.module):
-                tested = resolver.qualified_names_of_test(site.condition)
-                family = families_by_members.get(frozenset(tested or ()))
+                family = families_by_members.get(site.tested_members(resolver))
                 if family is not None:
                     shapes.append(
                         ForeignFamilySiteShape(
