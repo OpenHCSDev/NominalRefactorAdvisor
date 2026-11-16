@@ -158,6 +158,10 @@ class ConstantAnswer(MemberAnswer):
 
     value: str
 
+    @classmethod
+    def from_literal(cls, member: str, lineno: int, value: object) -> ConstantAnswer:
+        return cls(member=member, lineno=lineno, value=repr(value))
+
     @property
     def detail(self) -> tuple[str, ...]:
         return (self.value,)
@@ -274,13 +278,13 @@ class ClassBodyReading:
             case ast.Assign(
                 targets=[ast.Name(id=name)], value=ast.Constant(value=bool() as value)
             ) if not name.startswith("__"):
-                self.answer(ConstantAnswer(member=name, lineno=statement.lineno, value=repr(value)))
+                self.answer(ConstantAnswer.from_literal(member=name, lineno=statement.lineno, value=value))
             case ast.AnnAssign(
                 target=ast.Name(id=name),
                 annotation=annotation,
                 value=ast.Constant(value=bool() | str() as value),
             ) if not name.startswith("__") and "ClassVar" in ast.unparse(annotation):
-                self.answer(ConstantAnswer(member=name, lineno=statement.lineno, value=repr(value)))
+                self.answer(ConstantAnswer.from_literal(member=name, lineno=statement.lineno, value=value))
             case ast.AnnAssign(target=ast.Name(id=name), value=ast.expr()) | ast.Assign(
                 targets=[ast.Name(id=name)]
             ):
@@ -303,7 +307,7 @@ class ClassBodyReading:
             case [ast.Return(value=ast.Constant(value=bool() | str() as value))] if (
                 not name.startswith("__") and self.takes_only_receiver(statement)
             ):
-                self.answer(ConstantAnswer(member=name, lineno=statement.lineno, value=repr(value)))
+                self.answer(ConstantAnswer.from_literal(member=name, lineno=statement.lineno, value=value))
                 return
             case [ast.Return(value=ast.Call(func=ast.Name(id=called)))] if (
                 called in parameters and len(parameters) >= 2
