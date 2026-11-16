@@ -356,12 +356,31 @@ Full scan: ~1,591 findings. Work them by batch leverage, not by count:
 | `long_condition_factoring_lead` | 107 | MEDIUM — boolean chains → rule families | Named rules (IMPL-14) |
 | `missing_mixin` | ~31 | DIMINISHING — remaining are builder→product pairs, NamedTuple barriers, or 2-field domain overlap | Parent extraction (done for siblings); NamedTuple→dataclass needed for some |
 | `unused_method_parameter` | 65 | LOW — each is one deletion | Delete the param |
-| `loop_relookup` | 62 | LOW — each is one dict | Add @cached_property dict |
+| `loop_relookup` | 62→~50 | LOW — each is one dict | Add @cached_property dict |
+
+### loop_relookup: the mechanical pattern
+
+Every one is the same move: a collection is scanned inside a loop.
+Build a `@cached_property` dict keyed by the lookup attribute, then
+replace the scan with `.get()`. The hotspot files (by finding count):
+`_systemic.py` (17), `class_identity_observations.py` (14),
+`product_flow_authority.py` (11), `class_member_authority.py` (9).
+
+Common shapes:
+1. `next(x for x in self.members.values() if x.attr == val)` → `self._by_attr[val]`
+2. `any(x.name == val for x in overlap.shared)` → `val in overlap.shared_names`
+3. O(n²) dominance: `any(existing ... for existing in filtered)` → dict indexed by key
+4. BFS recomputed per call → `@cached_property` memoizing all ancestors
+
+False positives: dict.get() calls, property accesses, 3-element scans.
+The class must be frozen for `@cached_property`. Always check.
 
 **What's done:** `semantic_mirror_without_descent` (7→0),
 `unresolved_authority_claim` (1→0), `missing_mixin` sibling pairs
-(38→31). The `phantom_family` and `own_type_test` categories
-are the next high-leverage frontier — each ABC or base method
+(38→31), `loop_relookup` in 4 hotspot files (≥12 sites fixed: finding_counts,
+_systemic, class_identity_observations, class_body, class_overlap,
+product_flow_authority). The `phantom_family` and `own_type_test`
+categories are the next high-leverage frontier — each ABC or base method
 eliminates multiple findings per class.
 
 ## Known NRA tool issues (2026-11-16, updated)
