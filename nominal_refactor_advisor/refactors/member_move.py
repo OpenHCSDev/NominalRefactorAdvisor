@@ -383,10 +383,14 @@ class SourceShape:
     describes: ClassVar[str] = "a plain method"
     keeps_receiver: ClassVar[bool] = False
 
+    _leading_names: ClassVar[set[str]] = set()
+
     def __init_subclass__(cls, **kwargs: object) -> None:
         super().__init_subclass__(**kwargs)
         if cls.decorators is not None:
             SourceShape.members[cls.decorators] = cls
+        if cls.leading_name is not None:
+            SourceShape._leading_names.add(cls.leading_name)
 
     def __post_init__(self) -> None:
         positional = self.moved.method.args.posonlyargs + self.moved.method.args.args
@@ -454,7 +458,7 @@ class ClassBoundSource(SourceShape):
     def bound_class(
         self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],
     ) -> ClassBinding | None:
-        if isinstance(receiver, ast.Name) and receiver.id in {"cls", "self"}:
+        if isinstance(receiver, ast.Name) and receiver.id in SourceShape._leading_names:
             return None if enclosing not in self.moved.family else ImplicitClass(enclosing)
         return super().bound_class(receiver, file_path, enclosing, scopes)
 

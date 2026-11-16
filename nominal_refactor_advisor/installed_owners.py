@@ -204,6 +204,14 @@ class InstalledDistributionOwners:
 
     JUDGE_SOURCES = ("class_creation_store.py", "installed_owners.py")
 
+    def __post_init__(self) -> None:
+        if self.owners and isinstance(self.owners[0], dict):
+            object.__setattr__(
+                self,
+                "owners",
+                tuple(InstalledRegistrationOwner(**o) for o in self.owners),
+            )
+
     @staticmethod
     @cache
     def judge_digest() -> str:
@@ -259,14 +267,7 @@ class InstalledDistributionOwners:
 
     @classmethod
     def decoded(cls, payload: dict[str, object]) -> InstalledDistributionOwners:
-        owners = payload["owners"]
-        assert isinstance(owners, list)
-        return cls(
-            str(payload["distribution"]),
-            str(payload["version"]),
-            str(payload["files_digest"]),
-            tuple(InstalledRegistrationOwner(**owner) for owner in owners),
-        )
+        return cls(**payload)
 
     @staticmethod
     def _modules(distribution: metadata.Distribution) -> Iterator[tuple[str, Path]]:

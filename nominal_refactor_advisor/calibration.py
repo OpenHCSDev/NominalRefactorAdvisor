@@ -115,20 +115,19 @@ class DetectorExpectation(SemanticRecord):
     min_count: int = 1
     max_count: int | None = None
 
+    def __post_init__(self) -> None:
+        if self.max_count is not None and self.max_count < self.min_count:
+            raise ValueError("max_count must be greater than or equal to min_count")
+
     @classmethod
     def from_manifest(cls, value: object) -> DetectorExpectation:
         if isinstance(value, str):
             return cls(detector_id=value)
         row = MANIFEST_MAPPING(value, "detector expectation")
-        detector_id = MANIFEST_STRING(row.get("detector_id"), "detector_id")
-        min_count = _non_negative_int(row.get("min_count", 1), "min_count")
-        max_count = _optional_non_negative_int(row.get("max_count"), "max_count")
-        if max_count is not None and max_count < min_count:
-            raise ValueError("max_count must be greater than or equal to min_count")
         return cls(
-            detector_id=detector_id,
-            min_count=min_count,
-            max_count=max_count,
+            detector_id=MANIFEST_STRING(row.get("detector_id"), "detector_id"),
+            min_count=_non_negative_int(row.get("min_count", 1), "min_count"),
+            max_count=_optional_non_negative_int(row.get("max_count"), "max_count"),
         )
 
     def underflow_reason(self, observed_count: int) -> str | None:
