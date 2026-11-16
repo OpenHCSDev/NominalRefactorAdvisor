@@ -88,6 +88,14 @@ Not all 1500 findings are equally actionable.  Batch by detector:
       them from different sources: stored field vs AliasProperty vs property):
       NOT a dataclass promotion.  The parent's annotations declare a contract,
       not stored fields.
+    - **``__setattr__`` MRO conflict:** the parent's MRO includes a class that
+      already defines ``__setattr__`` (e.g. a frozen dataclass ancestor).
+      ``@dataclass(frozen=True)`` cannot override it.  Fix: restructure the
+      MRO to remove the conflict, or accept the redeclaration.
+    - **Child uses ``init=False`` computed field:** the child computes the field
+      in ``__post_init__``.  Promoting the parent makes it a required
+      constructor field, which conflicts.  Fix: make the parent field
+      ``init=False`` too, or accept the redeclaration.
 
 **Tier 2 — per-site design, high leverage**
 
