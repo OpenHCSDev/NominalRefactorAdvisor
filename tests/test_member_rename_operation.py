@@ -15,6 +15,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.refactors.member_rename import RenameClassMemberOperation
 
 SHAPES = (
@@ -145,6 +146,7 @@ def test_a_rename_says_what_it_needs_instead_of_editing(
     with pytest.raises(CodemodOperationPreflightError, match=needed) as raised:
         _rename(tmp_path, "shapes", "Shape", "area", new_name)
     assert "refus" not in str(raised.value)
+    assert raised.value.report.needs == (NeededInput.SOURCE_CHANGE,)
 
 
 @pytest.mark.native_proof

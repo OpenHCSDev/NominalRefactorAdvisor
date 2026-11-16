@@ -51,6 +51,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod,
     AnsweredUse,
@@ -93,14 +94,15 @@ class RenamedMember(AnsweredMethod):
     ) -> RenamedMember:
         source_class = ResolvedClassTarget.from_rewrite_target(snapshot, target)
         if not new_name.isidentifier() or keyword_module.iskeyword(new_name):
-            raise ValueError(f"renaming needs a Python identifier for the new name, not {new_name!r}")
+            raise NeedsInput(f"renaming needs a Python identifier for the new name, not {new_name!r}", NeededInput.SOURCE_CHANGE)
         if new_name == member_name:
-            raise ValueError(f"renaming needs a new name other than {member_name!r}")
+            raise NeedsInput(f"renaming needs a new name other than {member_name!r}", NeededInput.SOURCE_CHANGE)
         for name in (member_name, new_name):
             if name.startswith("__"):
-                raise ValueError(
+                raise NeedsInput(
                     f"renaming needs a name the runtime does not read by spelling; {name!r} is a dunder "
-                    "or a private name Python mangles per class"
+                    "or a private name Python mangles per class",
+                    NeededInput.PROOF,
                 )
         declaration = next(
             (
@@ -110,9 +112,10 @@ class RenamedMember(AnsweredMethod):
             None,
         )
         if declaration is None:
-            raise ValueError(
+            raise NeedsInput(
                 f"renaming needs {member_name!r} declared in the body of {source_class.qualname!r} "
-                "as a method, property, field or class attribute"
+                "as a method, property, field or class attribute",
+                NeededInput.SOURCE_CHANGE,
             )
         renamed = cls(snapshot, source_class, declaration, member_name, new_name)
         try:
@@ -160,22 +163,25 @@ class RenamedMember(AnsweredMethod):
         classes = self.index.classes_by_symbol
         for symbol in sorted(self.lineage - self.family):
             if symbol in classes and self.member_name in classes[symbol].member_binding_names:
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs the rename to start where dispatch starts: "
                     f"{classes[symbol].qualname!r} ({classes[symbol].file_path}:{classes[symbol].line}) "
                     f"also declares {self.member_name!r} and a family class inherits it; "
-                    "rename from that class, or show it is not the same member"
+                    "rename from that class, or show it is not the same member",
+                    NeededInput.SOURCE_CHANGE,
                 )
         for owner, spelled in self.foreign_bases:
             if ForeignBase(spelled).may_declare(self.member_name):
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs to know `{spelled}` (a base of {owner!r} outside the scan) "
-                    f"does not declare {self.member_name!r}; the family's member may override it"
+                    f"does not declare {self.member_name!r}; the family's member may override it",
+                    NeededInput.PROOF,
                 )
             if spelled.split("[", 1)[0].rsplit(".", 1)[-1] in self.NAME_KEYED_BASES:
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs every construction and key of `{spelled}` ({owner!r}); "
-                    "its members are built and read by name"
+                    "its members are built and read by name",
+                    NeededInput.PROOF,
                 )
 
     def require_free_new_name(self) -> None:
@@ -184,32 +190,36 @@ class RenamedMember(AnsweredMethod):
         classes = self.index.classes_by_symbol
         for symbol in sorted(self.lineage):
             if symbol in classes and self.new_name in classes[symbol].member_binding_names:
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs another name: {classes[symbol].qualname!r} "
-                    f"({classes[symbol].file_path}:{classes[symbol].line}) already binds {self.new_name!r}"
+                    f"({classes[symbol].file_path}:{classes[symbol].line}) already binds {self.new_name!r}",
+                    NeededInput.SOURCE_CHANGE,
                 )
         for owner, spelled in self.foreign_bases:
             if ForeignBase(spelled).may_declare(self.new_name):
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs another name, or proof that `{spelled}` (a base of {owner!r} "
-                    f"outside the scan) does not declare {self.new_name!r}"
+                    f"outside the scan) does not declare {self.new_name!r}",
+                    NeededInput.PROOF,
                 )
         for _file_path, body in self.renamed_bodies:
             for node in _class_scope_nodes(body):
                 if isinstance(node, ast.Name) and node.id == self.new_name:
-                    raise ValueError(
+                    raise NeedsInput(
                         f"{self.where} needs another name: the body of {body.name!r} reads "
-                        f"{self.new_name!r} at line {node.lineno}, which the renamed member would bind"
+                        f"{self.new_name!r} at line {node.lineno}, which the renamed member would bind",
+                        NeededInput.SOURCE_CHANGE,
                     )
         probe = replace(self, member_name=self.new_name)
         try:
             reached = probe.reaching(probe.references(), self.session)
         except ValueError as error:
-            raise ValueError(f"{self.where} needs another name: {error}") from error
+            raise NeedsInput(f"{self.where} needs another name: {error}", NeededInput.SOURCE_CHANGE) from error
         if reached:
-            raise ValueError(
+            raise NeedsInput(
                 f"{self.where} needs another name: {reached[0][0].where} already reads "
-                f"{self.new_name!r} on the family"
+                f"{self.new_name!r} on the family",
+                NeededInput.SOURCE_CHANGE,
             )
 
     def require_no_name_strings(self) -> None:
@@ -220,9 +230,10 @@ class RenamedMember(AnsweredMethod):
         for _file_path, body in self.family_bodies:
             for node in ast.walk(body):
                 if isinstance(node, ast.Constant) and node.value == self.member_name:
-                    raise ValueError(
+                    raise NeedsInput(
                         f"{self.where} needs the string {self.member_name!r} in the body of "
-                        f"{body.name!r} (line {node.lineno}) shown to be no read of the member"
+                        f"{body.name!r} (line {node.lineno}) shown to be no read of the member",
+                        NeededInput.SOURCE_CHANGE,
                     )
         for parsed in self.snapshot.parsed_modules:
             if repr(self.member_name)[1:-1] not in parsed.source:
@@ -231,13 +242,14 @@ class RenamedMember(AnsweredMethod):
                 if not (isinstance(node, ast.Constant) and node.value == self.member_name):
                     continue
                 if self.is_enum or _namespace_key(node, parsed.fact(ModuleNodeIndex).parents):
-                    raise ValueError(
+                    raise NeedsInput(
                         f"{self.where} needs {parsed.file_path}:{node.lineno} shown not to read the "
-                        f"member by its name {self.member_name!r}"
+                        f"member by its name {self.member_name!r}",
+                        NeededInput.SOURCE_CHANGE,
                     )
         lookup = self.lookup_reaching_family(self.session)
         if lookup is not None:
-            raise ValueError(f"{self.where} needs {lookup} shown not to look the member up by name")
+            raise NeedsInput(f"{self.where} needs {lookup} shown not to look the member up by name", NeededInput.PROOF)
 
     @cached_property
     def is_enum(self) -> bool:
@@ -263,7 +275,7 @@ class RenamedMember(AnsweredMethod):
                 continue
             names = indexed.own_dataclass_field_names
             if names is None:
-                raise ValueError(f"{self.where} needs the dataclass fields of {indexed.qualname!r} placed")
+                raise NeedsInput(f"{self.where} needs the dataclass fields of {indexed.qualname!r} placed", NeededInput.PROOF)
             if self.member_name in names:
                 found.add(symbol)
         return frozenset(found)
@@ -279,25 +291,28 @@ class RenamedMember(AnsweredMethod):
         takes the generated `__init__`, and every construction the scan cannot rewrite is shown."""
 
         if self.is_enum and _enum_value_from_name(self.method):
-            raise ValueError(
-                f"{self.where} needs the member's value given: `auto()` derives it from the name"
+            raise NeedsInput(
+                f"{self.where} needs the member's value given: `auto()` derives it from the name",
+                NeededInput.SOURCE_CHANGE,
             )
         if not self.is_field:
             return
         if isinstance(self.method, ast.AnnAssign) and "InitVar" in ast.unparse(self.method.annotation):
-            raise ValueError(f"{self.where} needs `__post_init__`'s parameter for the InitVar renamed with it")
+            raise NeedsInput(f"{self.where} needs `__post_init__`'s parameter for the InitVar renamed with it", NeededInput.OPERATION)
         stored = sorted(self.family & frozenset(StoredRecords.of(self.snapshot, self.source_class.file_path).records))
         if stored:
-            raise ValueError(
+            raise NeedsInput(
                 f"{self.where} is a data migration: {', '.join(stored)} are stored records "
-                "(durable-bases) whose rows keep the field's name"
+                "(durable-bases) whose rows keep the field's name",
+                NeededInput.OPERATION,
             )
         classes = self.index.classes_by_symbol
         for symbol in sorted(self.family):
             if symbol in classes and classes[symbol].member_binding_names & {"__init__", "__new__"}:
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs `{classes[symbol].qualname}.__init__`'s parameters: it declares "
-                    "its own constructor, so its keywords are not the field"
+                    "its own constructor, so its keywords are not the field",
+                    NeededInput.PROOF,
                 )
 
     @cached_property
@@ -310,11 +325,12 @@ class RenamedMember(AnsweredMethod):
                 found.extend((site.file_path, keyword) for keyword in self.passed(site.parent, site.location))
             elif site.role is ClassReferenceRole.CLASS_PATTERN and isinstance(site.parent, ast.MatchClass):
                 if self.member_name in site.parent.kwd_attrs:
-                    raise ValueError(f"{self.where} needs the class pattern at {site.location} rewritten by hand")
+                    raise NeedsInput(f"{self.where} needs the class pattern at {site.location} rewritten by hand", NeededInput.OPERATION)
             elif not (site.role.distinguishes_identity or site.is_annotation or site.is_base):
-                raise ValueError(
+                raise NeedsInput(
                     f"{self.where} needs the constructions behind {site.location}, which passes "
-                    f"`{ast.unparse(site.node)}` on as a value"
+                    f"`{ast.unparse(site.node)}` on as a value",
+                    NeededInput.PROOF,
                 )
         receivers: list[TypedReceiver] = []
         replaced: dict[ast.Call, str] = {}
@@ -332,19 +348,19 @@ class RenamedMember(AnsweredMethod):
         try:
             reached = self.reaching(receivers, self.session)
         except ValueError as error:
-            raise ValueError(f"{self.where} needs {error}") from error
+            raise NeedsInput(f"{self.where} needs {error}", NeededInput.SOURCE_CHANGE) from error
         for receiver, _binding in reached:
             call = receiver.anchor
             assert isinstance(call, ast.Call)
             if call not in replaced:
-                raise ValueError(f"{self.where} needs {receiver.where} shown: it reads the field names as strings")
+                raise NeedsInput(f"{self.where} needs {receiver.where} shown: it reads the field names as strings", NeededInput.PROOF)
             found.extend((replaced[call], keyword) for keyword in self.passed(call, receiver.where))
         return tuple(found)
 
     def passed(self, call: ast.Call, where: str) -> Iterator[ast.keyword]:
         for keyword in call.keywords:
             if keyword.arg is None:
-                raise ValueError(f"{self.where} needs the keywords {where} unpacks with `**`")
+                raise NeedsInput(f"{self.where} needs the keywords {where} unpacks with `**`", NeededInput.PROOF)
             if keyword.arg == self.member_name:
                 yield keyword
 
@@ -423,7 +439,7 @@ class RenamedMember(AnsweredMethod):
         try:
             uses = self.answering_calls(self.session)
         except ValueError as error:
-            raise ValueError(f"{self.where} needs {error}") from error
+            raise NeedsInput(f"{self.where} needs {error}", NeededInput.SOURCE_CHANGE) from error
         for use in uses:
             end = geometry(use.file_path).required_node_offsets(use.attribute)[1]
             renamed(use.file_path, end - len(self.member_name), len(self.member_name))
@@ -573,7 +589,7 @@ class RenameClassMemberOperation(RepositorySourceReprovedOperation):
     ) -> tuple[NominalSourceEdit, ...]:
         source_path = self.required_source_path(snapshot, self.operation_key())
         if self.target.qualname is None:
-            raise ValueError(f"{self.operation_key()} needs the class as target_qualname")
+            raise NeedsInput(f"{self.operation_key()} needs the class as target_qualname", NeededInput.SOURCE_CHANGE)
         renamed = RenamedMember.require(
             snapshot,
             SourceRewriteTarget(file_path=source_path, qualname=self.target.qualname),
