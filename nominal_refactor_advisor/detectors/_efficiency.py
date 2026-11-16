@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from operator import attrgetter
 
 from collections.abc import Iterator
 
+from nominal_refactor_advisor.class_families.parsed_index import FunctionStatement
 from nominal_refactor_advisor.ast_projection import (
     name_nodes,
     names_mentioned,

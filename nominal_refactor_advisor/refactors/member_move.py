@@ -3,7 +3,6 @@
 A method that only builds or asks another family's object belongs to that family; left where it
 is, it makes its own class import the other family, and when that family imports back, a local
 import hides the cycle (agent-comms Thread.native_environment builds a ProjectRuntimeRequest).
-from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition
 
 Two facts decide the move. The method's source shape (a plain method, a staticmethod or a
 classmethod) says what its call sites are spelled on before the move: a receiver of its class
@@ -51,6 +50,7 @@ from nominal_refactor_advisor.refactors.answered_method import (
     OutsideScan as OutsideScan,
     ReceiverBinding as ReceiverBinding,
 )
+from nominal_refactor_advisor.foreign_family import DefinitionStatement, FunctionDefinition
 from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation

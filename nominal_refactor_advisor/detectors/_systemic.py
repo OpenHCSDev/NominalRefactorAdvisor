@@ -1742,7 +1742,7 @@ class ResidualClosedAxisBranchingCandidate(CollectsItselfFromCompactContext[Comp
                             function=function,
                             branch=axis,
                             authoritative_families=sorted_tuple(
-                                specs,
+                                authoritative_specs_by_key[axis.key_type_name],
                                 key=lambda spec: (
                                     spec.family_name,
                                     spec.file_path,
