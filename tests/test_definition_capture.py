@@ -259,7 +259,7 @@ def test_undecorated_definition_has_explicit_empty_capture_payload(declaration):
 def test_definition_kind_cannot_be_constructed_with_plain_binding_target(declaration):
     definition = _definition(_projection(declaration).flows[0])
     with pytest.raises(TypeError, match="[Dd]efinition"):
-        replace(definition, target=CompactBindingTarget("subject"))
+        replace(definition, target=CompactBindingTarget(name="subject"))
 
 
 @pytest.mark.parametrize(

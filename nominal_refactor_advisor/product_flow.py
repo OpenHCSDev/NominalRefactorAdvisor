@@ -1454,7 +1454,10 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
 class CompactAssignmentTargetABC(DataclassGraphNode):
     """An evaluated write destination, distinct from the later write event."""
 
-    imported_origin: ImportedNameOrigin | None = field(default=None, init=False, repr=False)
+    @property
+    def imported_origin(self) -> ImportedNameOrigin | None:
+        """Only an import binds a name to an imported origin."""
+        return None
 
     @abstractmethod
     def resolve_mutation(
@@ -1521,12 +1524,9 @@ class CompactLexicalBindingTargetABC(CompactAssignmentTargetABC):
 @dataclass(frozen=True, kw_only=True)
 class CompactImportTarget(CompactLexicalBindingTargetABC):
     origin: ImportedNameOrigin
-    imported_origin: ImportedNameOrigin | None = field(default=None, init=False, repr=False)
 
     bound_name = AliasProperty[str]("origin.bound_name")
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "imported_origin", self.origin)
+    imported_origin = AliasProperty[ImportedNameOrigin]("origin")
 
 
 @dataclass(frozen=True, kw_only=True)
