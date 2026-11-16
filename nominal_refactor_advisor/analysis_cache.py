@@ -811,11 +811,10 @@ class DetectorRegistrySignature:
 
 
 @dataclass(frozen=True, kw_only=True)
-class AnalysisCacheEntryContext:
-    """Shared invalidation context for detector-output cache entries."""
+class AnalysisCacheBaseContext:
+    """Fields shared by every analysis cache identity, with or without a detector registry."""
 
     config: DetectorConfig
-    detector_registry: DetectorRegistrySignature
     python_version: PythonVersion
     presentation_roots: tuple[str, ...] = field(
         default=(),
@@ -823,6 +822,13 @@ class AnalysisCacheEntryContext:
         repr=False,
     )
     schema: AnalysisCacheSchema = analysis_cache_schema
+
+
+@dataclass(frozen=True, kw_only=True)
+class AnalysisCacheEntryContext(AnalysisCacheBaseContext):
+    """Shared invalidation context for detector-output cache entries."""
+
+    detector_registry: DetectorRegistrySignature
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1031,18 +1037,10 @@ class AnalysisCacheFamilyIdentity(AnalysisOrchestrationContext):
 
 
 @dataclass(frozen=True, kw_only=True)
-class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin):
+class PerModuleAnalysisCacheFamilyIdentity(ReprCacheTokenMixin, AnalysisCacheBaseContext):
     """Stable container identity for independently valid local detector bundles."""
 
-    config: DetectorConfig
-    python_version: PythonVersion
     source_file: ModuleSourceSignature
-    presentation_roots: tuple[str, ...] = field(
-        default=(),
-        compare=False,
-        repr=False,
-    )
-    schema: AnalysisCacheSchema = analysis_cache_schema
 
     @classmethod
     def from_module(
