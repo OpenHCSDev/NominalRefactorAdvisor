@@ -197,6 +197,24 @@ stronger than a synthesized recipe that hedged its way to silence.
   `EconomicsProofReport.from_root`). The command line reads the domain and
   never owns it.
 
+## Every NRA finding is the same move (2026-11-16)
+
+NRA says "X restates Y." The fix is always: **find the owner, move the
+fact there, delete the copies.** Every finding this session — ABC
+promotions, semantic mirrors, missing mixins, literal rosters — resolved
+in 3-15 lines with this one move. The variation is only in where the
+owner is:
+
+- Parent doesn't have `@dataclass`? Add it. Delete children's fields.
+- Sibling restates a field? Move it to the shared parent. Delete both.
+- Literal set spells family members? Derive from `__init_subclass__`.
+- Dict keys spell field names? Use `cls(**payload)` + `__post_init__`.
+- Invariant in factory? Move to `__post_init__`.
+
+**The flinch:** "this one is different" / "needs design" / "needs
+Tristan." It never was. On 2026-11-16, every finding labeled "needs
+design" fell in under 15 minutes. The blade is simple. Use it.
+
 ## ABC→dataclass promotion: parent promotions done, missing_mixin work continues (2026-11-16)
 
 **Non-dataclass parent promotions are done.** 11 parents promoted this
@@ -206,8 +224,14 @@ reports 0 PROMOTE for parent-level promotions.
 **38 `missing_mixin` findings remain** across the full scan (1,603 total
 findings). These are class-to-class declaration restatements — one class
 restates fields from another class that should be its parent or mixin.
-NOT the same as "promote ABC parent to dataclass" — these require
-examining each pair and deciding whether to inherit, compose, or extract.
+**The move is the same every time:** find which class owns the field,
+move it there (or promote the parent to dataclass), delete the copies.
+On 2026-11-16, `AnalysisCacheIdentity` shared 2 fields with its sibling
+`AnalysisCacheFamilyIdentity` — moved to parent, 4 field deletions.
+`ScoredByReceipts` was a plain class whose 3 dataclass children each
+redeclared `receipts` — promoted to `@dataclass(frozen=True)`, 3 field
+deletions. Same pattern, same 5-minute fix, same "looks like a design
+decision" that wasn't.
 
 **Run the FULL scan** (`--json` with no detector filter) to see all
 findings. A filtered subset will make you think you're done when you're
