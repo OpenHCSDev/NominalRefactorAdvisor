@@ -1454,7 +1454,7 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
 class CompactAssignmentTargetABC(DataclassGraphNode):
     """An evaluated write destination, distinct from the later write event."""
 
-    imported_origin: ImportedNameOrigin | None = None
+    imported_origin: ImportedNameOrigin | None = field(default=None, init=False, repr=False)
 
     @abstractmethod
     def resolve_mutation(
@@ -1518,7 +1518,7 @@ class CompactLexicalBindingTargetABC(CompactAssignmentTargetABC):
         return roots.intersection((self.bound_name,))
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactImportTarget(CompactLexicalBindingTargetABC):
     origin: ImportedNameOrigin
     imported_origin: ImportedNameOrigin | None = field(default=None, init=False, repr=False)
@@ -1536,7 +1536,7 @@ class CompactBindingTarget(CompactLexicalBindingTargetABC):
     bound_name = AliasProperty[str]("name")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
     """Captured header evidence and its exact source body, not final object identity."""
 
@@ -1557,7 +1557,7 @@ class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
             raise TypeError("Definition targets require their source declaration")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactReceiverTarget(CompactAssignmentTargetABC, ABC):
     receiver_use: CompactValueUse
 
@@ -1583,7 +1583,7 @@ class CompactReceiverTarget(CompactAssignmentTargetABC, ABC):
         return self.receiver_use.origin_in(flow).candidate_roots_within(roots)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactAttributeTarget(CompactReceiverTarget):
     attribute_name: str
 
@@ -1610,7 +1610,7 @@ class CompactAttributeTarget(CompactReceiverTarget):
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactItemTarget(CompactReceiverTarget):
     index_use: CompactValueUse
 
@@ -1625,7 +1625,7 @@ class CompactItemTarget(CompactReceiverTarget):
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactVariableAnnotationTarget(CompactItemTarget):
     """A compiler-created ``__annotations__`` namespace write."""
 
@@ -2692,6 +2692,7 @@ class FlowFrameResolverABC(ABC, Generic[TargetResolutionT]):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class CompactFlowOwner(ABC):
     """Nominal scope owner, retaining its declaration when it is a function."""
 
@@ -2743,8 +2744,7 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
     qualname: str
     capture: NativeClassCapture
     source_span: SourceByteSpan = field(init=False, repr=False)
-
-    kind = ClassBody
+    kind: type[CompactFlowOwnerKind] = field(default=ClassBody, init=False, repr=False)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "source_span", self.capture.source_span)
@@ -2773,9 +2773,6 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 @dataclass(frozen=True)
 class CompactNamespaceFlowOwner(CompactFlowOwner):
     """A module scope; definition flows retain their actual source declaration."""
-
-    kind: type[CompactFlowOwnerKind]
-    qualname: str
 
     def resolve_frame(
         self,
@@ -2936,15 +2933,14 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     signature: CompactFunctionSignature
     decorators: tuple[CompactValueExpression, ...] = ()
     return_annotation_expression: str | None = None
-
-    kind = Function
-
-    qualname = AliasProperty[str]("identity.qualname")
+    kind: type[CompactFlowOwnerKind] = field(default=Function, init=False, repr=False)
+    qualname: str = field(init=False, repr=False)
     source_span: SourceByteSpan = field(init=False, repr=False)
     line = AliasProperty[int]("source_span.start_line")
     end_line = AliasProperty[int]("source_span.end_line")
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "qualname", self.identity.qualname)
         object.__setattr__(self, "source_span", self.execution.source_span)
 
     def resolve_frame(
@@ -3704,7 +3700,7 @@ class _CompactMutationTargetCollector(ast.NodeVisitor):
         raise ValueError("Expected a binding, attribute or item assignment target")
 
     def visit_Name(self, node: ast.Name) -> CompactLexicalBindingTargetABC:
-        return CompactBindingTarget(node.id)
+        return CompactBindingTarget(name=node.id)
 
     def visit_Attribute(self, node: ast.Attribute) -> CompactAttributeTarget:
         return CompactAttributeTarget(
@@ -4502,7 +4498,7 @@ class _CompactFlowCollector(
         result = self._capture_result(node.value, destination, node)
         if destination.direct_binding_name is not None:
             self._record_mutation(
-                CompactBindingTarget(destination.direct_binding_name),
+                CompactBindingTarget(name=destination.direct_binding_name),
                 node,
                 result=result,
             )
@@ -4677,7 +4673,7 @@ class _CompactFlowCollector(
                 self.visit(handler.type)
             if handler.name is not None:
                 self._record_mutation(
-                    CompactBindingTarget(handler.name),
+                    CompactBindingTarget(name=handler.name),
                     handler,
                     CompactMutationKind.EXCEPTION_BINDING,
                 )
@@ -4707,7 +4703,7 @@ class _CompactFlowCollector(
         for index, case in enumerate(node.cases):
             for name in self._match_bound_names(case.pattern):
                 self._record_mutation(
-                    CompactBindingTarget(name),
+                    CompactBindingTarget(name=name),
                     case.pattern,
                     CompactMutationKind.PATTERN_BINDING,
                 )
