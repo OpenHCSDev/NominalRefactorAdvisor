@@ -89,6 +89,7 @@ class FunctionStatement(DecoratedStatement):
     node: ast.FunctionDef | ast.AsyncFunctionDef
 
 
+@dataclass(frozen=True)
 class ClassStatement(DecoratedStatement):
     """What one class statement's own source says, each answer read once.
 
@@ -210,7 +211,6 @@ class ClassStatement(DecoratedStatement):
 
 @dataclass(frozen=True)
 class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration, ClassStatement):
-    node: ast.ClassDef
 
     member_binding_names = AliasProperty[frozenset[str]](
         "namespace_execution.binding_names"
@@ -430,8 +430,6 @@ class UnindexedClassStatement(ClassStatement):
 
     One written inside a function, or one a native syntax index parsed alone.
     """
-
-    node: ast.ClassDef
 
     @cached_property
     def is_abstract(self) -> bool:

@@ -2191,6 +2191,7 @@ class InstalledValueSlotQuery(CapturedSlotQuery):
                    )
 
 
+@dataclass(frozen=True)
 class NamespaceContentsABC(ABC):
     """Complete contents of one admitted observation, not a new storage identity."""
 
@@ -2264,7 +2265,6 @@ class NamespaceMemberInventory(
 ):
     """Derived complete namespace contents at one admitted execution cut."""
 
-    kernel: CapturedReferenceKernel
     namespace: NamespaceEvidenceABC
     prefix: AdmittedExecutionPrefixABC
 
