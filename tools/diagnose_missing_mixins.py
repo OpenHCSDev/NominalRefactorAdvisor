@@ -180,36 +180,48 @@ def scan():
                 continue
 
             # Parent is NOT a dataclass — diagnose blockers
-            blockers = []
-            child_frozen_states = set()
-            for child_name, child in children:
-                child_frozen_states.add(child.get("frozen"))
-            if any(f is False for f in child_frozen_states):
-                blockers.append(
-                    "FROZEN_MUTABLE: mutable child(ren) prevent frozen parent promotion"
-                )
+            # Check ALL descendants (not just direct children) for blockers
+            def _all_descendants(cls_name, visited=None):
+                if visited is None:
+                    visited = set()
+                result = []
+                for cname, cdata in classes.items():
+                    if cls_name in cdata["bases"] and cname not in visited:
+                        visited.add(cname)
+                        result.append((cname, cdata))
+                        result.extend(_all_descendants(cname, visited))
+                return result
 
-            for child_name, child in children:
+            all_desc = _all_descendants(parent_name)
+            blockers = []
+            for desc_name, desc in all_desc:
+                if desc["is_dc"] and not desc.get("frozen"):
+                    blockers.append(
+                        f"MUTABLE_CHILD: {desc_name} is @dataclass without frozen=True "
+                        f"→ frozen parent would break __setattr__"
+                    )
+
+            for desc_name, desc in all_desc:
                 for field_name in parent["fields"]:
-                    if field_name in child.get("bare_assigns", {}):
+                    if field_name in desc.get("bare_assigns", {}):
                         blockers.append(
-                            f"BARE_ASSIGN: {child_name}.{field_name} = "
-                            f"{child['bare_assigns'][field_name][:40]} "
+                            f"BARE_ASSIGN: {desc_name}.{field_name} = "
+                            f"{desc['bare_assigns'][field_name][:40]} "
                             f"→ convert to field(default=..., init=False)"
                         )
-                    if field_name in child.get("alias_props", set()):
+                    if field_name in desc.get("alias_props", set()):
                         blockers.append(
-                            f"ALIAS_PROPERTY: {child_name}.{field_name} "
+                            f"ALIAS_PROPERTY: {desc_name}.{field_name} "
                             f"→ abstract contract, not stored field"
                         )
-                    if field_name in child.get("properties", set()):
+                    if field_name in desc.get("properties", set()):
                         blockers.append(
-                            f"PROPERTY: {child_name}.{field_name} "
+                            f"PROPERTY: {desc_name}.{field_name} "
                             f"→ abstract contract, not stored field"
                         )
-                    if field_name in child.get("cached_properties", set()):
+                    if field_name in desc.get("cached_properties", set()):
                         blockers.append(
-                            f"CACHED_PROPERTY: {child_name}.{field_name} "
+                            f"CACHED_PROPERTY: {desc_name}.{field_name} "
                             f"→ abstract contract, not stored field"
                         )
 
