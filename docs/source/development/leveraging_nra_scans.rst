@@ -37,9 +37,9 @@ Read ``synthesis.json`` for:
 - ``finding_recipe_plan.application_blocked`` / ``application_block_reason``:
   whether the planner can auto-apply
 
-The plan application (``--codemod-plan-out``) may fail on source-index gaps
-(e.g., ``__init__.py`` unavailable).  In that case, apply the proven candidates
-by hand using the synthesis report as the guide.
+Source-index ``__init__.py`` path normalization bugs (absolute vs relative
+paths) are now fixed in both ``declaration_authority_rename.py`` (4e10d10a)
+and ``codemod_selection_context.py`` (a0fb64df).  Synthesis runs cleanly.
 
 ``--search-refactors`` explores deeper but uses proportionally more memory.
 On a 274-file codebase it OOMs above ``--search-width 3``.  Use synthesis
@@ -49,7 +49,15 @@ instead for the executable frontier.
 Detector Leverage Tiers
 -----------------------
 
-Not all 1500 findings are equally actionable.  Batch by detector:
+Not all findings are equally actionable.  Batch by detector.
+
+.. note::
+
+   As of 2026-11-16, the ``missing_mixin`` mechanical promotion frontier is
+   **exhausted**: 11 ABC parents promoted, 0 remaining.  Basic scan shows 7
+   findings (all ``semantic_mirror_without_descent`` or
+   ``unresolved_authority_claim``).  The remaining 2 ``missing_mixin`` parents
+   are confirmed irreducible (ClassStatement, LexicalScopeABC).
 
 **Tier 1 — mechanical, batch now**
 
