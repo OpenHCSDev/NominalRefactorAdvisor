@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
+from functools import cached_property
 
 from nominal_refactor_advisor.json_reports import SemanticRecord
 from nominal_refactor_advisor.models import RefactorFinding
@@ -58,15 +59,12 @@ class FindingSummary(SemanticRecord):
             detector_counts=FindingDetectorCountsAuthority(findings).detector_counts(),
         )
 
+    @cached_property
+    def _counts_by_detector_id(self) -> dict[str, int]:
+        return {dc.detector_id: dc.count for dc in self.detector_counts}
+
     def detector_count(self, detector_id: str) -> int:
-        return next(
-            (
-                detector_count.count
-                for detector_count in self.detector_counts
-                if detector_count.detector_id == detector_id
-            ),
-            0,
-        )
+        return self._counts_by_detector_id.get(detector_id, 0)
 
     def detector_counts_text(self) -> str:
         return ", ".join(
