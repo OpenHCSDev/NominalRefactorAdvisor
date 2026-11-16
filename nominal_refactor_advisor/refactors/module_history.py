@@ -102,7 +102,7 @@ class _HistoryModuleRedirect(WholeModuleNameRedirect):
         return super().consumer_edits(context, excluded_paths=excluded_paths)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class _CallerManifestScope:
     """Only manifests governing physical caller sources belong to this replay."""
 

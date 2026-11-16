@@ -433,7 +433,7 @@ class CaptureOutcome(ABC):
     unproved state up unchanged.
     """
 
-    is_open: bool = False
+    is_open: bool = field(default=False, init=False, repr=False, compare=False)
 
     def and_then(
         self, step: Callable[[Self], _CaptureStepT]
