@@ -17,6 +17,9 @@ so on 2026-11-16 every run of the day skipped ~half the native-execution
 tests (112 of 223 in one targeted run) while reporting green. Read the
 `skipped` count: a large one is a wrong interpreter, not a pass. The repo's
 `addopts` already pass `-n auto`, so `-p no:xdist` fails to parse; use `-n0`.
+Never edit the package while a run is going: `test_analysis_cache` keys its
+caches on the package's source hashes, so an edit between a test's write and
+read turns it red (two phantom reds on 2026-11-16, green when rerun alone).
 
 ## Goal: polymorphism over switches
 
