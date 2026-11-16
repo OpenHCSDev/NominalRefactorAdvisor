@@ -23,6 +23,7 @@ from nominal_refactor_advisor.class_overlap import (
     ClassOverlapVerdicts,
     OverlapReceiptKind,
 )
+from nominal_refactor_advisor.owner_candidates import NewMixinOwner, OwnerReceiptKind
 
 
 LABELS = Path(__file__).parent / "fixtures" / "class_overlap_labels.json"
@@ -293,7 +294,8 @@ SPREAD = (
 def test_a_block_restated_through_an_inherited_mixin_is_still_a_verdict():
     """#96: FunctionSummary inherits file_path and finding_ids from Scope and
     declares line itself; EvidenceSummary declares all three. Own bodies share
-    one declaration, so only the MRO shows the restatement."""
+    one declaration, so only the MRO shows the restatement. The verdict names
+    the inherited part, which the mixin leaves to Scope (857586e)."""
 
     verdicts = {
         frozenset((candidate.owner.symbol, *candidate.restating_symbols)): candidate
@@ -305,24 +307,8 @@ def test_a_block_restated_through_an_inherited_mixin_is_still_a_verdict():
 
     assert verdict.shape is ClassOverlapShape.MISSING_MIXIN
     assert set(verdict.shared_names) == {"file_path", "line", "finding_ids"}
-    assert not verdict.permitted
-    assert {
-        receipt.detail
-        for receipt in verdict.refusals
-        if receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
-    } == {
-        "`FunctionSummary` inherits `file_path` from `Scope`: the move deletes only "
-        "declarations a class makes itself",
-        "`FunctionSummary` inherits `finding_ids` from `Scope`: the move deletes only "
-        "declarations a class makes itself",
-    }
-    inherited_sites = {
-        (location.file_path, location.symbol)
-        for receipt in verdict.receipts
-        if receipt.kind is OverlapReceiptKind.INHERITED_DECLARATION
-        for location in receipt.evidence
-    }
-    assert ("pkg/summaries.py", "Scope.file_path") in inherited_sites
+    assert set(verdict.inherited_names) == {"file_path", "finding_ids"}
+    assert verdict.permitted
 
 
 def test_classes_inheriting_one_declaration_from_one_ancestor_restate_nothing():
@@ -377,7 +363,8 @@ def test_a_shared_field_declared_differently_refuses_the_move():
 def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
     """`cls(...)` in the class's own classmethod binds its fields by position
     exactly as an outside call does, so a mixin that moves the block ahead of
-    the class's own fields would rebind it; the guard names it."""
+    the class's own fields would rebind it. The new mixin's guard names it, with
+    keywording First as its cure (3bb47ae moved the guard off the verdict)."""
 
     (candidate,) = _verdicts(
         (
@@ -395,13 +382,16 @@ def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
         ),
     )
 
-    positional = [
+    (mixin,) = (
+        owner for owner in candidate.owner_candidates if isinstance(owner, NewMixinOwner)
+    )
+    (positional,) = (
         receipt
-        for receipt in candidate.receipts
-        if receipt.kind is OverlapReceiptKind.POSITIONAL_CONSTRUCTION
-    ]
-    assert [receipt.detail.split("`")[1] for receipt in positional] == ["First"]
-    assert not candidate.permitted
+        for receipt in mixin.refusals
+        if receipt.kind is OwnerReceiptKind.POSITIONAL_CONSTRUCTION
+    )
+    assert positional.constructed == ("pkg.routes.First",)
+    assert [(site.line, site.symbol) for site in positional.evidence] == [(14, "First.of")]
 
 
 SITES = (

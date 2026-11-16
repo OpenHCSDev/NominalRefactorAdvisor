@@ -10,6 +10,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.refactors.class_overlap import (
+    ClassReferenceSites,
     ComposeExistingClassOperation,
     ComposeExistingClassesOperation,
     FoldSharedDeclarationsIntoBaseOperation,
@@ -263,6 +264,57 @@ def test_the_fold_refuses_a_class_handed_on_as_a_value(tmp_path: Path) -> None:
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="as a value"):
         _fold(tmp_path).source_edits(snapshot)
+
+
+def test_the_fold_refuses_a_positional_construction_behind_a_local_import(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pkg/caller.py": "def empty():\n"
+                "    from pkg.conveyor import ConveyorProof as Proof\n"
+                "    return Proof((), (), 'c', 0)\n"
+            }
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"caller\.py:3 binds 4"):
+        _fold(tmp_path).source_edits(snapshot)
+
+
+SCOPED_USERS = (
+    "from pkg.records import Point\n\n\n"
+    "def top():\n    return Point(1)\n\n\n"
+    "def aliased():\n    from pkg.records import Point as P\n    return P(2)\n\n\n"
+    "def shadowed(Point):\n    return Point(3)\n\n\n"
+    "def rebound():\n    Point = dict\n    return Point(x=4)\n"
+)
+
+
+def test_class_reads_resolve_through_the_scope_that_binds_them(tmp_path: Path) -> None:
+    """A function's own import names the class; its own parameter or local does not."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/records.py": SHAPES.replace("Edge", "Point"),
+            "pkg/users.py": SCOPED_USERS,
+            "pkg/only_local.py": "def build():\n"
+            "    from pkg.records import Point\n    return Point(5)\n",
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+
+    sites = ClassReferenceSites(snapshot, frozenset(("pkg.records.Point",))).sites
+
+    assert sorted((Path(site.file_path).name, site.node.lineno) for site in sites) == [
+        ("only_local.py", 3),
+        ("users.py", 5),
+        ("users.py", 10),
+    ]
 
 
 COVERED_OWNERS = (

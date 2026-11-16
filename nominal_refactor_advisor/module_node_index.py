@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import unicodedata
 from collections import Counter, deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
 
@@ -282,3 +283,63 @@ class ModuleNodeIndex(ParsedModuleFact):
                     return current
             below, child, current = child, current, parents.get(current)
         return None
+
+
+@dataclass(frozen=True)
+class ScopedImportBindings(ParsedModuleFact):
+    """What each name an inner scope binds by import reads, scope by scope.
+
+    A class, function, lambda or comprehension that binds a name has its own
+    variable of it (`ModuleNodeIndex.binder_of` says whose variable a read
+    uses). That variable reads an imported name exactly when every binding of
+    it in that scope is an import of one qualified name; bound any other way,
+    or by imports of different names, it is the scope's own value and reads
+    no import. The module's own imports are `ModuleImportBindings`'."""
+
+    node_index: ModuleNodeIndex = field(repr=False)
+    imported_names: dict[ast.AST, dict[str, str | None]] = field(repr=False)
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ScopedImportBindings:
+        node_index = parsed_module.fact(ModuleNodeIndex)
+        targets: dict[ast.AST, dict[str, set[str | None]]] = {}
+        for name, sites in node_index.binding_sites.items():
+            for site in sites:
+                scope = node_index.binding_scope(site, name)
+                if scope is None:
+                    continue
+                targets.setdefault(scope, {}).setdefault(name, set()).update(
+                    (
+                        origin.qualified_name
+                        for origin in ImportBoundNameProjection(site).origins(
+                            parsed_module.module_path_identity
+                        )
+                        if origin.bound_name == name
+                    )
+                    if isinstance(site, ast.Import | ast.ImportFrom)
+                    else (None,)
+                )
+        return cls(
+            node_index=node_index,
+            imported_names={
+                scope: {
+                    name: next(iter(names)) if len(names) == 1 else None
+                    for name, names in names_by_name.items()
+                }
+                for scope, names_by_name in targets.items()
+            },
+        )
+
+    @cached_property
+    def inner_bound_names(self) -> frozenset[str]:
+        """Every name some inner scope binds, however."""
+
+        return frozenset(name for names in self.imported_names.values() for name in names)
+
+    def aliases(self) -> Iterable[tuple[str, str]]:
+        """Each inner-scope name and the qualified name its imports read."""
+
+        for names in self.imported_names.values():
+            for name, qualified_name in names.items():
+                if qualified_name is not None:
+                    yield name, qualified_name
