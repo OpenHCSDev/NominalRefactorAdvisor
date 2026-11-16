@@ -13,6 +13,7 @@ import importlib
 import inspect
 import pkgutil
 import sys
+import textwrap
 from collections import Counter
 from collections.abc import Iterator
 from pathlib import Path
@@ -76,7 +77,7 @@ def _trees(path: Path) -> Iterator[tuple[int, ast.AST]]:
             and nominal_refactor_advisor.__name__ in node.value
         ):
             try:
-                yield node.lineno - 1, ast.parse(node.value)
+                yield node.lineno - 1, ast.parse(textwrap.dedent(node.value))
             except SyntaxError:
                 continue
 

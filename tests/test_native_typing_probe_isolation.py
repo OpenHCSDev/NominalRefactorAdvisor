@@ -42,7 +42,10 @@ CLASSVAR_COLLISION_SETUP = dedent("""
 
     def environment_for(source):
         module = ParsedModule(
-            Path("cache_binding.py"), "cache_binding", ast.parse(source), source
+            path=Path("cache_binding.py"),
+            module_name="cache_binding",
+            module=ast.parse(source),
+            source=source,
         )
         return SourceModuleExecution.from_module(module)
 
