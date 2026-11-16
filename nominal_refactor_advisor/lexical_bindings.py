@@ -776,14 +776,23 @@ class LexicalScopeBindingAuthority:
     def parameter_annotation(
         cls, read: ast.Name, ancestors: Sequence[ast.AST]
     ) -> ast.expr | None:
-        """The annotation of the parameter a read of a name reads, when nothing rebinds it.
+        """The annotation of the parameter a read of a name reads, when nothing rebinds it."""
+
+        function = cls.bound_parameter(read, ancestors)
+        return None if function is None else cls.declared_annotation(function, read.id)
+
+    @classmethod
+    def bound_parameter(
+        cls, read: ast.Name, ancestors: Sequence[ast.AST]
+    ) -> ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | None:
+        """The function whose parameter a read of a name reads, when nothing rebinds it.
 
         `ancestors` run from the module down to the read's parent. The read
         resolves in the nearest enclosing scope that binds the name: a
         comprehension targeting it, a class body it is read in directly, or a
         function whose body holds the read (a read in a function's defaults,
         decorators or annotations runs in the scope around it). The answer is
-        that function's annotation for the name only when the function declares
+        that function only when the function declares
         it a positional or keyword parameter and nothing rebinds it: no binding
         in the function's own scope (assignment, augmented assignment, `del`, a
         `for` or `with` target, a walrus, `except E as name`, a match capture,
@@ -811,7 +820,7 @@ class LexicalScopeBindingAuthority:
                             for statement in body
                             for node in ast.walk(statement)
                         )
-                        return None if rebound else cls.declared_annotation(scope, name)
+                        return None if rebound else scope
                     if name in (
                         collector.bound_names
                         | collector.global_names
