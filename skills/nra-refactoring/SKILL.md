@@ -423,6 +423,25 @@ kept). `repeated_module_expression_lead` AST tuple constants extracted
    15 runtime fixes because the AST detector measures syntax, not runtime.
    The perf win is real; the count is wrong. Say so here, not silently.
 
+### Where the frontier is now (2026-11-16)
+
+**Mechanical kills are exhausted.** `redundant_type_check` (15→2),
+`repeated_module_expression_lead` (AST constants extracted), and
+`loop_relookup` (15+ runtime fixes) were the mechanical categories.
+What remains is tier 2: per-site design.
+
+**The 324 certified `own_type_test` findings** are the biggest single
+batch. Each is an isinstance that NRA proved is knowable from context.
+But each fix is a method-on-base extraction or a dispatch redesign —
+not a delete-the-line. Hotspot: `source_execution.py` (48), then
+`native_compilation.py` (23), `class_overlap.py` (22). Pick one file,
+read every isinstance the detector flags, group by base class, and
+extract one method per group. That's how these move.
+
+**The 247 certified `foreign_absence_probe` findings** are the second
+batch. Each is `other.attr is None` that should be a property on the
+owner. Same pattern: group by owner class, add one property per group.
+
 ## Known NRA tool issues (2026-11-16, updated)
 
 - **Codemod synthesis CLI positional argument swap** — FIXED (cf39547c).
