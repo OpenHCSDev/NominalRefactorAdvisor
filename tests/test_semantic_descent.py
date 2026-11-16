@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from dataclasses import replace
 from pathlib import Path
@@ -2595,8 +2596,10 @@ def test_semantic_mirror_omits_ambiguous_mapping_class_key_fallback(
 
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.reason == (
-        "no class-family recipe declaration proved an executable exact derivation"
+        "a class-family recipe needs a proof of an executable exact derivation; "
+        "no declaration has one yet"
     )
+    assert record.needs == (NeededInput.PROOF,)
     assert (
         "source does not prove one complete zero-argument constructor view"
         in obstacles_by_declaration["AutoregisterInstanceViewRecipeBuilder"]
@@ -3806,8 +3809,10 @@ def test_dataclass_payload_recipe_requires_one_exhaustive_direct_field_run(
         assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
         assert not record.recipe_id
         assert record.reason == (
-            "no inferred mapping recipe builder proved an executable exact derivation"
+            "a mapping recipe builder needs a proof of an executable exact "
+            "derivation; none of the inferred builders has one"
         )
+        assert record.needs == (NeededInput.PROOF,)
         assert (
             "dataclass payload projection requires one contiguous, exhaustive"
             in obstacles_by_declaration[
