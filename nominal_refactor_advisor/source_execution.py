@@ -1612,18 +1612,17 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
     def production(self) -> CompactTupleValue:
         operation = self.execution.source.value_operation(self.read)
         use = self.read.use
-        if not isinstance(use, CompactValueUse) or not isinstance(
-            use.value, CompactTupleValue
-        ):
-            raise ValueError("Tuple capture requires its original compact production")
+        value = use.evaluated(
+            CompactTupleValue, "Tuple capture requires its original compact production"
+        )
         if use.position.branch_path or use.position.evaluation_path:
             raise ValueError("Conditional or repeated tuple creation remains unproved")
         node = operation.node
         NativeCreationBackend.current().require_tuple_construction(node)
-        if len(use.value.inputs) != len(node.elts):
+        if len(value.inputs) != len(node.elts):
             raise ValueError("Tuple production has a different input count")
         previous = None
-        for element, input_use in zip(node.elts, use.value.inputs, strict=True):
+        for element, input_use in zip(node.elts, value.inputs, strict=True):
             original = self.execution.source.value_operation(
                 CompactFlowValue(context=self.read.context, use=input_use)
             )
@@ -1634,7 +1633,7 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
             ):
                 raise ValueError("Tuple inputs have no original ordered completion")
             previous = input_use.position
-        return use.value
+        return value
 
     @cached_property
     def elements(self) -> tuple[CapturedReferenceResolution, ...]:
@@ -1691,12 +1690,10 @@ class SourceLiteralCapture(SourceReadCaptureABC):
     @cached_property
     def literal_value(self) -> object:
         operation = self.execution.source.value_operation(self.read)
-        if not isinstance(
-            cast(CompactValueUse, self.read.use).value, OpaqueValueExpression
-        ):
-            raise ValueError(
-                "Literal capture requires an original expression value read"
-            )
+        self.read.use.evaluated(
+            OpaqueValueExpression,
+            "Literal capture requires an original expression value read",
+        )
         return LiteralExpressionEffects(cast(ast.expr, operation.node)).value
 
     @cached_property
@@ -1717,12 +1714,10 @@ class SourceFunctionExpressionCapture(SourceReadCaptureABC, SourceFunctionCreati
     @property
     def native_execution(self) -> NativeFunctionExecution:
         operation = self.execution.source.value_operation(self.read)
-        if (
-            not isinstance(self.read.use, CompactValueUse)
-            or not isinstance(self.read.use.value, FunctionExpression)
-            or not isinstance(operation.node, ast.Lambda)
-        ):
-            raise ValueError("Function creation requires its original expression read")
+        refusal = "Function creation requires its original expression read"
+        self.read.use.evaluated(FunctionExpression, refusal)
+        if not isinstance(operation.node, ast.Lambda):
+            raise ValueError(refusal)
         return self.execution.module.native_compilation.execution_for(
             SourceByteSpan.require_node(operation.node)
         )
@@ -1748,10 +1743,9 @@ class SourceCompilerStoredCapture(
     @cached_property
     def production(self) -> NativeConstantStore:
         operation = self.execution.source.value_operation(self.read)
-        if not isinstance(
-            cast(CompactValueUse, self.read.use).value, CompilerStoredValue
-        ):
-            raise ValueError("Compiler value requires its original marked source read")
+        self.read.use.evaluated(
+            CompilerStoredValue, "Compiler value requires its original marked source read"
+        )
         results = tuple(
             result
             for result in self.read.context.flow.evaluated_results

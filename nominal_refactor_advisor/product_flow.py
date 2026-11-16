@@ -418,6 +418,7 @@ class CompactControlBranchKind(StrEnum):
 
 
 NamespaceMemberT = TypeVar("NamespaceMemberT")
+EvaluatedT = TypeVar("EvaluatedT")
 
 
 class CompactBindingOperationABC(ABC):
@@ -2299,6 +2300,11 @@ class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
 
         return False
 
+    def evaluated(self, kind: type[EvaluatedT], refusal: str) -> EvaluatedT:
+        """The `kind` value this use evaluates; only a value use evaluates one."""
+
+        raise ValueError(refusal)
+
     def require_native_origin(
         self,
         source: SourceProductFlowProjection,
@@ -2350,6 +2356,11 @@ class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
 
     def reads_value(self, value: object) -> bool:
         return self.value is value
+
+    def evaluated(self, kind: type[EvaluatedT], refusal: str) -> EvaluatedT:
+        if not isinstance(self.value, kind):
+            raise ValueError(refusal)
+        return self.value
 
     def resolve_value(
         self,
