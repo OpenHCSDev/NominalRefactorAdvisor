@@ -1999,7 +1999,7 @@ class CapturedSlotQuery:
         """Select lexical installation and subsequent writes under this query's law."""
         self.namespace.require_key(self.key)
         for candidate in self.prefix.binding_sources(self.namespace, self.key):
-            if candidate.is_open:
+            if isinstance(candidate, OpenCapturedReference):
                 return candidate
             source, binding = candidate
             if binding.mutation is not None:
@@ -2097,7 +2097,7 @@ class CapturedSlotQuery:
         self, resolver: CapturedReferenceKernel
     ) -> CapturedReferenceResolution | None:
         for occurrence in self.mutations_after_installation():
-            if occurrence.is_open:
+            if isinstance(occurrence, OpenCapturedReference):
                 return occurrence
             mutation = occurrence.mutation
             visit = CompactBindingVisit(context=occurrence.source.context, mutation=mutation)
@@ -2546,7 +2546,7 @@ class CapturedReferenceKernel(
         namespaces = endpoint.frame.initial_lookup_namespaces(
             endpoint.context, root.root_name
         )
-        if namespaces.is_open:
+        if isinstance(namespaces, OpenCapturedReference):
             return namespaces
         return self._namespaces_resolution(prefix, namespaces, root.root_name, pending)
 
