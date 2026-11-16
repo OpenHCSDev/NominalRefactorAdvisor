@@ -229,6 +229,26 @@ arguments`. 48 shadowed fields across 9 parents (`OpaqueCapturedObjectOperations
 alone had 15), ~65 red tests, unnoticed because the runs that checked
 the promotions were already red elsewhere and nobody diffed red sets.
 
+**Two more traps the same promotions laid** (both fixed, both guarded):
+- *Identity families promoted to value equality.* `@dataclass` defaults to
+  `eq=True`; a parent with no fields then makes every instance of a subclass
+  equal and hash alike, and `eq=False` children *inherit* that `__eq__`
+  because `eq=False` generates none. `CaptureOutcome` merged distinct proof
+  prefixes in caches this way. Promote a plain class with `eq=False` unless
+  its children are value records. Guard:
+  `test_repository_identity_dataclasses_keep_identity_equality`.
+- *Decorating a child to fit the parent.* `@dataclass` on a class with no
+  own fields generates an empty `__init__` that shadows the inherited
+  constructor ("takes 1 positional argument but 3 were given").
+
+**How these were found, for the next red with no obvious cause:** in a
+worktree of HEAD, swap each changed file back to the last green tree one at
+a time and run the red test; the file that turns it green holds the cause.
+Then do the same per hunk of that file's diff. 75 files → 1 file → 1 hunk,
+minutes, no guessing. Measure the red set *before and after* every batch
+(save the failing ids to a file and `comm` them); a run that is already red
+hides new reds.
+
 **Mandatory after any promotion, before commit:** the shadow sweep —
 every dataclass init field that a class in its MRO shadows with a
 non-field attribute. Zero is the only passing answer. It is the
