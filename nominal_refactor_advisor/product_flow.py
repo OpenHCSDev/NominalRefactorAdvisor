@@ -2294,6 +2294,11 @@ class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
 
     position: CompactFlowPosition
 
+    def reads_value(self, value: object) -> bool:
+        """Whether this use evaluates exactly `value`; only a value use evaluates one."""
+
+        return False
+
     def require_native_origin(
         self,
         source: SourceProductFlowProjection,
@@ -2342,6 +2347,9 @@ class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
     lexical_reference = AliasProperty[LexicalValueReference | None](
         "value.lexical_reference"
     )
+
+    def reads_value(self, value: object) -> bool:
+        return self.value is value
 
     def resolve_value(
         self,

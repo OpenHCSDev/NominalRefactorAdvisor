@@ -2383,7 +2383,7 @@ class SourceExecutionKernel(
     ) -> CapturedReferenceResolution:
         read, _ = context
         operation = self.effects.source.value_operation(read)
-        if not isinstance(read.use, CompactValueUse) or read.use.value is not value:
+        if not read.use.reads_value(value):
             raise ValueError("Subscription value does not belong to its original read")
         if not value.invocation.position.dominates(read.use.position):
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_BINDING)
@@ -2408,7 +2408,7 @@ class SourceExecutionKernel(
     ) -> CapturedReferenceResolution:
         read, pending = context
         self.effects.source_operation(read.context, read.use)
-        if not isinstance(read.use, CompactValueUse) or read.use.value is not value:
+        if not read.use.reads_value(value):
             raise ValueError("Tuple value does not belong to its original source read")
         result = SourceTupleCapture(execution=self.effects, read=read, pending=pending)
         try:
@@ -2441,7 +2441,7 @@ class SourceExecutionKernel(
     ) -> CapturedReferenceResolution:
         read, _ = context
         self.effects.source_operation(read.context, read.use)
-        if not isinstance(read.use, CompactValueUse) or read.use.value is not value:
+        if not read.use.reads_value(value):
             raise ValueError(
                 "Compiler value does not belong to its original source read"
             )
@@ -2461,7 +2461,7 @@ class SourceExecutionKernel(
     ) -> CapturedReferenceResolution:
         read, pending = context
         self.effects.source_operation(read.context, read.use)
-        if not isinstance(read.use, CompactValueUse) or read.use.value is not value:
+        if not read.use.reads_value(value):
             raise ValueError("Forwarded value does not belong to its original read")
         result = value.result
         self.effects.source_operation(read.context, result)
