@@ -35,6 +35,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
 from nominal_refactor_advisor.refactors.member_move import SourceShape
 from nominal_refactor_advisor.models import (
     EnvironmentBooleanDriftMetrics,
+    EnvironmentBooleanParserCore,
     EnvironmentReadKind,
     FixedKeyEnvironmentAuthorityWrapperMetrics,
     LocalEnvironmentBooleanParserMetrics,
@@ -882,11 +883,8 @@ class _EnvironmentAbsentSemantics:
 
 
 @dataclass(frozen=True)
-class _EnvironmentBooleanParserSite(SourceLocation):
-    read_kind: EnvironmentReadKind
+class _EnvironmentBooleanParserSite(SourceLocation, EnvironmentBooleanParserCore):
     environment_key: str
-    token_values: tuple[str, ...]
-    matched_decision: bool
     absence: _EnvironmentAbsentSemantics
 
 

@@ -692,12 +692,20 @@ class EnvironmentBooleanDriftMetrics(BehaviorFindingMetrics, ABC):
 
 
 @dataclass(frozen=True)
-class LocalEnvironmentBooleanParserMetrics(EnvironmentBooleanDriftMetrics):
-    """Observed local token parser and its absence semantics."""
+class EnvironmentBooleanParserCore:
+    """Token parser shape shared by the detector site and its finding metrics."""
 
     read_kind: EnvironmentReadKind
     token_values: tuple[str, ...]
     matched_decision: bool
+
+
+@dataclass(frozen=True)
+class LocalEnvironmentBooleanParserMetrics(
+    EnvironmentBooleanDriftMetrics, EnvironmentBooleanParserCore
+):
+    """Observed local token parser and its absence semantics."""
+
     absent_decision: bool | None
     absent_source: str | None
 
