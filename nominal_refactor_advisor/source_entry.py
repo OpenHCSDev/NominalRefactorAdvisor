@@ -99,6 +99,7 @@ class DeclaredNativeOperationBehavior(DeclaredOperationCompletion):
             raise ValueError("Native behavior condition belongs to another protocol")
 
 
+@dataclass(frozen=True, eq=False)
 class SourceExecutionEntryABC(NamespaceEvidenceABC):
     """Original entry namespace and frame of one source activation.
 
@@ -176,7 +177,6 @@ class SourceModuleEntryPremise(
     explicit inputs; default loaders never infer or transport these premises.
     """
 
-    source: SourceProductFlowProjection
     native_island: InitialNativeIsland
     bindings: InitVar[dict[NativeDictionaryKey, CapturedReferenceResolution]]
     builtins: NamespaceEvidenceABC | OpenCapturedReference

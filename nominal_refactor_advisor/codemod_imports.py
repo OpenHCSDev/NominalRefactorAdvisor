@@ -49,6 +49,7 @@ if TYPE_CHECKING:
     )
 
 
+@dataclass(frozen=True)
 class ImportBlockInsertionPointABC(ABC):
     """Shared insertion geometry for one contiguous Python import block."""
 
@@ -233,7 +234,6 @@ class ModuleImportInsertionPoint(ImportBlockInsertionPointABC):
     """Insertion line after a module docstring and leading import block."""
 
     source: str
-    file_path: str
     module_node: ast.Module | None = None
 
     @property
@@ -303,7 +303,6 @@ class TypeCheckingGuardImportInsertionPoint(ImportBlockInsertionPointABC):
 
     source: str
     guard: ast.If
-    file_path: str
 
     @property
     def scope(self) -> ModuleImportScope:

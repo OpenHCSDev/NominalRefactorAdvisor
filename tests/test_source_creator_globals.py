@@ -24,7 +24,7 @@ from test_source_function_result import execution
 pytestmark = pytest.mark.native_proof
 
 
-@dataclass(eq=False)
+@dataclass(frozen=True, eq=False)
 class SplitNamespaceEntry(
     NamespaceCreationEvidenceABC, RecordedNamespace, SourceExecutionEntryABC
 ):

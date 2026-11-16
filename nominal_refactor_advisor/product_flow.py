@@ -2292,6 +2292,7 @@ class CompilerOperandValue(
         return resolver._compiler_operand_value_resolution(self, context)
 
 
+@dataclass(frozen=True)
 class CompactPositionedReference(DataclassGraphNode, CompactResolvableValue):
     """A captured expression/reference with its actual source flow position."""
 
@@ -2340,7 +2341,6 @@ class CompactValueUse(DataclassGraphValue, CompactPositionedReference):
     """One evaluated expression value, retaining its source event."""
 
     value: CompactValueExpression | CompactResolvableValue
-    position: CompactFlowPosition
     indexes_source_expression: ClassVar[bool] = True
 
     lexical_reference = AliasProperty[LexicalValueReference | None](
@@ -2446,7 +2446,6 @@ class CompactEvaluatedResult(CompactSpannedGraphValue):
 @dataclass(frozen=True)
 class CompactCallableReferenceUse(CompactPositionedReference):
     target: CompactCallTargetReference
-    position: CompactFlowPosition
     source_span: SourceByteSpan
 
     line = AliasProperty[int]("source_span.start_line")

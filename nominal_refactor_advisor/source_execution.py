@@ -196,6 +196,7 @@ SourceDefinitionNodeT = TypeVar(
 )
 
 
+@dataclass(frozen=True, eq=False)
 class SourceNativeFrameResolver(NativeFrameOriginResolverABC[CompactFlowContext]):
     """Match native origin to the actual admitted activation at a source cut."""
 
@@ -342,7 +343,6 @@ class SourceDefinitionEntry(
     creators retain their separate open obligations.
     """
 
-    execution: SourceExecutionABC
     node: SourceDefinitionNodeT
 
     native_frame_context = AliasProperty[CompactFlowContext]("parent_context")
@@ -1654,8 +1654,6 @@ class SourceTupleCapture(NativeTypeCapture, OpaqueCapturedObjectOperations):
 @dataclass(frozen=True, eq=False)
 class SourceReadFrame(SourceNativeFrameResolver):
     """One original read and its admitted executing frame."""
-
-    execution: SourceExecutionABC
     read: CompactFlowValue
     native_frame_context = AliasProperty[CompactFlowContext]("read.context")
 
@@ -1811,8 +1809,6 @@ class SourceCompilerOperandRead(SourceReadFrame, SourceNativePrefixStorageABC):
 class SourceEventReturnABC(SourceCompletedReturnABC):
     """One original source event and its canonical executing frame."""
 
-    execution: SourceExecutionABC
-
     source_completion_prefix = AliasProperty[AdmittedExecutionPrefixABC](
         "native_frame_prefix"
     )
@@ -1841,7 +1837,6 @@ class SourceEventReturnABC(SourceCompletedReturnABC):
 class SourceBindingReturnABC(SourceEventReturnABC, SourceInstalledReturnABC):
     """A canonical source binding and its original executing frame."""
 
-    execution: SourceExecutionABC
     binding: CompactMutation
     event = AliasProperty[CompactMutation]("binding")
 
@@ -2257,6 +2252,7 @@ class SourceFunctionReturn(SourceEventReturnABC, SourceNativeExpressionABC):
         return self.require_join(self.receipt.value)
 
 
+@dataclass(frozen=True, eq=False)
 class SourceAssignmentValueABC(SourceNativeExpressionABC):
     """An assignment's RHS belongs to its original evaluated source read."""
 
@@ -2277,8 +2273,6 @@ class SourceAssignmentValueABC(SourceNativeExpressionABC):
 class SourceItemStoreReturn(SourceStackEffectReturnABC, SourceAssignmentValueABC):
     """Original item operands joined under the source-owned storage contract."""
 
-    execution: SourceExecutionABC
-    binding: CompactEvaluatedAssignment
     event = AliasProperty[CompactEvaluatedAssignment]("binding")
     native_effect_type: ClassVar[type[NativeStackEffectABC]] = NativeItemStoreValue
 
@@ -2307,8 +2301,6 @@ class SourceAssignmentStore(SourceBindingReturnABC, SourceAssignmentValueABC):
     The requested completed cut supplies source execution. This receipt alone
     does not establish subsequent namespace contents or class construction.
     """
-
-    binding: CompactEvaluatedAssignment
 
     @property
     def production(self) -> NativeValueStore:
