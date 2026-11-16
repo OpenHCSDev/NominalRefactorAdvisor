@@ -571,6 +571,16 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
     def require_completion(self, resolver: NativeCompletionResolverABC) -> None:
         resolver._native_value_completion(self)
 
+    def call_at(self, source_span: SourceByteSpan | None) -> bool:
+        """Whether this is a call whose source is exactly `source_span`; only a call is."""
+
+        return False
+
+    def require_call(self, refusal: str) -> NativeCallValue:
+        """This production as the call it is; only a call is one."""
+
+        raise ValueError(refusal)
+
     @property
     def implicit_arguments(self) -> tuple[NativeProducedValue, ...]:
         return (self,)
@@ -659,6 +669,12 @@ class NativeCallValue(DataclassGraphValue, NativeProducedValue):
     """Original invocation with ordered implicit and explicit Python arguments."""
 
     argument_slot: NativeCallSlotABC
+
+    def call_at(self, source_span: SourceByteSpan | None) -> bool:
+        return self.source_span == source_span
+
+    def require_call(self, refusal: str) -> NativeCallValue:
+        return self
 
     @property
     def callee(self) -> NativeProducedValue:
@@ -2012,9 +2028,8 @@ class NativeDefinitionApplication(DataclassGraphValue, NativeCaptureSite):
 
     def require_definition_operand(self, value: NativeProducedValue) -> None:
         if (
-            not isinstance(value, NativeCallValue)
+            not value.call_at(self.source_span)
             or value.instruction_offset != self.instruction_offset
-            or value.source_span != self.source_span
         ):
             raise ValueError("Native operand differs from its original application")
 
@@ -2072,8 +2087,7 @@ class ExactNativeClassCapture(NativeClassCapture):
         candidates = tuple(
             value
             for value in store.values
-            if isinstance(value, NativeCallValue)
-            and value.source_span == self.source_span
+            if value.call_at(self.source_span)
         )
         if len(candidates) != 1:
             raise ValueError("Native definition has no unique class construction")
@@ -2091,8 +2105,7 @@ class ExactNativeClassCapture(NativeClassCapture):
         ):
             raise ValueError("Native class result belongs to a different creator frame")
         if (
-            not isinstance(value, NativeCallValue)
-            or value.source_span != self.source_span
+            not value.call_at(self.source_span)
         ):
             raise ValueError("Native class result has no original construction call")
         if (
@@ -2303,8 +2316,9 @@ class NativeValueStore(DataclassGraphValue, NativeValueInventoryABC):
         applications = []
         while current is not creation:
             self.require_value(current)
-            if not isinstance(current, NativeCallValue):
-                raise ValueError("Native definition has no application path to storage")
+            current = current.require_call(
+                "Native definition has no application path to storage"
+            )
             argument = current.require_definition_argument()
             for operand in current.inputs:
                 self.require_value(operand)
