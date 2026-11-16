@@ -536,10 +536,11 @@ Next moves, each traced and parked with its reason:
   `CaptureOutcome`s.* `binding_sources` yields `SelectedBindingSource`,
   `ContextualMutation` is an outcome, `initial_lookup_namespaces` returns
   `LookupNamespaces`; consumers chain `and_then`, and no
-  `isinstance(..., OpenCapturedReference)` remains in the package. Left:
-  `_admitted_prefix` returns `AdmittedExecutionPrefixABC | Open`; making the
-  prefix family an outcome adds an import from `source_execution` to
-  `captured_reference`, so check the import graph first.
+  `isinstance(..., OpenCapturedReference)` remains in the package. The
+  admitted prefix was already an outcome (it lives in `captured_reference`
+  too); 9717774d chained its last two hand-written `is_open` returns. The
+  remaining `is_open` reads translate an open value into something else (a
+  different open reference, a codemod report) and are not short-circuits.
 - *`phantom_family`* (415) is two-owner pairs on generic method names
   (`resolve`, `of`, `read`, `names`, at most 3 per name): mostly name
   coincidence, no batch.
