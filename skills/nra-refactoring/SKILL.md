@@ -525,7 +525,10 @@ Next moves, each traced and parked with its reason:
   ~3260-3290); the probes live only during the stream. The fold:
   `advance()` returns a created emission replacing the pending one in the
   observer's state, so "not created yet" is a type. Not an `is_created`
-  property (that only renames the probe).
+  property (that only renames the probe). Constraint found 2026-11-16: the
+  emission object is shared (built ~3818, held by the prefix, read by the
+  classifier after the stream), so `advance()` cannot just return a fresh
+  object; emissions must first be owned by a registry keyed by load site.
 - *`CompactClassMemberDeclaration.annotation_expression: str | None`*
   (4 probes) is an annotated/unannotated family inside a cached
   `NamedTuple`; converting it is a cache-format move first.
