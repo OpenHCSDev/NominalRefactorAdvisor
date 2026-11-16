@@ -1877,11 +1877,16 @@ class AnalysisResultQuestion(ABC, Generic[AnalysisResultAnswerT]):
 
 
 @dataclass(frozen=True)
-class CachedAnalysisResult(ABC):
-    """Detector findings plus the persistent cache status used to produce them."""
+class AnalysisResultRecord:
+    """Detector findings plus the cache status used to produce them."""
 
     findings: list[RefactorFinding]
     cache_status: type[AnalysisCacheStatus]
+
+
+@dataclass(frozen=True)
+class CachedAnalysisResult(AnalysisResultRecord, ABC):
+    """Analysis result with polymorphic question dispatch."""
 
     @abstractmethod
     def answer(
@@ -3407,11 +3412,8 @@ class AnalysisCacheResolutionAuthority(
 
 
 @dataclass(frozen=True)
-class IncrementalAnalysisResult:
+class IncrementalAnalysisResult(AnalysisResultRecord):
     """Exact detector findings plus the shard-cache reuse status."""
-
-    findings: list[RefactorFinding]
-    cache_status: type[AnalysisCacheStatus]
 
 
 @ScanCache.scope()
