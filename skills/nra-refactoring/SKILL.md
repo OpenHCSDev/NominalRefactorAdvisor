@@ -431,7 +431,7 @@ The certified categories (all high confidence, all provably correct):
 
 | Detector | Certified | What NRA proved | The move |
 |---|---|---|---|
-| `own_type_test` | 324 | isinstance repeats a type the context already knows | Method on base, dispatch through MRO |
+| `own_type_test` | 217 | isinstance repeats a type the context already knows | Method on base, dispatch through MRO |
 | `foreign_absence_probe` | 247 | probes another object for absence it should report itself | Property on the owner |
 | `threaded_absence` | 112 | Optional threaded through calls where owner holds the value | Owner holds it, callers ask it |
 | `zero_one_tuple` | 33 | `()` or `(x,)` spells present/absent as a collection | Return `None` or value directly |
@@ -514,10 +514,18 @@ kept). `repeated_module_expression_lead` AST tuple constants extracted
 `loop_relookup` (15+ runtime fixes) were the mechanical categories.
 What remains is tier 2: per-site design.
 
-**The 324 certified `own_type_test` findings** are the biggest single
-batch. Each is an isinstance that NRA proved is knowable from context.
-But each fix is a method-on-base extraction or a dispatch redesign —
-not a delete-the-line. Hotspot: `source_execution.py` (48), then
+**The 217 certified `own_type_test` findings** (scan at 333b4709) are the
+biggest single batch. Each is an isinstance against a class we own whose
+answer belongs in a method on its base. 63 more were tests against a
+`ForeignFamily` (`FunctionDefinition`, `ImportDefinition`,
+`DefinitionStatement`): those are the boundary decoder, there is no base
+to override, and since 333b4709 the detector drops any class whose
+metaclass answers `isinstance` (`__instancecheck__`, or `register` in its
+`__init__`). The only foldable shape among them was a comprehension
+filter, which `--codemod-refactor-goal foreign_family_routing
+--codemod-goal-detector own_type_test` turns into `F.within(...)` (one
+site). Each remaining fix is a method-on-base extraction or a dispatch
+redesign, not a delete-the-line. Hotspot: `source_execution.py` (48), then
 `native_compilation.py` (23), `class_overlap.py` (22). Pick one file,
 read every isinstance the detector flags, group by base class, and
 extract one method per group. That's how these move.
