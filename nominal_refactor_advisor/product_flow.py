@@ -1450,6 +1450,7 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class CompactAssignmentTargetABC(DataclassGraphNode):
     """An evaluated write destination, distinct from the later write event."""
 
@@ -1520,9 +1521,12 @@ class CompactLexicalBindingTargetABC(CompactAssignmentTargetABC):
 @dataclass(frozen=True)
 class CompactImportTarget(CompactLexicalBindingTargetABC):
     origin: ImportedNameOrigin
+    imported_origin: ImportedNameOrigin | None = field(default=None, init=False, repr=False)
 
     bound_name = AliasProperty[str]("origin.bound_name")
-    imported_origin = AliasProperty[ImportedNameOrigin]("origin")
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "imported_origin", self.origin)
 
 
 @dataclass(frozen=True)
