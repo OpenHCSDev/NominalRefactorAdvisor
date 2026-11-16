@@ -278,6 +278,7 @@ class NativeClassCaptureResolverABC(ABC, Generic[NativeResolutionT]):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class NativeFrameOrigin(ABC):
     """Compiler container provenance, not an admitted execution activation."""
 
@@ -300,7 +301,6 @@ class NativeFrameOrigin(ABC):
 
 @dataclass(frozen=True)
 class ModuleNativeFrameOrigin(NativeFrameOrigin):
-    compilation: NativeCompilationIdentity
 
     def resolve(
         self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
@@ -311,13 +311,13 @@ class ModuleNativeFrameOrigin(NativeFrameOrigin):
 @dataclass(frozen=True)
 class SourceNativeFrameOrigin(NativeFrameOrigin):
     execution: ExactNativeFunctionExecution
+    compilation: NativeCompilationIdentity = field(init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "compilation", self.execution.compilation)
 
     def is_body_of(self, execution: NativeFunctionExecution) -> bool:
         return self.execution is execution
-
-    @property
-    def compilation(self) -> NativeCompilationIdentity:
-        return self.execution.compilation
 
     def resolve(
         self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
@@ -337,10 +337,10 @@ class GeneratedClassNativeFrameOrigin(NativeFrameOrigin):
     execution: CreatedNativeFunctionExecution
     activation: NativeCaptureSite
     bindings: tuple[NativeGeneratedFrameBinding, ...]
+    compilation: NativeCompilationIdentity = field(init=False, repr=False)
 
-    @property
-    def compilation(self) -> NativeCompilationIdentity:
-        return self.execution.compilation
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "compilation", self.execution.compilation)
 
     def resolve(
         self, resolver: NativeFrameOriginResolverABC[NativeResolutionT]
@@ -368,7 +368,6 @@ class OpenNativeFrameOrigin(NativeFrameOrigin):
     Their code is not equated to a source parent by overlapping source ranges.
     """
 
-    compilation: NativeCompilationIdentity
     reason: NativeExecutionUnavailable
 
     def resolve(
@@ -2731,7 +2730,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                 lambda frame: id(frame.owner.code),
             )
         )
-        self.frame_origins = {id(self.root_code): ModuleNativeFrameOrigin(compilation)}
+        self.frame_origins = {id(self.root_code): ModuleNativeFrameOrigin(compilation=compilation)}
         bound: set[int] = set()
         binding: set[int] = set()
 
@@ -2755,7 +2754,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                     owner = by_code.unambiguous_declarations_by_handle[identity]
                     bind(owner)
                     self.frame_origins[identity] = SourceNativeFrameOrigin(
-                        cast(ExactNativeFunctionExecution, owner.receipt)
+                        execution=cast(ExactNativeFunctionExecution, owner.receipt)
                     )
                 elif identity in generated_by_code.unambiguous_declarations_by_handle:
                     frame = generated_by_code.unambiguous_declarations_by_handle[
@@ -2989,7 +2988,7 @@ class _NativeExecutionIndex(NativeScopeInventoryABC, _NativeCompilationOutcome):
         candidates = tuple(
             store
             for store in self.value_stores
-            if store.frame == ModuleNativeFrameOrigin(self.compilation)
+            if store.frame == ModuleNativeFrameOrigin(compilation=self.compilation)
             and isinstance(store.value, NativeAnnotationNamespaceValue)
         )
         if len(candidates) > 1:
