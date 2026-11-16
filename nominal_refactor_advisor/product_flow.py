@@ -1552,10 +1552,6 @@ class CompactDefinitionTarget(CompactLexicalBindingTargetABC):
         """All eagerly consumed header receipts in their native evaluation order."""
         return (*self.decorator_uses, *self.input_uses)
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.owner, CompactDefinitionFlowOwner):
-            raise TypeError("Definition targets require their source declaration")
-
 
 @dataclass(frozen=True, kw_only=True)
 class CompactReceiverTarget(CompactAssignmentTargetABC, ABC):
@@ -2284,10 +2280,6 @@ class CompilerOperandValue(
 
     role: NativeItemStoreOperand
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.role, NativeItemStoreOperand):
-            raise TypeError("Compiler operand requires a declared native input role")
-
     def resolve_value(
         self,
         resolver: CompactValueResolverABC[ResolutionContextT, TargetResolutionT],
@@ -2416,8 +2408,7 @@ class CompactCompilerOperandUse(CompactValueUse):
         read: CompactFlowValue,
         operation: SourceFlowOperation,
     ) -> None:
-        if not isinstance(self.value, CompilerOperandValue):
-            raise ValueError("Compiler operand read requires its declared input role")
+        pass
 
 
 @dataclass(frozen=True, eq=False)

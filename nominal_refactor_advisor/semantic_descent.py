@@ -3490,11 +3490,7 @@ class SemanticDescentGraphCacheEntry:
         self,
         requested_identity: SemanticDescentGraphCacheIdentity,
     ) -> SemanticDescentGraphCacheLookup:
-        if (
-            not isinstance(self.identity, SemanticDescentGraphCacheIdentity)
-            or not isinstance(self.graph, SemanticDescentGraph)
-            or self.identity != requested_identity
-        ):
+        if self.identity != requested_identity:
             return SemanticDescentGraphCacheMiss()
         try:
             graph = rebase_semantic_descent_graph(
@@ -3529,12 +3525,7 @@ class SemanticDescentGraphLatestPointer:
         requested_family_identity: SemanticDescentGraphCacheFamilyIdentity,
     ) -> SemanticDescentGraphCacheIdentity | None:
         if (
-            not isinstance(
-                self.family_identity,
-                SemanticDescentGraphCacheFamilyIdentity,
-            )
-            or not isinstance(self.identity, SemanticDescentGraphCacheIdentity)
-            or self.family_identity != requested_family_identity
+            self.family_identity != requested_family_identity
             or SemanticDescentGraphCacheFamilyIdentity.from_identity(self.identity)
             != self.family_identity
         ):

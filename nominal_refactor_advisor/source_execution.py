@@ -4261,10 +4261,6 @@ class SourceFunctionExecution(SourceExecutionABC, CompactBranchPredicateResolver
         self.require_closed()
         return self.completed_result
 
-    def __post_init__(self) -> None:
-        if not isinstance(self.entry, SourceFunctionEntry):
-            raise TypeError("Function execution requires an actual function entry")
-
 
 @dataclass(eq=False)
 class SourceModuleExecution(SourceExecutionABC):
@@ -4284,10 +4280,6 @@ class SourceModuleExecution(SourceExecutionABC):
         constructor. Observation identity alone grants no execution/effect rights.
         """
         return cls(ImportedSourceModuleEntryPremise.from_source(source))
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.entry, SourceModuleEntryPremise):
-            raise TypeError("Source execution requires an actual source entry premise")
 
     @classmethod
     def from_module(cls, module: ParsedModule) -> SourceModuleExecution:
