@@ -491,8 +491,8 @@ class ClassBodyIndex:
             tuple(sorted((*declaration.bindings, *settlements.settled))),
         )
         return ProvedClassBodyDeclaration(
-            declaration,
-            identity,
+            declaration=declaration,
+            identity=identity,
             field_identity=self._field_identity(module_name, declaration, identity),
         )
 

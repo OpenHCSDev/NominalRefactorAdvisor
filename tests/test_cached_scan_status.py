@@ -141,13 +141,13 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
         raise AssertionError("The validated identity already owns its roster")
 
     monkeypatch.setattr(cli, "default_detector_types_for_analysis", forbidden)
-    result = ExactCacheHit([], identity)
-    target = cli.ScanTarget((package,), PythonSourcePathPolicy())
+    result = ExactCacheHit(findings=[], cache_identity=identity)
+    target = cli.ScanTarget(roots=(package,), source_policy=PythonSourcePathPolicy())
     status = cli.JsonScanStatus.exact_cache(result.cache_identity, target)
     assert status.analyzed_detector_count == 2
     assert status.mode is cli.JsonScanMode.exact_cache
     assert status.complete and status.omitted_detector_count == 0
-    report = cli.JsonLoopCachePayloadBuilder(payload, ScanTiming(), target).build()
+    report = cli.JsonLoopCachePayloadBuilder(cached=payload, timing=ScanTiming(), target=target).build()
     assert report["scan_status"]["analyzed_detector_count"] == 2
     assert report["scan_status"]["mode"] == "exact_cache"
 
@@ -155,8 +155,8 @@ def test_exact_status_and_summary_derive_the_validated_roster(tmp_path, monkeypa
 def test_served_results_carry_their_status_as_their_type(tmp_path):
     package, _source = source_tree(tmp_path)
     identity = AnalysisCacheIdentity.from_roots((package,), DetectorConfig())
-    assert ExactCacheHit([], identity).cache_status is Hit
-    assert PartialCacheReuse([], identity).cache_status is Partial
+    assert ExactCacheHit(findings=[], cache_identity=identity).cache_status is Hit
+    assert PartialCacheReuse(findings=[], cache_identity=identity).cache_status is Partial
 
 
 def test_summary_hit_requires_its_payload():
@@ -184,7 +184,7 @@ def test_summary_fast_path_retains_identity_and_partial_isolation(tmp_path):
         capability_gap="Retain the finding and request identity together",
         relation_context="Test-authored cache payload, not a detector execution claim",
     ).build(
-        "cache_fixture", "Retained finding", (SourceLocation(str(source), 1, "Alpha"),)
+        "cache_fixture", "Retained finding", (SourceLocation(file_path=str(source), line=1, symbol="Alpha"),)
     )
     cache.store(original, [finding])
     authority = FastCachedPathAnalysisAuthority(request)
@@ -311,12 +311,12 @@ def test_a_result_covering_no_source_never_certifies_a_target_holding_source(tmp
     )
     policy = PythonSourcePathPolicy()
 
-    unparsed = status(covered_nothing, cli.ScanTarget((package,), policy))
+    unparsed = status(covered_nothing, cli.ScanTarget(roots=(package,), source_policy=policy))
     assert unparsed.mode is cli.JsonScanMode.unparsed_target
     assert unparsed.complete is False
     assert unparsed.source_file_count == 0
 
-    assert status(covered_nothing, cli.ScanTarget((empty,), policy)).mode is (
+    assert status(covered_nothing, cli.ScanTarget(roots=(empty,), source_policy=policy)).mode is (
         cli.JsonScanMode.empty_target
     )
 
@@ -331,7 +331,7 @@ def test_a_cache_served_summary_over_no_source_is_incomplete(tmp_path):
         summary=FindingSummary.from_findings(()),
               )
     report = cli.JsonLoopCachePayloadBuilder(
-        payload, ScanTiming(), cli.ScanTarget((package,), PythonSourcePathPolicy())
+        cached=payload, timing=ScanTiming(), target=cli.ScanTarget(roots=(package,), source_policy=PythonSourcePathPolicy())
     ).build()
     assert report["scan_status"]["complete"] is False
     assert report["scan_status"]["mode"] == "unparsed_target"

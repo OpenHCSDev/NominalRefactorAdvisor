@@ -99,6 +99,6 @@ def test_native_compilation_and_editor_inherit_generic_geometry_contract():
             consumer.decorated_node_start_line
             is SourceLineSegmentAuthority.decorated_node_start_line
         )
-    compilation = NativePythonCompilation("value = 1\n", "source.py")
+    compilation = NativePythonCompilation(source="value = 1\n", file_path="source.py")
     assert compilation.source == "value = 1\n"
     assert compilation.file_path == "source.py"

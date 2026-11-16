@@ -36,7 +36,7 @@ def store_for(compilation, node):
 @pytest.mark.parametrize("in_class", (False, True))
 def test_scalar_pair_matches_actual_native_instructions(value, in_class):
     source = ("class Family:\n    " if in_class else "") + "key = " + value + "\n"
-    compilation = NativePythonCompilation(source, "scalar.py")
+    compilation = NativePythonCompilation(source=source, file_path="scalar.py")
     node = assignment(source)
     receipt = store_for(compilation, node)
     assert receipt.production_span != receipt.source_span
@@ -72,7 +72,7 @@ def test_scalar_pair_matches_actual_native_instructions(value, in_class):
 @pytest.mark.native_proof
 def test_later_compiler_overwrite_cannot_substitute_for_source_assignment():
     source = "class Family:\n    __static_attributes__ = None\n"
-    compilation = NativePythonCompilation(source, "overwrite.py")
+    compilation = NativePythonCompilation(source=source, file_path="overwrite.py")
     receipt = store_for(compilation, assignment(source))
     assert receipt.value.require_native_scalar() is None
     assert receipt.production_span != receipt.source_span
@@ -81,7 +81,7 @@ def test_later_compiler_overwrite_cannot_substitute_for_source_assignment():
 @pytest.mark.native_proof
 def test_scalar_receipts_do_not_broaden_documentation_entry_contract():
     source = "first = 1\ntext = 'later'\n"
-    compilation = NativePythonCompilation(source, "entry.py")
+    compilation = NativePythonCompilation(source=source, file_path="entry.py")
     for node in ast.parse(source).body:
         assert store_for(compilation, node).binding.name == node.targets[0].id
         with pytest.raises(ValueError):
@@ -103,7 +103,7 @@ def test_scalar_receipts_do_not_broaden_documentation_entry_contract():
 )
 def test_non_immediate_or_non_scalar_binding_is_not_inferred(source):
     with pytest.raises(ValueError, match="Native (value store|scalar production)"):
-        store_for(NativePythonCompilation(source, "reject.py"), assignment(source))
+        store_for(NativePythonCompilation(source=source, file_path="reject.py"), assignment(source))
 
 
 @pytest.mark.parametrize(
@@ -140,7 +140,7 @@ def test_instruction_pair_rejects_intervening_work_or_jump_entry(disturbance):
 @pytest.mark.native_proof
 def test_duplicate_receipts_and_stale_index_cannot_supply_unique_store():
     source = "key = None\n"
-    compilation = NativePythonCompilation(source, "duplicate.py")
+    compilation = NativePythonCompilation(source=source, file_path="duplicate.py")
     node = assignment(source)
     original = store_for(compilation, node)
     index = compilation.execution_outcome
@@ -158,7 +158,7 @@ def test_duplicate_receipts_and_stale_index_cannot_supply_unique_store():
 @pytest.mark.native_proof
 def test_pickle_preserves_canonical_frames_without_executable_code(monkeypatch):
     source = "class Family:\n    key = None\n"
-    original = NativePythonCompilation(source, "pickle.py")
+    original = NativePythonCompilation(source=source, file_path="pickle.py")
     receipt = store_for(original, assignment(source))
     payload = pickle.dumps(original)
 

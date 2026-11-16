@@ -56,7 +56,7 @@ def _compile_case(monkeypatch, source):
 
     monkeypatch.setattr(NativePythonCompilation, "compile", capture_compile)
     monkeypatch.setattr(NativeCreationBackend, "inventory", capture_inventory)
-    compilation = NativePythonCompilation(source, "native_class_capture_case.py")
+    compilation = NativePythonCompilation(source=source, file_path="native_class_capture_case.py")
     spans = tuple(
         SourceByteSpan.require_node(node)
         for node in ast.walk(ast.parse(source))

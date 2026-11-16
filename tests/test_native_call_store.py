@@ -34,7 +34,7 @@ def test_call_observation_retains_actual_operands_without_admitting_execution(
     expression,
 ):
     source = f"payload = {expression}\n"
-    compilation = NativePythonCompilation(source, "calls.py")
+    compilation = NativePythonCompilation(source=source, file_path="calls.py")
     node = ast.parse(source).body[0]
     receipt = value_store(compilation, node)
     assert isinstance(receipt.value, NativeCallValue)
@@ -47,7 +47,7 @@ def test_call_observation_retains_actual_operands_without_admitting_execution(
         receipt.require_value(value)
         assert not isinstance(value, NativeCallMarker)
     env = execution(source)
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[-1])
     with pytest.raises(ValueError):
         store.require_installation(env.required_prefix(env.entry.context, None))
     with pytest.raises(NameError):
@@ -80,7 +80,7 @@ def test_proved_calls_use_the_existing_result_owner_and_match_actual_output(
         if in_class
         else env.entry.context
     )
-    store = SourceAssignmentStore(env, context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=context.flow.mutations[-1])
     receipt = store.require_installation(env.required_prefix(context, None))
     node = env.source.value_operation(store.source_read).node
     call_context, call = env.source_call(node)
@@ -102,7 +102,7 @@ def test_proved_calls_use_the_existing_result_owner_and_match_actual_output(
 def test_distinct_constructor_invocations_do_not_gain_shared_identity():
     env = execution("class Payload: pass\nfirst = Payload()\nsecond = Payload()\n")
     stores = [
-        SourceAssignmentStore(env, binding)
+        SourceAssignmentStore(execution=env, binding=binding)
         for binding in env.entry.context.flow.mutations[-2:]
     ]
     for store in stores:
@@ -116,7 +116,7 @@ def test_distinct_constructor_invocations_do_not_gain_shared_identity():
 def test_call_operand_join_does_not_invent_source_function_metadata_proof(wrapper):
     source = f"def handler(): pass\npayload = {wrapper}(handler)\n"
     env = execution(source)
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[-1])
     assert isinstance(store.production.value, NativeCallValue)
     with pytest.raises(ValueError):
         store.require_installation(env.required_prefix(env.entry.context, None))
@@ -133,7 +133,7 @@ def test_callee_is_its_original_reference_read_not_a_synthetic_value_event():
     )
     with pytest.raises(ValueError):
         replace(read, use=copy(read.use)).source_operation(env.source)
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[-1])
     join = SourceNativeOperandJoin(parent=store, read=read)
     join.require_join(store.production.value.callee)
     with pytest.raises(ValueError, match="original production"):
@@ -145,7 +145,7 @@ def test_unobserved_expansion_protocol_is_not_inferred(expression):
     source = f"payload = {expression}\n"
     with pytest.raises(ValueError):
         value_store(
-            NativePythonCompilation(source, "unobserved.py"), ast.parse(source).body[0]
+            NativePythonCompilation(source=source, file_path="unobserved.py"), ast.parse(source).body[0]
         )
 
 
@@ -198,7 +198,7 @@ def test_serialised_call_graph_keeps_shared_original_receipts_without_recompilin
     monkeypatch,
 ):
     source = "payload = unknown(other(object))\n"
-    original = NativePythonCompilation(source, "warm_call.py")
+    original = NativePythonCompilation(source=source, file_path="warm_call.py")
     before = value_store(original, ast.parse(source).body[0])
     restored = pickle.loads(pickle.dumps(original))
     monkeypatch.setattr(

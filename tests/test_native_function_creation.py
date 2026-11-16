@@ -44,7 +44,7 @@ def _case(monkeypatch, source, *, damage=None):
 
     monkeypatch.setattr(NativePythonCompilation, "compile", compile_once)
     monkeypatch.setattr(NativeCreationBackend, "inventory", inventory_once)
-    compilation = NativePythonCompilation(source, "/repo/function_creation.py")
+    compilation = NativePythonCompilation(source=source, file_path="/repo/function_creation.py")
     node = next(
         node
         for node in ast.walk(ast.parse(source))

@@ -26,7 +26,7 @@ from nominal_refactor_advisor.lexical_scopes import LexicalNameResolution
 def test_parameter_removal_inventory_does_not_require_default_realignment(signature):
     function = ast.parse(f"def sample({signature}) -> Returned: return value\n").body[0]
     assert isinstance(function, ast.FunctionDef)
-    binding = FunctionParameterBinding(function, "value")
+    binding = FunctionParameterBinding(node=function, binding_name="value")
     projected = binding.without_binding()
 
     # These are deliberately partial binding projections, not rewritten callable

@@ -37,7 +37,7 @@ def test_keyword_values_and_metadata_remain_original_without_execution(
     expression, in_class
 ):
     source = ("class Holder:\n    " if in_class else "") + f"result = {expression}\n"
-    compilation = NativePythonCompilation(source, "keywords.py")
+    compilation = NativePythonCompilation(source=source, file_path="keywords.py")
     node = ast.parse(source).body[0]
     assignment = node.body[0] if in_class else node
     receipt = value_store(compilation, assignment)
@@ -78,7 +78,7 @@ def test_keyword_state_does_not_leak_between_calls(expressions):
     source = "".join(
         f"item_{index} = {value}\n" for index, value in enumerate(expressions)
     )
-    compilation = NativePythonCompilation(source, "successive_keywords.py")
+    compilation = NativePythonCompilation(source=source, file_path="successive_keywords.py")
     for node in ast.parse(source).body:
         value = value_store(compilation, node).value
         assert isinstance(value, NativeCallValue)
@@ -92,7 +92,7 @@ def test_keyword_state_does_not_leak_between_calls(expressions):
 def test_malformed_keyword_metadata_is_not_admitted(names):
     source = "result = unknown(key=object)\n"
     value = value_store(
-        NativePythonCompilation(source, "invalid_keywords.py"),
+        NativePythonCompilation(source=source, file_path="invalid_keywords.py"),
         ast.parse(source).body[0],
     ).value
     with pytest.raises(ValueError, match="Native keyword"):
@@ -101,7 +101,7 @@ def test_malformed_keyword_metadata_is_not_admitted(names):
 
 def test_keyword_capture_does_not_prove_unknown_callee_execution():
     env = execution("result = unknown(key=object)\n")
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[-1])
     assert isinstance(store.production.value, NativeKeywordCallValue)
     with pytest.raises(ValueError):
         store.require_installation(env.required_prefix(env.entry.context, None))
@@ -112,7 +112,7 @@ def test_keyword_capture_does_not_prove_unknown_callee_execution():
 )
 def test_proved_keyword_call_joins_original_source_result(expression):
     env = execution(f"result = {expression}\n")
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[-1])
     prefix = env.required_prefix(env.entry.context, None)
     receipt = store.require_installation(prefix)
     assert store.require_join(receipt.value) is store.source_value
@@ -127,7 +127,7 @@ def test_proved_keyword_call_joins_original_source_result(expression):
 )
 def test_class_builder_retains_keyword_header_without_proving_construction(header):
     source = f"class Family({header}): pass\n"
-    compilation = NativePythonCompilation(source, "keyword_class.py")
+    compilation = NativePythonCompilation(source=source, file_path="keyword_class.py")
     node = ast.parse(source).body[0]
     span = SourceByteSpan.require_node(node)
     receipt = compilation.value_store_for(span, span, node.name)
@@ -145,7 +145,7 @@ def test_class_builder_retains_keyword_header_without_proving_construction(heade
 def test_keyword_metadata_cannot_consume_implicit_argument_or_follow_invocation():
     source = "result = unknown(key=object)\n"
     value = value_store(
-        NativePythonCompilation(source, "keyword_order.py"), ast.parse(source).body[0]
+        NativePythonCompilation(source=source, file_path="keyword_order.py"), ast.parse(source).body[0]
     ).value
     with pytest.raises(ValueError, match="explicit arguments"):
         replace(value, argument_slot=value.arguments[0])

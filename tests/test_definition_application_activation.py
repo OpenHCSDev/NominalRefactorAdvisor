@@ -274,7 +274,7 @@ def test_annotated_function_activation_uses_compiler_predecessor_receipt():
         "def Target(value: annotation()): pass\n"
     )
     raw, application = SourceCreatedFunctionCapture(
-        environment, environment.module.module.body[-1]
+        execution=environment, node=environment.module.module.body[-1]
     ).creation_results
     native = raw.native_execution
     receipt = native.require_applications()[0]

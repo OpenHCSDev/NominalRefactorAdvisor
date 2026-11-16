@@ -550,8 +550,8 @@ class RegistrationShape:
     constructors: ClassVar[ConstructorVariantCatalog] = ConstructorVariantCatalog(
         (
             ConstructorVariantSpec(
-                "from_registration_call",
-                (
+                method_name="from_registration_call",
+                parameters=(
                     "parsed_module",
                     "node",
                     "registry_name",
@@ -583,8 +583,8 @@ class RegistrationShape:
                 ),
             ),
             ConstructorVariantSpec(
-                "from_decorator",
-                (
+                method_name="from_decorator",
+                parameters=(
                     "parsed_module",
                     "node",
                     "decorator",
@@ -616,8 +616,8 @@ class RegistrationShape:
                 ),
             ),
             ConstructorVariantSpec(
-                "from_factory_decorator",
-                (
+                method_name="from_factory_decorator",
+                parameters=(
                     "parsed_module",
                     "node",
                     "registry_name",

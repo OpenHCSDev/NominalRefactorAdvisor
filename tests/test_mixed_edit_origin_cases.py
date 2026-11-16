@@ -127,7 +127,7 @@ def test_disjoint_exact_and_line_edits_have_a_complete_fine_projection():
     geometry = SourceTextGeometry(SOURCE)
     complete = (SourceTextSpanReplacement(0, 0, replacement_source=prefix), replacement)
     assert geometry.source_with_replacements_in_span(0, len(SOURCE), complete) == output
-    read = SourceTextSpan(SOURCE.index("type"), SOURCE.index("type") + 4)
+    read = SourceTextSpan(start_offset=SOURCE.index("type"), end_offset=SOURCE.index("type") + 4)
     (retained,) = geometry.project_unchanged_spans((read,), complete)
     assert output[retained.start_offset : retained.end_offset] == "type"
 
@@ -146,7 +146,7 @@ def test_equal_opaque_replacement_does_not_supply_fine_read_origin():
     assert output == rewritten
     assert len(batch.edits) == 2
     assert len(batch.physical_edits) == 1
-    read = SourceTextSpan(SOURCE.index("type"), SOURCE.index("type") + 4)
+    read = SourceTextSpan(start_offset=SOURCE.index("type"), end_offset=SOURCE.index("type") + 4)
     geometry = SourceTextGeometry(SOURCE)
     assert geometry.project_unchanged_spans((read,), (replacement,))
     opaque = SourceTextSpanReplacement(0, len(SOURCE), replacement_source=rewritten)
@@ -184,12 +184,12 @@ def test_equal_exact_outputs_can_have_different_retained_interiors(reverse):
     assert result.parse_validation.parse_valid
     assert result.rewritten_sources[PATH] == source
     assert len(batch.edits) == 2 and len(batch.physical_edits) == 1
-    shared = SourceTextSpan(source.index("sorted"), source.index("sorted") + 6)
+    shared = SourceTextSpan(start_offset=source.index("sorted"), end_offset=source.index("sorted") + 6)
     assert geometry.project_unchanged_spans((shared,), first.replacements) == (shared,)
     assert geometry.project_unchanged_spans((shared,), second.replacements) == (shared,)
     for writer, other in ((first, second), (second, first)):
         replacement = writer.replacements[0]
-        read = SourceTextSpan(replacement.start_offset, replacement.end_offset)
+        read = SourceTextSpan(start_offset=replacement.start_offset, end_offset=replacement.end_offset)
         assert geometry.project_unchanged_spans((read,), other.replacements) == (read,)
         with pytest.raises(ValueError, match="unchanged-text correspondence"):
             geometry.project_unchanged_spans((read,), writer.replacements)

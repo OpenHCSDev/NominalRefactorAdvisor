@@ -27,7 +27,7 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 
 def _case(monkeypatch, source, **extra):
-    compilation = NativePythonCompilation(source, "native_class_prologue_case.py")
+    compilation = NativePythonCompilation(source=source, file_path="native_class_prologue_case.py")
     code = compilation.compile()
     native_compile = NativePythonCompilation.compile
     monkeypatch.setattr(
@@ -251,7 +251,7 @@ def test_one_creation_receipt_does_not_identify_repeated_runtime_cells():
         "    return Target\n"
         "first = make()\nsecond = make()\n"
     )
-    compilation = NativePythonCompilation(source, "repeated_cells.py")
+    compilation = NativePythonCompilation(source=source, file_path="repeated_cells.py")
     class_node = next(
         n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ClassDef)
     )
@@ -332,7 +332,7 @@ def test_annotation_helper_creation_is_not_annotation_body_execution(
 )
 def test_unobserved_annotation_creation_provenance_remains_open(monkeypatch, damage):
     compilation = NativePythonCompilation(
-        "class Target:\n    field: int\n", "helper_provenance.py"
+        source="class Target:\n    field: int\n", file_path="helper_provenance.py"
     )
     code = compilation.compile()
     backend = NativeCreationBackend.current()

@@ -1593,8 +1593,8 @@ def test_a_guarded_import_moved_into_another_file_grows_that_file(repo: Checkout
 def test_a_moved_file_reports_only_the_findings_its_move_added():
     """The base's findings of a moved file are matched at its head path, as its counts are."""
     moved = ChangedPaths(touched=frozenset({"old.py", "new.py"}), moved=(("old.py", "new.py"),))
-    kept, added = CheckerSite("new.py", 1, "kept"), CheckerSite("new.py", 2, "added")
-    results = [(BaseSide, (CheckerSite("old.py", 1, "kept"),)), (HeadSide, (kept, added))]
+    kept, added = CheckerSite(path="new.py", line=1, message="kept"), CheckerSite(path="new.py", line=2, message="added")
+    results = [(BaseSide, (CheckerSite(path="old.py", line=1, message="kept"),)), (HeadSide, (kept, added))]
     grown = TypeErrors.at("new.py")
     assert TypeErrors.grown_sites(results, {grown: 1}, moved) == {grown: [added]}
 

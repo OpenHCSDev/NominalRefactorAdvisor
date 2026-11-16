@@ -136,9 +136,9 @@ def test_enum_keyed_facade_builder_recovers_nominal_owner(tmp_path: Path) -> Non
         "pkg.mod.HandlerCatalog.handler_types_by_mode"
     )
     assert component.authority_evidence == SourceLocation(
-        module_path.as_posix(),
-        14,
-        "pkg.mod.Mode",
+        file_path=module_path.as_posix(),
+        line=14,
+        symbol="pkg.mod.Mode",
     )
     assert len(component.consumers) == 1
 

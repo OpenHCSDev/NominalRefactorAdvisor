@@ -498,7 +498,7 @@ def test_slot_interval_preserves_loop_ambiguity_and_dominating_refresh(repeat):
     frame = InitialNativeFrame(locals=namespace, globals=namespace, builtins=namespace)
     prefix = SingleFlowPrefix(context=context, frame=frame, position=read.use.position)
     query = CapturedSlotQuery(
-        namespace, "saved", prefix, frozenset(), ContextualMutation(source=prefix, mutation=installed)
+        namespace=namespace, key="saved", prefix=prefix, pending=frozenset(), installed=ContextualMutation(source=prefix, mutation=installed)
     )
     assert (
         item_write
@@ -527,7 +527,7 @@ def test_slot_interval_does_not_order_unproved_evaluation_siblings():
             target=mutation.target,
             kind=mutation.kind,
             position=CompactFlowPosition(
-                (), 0, index + 1, (CompactEvaluationBranch(parent_event_index=0, member_index=index),)
+                branch_path=(), statement_index=0, event_index=index + 1, evaluation_path=(CompactEvaluationBranch(parent_event_index=0, member_index=index),)
             ),
             line=mutation.line,
         )

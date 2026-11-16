@@ -18,7 +18,7 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def compilation(source="def chosen():\n    raise AssertionError('deferred body')\n"):
-    owner = NativePythonCompilation(source, "<authored-fresh-function-namespace>")
+    owner = NativePythonCompilation(source=source, file_path="<authored-fresh-function-namespace>")
     node = next(
         node
         for node in ast.walk(ast.parse(source))
@@ -107,7 +107,7 @@ def test_equal_source_compilations_are_distinct_receipt_owners():
 
 @pytest.mark.native_proof
 def test_canonical_receipt_with_foreign_interpreter_identity_is_rejected():
-    owner = NativePythonCompilation("def chosen(): pass\n", "<foreign-interpreter>")
+    owner = NativePythonCompilation(source="def chosen(): pass\n", file_path="<foreign-interpreter>")
     owner.__dict__["identity"] = replace(owner.identity, interpreter=("foreign", "0.0"))
     node = ast.parse(owner.source).body[0]
     receipt = owner.execution_for(SourceByteSpan.require_node(node))

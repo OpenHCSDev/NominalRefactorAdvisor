@@ -38,7 +38,7 @@ def test_original_function_and_decorator_operands_share_final_store(
         if in_class
         else body
     )
-    compilation = NativePythonCompilation(source, "function_operands.py")
+    compilation = NativePythonCompilation(source=source, file_path="function_operands.py")
     node = next(
         node
         for node in ast.walk(ast.parse(source))
@@ -114,7 +114,7 @@ def test_original_function_and_decorator_operands_share_final_store(
 
 
 def original_creation():
-    compilation = NativePythonCompilation("def chosen(): pass\n", "current_creation.py")
+    compilation = NativePythonCompilation(source="def chosen(): pass\n", file_path="current_creation.py")
     backend = NativeCreationBackend.current()
     inventory = backend.inventory(compilation.compile(), compilation.identity)
     (emission,) = inventory.emissions

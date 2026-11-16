@@ -79,7 +79,7 @@ def test_constant_receipt_cache_pickles_without_executable_code(monkeypatch):
     source = 'class Owner:\n    """Summary.\n        Details.\n    """\n'
     node = ast.parse(source).body[0]
     doc_span = SourceByteSpan.require_node(node.body[0])
-    compilation = NativePythonCompilation(source, "receipt.py")
+    compilation = NativePythonCompilation(source=source, file_path="receipt.py")
     calls = []
     compile_original = NativePythonCompilation.compile
 
@@ -105,7 +105,7 @@ def test_constant_receipt_cache_pickles_without_executable_code(monkeypatch):
 @pytest.mark.native_proof
 @pytest.mark.parametrize("duplicate", ("same_receipt", "distinct_receipt"))
 def test_lookup_index_rejects_duplicate_rows_without_reusing_old_projection(duplicate):
-    compilation = NativePythonCompilation('"documentation"\n', "duplicate.py")
+    compilation = NativePythonCompilation(source='"documentation"\n', file_path="duplicate.py")
     index = compilation.execution_outcome
     (original,) = index.constant_stores
     span, name = original.source_span, original.binding.name
@@ -121,7 +121,7 @@ def test_lookup_index_rejects_duplicate_rows_without_reusing_old_projection(dupl
 
 @pytest.mark.native_proof
 def test_lookup_index_keeps_binding_name_and_range_validity_in_the_join():
-    compilation = NativePythonCompilation('"documentation"\n', "lookup.py")
+    compilation = NativePythonCompilation(source='"documentation"\n', file_path="lookup.py")
     index = compilation.execution_outcome
     (original,) = index.constant_stores
     other = replace(original, binding=replace(original.binding, name="other"))
@@ -154,10 +154,10 @@ def test_copied_read_marker_context_and_foreign_execution_cannot_borrow_receipt(
         replace(read, context=replace(read.context)),
     ):
         with pytest.raises(ValueError):
-            SourceCompilerStoredCapture(env, changed).require_native_text()
+            SourceCompilerStoredCapture(execution=env, read=changed).require_native_text()
     foreign = execution('"documentation"\n')
     with pytest.raises(ValueError):
-        SourceCompilerStoredCapture(foreign, read).require_native_text()
+        SourceCompilerStoredCapture(execution=foreign, read=read).require_native_text()
     with pytest.raises(ValueError):
         env.kernel._compiler_stored_value_resolution(
             replace(read.use.value), (read, frozenset())
@@ -169,7 +169,7 @@ def test_plain_literal_leaf_cannot_reinterpret_compiler_marked_value():
     env = execution('"""Summary.\n        Details.\n    """\n')
     captured = env.capture_value(env.module.module.body[0].value)
     with pytest.raises(ValueError):
-        SourceLiteralCapture(env, captured.read).require_native_text()
+        SourceLiteralCapture(execution=env, read=captured.read).require_native_text()
 
 
 def test_generic_kernel_has_no_compiler_value_authority():
@@ -182,7 +182,7 @@ def test_generic_kernel_has_no_compiler_value_authority():
 
 @pytest.mark.parametrize("disturbance", ("jump", "extra_value", "unsupported"))
 def test_entry_window_does_not_skip_an_intervening_operation(disturbance):
-    compilation = NativePythonCompilation('"documentation"\n', "window.py")
+    compilation = NativePythonCompilation(source='"documentation"\n', file_path="window.py")
     code = compilation.compile()
     instructions = tuple(dis.get_instructions(code))
     load = next(
@@ -237,7 +237,7 @@ def test_entry_stores_and_function_returns_share_one_walk_per_emitted_scope(
         yield from original(self, code)
 
     monkeypatch.setattr(type(backend), "instructions", count)
-    compilation = NativePythonCompilation(source, "leafs.py")
+    compilation = NativePythonCompilation(source=source, file_path="leafs.py")
     nodes = ast.parse(source).body
     documentation = compilation.constant_store_for(
         SourceByteSpan.require_node(nodes[0]), "__doc__"

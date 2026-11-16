@@ -332,7 +332,7 @@ def test_fact_token_index_reuses_facts_in_deterministic_reference_order() -> Non
         kind=semantic_descent_module.SemanticFactKind.DATACLASS_FIELD,
         name="item",
         aliases=("shared_item",),
-        location=SourceLocation("pkg/beta.py", 2, "Beta.item"),
+        location=SourceLocation(file_path="pkg/beta.py", line=2, symbol="Beta.item"),
     )
     earlier_fact = semantic_descent_module.SemanticFact(
         fact_id="alpha:item",
@@ -340,7 +340,7 @@ def test_fact_token_index_reuses_facts_in_deterministic_reference_order() -> Non
         kind=semantic_descent_module.SemanticFactKind.DATACLASS_FIELD,
         name="item",
         aliases=("shared_item",),
-        location=SourceLocation("pkg/alpha.py", 2, "Alpha.item"),
+        location=SourceLocation(file_path="pkg/alpha.py", line=2, symbol="Alpha.item"),
     )
 
     refs = semantic_descent_module.SemanticFactTokenIndex(
@@ -1116,8 +1116,8 @@ def test_finding_authority_evidence_must_belong_to_its_evidence() -> None:
             why="detached evidence cannot prove the finding's authority",
             capability_gap="one self-contained authority witness",
             relation_context="authority provenance must travel with the finding",
-            evidence=(SourceLocation("pkg/mod.py", 7, "local_cases"),),
-            authority_evidence=SourceLocation("pkg/model.py", 3, "AxisRole"),
+            evidence=(SourceLocation(file_path="pkg/mod.py", line=7, symbol="local_cases"),),
+            authority_evidence=SourceLocation(file_path="pkg/model.py", line=3, symbol="AxisRole"),
         )
 
 
@@ -1125,14 +1125,14 @@ def test_finding_backed_graph_uses_declared_projection_witness_not_evidence_orde
     None
 ):
     authority_evidence = SourceLocation(
-        "pkg/generated.py",
-        3,
-        "GeneratedPolicy",
+        file_path="pkg/generated.py",
+        line=3,
+        symbol="GeneratedPolicy",
     )
     projection_evidence = SourceLocation(
-        "pkg/runtime.py",
-        7,
-        "LOCAL_POLICY",
+        file_path="pkg/runtime.py",
+        line=7,
+        symbol="LOCAL_POLICY",
     )
     finding = RefactorFinding(
         detector_id="generated_boundary_semantic_constant_mirror",
@@ -1183,7 +1183,7 @@ def test_finding_certificate_authority_requires_exact_graph_membership() -> None
 
 
 def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
-    projection_evidence = SourceLocation("pkg/mod.py", 7, "local_cases")
+    projection_evidence = SourceLocation(file_path="pkg/mod.py", line=7, symbol="local_cases")
     finding = RefactorFinding(
         detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1224,7 +1224,7 @@ def test_finding_backed_graph_projects_non_mirror_metrics_authority() -> None:
 
 
 def test_constructor_mapping_metrics_own_the_constructor_authority() -> None:
-    projection_evidence = SourceLocation("pkg/mod.py", 7, "Builder.first:Result")
+    projection_evidence = SourceLocation(file_path="pkg/mod.py", line=7, symbol="Builder.first:Result")
     finding = RefactorFinding(
         detector_id="repeated_builder_calls",
         pattern_id=PatternId.AUTHORITATIVE_SCHEMA,
@@ -1256,7 +1256,7 @@ def test_constructor_mapping_metrics_own_the_constructor_authority() -> None:
 def test_finding_backed_graph_falls_back_to_evidence_owner_for_generic_metric_authority() -> (
     None
 ):
-    projection_evidence = SourceLocation("pkg/mod.py", 7, "local_cases")
+    projection_evidence = SourceLocation(file_path="pkg/mod.py", line=7, symbol="local_cases")
     finding = RefactorFinding(
         detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1285,9 +1285,9 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
     None
 ):
     first_projection = SourceLocation(
-        "pkg/cli.py",
-        10,
-        "CodemodSynthesizePlanCliCommand:role_cases:applied,diff",
+        file_path="pkg/cli.py",
+        line=10,
+        symbol="CodemodSynthesizePlanCliCommand:role_cases:applied,diff",
     )
     first = RefactorFinding(
         detector_id="cross_module_projection_test",
@@ -1307,9 +1307,9 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
         ),
     )
     second_projection = SourceLocation(
-        "pkg/cli.py",
-        20,
-        "CodemodSynthesizeClassPlanCliCommand:role_cases:applied,diff",
+        file_path="pkg/cli.py",
+        line=20,
+        symbol="CodemodSynthesizeClassPlanCliCommand:role_cases:applied,diff",
     )
     second = RefactorFinding(
         detector_id="cross_module_projection_test",
@@ -1338,7 +1338,7 @@ def test_finding_backed_graph_uses_common_evidence_owner_before_detector_mapping
 
 
 def test_gate_uses_finding_backed_graph_for_non_mirror_authority() -> None:
-    projection_evidence = SourceLocation("pkg/mod.py", 7, "local_cases")
+    projection_evidence = SourceLocation(file_path="pkg/mod.py", line=7, symbol="local_cases")
     finding = RefactorFinding(
         detector_id="authority_projection_test",
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1600,12 +1600,12 @@ def test_codemod_source_context_hydrates_selected_finding_files_only(
         why="projection mirrors an authority",
         capability_gap="derive the projection",
         relation_context="missing derivation path",
-        evidence=(SourceLocation(alpha_path.as_posix(), 3, "Alpha"),),
+        evidence=(SourceLocation(file_path=alpha_path.as_posix(), line=3, symbol="Alpha"),),
     )
     beta_finding = replace(
         alpha_finding,
         title="Beta mirror",
-        evidence=(SourceLocation(beta_path.as_posix(), 1, "Beta"),),
+        evidence=(SourceLocation(file_path=beta_path.as_posix(), line=1, symbol="Beta"),),
     )
 
     context = CodemodSourceContext.from_modules(
@@ -3870,19 +3870,19 @@ def test_semantic_mirror_constructor_projection_uses_dataclass_method(
         capability_gap="derive the projection from the authority instead",
         relation_context="projection lacks a semantic-descent certificate",
         evidence=(
-            SourceLocation(str(module_path), 26, "build_replacement:return"),
-            SourceLocation(str(module_path), 4, "SourceLineReplacement"),
-            SourceLocation(str(module_path), 12, "SourceLineSpan"),
+            SourceLocation(file_path=str(module_path), line=26, symbol="build_replacement:return"),
+            SourceLocation(file_path=str(module_path), line=4, symbol="SourceLineReplacement"),
+            SourceLocation(file_path=str(module_path), line=12, symbol="SourceLineSpan"),
         ),
         projection_evidence=SourceLocation(
-            str(module_path),
-            26,
-            "build_replacement:return",
+            file_path=str(module_path),
+            line=26,
+            symbol="build_replacement:return",
         ),
         authority_evidence=SourceLocation(
-            str(module_path),
-            12,
-            "SourceLineSpan",
+            file_path=str(module_path),
+            line=12,
+            symbol="SourceLineSpan",
         ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -3989,18 +3989,18 @@ def test_constructor_projection_rejection_reports_only_constructor_builder(
         capability_gap="derive the projection from the authority instead",
         relation_context="projection lacks a semantic-descent certificate",
         evidence=(
-            SourceLocation(str(module_path), 14, "build_replacement:return"),
-            SourceLocation(str(module_path), 9, "SourceLineSpan"),
+            SourceLocation(file_path=str(module_path), line=14, symbol="build_replacement:return"),
+            SourceLocation(file_path=str(module_path), line=9, symbol="SourceLineSpan"),
         ),
         projection_evidence=SourceLocation(
-            str(module_path),
-            14,
-            "build_replacement:return",
+            file_path=str(module_path),
+            line=14,
+            symbol="build_replacement:return",
         ),
         authority_evidence=SourceLocation(
-            str(module_path),
-            9,
-            "SourceLineSpan",
+            file_path=str(module_path),
+            line=9,
+            symbol="SourceLineSpan",
         ),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -4075,11 +4075,11 @@ def test_constructor_projection_requires_same_nominal_constructor(
         capability_gap="derive the projection from the authority instead",
         relation_context="projection lacks a semantic-descent certificate",
         evidence=(
-            SourceLocation(str(report_path), 5, "build:return"),
-            SourceLocation(str(model_path), 5, "Span"),
+            SourceLocation(file_path=str(report_path), line=5, symbol="build:return"),
+            SourceLocation(file_path=str(model_path), line=5, symbol="Span"),
         ),
-        projection_evidence=SourceLocation(str(report_path), 5, "build:return"),
-        authority_evidence=SourceLocation(str(model_path), 5, "Span"),
+        projection_evidence=SourceLocation(file_path=str(report_path), line=5, symbol="build:return"),
+        authority_evidence=SourceLocation(file_path=str(model_path), line=5, symbol="Span"),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             field_names=("start_line", "end_line"),

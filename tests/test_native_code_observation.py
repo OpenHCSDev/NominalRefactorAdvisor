@@ -24,7 +24,7 @@ CLASS_BODIES = (
 
 
 def native_inventory(source):
-    compilation = NativePythonCompilation(source, "observation_fixture.py")
+    compilation = NativePythonCompilation(source=source, file_path="observation_fixture.py")
     code = compilation.compile()
     backend = NativeCreationBackend.current()
     inventory = backend.inventory(code, compilation.identity)

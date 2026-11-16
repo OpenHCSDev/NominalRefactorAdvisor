@@ -105,7 +105,7 @@ def test_compiler_overwrite_changes_final_native_storage_like_the_actual_runtime
 @pytest.mark.native_proof
 def test_final_method_tail_preserves_prepared_registry_values_without_constructing_class():
     _, entry, method = prepared_function(explicit_scope=False)
-    tail = PreparedNamespaceTail(entry, method)
+    tail = PreparedNamespaceTail(entry=entry, completion=method)
     assert tail.completed is None
     assert tail.member("registry_key").require_native_scalar() is None
     assert tail.member("example").proves_same_object(method)
@@ -141,7 +141,7 @@ def test_captured_tail_value_rechecks_its_actual_source_context():
 @pytest.mark.native_proof
 def test_tail_cell_fields_use_original_creation_and_the_same_prepared_namespace():
     _, entry, method = prepared_function(explicit_scope=False)
-    tail = PreparedNamespaceTail(entry, method)
+    tail = PreparedNamespaceTail(entry=entry, completion=method)
     cells = [
         value for value in tail.receipt.values if isinstance(value, NativeLocalValue)
     ]
@@ -165,7 +165,7 @@ def test_compiler_overwrite_does_not_erase_old_function_lifetime_obligation():
         explicit_scope=False,
         source=SOURCE.replace("def example(", "def __static_attributes__("),
     )
-    tail = PreparedNamespaceTail(entry, method)
+    tail = PreparedNamespaceTail(entry=entry, completion=method)
     if not any(binding.name == method.node.name for binding in tail.bindings):
         pytest.skip("This compiler does not overwrite the authored method slot")
     assert entry.completion_member(method.node.name).proves_same_object(method)
@@ -176,7 +176,7 @@ def test_compiler_overwrite_does_not_erase_old_function_lifetime_obligation():
 @pytest.mark.native_proof
 def test_complete_prepared_namespace_matches_native_return_before_metaclass_runs():
     env, entry, method = prepared_function(explicit_scope=False)
-    tail = PreparedNamespaceTail(entry, method)
+    tail = PreparedNamespaceTail(entry=entry, completion=method)
     observed = native_control(
         "import json, sys\n"
         "from metaclass_registry import AutoRegisterMeta as Creator\n"

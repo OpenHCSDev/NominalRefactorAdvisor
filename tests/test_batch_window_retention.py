@@ -109,10 +109,10 @@ def test_equal_output_intersects_actual_exact_and_opaque_evidence(opaque, revers
     assert rendered(batch) == SOURCE
     (window,) = batch.windows
     for name in ("object", "type"):
-        span = SourceTextSpan(SOURCE.index(name), SOURCE.index(name) + len(name))
+        span = SourceTextSpan(start_offset=SOURCE.index(name), end_offset=SOURCE.index(name) + len(name))
         with pytest.raises(ValueError):
             window.project_retained_interiors((span,))
-    tail = SourceTextSpan(SOURCE.index("sorted"), SOURCE.index("sorted") + 6)
+    tail = SourceTextSpan(start_offset=SOURCE.index("sorted"), end_offset=SOURCE.index("sorted") + 6)
     if opaque:
         with pytest.raises(ValueError, match="Opaque"):
             window.project_retained_interiors((tail,))
@@ -202,7 +202,7 @@ def test_member_path_retains_exact_authority_after_nominal_coalescence(inline):
     output = rendered(batch)
     assert "added = 1" in output and "other = 2" in output
     if inline:
-        span = SourceTextSpan(source.index("object"), source.index("object") + 6)
+        span = SourceTextSpan(start_offset=source.index("object"), end_offset=source.index("object") + 6)
         with pytest.raises(ValueError, match="unchanged-text correspondence"):
             batch.windows[0].project_retained_interiors((span,))
 
@@ -227,7 +227,7 @@ def test_batch_caches_exact_resolution_for_render_and_repeated_interior_queries(
     exact_window = windows[0].windows[0]
     assert exact_window.resolution.mutations == (first, second)
     assert windows[1].windows[0].resolution is exact_window.resolution
-    span = SourceTextSpan(source.index("sorted"), source.index("sorted") + 6)
+    span = SourceTextSpan(start_offset=source.index("sorted"), end_offset=source.index("sorted") + 6)
     expected = windows[0].project_retained_interiors((span,))
     for _ in range(3):
         assert batch.windows is windows

@@ -197,7 +197,7 @@ def test_recorded_call_still_requires_unique_original_graph_and_owner(corruption
         operation = selected
     environment = SourceModuleExecution.from_source(source)
     with pytest.raises(ValueError):
-        NativeDictCopyCall(environment, operation)
+        NativeDictCopyCall(environment=environment, operation=operation)
 
 
 def test_prefix_is_admitted_once_and_reused_by_the_bound_authority():
@@ -225,8 +225,8 @@ def test_shared_source_operations_do_not_share_execution_prefixes():
     left = execution("class Payload: pass\nheld = Payload()\n")
     right = SourceModuleExecution.from_source(left.source)
     operation = last_call(left)
-    first = SourceObjectConstruction(left, operation)
-    second = SourceObjectConstruction(right, operation)
+    first = SourceObjectConstruction(environment=left, operation=operation)
+    second = SourceObjectConstruction(environment=right, operation=operation)
     first.require_closed()
     second.require_closed()
     assert first.operation is second.operation
@@ -242,5 +242,5 @@ def test_actual_call_with_unclosed_prior_execution_does_not_gain_admission():
     operation = last_call(environment)
     assert isinstance(operation.node, ast.Call)
     with pytest.raises(ValueError):
-        NativeDictCopyCall(environment, operation)
+        NativeDictCopyCall(environment=environment, operation=operation)
     assert not environment._pending

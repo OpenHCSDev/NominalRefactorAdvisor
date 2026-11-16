@@ -112,7 +112,7 @@ def test_discard_cannot_supply_another_class_body_tail():
     first = body_entry("builtins.property")
     second = body_entry("builtins.property")
     with pytest.raises(ValueError, match="different source frame"):
-        _ = PreparedNamespaceTail(first, second.native_tail.completion).receipt
+        _ = PreparedNamespaceTail(entry=first, completion=second.native_tail.completion).receipt
 
 
 @pytest.mark.parametrize(
@@ -170,5 +170,5 @@ def test_a_historical_binding_does_not_hide_a_later_discard():
     )
     assert old.return_continuation(entry.completion_prefix)
     with pytest.raises(ValueError, match="Later original source operations"):
-        _ = PreparedNamespaceTail(entry, old).receipt
+        _ = PreparedNamespaceTail(entry=entry, completion=old).receipt
     assert isinstance(entry.native_tail.completion, SourceDiscardReturn)

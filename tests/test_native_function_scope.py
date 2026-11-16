@@ -30,7 +30,7 @@ def function(compilation, name):
 @pytest.mark.parametrize("expression", ("None", "value", "(value,)"))
 def test_function_body_return_uses_original_declaration(expression):
     compilation = NativePythonCompilation(
-        f"def chosen(value):\n    return {expression}\n", "function_scope.py"
+        source=f"def chosen(value):\n    return {expression}\n", file_path="function_scope.py"
     )
     execution = function(compilation, "chosen")
     receipt = compilation.return_from(execution)
@@ -43,7 +43,7 @@ def test_function_body_return_uses_original_declaration(expression):
 
 def test_local_store_and_return_share_the_original_scope_and_production():
     compilation = NativePythonCompilation(
-        "def chosen(value):\n    result = value\n    return result\n", "local_scope.py"
+        source="def chosen(value):\n    result = value\n    return result\n", file_path="local_scope.py"
     )
     execution = function(compilation, "chosen")
     assignment = ast.parse(compilation.source).body[0].body[0]
@@ -63,9 +63,9 @@ def test_local_store_and_return_share_the_original_scope_and_production():
 
 def test_nested_function_creation_and_return_share_native_installation():
     compilation = NativePythonCompilation(
-        "def outer(value):\n    def inner():\n        return None\n"
+        source="def outer(value):\n    def inner():\n        return None\n"
         "    return inner\n",
-        "nested_scope.py",
+        file_path="nested_scope.py",
     )
     outer, inner = (function(compilation, name) for name in ("outer", "inner"))
     installation = inner.require_installation()
@@ -79,8 +79,8 @@ def test_nested_function_creation_and_return_share_native_installation():
 
 def test_cell_bound_function_installation_retains_actual_native_storage():
     compilation = NativePythonCompilation(
-        "def outer():\n    def inner():\n        return inner\n    return inner\n",
-        "cell_scope.py",
+        source="def outer():\n    def inner():\n        return inner\n    return inner\n",
+        file_path="cell_scope.py",
     )
     inner = function(compilation, "inner")
     installation = inner.require_installation()
@@ -103,8 +103,8 @@ def test_fast_local_write_cannot_borrow_a_namespace_write_interpreter():
         _local_ensure_resolution = _local_store_resolution
 
     compilation = NativePythonCompilation(
-        "def outer():\n    def inner():\n        return None\n    return inner\n",
-        "fast_store_scope.py",
+        source="def outer():\n    def inner():\n        return None\n    return inner\n",
+        file_path="fast_store_scope.py",
     )
     binding = function(compilation, "inner").require_installation()
     with pytest.raises(ValueError, match="admitted function frame"):
@@ -113,8 +113,8 @@ def test_fast_local_write_cannot_borrow_a_namespace_write_interpreter():
 
 def test_function_scope_snapshot_keeps_products_without_recompiling(monkeypatch):
     compilation = NativePythonCompilation(
-        "def chosen(value):\n    result = value\n    return result\n",
-        "warm_function.py",
+        source="def chosen(value):\n    result = value\n    return result\n",
+        file_path="warm_function.py",
     )
     original = function(compilation, "chosen")
     old_receipt = compilation.return_from(original)

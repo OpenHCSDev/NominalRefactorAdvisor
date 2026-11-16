@@ -786,8 +786,8 @@ class PatchTargetOperation(SourceReprovedOperation, SourceTextPatch):
         _, target_digest = self.target_digest(snapshot)
         return (
             SourceTargetEditor(
-                snapshot.sources_by_file_path,
-                target_digest,
+                sources=snapshot.sources_by_file_path,
+                target=target_digest,
                 first_line=self.decorators.region_start(
                     lambda: self.target_node_from_context(snapshot)[2]
                 ),

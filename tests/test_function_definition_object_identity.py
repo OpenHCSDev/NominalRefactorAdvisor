@@ -227,9 +227,9 @@ def test_function_decorator_refusal_reaches_actual_creation(decorator, alias):
     # The preceding source definitions are admitted. This is the actual
     # callback's creation/decorator chain, not a failure at a fixture import.
     environment.require_class_creation(module.module.body[0])
-    SourceCreatedFunctionCapture(environment, module.module.body[1]).require_closed()
+    SourceCreatedFunctionCapture(execution=environment, node=module.module.body[1]).require_closed()
     with pytest.raises(ValueError, match="Function decorator result remains unproved"):
-        SourceCreatedFunctionCapture(environment, module.module.body[2]).result()
+        SourceCreatedFunctionCapture(execution=environment, node=module.module.body[2]).result()
     target = _final_write_target(repository)
     assert isinstance(target, UnboundedCompactFunctionTarget)
     assert target.candidate_symbols_within(

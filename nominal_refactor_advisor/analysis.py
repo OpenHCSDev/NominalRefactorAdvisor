@@ -3154,7 +3154,7 @@ class HeldExactFindings(LoadedAnalysisCache):
     @property
     def cached_result(self) -> CachedAnalysisResult:
         return PersistedAnalysisResult(
-            list(self.findings), Hit, cache_identity=self.cache_identity
+            findings=list(self.findings), cache_status=Hit, cache_identity=self.cache_identity
         )
 
     def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
@@ -3171,7 +3171,7 @@ class HeldNothingForRequest(LoadedAnalysisCache):
     @property
     def cached_result(self) -> CachedAnalysisResult:
         return PersistedAnalysisResult(
-            [], self.cache_status, cache_identity=self.cache_identity
+            findings=[], cache_status=self.cache_status, cache_identity=self.cache_identity
         )
 
     def fast_answer(self, authority: FastCachedPathAnalysisAuthority) -> FastCacheAnswer:
@@ -3331,8 +3331,8 @@ class AnalysisCacheResolutionAuthority(
                     findings,
                 )
                 return PersistedAnalysisResult(
-                    findings,
-                    Hit,
+                    findings=findings,
+                    cache_status=Hit,
                     cache_identity=cache_identity,
                 )
             incremental_result = IncrementalAnalysisCacheResolver(
@@ -3352,15 +3352,15 @@ class AnalysisCacheResolutionAuthority(
                 findings,
             )
             return PersistedAnalysisResult(
-                findings,
-                incremental_result.cache_status,
+                findings=findings,
+                cache_status=incremental_result.cache_status,
                 cache_identity=cache_identity,
             )
         with analysis_cache.rebuild_lease(cache_identity) as rebuild_lease:
             if rebuild_lease.cached_lookup is not None:
                 return PersistedAnalysisResult(
-                    list(rebuild_lease.cached_lookup.findings),
-                    Hit,
+                    findings=list(rebuild_lease.cached_lookup.findings),
+                    cache_status=Hit,
                     cache_identity=cache_identity,
                 )
             semantic_cache_lookup = analysis_cache.load(semantic_cache_identity)
@@ -3369,8 +3369,8 @@ class AnalysisCacheResolutionAuthority(
                 if semantic_cache_identity != cache_identity:
                     analysis_cache.store(cache_identity, findings)
                 return PersistedAnalysisResult(
-                    findings,
-                    Hit,
+                    findings=findings,
+                    cache_status=Hit,
                     cache_identity=cache_identity,
                 )
             incremental_result = IncrementalAnalysisCacheResolver(
@@ -3389,8 +3389,8 @@ class AnalysisCacheResolutionAuthority(
                 findings,
             )
             return PersistedAnalysisResult(
-                findings,
-                incremental_result.cache_status,
+                findings=findings,
+                cache_status=incremental_result.cache_status,
                 cache_identity=cache_identity,
             )
 
@@ -3912,8 +3912,8 @@ def analyze_modules_with_cache(
             focused_cache_identity
         )
         cache_result: CachedAnalysisResult = PersistedAnalysisResult(
-            list(focused_cache_lookup.findings),
-            focused_cache_lookup.status,
+            findings=list(focused_cache_lookup.findings),
+            cache_status=focused_cache_lookup.status,
             cache_identity=focused_cache_identity,
         )
     else:
@@ -3997,10 +3997,10 @@ def load_analysis_summary_for_roots(
     if analysis_cache_dir is None:
         return None
     identity_authority = AnalysisCacheIdentityAuthority(
-        roots,
-        config,
-        source_policy,
-        AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
+        roots=roots,
+        config=config,
+        source_policy=source_policy,
+        source_signature_cache=AnalysisFindingCache(analysis_cache_dir).source_signature_cache(),
         report_roots=report_roots,
     )
     cache_identity = identity_authority.cache_identity()

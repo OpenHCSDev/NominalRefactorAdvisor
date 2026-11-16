@@ -18,10 +18,10 @@ from nominal_refactor_advisor.product_flow import (
 
 def _position(event, *members, statement=0, controls=()):
     return CompactFlowPosition(
-        controls,
-        statement,
-        event,
-        tuple(CompactEvaluationBranch(parent_event_index=slot, member_index=member) for slot, member in members),
+        branch_path=controls,
+        statement_index=statement,
+        event_index=event,
+        evaluation_path=tuple(CompactEvaluationBranch(parent_event_index=slot, member_index=member) for slot, member in members),
     )
 
 

@@ -73,7 +73,7 @@ def _native_case(
 
     monkeypatch.setattr(NativePythonCompilation, "compile", observed_compile)
     monkeypatch.setattr(NativeCreationBackend, "select", observed_select)
-    compilation = NativePythonCompilation(source, "native_creation_case.py")
+    compilation = NativePythonCompilation(source=source, file_path="native_creation_case.py")
     execution = compilation.execution_for(span)
     assert captured == []  # Static evidence acquisition never executes source.
     (module_code,) = compiled
@@ -316,8 +316,8 @@ def native_region():
     if sys.version_info < (3, 14):
         pytest.skip("Native annotation attachment instructions require Python 3.14+")
     compilation = NativePythonCompilation(
-        "def sample(value: int) -> int:\n    return value\n",
-        "native_region.py",
+        source="def sample(value: int) -> int:\n    return value\n",
+        file_path="native_region.py",
     )
     code = compilation.compile()
     namespace = {}
@@ -459,7 +459,7 @@ def test_later_region_reset_does_not_erase_completed_attachment_witness(
 
 def test_projected_owner_retains_no_code_or_transient_emission_in_dict_values() -> None:
     source = "def sample(value: int) -> int:\n    return value\n"
-    compilation = NativePythonCompilation(source, "compact_projection.py")
+    compilation = NativePythonCompilation(source=source, file_path="compact_projection.py")
     compilation.execution_for(SourceByteSpan.require_node(ast.parse(source).body[0]))
     pending = [compilation]
     visited = set()

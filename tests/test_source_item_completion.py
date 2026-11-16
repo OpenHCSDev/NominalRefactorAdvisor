@@ -207,7 +207,7 @@ def test_item_completion_cannot_supply_another_class_body_tail():
     second = item_completion("payload = {}\npayload['x'] = None")
     entry = second.execution.class_entry(second.execution.module.module.body[0])
     with pytest.raises(ValueError, match="different source frame"):
-        _ = PreparedNamespaceTail(entry, first).receipt
+        _ = PreparedNamespaceTail(entry=entry, completion=first).receipt
 
 
 @pytest.mark.native_proof

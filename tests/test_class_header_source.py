@@ -23,7 +23,7 @@ def test_header_boundary_ends_at_the_suite_colon(header: str, suite: str) -> Non
     span = ClassHeaderSourceSpan.from_source(node, source)
     assert span.source == header
     assert span.is_reconstructible
-    authority = ClassHeaderSpanSourceAuthority(node, source)
+    authority = ClassHeaderSpanSourceAuthority(node=node, source=source)
     assert authority.can_rewrite
 
 
@@ -32,7 +32,7 @@ def test_header_comments_remain_a_shared_rewrite_obstacle() -> None:
     node = ast.parse(source).body[0]
     span = ClassHeaderSourceSpan.from_source(node, source)
     assert not span.is_reconstructible
-    assert not ClassHeaderSpanSourceAuthority(node, source).can_rewrite
+    assert not ClassHeaderSpanSourceAuthority(node=node, source=source).can_rewrite
 
 
 def test_comment_free_header_assessment_does_not_tokenise() -> None:

@@ -47,7 +47,7 @@ def factory_environment(arguments):
 
 
 def returned_closure_proof(source):
-    compilation = NativePythonCompilation(source, "native_closure_factory.py")
+    compilation = NativePythonCompilation(source=source, file_path="native_closure_factory.py")
     namespace = {}
     exec(compilation.compile(), namespace)
     function = namespace["factory"]

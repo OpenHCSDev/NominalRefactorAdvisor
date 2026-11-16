@@ -95,14 +95,14 @@ def test_exact_window_projects_relative_offsets_without_other_window_deltas():
     window = resolution.windows[1]
     start = SOURCE.index("type")
     (projected,) = window.project_retained_interiors(
-        (SourceTextSpan(start, start + 4),)
+        (SourceTextSpan(start_offset=start, end_offset=start + 4),)
     )
     rendered = "".join(window.physical_edit.replacement_lines)
     assert rendered[projected.start_offset : projected.end_offset] == "type"
     assert projected.start_offset == rendered.index("type")
     assert window.project_retained_interiors(()) == ()
     with pytest.raises(ValueError, match="belong to their physical window"):
-        window.project_retained_interiors((SourceTextSpan(0, 5),))
+        window.project_retained_interiors((SourceTextSpan(start_offset=0, end_offset=5),))
 
 
 def test_opaque_physical_edit_is_the_window_but_cannot_claim_an_exact_interior():
@@ -113,7 +113,7 @@ def test_opaque_physical_edit_is_the_window_but_cannot_claim_an_exact_interior()
     assert isinstance(physical, SourceEditWindowABC)
     assert physical.physical_edit is physical
     start = SOURCE.index("type")
-    span = SourceTextSpan(start, start + 4)
+    span = SourceTextSpan(start_offset=start, end_offset=start + 4)
     assert window.project_retained_interiors((span,))
     with pytest.raises(ValueError, match="Opaque source window"):
         physical.project_retained_interiors((span,))
@@ -128,7 +128,7 @@ def test_identical_replacement_bytes_have_no_retained_interior():
     )
     window = SourceTextMutation.peer_resolutions((edit,), context())[0].windows[0]
     with pytest.raises(ValueError, match="unchanged-text correspondence"):
-        window.project_retained_interiors((SourceTextSpan(start, start + 4),))
+        window.project_retained_interiors((SourceTextSpan(start_offset=start, end_offset=start + 4),))
 
 
 @pytest.mark.parametrize(
@@ -140,7 +140,7 @@ def test_exact_interiors_use_actual_character_geometry_and_line_endings(source):
     window = SourceTextMutation.peer_resolutions((edit,), context(source))[0].windows[0]
     start = source.index("object")
     (projected,) = window.project_retained_interiors(
-        (SourceTextSpan(start, start + 6),)
+        (SourceTextSpan(start_offset=start, end_offset=start + 6),)
     )
     output = "".join(window.physical_edit.replacement_lines)
     assert output[projected.start_offset : projected.end_offset] == "object"
@@ -159,7 +159,7 @@ def test_insertion_windows_have_no_original_interiors(offset):
     assert isinstance(window.physical_edit, SourceInsertion)
     assert window.project_retained_interiors(()) == ()
     with pytest.raises(ValueError, match="belong to their physical window"):
-        window.project_retained_interiors((SourceTextSpan(0, 5),))
+        window.project_retained_interiors((SourceTextSpan(start_offset=0, end_offset=5),))
 
 
 def test_resolution_rejects_empty_mixed_revision_and_foreign_source_inputs():
@@ -206,7 +206,7 @@ def test_window_can_only_select_an_actual_derived_projection():
         with pytest.raises(ValueError, match="actual resolution projection"):
             ExactSourceWindow(resolution=resolution, projection_index=index)
     with pytest.raises(TypeError):
-        ExactSourceWindow(resolution, 0, replacement_lines=("forged = True\n",))
+        ExactSourceWindow(resolution=resolution, projection_index=0, replacement_lines=("forged = True\n",))
 
 
 def test_existing_geometry_projects_once_per_resolution_even_when_all_views_are_used():
@@ -237,7 +237,7 @@ def test_physical_declarations_own_original_source_intervals(source):
         insertion = SourceInsertion(file_path=PATH, insertion_line=line)
         offset = len("".join(lines[: line - 1]))
         assert geometry.line_anchor_offset(line) == offset
-        assert insertion.original_span(geometry) == SourceTextSpan(offset, offset)
+        assert insertion.original_span(geometry) == SourceTextSpan(start_offset=offset, end_offset=offset)
     for start in range(1, len(lines) + 1):
         for end in range(start, len(lines) + 1):
             replacement = SourceSpanReplacement(
@@ -273,10 +273,10 @@ def test_empty_source_exact_insertion_uses_the_original_empty_interval():
         ),
     )
     window = SourceTextMutation.peer_resolutions((edit,), context(""))[0].windows[0]
-    assert window.physical_edit.original_span(geometry) == SourceTextSpan(0, 0)
+    assert window.physical_edit.original_span(geometry) == SourceTextSpan(start_offset=0, end_offset=0)
     assert window.project_retained_interiors(()) == ()
     with pytest.raises(ValueError, match="belong to their physical window"):
-        window.project_retained_interiors((SourceTextSpan(0, 1),))
+        window.project_retained_interiors((SourceTextSpan(start_offset=0, end_offset=1),))
 
 
 def test_exact_and_context_free_edits_share_the_actual_nominal_grouping_owner():
@@ -320,7 +320,7 @@ def test_empty_module_sentinel_span_is_used_by_the_actual_batch_renderer():
     rendered = compiler.simulate_rewrites(batch.planned_rewrites)
     assert rendered.parse_validation.parse_valid
     assert rendered.rewritten_sources[PATH] == "written = object\n"
-    assert edit.original_span(SourceTextGeometry("")) == SourceTextSpan(0, 0)
+    assert edit.original_span(SourceTextGeometry("")) == SourceTextSpan(start_offset=0, end_offset=0)
 
 
 @pytest.mark.parametrize(
@@ -343,4 +343,4 @@ def test_public_dsl_renders_empty_module_insertions_with_original_empty_interval
     result = document.simulate(context(""))
     assert result.is_clean
     for edit in result.edit_batch.physical_edits:
-        assert edit.original_span(SourceTextGeometry("")) == SourceTextSpan(0, 0)
+        assert edit.original_span(SourceTextGeometry("")) == SourceTextSpan(start_offset=0, end_offset=0)

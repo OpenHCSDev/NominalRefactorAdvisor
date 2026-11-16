@@ -29,7 +29,7 @@ def relation_for(source, edits):
     after_module = after_snapshot.parsed_module_for_source_path(PATH)
     before = before_snapshot.product_flow_repository.source_projection(before_module)
     after = after_snapshot.product_flow_repository.source_projection(after_module)
-    return SourceReadCorrespondence(document, before, after)
+    return SourceReadCorrespondence(document_simulation=document, before=before, after=after)
 
 
 def inserted_relation(

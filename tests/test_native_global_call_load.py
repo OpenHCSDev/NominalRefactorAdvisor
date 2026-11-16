@@ -35,7 +35,7 @@ def test_global_callee_joins_its_original_source_frame_and_result(expression):
     source = f"class Payload: pass\nclass Holder:\n    global {callee}\n    payload = {expression}\n"
     env = execution(source)
     holder = env.class_entry(env.module.module.body[-1])
-    store = SourceAssignmentStore(env, holder.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=holder.context.flow.mutations[-1])
     receipt = store.require_installation(holder.completion_prefix)
     assert isinstance(receipt.value, NativeCallValue)
     assert isinstance(receipt.value.callee, NativeGlobalValue)
@@ -64,7 +64,7 @@ def test_global_callee_joins_its_original_source_frame_and_result(expression):
 
 def test_unflagged_global_read_does_not_manufacture_a_call_marker():
     source = "class Holder:\n    global object\n    payload = object\n"
-    compilation = NativePythonCompilation(source, "plain_global.py")
+    compilation = NativePythonCompilation(source=source, file_path="plain_global.py")
     node = ast.parse(source).body[0].body[-1]
     receipt = value_store(compilation, node)
     assert type(receipt.value) is NativeGlobalValue
@@ -85,7 +85,7 @@ def test_unflagged_global_read_does_not_manufacture_a_call_marker():
 
 @pytest.mark.parametrize("order", tuple(NativeCallOperandOrder))
 def test_declared_call_layout_composes_and_splits_original_slots(order):
-    compilation = NativePythonCompilation("payload = unknown()\n", "roles.py")
+    compilation = NativePythonCompilation(source="payload = unknown()\n", file_path="roles.py")
     receipt = value_store(compilation, ast.parse(compilation.source).body[0])
     callee, marker = receipt.value.callee, receipt.value.argument_slot
     composed = order.compose(callee, marker)
@@ -98,7 +98,7 @@ def test_declared_call_layout_composes_and_splits_original_slots(order):
 @pytest.mark.parametrize("order", tuple(NativeCallOperandOrder))
 @pytest.mark.parametrize("form", tuple(NativeGlobalLoadForm))
 def test_global_load_form_projects_declared_roles_in_backend_order(order, form):
-    compilation = NativePythonCompilation("payload = unknown()\n", "roles.py")
+    compilation = NativePythonCompilation(source="payload = unknown()\n", file_path="roles.py")
     receipt = value_store(compilation, ast.parse(compilation.source).body[0])
     callee, marker = receipt.value.callee, receipt.value.argument_slot
 
@@ -113,7 +113,7 @@ def test_global_load_form_projects_declared_roles_in_backend_order(order, form):
 
 def test_function_global_load_observation_does_not_claim_source_activation():
     source = "def work():\n    global payload\n    payload = unknown(object)\n"
-    compilation = NativePythonCompilation(source, "global_marker.py")
+    compilation = NativePythonCompilation(source=source, file_path="global_marker.py")
     code = next(
         value
         for value in compilation.compile().co_consts

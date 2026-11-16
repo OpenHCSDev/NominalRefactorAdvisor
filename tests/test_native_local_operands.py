@@ -20,7 +20,7 @@ pytestmark = pytest.mark.native_proof
 
 def function_return(expression="value"):
     source = f"def chosen(value):\n    return {expression}\n"
-    compilation = NativePythonCompilation(source, "local_operands.py")
+    compilation = NativePythonCompilation(source=source, file_path="local_operands.py")
     syntax = ast.parse(source).body[0]
     execution = compilation.execution_for(SourceByteSpan.require_node(syntax))
     receipt = compilation.return_from(execution)

@@ -83,7 +83,7 @@ def conversion(tmp_path, source=SOURCE, *, edits=()):
     assert not simulation.is_clean, "Origin evidence must not admit registration"
     after = simulation.required_after_snapshot
     relation = SourceClassSuiteCorrespondence(
-        simulation, _projection(before, path), _projection(after, path)
+        document_simulation=simulation, before=_projection(before, path), after=_projection(after, path)
     )
     candidates = {
         node.name: node
@@ -111,7 +111,7 @@ def test_actual_conversion_pairs_complete_block_suites(tmp_path, newline, unicod
         assert original is relation.before.definition_operation(original).node
         assert original is not candidate
     reader = SourceReadCorrespondence(
-        relation.document_simulation, relation.before, relation.after
+        document_simulation=relation.document_simulation, before=relation.before, after=relation.after
     )
     assert reader.before_geometry.source == relation.before_geometry.source
     assert reader.retained_span_index.project(()) == ()
@@ -351,9 +351,9 @@ def test_stale_document_after_revision_is_not_a_correspondence(tmp_path):
     )
     with pytest.raises(ValueError, match="exact rewritten source"):
         SourceClassSuiteCorrespondence(
-            relation.document_simulation,
-            relation.before,
-            _projection(changed, relation.after.module.file_path),
+            document_simulation=relation.document_simulation,
+            before=relation.before,
+            after=_projection(changed, relation.after.module.file_path),
         )
 
 
@@ -387,9 +387,9 @@ def test_class_names_are_not_the_correspondence_and_decorators_are_retained(
     simulation = document_for(source, (edit,), path=path)
     before = simulation.after_snapshot_projection.base_snapshot
     relation = SourceClassSuiteCorrespondence(
-        simulation,
-        _projection(before, path),
-        _projection(simulation.required_after_snapshot, path),
+        document_simulation=simulation,
+        before=_projection(before, path),
+        after=_projection(simulation.required_after_snapshot, path),
     )
     original = next(
         node

@@ -26,7 +26,7 @@ def assignment(source, in_class=False):
         if in_class
         else env.entry.context
     )
-    return env, SourceAssignmentStore(env, context.flow.mutations[-1])
+    return env, SourceAssignmentStore(execution=env, binding=context.flow.mutations[-1])
 
 
 @pytest.mark.native_proof
@@ -127,7 +127,7 @@ def test_operand_with_same_value_at_another_source_site_cannot_supply_join():
 def test_tuple_members_keep_historical_bindings_after_later_reassignment():
     source = "selected = object\npayload = (selected, (selected,))\nselected = str\n"
     env = execution(source)
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[1])
     store.require_installation(env.required_prefix(env.entry.context, None))
     result = store.source_value
     assert result.elements[0].value is object
@@ -158,7 +158,7 @@ def test_foreign_source_context_does_not_borrow_an_original_native_operand():
     foreign, other = assignment("payload = (object, object)\n")
     uses = other.source_value.production.inputs
     join = SourceNativeOperandJoin(
-        store, CompactFlowValue(context=foreign.entry.context, use=uses[0])
+        parent=store, read=CompactFlowValue(context=foreign.entry.context, use=uses[0])
     )
     with pytest.raises(ValueError):
         join.require_join(store.production.value.inputs[0])

@@ -8,7 +8,7 @@ from nominal_refactor_advisor.audit.plan_package import Check, Document, HedgeCh
 
 class PlanPackageChecks(unittest.TestCase):
     def test_hedges_are_review_leads_not_automatic_failures(self):
-        package = PlanPackage(Path("unused"), (
+        package = PlanPackage(root=Path("unused"), documents=(
             Document(name="README.md", text="Not independently verified. Scope is stated here."),
             Document(name="S1-owner.md", text="The owner stores the record.\nA provisional finding.\nDo not claim this proves latency."),
         ))

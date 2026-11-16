@@ -85,7 +85,7 @@ def test_folded_tuple_store_joins_original_source_and_actual_compiled_output(
         if in_class
         else env.entry.context
     )
-    store = SourceAssignmentStore(env, context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=context.flow.mutations[-1])
     prefix = env.required_prefix(context, None)
     receipt = store.require_installation(prefix)
     assert type(receipt.value) is NativeConstantValue
@@ -110,7 +110,7 @@ def test_folded_tuple_store_joins_original_source_and_actual_compiled_output(
 def test_equal_folded_contents_do_not_prove_cross_evaluation_object_identity():
     env = execution("first = ('run',)\nsecond = ('run',)\n")
     stores = [
-        SourceAssignmentStore(env, binding)
+        SourceAssignmentStore(execution=env, binding=binding)
         for binding in env.entry.context.flow.mutations
     ]
     for store in stores:
@@ -142,7 +142,7 @@ def test_shared_constant_subgraphs_are_compared_once_per_original_pair():
 def test_warm_native_constants_keep_original_receipts_without_recompilation(
     monkeypatch,
 ):
-    original = NativePythonCompilation("payload = ('run', (1, None))\n", "constant.py")
+    original = NativePythonCompilation(source="payload = ('run', (1, None))\n", file_path="constant.py")
     stores = original.execution_outcome.value_stores
     restored = pickle.loads(pickle.dumps(original))
 

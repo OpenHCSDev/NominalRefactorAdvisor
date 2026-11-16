@@ -26,7 +26,7 @@ def test_source_identity_joins_native_windows_paths_to_source_evidence() -> None
         module=ast.parse(source, filename=native_path),
         source=source,
     )
-    location = SourceLocation(native_path, 1, "Alpha")
+    location = SourceLocation(file_path=native_path, line=1, symbol="Alpha")
     finding = RefactorFinding(
         detector_id="source-identity-probe",
         pattern_id=PatternId.NOMINAL_BOUNDARY,

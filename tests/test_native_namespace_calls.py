@@ -170,19 +170,19 @@ def test_bound_protocol_rejects_a_copied_source_operation():
     node = environment.module.module.body[-1].value
     context, call = environment.source_call(node)
     operation = environment.source_operation(context, call)
-    protocol = NativeVarsCall(environment, operation)
+    protocol = NativeVarsCall(environment=environment, operation=operation)
     assert protocol.node is node
     assert protocol.call is call
     assert protocol.context is context
     with pytest.raises(ValueError, match="original canonical"):
-        NativeVarsCall(environment, replace(operation))
+        NativeVarsCall(environment=environment, operation=replace(operation))
 
 
 def test_direct_wrong_leaf_cannot_claim_another_calls_native_protocol():
     environment = execution("import builtins\nresult = dict(builtins)\n")
     context, call = environment.source_call(environment.module.module.body[-1].value)
     with pytest.raises(ValueError, match="not the required native declaration"):
-        NativeVarsCall(environment, environment.source_operation(context, call))
+        NativeVarsCall(environment=environment, operation=environment.source_operation(context, call))
 
 
 def test_direct_constructor_does_not_skip_keyword_evaluation_effects():
@@ -191,7 +191,7 @@ def test_direct_constructor_does_not_skip_keyword_evaluation_effects():
     )
     context, call = environment.source_call(environment.module.module.body[-1].value)
     with pytest.raises(ValueError, match="capture remains open"):
-        NativeDictCopyCall(environment, environment.source_operation(context, call))
+        NativeDictCopyCall(environment=environment, operation=environment.source_operation(context, call))
 
 
 @pytest.mark.parametrize(

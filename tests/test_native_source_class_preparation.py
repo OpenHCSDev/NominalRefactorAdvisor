@@ -53,7 +53,7 @@ def prepared_execution(source=SOURCE, *, metaclass=AutoRegisterMeta, conditions=
         declared_operation_conditions=(
             tuple(
                 DeclaredNativeOperationBehavior(
-                    original.source.definition_operation(node), AutoRegisterClassEntry
+                    operation=original.source.definition_operation(node), protocol=AutoRegisterClassEntry
                 )
                 for node in nodes
             )
@@ -118,7 +118,7 @@ def test_selection_is_not_driven_by_supplied_conditions(condition_kind):
         "absent": (),
         "completion_only": (DeclaredOperationCompletion(operation),),
         "wrong_protocol": (
-            DeclaredNativeOperationBehavior(operation, ClassVariableSubscription),
+            DeclaredNativeOperationBehavior(operation=operation, protocol=ClassVariableSubscription),
         ),
     }
     environment = SourceModuleExecution(

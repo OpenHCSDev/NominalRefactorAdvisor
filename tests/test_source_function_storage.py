@@ -43,7 +43,7 @@ def prepared_function(*, explicit_scope=True, source=SOURCE, conditions=True):
         )
     entry = environment.class_entry(root)
     node = next(node for node in root.body if isinstance(node, ast.FunctionDef))
-    return environment, entry, SourceCreatedFunctionCapture(environment, node)
+    return environment, entry, SourceCreatedFunctionCapture(execution=environment, node=node)
 
 
 @pytest.mark.native_proof

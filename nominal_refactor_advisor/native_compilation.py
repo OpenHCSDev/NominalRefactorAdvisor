@@ -2870,11 +2870,11 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         for span, (builder, body, prologue) in captures.items():
             origin = body.frame_origin
             results[span] = ExactNativeClassCapture(
-                compilation,
-                span,
-                cast(ExactNativeFunctionExecution, body.receipt),
-                NativeCaptureSite(frame=origin, instruction_offset=builder.instruction.offset),
-                prologue,
+                compilation=compilation,
+                source_span=span,
+                body=cast(ExactNativeFunctionExecution, body.receipt),
+                builder=NativeCaptureSite(frame=origin, instruction_offset=builder.instruction.offset),
+                prologue=prologue,
             )
         return results
 
@@ -3197,11 +3197,11 @@ class NativeDefinitionApplicationObservation:
             )
         frame = argument.frame
         return NativeDefinitionApplication(
-            frame,
-            self.call.offset,
-            span,
-            tuple(NativeCaptureSite(frame=frame, instruction_offset=step.offset) for step in self.prelude),
-            argument,
+            frame=frame,
+            instruction_offset=self.call.offset,
+            source_span=span,
+            prelude=tuple(NativeCaptureSite(frame=frame, instruction_offset=step.offset) for step in self.prelude),
+            argument=argument,
         )
 
 
@@ -3904,12 +3904,12 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             for emission in selected_emissions
         }
         return _NativeExecutionIndex(
-            compilation,
-            IdentityHandleMultiplicityProjection(unambiguous_declarations_by_handle=exact, ambiguous_handles=frozenset(ambiguous)),
-            incomplete,
-            class_captures,
-            self.class_capture_fallback,
-            inventory.scopes,
+            compilation=compilation,
+            declarations=IdentityHandleMultiplicityProjection(unambiguous_declarations_by_handle=exact, ambiguous_handles=frozenset(ambiguous)),
+            has_incomplete_ranges=incomplete,
+            class_captures=class_captures,
+            class_capture_fallback=self.class_capture_fallback,
+            scopes=inventory.scopes,
         )
 
 

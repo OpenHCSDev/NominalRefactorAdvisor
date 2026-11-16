@@ -127,9 +127,9 @@ def test_distinct_allocations_do_not_gain_shared_runtime_identity():
         first.require_native_identity(NativeDeclaration(object))
     other = execution(environment.module.source)
     with pytest.raises(ValueError):
-        NativeObjectConstruction(other, first.operation)
+        NativeObjectConstruction(environment=other, operation=first.operation)
     with pytest.raises(ValueError):
-        NativeObjectConstruction(environment, replace(first.operation))
+        NativeObjectConstruction(environment=environment, operation=replace(first.operation))
 
 
 @pytest.mark.native_proof

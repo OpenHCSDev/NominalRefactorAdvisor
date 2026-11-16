@@ -41,7 +41,7 @@ def require_original_receipts(source, node):
         assert source.value_reads_by_node[operand].use is receipt
         assert source.source_operation(context, receipt).node is operand
         assert (
-            source.value_operation(flow.CompactFlowValue(context, receipt)).node
+            source.value_operation(flow.CompactFlowValue(context=context, use=receipt)).node
             is operand
         )
         assert receipt.position.dominates(invocation.position)

@@ -21,7 +21,7 @@ def defined(request):
     else:
         environment = execution("def first(): pass\ndef second(): pass\n")
         node = environment.module.module.body[0]
-        captured = SourceCreatedFunctionCapture(environment, node)
+        captured = SourceCreatedFunctionCapture(execution=environment, node=node)
     return environment, captured
 
 

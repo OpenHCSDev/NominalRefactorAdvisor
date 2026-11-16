@@ -475,10 +475,10 @@ class BlockOwnerQuestion:
             return ranked(found)
         copier, source, locations = copy
         refusal = Receipt(
-            OwnerReceiptKind.COPIED_FROM,
-            f"`{copier.qualname}` is built from the block copied field by field off "
+            kind=OwnerReceiptKind.COPIED_FROM,
+            detail=f"`{copier.qualname}` is built from the block copied field by field off "
             f"one value: an owner both compose keeps both copies",
-            locations[:4],
+            evidence=locations[:4],
             count=len(locations),
         )
         return ranked(
@@ -521,9 +521,9 @@ class BlockOwnerQuestion:
         hold the source instead of the copied block."""
 
         receipt = Receipt(
-            OwnerReceiptKind.COPIES_ONE_VALUE,
-            f"`{copier.qualname}` copies the block off one value field by field",
-            locations[:4],
+            kind=OwnerReceiptKind.COPIES_ONE_VALUE,
+            detail=f"`{copier.qualname}` copies the block off one value field by field",
+            evidence=locations[:4],
             count=len(locations),
         )
         cost = OwnerCost(
@@ -611,10 +611,10 @@ class BlockOwnerQuestion:
                 )
                 receipts.append(
                     Receipt(
-                        OwnerReceiptKind.OTHER_DESCENDANT,
-                        f"{len(others)} other descendant(s) would gain the block: "
+                        kind=OwnerReceiptKind.OTHER_DESCENDANT,
+                        detail=f"{len(others)} other descendant(s) would gain the block: "
                         + ", ".join(f"`{other}`" for other in others[:4]),
-                        tuple(
+                        evidence=tuple(
                             _location(indexed_class)
                             for other in others[:4]
                             if (indexed_class := self.class_for(other)) is not None
@@ -956,12 +956,12 @@ class BlockOwnerQuestion:
         if reordered and keyword_only_route:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.KEYWORD_ONLY_COMPOSITION,
-                    f"composing `{owner.qualname}` reorders the dataclass fields of "
+                    kind=OwnerReceiptKind.KEYWORD_ONLY_COMPOSITION,
+                    detail=f"composing `{owner.qualname}` reorders the dataclass fields of "
                     + ", ".join(f"`{name}`" for name in reordered_names)
                     + ", so the owner and they become keyword-only; their repr "
                     "and field order change",
-                    (_location(owner),),
+                    evidence=(_location(owner),),
                     count=len(reordered),
                 )
             )
@@ -975,10 +975,10 @@ class BlockOwnerQuestion:
             if positional:
                 receipts.append(
                     KeywordCuredReceipt(
-                        OwnerReceiptKind.POSITIONAL_CONSTRUCTION,
-                        f"{len(positional)} construction(s) of a reordered composer or "
+                        kind=OwnerReceiptKind.POSITIONAL_CONSTRUCTION,
+                        detail=f"{len(positional)} construction(s) of a reordered composer or "
                         "a descendant bind fields by position",
-                        positional[:4],
+                        evidence=positional[:4],
                         count=len(positional),
                         constructed=tuple(constructed),
                     )
@@ -986,22 +986,22 @@ class BlockOwnerQuestion:
         elif reordered:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.FIELD_ORDER_CHANGED,
-                    f"composing `{owner.qualname}` reorders the dataclass fields of "
+                    kind=OwnerReceiptKind.FIELD_ORDER_CHANGED,
+                    detail=f"composing `{owner.qualname}` reorders the dataclass fields of "
                     + ", ".join(f"`{name}`" for name in reordered_names)
                     + ": the block is not their leading fields in the owner's order",
-                    (_location(owner),),
+                    evidence=(_location(owner),),
                     count=len(reordered),
                 )
             )
         if unknown:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.FIELD_ORDER_CHANGED,
-                    "the field order of "
+                    kind=OwnerReceiptKind.FIELD_ORDER_CHANGED,
+                    detail="the field order of "
                     + ", ".join(f"`{name}`" for name in unknown)
                     + " is unknown, so composing leaves it unproved",
-                    (_location(owner),),
+                    evidence=(_location(owner),),
                     count=len(unknown),
                 )
             )
@@ -1033,11 +1033,11 @@ class BlockOwnerQuestion:
         if required and built:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.CONSTRUCTION_CHANGED,
-                    f"adding required field(s) {', '.join(f'`{name}`' for name in required)} "
+                    kind=OwnerReceiptKind.CONSTRUCTION_CHANGED,
+                    detail=f"adding required field(s) {', '.join(f'`{name}`' for name in required)} "
                     f"to `{owner.qualname}` breaks {len(built)} construction(s) of it "
                     "or its descendants",
-                    built[:4],
+                    evidence=built[:4],
                     count=len(built),
                 )
             )
@@ -1050,10 +1050,10 @@ class BlockOwnerQuestion:
         if positional:
             receipts.append(
                 KeywordCuredReceipt(
-                    OwnerReceiptKind.CONSTRUCTION_CHANGED,
-                    f"{len(positional)} construction(s) of `{owner.qualname}` or its "
+                    kind=OwnerReceiptKind.CONSTRUCTION_CHANGED,
+                    detail=f"{len(positional)} construction(s) of `{owner.qualname}` or its "
                     "descendants bind fields by position; added fields would shift them",
-                    positional[:4],
+                    evidence=positional[:4],
                     count=len(positional),
                     constructed=tuple(constructed),
                 )
@@ -1074,12 +1074,12 @@ class BlockOwnerQuestion:
             return ()
         return (
             Receipt(
-                OwnerReceiptKind.OTHER_DESCENDANT,
-                f"adding {', '.join(f'`{name}`' for name in missing)} to "
+                kind=OwnerReceiptKind.OTHER_DESCENDANT,
+                detail=f"adding {', '.join(f'`{name}`' for name in missing)} to "
                 f"`{owner.qualname}` gives its {len(composers)} other descendant(s) "
                 "those declarations: "
                 + ", ".join(f"`{symbol}`" for symbol in composers[:4]),
-                tuple(
+                evidence=tuple(
                     _location(indexed_class)
                     for symbol in composers[:4]
                     if (indexed_class := self.class_for(symbol)) is not None
@@ -1096,11 +1096,11 @@ class BlockOwnerQuestion:
             return ()
         return (
             Receipt(
-                OwnerReceiptKind.BRINGS_DECLARATIONS,
-                f"composing `{owner.qualname}` gives both classes {len(brought)} "
+                kind=OwnerReceiptKind.BRINGS_DECLARATIONS,
+                detail=f"composing `{owner.qualname}` gives both classes {len(brought)} "
                 "declaration(s) neither makes: "
                 + ", ".join(f"`{name}`" for name in brought[:6]),
-                (_location(owner),),
+                evidence=(_location(owner),),
                 count=len(brought),
             ),
             Receipt(
@@ -1122,10 +1122,10 @@ class BlockOwnerQuestion:
             return ()
         return (
             Receipt(
-                OwnerReceiptKind.ALSO_RESTATED_BY,
-                f"{len(restaters)} other class(es) restate the whole block and would "
+                kind=OwnerReceiptKind.ALSO_RESTATED_BY,
+                detail=f"{len(restaters)} other class(es) restate the whole block and would "
                 "compose it too: " + ", ".join(f"`{symbol}`" for symbol in restaters[:4]),
-                tuple(
+                evidence=tuple(
                     _location(indexed_class)
                     for symbol in restaters[:4]
                     if (indexed_class := self.class_for(symbol)) is not None
@@ -1141,11 +1141,11 @@ class BlockOwnerQuestion:
             return ()
         return (
             Receipt(
-                OwnerReceiptKind.HOLDS_DECLARATION,
-                f"`{owner.qualname}` already declares {len(held)} of the "
+                kind=OwnerReceiptKind.HOLDS_DECLARATION,
+                detail=f"`{owner.qualname}` already declares {len(held)} of the "
                 f"{len(self.block)} block declarations identically: "
                 + ", ".join(f"`{name}`" for name in held),
-                (_location(owner),),
+                evidence=(_location(owner),),
                 count=len(held),
             ),
         )
@@ -1159,11 +1159,11 @@ class BlockOwnerQuestion:
             return ()
         return (
             Receipt(
-                OwnerReceiptKind.SERVES_CONSUMER,
-                f"{len(served)} consumer(s) already use `{owner.qualname}` and one "
+                kind=OwnerReceiptKind.SERVES_CONSUMER,
+                detail=f"{len(served)} consumer(s) already use `{owner.qualname}` and one "
                 "of the classes: "
                 + ", ".join(f"`{consumer}`" for _path, consumer in served[:4]),
-                tuple(self.use_locations(owner)[key] for key in served[:4]),
+                evidence=tuple(self.use_locations(owner)[key] for key in served[:4]),
                 count=min(len(served), self.SERVED_CONSUMER_CAP),
             ),
         )
@@ -1176,11 +1176,11 @@ class BlockOwnerQuestion:
             return ()
         return (
             Receipt(
-                OwnerReceiptKind.CONFLICTING_DECLARATION,
-                f"`{owner.qualname}` already declares "
+                kind=OwnerReceiptKind.CONFLICTING_DECLARATION,
+                detail=f"`{owner.qualname}` already declares "
                 + ", ".join(f"`{name}`" for name in conflicting)
                 + " with a different answer",
-                (_location(owner),),
+                evidence=(_location(owner),),
                 count=len(conflicting),
             ),
         )
@@ -1212,21 +1212,21 @@ class BlockOwnerQuestion:
         if needed:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.IMPORT_ADDED,
-                    f"{', '.join(f'`{importer}`' for importer in needed)} would import "
+                    kind=OwnerReceiptKind.IMPORT_ADDED,
+                    detail=f"{', '.join(f'`{importer}`' for importer in needed)} would import "
                     f"`{module_name}`",
-                    (),
+                    evidence=(),
                     count=len(needed),
                 )
             )
         if cycles:
             receipts.append(
                 Receipt(
-                    OwnerReceiptKind.CYCLE_CREATED,
-                    f"`{module_name}` already imports, directly or not, "
+                    kind=OwnerReceiptKind.CYCLE_CREATED,
+                    detail=f"`{module_name}` already imports, directly or not, "
                     + ", ".join(f"`{importer}`" for importer in cycles)
                     + ": the new import closes a cycle",
-                    (),
+                    evidence=(),
                     count=len(cycles),
                 )
             )

@@ -432,9 +432,9 @@ def test_declared_carrier_detector_synthesizes_the_atomic_operation() -> None:
     assert finding.pattern_id is PatternId.AUTHORITATIVE_CONTEXT
     assert finding.certification == "certified"
     assert finding.authority_evidence == SourceLocation(
-        "pkg/detected.py",
-        4,
-        "pkg.detected._Context",
+        file_path="pkg/detected.py",
+        line=4,
+        symbol="pkg.detected._Context",
     )
     assert finding.metrics == ParameterThreadMetrics(
         function_count=2,

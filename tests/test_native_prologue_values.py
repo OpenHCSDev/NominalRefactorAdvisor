@@ -19,7 +19,7 @@ pytestmark = pytest.mark.native_proof
 
 
 def capture(source):
-    compilation = NativePythonCompilation(source, "prologue_values.py")
+    compilation = NativePythonCompilation(source=source, file_path="prologue_values.py")
     node = next(
         node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.ClassDef)
     )

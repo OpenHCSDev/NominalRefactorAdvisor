@@ -87,7 +87,7 @@ def test_semantic_inspection_summarizes_ast_and_source_index_targets(
     finding = _finding_spec().build(
         "semantic_test_detector",
         "Payload.build should move behind a nominal interface",
-        (SourceLocation(module_path.as_posix(), 11, "Payload.build"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=11, symbol="Payload.build"),),
     )
 
     report = inspect_modules(modules, findings=(finding,))

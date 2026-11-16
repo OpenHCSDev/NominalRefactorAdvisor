@@ -71,7 +71,7 @@ class SplitNamespaceEntry(
 class SplitNamespaceExecution(SourceExecutionABC):
     @cached_property
     def initial_contents(self):
-        return CapturedEntryContents(self.kernel, self.entry)
+        return CapturedEntryContents(kernel=self.kernel, namespace=self.entry)
 
 
 @pytest.fixture(params=(False, True))

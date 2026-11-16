@@ -191,7 +191,7 @@ def test_refined_overlap_keeps_half_open_and_continuation_boundaries():
     during = SingleFlowPrefix(context=context, frame=environment.entry.frame, position=whole.exit)
     assert during.may_overlap_positions(entry, whole.exit)
     completed = SingleFlowPrefix(
-        context, environment.entry.frame, None, after=whole.exit
+        context=context, frame=environment.entry.frame, position=None, after=whole.exit
     )
     assert not completed.may_overlap_positions(entry, whole.exit)
 

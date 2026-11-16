@@ -35,7 +35,7 @@ def test_non_scalar_store_records_actual_pair_without_claiming_source_execution(
     in_class, value
 ):
     source = ("class Family:\n    " if in_class else "") + "payload = " + value + "\n"
-    compilation = NativePythonCompilation(source, "value.py")
+    compilation = NativePythonCompilation(source=source, file_path="value.py")
     receipt = value_store(compilation, assignment(source))
     assert type(receipt) is NativeValueStore
     code = compilation.compile()
@@ -62,7 +62,7 @@ def test_non_scalar_store_records_actual_pair_without_claiming_source_execution(
 @pytest.mark.parametrize("value", ("None", "True", "17", "'label'"))
 def test_scalar_query_selects_the_same_original_receipt_not_a_second_observation(value):
     source = f"payload = {value}\n"
-    compilation = NativePythonCompilation(source, "shared.py")
+    compilation = NativePythonCompilation(source=source, file_path="shared.py")
     node = assignment(source)
     general = value_store(compilation, node)
     scalar = store_for(compilation, node)
@@ -73,7 +73,7 @@ def test_scalar_query_selects_the_same_original_receipt_not_a_second_observation
 @pytest.mark.native_proof
 def test_mixed_stores_have_one_return_and_one_pair_inventory():
     source = "first = None\nsecond = object\nthird = True\nlast = unknown\n"
-    compilation = NativePythonCompilation(source, "mixed.py")
+    compilation = NativePythonCompilation(source=source, file_path="mixed.py")
     stores = tuple(value_store(compilation, node) for node in ast.parse(source).body)
     receipt = stores[0].require_return()
     assert all(store.require_return() is receipt for store in stores)
@@ -95,7 +95,7 @@ def test_mixed_stores_have_one_return_and_one_pair_inventory():
     ),
 )
 def test_query_does_not_infer_unknown_productions_or_duplicate_storage(source):
-    compilation = NativePythonCompilation(source, "unsupported.py")
+    compilation = NativePythonCompilation(source=source, file_path="unsupported.py")
     with pytest.raises(ValueError, match="unique original receipt"):
         value_store(compilation, assignment(source))
 
@@ -103,8 +103,8 @@ def test_query_does_not_infer_unknown_productions_or_duplicate_storage(source):
 @pytest.mark.native_proof
 def test_same_spans_in_another_compilation_do_not_supply_store_membership():
     source = "payload = object\n"
-    first = value_store(NativePythonCompilation(source, "same.py"), assignment(source))
-    second = value_store(NativePythonCompilation(source, "same.py"), assignment(source))
+    first = value_store(NativePythonCompilation(source=source, file_path="same.py"), assignment(source))
+    second = value_store(NativePythonCompilation(source=source, file_path="same.py"), assignment(source))
     with pytest.raises(ValueError, match="original frame"):
         first.require_return().require_store(second)
 
@@ -112,7 +112,7 @@ def test_same_spans_in_another_compilation_do_not_supply_store_membership():
 @pytest.mark.native_proof
 def test_snapshot_preserves_original_pair_and_shared_return_identity():
     source = "first = None\nsecond = object\n"
-    original = NativePythonCompilation(source, "warm.py")
+    original = NativePythonCompilation(source=source, file_path="warm.py")
     nodes = ast.parse(source).body
     old = value_store(original, nodes[-1])
     warmed = pickle.loads(pickle.dumps(original))
@@ -126,7 +126,7 @@ def test_snapshot_preserves_original_pair_and_shared_return_identity():
 @pytest.mark.native_proof
 def test_ambiguous_production_target_pair_is_rejected_by_both_query_contracts():
     source = "payload = None\n"
-    compilation = NativePythonCompilation(source, "ambiguous.py")
+    compilation = NativePythonCompilation(source=source, file_path="ambiguous.py")
     node = assignment(source)
     original = value_store(compilation, node)
     outcome = compilation.execution_outcome
@@ -142,7 +142,7 @@ def test_ambiguous_production_target_pair_is_rejected_by_both_query_contracts():
 @pytest.mark.native_proof
 def test_unknown_suffix_does_not_keep_earlier_store_continuation():
     source = "payload = object\nunknown + 1\n"
-    compilation = NativePythonCompilation(source, "suffix.py")
+    compilation = NativePythonCompilation(source=source, file_path="suffix.py")
     receipt = value_store(compilation, assignment(source))
     with pytest.raises(ValueError, match="no proved straight-line return"):
         receipt.require_return()

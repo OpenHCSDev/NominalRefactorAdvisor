@@ -51,7 +51,7 @@ def exact(source, old, new):
 
 def span(source, text):
     start = source.index(text)
-    return SourceTextSpan(start, start + len(text))
+    return SourceTextSpan(start_offset=start, end_offset=start + len(text))
 
 
 def test_direct_interval_contract_and_physical_mro_keep_one_geometry_owner():
@@ -96,7 +96,7 @@ def test_neutral_insertions_remain_actual_inputs_without_interrupting_a_read(phy
         item = SourceTextSpanReplacement(5, 5, replacement_source="")
         index = geometry.exact_span_index((item,))
     assert index.ordered_inputs[0] is item
-    original = SourceTextSpan(0, len(source))
+    original = SourceTextSpan(start_offset=0, end_offset=len(source))
     assert index.project((original,)) == (original,)
 
 
@@ -142,7 +142,7 @@ def test_cross_window_contiguity_refuses_even_when_fine_edits_could_prove_it():
     owner, editor = context(source)
     mutation = exact(source, "1", "1000")
     batch = NominalEditBatch(compiler=owner, edits=(mutation,))
-    original = SourceTextSpan(0, source.index("1"))
+    original = SourceTextSpan(start_offset=0, end_offset=source.index("1"))
     assert SourceTextGeometry(source).exact_span_index(mutation.replacements).project(
         (original,)
     ) == (original,)
@@ -196,7 +196,7 @@ def test_equal_empty_character_anchors_keep_physical_order_and_identity():
         2,
     )
     assert all(
-        item.original_span(index.geometry) == SourceTextSpan(0, 0) for item in ordered
+        item.original_span(index.geometry) == SourceTextSpan(start_offset=0, end_offset=0) for item in ordered
     )
     assert index.project(()) == ()
     assert (

@@ -316,7 +316,7 @@ def test_actual_candidate_planner_retains_native_refusal_cause(tmp_path):
     ).build(
         "registry_candidate_gate",
         "Evaluate the real converter's candidate-native obligation.",
-        (SourceLocation(str(path), 3, "Alpha"),),
+        (SourceLocation(file_path=str(path), line=3, symbol="Alpha"),),
     )
     candidate = FindingRecipePlanCandidate(
         FindingRecipeSynthesisRecord(

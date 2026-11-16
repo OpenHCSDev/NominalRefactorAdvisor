@@ -81,14 +81,14 @@ def test_projecting_findings_keeps_the_actual_scan_bounded(tmp_path, monkeypatch
         )
     )
     request = invocation.scan_deadline_request
-    assert request == cli.CliScanDeadlineRequest(1.25, True)
+    assert request == cli.CliScanDeadlineRequest(budget_seconds=1.25, json_enabled=True)
 
 
 def test_scan_default_and_abbreviated_flags_use_the_actual_parser():
     invocation = cli.CliArguments.from_argv(
         ("sample.py", "--scan-budget-sec=1.75", "--json")
     )
-    assert invocation.scan_deadline_request == cli.CliScanDeadlineRequest(1.75, True)
+    assert invocation.scan_deadline_request == cli.CliScanDeadlineRequest(budget_seconds=1.75, json_enabled=True)
 
 
 def test_a_scan_runs_to_completion_unless_the_caller_sets_a_budget():
@@ -143,7 +143,7 @@ def test_architecture_guard_retains_scan_deadline_at_each_plan_level(
         ("--codemod-plan", "-", flag, "--scan-budget-seconds=1.25", "--json")
     )
     assert invocation.codemod_plan_sequence.has_architecture_guards
-    assert invocation.scan_deadline_request == cli.CliScanDeadlineRequest(1.25, True)
+    assert invocation.scan_deadline_request == cli.CliScanDeadlineRequest(budget_seconds=1.25, json_enabled=True)
 
 
 @pytest.mark.parametrize(

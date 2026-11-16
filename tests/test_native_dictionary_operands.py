@@ -22,7 +22,7 @@ from test_source_function_result import execution, function
 )
 def test_nonempty_dictionary_retains_inputs_without_inventing_contents(expression):
     source = f"payload = {expression}\n"
-    compiled = NativePythonCompilation(source, "dictionary_operands.py")
+    compiled = NativePythonCompilation(source=source, file_path="dictionary_operands.py")
     store = value_store(compiled, ast.parse(source).body[0])
     assert store.value.native_type is dict
     assert not isinstance(store.value, NativeEmptyDictionaryValue)

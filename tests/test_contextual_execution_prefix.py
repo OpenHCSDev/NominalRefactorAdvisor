@@ -90,18 +90,18 @@ class PlainChildFixtureEffects(CapturedReferenceEffectsABC):
         parent = SingleFlowPrefix(context=self.parent, frame=self.parent_frame, position=cut)
         if context is self.child:
             return ChildExecutionPrefix(
-                parent,
-                self.definition,
-                SingleFlowPrefix(context=self.child, frame=self.child_frame, position=position),
+                parent=parent,
+                definition=self.definition,
+                child=SingleFlowPrefix(context=self.child, frame=self.child_frame, position=position),
             )
         if context is not self.parent:
             return OpenCapturedReference(CapturedReferenceViolation.UNPROVED_EFFECTS)
         if not self.definition.position.may_precede(position):
             return SingleFlowPrefix(context=context, frame=self.parent_frame, position=position)
         completed = ChildExecutionPrefix(
-            parent,
-            self.definition,
-            SingleFlowPrefix(context=self.child, frame=self.child_frame, position=None),
+            parent=parent,
+            definition=self.definition,
+            child=SingleFlowPrefix(context=self.child, frame=self.child_frame, position=None),
         )
         return SequentialExecutionPrefix(
             (
@@ -339,11 +339,11 @@ def test_shared_actual_mutation_cut_has_one_installation_occurrence():
         == 1
     )
     query = CapturedSlotQuery(
-        frame.globals,
-        "builtins",
-        prefix,
-        frozenset(),
-        ContextualMutation(source=second, mutation=installation),
+        namespace=frame.globals,
+        key="builtins",
+        prefix=prefix,
+        pending=frozenset(),
+        installed=ContextualMutation(source=second, mutation=installation),
     )
     assert all(
         not isinstance(event, OpenCapturedReference)

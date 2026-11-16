@@ -21,7 +21,7 @@ from test_registry_native_registration_controls import native_control
 
 
 def last_store(env, context):
-    return SourceAssignmentStore(env, context.flow.mutations[-1])
+    return SourceAssignmentStore(execution=env, binding=context.flow.mutations[-1])
 
 
 @pytest.mark.native_proof
@@ -97,7 +97,7 @@ def test_local_and_declared_global_loads_follow_native_lookup_at_the_read(global
 @pytest.mark.native_proof
 def test_historical_assignment_reads_preceding_storage_not_completed_namespace():
     entry = body_entry("selected = object\npayload = selected\nselected = int")
-    store = SourceAssignmentStore(entry.execution, entry.context.flow.mutations[1])
+    store = SourceAssignmentStore(execution=entry.execution, binding=entry.context.flow.mutations[1])
     installed = store.require_installation(entry.completion_prefix)
     assert store.source_value.value is object
     assert store.native_value(installed.value).value is object

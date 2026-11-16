@@ -218,5 +218,5 @@ def test_parameter_removal_dependency_projection_keeps_default_expressions(
 ) -> None:
     function = ast.parse(source).body[0]
     expected = function.body[0].value
-    (reference,) = FunctionParameterBinding(function, "value").required_references()
+    (reference,) = FunctionParameterBinding(node=function, binding_name="value").required_references()
     assert reference is expected

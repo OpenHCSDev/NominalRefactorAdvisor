@@ -26,7 +26,7 @@ from test_source_function_storage import prepared_function
 def module_function(source="def chosen():\n    pass\n"):
     environment = execution(source)
     function = SourceCreatedFunctionCapture(
-        environment, environment.module.module.body[0]
+        execution=environment, node=environment.module.module.body[0]
     )
     return environment, function
 
@@ -143,7 +143,7 @@ def test_warmed_receipt_cannot_switch_to_another_original_function_node(query):
 def test_decorated_result_cannot_use_raw_function_installation():
     environment = execution("class Owner:\n    @staticmethod\n    def chosen(): pass\n")
     owner = environment.class_entry(environment.module.module.body[0])
-    function = SourceCreatedFunctionCapture(environment, owner.node.body[0])
+    function = SourceCreatedFunctionCapture(execution=environment, node=owner.node.body[0])
     with pytest.raises(ValueError, match="decorator result remains unproved"):
         function.require_native_installation(owner.completion_prefix)
 
@@ -152,7 +152,7 @@ def test_decorated_result_cannot_use_raw_function_installation():
 def test_conditional_native_installation_does_not_supply_source_execution():
     environment = execution("if True:\n    def chosen(): pass\n")
     node = environment.module.module.body[0].body[0]
-    function = SourceCreatedFunctionCapture(environment, node)
+    function = SourceCreatedFunctionCapture(execution=environment, node=node)
     assert function.native_execution.require_installation().name == "chosen"
     # A real canonical earlier cut exists, but it cannot establish that the
     # conditional function was subsequently installed.
@@ -169,7 +169,7 @@ def test_conditional_native_installation_does_not_supply_source_execution():
 def test_mangled_native_key_requires_actual_source_binding_correspondence():
     environment = execution("class Owner:\n    def __chosen(self): pass\n")
     owner = environment.class_entry(environment.module.module.body[0])
-    function = SourceCreatedFunctionCapture(environment, owner.node.body[0])
+    function = SourceCreatedFunctionCapture(execution=environment, node=owner.node.body[0])
     assert function.native_execution.require_installation().name == "_Owner__chosen"
     assert function.definition.target.bound_name == "__chosen"
     with pytest.raises(ValueError, match="differs from its original source binding"):

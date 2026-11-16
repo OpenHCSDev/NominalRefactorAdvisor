@@ -70,8 +70,8 @@ def test_original_literal_list_installation_matches_authored_execution(
 @pytest.mark.parametrize("snapshot", (False, True))
 def test_list_and_tuple_transfers_share_capture_but_keep_distinct_types(snapshot):
     compilation = NativePythonCompilation(
-        "first = [object, str, object]\nsecond = (object, str, object)\n",
-        "sequence-fixture.py",
+        source="first = [object, str, object]\nsecond = (object, str, object)\n",
+        file_path="sequence-fixture.py",
     )
     if snapshot:
         compilation = pickle.loads(pickle.dumps(compilation))

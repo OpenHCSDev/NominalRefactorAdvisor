@@ -160,12 +160,12 @@ def test_structural_overlap_rejects_a_finding_handle_collision(
         spec.build(
             "alpha-detector",
             "alpha summary 1098421",
-            (SourceLocation("alpha.py", 1, "alpha"),),
+            (SourceLocation(file_path="alpha.py", line=1, symbol="alpha"),),
         ),
         spec.build(
             "beta-detector",
             "beta summary 1923537",
-            (SourceLocation("beta.py", 2, "beta"),),
+            (SourceLocation(file_path="beta.py", line=2, symbol="beta"),),
         ),
     )
     monkeypatch.setattr(

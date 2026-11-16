@@ -29,7 +29,7 @@ def scalar_store(source):
         for o in env.source.operations
         if isinstance(o.event, CompactEvaluatedAssignment)
     )
-    store = SourceAssignmentStore(env, operation.event)
+    store = SourceAssignmentStore(execution=env, binding=operation.event)
     return env, store
 
 
@@ -161,7 +161,7 @@ def test_prepared_registration_root_joins_final_policy_store_without_claiming_re
     final = entry.final_evaluation
     binding = env.source.mutation_operation(final.node.targets[0]).event
     assert isinstance(binding, CompactEvaluatedAssignment)
-    receipt = SourceAssignmentStore(env, binding).require_installation(
+    receipt = SourceAssignmentStore(execution=env, binding=binding).require_installation(
         entry.completion_prefix
     )
     assert receipt.binding.name == "key"

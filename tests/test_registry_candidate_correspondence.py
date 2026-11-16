@@ -96,7 +96,7 @@ def test_candidate_class_selection_does_not_prove_retained_body_or_runtime_ident
     candidate_source = _projection(after, path)
     original_read = _object_read(original_source)
     correspondence = SourceReadCorrespondence(
-        simulation, original_source, candidate_source
+        document_simulation=simulation, before=original_source, after=candidate_source
     )
     if change_body:
         with pytest.raises(
@@ -164,7 +164,7 @@ def test_actual_later_rename_refuses_old_class_selector_even_with_retained_body(
     assert gamma.node is after.ast_target_nodes_by_id[gamma.target.target_id]
     previous_source = _projection(converted, path)
     current_source = _projection(after, path)
-    correspondence = SourceReadCorrespondence(renamed, previous_source, current_source)
+    correspondence = SourceReadCorrespondence(document_simulation=renamed, before=previous_source, after=current_source)
     (retained,) = correspondence.corresponding_reads((_object_read(previous_source),))
     assert retained is _object_read(current_source)
     assert retained in ast.walk(gamma.node)

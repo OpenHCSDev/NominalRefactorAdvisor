@@ -18,7 +18,7 @@ from test_native_value_store import value_store
 @pytest.mark.native_proof
 def test_stores_and_return_share_every_original_operand():
     source = "first = object\nsecond = (first, None)\nthird = (second, 7)\n"
-    compilation = NativePythonCompilation(source, "segments.py")
+    compilation = NativePythonCompilation(source=source, file_path="segments.py")
     stores = tuple(value_store(compilation, node) for node in ast.parse(source).body)
     returned = stores[0].require_return()
     assert all(store.require_return() is returned for store in stores)
@@ -61,7 +61,7 @@ def test_each_ordinary_native_production_is_emitted_once(monkeypatch):
 @pytest.mark.native_proof
 def test_unknown_suffix_keeps_stored_operands_but_not_a_return():
     source = "before = (object, None)\nunknown + 1\nafter = True\n"
-    compilation = NativePythonCompilation(source, "interrupted.py")
+    compilation = NativePythonCompilation(source=source, file_path="interrupted.py")
     first, _, last = ast.parse(source).body
     before = value_store(compilation, first)
     after = value_store(compilation, last)
@@ -74,7 +74,7 @@ def test_unknown_suffix_keeps_stored_operands_but_not_a_return():
 @pytest.mark.native_proof
 def test_pickled_segment_does_not_duplicate_store_operand_authority():
     source = "before = (object, None)\nafter = True\n"
-    compilation = NativePythonCompilation(source, "snapshot-segment.py")
+    compilation = NativePythonCompilation(source=source, file_path="snapshot-segment.py")
     _ = compilation.execution_outcome
     restored = pickle.loads(pickle.dumps(compilation))
     for node in ast.parse(source).body:

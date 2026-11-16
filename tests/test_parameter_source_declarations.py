@@ -154,7 +154,7 @@ def test_compact_signature_consumes_the_shared_source_projection(
 ) -> None:
     arguments = _arguments("def sample(first: int, second: str=None): pass")
     selected = DefaultedParameterSource(
-        arguments.args[1], CompactParameterKind.KEYWORD_ONLY, arguments.defaults[0]
+        argument=arguments.args[1], kind=CompactParameterKind.KEYWORD_ONLY, default=arguments.defaults[0]
     )
     requests = []
 

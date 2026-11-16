@@ -17,7 +17,7 @@ pytestmark = pytest.mark.native_proof
 
 
 def observed(source, name="Target"):
-    compilation = NativePythonCompilation(source, "/repo/definition_chain.py")
+    compilation = NativePythonCompilation(source=source, file_path="/repo/definition_chain.py")
     node = next(
         node
         for node in ast.walk(ast.parse(source))

@@ -27,12 +27,12 @@ def scalar_tail(body, index=-1):
     env = SourceModuleExecution.from_module(module)
     entry = env.class_entry(module.module.body[0])
     stores = [
-        SourceAssignmentStore(env, operation.event)
+        SourceAssignmentStore(execution=env, binding=operation.event)
         for operation in env.source.operations
         if operation.owner is entry.context.flow.owner
         and isinstance(operation.event, CompactEvaluatedAssignment)
     ]
-    return PreparedNamespaceTail(entry, stores[index])
+    return PreparedNamespaceTail(entry=entry, completion=stores[index])
 
 
 @pytest.mark.native_proof
@@ -65,7 +65,7 @@ def test_earlier_source_store_cannot_replay_assignments_over_completed_source_st
 def test_final_method_uses_same_tail_boundary_without_running_its_body():
     env, entry, function = prepared_function(explicit_scope=False)
     assert isinstance(function, SourceInstalledReturnABC)
-    tail = PreparedNamespaceTail(entry, function)
+    tail = PreparedNamespaceTail(entry=entry, completion=function)
     assert tail.receipt is function.return_continuation(entry.completion_prefix)
     assert tail.receipt.frame is function.native_execution.require_creation().frame
     assert tail.completion.completion_evaluation.node is function.node
@@ -107,7 +107,7 @@ def test_foreign_frame_cannot_borrow_an_identically_shaped_tail():
     first = scalar_tail("key = None")
     second = scalar_tail("key = None")
     with pytest.raises(ValueError, match="different source frame"):
-        _ = PreparedNamespaceTail(first.entry, second.completion).receipt
+        _ = PreparedNamespaceTail(entry=first.entry, completion=second.completion).receipt
 
 
 def test_copied_or_forged_evaluation_cannot_supply_terminal_source_cut():

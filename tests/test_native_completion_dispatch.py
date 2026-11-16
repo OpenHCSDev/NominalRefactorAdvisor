@@ -51,7 +51,7 @@ def test_real_compiler_transfers_do_not_enter_python_result_completion(expressio
     effect_type = (
         NativeItemStoreValue if isinstance(node, ast.Assign) else NativeDiscardValue
     )
-    compilation = NativePythonCompilation(source, "completion_dispatch.py")
+    compilation = NativePythonCompilation(source=source, file_path="completion_dispatch.py")
     span = SourceByteSpan.require_node(
         node.targets[0] if isinstance(node, ast.Assign) else node
     )

@@ -590,7 +590,7 @@ def _structural_overlap_finding(
     ).build(
         detector_id,
         f"{mapping_name} repeats fields {field_names}",
-        (SourceLocation("module.py", line, f"{mapping_name}_{line}"),),
+        (SourceLocation(file_path="module.py", line=line, symbol=f"{mapping_name}_{line}"),),
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
             field_names=field_names,
@@ -600,7 +600,7 @@ def _structural_overlap_finding(
 
 
 def test_source_location_owns_portable_path_identity() -> None:
-    location = SourceLocation(r"C:\repo\pkg\module.py", 7, "Alpha.run")
+    location = SourceLocation(file_path=r"C:\repo\pkg\module.py", line=7, symbol="Alpha.run")
 
     assert location.file_path == "C:/repo/pkg/module.py"
 
@@ -615,7 +615,7 @@ def test_sorted_findings_authority_uses_source_identity_without_priority() -> No
     ).build(
         "unreferenced_private_function",
         "alphabetically first raw finding",
-        (SourceLocation("module.py", 10, "raw"),),
+        (SourceLocation(file_path="module.py", line=10, symbol="raw"),),
     )
     semantic_finding = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -626,7 +626,7 @@ def test_sorted_findings_authority_uses_source_identity_without_priority() -> No
     ).build(
         "semantic_mirror_without_descent",
         "alphabetically later semantic finding",
-        (SourceLocation("module.py", 20, "semantic"),),
+        (SourceLocation(file_path="module.py", line=20, symbol="semantic"),),
     )
 
     ordered = SortedFindingsAuthority.sort((raw_finding, semantic_finding))
@@ -1668,7 +1668,7 @@ def test_finding_recipe_plan_preserves_conflicting_branches_independent_of_input
         ).build(
             detector_id,
             f"{detector_id} proposes a competing rewrite.",
-            (SourceLocation(module_path.as_posix(), 1, "value"),),
+            (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="value"),),
             compression_certificate=CompressionCertificate(
                 before_cost=SemanticCostVector(residual_objects=before),
                 after_cost=SemanticCostVector(residual_objects=after),
@@ -1761,7 +1761,7 @@ def _direct_recipe_candidate(
     ).build(
         detector_id,
         f"{detector_id} proposes a source rewrite.",
-        (SourceLocation(file_path, 1, subject_name),),
+        (SourceLocation(file_path=file_path, line=1, symbol=subject_name),),
         compression_certificate=certificate,
     )
     recipe = RefactorRecipe(f"{detector_id}-recipe").with_operation(
@@ -2810,7 +2810,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
         why="changed file requires a rerun",
         capability_gap="focused projected scan",
         relation_context="changed file evidence",
-        evidence=(SourceLocation(changed_path.as_posix(), 2, "Changed.value"),),
+        evidence=(SourceLocation(file_path=changed_path.as_posix(), line=2, symbol="Changed.value"),),
     )
     changed_after_finding = replace(
         before_finding,
@@ -2819,7 +2819,7 @@ def test_projected_finding_report_uses_focused_partial_scan(
     other_after_finding = replace(
         before_finding,
         summary="other file after finding",
-        evidence=(SourceLocation(other_path.as_posix(), 2, "Other.value"),),
+        evidence=(SourceLocation(file_path=other_path.as_posix(), line=2, symbol="Other.value"),),
     )
     analyzed_module_paths: list[str] = []
 
@@ -2905,7 +2905,7 @@ def test_projected_finding_report_omits_compact_global_detectors(
         why="changed file requires a graph rerun",
         capability_gap="focused projected scan",
         relation_context="changed file evidence",
-        evidence=(SourceLocation(changed_path.as_posix(), 2, "Changed.value"),),
+        evidence=(SourceLocation(file_path=changed_path.as_posix(), line=2, symbol="Changed.value"),),
     )
     graph_source_calls: list[tuple[str, ...]] = []
     analyzed_module_paths: list[str] = []
@@ -3780,8 +3780,8 @@ def test_semantic_selectors_resolve_findings_classes_inheritance_and_calls(
         "class_evidence_selector_fixture",
         "Alpha and Beta are the selected class evidence.",
         (
-            SourceLocation(module_path.as_posix(), class_lines["Alpha"], "Alpha"),
-            SourceLocation(module_path.as_posix(), class_lines["Beta"], "Beta"),
+            SourceLocation(file_path=module_path.as_posix(), line=class_lines["Alpha"], symbol="Alpha"),
+            SourceLocation(file_path=module_path.as_posix(), line=class_lines["Beta"], symbol="Beta"),
         ),
     )
     findings = (finding,)
@@ -3867,9 +3867,9 @@ def test_finding_evidence_selector_resolves_qualified_owner_subject(
         relation_context="role-case evidence subject resolution",
         evidence=(
             SourceLocation(
-                module_path.as_posix(),
-                1,
-                "ProjectionSurfaceAuthority:role_cases:alpha,beta",
+                file_path=module_path.as_posix(),
+                line=1,
+                symbol="ProjectionSurfaceAuthority:role_cases:alpha,beta",
             ),
         ),
     )
@@ -3905,7 +3905,7 @@ def test_synthesized_empty_recipe_has_terminal_status_and_no_expected_removal(
     ).build(
         detector_id,
         "Alpha requires an effective source rewrite.",
-        (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="Alpha"),),
     )
     snapshot = CodemodSourceSnapshot.from_modules(
         parse_python_modules(tmp_path),
@@ -3966,7 +3966,7 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
     ).build(
         detector_id,
         "Alpha cannot yet be rewritten safely.",
-        (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="Alpha"),),
     )
 
     class RejectedRecipeWithoutActionKeysSynthesizer(_FindingRecipeTestDetector):
@@ -4015,7 +4015,7 @@ def test_executable_synthesis_requires_action_keys_before_planning(
     ).build(
         detector_id,
         "Alpha has an unidentified executable rewrite.",
-        (SourceLocation(module_path.as_posix(), 1, "Alpha"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="Alpha"),),
     )
 
     class ExecutableRecipeWithoutActionKeysSynthesizer(_FindingRecipeTestDetector):
@@ -4075,7 +4075,7 @@ def test_unregistered_finding_has_no_recipe_evaluator() -> None:
     ).build(
         detector_id,
         "An unregistered finding must fail closed.",
-        (SourceLocation("pkg/mod.py", 1, "Alpha"),),
+        (SourceLocation(file_path="pkg/mod.py", line=1, symbol="Alpha"),),
         metrics=DispatchCountMetrics.from_literal_family(
             "mode",
             ("fast", "safe"),
@@ -5614,7 +5614,7 @@ def test_candidate_collector_base_name_is_derived_from_unique_shape_declaration(
     uses_config: bool,
     expected_base_name: str,
 ) -> None:
-    shape = base_detectors.CandidateCollectorBaseShape(scope, uses_config)
+    shape = base_detectors.CandidateCollectorBaseShape(scope=scope, uses_config=uses_config)
 
     assert (
         base_detectors.DerivedCandidateCollectorMixin.collector_base_name_for_shape(
@@ -11195,7 +11195,7 @@ def test_detects_generic_cancelable_product_composition_signal(
     ).build(
         "carrier_factorization",
         "adapter immediately unpacks a carrier with identical product fields",
-        (SourceLocation(str(module_path), 8, "Planner.adapt"),),
+        (SourceLocation(file_path=str(module_path), line=8, symbol="Planner.adapt"),),
     )
     source_index = build_source_index(modules, (finding,))
 
@@ -11928,7 +11928,7 @@ def test_finding_carries_compression_certificate_into_markdown() -> None:
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+        (SourceLocation(file_path="pkg/mod.py", line=12, symbol="Alpha.run"),),
         compression_certificate=certificate,
     )
 
@@ -11961,7 +11961,7 @@ def test_finding_build_context_remains_nominal_through_spec_construction() -> No
     finding = spec.build(
         "context_detector",
         "context remains one value",
-        (SourceLocation("pkg/mod.py", 8, "Detector.finding"),),
+        (SourceLocation(file_path="pkg/mod.py", line=8, symbol="Detector.finding"),),
         context=context,
         relation_context="call relation",
     )
@@ -11987,12 +11987,12 @@ def test_finding_stable_id_is_derived_from_subject_not_lines(no_modules: ParsedM
     finding = spec.build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+        (SourceLocation(file_path="pkg/mod.py", line=12, symbol="Alpha.run"),),
     )
     moved = spec.build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation("pkg/mod.py", 13, "Alpha.run"),),
+        (SourceLocation(file_path="pkg/mod.py", line=13, symbol="Alpha.run"),),
     )
 
     assert len(finding.stable_id) == 10
@@ -12001,7 +12001,7 @@ def test_finding_stable_id_is_derived_from_subject_not_lines(no_modules: ParsedM
         == spec.build(
             "orbit_detector",
             "manual family compresses through one ABC",
-            (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+            (SourceLocation(file_path="pkg/mod.py", line=12, symbol="Alpha.run"),),
         ).stable_id
     )
     assert finding.stable_id == moved.stable_id
@@ -12010,7 +12010,7 @@ def test_finding_stable_id_is_derived_from_subject_not_lines(no_modules: ParsedM
         != spec.build(
             "orbit_detector",
             "manual family compresses through one ABC",
-            (SourceLocation("pkg/mod.py", 12, "Beta.run"),),
+            (SourceLocation(file_path="pkg/mod.py", line=12, symbol="Beta.run"),),
         ).stable_id
     )
     assert f"Stable id: {finding.stable_id}" in MARKDOWN_RENDERER.report([finding])
@@ -12068,8 +12068,8 @@ def test_lean_export_payload_converts_to_standard_findings() -> None:
         field_item.name for field_item in fields(RefactorFinding)
     }
     assert finding.evidence == (
-        SourceLocation("<lean-env>", 0, "Leverage.Alpha"),
-        SourceLocation("<lean-env>", 0, "Leverage.Beta"),
+        SourceLocation(file_path="<lean-env>", line=0, symbol="Leverage.Alpha"),
+        SourceLocation(file_path="<lean-env>", line=0, symbol="Leverage.Beta"),
     )
 
 
@@ -12225,13 +12225,13 @@ def test_planner_uses_stable_identity_order_not_local_savings(
             spec.build(
                 "low",
                 "low-savings subsystem",
-                (SourceLocation(str(tmp_path / "aaa.py"), 1, "Low.run"),),
+                (SourceLocation(file_path=str(tmp_path / "aaa.py"), line=1, symbol="Low.run"),),
                 compression_certificate=low_savings,
             ),
             spec.build(
                 "high",
                 "high-savings subsystem",
-                (SourceLocation(str(tmp_path / "zzz.py"), 1, "High.run"),),
+                (SourceLocation(file_path=str(tmp_path / "zzz.py"), line=1, symbol="High.run"),),
                 compression_certificate=high_savings,
             ),
         ],
@@ -12263,19 +12263,19 @@ def test_execution_plan_groups_findings_by_weighted_graph(
         spec.build(
             "threaded_a",
             "alpha context fanout",
-            (SourceLocation(str(same_file), 10, "Alpha.run"),),
+            (SourceLocation(file_path=str(same_file), line=10, symbol="Alpha.run"),),
             compression_certificate=certificate,
         ),
         spec.build(
             "threaded_b",
             "beta context fanout",
-            (SourceLocation(str(same_file), 30, "Beta.run"),),
+            (SourceLocation(file_path=str(same_file), line=30, symbol="Beta.run"),),
             compression_certificate=certificate,
         ),
         spec.build(
             "threaded_c",
             "cache context fanout",
-            (SourceLocation(str(independent_file), 5, "Cache.run"),),
+            (SourceLocation(file_path=str(independent_file), line=5, symbol="Cache.run"),),
             compression_certificate=certificate,
         ),
     ]
@@ -12315,13 +12315,13 @@ def test_planning_similarity_requires_concrete_source_authority(
         context_spec.build(
             "threaded_a",
             "alpha context fanout",
-            (SourceLocation(str(tmp_path / "pkg/runtime/a.py"), 10, "Alpha.run"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/runtime/a.py"), line=10, symbol="Alpha.run"),),
             capability_tags=mapping_capability,
         ),
         context_spec.build(
             "threaded_b",
             "beta context fanout",
-            (SourceLocation(str(tmp_path / "pkg/runtime/b.py"), 10, "Beta.run"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/runtime/b.py"), line=10, symbol="Beta.run"),),
             capability_tags=mapping_capability,
         ),
     ]
@@ -12349,13 +12349,13 @@ def test_shared_symbol_root_can_anchor_cross_file_execution_relation(
         context_spec.build(
             "threaded_a",
             "first shared context surface",
-            (SourceLocation(str(tmp_path / "pkg/a.py"), 10, "Shared.run"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/a.py"), line=10, symbol="Shared.run"),),
             capability_tags=mapping_capability,
         ),
         context_spec.build(
             "threaded_b",
             "second shared context surface",
-            (SourceLocation(str(tmp_path / "pkg/b.py"), 10, "Shared.stop"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/b.py"), line=10, symbol="Shared.stop"),),
             capability_tags=mapping_capability,
         ),
     ]
@@ -12380,16 +12380,16 @@ def test_subsystem_plan_follows_multi_file_evidence_bridge(tmp_path: Path) -> No
             "projection_a",
             "first multi-file projection",
             (
-                SourceLocation(str(tmp_path / "pkg/a.py"), 1, "Alpha"),
-                SourceLocation(str(shared_path), 2, "Shared.alpha"),
+                SourceLocation(file_path=str(tmp_path / "pkg/a.py"), line=1, symbol="Alpha"),
+                SourceLocation(file_path=str(shared_path), line=2, symbol="Shared.alpha"),
             ),
         ),
         spec.build(
             "projection_b",
             "second multi-file projection",
             (
-                SourceLocation(str(shared_path), 3, "Shared.beta"),
-                SourceLocation(str(tmp_path / "pkg/b.py"), 4, "Beta"),
+                SourceLocation(file_path=str(shared_path), line=3, symbol="Shared.beta"),
+                SourceLocation(file_path=str(tmp_path / "pkg/b.py"), line=4, symbol="Beta"),
             ),
         ),
     ]
@@ -12426,12 +12426,12 @@ def test_execution_plan_splits_weak_bridges_by_semantic_axis(
         context_spec.build(
             "threaded_context",
             "context fanout",
-            (SourceLocation(str(shared_file), 10, "Context.run"),),
+            (SourceLocation(file_path=str(shared_file), line=10, symbol="Context.run"),),
         ),
         witness_spec.build(
             "witness_projection",
             "witness projection",
-            (SourceLocation(str(shared_file), 30, "Witness.run"),),
+            (SourceLocation(file_path=str(shared_file), line=30, symbol="Witness.run"),),
         ),
     ]
 
@@ -12482,13 +12482,13 @@ def test_planner_does_not_expose_a_fabricated_escape_proof_surface(
         boundary_spec.build(
             "boundary",
             "record normalization is locally negative",
-            (SourceLocation(str(tmp_path / "pkg/mod.py"), 1, "Result"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/mod.py"), line=1, symbol="Result"),),
             compression_certificate=boundary_certificate,
         ),
         abc_spec.build(
             "abc",
             "ABC extraction is blocked until identity is nominal",
-            (SourceLocation(str(tmp_path / "pkg/mod.py"), 2, "Runner.run"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/mod.py"), line=2, symbol="Runner.run"),),
             compression_certificate=abc_certificate,
         ),
     ]
@@ -12520,17 +12520,17 @@ def test_planner_keeps_registry_observations_without_suggesting_a_normal_form(
         registry_spec.build(
             "non_injective_type_registry",
             "duplicate registry key blocks metaclass promotion",
-            (SourceLocation(str(tmp_path / "pkg/mod.py"), 1, "ModeRunner"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/mod.py"), line=1, symbol="ModeRunner"),),
         ),
         schema_spec.build(
             "parallel_keyed_table_and_family",
             "table and family share a mode axis",
-            (SourceLocation(str(tmp_path / "pkg/mod.py"), 2, "MODE_CONFIGS"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/mod.py"), line=2, symbol="MODE_CONFIGS"),),
         ),
         registry_spec.build(
             "injective_type_registry",
             "mature registry should use AutoRegisterMeta after repair",
-            (SourceLocation(str(tmp_path / "pkg/mod.py"), 3, "ModeRunner"),),
+            (SourceLocation(file_path=str(tmp_path / "pkg/mod.py"), line=3, symbol="ModeRunner"),),
         ),
     ]
 
@@ -12577,19 +12577,19 @@ def test_recommendation_economics_separates_loc_and_semantic_payoff() -> None:
     semantic_finding = spec.build(
         "semantic",
         "semantic family pays rent",
-        (SourceLocation("pkg/mod.py", 10, "Alpha"),),
+        (SourceLocation(file_path="pkg/mod.py", line=10, symbol="Alpha"),),
         compression_certificate=certificate,
     )
     loc_finding = spec.build(
         "loc",
         "dispatch sites collapse",
-        (SourceLocation("pkg/mod.py", 20, "dispatch"),),
+        (SourceLocation(file_path="pkg/mod.py", line=20, symbol="dispatch"),),
         metrics=DispatchCountMetrics(dispatch_site_count=4),
     )
     unproven_finding = spec.build(
         "unproven",
         "manual helper should move",
-        (SourceLocation("pkg/mod.py", 30, "helper"),),
+        (SourceLocation(file_path="pkg/mod.py", line=30, symbol="helper"),),
     )
 
     economics = RefactorEvidenceEconomics.from_findings_and_plans(
@@ -12639,7 +12639,7 @@ def test_economics_markdown_and_json_expose_evidence_proof(no_modules: ParsedMod
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation("pkg/mod.py", 12, "Alpha.run"),),
+        (SourceLocation(file_path="pkg/mod.py", line=12, symbol="Alpha.run"),),
         compression_certificate=certificate,
     )
     economics = RefactorEvidenceEconomics.from_findings_and_plans([finding])
@@ -12677,13 +12677,13 @@ def test_scan_economics_proof_splits_production_from_test_findings(
     production_finding = spec.build(
         "prod_detector",
         "production dispatch sites collapse",
-        (SourceLocation("pkg/mod.py", 20, "dispatch"),),
+        (SourceLocation(file_path="pkg/mod.py", line=20, symbol="dispatch"),),
         metrics=DispatchCountMetrics(dispatch_site_count=3),
     )
     test_finding = spec.build(
         "test_detector",
         "test fixture dispatch sites collapse",
-        (SourceLocation("tests/test_mod.py", 30, "dispatch"),),
+        (SourceLocation(file_path="tests/test_mod.py", line=30, symbol="dispatch"),),
         metrics=DispatchCountMetrics(dispatch_site_count=2),
     )
 
@@ -12745,7 +12745,7 @@ def test_economics_proof_report_names_all_gate_regressions(tmp_path: Path) -> No
     ).build(
         "unproven_detector",
         "production helper move has no payoff proof",
-        (SourceLocation("pkg/mod.py", 12, "helper"),),
+        (SourceLocation(file_path="pkg/mod.py", line=12, symbol="helper"),),
     )
     package_scan = _test_scan_economics_proof(
         _PACKAGE_SCAN_LABEL,
@@ -13372,7 +13372,7 @@ def test_analysis_finding_cache_invalidates_after_source_change(tmp_path: Path) 
     ).build(
         "cache_detector",
         "cached summary",
-        (SourceLocation(str(module_path), 2, "Cached"),),
+        (SourceLocation(file_path=str(module_path), line=2, symbol="Cached"),),
     )
     cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
 
@@ -13422,7 +13422,7 @@ def test_analysis_cache_stores_count_summary_sidecar(tmp_path: Path) -> None:
     ).build(
         "summary_detector",
         "cached summary finding",
-        (SourceLocation(str(module_path), 2, "Cached"),),
+        (SourceLocation(file_path=str(module_path), line=2, symbol="Cached"),),
     )
     cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
 
@@ -13472,7 +13472,7 @@ def test_analysis_cache_stores_execution_plan_sidecar(tmp_path: Path) -> None:
     ).build(
         "execution_plan_detector",
         "cached execution plan finding",
-        (SourceLocation(str(module_path), 2, "Cached"),),
+        (SourceLocation(file_path=str(module_path), line=2, symbol="Cached"),),
     )
     execution_plan = build_refactor_execution_plan([finding], tmp_path / "pkg")
     plan_identity = AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
@@ -13502,7 +13502,7 @@ def test_analyze_paths_reuses_detector_findings(
     ).build(
         "cache_detector",
         "cached summary",
-        (SourceLocation(str(module_path), 2, "Cached"),),
+        (SourceLocation(file_path=str(module_path), line=2, symbol="Cached"),),
     )
     detector_calls = 0
 
@@ -13570,7 +13570,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
                 finding_spec.build(
                     "counting_per_module",
                     f"local {module_name}",
-                    (SourceLocation(str(module_path), 2, module_name),),
+                    (SourceLocation(file_path=str(module_path), line=2, symbol=module_name),),
                 )
             ]
 
@@ -13589,7 +13589,7 @@ def test_analysis_cache_reuses_unchanged_per_module_detector_shards(
                 finding_spec.build(
                     "counting_global",
                     f"global {module_names}",
-                    (SourceLocation(str(first_module.path), 1, "global"),),
+                    (SourceLocation(file_path=str(first_module.path), line=1, symbol="global"),),
                 )
             ]
 
@@ -13661,7 +13661,7 @@ def test_focused_analysis_schedules_local_detectors_only_for_report_modules(
         return finding_spec.build(
             detector_id,
             f"{detector_id} {module.path.name}",
-            (SourceLocation(str(module.path), 1, module.path.name),),
+            (SourceLocation(file_path=str(module.path), line=1, symbol=module.path.name),),
         )
 
     class FocusedPerModuleDetector(base_detectors.PerModuleIssueDetector):
@@ -13814,7 +13814,7 @@ def test_analyze_paths_partial_cache_parses_changed_file_only(
                 finding_spec.build(
                     self.detector_id,
                     f"local {module_name}",
-                    (SourceLocation(str(module.path), 2, module_name),),
+                    (SourceLocation(file_path=str(module.path), line=2, symbol=module_name),),
                 )
             ]
 
@@ -13833,7 +13833,7 @@ def test_analyze_paths_partial_cache_parses_changed_file_only(
                 finding_spec.build(
                     self.detector_id,
                     f"global {module.path.name}",
-                    (SourceLocation(str(module.path), 1, "global"),),
+                    (SourceLocation(file_path=str(module.path), line=1, symbol="global"),),
                 )
                 for module in modules
             ]
@@ -13911,7 +13911,7 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
                 finding_spec.build(
                     self.detector_id,
                     f"local {module_name}",
-                    (SourceLocation(str(module.path), 2, module_name),),
+                    (SourceLocation(file_path=str(module.path), line=2, symbol=module_name),),
                 )
             ]
 
@@ -13930,7 +13930,7 @@ def test_fast_cache_evidence_local_partial_reuses_unchanged_findings_when_reques
                 finding_spec.build(
                     self.detector_id,
                     f"global {module.path.name}",
-                    (SourceLocation(str(module.path), 1, "global"),),
+                    (SourceLocation(file_path=str(module.path), line=1, symbol="global"),),
                 )
                 for module in modules
             ]
@@ -14032,7 +14032,7 @@ def test_fast_partial_cache_does_not_poison_exact_cache(
                 finding_spec.build(
                     self.detector_id,
                     f"{module.path.name}:{self.class_count(module)}",
-                    (SourceLocation(str(module.path), 1, "global"),),
+                    (SourceLocation(file_path=str(module.path), line=1, symbol="global"),),
                 )
                 for module in modules
             ]
@@ -14162,7 +14162,7 @@ def test_analyze_paths_partial_cache_parses_changed_file_under_owning_root(
                 finding_spec.build(
                     self.detector_id,
                     f"global {module.path.name}",
-                    (SourceLocation(str(module.path), 1, "global"),),
+                    (SourceLocation(file_path=str(module.path), line=1, symbol="global"),),
                 )
                 for module in modules
             ]
@@ -16213,44 +16213,44 @@ def test_markdown_output_does_not_render_detector_authored_suggestions(
 def test_observation_graph_caches_derived_groupings() -> None:
     observations = (
         StructuralObservation(
-            "module.py",
-            "Alpha",
-            "Alpha",
-            1,
-            ObservationKind.FIELD,
-            StructuralExecutionLevel.CLASS_BODY,
-            "pose_id",
-            "pose_id",
+            file_path="module.py",
+            line="Alpha",
+            owner_symbol="Alpha",
+            nominal_witness=1,
+            observation_kind=ObservationKind.FIELD,
+            execution_level=StructuralExecutionLevel.CLASS_BODY,
+            observed_name="pose_id",
+            fiber_key="pose_id",
         ),
         StructuralObservation(
-            "module.py",
-            "Alpha",
-            "Alpha",
-            2,
-            ObservationKind.FIELD,
-            StructuralExecutionLevel.CLASS_BODY,
-            "score",
-            "score",
+            file_path="module.py",
+            line="Alpha",
+            owner_symbol="Alpha",
+            nominal_witness=2,
+            observation_kind=ObservationKind.FIELD,
+            execution_level=StructuralExecutionLevel.CLASS_BODY,
+            observed_name="score",
+            fiber_key="score",
         ),
         StructuralObservation(
-            "module.py",
-            "Beta",
-            "Beta",
-            10,
-            ObservationKind.FIELD,
-            StructuralExecutionLevel.CLASS_BODY,
-            "pose_id",
-            "pose_id",
+            file_path="module.py",
+            line="Beta",
+            owner_symbol="Beta",
+            nominal_witness=10,
+            observation_kind=ObservationKind.FIELD,
+            execution_level=StructuralExecutionLevel.CLASS_BODY,
+            observed_name="pose_id",
+            fiber_key="pose_id",
         ),
         StructuralObservation(
-            "module.py",
-            "Beta",
-            "Beta",
-            11,
-            ObservationKind.FIELD,
-            StructuralExecutionLevel.CLASS_BODY,
-            "score",
-            "score",
+            file_path="module.py",
+            line="Beta",
+            owner_symbol="Beta",
+            nominal_witness=11,
+            observation_kind=ObservationKind.FIELD,
+            execution_level=StructuralExecutionLevel.CLASS_BODY,
+            observed_name="score",
+            fiber_key="score",
         ),
     )
     graph = ObservationGraph(observations)
@@ -20059,7 +20059,7 @@ def test_loop_preparse_partial_loads_latest_repo_semantic_graph_lazily(
                 authority_id="repo-authority",
                 kind=SemanticAuthorityKind.CLASS_FAMILY,
                 name="RepoAuthority",
-                location=SourceLocation(str(module_path), 1, "RepoAuthority"),
+                location=SourceLocation(file_path=str(module_path), line=1, symbol="RepoAuthority"),
                 fact_ids=(),
             ),
         ),
@@ -20308,7 +20308,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     ).build(
         detector_id,
         "The test transition has not yet moved the value.",
-        (SourceLocation(module_path.as_posix(), 1, "value"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="value"),),
     )
     introduced = _finding_spec(
         PatternId.NOMINAL_BOUNDARY,
@@ -20319,7 +20319,7 @@ def test_goal_runner_rejects_terminal_with_new_finding_obligations(
     ).build(
         "semantic_mirror_without_descent",
         "The test projection introduces an unresolved authority relation.",
-        (SourceLocation(module_path.as_posix(), 1, "value"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="value"),),
     )
 
     class NewObligationSynthesizer(FindingRecipeSynthesizer, SemanticCarrierConcept):
@@ -20525,7 +20525,7 @@ def test_codemod_refactor_goal_runner_builds_staged_replay_plan(
     ).build(
         detector_id,
         "Alpha.run encodes the semantic fact outside its boundary.",
-        (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=3, symbol="Alpha.run"),),
     )
 
     class GoalTestSynthesizer(FindingRecipeSynthesizer, SemanticCarrierConcept):
@@ -20702,7 +20702,7 @@ def test_goal_runner_does_not_commit_conflicting_trajectory_branches(
         ).build(
             detector_id,
             f"{detector_id} proposes a competing migration.",
-            (SourceLocation(module_path.as_posix(), 1, "value"),),
+            (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="value"),),
             compression_certificate=CompressionCertificate(
                 before_cost=SemanticCostVector(residual_objects=10),
                 after_cost=SemanticCostVector(residual_objects=after),
@@ -20854,7 +20854,7 @@ def test_goal_runner_analyzes_equivalent_branch_state_once(
         ).build(
             detector_id,
             f"{detector_id} proposes the same migration.",
-            (SourceLocation(module_path.as_posix(), 1, "value"),),
+            (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="value"),),
         )
         for detector_id in detector_ids
     )
@@ -20988,7 +20988,7 @@ def test_goal_runner_crosses_local_worsening_move_to_unique_terminal(
         ).build(
             detector_id,
             f"{detector_id} contributes one reachable migration branch.",
-            (SourceLocation(module_path.as_posix(), 1, "value"),),
+            (SourceLocation(file_path=module_path.as_posix(), line=1, symbol="value"),),
             compression_certificate=CompressionCertificate(
                 before_cost=SemanticCostVector(residual_objects=before_cost),
                 after_cost=SemanticCostVector(residual_objects=after_cost),
@@ -21484,12 +21484,12 @@ def test_codemod_refactor_goal_runner_scopes_context_root_progress(
     report_finding = finding_spec.build(
         detector_id,
         "Report.run encodes the semantic fact outside its boundary.",
-        (SourceLocation(report_path.as_posix(), 3, "Report.run"),),
+        (SourceLocation(file_path=report_path.as_posix(), line=3, symbol="Report.run"),),
     )
     context_finding = finding_spec.build(
         detector_id,
         "Context.run encodes the semantic fact outside its boundary.",
-        (SourceLocation(context_path.as_posix(), 3, "Context.run"),),
+        (SourceLocation(file_path=context_path.as_posix(), line=3, symbol="Context.run"),),
     )
 
     class GoalScopeTestSynthesizer(
@@ -21583,7 +21583,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
     ).build(
         detector_id,
         "Alpha.run encodes the semantic fact outside its boundary.",
-        (SourceLocation(module_path.as_posix(), 3, "Alpha.run"),),
+        (SourceLocation(file_path=module_path.as_posix(), line=3, symbol="Alpha.run"),),
     )
 
     class RejectedGoalTestSynthesizer(
@@ -21885,17 +21885,17 @@ def test_codemod_finding_class_delta_distinguishes_replaced_from_eliminated(
     before_moved = moved_spec.build(
         "semantic_mirror_without_descent",
         "Alpha mirrors the semantic fact.",
-        (SourceLocation((tmp_path / "before.py").as_posix(), 3, "Alpha.run"),),
+        (SourceLocation(file_path=(tmp_path / "before.py").as_posix(), line=3, symbol="Alpha.run"),),
     )
     after_moved = moved_spec.build(
         "semantic_mirror_without_descent",
         "Beta mirrors the semantic fact.",
-        (SourceLocation((tmp_path / "after.py").as_posix(), 4, "Beta.run"),),
+        (SourceLocation(file_path=(tmp_path / "after.py").as_posix(), line=4, symbol="Beta.run"),),
     )
     before_eliminated = eliminated_spec.build(
         "manual_class_registration",
         "REGISTRY mirrors AlphaHandler/BetaHandler.",
-        (SourceLocation((tmp_path / "registry.py").as_posix(), 2, "REGISTRY"),),
+        (SourceLocation(file_path=(tmp_path / "registry.py").as_posix(), line=2, symbol="REGISTRY"),),
     )
 
     delta = CodemodFindingClassDelta.from_findings(
@@ -21951,12 +21951,12 @@ def test_codemod_finding_class_delta_ignores_presentation_and_coordinate_changes
     before = spec.build(
         "semantic_mirror_without_descent",
         "Stable projection mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 12, "project:return"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=12, symbol="project:return"),),
     )
     after = revised_presentation.build(
         "semantic_mirror_without_descent",
         "Stable projection mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 18, "project:return"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=18, symbol="project:return"),),
     )
 
     delta = CodemodFindingClassDelta.from_findings((before,), (after,))
@@ -21983,7 +21983,7 @@ def test_codemod_finding_class_delta_rejects_unknown_relation_declaration(
     ).build(
         "unregistered_detector",
         "Unknown detector emitted a finding.",
-        (SourceLocation((tmp_path / "unknown.py").as_posix(), 1, "unknown"),),
+        (SourceLocation(file_path=(tmp_path / "unknown.py").as_posix(), line=1, symbol="unknown"),),
     )
 
     with pytest.raises(ValueError, match="required relation is unknown"):
@@ -22014,12 +22014,12 @@ def test_codemod_finding_class_delta_fails_closed_across_detector_declarations(
     before = before_spec.build(
         "semantic_mirror_without_descent",
         "Alpha exposes the unresolved relation.",
-        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=12, symbol="Alpha.run"),),
     )
     after = after_spec.build(
         "string_backed_reflective_nominal_lookup",
         "Beta exposes the unresolved relation.",
-        (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=18, symbol="Beta.run"),),
     )
 
     delta = CodemodFindingClassDelta.from_findings((before,), (after,))
@@ -22068,17 +22068,17 @@ def test_codemod_finding_class_delta_reports_increased_obligations(
     before = spec.build(
         "semantic_mirror_without_descent",
         "Alpha mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=12, symbol="Alpha.run"),),
     )
     surviving = spec.build(
         "semantic_mirror_without_descent",
         "Alpha mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=12, symbol="Alpha.run"),),
     )
     added = spec.build(
         "semantic_mirror_without_descent",
         "Beta mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=18, symbol="Beta.run"),),
     )
 
     delta = CodemodFindingClassDelta.from_findings(
@@ -22110,12 +22110,12 @@ def test_finding_class_status_members_own_transition_classification(
     first = spec.build(
         "semantic_mirror_without_descent",
         "Alpha mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 12, "Alpha.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=12, symbol="Alpha.run"),),
     )
     second = spec.build(
         "semantic_mirror_without_descent",
         "Beta mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 18, "Beta.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=18, symbol="Beta.run"),),
     )
 
     def status(
@@ -22150,7 +22150,7 @@ def test_finding_class_status_members_own_transition_classification(
     moved_first = spec.build(
         "semantic_mirror_without_descent",
         "Alpha mirrors Authority.",
-        (SourceLocation(source_path.as_posix(), 30, "Alpha.run"),),
+        (SourceLocation(file_path=source_path.as_posix(), line=30, symbol="Alpha.run"),),
     )
     assert moved_first.stable_id == first.stable_id
     assert status((first,), (moved_first,)) is CodemodFindingClassStatus.MOVED
@@ -24193,7 +24193,7 @@ def test_json_payload_exposes_source_index_for_agent_targeting(tmp_path: Path) -
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+        (SourceLocation(file_path=str(module_path), line=3, symbol="Alpha.run"),),
     )
 
     payload = JsonPayloadBuilder(
@@ -24284,7 +24284,7 @@ def test_json_payload_loop_uses_counts_only_finding_projection(
     ).build(
         "compact_loop_detector",
         "compact loop summary",
-        (SourceLocation(str(module_path), 2, "Alpha"),),
+        (SourceLocation(file_path=str(module_path), line=2, symbol="Alpha"),),
     )
 
     def fail_full_finding_serialization(
@@ -24359,12 +24359,12 @@ def test_json_payload_profiles_compact_execution_plan_edges(
         spec.build(
             "compact_execution_plan_detector",
             "left execution plan finding",
-            (SourceLocation(str(module_path), 2, "Alpha.left"),),
+            (SourceLocation(file_path=str(module_path), line=2, symbol="Alpha.left"),),
         ),
         spec.build(
             "compact_execution_plan_detector",
             "right execution plan finding",
-            (SourceLocation(str(module_path), 2, "Alpha.right"),),
+            (SourceLocation(file_path=str(module_path), line=2, symbol="Alpha.right"),),
         ),
     ]
     execution_plan = build_refactor_execution_plan(findings, tmp_path)
@@ -24884,7 +24884,7 @@ def test_source_index_caches_lookup_maps_and_finding_target_keys(
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+        (SourceLocation(file_path=str(module_path), line=3, symbol="Alpha.run"),),
     )
     source_index = build_source_index(modules, (finding,))
 
@@ -24984,7 +24984,7 @@ def test_source_index_retains_all_matching_evidence_targets(tmp_path: Path) -> N
     ).build(
         "source_index_detector",
         "nested scope evidence",
-        (SourceLocation(str(module_path), 6, "unknown"),),
+        (SourceLocation(file_path=str(module_path), line=6, symbol="unknown"),),
     )
 
     source_index = build_source_index(modules, (finding,))
@@ -25020,7 +25020,7 @@ def test_structural_overlap_preserves_public_output_shape_with_source_targets(
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+        (SourceLocation(file_path=str(module_path), line=3, symbol="Alpha.run"),),
     )
     source_index = build_source_index(modules, (finding,))
     structural_overlap = build_structural_overlap_report(
@@ -25081,7 +25081,7 @@ def test_structural_overlap_does_not_project_codemod_candidates(
     ).build(
         "orbit_detector",
         "manual family compresses through one ABC",
-        (SourceLocation(str(module_path), 3, "Alpha.run"),),
+        (SourceLocation(file_path=str(module_path), line=3, symbol="Alpha.run"),),
     )
     source_index = build_source_index(modules, (finding,))
     structural_overlap = build_structural_overlap_report(
@@ -25141,22 +25141,22 @@ def test_semantic_gate_orders_boundary_evidence_by_stable_authority_identity(no_
     small = spec.build(
         "semantic_mirror_without_descent",
         "small authority branch",
-        (SourceLocation("module.py", 10, "SmallAuthority.guard"),),
-        projection_evidence=SourceLocation("module.py", 10, "SmallAuthority.guard"),
+        (SourceLocation(file_path="module.py", line=10, symbol="SmallAuthority.guard"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=10, symbol="SmallAuthority.guard"),
         title="A small authority branch",
     )
     large_one = spec.build(
         "semantic_mirror_without_descent",
         "large boundary group one",
-        (SourceLocation("module.py", 20, "LargeBoundary.alpha"),),
-        projection_evidence=SourceLocation("module.py", 20, "LargeBoundary.alpha"),
+        (SourceLocation(file_path="module.py", line=20, symbol="LargeBoundary.alpha"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=20, symbol="LargeBoundary.alpha"),
         title="Z large boundary group",
     )
     large_two = spec.build(
         "semantic_mirror_without_descent",
         "large boundary group two",
-        (SourceLocation("module.py", 30, "LargeBoundary.beta"),),
-        projection_evidence=SourceLocation("module.py", 30, "LargeBoundary.beta"),
+        (SourceLocation(file_path="module.py", line=30, symbol="LargeBoundary.beta"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=30, symbol="LargeBoundary.beta"),
         title="Z large boundary group",
     )
 
@@ -25187,8 +25187,8 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth(no
     narrow_one = spec.build(
         "repeated_builder_calls",
         "narrow branch one",
-        (SourceLocation("module.py", 10, "NarrowAuthority.alpha"),),
-        projection_evidence=SourceLocation("module.py", 10, "NarrowAuthority.alpha"),
+        (SourceLocation(file_path="module.py", line=10, symbol="NarrowAuthority.alpha"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=10, symbol="NarrowAuthority.alpha"),
         title="A narrow raw-count group",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -25200,8 +25200,8 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth(no
     narrow_two = spec.build(
         "repeated_builder_calls",
         "narrow branch two",
-        (SourceLocation("module.py", 20, "NarrowAuthority.beta"),),
-        projection_evidence=SourceLocation("module.py", 20, "NarrowAuthority.beta"),
+        (SourceLocation(file_path="module.py", line=20, symbol="NarrowAuthority.beta"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=20, symbol="NarrowAuthority.beta"),
         title="A narrow raw-count group",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -25213,8 +25213,8 @@ def test_semantic_gate_does_not_rank_boundary_evidence_by_certificate_breadth(no
     broad = spec.build(
         "repeated_builder_calls",
         "broad semantic certificate",
-        (SourceLocation("module.py", 30, "BroadAuthority.mapping"),),
-        projection_evidence=SourceLocation("module.py", 30, "BroadAuthority.mapping"),
+        (SourceLocation(file_path="module.py", line=30, symbol="BroadAuthority.mapping"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=30, symbol="BroadAuthority.mapping"),
         title="Z broad semantic certificate",
         metrics=MappingMetrics.from_field_names(
             mapping_site_count=2,
@@ -25250,15 +25250,15 @@ def test_json_payload_uses_semantic_boundary_evidence_when_gate_is_active(no_mod
         "single authority boundary",
         "same fact family has multiple writable surfaces",
     )
-    authority_location = SourceLocation("module.py", 3, "Handler")
+    authority_location = SourceLocation(file_path="module.py", line=3, symbol="Handler")
     critical = spec.build(
         "semantic_mirror_without_descent",
         "`HANDLERS` mirrors `Handler` without a descent path.",
         (
-            SourceLocation("module.py", 10, "HANDLERS"),
+            SourceLocation(file_path="module.py", line=10, symbol="HANDLERS"),
             authority_location,
         ),
-        projection_evidence=SourceLocation("module.py", 10, "HANDLERS"),
+        projection_evidence=SourceLocation(file_path="module.py", line=10, symbol="HANDLERS"),
         authority_evidence=authority_location,
         title="`HANDLERS` mirrors `Handler`",
         relation_context=(
@@ -25332,8 +25332,8 @@ def test_semantic_gate_emits_authority_discovery_finding_for_unresolved_claim() 
     ).build(
         "semantic_mirror_without_descent",
         "ComponentAxisAuthority has no resolved descent path.",
-        (SourceLocation("module.py", 1, "ComponentAxisAuthority"),),
-        projection_evidence=SourceLocation("module.py", 1, "ComponentAxisAuthority"),
+        (SourceLocation(file_path="module.py", line=1, symbol="ComponentAxisAuthority"),),
+        projection_evidence=SourceLocation(file_path="module.py", line=1, symbol="ComponentAxisAuthority"),
     )
     boundary = SemanticRefactorBoundaryEvidence.from_ssot_finding(finding)
     discovery_findings = (
@@ -25891,7 +25891,7 @@ def test_markdown_and_json_can_include_execution_plan(tmp_path: Path, no_modules
     finding = spec.build(
         "batch_detector",
         "batch context",
-        (SourceLocation(str(tmp_path / "pkg" / "runtime.py"), 7, "Runtime.run"),),
+        (SourceLocation(file_path=str(tmp_path / "pkg" / "runtime.py"), line=7, symbol="Runtime.run"),),
     )
     execution_plan = build_refactor_execution_plan([finding], tmp_path)
 
@@ -27174,9 +27174,9 @@ def test_detects_type_keyed_behavior_projected_away_from_nominal_types(
     assert finding.projection_evidence is not None
     assert finding.projection_evidence.symbol == "pkg.mod.EventProjection"
     assert finding.authority_evidence == SourceLocation(
-        str(tmp_path / "pkg/mod.py"),
-        8,
-        "pkg.mod.Event",
+        file_path=str(tmp_path / "pkg/mod.py"),
+        line=8,
+        symbol="pkg.mod.Event",
     )
 
 
@@ -27600,7 +27600,7 @@ def test_proved_scan_index_names_its_own_findings(tmp_path: Path) -> None:
             why="fixture",
             capability_gap="fixture",
             relation_context="fixture",
-            evidence=(SourceLocation(file_path, line, name),),
+            evidence=(SourceLocation(file_path=file_path, line=line, symbol=name),),
         )
 
     parent, child = finding("Parent", 1), finding("Child", 5)

@@ -18,7 +18,7 @@ def body_receipt(body, parameters=""):
         + "\n".join("    " + line for line in body.splitlines())
         + "\n"
     )
-    compilation = NativePythonCompilation(source, "entry_continuation.py")
+    compilation = NativePythonCompilation(source=source, file_path="entry_continuation.py")
     declaration = compilation.execution_for(
         SourceByteSpan.require_node(ast.parse(source).body[0])
     )

@@ -260,7 +260,7 @@ def test_unsupported_transfer_after_applied_store_does_not_gain_a_return(monkeyp
 @pytest.mark.native_proof
 def test_application_receipts_survive_serialisation_without_recompiling(monkeypatch):
     source = "@replace\ndef chosen(): pass\n"
-    compilation = NativePythonCompilation(source, "applied.py")
+    compilation = NativePythonCompilation(source=source, file_path="applied.py")
     span = SourceByteSpan.require_node(ast.parse(source).body[0])
     receipt = compilation.execution_for(span)
     assert receipt.require_applications()

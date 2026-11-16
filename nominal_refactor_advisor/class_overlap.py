@@ -1099,11 +1099,11 @@ class ClassOverlapVerdicts:
             if positional:
                 receipts.append(
                     KeywordCuredReceipt(
-                        OverlapReceiptKind.POSITIONAL_CONSTRUCTION,
-                        f"`{indexed_class.qualname}` is constructed by position or "
+                        kind=OverlapReceiptKind.POSITIONAL_CONSTRUCTION,
+                        detail=f"`{indexed_class.qualname}` is constructed by position or "
                         f"unpacking in {len(positional)} place(s); moving its fields "
                         "ahead of its own would rebind them",
-                        tuple(use.location for use in positional[:4]),
+                        evidence=tuple(use.location for use in positional[:4]),
                         constructed=(indexed_class.symbol,),
                     )
                 )

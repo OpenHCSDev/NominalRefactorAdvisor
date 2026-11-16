@@ -461,8 +461,8 @@ def test_callable_member_declarations_skip_overloads_and_setters(tmp_path):
     (projection,) = projections
     (holder,) = projection.classes
     assert holder.callable_member_declarations == (
-        CompactAnnotatedProperty("value", 4, "int"),
-        CompactUnannotatedCallable("pick", 9),
+        CompactAnnotatedProperty(name="value", line=4, return_annotation_expression="int"),
+        CompactUnannotatedCallable(name="pick", line=9),
     )
 
 
@@ -483,9 +483,9 @@ def test_decorators_are_the_objects_their_names_bind(tmp_path):
     (holder,) = projection.classes
     # The module's own `property` is a plain function, so `local` is a method.
     assert holder.callable_member_declarations == (
-        CompactAnnotatedMethod("local", 13, "int"),
-        CompactAnnotatedProperty("cached", 15, "int"),
-        CompactAnnotatedMethod("asked", 17, "int"),
+        CompactAnnotatedMethod(name="local", line=13, return_annotation_expression="int"),
+        CompactAnnotatedProperty(name="cached", line=15, return_annotation_expression="int"),
+        CompactAnnotatedMethod(name="asked", line=17, return_annotation_expression="int"),
     )
     assert holder.abstract_method_names == ("asked",)
     assert holder.is_final
@@ -512,7 +512,7 @@ def test_a_cached_class_projection_carries_the_declared_returns(tmp_path):
     for loaded in (cold, warm):
         (holder,) = loaded.classes
         assert holder.callable_member_declarations == (
-            CompactAnnotatedMethod("make", 2, "'Holder'"),
+            CompactAnnotatedMethod(name="make", line=2, return_annotation_expression="'Holder'"),
         )
         assert [declared.name for declared in loaded.annotated_function_returns] == [
             "build"

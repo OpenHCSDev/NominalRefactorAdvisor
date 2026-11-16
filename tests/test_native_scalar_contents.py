@@ -167,7 +167,7 @@ def test_direct_literal_with_warmed_type_still_requires_original_prefix(literal)
     environment = execution(f"unknown()\nresult = {literal}\n")
     node = environment.module.module.body[-1].value
     read = environment.source.value_reads_by_node[node]
-    captured = SourceLiteralCapture(environment, read)
+    captured = SourceLiteralCapture(execution=environment, read=read)
     assert captured.native_type in (int, str)
     for query in (captured.require_native_scalar, captured.require_native_text):
         with pytest.raises(CapturedReferenceRejection) as failure:

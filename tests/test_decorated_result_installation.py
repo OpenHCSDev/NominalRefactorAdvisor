@@ -32,7 +32,7 @@ def wrapped(decorators=("staticmethod",), in_class=False, parameters=""):
     )
     env = execution(source)
     node, context, binding = function(env)
-    raw = SourceCreatedFunctionCapture(env, node)
+    raw = SourceCreatedFunctionCapture(execution=env, node=node)
     return source, env, context, binding, raw.creation_results[-1]
 
 
@@ -68,7 +68,7 @@ def test_final_wrapped_result_supplies_its_original_store_and_return(
             operation()
     if in_class:
         owner = env.class_entry(env.module.module.body[0])
-        tail = PreparedNamespaceTail(owner, result)
+        tail = PreparedNamespaceTail(entry=owner, completion=result)
         assert tail.receipt is result.return_continuation(prefix)
         env.require_class_creation(owner.node)
     assert not env._pending

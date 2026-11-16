@@ -4832,9 +4832,9 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                         f"{node.name}:{subject}",
                         tuple(
                             PresentationToken(
-                                key,
-                                PresentationTokenKind.STRING_LITERAL,
-                                PresentationTokenRole.DICT_KEY,
+                                value=key,
+                                kind=PresentationTokenKind.STRING_LITERAL,
+                                role=PresentationTokenRole.DICT_KEY,
                                 written=key,
                             )
                             for key in keys
@@ -6497,9 +6497,9 @@ class ConstantPresentationTokenProjector(PresentationTokenNodeProjector):
             return ()
         return tuple(
             PresentationToken(
-                value,
-                PresentationTokenKind.STRING_LITERAL,
-                role,
+                value=value,
+                kind=PresentationTokenKind.STRING_LITERAL,
+                role=role,
                 written=node.value,
             )
             for value in normalized_name_variants(node.value)
@@ -6522,7 +6522,7 @@ class NamePresentationTokenProjector(PresentationTokenNodeProjector):
             raise TypeError(f"Expected ast.Name, got {type(node)!r}")
         return tuple(
             PresentationToken(
-                value, PresentationTokenKind.NAME_REFERENCE, role, written=node.id
+                value=value, kind=PresentationTokenKind.NAME_REFERENCE, role=role, written=node.id
             )
             for value in normalized_name_variants(node.id)
         )
@@ -6547,9 +6547,9 @@ class AttributePresentationTokenProjector(PresentationTokenNodeProjector):
             qualifier = chain[-2]
             return tuple(
                 PresentationToken(
-                    value,
-                    PresentationTokenKind.QUALIFIED_ATTRIBUTE,
-                    role,
+                    value=value,
+                    kind=PresentationTokenKind.QUALIFIED_ATTRIBUTE,
+                    role=role,
                     written=chain[-1],
                     qualifier=qualifier,
                 )
@@ -6557,7 +6557,7 @@ class AttributePresentationTokenProjector(PresentationTokenNodeProjector):
             )
         return tuple(
             PresentationToken(
-                value, PresentationTokenKind.NAME_REFERENCE, role, written=node.attr
+                value=value, kind=PresentationTokenKind.NAME_REFERENCE, role=role, written=node.attr
             )
             for value in normalized_name_variants(node.attr)
         )
@@ -6661,9 +6661,9 @@ class CallPresentationTokenProjector(PresentationTokenNodeProjector):
             for name in keyword.names:
                 tokens.extend(
                     PresentationToken(
-                        value,
-                        PresentationTokenKind.STRING_LITERAL,
-                        PresentationTokenRole.CALL_KEYWORD_NAME,
+                        value=value,
+                        kind=PresentationTokenKind.STRING_LITERAL,
+                        role=PresentationTokenRole.CALL_KEYWORD_NAME,
                         written=name,
                     )
                     for value in normalized_name_variants(name)

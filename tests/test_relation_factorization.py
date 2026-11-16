@@ -465,7 +465,7 @@ def test_invalidation_surface_rejects_wrong_type_duplicate_and_foreign_rows() ->
         OwnerInvalidationSurface(implementation_key="owner", derived_consumers=(), residual_pairs=(pair, pair), is_choke_point=False)
     with pytest.raises(ValueError):
         OwnerInvalidationSurface(
-            "owner", (), (RequiredRelationPair(implementation_key="foreign", consumer="x"),), False
+            implementation_key="owner", derived_consumers=(), residual_pairs=(RequiredRelationPair(implementation_key="foreign", consumer="x"),), is_choke_point=False
         )
 
 

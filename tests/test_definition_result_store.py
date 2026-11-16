@@ -18,7 +18,7 @@ def definition(source):
     entry = (
         environment.class_entry(node)
         if isinstance(node, ast.ClassDef)
-        else SourceCreatedFunctionCapture(environment, node)
+        else SourceCreatedFunctionCapture(execution=environment, node=node)
     )
     return environment, entry
 

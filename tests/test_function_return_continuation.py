@@ -21,7 +21,7 @@ from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 def native_function(source):
-    compilation = NativePythonCompilation(source, "function_return.py")
+    compilation = NativePythonCompilation(source=source, file_path="function_return.py")
     node = next(
         node
         for node in ast.walk(ast.parse(source))

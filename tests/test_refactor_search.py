@@ -41,7 +41,7 @@ def test_front_keeps_every_move_no_other_move_beats_on_every_axis() -> None:
     amortizing = scored("amortizing", removed=1, tokens=1000, add_member=10)
     dominated = scored("dominated", removed=1, tokens=1000)
 
-    idle = UnscoredMove("idle", "no targets")
+    idle = UnscoredMove(concept="idle", reason="no targets")
     turn = SearchTurn(start=START, moves=(dominated, amortizing, cheap, idle))
 
     assert turn.front == (cheap, amortizing)

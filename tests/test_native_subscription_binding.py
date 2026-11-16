@@ -195,7 +195,7 @@ def test_binding_cannot_use_foreign_or_copied_original_inputs(foreign):
         )
         with pytest.raises(ValueError):
             ClassVariableSubscription(
-                environment, replace(operation, event=event)
+                environment=environment, operation=replace(operation, event=event)
             ).require_closed()
     assert not environment._pending
 

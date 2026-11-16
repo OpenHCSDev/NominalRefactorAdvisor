@@ -499,10 +499,10 @@ class ExistingMethodOwner(OwnerCandidate):
         location = SourceLocation(file_path=self.declaration.file_path, line=self.method.lineno, symbol=self.symbol)
         receipts = [
             Receipt(
-                OwnerReceiptKind.SERVES_CALL_SITES,
-                f"`{self.declaration.qualname}` is inherited by the owners of "
+                kind=OwnerReceiptKind.SERVES_CALL_SITES,
+                detail=f"`{self.declaration.qualname}` is inherited by the owners of "
                 f"{len(served)} of the {len(call_sites)} constructor call(s)",
-                (location,),
+                evidence=(location,),
                 count=len(served),
             )
         ]

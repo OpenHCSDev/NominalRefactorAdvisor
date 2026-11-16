@@ -18,7 +18,7 @@ pytestmark = pytest.mark.native_proof
 
 def imports(statement, in_class):
     source = "class Target:\n    " + statement if in_class else statement
-    compilation = NativePythonCompilation(source + "\n", "import-operands.py")
+    compilation = NativePythonCompilation(source=source + "\n", file_path="import-operands.py")
     stores = tuple(
         store
         for store in compilation.execution_outcome.value_stores

@@ -36,7 +36,7 @@ def test_body_contract_requires_capture_and_preparation_before_instantiation():
     )
     env = execution("class Sample: pass\n")
     with pytest.raises(TypeError, match="abstract"):
-        SourceClassBodyEntryABC(env, env.module.module.body[0])
+        SourceClassBodyEntryABC(execution=env, node=env.module.module.body[0])
 
 
 @pytest.mark.native_proof
@@ -155,7 +155,7 @@ def test_body_factoring_does_not_bypass_explicit_constructor_keyword_rejection(h
     env = execution(f"class Sample({header}): pass\n")
     # The ordinary owner retains its proof boundary independently of the new
     # factory's earlier native-family selection from explicit metaclass inputs.
-    entry = SourceClassEntry(env, env.module.module.body[0])
+    entry = SourceClassEntry(execution=env, node=env.module.module.body[0])
     with pytest.raises(ValueError, match="unproved construction hooks") as refused:
         _ = entry.frame
     assert "'documentation.Sample'" in str(refused.value)

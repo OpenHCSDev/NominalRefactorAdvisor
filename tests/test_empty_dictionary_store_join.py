@@ -34,7 +34,7 @@ def test_actual_empty_dictionary_producer_and_store_join_original_creation(in_cl
         if in_class
         else env.entry.context
     )
-    store = SourceAssignmentStore(env, context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=context.flow.mutations[-1])
     prefix = env.required_prefix(context, None)
     receipt = store.require_installation(prefix)
     assert type(receipt.value) is NativeEmptyDictionaryValue
@@ -64,12 +64,12 @@ def test_final_dictionary_namespace_matches_real_subprocess_frame_return(body):
     ),
 )
 def test_nonempty_transfer_does_not_gain_empty_creation_or_source_installation(source):
-    compilation = NativePythonCompilation(source, "nonempty.py")
+    compilation = NativePythonCompilation(source=source, file_path="nonempty.py")
     receipt = value_store(compilation, assignment(source))
     assert receipt.value.native_type is dict
     assert not isinstance(receipt.value, NativeEmptyDictionaryValue)
     env = execution(source)
-    store = SourceAssignmentStore(env, env.entry.context.flow.mutations[-1])
+    store = SourceAssignmentStore(execution=env, binding=env.entry.context.flow.mutations[-1])
     with pytest.raises(ValueError):
         env.empty_dictionary_creation(store.source_read).require_closed()
     with pytest.raises(ValueError):
@@ -78,7 +78,7 @@ def test_nonempty_transfer_does_not_gain_empty_creation_or_source_installation(s
 
 def test_unpacked_map_has_no_proved_native_transfer():
     source = "payload = {**other}\n"
-    compilation = NativePythonCompilation(source, "unpacked.py")
+    compilation = NativePythonCompilation(source=source, file_path="unpacked.py")
     with pytest.raises(ValueError, match="unique original receipt"):
         value_store(compilation, assignment(source))
 
@@ -122,7 +122,7 @@ def test_source_creation_cannot_use_a_copied_native_value():
 def test_equal_empty_dictionaries_retain_distinct_source_creation_identities():
     env = execution("first = {}\nsecond = {}\n")
     stores = tuple(
-        SourceAssignmentStore(env, binding)
+        SourceAssignmentStore(execution=env, binding=binding)
         for binding in env.entry.context.flow.mutations
     )
     prefix = env.required_prefix(env.entry.context, None)
@@ -145,7 +145,7 @@ def test_prior_unknown_source_work_is_not_admitted_by_fresh_map_opcode():
 def test_construction_does_not_claim_absence_after_later_item_mutation():
     env = execution("payload = {}\npayload['item'] = None\n")
     binding = env.entry.context.flow.mutations[0]
-    store = SourceAssignmentStore(env, binding)
+    store = SourceAssignmentStore(execution=env, binding=binding)
     prefix = env.required_prefix(env.entry.context, None)
     store.require_installation(prefix)
     assert store.source_value.initial_names == frozenset()

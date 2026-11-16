@@ -18,7 +18,7 @@ from test_source_function_result import execution
 @pytest.mark.native_proof
 @pytest.mark.parametrize("expression", ("container[key]", "container[first][second]"))
 def test_subscription_retains_original_inputs_in_its_native_return(expression):
-    compilation = NativePythonCompilation(f"result = {expression}\n", "subscription.py")
+    compilation = NativePythonCompilation(source=f"result = {expression}\n", file_path="subscription.py")
     assignment = ast.parse(compilation.source).body[0]
     store = compilation.value_store_for(
         SourceByteSpan.require_node(assignment.value),
@@ -49,7 +49,7 @@ def test_native_generic_alias_has_a_complete_original_class_storage_path(
 
 @pytest.mark.parametrize("expression", ("left + right", "left | right"))
 def test_other_binary_operators_are_not_treated_as_subscription(expression):
-    compilation = NativePythonCompilation(f"result = {expression}\n", "binary.py")
+    compilation = NativePythonCompilation(source=f"result = {expression}\n", file_path="binary.py")
     assignment = ast.parse(compilation.source).body[0]
     with pytest.raises(ValueError):
         compilation.value_store_for(

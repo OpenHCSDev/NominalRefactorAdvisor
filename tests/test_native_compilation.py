@@ -325,7 +325,7 @@ def test_serialized_execution_keeps_source_provenance_without_ast_or_code() -> N
     assert restored == result
     _assert_compact(restored)
     changed = NativePythonCompilation(
-        module.source + "# different source\n", module.file_path
+        source=module.source + "# different source\n", file_path=module.file_path
     )
     assert changed.identity != result.compilation
     assert result.compilation.interpreter == (sys.implementation.name, sys.version)
@@ -343,7 +343,7 @@ def test_exact_source_hash_reexport_is_the_same_lower_authority() -> None:
 
 
 def test_compilation_reuses_canonical_source_path_policy() -> None:
-    compilation = NativePythonCompilation("", "package\\module.py")
+    compilation = NativePythonCompilation(source="", file_path="package\\module.py")
     assert compilation.file_path == "package/module.py"
     assert compilation.identity.file_path == compilation.file_path
 

@@ -103,7 +103,7 @@ def join(
         before,
         after,
         SourceReadCorrespondence(
-            document_for(document_source, (mutation,)), before.source, after.source
+            document_simulation=document_for(document_source, (mutation,)), before=before.source, after=after.source
         ),
     )
 
@@ -300,7 +300,7 @@ REGISTRY['beta'] = Beta
     for partial in exact:
         with pytest.raises(ValueError, match="exact rewritten source"):
             SourceReadCorrespondence(
-                document_for(source, (partial,), path), before.source, after.source
+                document_simulation=document_for(source, (partial,), path), before=before.source, after=after.source
             )
 
 
@@ -343,7 +343,7 @@ def test_mixed_document_projects_multiple_windows_and_gap_reads_once():
     after = source_environment(
         document.required_after_snapshot.sources_by_file_path[PATH]
     )
-    relation = SourceReadCorrespondence(document, before.source, after.source)
+    relation = SourceReadCorrespondence(document_simulation=document, before=before.source, after=after.source)
     names = ("sorted", "object", "len", "sorted", "type")
     originals = tuple(read_named(before, name) for name in names)
     expected = tuple(read_named(after, name) for name in names)
@@ -374,7 +374,7 @@ def test_equal_opaque_document_output_does_not_create_exact_read_provenance(reve
     after = source_environment(
         document.required_after_snapshot.sources_by_file_path[PATH]
     )
-    relation = SourceReadCorrespondence(document, before.source, after.source)
+    relation = SourceReadCorrespondence(document_simulation=document, before=before.source, after=after.source)
     with pytest.raises(ValueError, match="correspondence"):
         relation.corresponding_reads((read_named(before, "type"),))
 
@@ -400,7 +400,7 @@ def test_unchanged_module_can_join_through_another_files_document_edit():
     ).simulate(snapshot)
     assert PATH not in document.simulation.rewritten_sources
     before, after = source_environment(source), source_environment(source)
-    relation = SourceReadCorrespondence(document, before.source, after.source)
+    relation = SourceReadCorrespondence(document_simulation=document, before=before.source, after=after.source)
     assert relation.corresponding_reads((read_named(before, "object"),)) == (
         read_named(after, "object"),
     )
@@ -427,8 +427,8 @@ def test_created_module_has_no_original_reads_but_next_stage_does():
     first, second = (stage.document_simulation for stage in result.stage_reports)
     before, after = source_environment(source), source_environment(source)
     with pytest.raises(ValueError, match="original document revision"):
-        SourceReadCorrespondence(first, before.source, after.source)
-    relation = SourceReadCorrespondence(second, before.source, after.source)
+        SourceReadCorrespondence(document_simulation=first, before=before.source, after=after.source)
+    relation = SourceReadCorrespondence(document_simulation=second, before=before.source, after=after.source)
     assert relation.corresponding_reads((read_named(before, "object"),)) == (
         read_named(after, "object"),
     )
@@ -440,7 +440,7 @@ def test_uncovered_original_module_is_not_recovered_from_another_authority():
     before = source_environment("value = object\n", "/repo/uncovered.py")
     after = source_environment("value = object\n", "/repo/uncovered.py")
     with pytest.raises(KeyError):
-        SourceReadCorrespondence(document, before.source, after.source)
+        SourceReadCorrespondence(document_simulation=document, before=before.source, after=after.source)
 
 
 @pytest.mark.native_proof
@@ -487,7 +487,7 @@ def test_failed_candidate_native_gate_preserves_read_origin_but_blocks_applicati
         for node in after.reference_reads_by_node
         if isinstance(node, ast.Name) and node.id == "object"
     )
-    correspondence = SourceReadCorrespondence(document, before, after)
+    correspondence = SourceReadCorrespondence(document_simulation=document, before=before, after=after)
     assert correspondence.corresponding_reads((original,)) == (expected,)
     assert original is not expected
 
@@ -510,4 +510,4 @@ def test_invalid_renderer_parse_evidence_cannot_authenticate_source_corresponden
     invalid_document = replace(original_document, simulation=invalid_simulation)
     assert invalid_document.preflight_report.is_clean
     with pytest.raises(ValueError):
-        SourceReadCorrespondence(invalid_document, relation.before, relation.after)
+        SourceReadCorrespondence(document_simulation=invalid_document, before=relation.before, after=relation.after)

@@ -33,7 +33,7 @@ def tail_query(environment, key="alpha"):
         environment.initial
     )
     prefix = environment.required_prefix(read.context, read.use.position)
-    return InstalledValueSlotQuery(namespace, key, prefix, frozenset())
+    return InstalledValueSlotQuery(namespace=namespace, key=key, prefix=prefix, pending=frozenset())
 
 
 def installation(query, index=0):

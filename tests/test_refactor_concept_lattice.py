@@ -470,7 +470,7 @@ def test_registered_detector_cannot_infer_recipe_capability_from_metrics() -> No
 
 
 def test_semantic_mirror_contract_requires_projection_and_preserves_unknown_authority() -> None:
-    projection = SourceLocation("module.py", 3, "ROLE_TABLE")
+    projection = SourceLocation(file_path="module.py", line=3, symbol="ROLE_TABLE")
     finding = RefactorFinding(
         detector_id="semantic_mirror_without_descent",
         pattern_id=PatternId.NOMINAL_BOUNDARY,

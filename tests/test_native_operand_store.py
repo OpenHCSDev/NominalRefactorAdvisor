@@ -20,7 +20,7 @@ from test_documentation_store import execution
 
 
 def native_store(source):
-    compilation = NativePythonCompilation(source, "operands.py")
+    compilation = NativePythonCompilation(source=source, file_path="operands.py")
     assignment = ast.parse(source).body[-1]
     return compilation, compilation.value_store_for(
         SourceByteSpan.require_node(assignment.value),

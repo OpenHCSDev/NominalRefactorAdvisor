@@ -23,7 +23,7 @@ from test_registry_native_registration_controls import native_control
 
 
 def compiled_stores(source):
-    compilation = NativePythonCompilation(source, "return.py")
+    compilation = NativePythonCompilation(source=source, file_path="return.py")
     nodes = sorted(
         (node for node in ast.walk(ast.parse(source)) if isinstance(node, ast.Assign)),
         key=lambda node: node.lineno,

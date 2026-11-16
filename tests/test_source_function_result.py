@@ -236,7 +236,7 @@ def test_equal_foreign_receipts_cannot_authenticate_source_function(corruption):
     environment = execution("def chosen(): pass\n")
     node, context, binding = function(environment)
     if corruption == "node":
-        result = SourceCreatedFunctionCapture(environment, copy.deepcopy(node))
+        result = SourceCreatedFunctionCapture(execution=environment, node=copy.deepcopy(node))
         with pytest.raises(ValueError, match="unique actual operation"):
             result.require_closed()
     elif corruption == "binding":
@@ -264,4 +264,4 @@ def test_class_entry_reuses_definition_owner_without_function_activation_change(
     assert isinstance(result.entry, SourceDefinitionEntry)
     assert result.source_definition() == (context, operation.event)
     with pytest.raises(ValueError, match="actual function declaration"):
-        SourceCreatedFunctionCapture(environment, node).require_closed()
+        SourceCreatedFunctionCapture(execution=environment, node=node).require_closed()

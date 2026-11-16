@@ -273,9 +273,9 @@ def test_detector_emits_one_authority_anchored_certified_finding() -> None:
     assert finding.pattern_id is PatternId.AUTHORITATIVE_CONTEXT
     assert finding.certification == "certified"
     assert finding.authority_evidence == SourceLocation(
-        "pkg/complete.py",
-        4,
-        "pkg.complete._CacheKey",
+        file_path="pkg/complete.py",
+        line=4,
+        symbol="pkg.complete._CacheKey",
     )
     assert finding.metrics == ParameterThreadMetrics(
         function_count=1,

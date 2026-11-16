@@ -18,7 +18,7 @@ pytestmark = pytest.mark.native_proof
 
 
 def observed_store():
-    compilation = NativePythonCompilation("chosen = object\n", "convergence.py")
+    compilation = NativePythonCompilation(source="chosen = object\n", file_path="convergence.py")
     code = compilation.compile()
     stream = NativeValueStoreStream(
         code, NativeCreationBackend.current().primitive_operations
@@ -84,7 +84,7 @@ def test_value_free_first_observation_cannot_borrow_a_later_distinct_value():
 
 def test_stores_at_distinct_offsets_remain_distinct_even_with_equal_names():
     compilation = NativePythonCompilation(
-        "chosen = object\nchosen = str\n", "repeated.py"
+        source="chosen = object\nchosen = str\n", file_path="repeated.py"
     )
     stream = NativeValueStoreStream(
         compilation.compile(), NativeCreationBackend.current().primitive_operations

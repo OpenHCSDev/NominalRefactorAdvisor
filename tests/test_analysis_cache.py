@@ -303,7 +303,7 @@ def _empty_semantic_descent_graph(authority_name: str = "") -> SemanticDescentGr
                 authority_id=f"authority:{authority_name}",
                 kind=SemanticAuthorityKind.CLASS_FAMILY,
                 name=authority_name,
-                location=SourceLocation("fixture.py", 1, authority_name),
+                location=SourceLocation(file_path="fixture.py", line=1, symbol=authority_name),
                 fact_ids=(),
             ),
         )
@@ -572,7 +572,7 @@ def test_module_detector_cache_reuses_unchanged_implementation_bundle(
         return finding_spec.build(
             detector_id,
             detector_id,
-            (SourceLocation(str(module.path), 1, detector_id),),
+            (SourceLocation(file_path=str(module.path), line=1, symbol=detector_id),),
         )
 
     class StableBundleDetector(PerModuleIssueDetector):
@@ -981,7 +981,7 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
                 authority_id="stable-authority",
                 kind=SemanticAuthorityKind.CLASS_FAMILY,
                 name="StableAuthority",
-                location=SourceLocation(str(source_a), 1, "StableAuthority"),
+                location=SourceLocation(file_path=str(source_a), line=1, symbol="StableAuthority"),
                 fact_ids=(),
             ),
         ),
@@ -1024,7 +1024,7 @@ def test_equivalent_checkouts_reuse_graph_and_detector_caches_with_rebased_paths
                 finding_spec.build(
                     self.detector_id,
                     "relocatable finding",
-                    (SourceLocation(str(module.path), 1, "StableAuthority"),),
+                    (SourceLocation(file_path=str(module.path), line=1, symbol="StableAuthority"),),
                 )
             ]
 
@@ -1093,7 +1093,7 @@ def test_same_checkout_finding_rebase_reuses_validated_objects(
     ).build(
         "stable_cache_detector",
         "stable finding",
-        (SourceLocation(str(source_path), 1, "VALUE"),),
+        (SourceLocation(file_path=str(source_path), line=1, symbol="VALUE"),),
     )
 
     rebased = analysis_cache_module._rebase_findings(
@@ -1114,14 +1114,14 @@ def test_cross_checkout_finding_rebase_preserves_declared_evidence_roles(
     source_root.mkdir()
     target_root.mkdir()
     projection = SourceLocation(
-        (source_root / "projection.py").as_posix(),
-        7,
-        "ROLE_TABLE",
+        file_path=(source_root / "projection.py").as_posix(),
+        line=7,
+        symbol="ROLE_TABLE",
     )
     authority = SourceLocation(
-        (source_root / "authority.py").as_posix(),
-        3,
-        "Role",
+        file_path=(source_root / "authority.py").as_posix(),
+        line=3,
+        symbol="Role",
     )
     finding = FindingSpec(
         pattern_id=PatternId.NOMINAL_BOUNDARY,
@@ -1177,7 +1177,7 @@ def test_cross_checkout_finding_rebase_moves_the_paths_its_metrics_name(
     ).build(
         "package_destination_cache_detector",
         "flat.py belongs in pkg/flat.py",
-        (SourceLocation(flat.as_posix(), 1, "<module>"),),
+        (SourceLocation(file_path=flat.as_posix(), line=1, symbol="<module>"),),
         metrics=PackageDestinationMetrics(
             destination_path=(source_root / "pkg" / "flat.py").as_posix(),
             cluster_paths=(flat.as_posix(),),
@@ -1216,7 +1216,7 @@ def test_exact_finding_cache_chunks_pickles_and_loads_legacy_payloads(
         ).build(
             "chunked_cache_detector",
             f"chunked finding {index}",
-            (SourceLocation(str(source_path), index + 1, f"VALUE:{index}"),),
+            (SourceLocation(file_path=str(source_path), line=index + 1, symbol=f"VALUE:{index}"),),
         )
         for index in range(5)
     ]
@@ -1292,7 +1292,7 @@ def test_relocatable_caches_reject_path_escape_and_ambiguous_roots(
     ).build(
         "escaped_cache_detector",
         "escaped finding",
-        (SourceLocation(str(tmp_path / "outside.py"), 1, "outside"),),
+        (SourceLocation(file_path=str(tmp_path / "outside.py"), line=1, symbol="outside"),),
     )
     cache.store(identity, [escaped_finding])
 
@@ -1569,7 +1569,7 @@ def test_analysis_cache_rejects_malformed_finding_evidence(
     finding = finding_spec.build(
         "malformed_evidence",
         "malformed evidence",
-        (SourceLocation((package_root / "mod.py").as_posix(), 1, "VALUE"),),
+        (SourceLocation(file_path=(package_root / "mod.py").as_posix(), line=1, symbol="VALUE"),),
     )
     object.__setattr__(finding, "evidence", (finding.evidence,))
     storage.store_typed_payload_atomic(
@@ -1624,7 +1624,7 @@ def test_cross_module_candidate_detector_reuses_contextual_global_cache(
             return finding_spec.build(
                 self.detector_id,
                 f"candidate {candidate}",
-                (SourceLocation(str(package_root / candidate), 1, candidate),),
+                (SourceLocation(file_path=str(package_root / candidate), line=1, symbol=candidate),),
             )
 
     for registry_key, detector_type in tuple(IssueDetector.__registry__.items()):
@@ -1773,7 +1773,7 @@ def test_graph_detector_uses_cached_repo_graph_for_changed_module_analysis(
                 authority_id="repo-authority",
                 kind=SemanticAuthorityKind.CLASS_FAMILY,
                 name="RepoAuthority",
-                location=SourceLocation(str(package_root / "a.py"), 1, "RepoAuthority"),
+                location=SourceLocation(file_path=str(package_root / "a.py"), line=1, symbol="RepoAuthority"),
                 fact_ids=(),
             ),
         ),
@@ -1879,7 +1879,7 @@ def test_uncached_analysis_preserves_cached_repo_graph_source(
                 authority_id="repo-authority",
                 kind=SemanticAuthorityKind.CLASS_FAMILY,
                 name="RepoAuthority",
-                location=SourceLocation(str(package_root / "a.py"), 1, "RepoAuthority"),
+                location=SourceLocation(file_path=str(package_root / "a.py"), line=1, symbol="RepoAuthority"),
                 fact_ids=(),
             ),
         ),
@@ -2004,7 +2004,7 @@ def test_global_detector_shard_survives_detector_registry_expansion(
                 finding_spec.build(
                     self.detector_id,
                     "stable global",
-                    (SourceLocation(str(modules[0].path), 1, "global"),),
+                    (SourceLocation(file_path=str(modules[0].path), line=1, symbol="global"),),
                 )
             ]
 
@@ -5970,8 +5970,8 @@ def test_compact_method_family_candidates_preserve_semantics_without_ast_shadow(
     )
     with pytest.raises(TypeError, match="violates its SemanticOverlapMethodCandidate"):
         helper_detectors.CompactMethodFamilyCandidates(
-            candidate_records.SemanticOverlapMethodCandidate,
-            family_candidates,
+            candidate_type=candidate_records.SemanticOverlapMethodCandidate,
+            candidates=family_candidates,
         )
     with pytest.raises(TypeError, match="requires one family per candidate type"):
         helper_detectors.CompactMethodFamilyContext(
@@ -6549,8 +6549,8 @@ def test_single_source_parser_rejects_stale_semantic_hash_identity(
     changed_source = "VALUE = 2\n"
     module_path.write_text(original_source, encoding="utf-8", newline="")
     source_semantic_hash = ast_tools_module.PythonSourceSemanticHash(
-        ast_tools_module.python_source_cache_signature(original_source),
-        ast_tools_module.semantic_python_source_hash(original_source),
+        source_signature=ast_tools_module.python_source_cache_signature(original_source),
+        semantic_hash=ast_tools_module.semantic_python_source_hash(original_source),
     )
     module_path.write_text(changed_source, encoding="utf-8", newline="")
     parser = ast_tools_module.PythonModuleRootParser.for_root(

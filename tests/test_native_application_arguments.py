@@ -109,7 +109,7 @@ def test_long_native_argument_chain_reuses_iterative_value_comparison(monkeypatc
 def decorated():
     env = execution("@classmethod\n@staticmethod\ndef chosen(): pass\n")
     node, _, _ = function(env)
-    result = SourceCreatedFunctionCapture(env, node).creation_results[-1]
+    result = SourceCreatedFunctionCapture(execution=env, node=node).creation_results[-1]
     return env, node, result
 
 
@@ -164,7 +164,7 @@ def test_source_join_rejects_copied_native_argument_or_frame(damage, message):
 def test_observed_implicit_argument_does_not_admit_unknown_decorator():
     env = execution("@unknown\ndef chosen(): pass\n")
     node, _, _ = function(env)
-    creation = SourceCreatedFunctionCapture(env, node)
+    creation = SourceCreatedFunctionCapture(execution=env, node=node)
     application = creation.creation_results[-1]
     assert (
         creation.native_execution.require_applications()[-1].argument

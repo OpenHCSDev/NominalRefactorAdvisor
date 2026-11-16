@@ -27,7 +27,7 @@ def compiled_function(tmp_path, monkeypatch, source):
     module = ModuleType("native_function_source_fixture")
     module.__file__ = str(path)
     monkeypatch.setitem(sys.modules, module.__name__, module)
-    compilation = NativePythonCompilation(source, str(path))
+    compilation = NativePythonCompilation(source=source, file_path=str(path))
     exec(compilation.compile(), vars(module))
     return compilation, module.sample
 
@@ -260,7 +260,7 @@ def test_different_compilation_cannot_reuse_completed_source_proof(
     with ScanCache.scope():
         compilation.function_definition(function)
         changed = NativePythonCompilation(
-            compilation.source.replace("17", "18"), compilation.file_path
+            source=compilation.source.replace("17", "18"), file_path=compilation.file_path
         )
         with pytest.raises(ValueError, match="differs from compiled source"):
             changed.function_definition(function)
@@ -494,7 +494,7 @@ def test_physical_source_acquisition_dsl_keeps_input_and_original_signature():
 def test_executable_filename_preserves_backslashes_separately_from_source_identity():
     source = "def sample():\n    return 17\n"
     filename = r"package\sample.py"
-    compilation = NativePythonCompilation(source, filename)
+    compilation = NativePythonCompilation(source=source, file_path=filename)
     namespace = {}
     exec(compile(source, filename, "exec", dont_inherit=True, optimize=0), namespace)
     function = namespace["sample"]

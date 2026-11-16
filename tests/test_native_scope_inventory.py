@@ -16,9 +16,9 @@ from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
 def observed_inventory():
     compilation = NativePythonCompilation(
-        '"module documentation"\nfirst = None\nclass Holder:\n'
+        source='"module documentation"\nfirst = None\nclass Holder:\n'
         '    "class documentation"\n    second = True\n',
-        "scope_inventory.py",
+        file_path="scope_inventory.py",
     )
     backend = NativeCreationBackend.current()
     inventory = backend.inventory(compilation.compile(), compilation.identity)
@@ -42,7 +42,7 @@ def test_repeated_code_sites_keep_distinct_observers_and_ambiguous_origins():
         "def create(flag):\n    try:\n        if flag: return 1\n"
         "    finally:\n        class Target:\n            value = None\n"
     )
-    compilation = NativePythonCompilation(source, "repeated_scope.py")
+    compilation = NativePythonCompilation(source=source, file_path="repeated_scope.py")
     backend = NativeCreationBackend.current()
     inventory = backend.inventory(compilation.compile(), compilation.identity)
     repeated = [
@@ -101,7 +101,7 @@ def test_rebinding_transient_inventory_does_not_rewrite_published_scopes():
 @pytest.mark.native_proof
 def test_snapshot_keeps_scope_views_without_recompiling(monkeypatch):
     source = "class Holder:\n    value = None\n"
-    compilation = NativePythonCompilation(source, "scope_snapshot.py")
+    compilation = NativePythonCompilation(source=source, file_path="scope_snapshot.py")
     original = compilation.execution_outcome
     payload = pickle.dumps(compilation)
 

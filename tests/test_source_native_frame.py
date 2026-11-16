@@ -19,7 +19,7 @@ def resolver_for(env, node):
     if isinstance(node, ast.ClassDef):
         return env.class_entry(node)
     if isinstance(node, ast.FunctionDef):
-        return SourceCreatedFunctionCapture(env, node)
+        return SourceCreatedFunctionCapture(execution=env, node=node)
     return env.capture_value(node.value)
 
 
@@ -97,7 +97,7 @@ def test_builder_observation_does_not_require_later_header_completion():
 def test_module_receipt_cannot_authenticate_a_function_shaped_entry():
     env = execution("def outer():\n    def chosen(): pass\n")
     outer = env.module.module.body[0]
-    resolver = SourceCreatedFunctionCapture(env, outer.body[0])
+    resolver = SourceCreatedFunctionCapture(execution=env, node=outer.body[0])
     context = resolver.native_frame_context
     assert context is not env.source.module_context
     # Even a corrupted entry-context association cannot relabel compiler origin.

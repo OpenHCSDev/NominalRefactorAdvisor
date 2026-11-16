@@ -100,7 +100,7 @@ def test_raw_function_also_requires_its_decorator_operand_to_be_evaluated(decora
     environment = execution(source)
     node, _, _ = function(environment)
     with pytest.raises(ValueError, match="unproved|missing"):
-        SourceCreatedFunctionCapture(environment, node).require_descriptor_argument()
+        SourceCreatedFunctionCapture(execution=environment, node=node).require_descriptor_argument()
 
 
 @pytest.mark.native_proof

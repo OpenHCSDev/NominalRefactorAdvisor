@@ -36,7 +36,7 @@ def test_span_fields_and_boundary_laws_have_one_nominal_owner():
             assert field is base_fields[field.name]
     assert "start_offset" not in SourceTextSpanReplacement.__annotations__
     spans = tuple(
-        SourceTextSpan(start, end) for start in range(6) for end in range(start, 6)
+        SourceTextSpan(start_offset=start, end_offset=end) for start in range(6) for end in range(start, 6)
     )
     for first, second in product(spans, repeat=2):
         assert first.overlaps(second) == previous_overlap(first, second)
@@ -88,17 +88,17 @@ def test_adjacent_conflict_check_matches_all_pairs_and_renderer_matches_original
 @pytest.mark.parametrize(
     "batch, expected",
     (
-        ((), SourceTextSpan(2, 4)),
-        ((edit(0, 1, "XYZ"),), SourceTextSpan(4, 6)),
-        ((edit(0, 2, ""),), SourceTextSpan(0, 2)),
-        ((edit(2, 2, "before"),), SourceTextSpan(8, 10)),
-        ((edit(4, 4, "after"),), SourceTextSpan(2, 4)),
-        ((edit(0, 2, "x"), edit(2, 2, "++"), edit(4, 6, "y")), SourceTextSpan(3, 5)),
+        ((), SourceTextSpan(start_offset=2, end_offset=4)),
+        ((edit(0, 1, "XYZ"),), SourceTextSpan(start_offset=4, end_offset=6)),
+        ((edit(0, 2, ""),), SourceTextSpan(start_offset=0, end_offset=2)),
+        ((edit(2, 2, "before"),), SourceTextSpan(start_offset=8, end_offset=10)),
+        ((edit(4, 4, "after"),), SourceTextSpan(start_offset=2, end_offset=4)),
+        ((edit(0, 2, "x"), edit(2, 2, "++"), edit(4, 6, "y")), SourceTextSpan(start_offset=3, end_offset=5)),
     ),
 )
 def test_unchanged_spans_follow_exact_boundary_insertions(batch, expected):
     geometry = SourceTextGeometry("abcdef")
-    original = SourceTextSpan(2, 4)
+    original = SourceTextSpan(start_offset=2, end_offset=4)
     assert geometry.project_unchanged_spans((original,), batch) == (expected,)
     rewritten = geometry.source_with_replacements_in_span(0, 6, batch)
     assert expected.source_text(rewritten) == original.source_text(geometry.source)
@@ -112,17 +112,17 @@ def test_changed_spans_have_no_original_text_provenance_even_when_bytes_match(
 ):
     with pytest.raises(ValueError, match="unchanged-text correspondence"):
         SourceTextGeometry("abcdef").project_unchanged_spans(
-            (SourceTextSpan(2, 4),), (replacement,)
+            (SourceTextSpan(start_offset=2, end_offset=4),), (replacement,)
         )
 
 
 @pytest.mark.parametrize(
     "span",
     (
-        SourceTextSpan(-1, 2),
-        SourceTextSpan(2, 1),
-        SourceTextSpan(3, 3),
-        SourceTextSpan(1, 8),
+        SourceTextSpan(start_offset=-1, end_offset=2),
+        SourceTextSpan(start_offset=2, end_offset=1),
+        SourceTextSpan(start_offset=3, end_offset=3),
+        SourceTextSpan(start_offset=1, end_offset=8),
     ),
 )
 def test_invalid_or_empty_retained_spans_reject(span):
@@ -147,7 +147,7 @@ def test_utf8_crlf_and_unsorted_nested_queries_keep_exact_character_provenance()
 
 
 def test_empty_insertion_does_not_interrupt_retained_text():
-    span = SourceTextSpan(0, 6)
+    span = SourceTextSpan(start_offset=0, end_offset=6)
     assert SourceTextGeometry("abcdef").project_unchanged_spans(
         (span,), (edit(3, 3, ""),)
     ) == (span,)
@@ -176,18 +176,18 @@ def test_repeated_lexemes_follow_original_offsets_in_one_large_batch():
         edit(index * 9 + 7, index * 9 + 8, "100") for index in range(count)
     )
     spans = tuple(
-        SourceTextSpan(index * 9, index * 9 + 4) for index in reversed(range(count))
+        SourceTextSpan(start_offset=index * 9, end_offset=index * 9 + 4) for index in reversed(range(count))
     )
     projected = geometry.project_unchanged_spans(spans, replacements)
     assert projected == tuple(
-        SourceTextSpan(index * 11, index * 11 + 4) for index in reversed(range(count))
+        SourceTextSpan(start_offset=index * 11, end_offset=index * 11 + 4) for index in reversed(range(count))
     )
 
 
 def test_identical_declared_edit_is_deduplicated_before_transport():
     replacement = edit(0, 1, "XYZ")
     assert SourceTextGeometry("abcdef").project_unchanged_spans(
-        (SourceTextSpan(2, 4),), (replacement, replacement)
+        (SourceTextSpan(start_offset=2, end_offset=4),), (replacement, replacement)
     ) == (
-        SourceTextSpan(4, 6),
+        SourceTextSpan(start_offset=4, end_offset=6),
     )
