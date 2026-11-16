@@ -28,9 +28,6 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod, AnsweredUse
-from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
-
-_shared_type_checker_session: TypeCheckerSession | None = None
 
 
 def _tuple_return_kind(node: ast.Return) -> str | None:
@@ -181,16 +178,7 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                     add(resolved_class.file_path, start, end, new_annotation)
 
         answered = AnsweredMethod(snapshot, base, function)
-        shared = _shared_type_checker_session
-        owned_session = shared is None
-        session = shared or TypeCheckerSession.started(
-            SourceTexts(snapshot.parsed_modules)
-        )
-        try:
-            calls = answered.answering_calls(session)
-        finally:
-            if owned_session:
-                session.stop()
+        calls = answered.answering_calls()
 
         for use in calls:
             geo = geometry(use.file_path)

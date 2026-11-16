@@ -34,6 +34,7 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.type_checker_session import DeferredTypeChecker, SourceTexts
 from nominal_refactor_advisor.implementation_identity import AnswerFreeDeclaration
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -190,6 +191,13 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     text_files: Mapping[str, FileText] = field(default_factory=dict, repr=False)
     """Files outside the Python index that earlier stages of the plan rewrote, as
     this state has them; every other one is as it is on disk."""
+
+    @cached_property
+    def type_checker(self) -> DeferredTypeChecker:
+        """One type-checker build of this state's sources, started by the first
+        receiver an operation proved against this state asks about."""
+
+        return DeferredTypeChecker(SourceTexts(self.parsed_modules))
 
     _projected_states: dict[tuple[tuple[str, str], ...], CodemodSourceSnapshot] = (
         field(default_factory=dict, init=False, repr=False, compare=False)
