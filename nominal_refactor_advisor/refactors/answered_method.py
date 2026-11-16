@@ -8,6 +8,7 @@ from functools import cached_property
 from collections.abc import Sequence
 from typing import ClassVar
 
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
@@ -148,11 +149,16 @@ class AnsweredMethod:
         if symbols and not inside:
             return False
         if not symbols:
-            raise ValueError(
+            raise NeedsInput(
                 f"{where} reads {self.name!r} on a receiver typed by no declaration; "
-                "it needs an annotation that says which class answers"
+                "it needs an annotation that says which class answers",
+                NeededInput.SOURCE_CHANGE,
             )
-        raise ValueError(f"{where} calls {self.name!r} on a receiver typed {symbols!r}")
+        raise NeedsInput(
+            f"{where} reads {self.name!r} on a receiver that may be {symbols!r}, some of "
+            "them outside the family; it needs one type the family answers",
+            NeededInput.SOURCE_CHANGE,
+        )
 
     def bound_class(
         self, receiver: ast.expr, file_path: str, enclosing: str | None, scopes: tuple[ast.AST, ...],

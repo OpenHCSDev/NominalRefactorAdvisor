@@ -687,7 +687,7 @@ class CarrierCollapseFindingRecipeSynthesizer(
                 authority_location
             )
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         operation = type(self).carrier_collapse_operation(
             SourceRewriteTarget(target_id=authority_target.target_id)
         )

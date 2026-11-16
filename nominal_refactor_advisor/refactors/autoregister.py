@@ -744,7 +744,7 @@ class InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer(
             )
             operation.source_edits_from_snapshot(snapshot)
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         recipe = (
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{self.recipe_id_suffix}",

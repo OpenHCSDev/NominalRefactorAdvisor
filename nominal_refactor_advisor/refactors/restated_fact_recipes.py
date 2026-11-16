@@ -97,7 +97,7 @@ class DeadModuleDissolutionFindingRecipeSynthesizer(
             operation.source_edits(context)
             operation.source_file_deletions(context)
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-dissolve-module",

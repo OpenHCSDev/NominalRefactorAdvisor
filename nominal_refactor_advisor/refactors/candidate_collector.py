@@ -423,7 +423,7 @@ class SourceReprovedLineWitnessFindingRecipeSynthesizer(
             TypeError,
             ValueError,
         ) as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         return self.executable_evaluation(recipe)
 
 

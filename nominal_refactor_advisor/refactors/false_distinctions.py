@@ -189,7 +189,7 @@ class ScopeBranchFindingRecipeSynthesizer(
         try:
             operation.source_edits(context)
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
@@ -377,7 +377,7 @@ class ClassTargetFindingRecipeSynthesizer(
             operation = self.operation_for(SourceRewriteTarget(target_id=target_ids[0]), context)
             operation.source_edits(context)
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",

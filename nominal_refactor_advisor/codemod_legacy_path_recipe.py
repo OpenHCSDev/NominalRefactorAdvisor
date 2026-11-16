@@ -74,7 +74,7 @@ class LegacyPathErasureFindingRecipeSynthesizer(
         try:
             operation.source_edits(context)
         except ValueError as error:
-            return self.rejected_evaluation(str(error))
+            return self.stopped_evaluation(error)
         return self.executable_evaluation(
             RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-erase-legacy-path",

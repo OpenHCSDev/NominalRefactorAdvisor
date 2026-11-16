@@ -151,7 +151,7 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
     def failed_preflight(
         self, error: TypeError | ValueError
     ) -> CodemodOperationPreflightError:
-        return CodemodOperationPreflightError(
+        stopped = CodemodOperationPreflightError(
             CodemodOperationPreflightReport(
                 operation=self.operation_key(),
                 status=CodemodPreflightStatus.FAILED,
@@ -160,6 +160,8 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
                 needs=NeedsInput.needs_of(error),
             )
         )
+        stopped.__cause__ = error
+        return stopped
 
     @abstractmethod
     def source_edits_from_snapshot(
