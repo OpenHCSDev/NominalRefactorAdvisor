@@ -605,6 +605,13 @@ def named_value_binding(node: ast.AST) -> NamedValueBinding | None:
     return named_assign_value_binding(node) or named_ann_assign_value_binding(node)
 
 
+def named_valued_binding(node: ast.AST) -> NamedValueBinding | None:
+    """A named binding that assigns a value; a bare annotation (`x: int`) assigns none."""
+
+    binding = named_value_binding(node)
+    return None if binding is None or binding.value is None else binding
+
+
 def single_return_value(body: Sequence[ast.stmt]) -> ast.AST | None:
     statement = single_ast(body, ast.Return)
     return None if statement is None else statement.value

@@ -21,7 +21,7 @@ from nominal_refactor_advisor.ast_tools import (
     is_docstring_statement,
     statements_without_docstring,
 )
-from nominal_refactor_advisor.semantic_match import NamedValueBinding, named_value_binding
+from nominal_refactor_advisor.semantic_match import NamedValueBinding, named_valued_binding
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
 
 ProjectionT = TypeVar("ProjectionT")
@@ -121,7 +121,7 @@ class ModuleNamedValues(ParsedModuleFact):
                 for statement in statements_without_docstring(
                     parsed_module.module.body
                 )
-                if (binding := named_value_binding(statement)) is not None
+                if (binding := named_valued_binding(statement)) is not None
             )
         )
 
@@ -132,7 +132,6 @@ class ModuleNamedValues(ParsedModuleFact):
         return {
             binding.name: (binding.line, binding.value)
             for binding in self.bindings
-            if binding.value is not None
         }
 
     @cached_property
@@ -169,7 +168,7 @@ class ModuleNamedValues(ParsedModuleFact):
                 ),
             )
             for binding in self.bindings
-            if binding.value is not None and _is_upper_snake_identifier(binding.name)
+            if _is_upper_snake_identifier(binding.name)
         }
 
 

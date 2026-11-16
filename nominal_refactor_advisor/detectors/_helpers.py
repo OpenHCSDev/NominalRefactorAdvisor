@@ -77,7 +77,7 @@ from nominal_refactor_advisor.semantic_match import (
     constant_value,
     Maybe,
     name_id,
-    named_value_binding,
+    named_valued_binding,
     return_call,
     single_assign_target,
     single_item,
@@ -165,8 +165,8 @@ class MethodProjection:
     ) -> dict[str, str]:
         aliases: dict[str, str] = {}
         for subnode in ast.walk(method):
-            binding = named_value_binding(subnode)
-            if binding is None or binding.value is None:
+            binding = named_valued_binding(subnode)
+            if binding is None:
                 continue
             attr_name = None
             if (value_attr_name := _self_attr_name(binding.value)) is not None:

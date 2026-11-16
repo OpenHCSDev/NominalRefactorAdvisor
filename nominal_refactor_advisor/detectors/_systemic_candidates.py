@@ -51,6 +51,7 @@ from nominal_refactor_advisor.semantic_description_length import CompressionCert
 from nominal_refactor_advisor.semantic_match import (
     name_id,
     named_value_binding,
+    named_valued_binding,
     return_call,
 )
 
@@ -323,10 +324,9 @@ class DeclarativeDetectorClassCandidate(
             return None
         values: dict[str, ast.expr] = {}
         for statement in node.body:
-            binding = named_value_binding(statement)
+            binding = named_valued_binding(statement)
             if (
                 binding is None
-                or binding.value is None
                 or binding.name in values
                 or binding.name not in DetectorDeclaration.class_shell_field_names()
             ):
