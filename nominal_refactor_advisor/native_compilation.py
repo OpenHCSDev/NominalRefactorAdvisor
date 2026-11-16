@@ -716,8 +716,6 @@ class NativeKeywordCallValue(NativeCallValue):
 
     @property
     def names(self) -> tuple[str, ...]:
-        if not isinstance(self.keyword_names, NativeConstantValue):
-            raise ValueError("Native keyword names require original constant metadata")
         names = self.keyword_names.value
         if type(names) is not tuple or any(type(name) is not str for name in names):
             raise ValueError("Native keyword names require an exact string tuple")
@@ -1021,7 +1019,7 @@ class NativeImportValue(NativeReadValue):
     def require_request(
         self, name: str, level: int, from_list: tuple[str, ...] | None
     ) -> None:
-        if type(self.name) is not str or self.name != name or len(self.inputs) != 2:
+        if self.name != name or len(self.inputs) != 2:
             raise ValueError("Native import differs from its original source request")
         for value, expected in zip(self.inputs, (level, from_list), strict=True):
             if not isinstance(value, NativeConstantContentsABC):

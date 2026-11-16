@@ -164,7 +164,6 @@ class CodemodSourceContextCacheEntry:
         if (
             self.identity == identity
             and self.schema == self.codemod_source_context_cache_schema
-            and isinstance(self.context, CodemodSourceContext)
         ):
             return self.context
         return None
