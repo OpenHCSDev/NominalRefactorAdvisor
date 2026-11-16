@@ -16,7 +16,7 @@ from functools import cached_property
 from pathlib import Path
 from typing import ClassVar, Iterator, Self, TypeVar, cast
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import CLASS_DEF_TYPES, FUNCTION_DEF_TYPES, ParsedModule
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.audit.chain_terms import ChainProfile
 from nominal_refactor_advisor.audit.checkers import GodClassExcess
@@ -525,7 +525,7 @@ class GodObject(PerNodeFinding, ListedFinding):
 @dataclass(frozen=True)
 class GodClass(GodObject):
     title = f"GOD CLASSES (over {GodClassExcess.threshold} lines)"
-    node_types = (ast.ClassDef,)
+    node_types = CLASS_DEF_TYPES
 
     @classmethod
     def threshold(cls) -> int:
@@ -535,7 +535,7 @@ class GodClass(GodObject):
 @dataclass(frozen=True)
 class GodFunction(GodObject):
     title = f"GOD FUNCTIONS (over {LongFunction.lines} lines)"
-    node_types = (ast.FunctionDef, ast.AsyncFunctionDef)
+    node_types = FUNCTION_DEF_TYPES
 
     @classmethod
     def threshold(cls) -> int:

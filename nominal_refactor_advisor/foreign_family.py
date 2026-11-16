@@ -8,6 +8,7 @@ from collections.abc import Iterable, Iterator
 from typing import ClassVar, Self
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_tools import FUNCTION_DEF_TYPES, NAMED_DEFINITION_TYPES
 from nominal_refactor_advisor.declared_family import DeclaredFamily, ForeignAdapter
 
 
@@ -57,7 +58,7 @@ class DefinitionStatement(ForeignFamily):
     All three members store ``name``, ``body``, ``decorator_list`` and positions.
     """
 
-    members = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    members = NAMED_DEFINITION_TYPES
 
     name: str
     body: list[ast.stmt]
@@ -73,7 +74,7 @@ class FunctionDefinition(DefinitionStatement):
     ``args`` which only functions carry.
     """
 
-    members = (ast.FunctionDef, ast.AsyncFunctionDef)
+    members = FUNCTION_DEF_TYPES
 
     args: ast.arguments
 

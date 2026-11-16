@@ -20,7 +20,7 @@ from typing import ClassVar
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
 from nominal_refactor_advisor.ast_projection import nodes_of
-from nominal_refactor_advisor.ast_tools import OwnScopeNodeVisitor, ParsedModule
+from nominal_refactor_advisor.ast_tools import CLASS_DEF_TYPES, OwnScopeNodeVisitor, ParsedModule
 from nominal_refactor_advisor.audit.findings import Package, RawShape
 from nominal_refactor_advisor.audit.identity import TypePositions
 from nominal_refactor_advisor.audit.lexical import DecoratorBinding, ModuleScope, Scope
@@ -409,7 +409,7 @@ class EnumDeclaration(PerFileOccurrenceMeasure, NodeCount):
     behaviour, so every case is decided by a switch outside it. A subclass of a project's own
     enum is counted where that enum is declared."""
 
-    node_types = (ast.ClassDef,)
+    node_types = CLASS_DEF_TYPES
     bases: typing.ClassVar[frozenset[str]] = frozenset(
         name for name, value in vars(enum).items()
         if isinstance(value, type) and issubclass(value, enum.Enum))
@@ -835,7 +835,7 @@ class CodecSubclass(PerFileOccurrenceMeasure, NodeCount):
     form. A sealed codec's own guard also resolves aliases."""
 
     weight = 3
-    node_types = (ast.ClassDef,)
+    node_types = CLASS_DEF_TYPES
 
     @staticmethod
     def codec_base(node: ast.AST) -> bool:

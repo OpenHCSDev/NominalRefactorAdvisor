@@ -10,6 +10,7 @@ from functools import lru_cache
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from nominal_refactor_advisor.ast_tools import FUNCTION_DEF_TYPES, REFERENCE_NAME_TYPES
 from nominal_refactor_advisor.audit.handler_declarations import (
     BuiltinHandlerDeclarations,
 )
@@ -149,7 +150,7 @@ class TypeTests(MatchArms, MroDispatch):
                              comparators=[ast.Name() | ast.Attribute() as kind]):
                 self.tested(subject, kind, node)
             case ast.Compare(left=subject, ops=[ast.In()], comparators=[ast.Tuple(elts=kinds)]) if (
-                    kinds and all(isinstance(kind, (ast.Name, ast.Attribute)) for kind in kinds)):
+                    kinds and all(isinstance(kind, REFERENCE_NAME_TYPES) for kind in kinds)):
                 for kind in kinds:
                     self.tested(subject, kind, node)
 
@@ -175,7 +176,7 @@ class DispatchMeasure(PerFileOccurrenceMeasure, NodeCount):
     """
 
     weight = 5
-    node_types = (ast.FunctionDef, ast.AsyncFunctionDef)
+    node_types = FUNCTION_DEF_TYPES
 
     @classmethod
     @abstractmethod

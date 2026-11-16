@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import ClassVar
 
+from nominal_refactor_advisor.ast_tools import CLASS_DEF_TYPES, FUNCTION_DEF_TYPES
 from nominal_refactor_advisor.audit.family import Family
 from nominal_refactor_advisor.audit.lexical import ModuleScope
 
@@ -231,7 +232,7 @@ class JsonLoads(PatternMeasure):
 
 
 class LongFunction(PatternMeasure):
-    node_types = (ast.FunctionDef, ast.AsyncFunctionDef)
+    node_types = FUNCTION_DEF_TYPES
     lines: ClassVar[int] = 100
 
     @classmethod
@@ -243,7 +244,7 @@ class LongFunction(PatternMeasure):
 
 
 class ClassDefinition(PatternMeasure):
-    node_types = (ast.ClassDef,)
+    node_types = CLASS_DEF_TYPES
 
     @classmethod
     def matches(cls, node: ast.AST) -> bool:
@@ -251,7 +252,7 @@ class ClassDefinition(PatternMeasure):
 
 
 class AbstractBase(PatternMeasure):
-    node_types = (ast.ClassDef,)
+    node_types = CLASS_DEF_TYPES
 
     @classmethod
     def matches(cls, node: ast.AST) -> bool:

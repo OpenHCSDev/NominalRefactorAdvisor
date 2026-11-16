@@ -36,7 +36,9 @@ from nominal_refactor_advisor.ast_projection import (
     nodes_of,
 )
 from nominal_refactor_advisor.ast_tools import (
+    FUNCTION_DEF_TYPES,
     ParsedModule,
+    REFERENCE_NAME_TYPES,
     is_docstring_statement,
 )
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
@@ -529,7 +531,7 @@ class ClassReferenceSites:
         resolver = self.snapshot.class_reference_resolver_for_source_path(
             parsed_module.file_path
         ).reference_resolution
-        for node_type in (ast.Name, ast.Attribute):
+        for node_type in REFERENCE_NAME_TYPES:
             for index in syntax_index.node_indices_by_type.get(node_type, ()):
                 node = nodes[index]
                 identifier = node.id if isinstance(node, ast.Name) else node.attr
@@ -1421,7 +1423,7 @@ class BaseFold(ClassOverlapRewrite):
                                     source=first_source, node=statement
                                 ).member_source(body.indentation),
                                 isinstance(
-                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
+                                    statement, FUNCTION_DEF_TYPES
                                 ),
                             )
                             for statement in first.statements
@@ -2407,7 +2409,7 @@ class OwnerExtension(ClassOverlapRewrite):
                                     source=anchor_source, node=statement
                                 ).member_source(body.indentation),
                                 isinstance(
-                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
+                                    statement, FUNCTION_DEF_TYPES
                                 ),
                             )
                             for statement in self.restated.statements

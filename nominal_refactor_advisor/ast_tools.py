@@ -124,6 +124,19 @@ from nominal_refactor_advisor.value_graph import (
 
 FunctionDefinitionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
+FUNCTION_DEF_TYPES: tuple[type[ast.FunctionDef], type[ast.AsyncFunctionDef]] = (
+    ast.FunctionDef,
+    ast.AsyncFunctionDef,
+)
+NAMED_DEFINITION_TYPES: tuple[
+    type[ast.ClassDef], type[ast.FunctionDef], type[ast.AsyncFunctionDef]
+] = (ast.ClassDef, *FUNCTION_DEF_TYPES)
+REFERENCE_NAME_TYPES: tuple[type[ast.Name], type[ast.Attribute]] = (
+    ast.Name,
+    ast.Attribute,
+)
+CLASS_DEF_TYPES: tuple[type[ast.ClassDef]] = (ast.ClassDef,)
+
 
 _DEFAULT_PARSE_WORKERS = 1
 
@@ -2990,7 +3003,7 @@ class FunctionObservationSpec(
 ):
     @property
     def node_types(self) -> tuple[type[ast.AST], ...]:
-        return (ast.FunctionDef, ast.AsyncFunctionDef)
+        return FUNCTION_DEF_TYPES
 
     def build_from_observation(
         self, parsed_module: ParsedModule, observation: ScopedAstObservation
@@ -3714,7 +3727,7 @@ class ModuleSyntaxIndex:
 def walk_function_body_nodes(body: list[ast.stmt]) -> tuple[ast.AST, ...]:
     """Walk a function body without entering nested definition bodies."""
 
-    _scope_types = (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    _scope_types = NAMED_DEFINITION_TYPES
     nodes: list[ast.AST] = []
     stack = list(reversed(statements_without_docstring(body)))
     while stack:
@@ -3804,7 +3817,7 @@ class ClassObservationProjection:
     @classmethod
     def project(cls, parsed_module: ParsedModule) -> tuple[ClassAstObservation, ...]:
         observations: list[ClassAstObservation] = []
-        for observation in collect_scoped_observations(parsed_module, (ast.ClassDef,)):
+        for observation in collect_scoped_observations(parsed_module, CLASS_DEF_TYPES):
             node = observation.node
             assert isinstance(node, ast.ClassDef)
             observations.append(

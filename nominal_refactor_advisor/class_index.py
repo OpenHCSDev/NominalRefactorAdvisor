@@ -73,10 +73,12 @@ from nominal_refactor_advisor.ast_tools import (
     CollectedFamily,
     CompactModuleIdentity,
     FamilyDemand,
+    FUNCTION_DEF_TYPES,
     LexicalSyntaxScope,
     OwnScopeNodeVisitor,
     ParsedModule,
     ParsedModuleFact,
+    REFERENCE_NAME_TYPES,
     ScanContext,
     SourceDemandCollectedFamily,
     SourceModule,
@@ -4937,7 +4939,7 @@ class CompactModuleClassProjectionFamily(
             }
             if isinstance(
                 function := syntax_index.depth_first_nodes[function_index],
-                (ast.FunctionDef, ast.AsyncFunctionDef),
+                FUNCTION_DEF_TYPES,
             )
         }
         nodes = syntax_index.depth_first_nodes
@@ -4946,7 +4948,7 @@ class CompactModuleClassProjectionFamily(
             tuple[str, tuple[str, ...], ClassReferenceRole],
             tuple[int, int, bool, tuple[str, ...]],
         ] = {}
-        for node_type in (ast.Name, ast.Attribute):
+        for node_type in REFERENCE_NAME_TYPES:
             for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
                 node = nodes[node_index]
                 if not isinstance(getattr(node, "ctx", None), ast.Load):
