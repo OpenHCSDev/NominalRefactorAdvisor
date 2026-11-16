@@ -677,6 +677,7 @@ class _UnboundEntryParameter(ParameterDefaultQuestion[CapturedReferenceResolutio
         raise ValueError("Function entry has no bound parameter value")
 
 
+@dataclass(frozen=True)
 class SourceFunctionActivationABC(ABC):
     """One exact source-function activation, independent of invocation syntax."""
 
@@ -1004,23 +1005,21 @@ class SourceDefinitionFunctionActivation(SourceFunctionActivationABC):
 
     application: SourceDefinitionDecoratorApplicationABC
     function: SourceCreatedFunctionCapture
+    environment: NativeReferenceEnvironment = field(init=False, repr=False)
+    callee: SourceCreatedFunctionCapture = field(init=False, repr=False)
+    caller_prefix: AdmittedExecutionPrefixABC = field(init=False, repr=False)
 
-    environment = AliasProperty[NativeReferenceEnvironment]("application.execution")
-
-    @property
-    def callee(self) -> SourceCreatedFunctionCapture:
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "environment", self.application.execution)
         if not self.application.callee.proves_same_object(self.function):
             raise ValueError(
                 "Definition application activation has a different source callee"
             )
-        return self.function
-
-    @property
-    def caller_prefix(self) -> AdmittedExecutionPrefixABC:
+        object.__setattr__(self, "callee", self.function)
         self.application.require_original_application()
         prefix = self.application.application_prefix
         self.callee.execution.entry.require_external_noninterference(prefix)
-        return prefix
+        object.__setattr__(self, "caller_prefix", prefix)
 
     @cached_property
     def bound_arguments(
