@@ -2611,7 +2611,21 @@ class ClassOverlapFindingRecipeSynthesizer(
 
         pick = metrics.owner_pick
         if pick is None:
-            raise NeedsInput("an extract-mixin move needs an owner pick (--codemod-owner-picks)", NeededInput.OWNER_PICK)
+            if not any(
+                owner.permitted or owner.keyword_cure for owner in metrics.owner_candidates
+            ):
+                blocking = tuple(
+                    receipt for owner in metrics.owner_candidates for receipt in owner.refusals
+                )
+                raise NeedsInput(
+                    "every owner candidate needs: "
+                    + "; ".join(dict.fromkeys(receipt.detail for receipt in blocking)),
+                    *(receipt.kind.needs for receipt in blocking),
+                )
+            raise NeedsInput(
+                "an extract-mixin move needs an owner pick (--codemod-owner-picks)",
+                NeededInput.OWNER_PICK,
+            )
         owner = pick.candidate
         if owner.keyword_cure:
             return ClassOverlapFindingRecipeSynthesizer.keywordings(owner.keyword_cure, verdicts)
