@@ -408,6 +408,18 @@ def test_an_exception_a_test_catches_is_distinguished(tmp_path: Path, name: str)
     assert _findings(NameOnlySubclassDetector, tmp_path) == []
 
 
+def test_a_src_package_reads_its_repository_tests(tmp_path: Path):
+    """A scan of `src/` reads the `tests/` beside it, not only tests under `src/`;
+    a nested repository's tests belong to that repository."""
+
+    files = {f"src/{name}": text for name, text in ERROR_PACKAGE.items()}
+    _write(tmp_path, {**files, "pyproject.toml": "", "tests/test_errors.py": CATCHING_TESTS["except"]})
+    assert _findings(NameOnlySubclassDetector, tmp_path / "src") == []
+    (tmp_path / "tests/test_errors.py").unlink()
+    _write(tmp_path, {"stack/pyproject.toml": "", "stack/tests/test_errors.py": CATCHING_TESTS["except"]})
+    assert len(_findings(NameOnlySubclassDetector, tmp_path / "src")) == 1
+
+
 def test_an_exception_nothing_catches_still_differs_only_by_name(tmp_path: Path):
     _write(tmp_path, ERROR_PACKAGE)
     (finding,) = _findings(NameOnlySubclassDetector, tmp_path)

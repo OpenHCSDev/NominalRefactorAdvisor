@@ -50,6 +50,7 @@ from nominal_refactor_advisor.class_index import (
     CompactNominalBindingKind,
 )
 from nominal_refactor_advisor.codemod_foreign_family_source import RewrittenLineFit
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.enum_semantics import (
     PythonEnumBaseKind,
     PythonEnumDeclarationAuthority,
@@ -793,14 +794,17 @@ class NameUse:
 
 @dataclass(frozen=True)
 class SiblingTestModules(ParsedModuleSetFact):
-    """The test modules of the repositories that scanned modules import from.
+    """The test modules of the repositories the scanned modules belong to.
 
     They are consumer evidence: a test that catches a class or names a member
     tells it apart as surely as library code does. They are never where a
-    finding is reported, and the scan itself still excludes them. They are
-    found by the scan's own discovery (`PythonSourcePathDiscovery`, with
-    tests included, kept when `PythonSourcePathPolicy.is_test_path` says so)
-    under each scanned module's import root, and parsed by the scan's parser.
+    finding is reported, and the scan itself still excludes them. A scanned
+    module's repository is the directory of its nearest `pyproject.toml`, or
+    its import root when none is above it, so a `src/` package's `tests/` are
+    read. They are found by the scan's own discovery
+    (`PythonSourcePathDiscovery`, with tests included, kept when
+    `PythonSourcePathPolicy.is_test_path` says so and their own nearest
+    `pyproject.toml` is that repository's) and parsed by the scan's parser.
     """
 
     modules: tuple[ParsedModule, ...]
@@ -808,24 +812,30 @@ class SiblingTestModules(ParsedModuleSetFact):
     @classmethod
     def under(
         cls,
-        import_roots: Iterable[str],
+        sources: Iterable[tuple[str, str]],
         held: frozenset[Path] = frozenset(),
     ) -> SiblingTestModules:
-        """The test modules under each import root that the scan does not hold.
+        """The tests of each source's repository that the scan does not hold.
 
+        `sources` pairs each scanned module's import root with its file path.
         `held` is the scanned files, resolved. Their uses are already in the
-        scan's own projections, and one file can sit under several import roots,
-        so a file is matched by where it is, not by the name a root gives it.
+        scan's own projections, and one file can sit under several roots, so a
+        file is matched by where it is, not by the name a root gives it.
         """
 
         policy = PythonSourcePathPolicy(include_tests=True)
         modules: list[ParsedModule] = []
-        for root in map(Path, sorted(set(import_roots))):
+        repositories = {
+            cls.repository(Path(import_root), Path(file_path))
+            for import_root, file_path in sources
+        }
+        for root, pyproject in sorted(repositories):
             paths = tuple(
                 path
                 for path in PythonSourcePathDiscovery(root, policy).paths()
                 if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
                 and path.resolve() not in held
+                and DeclaredRoot.nearest_pyproject(path) == pyproject
             )
             modules.extend(
                 PythonModuleRootParser.for_root(root, source_policy=policy).parsed_source_paths(
@@ -833,6 +843,15 @@ class SiblingTestModules(ParsedModuleSetFact):
                 )
             )
         return cls(tuple(modules))
+
+    @staticmethod
+    def repository(import_root: Path, file_path: Path) -> tuple[Path, Path | None]:
+        """The directory a scanned file's repository is, with its `pyproject.toml`."""
+
+        pyproject = DeclaredRoot.nearest_pyproject(file_path)
+        if pyproject is None:
+            return import_root.resolve(), None
+        return pyproject.parent, pyproject
 
     @staticmethod
     def holds(parsed_module: ParsedModule) -> bool:
@@ -852,7 +871,10 @@ class SiblingTestModules(ParsedModuleSetFact):
 
         held_tests = tuple(module for module in modules if cls.holds(module))
         unheld = cls.under(
-            (str(module.module_path_identity.declared_import_root) for module in modules),
+            (
+                (str(module.module_path_identity.declared_import_root), module.file_path)
+                for module in modules
+            ),
             frozenset(Path(module.file_path).resolve() for module in modules),
         )
         return cls((*held_tests, *unheld.modules))
@@ -960,7 +982,7 @@ class EmptySubclassIndex:
             for use in module.uses:
                 kinds[use.name].add(use.kind)
         for test_module in SiblingTestModules.under(
-            (module.import_root for module in modules),
+            ((module.import_root, module.file_path) for module in modules),
             frozenset(Path(module.file_path).resolve() for module in modules),
         ).modules:
             for use in NameUse.in_module(test_module):
@@ -1465,7 +1487,7 @@ class EnumMemberIndex:
         member_uses: dict[str, list[EnumMemberUse]] = defaultdict(list)
         class_kinds: dict[str, set[EnumUseKind]] = defaultdict(set)
         tests = SiblingTestModules.under(
-            (module.import_root for module in modules),
+            ((module.import_root, module.file_path) for module in modules),
             frozenset(Path(module.file_path).resolve() for module in modules),
         )
         evidence = (
