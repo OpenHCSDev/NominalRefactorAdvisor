@@ -101,7 +101,6 @@ class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
     """One place the block could live, the facts for and against it, and its cost."""
 
     module_name: str
-    receipts: tuple[Receipt, ...]
     cost: OwnerCost
     confidence: float = 0.0
 

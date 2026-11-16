@@ -46,6 +46,7 @@ class KeywordCuredReceipt(Receipt):
     constructed: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
 class ScoredByReceipts:
     """A verdict whose score is the sum of its receipts and whose guards refuse it."""
 

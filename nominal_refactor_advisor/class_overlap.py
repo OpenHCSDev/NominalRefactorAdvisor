@@ -428,7 +428,6 @@ class ClassOverlapCandidate(ScoredByReceipts):
     owner: CompactIndexedClass
     restating: CompactIndexedClass
     overlap: ClassBodyOverlap
-    receipts: tuple[Receipt, ...]
     co_restating: CompactIndexedClass | None = None
     owner_candidates: tuple[OwnerCandidate, ...] = ()
     """For a move that needs an owner decision, where the block could live (#67)."""
@@ -491,7 +490,6 @@ class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
     restating_symbols: tuple[str, ...]
     shared_declaration_names: tuple[str, ...]
     confidence_score: float
-    receipts: tuple[Receipt, ...]
     owner_candidates: tuple[OwnerCandidate, ...] = ()
     owner_pick: PickedOwner | None = None
     """The picker's choice among `owner_candidates`, from a picks file (#67)."""
