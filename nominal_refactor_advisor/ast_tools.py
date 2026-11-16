@@ -489,11 +489,19 @@ class CollectedFamilyContentSignatureIndex(PublishesCacheFiles):
             pass
 
 
+@dataclass(frozen=True, kw_only=True)
+class FamilyDemand:
+    """Base for typed demands passed alongside a collected family."""
+
+    include_context: bool = False
+    header_core_only: bool = False
+
+
 @dataclass(frozen=True)
-class CollectedFamilyPresenceDemand:
+class CollectedFamilyPresenceDemand(FamilyDemand):
     """Whether context facts can share evidence with any report-target fact."""
 
-    include_context: bool
+    include_context: bool = False
 
 
 @dataclass(frozen=True, kw_only=True)

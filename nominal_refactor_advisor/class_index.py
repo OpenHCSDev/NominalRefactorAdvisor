@@ -72,6 +72,7 @@ from nominal_refactor_advisor.ast_tools import (
     collect_family_items,
     CollectedFamily,
     CompactModuleIdentity,
+    FamilyDemand,
     LexicalSyntaxScope,
     OwnScopeNodeVisitor,
     ParsedModule,
@@ -4585,15 +4586,14 @@ def module_star_import_origins(
 
 
 @dataclass(frozen=True)
-class CompactClassProjectionDemand:
+class CompactClassProjectionDemand(FamilyDemand):
     """Target-correlated filters for expensive class-family facets."""
 
     class_method_names: frozenset[str]
     include_autoregister_references: bool = True
-    header_core_only: bool = False
 
 
-HEADER_CORE_DEMAND = CompactClassProjectionDemand(frozenset(), header_core_only=True)
+HEADER_CORE_DEMAND = CompactClassProjectionDemand(class_method_names=frozenset(), header_core_only=True)
 """The view `ModuleClassHeaderCore` holds: namespace and class headers only."""
 
 
