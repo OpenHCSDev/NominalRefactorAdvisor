@@ -197,6 +197,60 @@ stronger than a synthesized recipe that hedged its way to silence.
   `EconomicsProofReport.from_root`). The command line reads the domain and
   never owns it.
 
+## ABC→dataclass promotion: unblocking techniques (2026-11-16)
+
+The `missing_mixin` detector finds ABC parents whose children redeclare
+the same fields. Promoting the parent to `@dataclass(frozen=True)` lets
+children inherit instead of copy. **Don't label a parent "irreducible"
+without trying.** Five techniques unblock what looks blocked:
+
+1. **AliasProperty → field(init=False) + __post_init__.**
+   `source_span = AliasProperty("capture.source_span")` becomes
+   `source_span: T = field(init=False, repr=False)` and
+   `object.__setattr__(self, "source_span", self.capture.source_span)`
+   in `__post_init__`. Unblocked CompactFlowOwner, CompactDefinitionFlowOwner,
+   CompactAssignmentTargetABC.
+
+2. **@property → field(init=False) + __post_init__.**
+   Same conversion when the property only reads stored fields on frozen
+   dataclasses (everything is set before `__post_init__`). Unblocked
+   NativeFrameOrigin and SourceFunctionActivationABC. **Try it** — "lazy"
+   validation that reads stored fields usually works eagerly.
+
+3. **Non-frozen @dataclass for mutable children.**
+   `@dataclass` without `frozen=True` avoids the `__setattr__` MRO
+   conflict. Children that mutate state work, and the parent still
+   owns the field declarations. Unblocked NativeOperandObservation.
+
+4. **Make non-dataclass children into dataclasses.**
+   A child that's a plain class with a bare assign
+   `violation = CapturedReferenceViolation.UNPROVED_ACCESS` becomes
+   `@dataclass(frozen=True)` with
+   `violation: T = field(default=..., init=False)`.
+   If it's never directly constructed (only its subclasses are), it's
+   safe. Unblocked OpaqueCapturedObjectOperations.
+
+5. **Check grandchildren, not just direct children.**
+   A parent's blocker might be on a grandchild through an intermediate
+   ABC. The diagnostic tool (`tools/diagnose_missing_mixins.py`) now
+   resolves the full descendant tree. CompactFlowOwner was falsely
+   labeled PROMOTE until the tool caught CompactClassDeclaration's
+   bare assign two levels down.
+
+**What's genuinely irreducible (confirmed by test failure):**
+- Children compute the same-named field from different constructor
+  sources (ClassStatement: `is_dataclass` from `dataclass_declaration`
+  in one child, from `dataclass_decorator` in another — test blows up).
+- Python forbids frozen parent + non-frozen child (LexicalScopeABC:
+  `TypeError: cannot inherit frozen dataclass from a non-frozen one`).
+
+**The is_open virtual dispatch pattern** replaces `isinstance(x, T)` with
+`x.is_open` on the base class. BUT: only safe when the variable's type
+always inherits CaptureOutcome. On union types like
+`tuple | OpenCapturedReference`, the isinstance stays — it's a boundary
+decoder (Proposition 3.3). Two bugs from overcorrecting were fixed on
+2026-11-16.
+
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
 - **Fill the plan, simulate once, apply once.** Compose with
