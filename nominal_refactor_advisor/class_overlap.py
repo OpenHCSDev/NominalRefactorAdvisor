@@ -69,6 +69,7 @@ from nominal_refactor_advisor.class_references import (
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.receipts import KeywordCuredReceipt, Receipt, ScoredByReceipts
 from nominal_refactor_advisor.owner_candidates import (
+    MINIMUM_SHARED_WEIGHT,
     BlockOwnerQuestion,
     ModuleImportGraph,
     OwnerCandidate,
@@ -193,10 +194,6 @@ class ExtractMixin(ClassOverlapMove):
 FEW_SHARED_DECLARATIONS = 3
 """Below this many shared declarations the overlap is weak evidence of one concept."""
 
-MINIMUM_SHARED_WEIGHT = 1.5
-"""Declared bound on what is worth a verdict: the shared declarations' own receipts
-must reach this weight (one method, a valued declaration and an annotation, or
-three annotations). A lone shared field is not reported at all."""
 
 
 @dataclass(frozen=True)
@@ -810,7 +807,10 @@ class ClassOverlapVerdicts:
             co_restating=co_restating,
             owner_candidates=(
                 self.owner_question(
-                    first, second, tuple(shared.name for shared in extractable)
+                    first,
+                    second,
+                    tuple(shared.name for shared in extractable),
+                    {shared.name: shared.kind.shared_receipt.weight for shared in extractable},
                 ).candidates()
                 if move is ExtractMixin
                 else ()
@@ -867,6 +867,7 @@ class ClassOverlapVerdicts:
         first: CompactIndexedClass,
         second: CompactIndexedClass,
         block: tuple[str, ...],
+        weights: Mapping[str, float],
     ) -> BlockOwnerQuestion:
         """Where the block `first` and `second` share could live; `first`'s
         declarations are the block's identities."""
@@ -933,6 +934,7 @@ class ClassOverlapVerdicts:
             first=first,
             second=second,
             block=block,
+            weights=weights,
             copies_of=copies_of,
             holders_of=holders_of,
             own_holders_of=own_holders_of,

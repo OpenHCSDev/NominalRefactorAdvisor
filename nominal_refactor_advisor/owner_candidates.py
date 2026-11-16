@@ -55,6 +55,12 @@ from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.needed_input import NeededInput
 
 
+MINIMUM_SHARED_WEIGHT = 1.5
+"""Declared bound on what is worth a verdict: the shared declarations' own receipts
+must reach this weight (one method, a valued declaration and an annotation, or
+three annotations). A lone shared field is not reported at all."""
+
+
 class OwnerReceiptKind(ReceiptKind):
     """One kind of fact about a candidate owner, with its log-odds weight per unit."""
 
@@ -82,6 +88,7 @@ class OwnerReceiptKind(ReceiptKind):
     NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True, NeededInput.PROOF
     OWNED_BY_EXISTING_CLASSES = "owned_by_existing_classes", 0.0, True, NeededInput.OWNER_PICK
     PLAYS_SAME_ROLE = "plays_same_role", 1.0, False
+    INHERITED_SHARE = "inherited_share", 0.0, True, NeededInput.OPERATION
 
 
 SERVED_CONSUMER_CAP = 4
@@ -437,6 +444,8 @@ class BlockOwnerQuestion:
     first: CompactIndexedClass
     second: CompactIndexedClass
     block: tuple[str, ...]
+    weights: Mapping[str, float]
+    """Each block declaration's own receipt weight."""
     copies_of: Callable[[str], tuple[tuple[SourceLocation, tuple[str, ...]], ...]]
     """Constructions of a class with the fields each copies as `x.<same name>`."""
     holders_of: Callable[[str], frozenset[str]]
@@ -851,6 +860,25 @@ class BlockOwnerQuestion:
     def _new_mixins(
         self, covering: tuple[CompactIndexedClass, ...]
     ) -> Iterator[NewMixinOwner]:
+        declared = tuple(
+            name
+            for name in self.block
+            if {self.first.symbol, self.second.symbol} <= self.own_holders_of(name)
+        )
+        inherited_share = (
+            (
+                Receipt(
+                    OwnerReceiptKind.INHERITED_SHARE,
+                    "a new mixin takes only what both classes declare themselves ("
+                    + (", ".join(f"`{name}`" for name in declared) or "nothing")
+                    + "), too little to compose: the rest is inherited, so the move "
+                    "needs an operation that composes the inherited owner",
+                    (),
+                ),
+            )
+            if sum(self.weights[name] for name in declared) < MINIMUM_SHARED_WEIGHT
+            else ()
+        )
         owned_elsewhere = (
             (
                 Receipt(
@@ -897,6 +925,7 @@ class BlockOwnerQuestion:
                     *import_receipts,
                     *order_receipts,
                     *owned_elsewhere,
+                    *inherited_share,
                 ),
                 cost=OwnerCost(
                     statements_rewritten=1
