@@ -163,6 +163,11 @@ class InstalledRegistrationOwner(SourceLineReference):
     symbol: str
     role: RegistrationRole
 
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if isinstance(self.role, str):
+            object.__setattr__(self, "role", RegistrationRole.decoded(self.role))
+
     @property
     def receipt(self) -> str:
         return (
@@ -260,12 +265,7 @@ class InstalledDistributionOwners:
             str(payload["distribution"]),
             str(payload["version"]),
             str(payload["files_digest"]),
-            tuple(
-                InstalledRegistrationOwner(
-                    **{**owner, "role": RegistrationRole.decoded(owner["role"])}
-                )
-                for owner in owners
-            ),
+            tuple(InstalledRegistrationOwner(**owner) for owner in owners),
         )
 
     @staticmethod
