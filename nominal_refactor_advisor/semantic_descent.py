@@ -525,19 +525,25 @@ class SemanticDescentModuleSignature(SemanticDescentModuleFamilySignature):
         ).hexdigest()
 
 
-@dataclass(frozen=True)
-class SemanticDescentGraphCacheIdentity:
-    """Complete invalidation identity for one semantic-descent graph."""
+@dataclass(frozen=True, kw_only=True)
+class SemanticDescentGraphCacheContext:
+    """Shared invalidation context for semantic-descent graph cache entries."""
 
     schema: SemanticDescentGraphCacheSchema
     implementation: SemanticDescentImplementationSignature
     python_version: PythonVersion
-    modules: tuple[SemanticDescentModuleSignature, ...]
     presentation_roots: tuple[str, ...] = field(
         default=(),
         compare=False,
         repr=False,
     )
+
+
+@dataclass(frozen=True)
+class SemanticDescentGraphCacheIdentity(SemanticDescentGraphCacheContext):
+    """Complete invalidation identity for one semantic-descent graph."""
+
+    modules: tuple[SemanticDescentModuleSignature, ...]
 
     @classmethod
     def from_modules(
@@ -676,18 +682,10 @@ class SemanticDescentGraphCacheIdentity:
 
 
 @dataclass(frozen=True)
-class SemanticDescentGraphCacheFamilyIdentity:
+class SemanticDescentGraphCacheFamilyIdentity(SemanticDescentGraphCacheContext):
     """Source-set family identity for latest semantic-descent graph reuse."""
 
-    schema: SemanticDescentGraphCacheSchema
-    implementation: SemanticDescentImplementationSignature
-    python_version: PythonVersion
     modules: tuple[SemanticDescentModuleFamilySignature, ...]
-    presentation_roots: tuple[str, ...] = field(
-        default=(),
-        compare=False,
-        repr=False,
-    )
 
     @classmethod
     def from_identity(
