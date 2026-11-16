@@ -4713,17 +4713,17 @@ def _scan_main(
 
     if selected_command_type is not None:
         return cast(type[CodemodScanCliCommand], selected_command_type)(
-            parser,
-            args,
-            source_snapshot,
-            findings,
-            modules,
-            config,
-            roots,
-            path_scope.report_roots,
-            parse_cache_dir,
-            semantic_descent_analysis_source,
-            codemod_execution_request,
+            parser=parser,
+            args=args,
+            source_snapshot=source_snapshot,
+            findings=findings,
+            modules=modules,
+            config=config,
+            roots=roots,
+            report_roots=path_scope.report_roots,
+            parse_cache_dir=parse_cache_dir,
+            semantic_descent_source=semantic_descent_analysis_source,
+            execution_request=codemod_execution_request,
         ).run()
 
     if args.include_structural_overlap:
