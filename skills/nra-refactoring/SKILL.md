@@ -516,7 +516,7 @@ kept). `repeated_module_expression_lead` AST tuple constants extracted
 
 ### Where the frontier is now (2026-11-16)
 
-**Checkpoint 2e619cf2: full suite green on 3.14** (8684 passed, 37 skipped).
+**Checkpoints, full suite on 3.14:** 2e619cf2 and db72b373, both 8684 passed, 0 failed, 37 skipped.
 Next moves, each traced and parked with its reason:
 - *Undeclared unions are families.* `SourceFlowEvent` was a 7-way
   `TypeAlias`; declaring it as a plain ABC mixin retired 12 event-kind
