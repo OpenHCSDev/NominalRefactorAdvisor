@@ -3031,10 +3031,9 @@ class SourceClassBodyEntryABC(
     def capture_operation(self, native_site: NativeCaptureSite) -> SourceFlowOperation:
         sites = tuple(
             site
-            for site in self.execution.source.operations
+            for site in CompactNativeCapture.operations_in(self.execution.source.operations)
             if site.node is self.node
             and site.owner is self.operation.owner
-            and isinstance(site.event, CompactNativeCapture)
             and site.event.site is native_site
         )
         if len(sites) != 1:
@@ -3755,10 +3754,8 @@ class SourceExecutionABC(
     )
 
     def require_discard(self, node: ast.Expr) -> None:
-        operations = tuple(
-            operation
-            for operation in self.source.operations_by_node.get(node, ())
-            if isinstance(operation.event, CompactEvaluatedResult)
+        operations = CompactEvaluatedResult.operations_in(
+            self.source.operations_by_node.get(node, ())
         )
         if len(operations) != 1:
             raise ValueError("Discard has no unique original evaluated result")
@@ -3816,10 +3813,8 @@ class SourceExecutionABC(
     def source_call(
         self, node: ast.Call
     ) -> tuple[CompactFlowContext, CompactFunctionCall]:
-        operations = tuple(
-            operation
-            for operation in self.source.operations_by_node.get(node, ())
-            if isinstance(operation.event, CompactFunctionCall)
+        operations = CompactFunctionCall.operations_in(
+            self.source.operations_by_node.get(node, ())
         )
         if len(operations) != 1:
             raise ValueError("Call operand has no unique original invocation")

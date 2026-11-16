@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from functools import (
@@ -1666,6 +1666,14 @@ class SourceFlowEvent(ABC):
         """Whether this event stores exactly `result`; only an evaluated assignment does."""
 
         return False
+
+    @classmethod
+    def operations_in(
+        cls, operations: Iterable[SourceFlowOperation]
+    ) -> tuple[SourceFlowOperation, ...]:
+        """The operations, in order, whose event is one of this class's."""
+
+        return tuple(operation for operation in operations if isinstance(operation.event, cls))
 
 
 @dataclass(frozen=True)
@@ -3888,11 +3896,7 @@ class SourceProductFlowProjection:
     def call_operations_by_span(self) -> dict[SourceByteSpan, SourceFlowOperation]:
         """Index actual call events; ambiguous spans cannot select an occurrence."""
         return UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-            (
-                site
-                for site in self.operations
-                if isinstance(site.event, CompactFunctionCall)
-            ),
+            CompactFunctionCall.operations_in(self.operations),
             lambda site: site.event.source_span,
         )
 
@@ -4020,9 +4024,8 @@ class SourceProductFlowProjection:
         sites = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
             (
                 site
-                for site in self.operations
-                if isinstance(site.event, CompactValueUse)
-                and site.event.indexes_source_expression
+                for site in CompactValueUse.operations_in(self.operations)
+                if site.event.indexes_source_expression
             ),
             lambda site: site.node,
         )
@@ -4052,11 +4055,7 @@ class SourceProductFlowProjection:
         canonical objects in this projection. Duplicate node sites remain open.
         """
         sites = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-            (
-                site
-                for site in self.operations
-                if isinstance(site.event, CompactCallableReferenceUse)
-            ),
+            CompactCallableReferenceUse.operations_in(self.operations),
             lambda site: site.node,
         )
         reads = self.compact.reference_reads_by_span

@@ -235,8 +235,9 @@ class ExpressionStatementEffect(ClassNamespaceEffect):
     def result(self, source: SourceProductFlowProjection) -> CompactEvaluatedResult:
         results = tuple(
             operation.event
-            for operation in source.operations_by_node.get(self.node, ())
-            if isinstance(operation.event, CompactEvaluatedResult)
+            for operation in CompactEvaluatedResult.operations_in(
+                source.operations_by_node.get(self.node, ())
+            )
         )
         if len(results) != 1:
             raise ValueError("Expression has no unique original evaluated result")
