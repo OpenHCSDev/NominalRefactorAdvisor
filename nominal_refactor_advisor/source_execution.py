@@ -2596,9 +2596,19 @@ class SourceExecutionKernel(
         pending_bindings: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
         del pending_bindings
-        prefix = self._admitted_prefix(context, use_position)
-        if prefix.is_open:
-            return prefix
+        return self._admitted_prefix(context, use_position).and_then(
+            lambda prefix: self._entry_parameter_value(context, reference, binding, prefix)
+        )
+
+    def _entry_parameter_value(
+        self,
+        context: CompactFlowContext,
+        reference: LexicalValueReference,
+        binding: InitialCompactParameterBinding,
+        prefix: AdmittedExecutionPrefixABC,
+    ) -> CapturedReferenceResolution:
+        """The parameter's value in the frame the admitted prefix entered."""
+
         endpoint = prefix.endpoint
         if (
             endpoint.context is not context

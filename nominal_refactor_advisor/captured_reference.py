@@ -2551,9 +2551,20 @@ class CapturedReferenceKernel(
         position: CompactFlowPosition,
         pending: frozenset[CompactBindingVisit[CompactFlowContext]],
     ) -> CapturedReferenceResolution:
-        prefix = self._admitted_prefix(context, position)
-        if prefix.is_open:
-            return prefix
+        return self._admitted_prefix(context, position).and_then(
+            lambda prefix: self._prefixed_reference(reference, context, position, prefix, pending)
+        )
+
+    def _prefixed_reference(
+        self,
+        reference: LexicalValueReference,
+        context: CompactFlowContext,
+        position: CompactFlowPosition,
+        prefix: AdmittedExecutionPrefixABC,
+        pending: frozenset[CompactBindingVisit[CompactFlowContext]],
+    ) -> CapturedReferenceResolution:
+        """The reference's root in the admitted prefix, then each attribute in turn."""
+
         resolution = self._root_resolution(
             prefix, LexicalValueReference(reference.root_name), pending
         )
