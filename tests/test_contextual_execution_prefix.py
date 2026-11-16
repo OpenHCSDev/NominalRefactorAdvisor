@@ -11,6 +11,7 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.captured_reference import (
+    AfterCut,
     CapturedReferenceEffectsABC,
     CapturedReferenceKernel,
     CapturedReferenceViolation,
@@ -106,7 +107,7 @@ class PlainChildFixtureEffects(CapturedReferenceEffectsABC):
         return SequentialExecutionPrefix(
             (
                 completed,
-                SingleFlowPrefix(context=context, frame=self.parent_frame, position=position, after=cut),
+                SingleFlowPrefix(context=context, frame=self.parent_frame, position=position, start=AfterCut(position=cut)),
             )
         )
 
@@ -259,7 +260,7 @@ def test_composition_rejects_missing_same_activation_interval():
     with pytest.raises(ValueError, match="join"):
         replace(
             prefix,
-            parts=(prefix.parts[0], replace(continuation, after=read.use.position)),
+            parts=(prefix.parts[0], replace(continuation, start=AfterCut(position=read.use.position))),
         ).require_admitted(kernel.initial)
 
 
@@ -329,7 +330,7 @@ def test_shared_actual_mutation_cut_has_one_installation_occurrence():
     frame = kernel.effects.parent_frame
     installation = context.flow.mutations[0]
     first = SingleFlowPrefix(context=context, frame=frame, position=installation.position)
-    second = SingleFlowPrefix(context=context, frame=frame, position=read.use.position, after=installation.position)
+    second = SingleFlowPrefix(context=context, frame=frame, position=read.use.position, start=AfterCut(position=installation.position))
     prefix = SequentialExecutionPrefix((first, second))
     prefix.require_admitted(kernel.initial)
     assert not first.contains(installation)
@@ -360,7 +361,7 @@ def test_interval_rejects_reversed_cuts_without_sorting_them():
             context=read.context,
             frame=kernel.effects.parent_frame,
             position=kernel.effects.definition.target.header_position,
-            after=read.use.position,
+            start=AfterCut(position=read.use.position),
         )
 
 
@@ -373,7 +374,7 @@ def test_equal_cuts_are_empty_not_a_replayed_activation():
         context=kernel.effects.parent,
         frame=kernel.effects.parent_frame,
         position=position,
-        after=position,
+        start=AfterCut(position=position),
             )
     assert tuple(empty.mutation_occurrences()) == ()
 
@@ -386,4 +387,4 @@ def test_incomparable_evaluation_cuts_do_not_manufacture_interval_order():
     second = CompactFlowPosition(branch_path=(), statement_index=0, event_index=2, evaluation_path=(CompactEvaluationBranch(parent_event_index=0, member_index=1),))
     assert first.may_precede(second)
     with pytest.raises(ValueError, match="ordered cuts"):
-        SingleFlowPrefix(context=read.context, frame=kernel.effects.parent_frame, position=second, after=first)
+        SingleFlowPrefix(context=read.context, frame=kernel.effects.parent_frame, position=second, start=AfterCut(position=first))

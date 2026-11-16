@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from nominal_refactor_advisor.captured_reference import (
+    AfterCut,
     CapturedNativeObject,
     SequentialExecutionPrefix,
     SingleFlowPrefix,
@@ -81,7 +82,7 @@ def test_entry_work_is_projected_by_original_namespace_owner():
         cut = owner.entry.context.flow.mutations[0].position
         start = owner.required_prefix(owner.entry.context, cut)
         middle = other.required_prefix(other.entry.context, None)
-        end = replace(owner.required_prefix(owner.entry.context, None), after=cut)
+        end = replace(owner.required_prefix(owner.entry.context, None), start=AfterCut(position=cut))
         prefix = SequentialExecutionPrefix((start, middle, end))
         prefix.require_admitted(owner.initial)
         for observer in (first, second):

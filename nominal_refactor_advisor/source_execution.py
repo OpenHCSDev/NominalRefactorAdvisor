@@ -28,6 +28,7 @@ from nominal_refactor_advisor.call_binding import (
 )
 from nominal_refactor_advisor.captured_reference import (
     AdmittedExecutionPrefixABC,
+    AfterCut,
     CapturedFlowPrefix,
     CapturedEntryContents,
     CapturedReferenceEffectsABC,
@@ -3900,7 +3901,7 @@ class SourceExecutionABC(
             context=context,
             frame=prefix.endpoint.frame,
             position=None,
-            after=evaluation.exit,
+            start=AfterCut(position=evaluation.exit),
                     )
         self.require_empty_interval(remainder)
         return prefix
@@ -3961,7 +3962,7 @@ class SourceExecutionABC(
                         context=context,
                         frame=prefix.endpoint.frame,
                         position=position,
-                        after=last.target.header_position,
+                        start=AfterCut(position=last.target.header_position),
                         kernel=self.kernel,
                     ),
                 )

@@ -1367,11 +1367,13 @@ class AdmittedExecutionPrefixABC(AdmittedEvidenceABC):
                 activation = (id(interval.context), id(interval.frame))
                 if activation in cuts:
                     earlier = cuts[activation]
-                    if earlier.position is None or interval.after != earlier.position:
+                    if earlier.position is None or not interval.start.starts_at(
+                        earlier.position
+                    ):
                         raise ValueError(
                             "Execution intervals must join the same activation cut"
                         )
-                elif interval.after is not None:
+                elif interval.start.continues:
                     raise ValueError(
                         "A prefix cannot omit its activation's earlier interval"
                     )
@@ -1484,6 +1486,55 @@ class AdmittedExecutionPrefixABC(AdmittedEvidenceABC):
             yield from interval.mutation_occurrences()
 
 
+class IntervalStart(ABC):
+    """Where an admitted interval begins: at its frame's entry, or just after a cut."""
+
+    continues: ClassVar[bool] = False
+    """Whether the interval resumes after a cut, so composition must hold its earlier part."""
+
+    def admits(self, position: CompactFlowPosition) -> bool:
+        """Whether an event at `position` may follow this start."""
+
+        return True
+
+    def may_precede_cut(self, exit: CompactFlowPosition) -> bool:
+        return True
+
+    def starts_at(self, position: CompactFlowPosition | None) -> bool:
+        """Whether this start is exactly `position`."""
+
+        return False
+
+    def require_before(self, end: CompactFlowPosition | None) -> None:
+        """Refuse an end the start does not provably precede."""
+
+
+@dataclass(frozen=True)
+class FromEntry(IntervalStart):
+    """The interval runs from its frame's entry."""
+
+
+@dataclass(frozen=True)
+class AfterCut(IntervalStart):
+    """The interval resumes just after an earlier cut of the same activation."""
+
+    position: CompactFlowPosition
+    continues = True
+
+    def admits(self, position: CompactFlowPosition) -> bool:
+        return self.position.may_precede(position)
+
+    def may_precede_cut(self, exit: CompactFlowPosition) -> bool:
+        return self.position.may_precede_cut(exit)
+
+    def starts_at(self, position: CompactFlowPosition | None) -> bool:
+        return self.position == position
+
+    def require_before(self, end: CompactFlowPosition | None) -> None:
+        if end is not None and self.position != end and not self.position.dominates(end):
+            raise ValueError("Flow interval requires proved ordered cuts")
+
+
 @dataclass(frozen=True, eq=False)
 class SingleFlowPrefix(AdmittedExecutionPrefixABC):
     """One admitted interval; None end explicitly means completed execution.
@@ -1496,7 +1547,7 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
     context: CompactFlowContext
     frame: InitialNativeFrame
     position: CompactFlowPosition | None
-    after: CompactFlowPosition | None = None
+    start: IntervalStart = FromEntry()
 
     def capture_kernel(
         self, observer: CapturedReferenceKernel
@@ -1519,11 +1570,11 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
         exit: CompactFlowPosition,
     ) -> bool:
         """Retain uncertain ordering and repeated cuts under one interval law."""
-        if self.after is not None and self.after == self.position:
+        if self.start.starts_at(self.position):
             return False
-        return (self.position is None or entry.may_precede_cut(self.position)) and (
-            self.after is None or self.after.may_precede_cut(exit)
-        )
+        return (
+            self.position is None or entry.may_precede_cut(self.position)
+        ) and self.start.may_precede_cut(exit)
 
     def may_overlap_evaluation(self, evaluation: SourceFlowEvaluation) -> bool:
         """Retain possible observer overlap under existing strict, loop-aware cuts."""
@@ -1549,13 +1600,7 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
         )
 
     def __post_init__(self) -> None:
-        if (
-            self.after is not None
-            and self.position is not None
-            and self.after != self.position
-            and not self.after.dominates(self.position)
-        ):
-            raise ValueError("Flow interval requires proved ordered cuts")
+        self.start.require_before(self.position)
 
     @property
     def execution_parts(self) -> tuple[AdmittedExecutionPrefixABC, ...]:
@@ -1572,8 +1617,8 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
         return iter(self._mutation_occurrences)
 
     def contains(self, mutation: SourceFlowEvent) -> bool:
-        """Half-open [after, position), retaining uncertain preceding events."""
-        if self.after is not None and self.after == self.position:
+        """Half-open [start, position), retaining uncertain preceding events."""
+        if self.start.starts_at(self.position):
             return False
         return (
             self.position is None
@@ -1581,7 +1626,7 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
                 mutation.position != self.position
                 and mutation.position.may_precede(self.position)
             )
-        ) and (self.after is None or self.after.may_precede(mutation.position))
+        ) and self.start.admits(mutation.position)
 
 
 @dataclass(frozen=True, eq=False)
@@ -1631,7 +1676,7 @@ class ChildExecutionPrefix(AdmittedExecutionPrefixABC):
             raise ValueError("Child entry requires its actual parent definition event")
         if self.definition.target.owner is not child.context.flow.owner:
             raise ValueError("Child entry requires the definition's actual flow owner")
-        if parent.position is None or child.after is not None:
+        if parent.position is None or child.start.continues:
             raise ValueError(
                 "Child entry requires a parent cut and a fresh child interval"
             )
@@ -1665,7 +1710,7 @@ class FunctionInvocationPrefix(AdmittedExecutionPrefixABC):
             raise ValueError(
                 "Function entry requires its original parent invocation cut"
             )
-        if child.context.flow.owner is not self.declaration or child.after is not None:
+        if child.context.flow.owner is not self.declaration or child.start.continues:
             raise ValueError(
                 "Function entry requires the callee declaration's fresh body interval"
             )
@@ -1742,7 +1787,7 @@ class DefinitionApplicationPrefix(AdmittedExecutionPrefixABC):
             raise ValueError(
                 "Function entry requires its original definition application cut"
             )
-        if child.context.flow.owner is not self.declaration or child.after is not None:
+        if child.context.flow.owner is not self.declaration or child.start.continues:
             raise ValueError(
                 "Function entry requires the callee declaration's fresh body interval"
             )

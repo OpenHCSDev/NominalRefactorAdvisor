@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from nominal_refactor_advisor.captured_reference import (
+    AfterCut,
     ChildExecutionPrefix,
     SequentialExecutionPrefix,
     SingleFlowPrefix,
@@ -25,7 +26,7 @@ def _parts():
         context=effects.parent,
         frame=effects.parent_frame,
         position=read.use.position,
-        after=cut,
+        start=AfterCut(position=cut),
              )
     return kernel, parent, child, resume
 
