@@ -432,9 +432,8 @@ class FindingAssemblyPipelineCandidate(CollectsItself, WitnessCarrierCandidate):
         method = next(
             (
                 statement
-                for statement in node.body
-                if isinstance(statement, FunctionDefinition)
-                and statement.name == "_findings_for_module"
+                for statement in FunctionDefinition.within(node.body)
+                if statement.name == "_findings_for_module"
             ),
             None,
         )
@@ -702,9 +701,7 @@ class GuardedDelegatorCandidate(CollectsItself, WitnessCarrierCandidate):
             return
         node = declared.node
         guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
-        for statement in node.body:
-            if not isinstance(statement, FunctionDefinition):
-                continue
+        for statement in FunctionDefinition.within(node.body):
             if statement.name not in {
                 "build_from_function",
                 "build_from_assign",

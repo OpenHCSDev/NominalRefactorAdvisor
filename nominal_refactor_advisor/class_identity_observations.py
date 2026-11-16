@@ -2309,8 +2309,11 @@ class IdentityPositions:
             function = next(
                 (
                     ancestor
-                    for ancestor in reversed(self.index.ancestor_nodes(node_index))
-                    if isinstance(ancestor, FunctionDefinition)
+                    for ancestor in FunctionDefinition.within(
+                        reversed(
+                            self.index.ancestor_nodes(node_index)
+                        )
+                    )
                 ),
                 None,
             )

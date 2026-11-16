@@ -2795,9 +2795,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                 return None
             constructors = [
                 method
-                for method in node.body
-                if isinstance(method, FunctionDefinition)
-                and method.name == "__init__"
+                for method in FunctionDefinition.within(node.body)
+                if method.name == "__init__"
             ]
             if len(constructors) > 1:
                 return None
@@ -2833,9 +2832,8 @@ class SourceProductFlowRepository(RepositoryModuleBindingProof, ProductFlowRepos
                 return False
             methods = [
                 method
-                for method in node.body
-                if isinstance(method, FunctionDefinition)
-                and method.name == name
+                for method in FunctionDefinition.within(node.body)
+                if method.name == name
             ]
             if not methods:
                 continue

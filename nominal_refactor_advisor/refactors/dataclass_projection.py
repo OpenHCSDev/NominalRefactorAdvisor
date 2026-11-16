@@ -539,9 +539,8 @@ class DataclassInstanceFieldProjection:
             return frozenset()
         return frozenset(
             statement.name
-            for statement in authority.node.body
-            if isinstance(statement, FunctionDefinition)
-            and any(
+            for statement in FunctionDefinition.within(authority.node.body)
+            if any(
                 ExpressionReference.decoded(decorator).terminal_name == "classmethod"
                 for decorator in statement.decorator_list
             )

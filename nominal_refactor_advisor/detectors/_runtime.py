@@ -2925,8 +2925,7 @@ class GuardedStringCaseOwnershipLeadDetector(PerModuleIssueDetector):
             owner = next(
                 (
                     ancestor
-                    for ancestor in reversed(ancestors)
-                    if isinstance(ancestor, DefinitionStatement)
+                    for ancestor in DefinitionStatement.within(reversed(ancestors))
                 ),
                 module.module,
             )

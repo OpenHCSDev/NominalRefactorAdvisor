@@ -52,9 +52,7 @@ class BuiltinHandlerDeclarations:
 
         primitives = {f"builtins.{kind.__name__}" for kind in cls.builtin_types}
         total = 0
-        for function in ast.walk(node):
-            if not isinstance(function, FunctionDefinition):
-                continue
+        for function in FunctionDefinition.within(ast.walk(node)):
             for decorator in function.decorator_list:
                 match decorator:
                     case ast.Call(func=handler, args=arguments):

@@ -4797,9 +4797,8 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         """Pure original-source geometry; no mutable AST or current-code verdict retained."""
         definitions = tuple(
             node
-            for node in ast.walk(ast.parse(self.source))
-            if isinstance(node, FunctionDefinition)
-            and SourceByteSpan.require_node(node) == span
+            for node in FunctionDefinition.within(ast.walk(ast.parse(self.source)))
+            if SourceByteSpan.require_node(node) == span
         )
         if len(definitions) != 1:
             raise ValueError("Native body has no unique function source declaration")
@@ -4886,9 +4885,8 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         ast.increment_lineno(parsed, start_line_index - bool(span.start_byte))
         definitions = tuple(
             node
-            for node in ast.walk(parsed)
-            if isinstance(node, FunctionDefinition)
-            and SourceByteSpan.require_node(node) == span
+            for node in FunctionDefinition.within(ast.walk(parsed))
+            if SourceByteSpan.require_node(node) == span
         )
         if len(definitions) != 1:
             raise ValueError("Native body has no unique function source declaration")

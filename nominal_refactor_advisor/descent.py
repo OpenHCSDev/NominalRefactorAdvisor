@@ -227,9 +227,8 @@ class EnumDeclaration(ParsedClassContext):
         )
         methods = tuple(
             statement
-            for statement in node.body
-            if isinstance(statement, FunctionDefinition)
-            and statement is not new
+            for statement in FunctionDefinition.within(node.body)
+            if statement is not new
         )
         data_fields = () if new is None else cls._data_fields(new)
         members: list[Member] = []
@@ -687,9 +686,8 @@ class Rewrite:
         else:
             anchor = next(
                 statement
-                for statement in module.module.body
-                if isinstance(statement, ImportDefinition)
-                and not (
+                for statement in ImportDefinition.within(module.module.body)
+                if not (
                     isinstance(statement, ast.ImportFrom)
                     and statement.module == "__future__"
                 )

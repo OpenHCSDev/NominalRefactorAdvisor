@@ -624,8 +624,7 @@ class ModuleSymbolTable:
 
         return frozenset(
             alias.name
-            for statement in self.module.body
-            if isinstance(statement, ImportDefinition)
+            for statement in ImportDefinition.within(self.module.body)
             for alias in statement.names
             if ImportAlias.from_alias(alias).declares_reexport
         )

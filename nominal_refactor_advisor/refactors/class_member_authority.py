@@ -370,9 +370,8 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         return frozenset(
             member_name
             for class_target in self.targets
-            for statement in class_target.node.body
-            if isinstance(statement, FunctionDefinition)
-            and statement.name in method_names
+            for statement in FunctionDefinition.within(class_target.node.body)
+            if statement.name in method_names
             for member_name in ClassMethodReceiverRequirements.from_method(
                 statement
             ).member_names

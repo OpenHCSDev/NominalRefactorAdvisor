@@ -1920,9 +1920,7 @@ class CompactModuleClassHeader(CompactModuleIdentity):
 
         declarations: list[CompactCallableMemberDeclaration] = []
         property_names: set[str] = set()
-        for statement in node.body:
-            if not isinstance(statement, FunctionDefinition):
-                continue
+        for statement in FunctionDefinition.within(node.body):
             if module_binding_snapshot.decorated_by(
                 statement, (OVERLOAD_DECORATOR,)
             ) or CompactModuleClassHeader._redefines_property(statement, property_names):
@@ -4880,10 +4878,7 @@ class CompactModuleClassProjectionFamily(
                 manual_selector_axes=CompactModuleClassProjectionFamily._compact_manual_selector_axes(parsed_module),
                 top_level_definitions=tuple(
                     (node.name, node.lineno)
-                    for node in parsed_module.module.body
-                    if isinstance(
-                        node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-                    )
+                    for node in DefinitionStatement.within(parsed_module.module.body)
                 ),
                 type_variable_names=cls._module_type_variable_names(parsed_module),
                 annotated_function_returns=tuple(
@@ -4892,8 +4887,7 @@ class CompactModuleClassProjectionFamily(
                         line=node.lineno,
                         return_annotation_expression=ast.unparse(returns),
                     )
-                    for node in parsed_module.module.body
-                    if isinstance(node, FunctionDefinition)
+                    for node in FunctionDefinition.within(parsed_module.module.body)
                     for returns in declared_annotations(node)
                 ),
                 exact_type_guards=syntax_facets.exact_type_guards,

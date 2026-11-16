@@ -789,8 +789,7 @@ class DispatchPolymorphismSource:
         required_sources = {
             name: source
             for import_source in self.support_import_sources
-            for statement in ast.parse(import_source).body
-            if isinstance(statement, ImportDefinition)
+            for statement in ImportDefinition.within(ast.parse(import_source).body)
             for name, source in ImportBoundNameProjection(statement).name_sources()
         }
         conflicts: set[str] = set()

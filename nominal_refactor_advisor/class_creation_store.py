@@ -37,8 +37,7 @@ FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 def _functions(statements: list[ast.stmt]) -> dict[str, FunctionNode]:
     return {
         statement.name: statement
-        for statement in statements
-        if isinstance(statement, FunctionDefinition)
+        for statement in FunctionDefinition.within(statements)
     }
 
 

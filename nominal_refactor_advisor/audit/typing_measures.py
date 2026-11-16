@@ -252,8 +252,7 @@ class TypeCheckingImport(PerFileMeasure, LocatedSource):
             match node:
                 case ast.If(test=test, body=body, orelse=orelse):
                     for statement in cls.checker_branch(test, body, orelse, imports):
-                        guarded.update((id(inner), inner) for inner in ast.walk(statement)
-                                       if isinstance(inner, ImportDefinition))
+                        guarded.update((id(inner), inner) for inner in ImportDefinition.within(ast.walk(statement)))
         return sorted(statement.lineno for statement in guarded.values()
                       for _ in statement.names)
 

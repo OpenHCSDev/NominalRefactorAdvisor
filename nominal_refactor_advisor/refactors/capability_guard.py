@@ -136,8 +136,8 @@ class CapabilityGuardToOverrideOperation(
         function = next(
             (
                 node
-                for node in body
-                if isinstance(node, FunctionDefinition) and node.name == function_name
+                for node in FunctionDefinition.within(body)
+                if node.name == function_name
             ),
             None,
         )

@@ -104,9 +104,7 @@ class ReflectiveSelfAttributeCandidate(CollectsItself, SelfReflectiveBuiltinCand
 
     @classmethod
     def _for_class(cls, module: ParsedModule, node: ast.ClassDef) -> Iterable[Self]:
-        for statement in node.body:
-            if not isinstance(statement, FunctionDefinition):
-                continue
+        for statement in FunctionDefinition.within(node.body):
             for subnode in ast.walk(statement):
                 if not isinstance(subnode, ast.Call):
                     continue
@@ -1288,9 +1286,7 @@ class DynamicSelfFieldSelectionCandidate(CollectsItself, SelfReflectiveBuiltinCa
 
     @classmethod
     def _for_class(cls, module: ParsedModule, node: ast.ClassDef) -> Iterable[Self]:
-        for statement in node.body:
-            if not isinstance(statement, FunctionDefinition):
-                continue
+        for statement in FunctionDefinition.within(node.body):
             for subnode in module.syntax_index.function_walks[statement]:
                 if not isinstance(subnode, ast.Call):
                     continue

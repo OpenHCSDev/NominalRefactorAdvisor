@@ -61,8 +61,7 @@ def _has_private_identifiers(nodes: tuple[ast.AST, ...]) -> bool:
         *(node.arg for node in nodes if isinstance(node, ast.arg)),
         *(
             node.name
-            for node in nodes
-            if isinstance(node, DefinitionStatement)
+            for node in DefinitionStatement.within(nodes)
         ),
     )
     return any(name.startswith("__") and not name.endswith("__") for name in names)

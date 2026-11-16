@@ -542,7 +542,7 @@ class _ForwarderBody(_Forwarder):
             )
         ]
         imports = tuple(
-            statement for statement in body if isinstance(statement, ImportDefinition)
+            statement for statement in ImportDefinition.within(body)
         )
         arguments = method.args
         if (
@@ -721,8 +721,8 @@ class InlineForwarderOperation(PreflightByReproof, RepositorySourceReprovedOpera
         )
         method = next(
             (
-                node for node in source_class.node.body
-                if isinstance(node, FunctionDefinition) and node.name == method_name
+                node for node in FunctionDefinition.within(source_class.node.body)
+                if node.name == method_name
             ),
             None,
         )

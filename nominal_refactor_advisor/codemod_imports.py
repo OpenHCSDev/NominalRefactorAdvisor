@@ -796,8 +796,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
         guard_by_statement_id = {
             id(statement): guard
             for guard in guard_projection.guards
-            for statement in guard.body
-            if isinstance(statement, ImportDefinition)
+            for statement in ImportDefinition.within(guard.body)
         }
         has_guarded_pending_additions = any(
             addition.scope.is_guarded for addition in pending_additions

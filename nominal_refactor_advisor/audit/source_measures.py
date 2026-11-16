@@ -625,7 +625,7 @@ class FamilyFlattened(PerFileModuleMeasure):
         writes = collections.Counter(item.id for item in nodes
                                      if isinstance(item, ast.Name) and isinstance(item.ctx, (ast.Store, ast.Del)))
         writes.update(item.arg for item in nodes if isinstance(item, ast.arg))
-        writes.update(item.name for item in nodes if isinstance(item, DefinitionStatement))
+        writes.update(item.name for item in DefinitionStatement.within(nodes))
         for item in nodes:
             if isinstance(item, ImportDefinition):
                 writes.update(alias.asname or alias.name.split('.')[0] for alias in item.names)

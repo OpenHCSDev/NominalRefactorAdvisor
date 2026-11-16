@@ -1558,9 +1558,7 @@ class KeywordOnlyComposition:
         for symbol in symbols:
             owner = OverlapClass.for_symbol(self.snapshot, symbol)
             module = self.snapshot.parsed_module_for_source_path(owner.file_path)
-            for method in owner.node.body:
-                if not isinstance(method, FunctionDefinition):
-                    continue
+            for method in FunctionDefinition.within(owner.node.body):
                 digest = FieldOrderDigest.in_method(self.snapshot, module, method)
                 if digest is not None:
                     raise ValueError(

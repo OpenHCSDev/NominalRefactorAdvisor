@@ -21,8 +21,7 @@ ImportStatement: TypeAlias = ast.Import | ast.ImportFrom
 def _runtime_import_statements(module: ast.Module) -> tuple[ImportStatement, ...]:
     return tuple(
         statement
-        for statement in module.body
-        if isinstance(statement, ImportDefinition)
+        for statement in ImportDefinition.within(module.body)
     )
 
 
@@ -32,8 +31,7 @@ def _type_checking_import_statements(
     return tuple(
         statement
         for guard in TypeCheckingGuardProjection.from_module(module).guards
-        for statement in guard.body
-        if isinstance(statement, ImportDefinition)
+        for statement in ImportDefinition.within(guard.body)
     )
 
 
@@ -185,8 +183,7 @@ class TypeCheckingGuardProjection:
     ) -> tuple[TypeCheckingGuardReference, ...]:
         return tuple(
             reference
-            for statement in module.body
-            if isinstance(statement, ImportDefinition)
+            for statement in ImportDefinition.within(module.body)
             for reference in cls._references_for_statement(statement)
         )
 
