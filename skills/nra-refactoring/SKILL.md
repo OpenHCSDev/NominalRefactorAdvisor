@@ -343,6 +343,27 @@ this session went 7 → 0 by doing exactly this every time.
 doesn't, the derivation doesn't cover every site — grep the literal and
 fix the remaining copies.
 
+## Remaining finding categories by batch leverage (2026-11-16)
+
+Full scan: ~1,591 findings. Work them by batch leverage, not by count:
+
+| Detector | Count | Leverage | The move |
+|---|---|---|---|
+| `phantom_family` | 411 | HIGH — one ABC kills N findings | Declare the ABC, make N classes inherit it |
+| `own_type_test` | 336 | HIGH per file — one method on base kills N isinstance | Method on base, dispatch through MRO |
+| `foreign_absence_probe` | 247 | MEDIUM — owner should report its state | Property on the owner |
+| `threaded_absence` | 112 | MEDIUM — threaded Optional through calls | Owner holds the value, callers ask it |
+| `long_condition_factoring_lead` | 107 | MEDIUM — boolean chains → rule families | Named rules (IMPL-14) |
+| `missing_mixin` | ~31 | DIMINISHING — remaining are builder→product pairs, NamedTuple barriers, or 2-field domain overlap | Parent extraction (done for siblings); NamedTuple→dataclass needed for some |
+| `unused_method_parameter` | 65 | LOW — each is one deletion | Delete the param |
+| `loop_relookup` | 62 | LOW — each is one dict | Add @cached_property dict |
+
+**What's done:** `semantic_mirror_without_descent` (7→0),
+`unresolved_authority_claim` (1→0), `missing_mixin` sibling pairs
+(38→31). The `phantom_family` and `own_type_test` categories
+are the next high-leverage frontier — each ABC or base method
+eliminates multiple findings per class.
+
 ## Known NRA tool issues (2026-11-16, updated)
 
 - **Codemod synthesis CLI positional argument swap** — FIXED (cf39547c).
