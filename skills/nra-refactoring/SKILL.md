@@ -251,6 +251,27 @@ always inherits CaptureOutcome. On union types like
 decoder (Proposition 3.3). Two bugs from overcorrecting were fixed on
 2026-11-16.
 
+## Known NRA tool issues (2026-11-16)
+
+- **Codemod synthesis CLI had a positional argument swap** at cli.py:4715
+  that put `args` in `source_snapshot`'s slot. Fixed by converting to
+  keyword construction (commit cf39547c). Both `--codemod-synthesize-plan`
+  and `--codemod-synthesize-class-plan` were broken.
+
+- **Source-index `__init__.py` gap blocks plan application.** The plan
+  auto-apply (`--codemod-apply`) fails with "Source module ... is
+  unavailable" because `AstTargetDigest.file_path` is absolute while
+  `ParsedModule.file_path` is relative. The lookup at
+  `declaration_authority_rename.py:130` fails on the mismatch. The scan
+  and synthesis JSON output work fine; only the apply step breaks.
+  Fix: normalize paths in `_located()` or make both absolute.
+
+- **Trajectory completeness gate blocks simulation.** The synthesis
+  correctly finds 6 executable candidates, but `--codemod-simulate`
+  rejects the plan because it's not a "complete proof across reachable
+  refactor trajectories." Author and apply manually from the synthesis
+  output until this gate is relaxed.
+
 ## Running a sweep: lessons from agent-comms (2026-11-11)
 
 - **Fill the plan, simulate once, apply once.** Compose with
