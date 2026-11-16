@@ -192,9 +192,9 @@ class OverlapClass(ABC):
             if not bound & wanted:
                 continue
             if not bound <= wanted:
-                raise ValueError(
+                raise NeedsInput(
                     f"`{self.qualname}` binds {sorted(bound - wanted)} in the same "
-                    "statement as a moved declaration"
+                    "statement as a moved declaration", NeededInput.SOURCE_CHANGE
                 )
             statements.append(statement)
             found |= bound
@@ -215,15 +215,15 @@ class OverlapClass(ABC):
                 for field in self.facts.dataclass_declaration.fields
                 if not field.role.has_known_field_position
             ]
-            raise ValueError(
-                f"`{self.qualname}` has {unplaced} with no known field position"
+            raise NeedsInput(
+                f"`{self.qualname}` has {unplaced} with no known field position", NeededInput.PROOF
             )
         return names
 
     def _require_single_decorator(self) -> None:
         decorators = self.node.decorator_list
         if len(decorators) > 1:
-            raise ValueError(f"`{self.qualname}` has {len(decorators)} decorators")
+            raise NeedsInput(f"`{self.qualname}` has {len(decorators)} decorators", NeededInput.PROOF)
 
     @property
     @abstractmethod
@@ -280,7 +280,7 @@ class PlainOverlapClass(OverlapClass):
     def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
         self._require_single_decorator()
         if self.node.decorator_list:
-            raise ValueError(f"`{self.qualname}` has a non-dataclass decorator")
+            raise NeedsInput(f"`{self.qualname}` has a non-dataclass decorator", NeededInput.PROOF)
         return ()
 
     def keyword_only_composed_by(
@@ -314,8 +314,8 @@ class PlainOverlapClass(OverlapClass):
     def require_accepts_moved_fields(self, frozen: str) -> None:
         self.dataclass_options_key
         if any(isinstance(statement, ast.AnnAssign) for statement in self.node.body):
-            raise ValueError(
-                f"`{self.qualname}` annotates names that would become fields"
+            raise NeedsInput(
+                f"`{self.qualname}` annotates names that would become fields", NeededInput.SOURCE_CHANGE
             )
 
     def option(self, name: str) -> str:
@@ -324,7 +324,7 @@ class PlainOverlapClass(OverlapClass):
 
     def require_dataclass(self) -> None:
         self.dataclass_options_key
-        raise ValueError(f"`{self.qualname}` is not a dataclass")
+        raise NeedsInput(f"`{self.qualname}` is not a dataclass", NeededInput.SOURCE_CHANGE)
 
 
 @dataclass(frozen=True)
@@ -360,7 +360,7 @@ class DataclassOverlapClass(OverlapClass):
 
     def require_accepts_moved_fields(self, frozen: str) -> None:
         if self.option("kw_only") != "True" or self.option("frozen") != frozen:
-            raise ValueError(f"`{self.qualname}` is a dataclass of another kind")
+            raise NeedsInput(f"`{self.qualname}` is a dataclass of another kind", NeededInput.SOURCE_CHANGE)
 
     def option(self, name: str) -> str:
         self._require_single_decorator()
@@ -419,13 +419,13 @@ class RestatedDeclarations:
             raise ValueError("A restatement needs at least one declaration")
         for name in names:
             if name.startswith("__") and not name.endswith("__"):
-                raise ValueError(f"`{name}` is name-mangled by its owner")
+                raise NeedsInput(f"`{name}` is name-mangled by its owner", NeededInput.PROOF)
             mine = source.declaration(snapshot, name)
             theirs = restating.declaration(snapshot, name)
             if not mine.same_declaration_as(theirs):
-                raise ValueError(
+                raise NeedsInput(
                     f"`{restating.qualname}.{name}` differs from "
-                    f"`{source.qualname}.{name}`"
+                    f"`{source.qualname}.{name}`", NeededInput.SOURCE_CHANGE
                 )
         return cls(source, restating, names)
 
@@ -463,20 +463,20 @@ class RestatedDeclarations:
                     continue
                 symbol = resolver.symbol_for_node(callee)
                 if symbol is None or class_index.class_for(symbol) is None:
-                    raise ValueError(
+                    raise NeedsInput(
                         f"`{ast.unparse(call.func)}` builds a moved value; "
-                        "its callee is no indexed class"
+                        "its callee is no indexed class", NeededInput.PROOF
                     )
                 mro_type = mro_authority.resolve(symbol).mro_type
                 if mro_type is None:
-                    raise ValueError(f"`{symbol}` has an open MRO")
+                    raise NeedsInput(f"`{symbol}` has an open MRO", NeededInput.PROOF)
                 if any(
                     declaration.name == "__set_name__"
                     for owner in mro_type.declarations
                     for declaration in owner.body_declarations
                 ):
-                    raise ValueError(
-                        f"`{symbol}` learns its owner class through `__set_name__`"
+                    raise NeedsInput(
+                        f"`{symbol}` learns its owner class through `__set_name__`", NeededInput.PROOF
                     )
 
 
@@ -587,9 +587,9 @@ class ClassReferenceSites:
 
         for site in self.sites:
             if site.role.distinguishes_identity:
-                raise ValueError(
+                raise NeedsInput(
                     f"{site.location} reads `{ast.unparse(site.node)}` as a "
-                    f"{site.role.value}: the move changes what it answers"
+                    f"{site.role.value}: the move changes what it answers", NeededInput.SOURCE_CHANGE
                 )
 
     def require_keyword_construction(self) -> None:
@@ -602,9 +602,9 @@ class ClassReferenceSites:
         for site in self.sites:
             positional = site.role.positional_bindings(site.parent)
             if positional:
-                raise ValueError(
+                raise NeedsInput(
                     f"{site.location} binds {positional} field(s) of "
-                    f"`{ast.unparse(site.node)}` by position, as a {site.role.value}"
+                    f"`{ast.unparse(site.node)}` by position, as a {site.role.value}", NeededInput.SOURCE_CHANGE
                 )
             if (
                 site.role.binds_fields
@@ -613,9 +613,9 @@ class ClassReferenceSites:
                 or site.is_base
             ):
                 continue
-            raise ValueError(
+            raise NeedsInput(
                 f"{site.location} passes `{ast.unparse(site.node)}` on as a value; "
-                "how its callers bind fields is unproved"
+                "how its callers bind fields is unproved", NeededInput.PROOF
             )
 
 
@@ -638,15 +638,15 @@ def require_static_c3(
             continue
         reached[current.symbol] = current
         if not current.base_references_are_complete:
-            raise ValueError(f"`{current.qualname}` has unresolved bases")
+            raise NeedsInput(f"`{current.qualname}` has unresolved bases", NeededInput.PROOF)
         for reference in current.base_references:
             qualified_name = ".".join(reference.resolved_parts)
             base = class_index.class_for(qualified_name)
             if base is not None:
                 pending.append(base)
             elif NativeMroBase.for_qualified_name(qualified_name) is None:
-                raise ValueError(
-                    f"`{current.qualname}` has base `{qualified_name}` outside the index"
+                raise NeedsInput(
+                    f"`{current.qualname}` has base `{qualified_name}` outside the index", NeededInput.PROOF
                 )
         if set(current.class_keyword_names) - {"metaclass"}:
             raise NeedsInput(
@@ -658,7 +658,7 @@ def require_static_c3(
             declaration.name in CLASS_METHOD_OWNERSHIP_HOOK_NAMES
             for declaration in current.body_declarations
         ):
-            raise ValueError(f"`{current.qualname}` runs a subclass creation hook")
+            raise NeedsInput(f"`{current.qualname}` runs a subclass creation hook", NeededInput.PROOF)
         if "metaclass" in current.class_keyword_names:
             MetaclassMroProof(snapshot, current).require_type_mro()
     return tuple(reached.values())
@@ -677,14 +677,14 @@ class MetaclassMroProof:
             keyword for keyword in target.node.keywords if keyword.arg == "metaclass"
         )
         if len(keywords) != 1:
-            raise ValueError(f"`{target.qualname}` has no single metaclass keyword")
+            raise NeedsInput(f"`{target.qualname}` has no single metaclass keyword", NeededInput.PROOF)
         witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
             self.snapshot.parsed_module_for_source_path(target.file_path),
             keywords[0].value,
             line=target.node.lineno,
         )
         if witness is None:
-            raise ValueError(f"`{target.qualname}` has an unbound metaclass")
+            raise NeedsInput(f"`{target.qualname}` has an unbound metaclass", NeededInput.PROOF)
         class_index = self.snapshot.class_overlap_verdicts.class_index
         if class_index.class_for(witness.qualified_name) is not None:
             self._require_indexed(witness.qualified_name)
@@ -701,9 +701,9 @@ class MetaclassMroProof:
             seen.add(current)
             metaclass = class_index.class_for(current)
             if metaclass is None or not metaclass.base_references_are_complete:
-                raise ValueError(f"Metaclass `{current}` has an unproved ancestry")
+                raise NeedsInput(f"Metaclass `{current}` has an unproved ancestry", NeededInput.PROOF)
             if any(declaration.name == "mro" for declaration in metaclass.body_declarations):
-                raise ValueError(f"Metaclass `{current}` overrides `mro`")
+                raise NeedsInput(f"Metaclass `{current}` overrides `mro`", NeededInput.PROOF)
             pending.extend(
                 ".".join(reference.resolved_parts)
                 for reference in metaclass.base_references
@@ -715,11 +715,11 @@ class MetaclassMroProof:
         try:
             metaclass = getattr(import_module(module_name), attribute)
         except (ImportError, AttributeError) as error:
-            raise ValueError(f"Metaclass `{qualified_name}` is not importable") from error
+            raise NeedsInput(f"Metaclass `{qualified_name}` is not importable", NeededInput.PROOF) from error
         if not isinstance(metaclass, type) or not issubclass(metaclass, type):
-            raise ValueError(f"`{qualified_name}` is not a metaclass")
+            raise NeedsInput(f"`{qualified_name}` is not a metaclass", NeededInput.PROOF)
         if NativeClassMroDeclaration(metaclass).member_owner("mro") is not type:
-            raise ValueError(f"Metaclass `{qualified_name}` overrides `mro`")
+            raise NeedsInput(f"Metaclass `{qualified_name}` overrides `mro`", NeededInput.PROOF)
 
 
 def require_verdict(
@@ -870,16 +870,16 @@ def required_name_imports(
         )
         if actual is not None:
             if actual.qualified_name != expected.qualified_name:
-                raise ValueError(
+                raise NeedsInput(
                     f"`{name}` is `{actual.qualified_name}` in "
-                    f"{destination.file_path}, not `{expected.qualified_name}`"
+                    f"{destination.file_path}, not `{expected.qualified_name}`", NeededInput.SOURCE_CHANGE
                 )
             continue
         targets = snapshot.source_index.targets_matching_repository_symbol(
             expected.qualified_name
         )
         if len(targets) != 1:
-            raise ValueError(f"`{expected.qualified_name}` has no single declaration")
+            raise NeedsInput(f"`{expected.qualified_name}` has no single declaration", NeededInput.PROOF)
         imports.append(
             ModuleImportMutation.from_source(
                 file_path=destination.file_path,
@@ -926,7 +926,7 @@ class ClassComposition:
         )
         body = owner.node.body[1:] if is_docstring_statement(owner.node.body[0]) else owner.node.body
         if not body or any(not declared_names(statement) for statement in body):
-            raise ValueError(f"`{owner.qualname}` runs statements beyond declarations")
+            raise NeedsInput(f"`{owner.qualname}` runs statements beyond declarations", NeededInput.SOURCE_CHANGE)
         restated = RestatedDeclarations.require(
             snapshot,
             owner,
@@ -975,7 +975,7 @@ class ClassComposition:
             restating.node, self.snapshot.sources_by_file_path[restating.file_path]
         )
         if not header.can_rewrite:
-            raise ValueError(f"`{restating.qualname}` has an unrewritable header")
+            raise NeedsInput(f"`{restating.qualname}` has an unrewritable header", NeededInput.OPERATION)
 
     def require_field_order(self) -> None:
         """Old and new dataclass collection bind the same values.
@@ -1006,10 +1006,10 @@ class ClassComposition:
         if before == after and self.owner.option("kw_only") == restating.option("kw_only"):
             return None
         if self.owner.option("kw_only") != "True":
-            raise ValueError(
+            raise NeedsInput(
                 f"Composing `{self.owner.qualname}` reorders the fields of "
                 f"`{restating.qualname}`: {before} becomes {after}, and the owner "
-                "is not keyword-only"
+                "is not keyword-only", NeededInput.SOURCE_CHANGE
             )
         return KeywordOnlyComposition(self.snapshot, restating)
 
@@ -1159,14 +1159,14 @@ class CoveringComposition:
                 if owner.file_path == composer.file_path and (
                     owner.node.lineno > composer.node.lineno
                 ):
-                    raise ValueError(
-                        f"`{owner.qualname}` is declared after `{composer.qualname}`"
+                    raise NeedsInput(
+                        f"`{owner.qualname}` is declared after `{composer.qualname}`", NeededInput.SOURCE_CHANGE
                     )
             header = ClassHeaderSpanSourceAuthority(
                 composer.node, self.snapshot.sources_by_file_path[composer.file_path]
             )
             if not header.can_rewrite:
-                raise ValueError(f"`{composer.qualname}` has an unrewritable header")
+                raise NeedsInput(f"`{composer.qualname}` has an unrewritable header", NeededInput.OPERATION)
 
     def require_field_order(self) -> None:
         for composer in self.composers:
@@ -1184,9 +1184,9 @@ class CoveringComposition:
         if before != after or any(
             owner.option("kw_only") != composer.option("kw_only") for owner in self.owners
         ):
-            raise ValueError(
+            raise NeedsInput(
                 f"Composing {', '.join(f'`{owner.qualname}`' for owner in self.owners)} "
-                f"reorders the fields of `{composer.qualname}`: {before} becomes {after}"
+                f"reorders the fields of `{composer.qualname}`: {before} becomes {after}", NeededInput.SOURCE_CHANGE
             )
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -1252,7 +1252,7 @@ def _owner_import_edits(
         snapshot.parsed_module_for_source_path(composer.file_path).module.body
     )
     if name in bound:
-        raise ValueError(f"`{name}` is bound to another declaration there")
+        raise NeedsInput(f"`{name}` is bound to another declaration there", NeededInput.SOURCE_CHANGE)
     return (
         ModuleImportMutation.from_source(
             file_path=composer.file_path,
@@ -1345,7 +1345,7 @@ class BaseFold:
     def require_dataclass_family(self) -> None:
         base = self.base
         if frozenset(self.names) & base.target.bound_names:
-            raise ValueError(f"`{base.qualname}` already binds a moved name")
+            raise NeedsInput(f"`{base.qualname}` already binds a moved name", NeededInput.SOURCE_CHANGE)
         base.require_accepts_moved_fields(self.frozen)
         class_index = self.snapshot.class_overlap_verdicts.class_index
         for symbol in class_index.ancestor_symbols(base.symbol):
@@ -1355,13 +1355,13 @@ class BaseFold:
             descendant = OverlapClass.for_symbol(self.snapshot, symbol)
             descendant.require_dataclass()
             if descendant.option("frozen") != self.frozen:
-                raise ValueError(f"`{descendant.qualname}` differs in frozen-ness")
+                raise NeedsInput(f"`{descendant.qualname}` differs in frozen-ness", NeededInput.SOURCE_CHANGE)
             if descendant.option("order") == "True":
-                raise ValueError(f"`{descendant.qualname}` orders by field position")
+                raise NeedsInput(f"`{descendant.qualname}` orders by field position", NeededInput.SOURCE_CHANGE)
             descendant.own_field_names
             if {"__init__", "__match_args__"} & descendant.target.bound_names:
-                raise ValueError(
-                    f"`{descendant.qualname}` declares its own construction surface"
+                raise NeedsInput(
+                    f"`{descendant.qualname}` declares its own construction surface", NeededInput.PROOF
                 )
 
     def require_lookup(self) -> None:
@@ -1375,14 +1375,14 @@ class BaseFold:
 
         dunders = sorted(name for name in self.names if name.startswith("__"))
         if dunders:
-            raise ValueError(f"Moving {dunders} could expose a native declaration")
+            raise NeedsInput(f"Moving {dunders} could expose a native declaration", NeededInput.PROOF)
         class_index = self.snapshot.class_overlap_verdicts.class_index
         authority = ClassMroAuthority(class_index.classes_by_symbol)
         children = frozenset(child.symbol for child in self.children)
         for symbol in self.descendant_symbols:
             mro_type = authority.resolve(symbol).mro_type
             if mro_type is None:
-                raise ValueError(f"`{symbol}` has an open MRO")
+                raise NeedsInput(f"`{symbol}` has an open MRO", NeededInput.PROOF)
             order = tuple(declaration.symbol for declaration in mro_type.declarations)
             if self.base.symbol not in order:
                 raise ValueError(f"`{self.base.qualname}` is outside the MRO of `{symbol}`")
@@ -1402,9 +1402,9 @@ class BaseFold:
                     and order.index(owner) < order.index(self.base.symbol)
                 )
                 if between:
-                    raise ValueError(
+                    raise NeedsInput(
                         f"`{between[0]}` would answer `{symbol}.{name}` instead of "
-                        f"`{self.base.qualname}`"
+                        f"`{self.base.qualname}`", NeededInput.SOURCE_CHANGE
                     )
 
     def require_movable(self, restatement: RestatedDeclarations) -> None:
@@ -1415,8 +1415,8 @@ class BaseFold:
         for statement in restatement.statements:
             member = ClassMemberPromotionStatement.for_statement(statement)
             if member is None:
-                raise ValueError(
-                    f"`{child.qualname}` line {statement.lineno} is no movable member"
+                raise NeedsInput(
+                    f"`{child.qualname}` line {statement.lineno} is no movable member", NeededInput.OPERATION
                 )
             member.require_safe_move(context)
 
@@ -1487,7 +1487,7 @@ class BaseFold:
         )
         if witness is not None:
             if witness.qualified_name != "dataclasses.dataclass":
-                raise ValueError("`dataclass` is bound to something else in the base module")
+                raise NeedsInput("`dataclass` is bound to something else in the base module", NeededInput.SOURCE_CHANGE)
             return ()
         return (
             ModuleImportMutation.from_source(
@@ -1510,9 +1510,9 @@ def require_no_positional_self_construction(
         owner = OverlapClass.for_symbol(snapshot, symbol)
         for node in ast.walk(owner.node):
             if isinstance(node, ast.Call) and node.args and _is_own_class(node.func):
-                raise ValueError(
+                raise NeedsInput(
                     f"{owner.file_path}:{node.lineno} builds its own class with "
-                    f"{len(node.args)} positional argument(s)"
+                    f"{len(node.args)} positional argument(s)", NeededInput.SOURCE_CHANGE
                 )
 
 
@@ -1552,10 +1552,10 @@ class KeywordOnlyComposition:
         for symbol in self.family:
             member = OverlapClass.for_symbol(self.snapshot, symbol)
             if member.option("order") == "True":
-                raise ValueError(f"`{member.qualname}` orders by field position")
+                raise NeedsInput(f"`{member.qualname}` orders by field position", NeededInput.SOURCE_CHANGE)
             if {"__init__", "__match_args__"} & member.target.bound_names:
-                raise ValueError(
-                    f"`{member.qualname}` declares its own construction surface"
+                raise NeedsInput(
+                    f"`{member.qualname}` declares its own construction surface", NeededInput.PROOF
                 )
         ClassReferenceSites(
             self.snapshot, frozenset(self.family)
@@ -1579,10 +1579,10 @@ class KeywordOnlyComposition:
                     continue
                 digest = FieldOrderDigest.in_method(self.snapshot, module, method)
                 if digest is not None:
-                    raise ValueError(
+                    raise NeedsInput(
                         f"{owner.file_path}:{digest} digests `{owner.qualname}."
                         f"{method.name}`'s serialization of the instance, whose "
-                        "field order the composition changes"
+                        "field order the composition changes", NeededInput.SOURCE_CHANGE
                     )
 
     def decorator_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -1703,7 +1703,7 @@ def keyword_only_decorator_source(decorator_source: str, decorator: ast.expr) ->
     if not isinstance(decorator, ast.Call):
         return f"{decorator_source}(kw_only=True)"
     if not decorator_source.endswith(")"):
-        raise ValueError(f"`{decorator_source}` is an unrewritable decorator")
+        raise NeedsInput(f"`{decorator_source}` is an unrewritable decorator", NeededInput.OPERATION)
     opened = decorator_source[:-1].rstrip()
     separator = "" if opened.endswith("(") else ", "
     return f"{opened}{separator}kw_only=True)"
@@ -1787,16 +1787,16 @@ class PositionalConstruction:
     def require_keywordable(self) -> None:
         call = self.call
         if any(isinstance(argument, ast.Starred) for argument in call.args):
-            raise ValueError(f"{self.location} unpacks `*` arguments")
+            raise NeedsInput(f"{self.location} unpacks `*` arguments", NeededInput.PROOF)
         if CallKeywords.of(call.keywords).splats:
-            raise ValueError(f"{self.location} unpacks `**` arguments")
+            raise NeedsInput(f"{self.location} unpacks `**` arguments", NeededInput.PROOF)
         if len(call.args) > len(self.parameter_names):
-            raise ValueError(
+            raise NeedsInput(
                 f"{self.location} passes {len(call.args)} positional argument(s); "
-                f"the generated `__init__` takes {len(self.parameter_names)}"
+                f"the generated `__init__` takes {len(self.parameter_names)}", NeededInput.PROOF
             )
         if any(isinstance(argument, ast.GeneratorExp) for argument in call.args):
-            raise ValueError(f"{self.location} passes a bare generator expression")
+            raise NeedsInput(f"{self.location} passes a bare generator expression", NeededInput.OPERATION)
 
     def replacements(
         self, geometry: SourceTextGeometry
@@ -1918,9 +1918,9 @@ class ConstructionKeywording:
             self.target.symbol
         ):
             if self.parameter_names(symbol)[:widest] != parameters[:widest]:
-                raise ValueError(
+                raise NeedsInput(
                     f"`{symbol}` takes other positional parameters than "
-                    f"`{self.target.qualname}`, and its receiver may be one"
+                    f"`{self.target.qualname}`, and its receiver may be one", NeededInput.PROOF
                 )
         return tuple(
             PositionalConstruction(self.target.file_path, call, parameters) for call in calls
@@ -2010,9 +2010,9 @@ def _receiver_class_calls(
             )
         )
         if rebound:
-            raise ValueError(
+            raise NeedsInput(
                 f"line {function.lineno}: `{function.name}` rebinds {sorted(rebound)}, "
-                "so its own-class calls are unproved"
+                "so its own-class calls are unproved", NeededInput.PROOF
             )
     return calls
 
@@ -2201,8 +2201,8 @@ def movable_members(
     for statement in statements:
         member = ClassMemberPromotionStatement.for_statement(statement)
         if member is None:
-            raise ValueError(
-                f"`{source.qualname}` line {statement.lineno} is no movable member"
+            raise NeedsInput(
+                f"`{source.qualname}` line {statement.lineno} is no movable member", NeededInput.OPERATION
             )
         member.require_safe_move(context)
 
@@ -2239,19 +2239,19 @@ class MixinCreation:
     ) -> Self:
         anchor = OverlapClass.require(snapshot, anchor_reference)
         if not docstring.strip() or '"""' in docstring or "\\" in docstring:
-            raise ValueError("A mixin needs a one-line docstring without quotes")
+            raise NeedsInput("A mixin needs a one-line docstring without quotes", NeededInput.OWNER_PICK)
         module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
         _, owner = require_owner_candidate(
             snapshot, anchor.symbol, NewMixinOwner, (module_name,), member_names,
             tolerate_inherited=True,
         )
         if not name.isidentifier() or keyword_module.iskeyword(name):
-            raise ValueError(f"`{name}` is no class name")
+            raise NeedsInput(f"`{name}` is no class name", NeededInput.OWNER_PICK)
         bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
             snapshot.parsed_module_for_source_path(anchor.file_path).module.body
         )
         if name in bound:
-            raise ValueError(f"`{name}` is already bound in {anchor.file_path}")
+            raise NeedsInput(f"`{name}` is already bound in {anchor.file_path}", NeededInput.OWNER_PICK)
         anchor.dataclass_options_key
         restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
         movable_members(snapshot, anchor, anchor, restated.statements)
@@ -2349,10 +2349,10 @@ class OwnerExtension:
             snapshot, anchor.symbol, ExistingClassOwner, (owner.symbol,), member_names
         )
         if frozenset(member_names) & owner.target.bound_names:
-            raise ValueError(f"`{owner.qualname}` already binds an added name")
+            raise NeedsInput(f"`{owner.qualname}` already binds an added name", NeededInput.SOURCE_CHANGE)
         dunders = sorted(name for name in member_names if name.startswith("__"))
         if dunders:
-            raise ValueError(f"Adding {dunders} could shadow a native declaration")
+            raise NeedsInput(f"Adding {dunders} could shadow a native declaration", NeededInput.PROOF)
         if owner.dataclass_options_key != anchor.dataclass_options_key:
             raise NeedsInput(
                 f"`{owner.qualname}` and `{anchor.qualname}` differ as dataclasses",
@@ -2388,9 +2388,9 @@ class OwnerExtension:
         if added_required:
             built = tuple(site for site in sites.sites if site.role.binds_fields)
             if built:
-                raise ValueError(
+                raise NeedsInput(
                     f"{built[0].location} builds `{ast.unparse(built[0].node)}`, which "
-                    f"would need the new required field(s) {list(added_required)}"
+                    f"would need the new required field(s) {list(added_required)}", NeededInput.SOURCE_CHANGE
                 )
         sites.require_keyword_construction()
         require_no_positional_self_construction(self.snapshot, self.family)
@@ -2401,7 +2401,7 @@ class OwnerExtension:
         for symbol in self.family:
             mro_type = authority.resolve(symbol).mro_type
             if mro_type is None:
-                raise ValueError(f"`{symbol}` has an open MRO")
+                raise NeedsInput(f"`{symbol}` has an open MRO", NeededInput.PROOF)
             order = tuple(declaration.symbol for declaration in mro_type.declarations)
             for name in self.restated.names:
                 declaring = tuple(
@@ -2413,9 +2413,9 @@ class OwnerExtension:
                 if declaring and order.index(declaring[0]) > order.index(
                     self.owner.symbol
                 ):
-                    raise ValueError(
+                    raise NeedsInput(
                         f"`{self.owner.qualname}.{name}` would replace `{declaring[0]}`'s "
-                        f"answer for `{symbol}`"
+                        f"answer for `{symbol}`", NeededInput.SOURCE_CHANGE
                     )
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:

@@ -180,9 +180,9 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
                 and projected & cls.direct_declared_member_names
             )
             if declaring_descendants:
-                raise ValueError(
+                raise NeedsInput(
                     f"`{target.qualname}` has descendants declaring projected fields: "
-                    f"{sorted(declaring_descendants)!r}"
+                    f"{sorted(declaring_descendants)!r}", NeededInput.SOURCE_CHANGE
                 )
         declarations = {
             self.field_name_for_statement(statement): statement
@@ -224,7 +224,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
                 [(receiver, binding) for receiver, binding in reached if receiver.site.attribute.attr == field.name]
             ):
                 if not isinstance(use.attribute.ctx, ast.Load):
-                    raise ValueError(f"{use.where} writes the projected field {field.name!r}")
+                    raise NeedsInput(f"{use.where} writes the projected field {field.name!r}", NeededInput.SOURCE_CHANGE)
                 start, end = geometry(use.file_path).required_node_offsets(use.attribute)
                 replacements.setdefault(use.file_path, []).append(
                     SourceTextSpanReplacement.from_offsets(
@@ -264,9 +264,9 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
                 f"{name} -> {self.carrier_field_name}.{attribute}"
                 for name, attribute in self.field_projection_map.items()
             )
-            raise ValueError(
+            raise NeedsInput(
                 f"`{symbol}` is a `{stored[0]}`, whose rows are already stored: holding "
-                f"the carrier moves its keys ({moved}), a migration this move does not carry"
+                f"the carrier moves its keys ({moved}), a migration this move does not carry", NeededInput.OPERATION
             )
 
     def require_concrete_carrier(
@@ -323,7 +323,7 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
             )
         replacement = self.carrier_argument_list(call, projected, carrier, geometry)
         if replacement is None:
-            raise ValueError(f"{where} has an argument whose source this edit cannot keep")
+            raise NeedsInput(f"{where} has an argument whose source this edit cannot keep", NeededInput.OPERATION)
         return (replacement,)
 
     def class_field_replacements(

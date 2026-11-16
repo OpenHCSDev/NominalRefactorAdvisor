@@ -1039,6 +1039,7 @@ class RefactorRecipe(SourceRewriteReferences):
                     recipe_id=self.recipe_id,
                     declaration_preflight=error.report,
                 ),
+                needs=error.needs,
             )
         claims = tuple(dict.fromkeys((*self.authority_claims, *declared_claims)))
         if not claims:
