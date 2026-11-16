@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import io
+import os
 import re
 import tokenize
 from collections import defaultdict, deque
@@ -128,6 +129,8 @@ class TopLevelBindingRenameTarget:
         ):
             raise ValueError("Declaration rename requires unique module identities")
         source_module = modules_by_path.get(source_path)
+        if source_module is None:
+            source_module = modules_by_path.get(os.path.relpath(source_path))
         if source_module is None:
             raise ValueError(f"Source module {source_path!r} is unavailable")
         return source_module, SourceTopLevelDeclarationIndex(
