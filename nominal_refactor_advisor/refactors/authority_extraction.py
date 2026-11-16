@@ -73,6 +73,10 @@ class AuthoritySourceOperation(
     )
     authority_source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.authority_kind, SemanticAuthorityKind):
+            raise TypeError("authority_kind must be a SemanticAuthorityKind")
+
     @cached_property
     def authority_declaration(self) -> ast.ClassDef:
         """Return the single top-level class owned by the supplied source."""
