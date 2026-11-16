@@ -13,7 +13,6 @@ from functools import cached_property
 from typing import TYPE_CHECKING
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
-from nominal_refactor_advisor.captured_reference import OpenCapturedReference
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
@@ -36,7 +35,6 @@ from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 from nominal_refactor_advisor.product_flow import (
     CompactDefinitionTarget,
-    CompactMutation,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -309,8 +307,7 @@ class NativeDefinitionUseRequirement(NativeUseRequirement):
         operations = tuple(
             operation
             for operation in self.environment.source.operations
-            if isinstance(operation.event, CompactMutation)
-            and isinstance(operation.event.target, CompactDefinitionTarget)
+            if operation.mutates(CompactDefinitionTarget)
             and any(use is read.use for use in operation.event.target.header_uses)
         )
         if len(operations) != 1:

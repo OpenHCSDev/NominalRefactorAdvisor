@@ -29,7 +29,6 @@ from typing import (
 )
 
 from nominal_refactor_advisor.ast_projection import (
-    NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
@@ -3763,6 +3762,14 @@ class SourceFlowOperation:
     def position(self) -> CompactFlowPosition:
         return self.event.position
 
+    def mutates(self, target_kind: type[CompactAssignmentTargetABC]) -> bool:
+        """Whether this operation's event mutates a `target_kind` target."""
+
+        match self.event:
+            case CompactMutation(target=target):
+                return isinstance(target, target_kind)
+        return False
+
 
 @dataclass(frozen=True)
 class SourceProductFlowProjection:
@@ -3897,8 +3904,7 @@ class SourceProductFlowProjection:
             **{
                 id(site.event.target.owner): site.node
                 for site in self.operations
-                if isinstance(site.event, CompactMutation)
-                and isinstance(site.event.target, CompactDefinitionTarget)
+                if site.mutates(CompactDefinitionTarget)
             },
         }
 

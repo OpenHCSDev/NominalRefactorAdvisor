@@ -15,7 +15,6 @@ from typing import (
 )
 
 from nominal_refactor_advisor.ast_projection import (
-    NoStatementValue,
     StatementValue,
     StatementValueQuestion,
     SuppliedValue,
@@ -35,6 +34,7 @@ from nominal_refactor_advisor.native_compilation import NativeCreationBackend
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.native_call import NativeDecoratorContract
 from nominal_refactor_advisor.product_flow import (
+    CompactAssignmentTargetABC,
     CompactCallableReferenceUse,
     CompactDefinitionTarget,
     CompactEvaluatedResult,
@@ -308,7 +308,7 @@ class AugmentedAssignmentSourceEffect(ClassNamespaceEffect):
         operations = tuple(
             operation
             for operation in source.operations_by_node.get(self.node.target, ())
-            if isinstance(operation.event, CompactMutation)
+            if operation.mutates(CompactAssignmentTargetABC)
         )
         if len(operations) != 1:
             raise ValueError(

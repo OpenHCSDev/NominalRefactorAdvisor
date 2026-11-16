@@ -135,6 +135,7 @@ from nominal_refactor_advisor.native_call import (
     SignatureCallAuthorityABC,
 )
 from nominal_refactor_advisor.product_flow import (
+    CompactAssignmentTargetABC,
     CompactAttributeTarget,
     CompactBranchPredicateResolverABC,
     CompactBindingValueResolverABC,
@@ -3637,9 +3638,7 @@ class SourceExecutionABC(
 
     def require_import_operation(self, operation: SourceFlowOperation) -> None:
         mutation = operation.event
-        if not isinstance(mutation, CompactMutation) or not isinstance(
-            mutation.target, CompactImportTarget
-        ):
+        if not operation.mutates(CompactImportTarget):
             raise ValueError("Import proof requires an actual import binding operation")
         context = self.context_for_owner(operation.owner)
         if self.source_operation(context, mutation) is not operation:
@@ -3662,16 +3661,14 @@ class SourceExecutionABC(
 
     def _require_binding_operation(self, operation: SourceFlowOperation) -> None:
         mutation = operation.event
-        if not isinstance(mutation, CompactMutation) or not isinstance(
-            mutation.target, CompactLexicalBindingTargetABC
-        ):
+        if not operation.mutates(CompactLexicalBindingTargetABC):
             raise ValueError("Binding proof requires a lexical mutation operation")
         self._require_storage_operation(operation)
 
     def _require_storage_operation(self, operation: SourceFlowOperation) -> None:
         """Authenticate once and retain only a completed target-owned storage proof."""
         mutation = operation.event
-        if not isinstance(mutation, CompactMutation):
+        if not operation.mutates(CompactAssignmentTargetABC):
             raise ValueError("Storage proof requires an actual mutation")
         context = self.context_for_owner(operation.owner)
         if self.source_operation(context, mutation) is not operation:
@@ -4001,8 +3998,7 @@ class SourceExecutionABC(
         operations = tuple(
             site
             for site in self.source.operations_by_node.get(node, ())
-            if isinstance(site.event, CompactMutation)
-            and isinstance(site.event.target, CompactLexicalBindingTargetABC)
+            if site.mutates(CompactLexicalBindingTargetABC)
         )
         if not operations:
             raise ValueError("Source binding has no actual lexical mutation")
@@ -4013,8 +4009,7 @@ class SourceExecutionABC(
         operations = tuple(
             site
             for site in self.source.operations_by_node.get(node, ())
-            if isinstance(site.event, CompactMutation)
-            and isinstance(site.event.target, CompactImportTarget)
+            if site.mutates(CompactImportTarget)
         )
         if not operations:
             raise ValueError("Source import has no actual import binding operation")
