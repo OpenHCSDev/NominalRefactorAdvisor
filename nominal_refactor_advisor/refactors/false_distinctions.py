@@ -312,7 +312,7 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
             ),
             *(
                 module._name_replacement(
-                    module._qualified_name_offsets(geometry, reference), base
+                    module.qualified_reference_offsets(geometry, reference), base
                 )
                 for reference in module.qualified_references
             ),
