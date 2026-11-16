@@ -1529,7 +1529,7 @@ class CompactImportTarget(CompactLexicalBindingTargetABC):
         object.__setattr__(self, "imported_origin", self.origin)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class CompactBindingTarget(CompactLexicalBindingTargetABC):
     name: str
 
@@ -2716,6 +2716,7 @@ class CompactFlowOwner(ABC):
         raise NotImplementedError
 
 
+@dataclass(frozen=True)
 class CompactDefinitionFlowOwner(CompactFlowOwner, ABC):
     """One exact source body shared by its binding event and separate flow."""
 
@@ -2741,10 +2742,12 @@ class CompactClassDeclaration(CompactDefinitionFlowOwner):
 
     qualname: str
     capture: NativeClassCapture
-
-    source_span = AliasProperty[SourceByteSpan]("capture.source_span")
+    source_span: SourceByteSpan = field(init=False, repr=False)
 
     kind = ClassBody
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_span", self.capture.source_span)
 
     def resolve_frame(
         self,
@@ -2937,9 +2940,12 @@ class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
     kind = Function
 
     qualname = AliasProperty[str]("identity.qualname")
-    source_span = AliasProperty[SourceByteSpan]("execution.source_span")
+    source_span: SourceByteSpan = field(init=False, repr=False)
     line = AliasProperty[int]("source_span.start_line")
     end_line = AliasProperty[int]("source_span.end_line")
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_span", self.execution.source_span)
 
     def resolve_frame(
         self,
