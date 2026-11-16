@@ -3223,7 +3223,8 @@ class NativeEmissionBinding:
         span = source.source_span
         if span is None:
             return None
-        arguments = (source.compilation, span, source.code.co_flags)
+        compilation = source.compilation
+        native_flags = source.code.co_flags
         if (
             source.creation is None
             or NativeInstructionSite(
@@ -3232,10 +3233,15 @@ class NativeEmissionBinding:
                ).source_span
             is None
         ):
-            return ExactNativeFunctionExecution(*arguments)
+            return ExactNativeFunctionExecution(
+                compilation=compilation, source_span=span, native_flags=native_flags,
+            )
         creation = NativeCaptureSite(frame=self.frame, instruction_offset=source.creation.offset)
         if source.installation is None:
-            return CreatedNativeFunctionExecution(*arguments, creation)
+            return CreatedNativeFunctionExecution(
+                compilation=compilation, source_span=span, native_flags=native_flags,
+                creation=creation,
+            )
         if source.applications:
             applications: list[NativeDefinitionApplication] = []
             argument = creation
@@ -3243,13 +3249,14 @@ class NativeEmissionBinding:
                 argument = observation.receipt(argument)
                 applications.append(argument)
             return AppliedNativeFunctionExecution(
-                *arguments,
-                creation,
-                tuple(applications),
-                source.installation,
+                compilation=compilation, source_span=span, native_flags=native_flags,
+                creation=creation,
+                applications=tuple(applications),
+                applied_installation=source.installation,
             )
         return InstalledNativeFunctionExecution(
-            *arguments, creation, source.installation
+            compilation=compilation, source_span=span, native_flags=native_flags,
+            creation=creation, installation=source.installation,
         )
 
 
