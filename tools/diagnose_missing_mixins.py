@@ -10,6 +10,41 @@ import sys
 from pathlib import Path
 
 
+def _is_dataclass_decorator(d):
+    return (isinstance(d, ast.Name) and d.id == "dataclass") or (
+        isinstance(d, ast.Call)
+        and isinstance(d.func, ast.Name)
+        and d.func.id == "dataclass"
+    )
+
+
+def _is_frozen(node):
+    for d in node.decorator_list:
+        if isinstance(d, ast.Call) and isinstance(d.func, ast.Name) and d.func.id == "dataclass":
+            for kw in d.keywords:
+                if kw.arg == "frozen" and isinstance(kw.value, ast.Constant) and kw.value.value:
+                    return True
+    return False
+
+
+def _field_has_init_false(value_node):
+    if not isinstance(value_node, ast.Call):
+        return False
+    func = value_node.func
+    if not (isinstance(func, ast.Name) and func.id == "field"):
+        return False
+    for kw in value_node.keywords:
+        if kw.arg == "init" and isinstance(kw.value, ast.Constant) and kw.value.value is False:
+            return True
+    return False
+
+
+def _field_default_repr(item):
+    if isinstance(item, ast.AnnAssign) and item.value is not None:
+        return ast.unparse(item.value)
+    return None
+
+
 def scan():
     classes_by_file: dict[str, dict[str, dict]] = {}
 
@@ -26,16 +61,11 @@ def scan():
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef):
                 continue
-            is_dc = any(
-                (isinstance(d, ast.Name) and d.id == "dataclass")
-                or (
-                    isinstance(d, ast.Call)
-                    and isinstance(d.func, ast.Name)
-                    and d.func.id == "dataclass"
-                )
-                for d in node.decorator_list
-            )
+            is_dc = any(_is_dataclass_decorator(d) for d in node.decorator_list)
+            is_frozen = _is_frozen(node)
             fields = {}
+            field_defaults = {}
+            field_init_false = set()
             bare_assigns = {}
             alias_props = set()
             properties = set()
@@ -52,6 +82,11 @@ def scan():
                     ):
                         continue
                     fields[item.target.id] = ast.unparse(ann)
+                    default = _field_default_repr(item)
+                    if default is not None:
+                        field_defaults[item.target.id] = default
+                    if item.value is not None and _field_has_init_false(item.value):
+                        field_init_false.add(item.target.id)
                 elif isinstance(item, ast.Assign):
                     for target in item.targets:
                         if isinstance(target, ast.Name):
@@ -70,7 +105,10 @@ def scan():
             bases = [b.id for b in node.bases if isinstance(b, ast.Name)]
             classes[node.name] = {
                 "is_dc": is_dc,
+                "is_frozen": is_frozen,
                 "fields": fields,
+                "field_defaults": field_defaults,
+                "field_init_false": field_init_false,
                 "bases": bases,
                 "line": node.lineno,
                 "bare_assigns": bare_assigns,
@@ -80,7 +118,15 @@ def scan():
             }
         classes_by_file[str(p)] = classes
 
-    # Build parent→children map per file
+    # Resolve transitive descendants within each file
+    def all_descendants(classes, parent_name):
+        result = []
+        for child_name, child in classes.items():
+            if parent_name in child["bases"]:
+                result.append((child_name, child))
+                result.extend(all_descendants(classes, child_name))
+        return result
+
     for file_path, classes in classes_by_file.items():
         parents: dict[str, list[tuple[str, dict]]] = {}
         for child_name, child in classes.items():
@@ -92,64 +138,98 @@ def scan():
                     continue
                 parents.setdefault(base_name, []).append((child_name, child))
 
-        for parent_name, children in parents.items():
+        for parent_name, direct_children in parents.items():
             parent = classes[parent_name]
             if parent["is_dc"]:
-                # Parent already a dataclass — check for deletable child fields
-                for child_name, child in children:
+                for child_name, child in direct_children:
                     for field_name, field_type in child["fields"].items():
-                        if (
-                            field_name in parent["fields"]
-                            and parent["fields"][field_name] == field_type
-                        ):
+                        if field_name not in parent["fields"]:
+                            continue
+                        if field_name in child["field_init_false"]:
                             print(
-                                f"DELETE {file_path}:{child['line']} "
+                                f"COMPUTED {file_path}:{child['line']} "
                                 f"{child_name}.{field_name} "
-                                f"(parent {parent_name} already owns it)"
+                                f"(init=False override of parent {parent_name}'s field — keep)"
                             )
-                        elif field_name in parent["fields"]:
+                        elif parent["fields"][field_name] != field_type:
                             print(
                                 f"NARROWS {file_path}:{child['line']} "
                                 f"{child_name}.{field_name}: "
                                 f"{parent['fields'][field_name]} → {field_type} "
                                 f"(keep for type narrowing)"
                             )
+                        elif (
+                            field_name in child.get("field_defaults", {})
+                            and field_name in parent.get("field_defaults", {})
+                            and child["field_defaults"][field_name] != parent["field_defaults"][field_name]
+                        ):
+                            print(
+                                f"DIFF_DEFAULT {file_path}:{child['line']} "
+                                f"{child_name}.{field_name} "
+                                f"(same type but different default: "
+                                f"parent={parent['field_defaults'][field_name]}, "
+                                f"child={child['field_defaults'][field_name]} — keep)"
+                            )
+                        elif parent["fields"][field_name] == field_type:
+                            print(
+                                f"DELETE {file_path}:{child['line']} "
+                                f"{child_name}.{field_name} "
+                                f"(parent {parent_name} already owns it)"
+                            )
                 continue
 
             # Parent is NOT a dataclass — diagnose blockers
+            # Check ALL descendants (not just direct children) for blockers
+            all_desc = all_descendants(classes, parent_name)
+            all_dc_desc = [(n, c) for n, c in all_desc if c["is_dc"]]
+
             blockers = []
-            for child_name, child in children:
+            for desc_name, desc in all_desc:
                 for field_name in parent["fields"]:
-                    if field_name in child.get("bare_assigns", {}):
+                    if field_name in desc.get("bare_assigns", {}):
                         blockers.append(
-                            f"BARE_ASSIGN: {child_name}.{field_name} = "
-                            f"{child['bare_assigns'][field_name][:40]} "
+                            f"BARE_ASSIGN: {desc_name}.{field_name} = "
+                            f"{desc['bare_assigns'][field_name][:40]} "
                             f"→ convert to field(default=..., init=False)"
                         )
-                    if field_name in child.get("alias_props", set()):
+                    if field_name in desc.get("alias_props", set()):
                         blockers.append(
-                            f"ALIAS_PROPERTY: {child_name}.{field_name} "
+                            f"ALIAS_PROPERTY: {desc_name}.{field_name} "
                             f"→ abstract contract, not stored field"
                         )
-                    if field_name in child.get("properties", set()):
+                    if field_name in desc.get("properties", set()):
                         blockers.append(
-                            f"PROPERTY: {child_name}.{field_name} "
+                            f"PROPERTY: {desc_name}.{field_name} "
                             f"→ abstract contract, not stored field"
                         )
-                    if field_name in child.get("cached_properties", set()):
+                    if field_name in desc.get("cached_properties", set()):
                         blockers.append(
-                            f"CACHED_PROPERTY: {child_name}.{field_name} "
+                            f"CACHED_PROPERTY: {desc_name}.{field_name} "
                             f"→ abstract contract, not stored field"
                         )
 
-            # Check for same-type deletable fields
+            # Check for frozen/mutable conflict: if promoting parent as frozen,
+            # any non-frozen dataclass descendant would break
+            for desc_name, desc in all_dc_desc:
+                if desc["is_dc"] and not desc["is_frozen"]:
+                    blockers.append(
+                        f"MUTABLE_CHILD: {desc_name} is @dataclass without frozen=True "
+                        f"→ frozen parent would break __setattr__"
+                    )
+
+            # Check for same-type deletable fields (direct children only)
             deletable = []
             narrowing = []
-            for child_name, child in children:
+            for child_name, child in direct_children:
                 for field_name, field_type in child["fields"].items():
                     if field_name not in parent["fields"]:
                         continue
-                    if parent["fields"][field_name] == field_type:
+                    if field_name in child["field_init_false"]:
+                        narrowing.append(
+                            f"{child_name}.{field_name} "
+                            f"(init=False computed override — keep)"
+                        )
+                    elif parent["fields"][field_name] == field_type:
                         deletable.append(f"{child_name}.{field_name}")
                     else:
                         narrowing.append(
@@ -174,7 +254,6 @@ def scan():
                     print(f"  delete {d}")
                 for n in narrowing:
                     print(f"  keep (narrows): {n}")
-            # else: no shared fields — not a candidate
 
 
 if __name__ == "__main__":
