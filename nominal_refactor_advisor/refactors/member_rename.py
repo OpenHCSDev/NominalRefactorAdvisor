@@ -36,7 +36,6 @@ from typing import ClassVar
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_families.parsed_index import ClassFamilyIndex
 from nominal_refactor_advisor.class_index import ForeignBase
-from nominal_refactor_advisor.class_references import ClassReferenceRole
 from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -321,11 +320,15 @@ class RenamedMember(AnsweredMethod):
 
         found: list[tuple[str, ast.keyword]] = []
         for site in ClassReferenceSites(self.snapshot, self.family).sites:
-            if site.role is ClassReferenceRole.CONSTRUCTION and isinstance(site.parent, ast.Call):
-                found.extend((site.file_path, keyword) for keyword in self.passed(site.parent, site.location))
-            elif site.role is ClassReferenceRole.CLASS_PATTERN and isinstance(site.parent, ast.MatchClass):
-                if self.member_name in site.parent.kwd_attrs:
-                    raise NeedsInput(f"{self.where} needs the class pattern at {site.location} rewritten by hand", NeededInput.OPERATION)
+            if site.role.binds_fields:
+                match site.parent:
+                    case ast.Call() as call:
+                        found.extend((site.file_path, keyword) for keyword in self.passed(call, site.location))
+                    case ast.MatchClass(kwd_attrs=names) if self.member_name in names:
+                        raise NeedsInput(
+                            f"{self.where} needs the class pattern at {site.location} rewritten by hand",
+                            NeededInput.OPERATION,
+                        )
             elif not (site.role.distinguishes_identity or site.is_annotation or site.is_base):
                 raise NeedsInput(
                     f"{self.where} needs the constructions behind {site.location}, which passes "
