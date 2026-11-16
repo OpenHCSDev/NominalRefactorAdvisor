@@ -15,6 +15,7 @@ import time
 from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
     EvidenceLocalFindingReuseAuthority,
@@ -837,7 +838,7 @@ class CodemodRefactorRecipeFrontierObstacle(CodemodRefactorTrajectoryObstacle):
 
     @property
     def causes(self) -> tuple[str, ...]:
-        """"Incomplete" names no cause: the refused recipes' reasons do."""
+        """"Incomplete" names no cause: the stopped recipes' reasons and needs do."""
 
         return tuple(dict.fromkeys(obstacle.reason for obstacle in self.recipe_obstacles)) or (
             self.reason,
@@ -983,6 +984,7 @@ class CodemodRefactorRemainingTargets(DataclassJsonReport):
 
     status: FindingRecipeSynthesisStatus
     reason: str
+    needs: tuple[NeededInput, ...]
     finding_ids: tuple[str, ...]
 
     @json_report_property()
@@ -997,8 +999,8 @@ class CodemodRefactorRemainingTargets(DataclassJsonReport):
     ) -> tuple[CodemodRefactorRemainingTargets, ...]:
         """Every remaining target under why no recipe removes it, largest group first.
 
-        A target with no synthesis record, or one still executable, refuses:
-        a partial terminal reports every target it leaves and why.
+        A target with no synthesis record, or one still executable, stops the
+        grouping: a partial terminal reports every target it leaves and why.
         """
 
         records_by_id = {record.finding_id: record for record in records}
@@ -1019,14 +1021,16 @@ class CodemodRefactorRemainingTargets(DataclassJsonReport):
     ) -> tuple[CodemodRefactorRemainingTargets, ...]:
         """The records' targets under each synthesis outcome and reason, largest group first."""
 
-        groups: dict[tuple[FindingRecipeSynthesisStatus, str], list[str]] = {}
+        groups: dict[
+            tuple[FindingRecipeSynthesisStatus, str, tuple[NeededInput, ...]], list[str]
+        ] = {}
         for record in records:
-            groups.setdefault((record.status, record.reason), []).append(
+            groups.setdefault((record.status, record.reason, record.needs), []).append(
                 record.finding_id
             )
         return tuple(
-            cls(status, reason, tuple(sorted(finding_ids)))
-            for (status, reason), finding_ids in sorted(
+            cls(status, reason, needs, tuple(sorted(finding_ids)))
+            for (status, reason, needs), finding_ids in sorted(
                 groups.items(), key=lambda item: (-len(item[1]), item[0][1])
             )
         )

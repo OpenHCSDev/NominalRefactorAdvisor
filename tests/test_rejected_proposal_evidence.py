@@ -1,5 +1,6 @@
 """Generic rejected proposals retain evidence without becoming executable."""
 
+from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -137,7 +138,7 @@ def test_rejected_proposal_json_preserves_recipe_without_selecting_it(invalid_pr
     wire = json.loads(json.dumps(json_report_object(record)))
     assert wire["recipe"] is None
     assert record.candidate_recipes == ()
-    assert wire["status"] == "rejected_by_safety_check"
+    assert wire["status"] == FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert (
         RefactorRecipe.from_json_value(wire["proposal"]) == evaluation.executable_recipe
     )

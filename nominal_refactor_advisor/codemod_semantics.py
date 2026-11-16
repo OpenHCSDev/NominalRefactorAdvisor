@@ -8,6 +8,7 @@ from enum import StrEnum
 from typing import ClassVar
 
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
+from nominal_refactor_advisor.needed_input import NeededInput
 
 
 class RewriteOperation(StrEnum):
@@ -77,11 +78,12 @@ class CodemodBackend(StrEnum):
 
 
 class FindingRecipeSynthesisDisposition(StrEnum):
-    """Reporting disposition carried by each terminal synthesis status."""
+    """Reporting disposition carried by each terminal synthesis status: ready, needs
+    an input the record names, needs NRA to grow, or counted by another record."""
 
     CANDIDATE = "candidate"
-    REJECTED = "rejected"
-    UNSUPPORTED = "unsupported"
+    REJECTED = "needs_input"
+    UNSUPPORTED = "needs_nra"
     UNCOUNTED = "uncounted"
 
 
@@ -164,47 +166,56 @@ FindingRecipePlanningHorizon.UNPROVED = FindingRecipePlanningHorizon()
 
 
 class FindingRecipeSynthesisStatus(StrEnum):
-    """Recipe-synthesis outcome for one advisor finding."""
+    """Recipe-synthesis outcome for one advisor finding, with the kinds of input
+    an outcome of it needs before NRA can apply a fix."""
 
     EXECUTABLE_CANDIDATE = (
         "executable_candidate",
         "",
         FindingRecipeSynthesisDisposition.CANDIDATE,
+        (),
     )
     NO_EVALUATOR = (
-        "no_evaluator",
-        "detector declaration has no finding recipe evaluation behavior",
+        "needs_operation",
+        "no operation is written for this detector's findings yet",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
+        (NeededInput.OPERATION,),
     )
     NO_ACTION_KEYS = (
         "no_action_keys",
-        "executable recipe has no stable source action keys",
+        "the executable recipe needs stable source action keys",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
+        (NeededInput.PROOF,),
     )
     CONFLICTING_TRAJECTORY_BRANCHES = (
         "conflicting_trajectory_branches",
-        "conflicting current-snapshot candidates require trajectory exploration",
+        "conflicting current-snapshot candidates need trajectory exploration",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
+        (NeededInput.PROOF,),
     )
     UNPROVED_RECIPE_PLAN = (
         "unproved_recipe_plan",
-        "recipe compatibility or batch simulation is unproved",
+        "recipe compatibility or batch simulation needs a proof",
         FindingRecipeSynthesisDisposition.UNSUPPORTED,
+        (NeededInput.PROOF,),
     )
     NO_EFFECTIVE_REWRITES = (
         "no_effective_rewrites",
-        "synthesizer recipe produced no effective source rewrites",
+        "the synthesizer's recipe produced no effective source rewrites",
         FindingRecipeSynthesisDisposition.REJECTED,
+        (NeededInput.OPERATION,),
     )
     REJECTED_BY_SAFETY_CHECK = (
-        "rejected_by_safety_check",
+        "needs_input",
         "",
         FindingRecipeSynthesisDisposition.REJECTED,
+        (NeededInput.UNTYPED,),
     )
     COVERED_BY_CANDIDATE = (
         "covered_by_candidate",
         "",
         FindingRecipeSynthesisDisposition.UNCOUNTED,
+        (),
     )
 
     def __new__(
@@ -212,11 +223,13 @@ class FindingRecipeSynthesisStatus(StrEnum):
         value: str,
         default_reason: str,
         disposition: FindingRecipeSynthesisDisposition,
+        default_needs: tuple[NeededInput, ...],
     ) -> "FindingRecipeSynthesisStatus":
         member = str.__new__(cls, value)
         member._value_ = value
         member._default_reason = default_reason
         member._disposition = disposition
+        member.default_needs = default_needs
         return member
 
     @property

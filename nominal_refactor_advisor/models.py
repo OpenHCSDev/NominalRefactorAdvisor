@@ -478,7 +478,8 @@ class DeclarationReferenceMetrics(FindingMetrics):
         """The evaluation of this finding when it carries no rewrite: no site of it is rewritable."""
 
         return evaluator.rejected_evaluation(
-            "no site of this finding can be written as its reference where it stands"
+            "every site of this finding needs a change before it can take the "
+            "reference where it stands"
         )
 
 

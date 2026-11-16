@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from nominal_refactor_advisor.receipts import ReceiptKind
+from nominal_refactor_advisor.needed_input import NeededInput
 
 
 class OverlapReceiptKind(ReceiptKind):
     """One kind of evidence: a concept receipt with its fixed log-odds weight, or a
-    move guard that refuses the move and weighs nothing in the concept score."""
+    move guard that names the input the move needs and weighs nothing in the
+    concept score."""
 
     SHARED_METHOD = "shared_method", 1.5, False
     SHARED_VALUE = "shared_value", 1.0, False
@@ -21,9 +23,9 @@ class OverlapReceiptKind(ReceiptKind):
     SAME_FAMILY = "same_family", 0.5, False
     SEPARATE_FAMILIES = "separate_families", 0.0, False
     SAME_CONSTRUCTION = "same_construction", 0.0, False
-    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True
-    IDENTITY_USED = "identity_used", 0.0, True
-    IDENTITY_DECLARED = "identity_declared", 0.0, True
-    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True
-    INHERITED_DECLARATION = "inherited_declaration", 0.0, True
-    DECLARATION_DIFFERS = "declaration_differs", 0.0, True
+    DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True, NeededInput.SOURCE_CHANGE
+    IDENTITY_USED = "identity_used", 0.0, True, NeededInput.SOURCE_CHANGE
+    IDENTITY_DECLARED = "identity_declared", 0.0, True, NeededInput.PROOF
+    POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True, NeededInput.SOURCE_CHANGE
+    INHERITED_DECLARATION = "inherited_declaration", 0.0, True, NeededInput.OPERATION
+    DECLARATION_DIFFERS = "declaration_differs", 0.0, True, NeededInput.SOURCE_CHANGE

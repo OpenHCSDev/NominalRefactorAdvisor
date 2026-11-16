@@ -32,6 +32,7 @@ from nominal_refactor_advisor.codemod_selection_context import (
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
 from nominal_refactor_advisor.finding_recipe_actions import FindingRecipeActionKey
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.models import (
     FindingMetrics,
     MappingMetrics,
@@ -433,10 +434,14 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         if import_boundary is not None and import_boundary.import_would_create_cycle(
             context
         ):
-            reason = "semantic authority import would create a module cycle"
+            reason = (
+                "the semantic authority import would create a module cycle: the module "
+                "structure needs to change first"
+            )
             return RejectedRecipeEvaluation(
                 reason=reason,
                 evaluation_declaration_type=type(self),
+                needs=(NeededInput.SOURCE_CHANGE,),
                 obstacles=(
                     FindingRecipeProofObstacle(
                         executable_declaration_type=SemanticMirrorImportBoundary,
@@ -458,20 +463,21 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
         if proof_obstacles:
             return RejectedRecipeEvaluation(
                 reason=(
-                    "no inferred mapping recipe builder proved an executable "
-                    "exact derivation"
+                    "a mapping recipe builder needs a proof of an executable exact "
+                    "derivation; none of the inferred builders has one"
                 ),
                 evaluation_declaration_type=type(self),
                 obstacles=proof_obstacles,
+                needs=(NeededInput.PROOF,),
             )
         return RejectedRecipeEvaluation(
             reason=(
-                "semantic mapping mirror has a stable DSL action key, but no safe "
-                f"mapping recipe exists yet to derive "
+                "the semantic mapping mirror needs a mapping recipe that derives "
                 f"`{finding.metrics.plan_mapping_name}` from "
-                f"`{finding.metrics.plan_source_name}`"
+                f"`{finding.metrics.plan_source_name}`; none is written yet"
             ),
             evaluation_declaration_type=type(self),
+            needs=(NeededInput.OPERATION,),
         )
 
     @staticmethod

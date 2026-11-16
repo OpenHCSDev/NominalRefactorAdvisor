@@ -6,6 +6,7 @@ from pathlib import Path
 
 from nominal_refactor_advisor.analysis import analyze_path
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.codemod import (
     CodemodSourceSnapshot,
     FindingRecipeSynthesisStatus,
@@ -155,8 +156,10 @@ def test_a_module_the_file_does_not_import_keeps_its_prescription(tmp_path: Path
     (record,) = records
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert record.reason == (
-        "no site of this finding can be written as its reference where it stands"
+        "every site of this finding needs a change before it can take the "
+        "reference where it stands"
     )
+    assert record.needs == (NeededInput.UNTYPED,)
     assert rewritten == {}
     assert "a site no recipe rewrites keeps this prescription" in finding.summary
 

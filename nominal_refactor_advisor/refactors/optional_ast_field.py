@@ -54,6 +54,7 @@ from nominal_refactor_advisor.codemod_payload import (
     codemod_payload_field,
 )
 from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
@@ -1932,7 +1933,7 @@ class PendingDecoderMigration:
 
     @cached_property
     def consumers(self) -> tuple[RoutedConsumer | Unroutable, ...]:
-        """Every consumer probing a pending decoder's field, routed or refused."""
+        """Every consumer probing a pending decoder's field, routed or needing more input."""
 
         snapshot = self.declared_snapshot
         found: list[RoutedConsumer | Unroutable] = []
@@ -2122,6 +2123,7 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
             {}
         )
         refusals: list[str] = []
+        needs: list[NeededInput] = []
         probed_fields: set[str] = set()
         for evidence in finding.evidence:
             parsed_module = snapshot.parsed_module_for_source_path(evidence.file_path)
@@ -2162,6 +2164,7 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
                         operation.source_edits_from_snapshot(snapshot)
                     except ValueError as error:
                         refusals.append(str(error))
+                        needs.extend(NeedsInput.needs_of(error))
                         continue
                     operations[
                         (evidence.file_path, evidence.symbol, decoder.__name__)
@@ -2175,9 +2178,10 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
                 }
             )
             return self.rejected_evaluation(
-                f"probed fields {', '.join(sorted(probed_fields)) or 'none'}; "
-                f"registered decoders own {', '.join(registered)}"
-                + (f" ({'; '.join(refusals)})" if refusals else "")
+                f"needs a decoder for fields {', '.join(sorted(probed_fields)) or 'none'}; "
+                f"registered decoders cover {', '.join(registered)}"
+                + (f" ({'; '.join(refusals)})" if refusals else ""),
+                NeededInput.distinct(needs) if refusals else (NeededInput.OPERATION,),
             )
         recipe = RefactorRecipe(
             recipe_id=f"{finding.stable_id}-route-optional-ast-field",

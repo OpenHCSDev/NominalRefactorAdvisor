@@ -16660,7 +16660,7 @@ def delta(source: PlanSource):
 
     assert len(findings) == 2
     assert all(
-        record.status.value == "rejected_by_safety_check" for record in plan.records
+        record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK for record in plan.records
     )
     assert all(
         "has 2 current proven repeated-builder families" in record.reason
@@ -16744,7 +16744,7 @@ def test_repeated_builder_rejects_same_named_distinct_source_types(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "source projection or invariant selector axis" in plan.records[0].reason
 
 
@@ -16779,7 +16779,7 @@ def test_repeated_builder_preserves_inherited_builder_implementation(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "will not overwrite or shadow from_source" in plan.records[0].reason
 
 
@@ -16903,7 +16903,7 @@ def test_repeated_builder_rejects_shadowed_consumer_family_authority(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "complete exact parameter substitution" in plan.records[0].reason
 
 
@@ -17011,7 +17011,7 @@ def test_repeated_builder_rejects_ambiguous_consumer_family_authorities(
     )
 
     assert len(findings) == 1
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     reason = plan.records[0].reason
     assert "several executable consumer-family constructor authorities" in reason
     assert reason.count("existing method `") == 2
@@ -17040,7 +17040,7 @@ def test_repeated_builder_rejects_unproved_source_projection_type(
         detector_ids=(REPEATED_BUILDER_CALLS_DETECTOR_ID,),
     )
 
-    assert plan.records[0].status.value == "rejected_by_safety_check"
+    assert plan.records[0].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert "requires a source projection or invariant selector axis" in (
         plan.records[0].reason
     )
@@ -19373,7 +19373,7 @@ def test_module_cli_synthesizes_and_simulates_finding_backed_plan(
     assert payload["simulation"]["parse_validation"]["parse_valid"] is True
     assert payload["expected_removed_finding_count"] == 0
     assert payload["synthesis_report"]["candidate_count"] == 0
-    assert payload["synthesis_report"]["unsupported_count"] == 1
+    assert payload["synthesis_report"]["needs_nra_count"] == 1
     assert payload["application_blocked"] is True
     assert payload["synthesis_report"]["application_blocked"] is True
     assert "reachable refactor trajectories" in payload["application_block_reason"]
@@ -19421,7 +19421,7 @@ def test_module_cli_synthesizes_and_preflights_finding_backed_plan(
     assert payload["report_count"] == 0
     assert payload["expected_removed_finding_count"] == 0
     assert payload["synthesis_report"]["candidate_count"] == 0
-    assert payload["synthesis_report"]["unsupported_count"] == 1
+    assert payload["synthesis_report"]["needs_nra_count"] == 1
     assert payload["document"]["recipes"] == []
     record = payload["synthesis_report"]["records"][0]
     assert record["status"] == "unproved_recipe_plan"
@@ -21850,7 +21850,7 @@ def test_codemod_refactor_goal_reports_terminal_synthesis_failures(
         terminal_class_plan["finding_recipe_plan"]["synthesis_report"]["records"][0][
             "status"
         ]
-        == "rejected_by_safety_check"
+        == FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     )
     assert "synthesis_records" not in terminal_class_plan["classes"][0]
     assert payload["trajectory_proof"]["dead_ends"][0]["reaching_stages"] == ()
