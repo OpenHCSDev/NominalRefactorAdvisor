@@ -392,6 +392,68 @@ def test_an_abstract_block_one_composer_is_no_abc_of_is_refused_naming_it(tmp_pa
         operation.source_edits(snapshot)
 
 
+DISPATCHED_RECORDS = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "def handles(*classes):\n"
+    "    def decorate(handler):\n"
+    "        handler.__handled_classes__ = classes\n"
+    "        return handler\n"
+    "    return decorate\n\n\n"
+    "class Dispatch(ABC):\n"
+    "    def __init_subclass__(cls, **kwargs):\n"
+    "        super().__init_subclass__(**kwargs)\n"
+    "        methods = {}\n"
+    "        for owner in cls.__mro__:\n"
+    "            for name, method in vars(owner).items():\n"
+    "                methods.setdefault(name, method)\n"
+    "        cls._handler_declarations = tuple(\n"
+    "            (name, classes)\n"
+    "            for name, method in methods.items()\n"
+    "            if (classes := getattr(method, '__handled_classes__', ()))\n"
+    "        )\n\n\n"
+    "class First(Dispatch):\n"
+    "    @abstractmethod\n    def is_pointed(self) -> bool: ...\n\n"
+    "    @handles(int)\n    def on_int(self, value):\n        return value\n\n"
+    "    @handles(str)\n    def on_str(self, value):\n        return value\n\n\n"
+    "class Second(Dispatch):\n"
+    "    @abstractmethod\n    def is_pointed(self) -> bool: ...\n\n"
+    "    @handles(bytes)\n    def on_bytes(self, value):\n        return value\n"
+)
+
+DISPATCHED_PROBE = (
+    "from pkg.records import First, Second\n"
+    "print(First._handler_declarations, Second._handler_declarations)\n"
+    "print(sorted(First.__abstractmethods__), sorted(Second.__abstractmethods__))\n"
+)
+
+
+def test_an_abstract_method_leaves_for_a_new_mixin_past_a_hook_walking_the_mro(tmp_path: Path) -> None:
+    """The hook's walk meets `is_pointed` before the handlers, and after them
+    once composed; `abstractmethod` stores only `__isabstractmethod__` on it, so
+    the hook drops it either way and builds the same handler tables."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": DISPATCHED_RECORDS})
+    before = _run(tmp_path, DISPATCHED_PROBE)
+    records = str(tmp_path / "pkg/records.py")
+    _apply(
+        tmp_path,
+        CreateMixinOperation(
+            target=SourceRewriteTarget(file_path=records, qualname="First"),
+            member_names=("is_pointed",),
+            mixin_name="Pointed",
+            docstring="A record that may be pointed.",
+            composers=(
+                SourceRewriteTarget(file_path=records, qualname="First"),
+                SourceRewriteTarget(file_path=records, qualname="Second"),
+            ),
+        ),
+    )
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert "class First(Pointed, Dispatch):" in source and "class Second(Pointed, Dispatch):" in source, source
+    assert _run(tmp_path, DISPATCHED_PROBE) == before
+    assert "on_int" in before and "is_pointed" in before.splitlines()[1]
+
+
 def test_an_abstract_method_moves_only_into_a_new_abc(tmp_path: Path) -> None:
     """`abstractmethod` is admitted only where the receiving class is a new `ABC`:
     an existing class it moved onto would become abstract itself."""
@@ -762,6 +824,48 @@ def test_a_positional_construction_in_a_script_is_keyworded_first_too(
     assert "First(lead=0, alpha=1, beta=\'x\').lead" in (tmp_path / "pkg/scripts.py").read_text()
     assert "class First(Lettered):\n" in (tmp_path / "pkg/records.py").read_text()
     assert _run(tmp_path, probe) == before
+
+
+KEYWORD_ONLY_FIRST = RECORDS.replace(
+    "@dataclass(frozen=True)\nclass First:", "@dataclass(frozen=True, kw_only=True)\nclass First:"
+)
+
+
+def test_a_composer_built_by_position_beside_a_keyword_only_one_is_keyworded_first(
+    tmp_path: Path,
+) -> None:
+    """No field moves, but `First` is keyword-only, so the mixin and each composer
+    become keyword-only: the goal binds `Second(3, 'y')` by keyword, then composes."""
+    positional = KEYWORD_ONLY_FIRST + "\n\ndef build():\n    return Second(3, 'y')\n"
+    probe = PROBE + "from pkg.records import build\nprint(build(), build().gamma())\n"
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": positional})
+    before = _run(tmp_path, probe)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 2
+    assert "return Second(alpha=3, beta='y')" in source, source
+    assert "@dataclass(frozen=True, kw_only=True)\nclass Second(Lettered):\n" in source, source
+    assert "class First(Lettered):\n" in source, source
+    assert _run(tmp_path, probe) == before
+
+
+def test_a_composer_handed_on_as_a_value_beside_a_keyword_only_one_is_not_composed(
+    tmp_path: Path,
+) -> None:
+    """Whoever calls the value may bind by position: no keyword rewrite reaches it,
+    so the direct positional call is not rewritten either."""
+    handed_on = KEYWORD_ONLY_FIRST + (
+        "\n\ndef build(make=Second):\n    return make(3, 'y')\n\n\n"
+        "def direct():\n    return Second(3, 'y')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": handed_on})
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert (tmp_path / "pkg/records.py").read_text() == handed_on
 
 
 DOCUMENTED = REORDERED.replace(

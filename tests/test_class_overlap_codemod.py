@@ -674,6 +674,64 @@ def test_a_hook_walking_the_mro_refuses_what_the_name_check_does_not_cover(
         _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
 
 
+HANDLERS = (
+    "\n    @handles(int)\n    def on_int(self, value):\n        return value\n"
+    "\n    @handles(str)\n    def on_str(self, value):\n        return value\n"
+)
+
+
+@pytest.mark.parametrize(
+    "moved",
+    (
+        "    @staticmethod\n    def label():\n        return 'l'\n",
+        "    @classmethod\n    def label(cls):\n        return 'l'\n",
+        "    @property\n    def label(self):\n        return 'l'\n",
+    ),
+)
+def test_a_hook_walking_the_mro_composes_an_owner_whose_moved_winner_carries_no_mark(
+    tmp_path: Path, moved: str
+) -> None:
+    """The walk meets `label` before the handlers, and after them once composed.
+    A static method, class method or property built from a plain function has no
+    `__handled_classes__`, and nothing stores one on it: the hook drops `label`
+    either way and keeps the handlers in the same order."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _dispatch_family(moved, moved + HANDLERS)})
+    before = _run(tmp_path, DISPATCH_PROBE).split()
+    _apply(tmp_path, _dispatch_composition((tmp_path / "pkg/located.py").as_posix()))
+    assert "class Finding(Located, Dispatch):" in (tmp_path / "pkg/located.py").read_text()
+    after = _run(tmp_path, DISPATCH_PROBE).split()
+    assert after[:-1] == before[:-1] and after[-1] == "True"
+    assert "'on_int'" in before[0] and "'label'" not in " ".join(before)
+
+
+@pytest.mark.parametrize(
+    ("prefix", "moved", "suffix"),
+    (
+        # `functools.cache` copies the function's `__dict__` onto its wrapper:
+        # NRA does not model what the wrapper carries.
+        ("import functools\n", "    @functools.cache\n    def label(self):\n        return 'l'\n", ""),
+        # A plain method, but the module stores the mark on it before `Sub`'s walk.
+        (
+            "",
+            OWNER_BODY,
+            "\n\nFinding.label.__handled_classes__ = (bytes,)\n\n\nclass Sub(Finding):\n    pass\n",
+        ),
+    ),
+)
+def test_a_hook_walking_the_mro_refuses_reordering_a_winner_that_may_carry_the_mark(
+    tmp_path: Path, prefix: str, moved: str, suffix: str
+) -> None:
+    source = prefix + _dispatch_family(moved, moved + HANDLERS) + suffix
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": source})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"meets \['label', 'on_int', 'on_str'.*in that order, and \['on_int', 'on_str', 'label'",
+    ):
+        _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
+
+
 def _declared_file_family(key: str) -> str:
     """A base whose subclass hook asks whether the new class's own body binds `key`."""
 

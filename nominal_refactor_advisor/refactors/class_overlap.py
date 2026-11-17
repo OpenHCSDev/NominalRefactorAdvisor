@@ -946,13 +946,7 @@ class ClassReferenceSites:
                 )
 
     def require_keyword_construction(self) -> None:
-        """Every read builds the class by keyword, tests it, annotates or subclasses.
-
-        Any other read hands the class on as a value, and whoever calls that
-        value may bind fields by position, unless the class binds none: a call
-        to one whose fields are all keyword-only already names every field, so
-        a move that keeps them keyword-only cannot shift it.
-        """
+        """Every read builds the class by keyword, tests it, annotates or subclasses."""
 
         for site in self.sites:
             positional = site.role.positional_bindings(site.parent)
@@ -961,6 +955,16 @@ class ClassReferenceSites:
                     f"{site.location} binds {positional} field(s) of "
                     f"`{ast.unparse(site.node)}` by position, as a {site.role.value}", NeededInput.SOURCE_CHANGE
                 )
+        self.require_no_value_hand_on()
+
+    def require_no_value_hand_on(self) -> None:
+        """No read hands the class on as a value: whoever calls that value may
+        bind fields by position, and no keyword rewrite reaches that caller,
+        unless the class binds none: a call to one whose fields are all
+        keyword-only already names every field, so a move that keeps them
+        keyword-only cannot shift it."""
+
+        for site in self.sites:
             if (
                 site.role.binds_fields
                 or site.role.distinguishes_identity
@@ -3726,6 +3730,33 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
             rationale,
         )
 
+    def keyword_cure(self, snapshot: CodemodSourceSnapshot) -> tuple[str, ...]:
+        """The composers and descendants a call builds by position, among those
+        composing the keyword-only mixin makes keyword-only: each is bound by
+        keyword at an earlier stage. A family that hands its class on as a value
+        refuses here, before any rewrite."""
+
+        if not self.creation(snapshot).keyword_only:
+            return ()
+        verdicts = snapshot.class_overlap_verdicts
+        family = tuple(
+            dict.fromkeys(
+                symbol
+                for target in self.composers
+                if (composer := OverlapClass.require(snapshot, target)).option("kw_only") != "True"
+                for symbol in (composer.symbol, *verdicts.class_index.descendant_symbols(composer.symbol))
+            )
+        )
+        cured = tuple(
+            symbol
+            for symbol in family
+            if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
+            and verdicts.uses.constructions_of(indexed_class, positional=True)
+        )
+        if cured:
+            ClassReferenceSites(snapshot, frozenset(family)).require_no_value_hand_on()
+        return cured
+
     def current_source_authority_claims(
         self, context: CodemodSelectorContext
     ) -> tuple[AuthorityClaim, ...]:
@@ -3921,7 +3952,13 @@ class ClassOverlapFindingRecipeSynthesizer(
                     ),
                 )
             case NewMixinOwner():
-                return ClassOverlapFindingRecipeSynthesizer.new_mixin(owner, pick, composers, verdicts)
+                creations = ClassOverlapFindingRecipeSynthesizer.new_mixin(owner, pick, composers, verdicts)
+                cure = tuple(
+                    dict.fromkeys(symbol for creation in creations for symbol in creation.keyword_cure(snapshot))
+                )
+                if cure:
+                    return ClassOverlapFindingRecipeSynthesizer.keywordings(cure, verdicts)
+                return creations
             case ExistingClassOwner():
                 existing = verdicts.class_index.class_for(owner.symbol)
                 missing = tuple(name for name in owner.block if name not in owner.held)
