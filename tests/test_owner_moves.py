@@ -392,6 +392,68 @@ def test_an_abstract_block_one_composer_is_no_abc_of_is_refused_naming_it(tmp_pa
         operation.source_edits(snapshot)
 
 
+DISPATCHED_RECORDS = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "def handles(*classes):\n"
+    "    def decorate(handler):\n"
+    "        handler.__handled_classes__ = classes\n"
+    "        return handler\n"
+    "    return decorate\n\n\n"
+    "class Dispatch(ABC):\n"
+    "    def __init_subclass__(cls, **kwargs):\n"
+    "        super().__init_subclass__(**kwargs)\n"
+    "        methods = {}\n"
+    "        for owner in cls.__mro__:\n"
+    "            for name, method in vars(owner).items():\n"
+    "                methods.setdefault(name, method)\n"
+    "        cls._handler_declarations = tuple(\n"
+    "            (name, classes)\n"
+    "            for name, method in methods.items()\n"
+    "            if (classes := getattr(method, '__handled_classes__', ()))\n"
+    "        )\n\n\n"
+    "class First(Dispatch):\n"
+    "    @abstractmethod\n    def is_pointed(self) -> bool: ...\n\n"
+    "    @handles(int)\n    def on_int(self, value):\n        return value\n\n"
+    "    @handles(str)\n    def on_str(self, value):\n        return value\n\n\n"
+    "class Second(Dispatch):\n"
+    "    @abstractmethod\n    def is_pointed(self) -> bool: ...\n\n"
+    "    @handles(bytes)\n    def on_bytes(self, value):\n        return value\n"
+)
+
+DISPATCHED_PROBE = (
+    "from pkg.records import First, Second\n"
+    "print(First._handler_declarations, Second._handler_declarations)\n"
+    "print(sorted(First.__abstractmethods__), sorted(Second.__abstractmethods__))\n"
+)
+
+
+def test_an_abstract_method_leaves_for_a_new_mixin_past_a_hook_walking_the_mro(tmp_path: Path) -> None:
+    """The hook's walk meets `is_pointed` before the handlers, and after them
+    once composed; `abstractmethod` stores only `__isabstractmethod__` on it, so
+    the hook drops it either way and builds the same handler tables."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": DISPATCHED_RECORDS})
+    before = _run(tmp_path, DISPATCHED_PROBE)
+    records = str(tmp_path / "pkg/records.py")
+    _apply(
+        tmp_path,
+        CreateMixinOperation(
+            target=SourceRewriteTarget(file_path=records, qualname="First"),
+            member_names=("is_pointed",),
+            mixin_name="Pointed",
+            docstring="A record that may be pointed.",
+            composers=(
+                SourceRewriteTarget(file_path=records, qualname="First"),
+                SourceRewriteTarget(file_path=records, qualname="Second"),
+            ),
+        ),
+    )
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert "class First(Pointed, Dispatch):" in source and "class Second(Pointed, Dispatch):" in source, source
+    assert _run(tmp_path, DISPATCHED_PROBE) == before
+    assert "on_int" in before and "is_pointed" in before.splitlines()[1]
+
+
 def test_an_abstract_method_moves_only_into_a_new_abc(tmp_path: Path) -> None:
     """`abstractmethod` is admitted only where the receiving class is a new `ABC`:
     an existing class it moved onto would become abstract itself."""
