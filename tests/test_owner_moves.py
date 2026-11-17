@@ -11,10 +11,12 @@ import pytest
 from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_overlap import (
+    NO_FLOOR,
     ClassOverlapMetrics,
     ComposeExisting,
     ExtractMixin,
 )
+from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.refactors.carrier_fields import (
     CarrierFieldProjection,
     ReplaceFieldsWithCarrierOperation,
@@ -846,6 +848,38 @@ def test_a_base_declaring_only_the_hoisted_names_is_hoisted_too(tmp_path: Path) 
     assert "class Action(Numbered, Step):\n    pass\n" in source
     assert "class Task(Filed, Numbered, Phase):\n    def checked" in source
     assert _run(tmp_path, HOISTED_PROBE) == before
+
+
+
+@pytest.mark.parametrize(
+    ("records", "gained"),
+    (
+        (ALONE, ["`Step.bound_to`", "`Step.request`"]),
+        (ALONE.replace("class Action(Step):", "class Action:"), []),
+    ),
+)
+def test_composing_an_owner_never_hands_a_class_its_ancestors_members(
+    tmp_path: Path, records: str, gained: list[str]
+) -> None:
+    """`Task` restates all `Action` declares, but inheriting `Action` would also
+    give it `Step`'s field and method, which nothing requires `Task` to have:
+    unwanted supply, which the move must refuse. Without `Step` it is sound."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
+    verdicts = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    ).class_overlap_verdicts
+    verdict = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.records.Action", "pkg.records.Task"), NO_FLOOR
+    )
+    assert verdict is not None and verdict.move is ComposeExisting
+    refusals = [
+        receipt.detail
+        for receipt in verdict.refusals
+        if receipt.kind is OverlapReceiptKind.UNWANTED_SUPPLY
+    ]
+    assert [name for detail in refusals for name in gained if name in detail] == gained
+    assert bool(refusals) == bool(gained) and verdict.permitted is not bool(gained)
 
 
 def _field_mixin(records: str) -> CreateMixinOperation:
