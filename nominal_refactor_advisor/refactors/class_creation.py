@@ -1403,6 +1403,21 @@ class BaseDropReads(CreationReads):
             return
         self.refuse(parent or node, "reads a base of the class, which may be a dropped one")
 
+    def follow(self, call: ast.Call, node: ast.Name, role: Role) -> None:
+        """`dataclasses.dataclass(cls, ...)` on the new class builds its fields from
+        each class's own annotations along the order, which the drop keeps, and never
+        reads the header's bases; anything else is followed as before."""
+
+        owner = self.code.owner
+        if (
+            role is NEW_CLASS
+            and owner is not None
+            and call.args[:1] == [node]
+            and self.proof.resolved(owner, call.func, self.proof.module_end(owner)) == "dataclasses.dataclass"
+        ):
+            return
+        super().follow(call, node, role)
+
     def dropped_reach_empty_plain_answer(self, table: ast.ClassDef) -> bool:
         answer = self.plain_answer(table)
         if answer is None or ast.literal_eval(answer) not in ((), [], None, frozenset(), set()):
