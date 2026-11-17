@@ -21,6 +21,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
 from nominal_refactor_advisor.class_index import (
+    ABSTRACT_METHOD_DECORATOR,
     ClassLineBindingSnapshots,
     ModuleNominalBindingSnapshot,
 )
@@ -32,6 +33,7 @@ from nominal_refactor_advisor.class_method_facets import (
     ClassMethodPromotionSafetyProfile,
     ClassMethodReceiverRequirements,
 )
+from nominal_refactor_advisor.class_namespace import PROMOTABLE_METHOD_DECORATOR_IDENTITIES
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_declaration_source import (
@@ -1554,6 +1556,7 @@ class ClassMethodPromotionStatement(ClassMemberPromotionStatement):
                 binding_snapshot,
                 context.class_bound_names,
                 source_lines=context.source_lines,
+                admitted_decorators=context.admitted_decorators,
             ).hazards
         ))
         if hazards:
@@ -1571,6 +1574,19 @@ class ClassMemberMoveProofContext(SourceTextGeometry):
     destination_class: ResolvedClassTarget
     binding_snapshots: tuple[ModuleNominalBindingSnapshot, ...]
     """The module's bindings where the source and the destination class statements run."""
+    admitted_decorators: frozenset[str] = PROMOTABLE_METHOD_DECORATOR_IDENTITIES
+    """What a moved method's decorators may resolve to: the natives whose application
+    the destination's class statement repeats unchanged."""
+
+    def into_new_abc(self) -> Self:
+        """The destination is a new class `ABCMeta` creates, which nothing instantiates
+        and whose composers `ABCMeta` creates too: `abstractmethod` only marks the
+        function, and each composer takes the mixin's abstract names, so a moved
+        abstract method stays abstract wherever it was."""
+
+        return replace(
+            self, admitted_decorators=self.admitted_decorators | {ABSTRACT_METHOD_DECORATOR}
+        )
 
     @classmethod
     def between(

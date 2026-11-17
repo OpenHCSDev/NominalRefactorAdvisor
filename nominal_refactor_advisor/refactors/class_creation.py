@@ -263,7 +263,7 @@ class BuiltinContainer:
 
 @dataclass(frozen=True)
 class ClassCreationProof:
-    """Composing a new plain owner leaves the composer's creation unchanged."""
+    """Composing new owners leaves the composer's creation unchanged."""
 
     snapshot: CodemodSourceSnapshot
     composer: CompactIndexedClass
