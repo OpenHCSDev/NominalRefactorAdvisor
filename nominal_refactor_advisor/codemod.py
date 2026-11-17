@@ -89,6 +89,9 @@ from nominal_refactor_advisor.refactors.class_member_authority import (
 from nominal_refactor_advisor.refactors.capability_guard import (
     CapabilityGuardToOverrideOperation as CapabilityGuardToOverrideOperation,
 )
+from nominal_refactor_advisor.refactors.guarded_block import (
+    GuardedBlockToOverrideOperation as GuardedBlockToOverrideOperation,
+)
 from nominal_refactor_advisor.refactors.capability_requirement import (
     DeclaredCapabilityRequirementOperation as DeclaredCapabilityRequirementOperation,
 )
