@@ -290,3 +290,31 @@ def test_a_namespace_read_the_type_checker_types_as_another_family_sees_no_membe
     assert "`dict(vars(owner))`" in evaluation.rejection_reason
     assert "whose values can be that class" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_namespace_read_asking_only_its_own_annotations_sees_no_unannotated_member(tmp_path: Path):
+    source = (
+        "import annotationlib\n\n\n"
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n\n\n"
+        "def generated(cls: type):\n"
+        "    found = []\n"
+        "    for owner in cls.__mro__:\n"
+        "        declared = tuple(annotationlib.get_annotations(owner, format=annotationlib.Format.STRING))\n"
+        "        for position, name in enumerate(declared):\n"
+        "            found.append(vars(owner).get(name))\n"
+        "    return found\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/read.py": source})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""
+    for other in (
+        source.replace("get_annotations(owner,", "get_annotations(Base,"),
+        source.replace(
+            "        declared = tuple(annotationlib.get_annotations(owner, format=annotationlib.Format.STRING))\n",
+            "        if owner is cls:\n            declared = tuple(annotationlib.get_annotations(owner))\n",
+        ),
+    ):
+        _write(tmp_path, {"pkg/read.py": other})
+        evaluation = _evaluation(tmp_path, "Child")
+        assert "vars(owner).get" in evaluation.rejection_reason, other
+        assert NeededInput.PROOF in evaluation.needs
