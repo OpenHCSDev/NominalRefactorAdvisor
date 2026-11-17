@@ -794,11 +794,14 @@ class CreationReads:
 
     def is_builtin(self, func: ast.Name, qualified_name: str) -> bool:
         """Whether `func` names this builtin where the function body runs: its
-        module's final binding of the name."""
+        module's final binding of the name. Names resolve in scanned modules
+        only; in an installed module's code the call stays unread."""
 
         owner = self.code.owner
-        return owner is not None and (
-            self.proof.qualified(owner, func, self.proof.module_end(owner)) == qualified_name
+        return (
+            owner is not None
+            and self.proof.class_index.class_for(owner.symbol) is not None
+            and self.proof.qualified(owner, func, self.proof.module_end(owner)) == qualified_name
         )
 
     def first_found_walk(self, attribute: ast.Attribute) -> bool:
