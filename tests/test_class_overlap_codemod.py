@@ -169,6 +169,86 @@ def test_a_requested_composition_is_judged_below_the_reporting_floor(tmp_path: P
     ]
 
 
+BASED_OWNER = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "class Snapshot(ABC):\n"
+    "    __slots__ = ()\n\n"
+    "    @abstractmethod\n"
+    "    def owner_identity(self, name: str) -> int: ...\n\n\n"
+    "class Reads(ABC):\n"
+    "    __slots__ = ()\n\n"
+    "    @abstractmethod\n"
+    "    def owner_identity(self, name: str) -> int: ...\n\n"
+    "    @abstractmethod\n"
+    "    def require(self, name: str) -> str: ...\n\n\n"
+    "class Live(Reads):\n"
+    "    __slots__ = ('names',)\n\n"
+    "    def __init__(self) -> None:\n"
+    "        self.names = {'a': 1}\n\n"
+    "    def owner_identity(self, name: str) -> int:\n"
+    "        return self.names[name]\n\n"
+    "    def require(self, name: str) -> str:\n"
+    "        return name\n"
+)
+BASED_PROBE = (
+    "from pkg.reads import Live, Reads\n"
+    "live = Live()\n"
+    "print(live.owner_identity('a'), live.require('b'), hasattr(live, '__dict__'),\n"
+    "      sorted(Reads.__abstractmethods__))\n"
+)
+
+
+def test_an_owner_whose_base_the_class_already_has_is_composed(tmp_path: Path) -> None:
+    """`Snapshot` has a base, but `Reads` already descends from it: C3 puts the
+    owner first and keeps every other ancestor in order, each name resolves as
+    before or to the owner's equal declaration, and `__slots__` stays, since
+    each class's own body declares it."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/reads.py": BASED_OWNER})
+    before = _run(tmp_path, BASED_PROBE)
+    path = (tmp_path / "pkg/reads.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Reads"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Snapshot"),
+        ),
+    )
+    source = (tmp_path / "pkg/reads.py").read_text()
+    assert "class Reads(Snapshot, ABC):\n    __slots__ = ()\n\n    @abstractmethod\n    def require" in source
+    assert source.count("def owner_identity") == 2
+    assert _run(tmp_path, BASED_PROBE) == before
+
+
+def test_a_composition_that_changes_a_name_s_winner_is_refused(tmp_path: Path) -> None:
+    """Composing `Labelled` brings its base `Base` ahead of `Mixin` in `Plain`'s
+    C3 order, so `Plain.label` would stop being `Mixin`'s."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/labels.py": (
+                "class Base:\n    def label(self) -> str:\n        return 'base'\n\n\n"
+                "class Mixin:\n    def label(self) -> str:\n        return 'mixin'\n\n\n"
+                "class Labelled(Base):\n    def kind(self) -> str:\n        return 'k'\n\n\n"
+                "class Plain(Mixin):\n    def kind(self) -> str:\n        return 'k'\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/labels.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Plain"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Labelled"),
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"makes `Plain.label` resolve to `pkg.labels.Base` instead of `pkg.labels.Mixin`",
+    ):
+        operation.source_edits(snapshot)
+
+
 def _tagged_family(hook: str) -> str:
     return (
         "from dataclasses import dataclass\n\n\n"
