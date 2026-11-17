@@ -2,14 +2,18 @@ from __future__ import annotations
 
 import ast
 import difflib
+import io
 import keyword as keyword_module
+import textwrap
 import tokenize
+import unicodedata
 from abc import (
     ABC,
     abstractmethod,
 )
 from collections.abc import (
     Iterable,
+    Iterator,
     Sequence,
 )
 from dataclasses import (
@@ -20,7 +24,7 @@ from functools import cached_property
 from itertools import chain
 from importlib import import_module
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Self, cast
 
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, declared_names
@@ -36,9 +40,12 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
+    ParsedModuleFact,
     is_docstring_statement,
 )
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
+from nominal_refactor_advisor.class_families.parsed_index import ModuleClassReferenceResolver
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactIndexedClass,
@@ -472,11 +479,224 @@ class RestatedDeclarations:
                     )
 
 
+class ReadSource(ABC):
+    """The parse a class read was found in, placed in the file that holds it.
+
+    A module is its own source. Python source a string literal holds, run by a
+    child interpreter, is another: its own imports resolve its names, and its
+    offsets map through the literal's characters into the holding file.
+    """
+
+    file_path: str
+    parsed_module: ParsedModule
+
+    @cached_property
+    def geometry(self) -> SourceTextGeometry:
+        return SourceTextGeometry(self.parsed_module.source)
+
+    @abstractmethod
+    def resolution(self, snapshot: CodemodSourceSnapshot) -> ClassSymbolResolutionAuthority:
+        raise NotImplementedError
+
+    @abstractmethod
+    def file_offset(self, offset: int) -> int:
+        """Where a character of this parse's text sits in the holding file."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def line_of(self, node: ast.AST) -> int:
+        raise NotImplementedError
+
+    def node_offsets(self, node: ast.AST) -> tuple[int, int]:
+        start, end = self.geometry.required_node_offsets(node)
+        return self.file_offset(start), self.file_offset(end)
+
+
+@dataclass(frozen=True)
+class ModuleSource(ReadSource):
+    """A scanned module, read where it stands."""
+
+    parsed_module: ParsedModule
+
+    @property
+    def file_path(self) -> str:
+        return self.parsed_module.file_path
+
+    def resolution(self, snapshot: CodemodSourceSnapshot) -> ClassSymbolResolutionAuthority:
+        return snapshot.class_reference_resolver_for_source_path(self.file_path).reference_resolution
+
+    def file_offset(self, offset: int) -> int:
+        return offset
+
+    def line_of(self, node: ast.AST) -> int:
+        return node.lineno
+
+
+@dataclass(frozen=True)
+class EmbeddedSource(ReadSource):
+    """Python source a string literal holds, parsed as the `__main__` a child
+    interpreter runs it as.
+
+    `positions` gives each character's offset in the holding file, then the
+    offset past the last; it is empty when the literal's characters do not
+    decode to its value one by one, and then any edit refuses.
+    """
+
+    holder: ParsedModule
+    parsed_module: ParsedModule
+    literal: ast.Constant
+    positions: tuple[int, ...]
+
+    @property
+    def file_path(self) -> str:
+        return self.holder.file_path
+
+    def resolution(self, snapshot: CodemodSourceSnapshot) -> ClassSymbolResolutionAuthority:
+        return ModuleClassReferenceResolver(
+            self.parsed_module, snapshot.required_class_family_index
+        ).reference_resolution
+
+    def file_offset(self, offset: int) -> int:
+        if not self.positions:
+            raise NeedsInput(
+                f"{self.file_path}:{self.literal.lineno} holds Python source whose characters "
+                "NRA cannot place back in the file", NeededInput.OPERATION
+            )
+        return self.positions[offset]
+
+    def line_of(self, node: ast.AST) -> int:
+        if not self.positions:
+            return self.literal.lineno
+        return self.holder.source.count("\n", 0, self.positions[self.geometry.required_node_offsets(node)[0]]) + 1
+
+
+@dataclass(frozen=True)
+class EmbeddedSources(ParsedModuleFact):
+    """Every string literal in a module that holds Python source importing
+    something, as it is run: verbatim, or through `textwrap.dedent`."""
+
+    sources: tuple[EmbeddedSource, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        index = parsed_module.syntax_index
+        literals = (
+            node
+            for position in index.node_indices_by_type.get(ast.Constant, ())
+            for node in (index.depth_first_nodes[position],)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "import" in node.value
+        )
+        return cls(tuple(source for literal in literals for source in cls.parsed(parsed_module, literal)))
+
+    @staticmethod
+    def parsed(holder: ParsedModule, literal: ast.Constant) -> Iterator[EmbeddedSource]:
+        value = cast(str, literal.value)
+        for text in dict.fromkeys((value, textwrap.dedent(value))):
+            try:
+                module = ast.parse(text)
+            except SyntaxError:
+                continue
+            if not any(isinstance(node, (ast.Import, ast.ImportFrom)) for node in ast.walk(module)):
+                return
+            characters = _literal_positions(holder.source, SourceTextGeometry(holder.source).required_node_offsets(literal), value)
+            yield EmbeddedSource(
+                holder=holder,
+                parsed_module=ParsedModule(path=holder.path, module_name="__main__", module=module, source=text),
+                literal=literal,
+                positions=_aligned(text, value, characters) if characters else (),
+            )
+            return
+
+
+_SIMPLE_ESCAPES = {
+    "\\": "\\", "'": "'", '"': '"', "a": "\a", "b": "\b", "f": "\f",
+    "n": "\n", "r": "\r", "t": "\t", "v": "\v",
+}
+
+
+def _literal_positions(source: str, span: tuple[int, int], value: str) -> tuple[int, ...]:
+    """Each character of a string literal's value with its offset in `source`,
+    then the offset past the last; empty unless the characters decode to `value`."""
+
+    start, end = span
+    decoded: list[str] = []
+    positions: list[int] = []
+    segment = source[start:end]
+    line_starts = [0, *(index + 1 for index, character in enumerate(segment) if character == "\n")]
+    try:
+        tokens = tuple(tokenize.generate_tokens(io.StringIO(segment).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return ()
+    body_end = start
+    for token in tokens:
+        if token.type != tokenize.STRING:
+            continue
+        text = token.string
+        prefix = text[: len(text) - len(text.lstrip("rRuUbBfF"))].lower()
+        if "b" in prefix or "f" in prefix:
+            return ()
+        quote = text[len(prefix) : len(prefix) + 3] if text[len(prefix) : len(prefix) + 3] in ('"""', "'''") else text[len(prefix)]
+        body = text[len(prefix) + len(quote) : len(text) - len(quote)]
+        body_start = start + line_starts[token.start[0] - 1] + token.start[1] + len(prefix) + len(quote)
+        body_end = body_start + len(body)
+        index = 0
+        while index < len(body):
+            character = body[index]
+            following = body[index + 1] if index + 1 < len(body) else ""
+            if character != "\\" or "r" in prefix:
+                decoded.append(character)
+                positions.append(body_start + index)
+                index += 1
+            elif following == "\n":
+                index += 2
+            elif following in _SIMPLE_ESCAPES:
+                decoded.append(_SIMPLE_ESCAPES[following])
+                positions.append(body_start + index)
+                index += 2
+            elif following in "01234567":
+                digits = len(body[index + 1 : index + 4]) - len(body[index + 1 : index + 4].lstrip("01234567"))
+                decoded.append(chr(int(body[index + 1 : index + 1 + digits], 8)))
+                positions.append(body_start + index)
+                index += 1 + digits
+            elif following in "xuU":
+                width = {"x": 2, "u": 4, "U": 8}[following]
+                decoded.append(chr(int(body[index + 2 : index + 2 + width], 16)))
+                positions.append(body_start + index)
+                index += 2 + width
+            elif following == "N":
+                close = body.index("}", index)
+                decoded.append(unicodedata.lookup(body[index + 3 : close]))
+                positions.append(body_start + index)
+                index = close + 1
+            else:
+                decoded.append(character)
+                positions.append(body_start + index)
+                index += 1
+    if "".join(decoded) != value:
+        return ()
+    return (*positions, body_end)
+
+
+def _aligned(text: str, value: str, positions: tuple[int, ...]) -> tuple[int, ...]:
+    """`positions` for `text`, which is `value` with whitespace removed (what
+    `textwrap.dedent` does); each kept character keeps its own offset."""
+
+    aligned: list[int] = []
+    index = 0
+    for character in text:
+        while value[index] != character:
+            index += 1
+        aligned.append(positions[index])
+        index += 1
+    return (*aligned, positions[-1] if index == len(value) else positions[index])
+
+
 @dataclass(frozen=True)
 class ClassReferenceSite:
     """One read of a class in the repository and the syntax around it."""
 
-    file_path: str
+    source: ReadSource
     node: ast.expr
     parent: ast.AST | None
     role: ClassReferenceRole
@@ -486,8 +706,12 @@ class ClassReferenceSite:
     """The class the read resolves to."""
 
     @property
+    def file_path(self) -> str:
+        return self.source.file_path
+
+    @property
     def location(self) -> str:
-        return f"{self.file_path}:{self.node.lineno}"
+        return f"{self.file_path}:{self.source.line_of(self.node)}"
 
 
 class DeclaringClass(ClassMemberAnswersABC[tuple[str, ...]]):
@@ -531,7 +755,7 @@ class KeywordBinders:
     DEPTH: ClassVar[int] = 4
 
     def binds_by_keyword(self, site: ClassReferenceSite) -> bool:
-        module = self.snapshot.parsed_module_for_source_path(site.file_path)
+        module = site.source.parsed_module
         parents = {
             child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
         }
@@ -681,12 +905,14 @@ class ClassReferenceSites:
         return tuple(
             site
             for parsed_module in self.snapshot.parsed_modules
-            for site in self._module_sites(parsed_module, terminal_names)
+            for source in (ModuleSource(parsed_module), *parsed_module.fact(EmbeddedSources).sources)
+            for site in self._source_sites(source, terminal_names)
         )
 
-    def _module_sites(
-        self, parsed_module: ParsedModule, terminal_names: frozenset[str]
+    def _source_sites(
+        self, source: ReadSource, terminal_names: frozenset[str]
     ) -> Iterable[ClassReferenceSite]:
+        parsed_module = source.parsed_module
         aliases = module_import_aliases(parsed_module)
         identifiers = terminal_names | frozenset(
             alias
@@ -699,9 +925,7 @@ class ClassReferenceSites:
         syntax_index = parsed_module.syntax_index
         nodes = syntax_index.depth_first_nodes
         parents = syntax_index.parent_indices
-        resolver = self.snapshot.class_reference_resolver_for_source_path(
-            parsed_module.file_path
-        ).reference_resolution
+        resolver = source.resolution(self.snapshot)
         for node_type in (ast.Name, ast.Attribute):
             for index in syntax_index.node_indices_by_type.get(node_type, ()):
                 node = nodes[index]
@@ -720,7 +944,7 @@ class ClassReferenceSites:
                     else None
                 )
                 yield ClassReferenceSite(
-                    file_path=parsed_module.file_path,
+                    source=source,
                     node=node,
                     parent=parent,
                     role=ClassReferenceRole.of_reference(
@@ -1983,13 +2207,17 @@ def _is_own_class(function: ast.expr) -> bool:
 class PositionalConstruction:
     """One call that builds a dataclass, or its receiver's class, by position."""
 
-    file_path: str
+    source: ReadSource
     call: ast.Call
     parameter_names: tuple[str, ...]
 
     @property
+    def file_path(self) -> str:
+        return self.source.file_path
+
+    @property
     def location(self) -> str:
-        return f"{self.file_path}:{self.call.lineno}"
+        return f"{self.file_path}:{self.source.line_of(self.call)}"
 
     def require_keywordable(self) -> None:
         call = self.call
@@ -2005,13 +2233,13 @@ class PositionalConstruction:
         if any(isinstance(argument, ast.GeneratorExp) for argument in call.args):
             raise NeedsInput(f"{self.location} passes a bare generator expression", NeededInput.OPERATION)
 
-    def replacements(
-        self, geometry: SourceTextGeometry
-    ) -> tuple[SourceTextSpanReplacement, ...]:
+    def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
         """`name=` before each positional argument's first token; a walrus the
-        call left bare is parenthesized."""
+        call left bare is parenthesized. Offsets are the holding file's."""
 
         call = self.call
+        geometry = self.source.geometry
+        placed = self.source.file_offset
         func_end = geometry.required_node_offsets(call.func)[1]
         starts: list[int] = []
         depth = 0
@@ -2037,16 +2265,16 @@ class PositionalConstruction:
             bare_walrus = isinstance(argument, ast.NamedExpr) and argument_start == start
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
-                    start_offset=start,
-                    end_offset=start,
+                    start_offset=placed(start),
+                    end_offset=placed(start),
                     replacement_source=f"{name}=" + ("(" if bare_walrus else ""),
                 )
             )
             if bare_walrus:
                 replacements.append(
                     SourceTextSpanReplacement.from_offsets(
-                        start_offset=argument_end,
-                        end_offset=argument_end,
+                        start_offset=placed(argument_end),
+                        end_offset=placed(argument_end),
                         replacement_source=")",
                     )
                 )
@@ -2095,7 +2323,7 @@ class ConstructionKeywording:
     def constructions(self) -> tuple[PositionalConstruction, ...]:
         parameters = proved_construction_parameters(self.snapshot, self.target.symbol)
         direct = tuple(
-            PositionalConstruction(site.file_path, site.parent, parameters)
+            PositionalConstruction(site.source, site.parent, parameters)
             for site in ClassReferenceSites(self.snapshot, frozenset((self.target.symbol,))).sites
             if site.role is ClassReferenceRole.CONSTRUCTION
             and isinstance(site.parent, ast.Call)
@@ -2127,7 +2355,12 @@ class ConstructionKeywording:
                     f"`{self.target.qualname}`, and its receiver may be one", NeededInput.PROOF
                 )
         return tuple(
-            PositionalConstruction(self.target.file_path, call, parameters) for call in calls
+            PositionalConstruction(
+                ModuleSource(self.snapshot.parsed_module_for_source_path(self.target.file_path)),
+                call,
+                parameters,
+            )
+            for call in calls
         )
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -2143,7 +2376,7 @@ class ConstructionKeywording:
                 replacements=tuple(
                     replacement
                     for construction in constructions
-                    for replacement in construction.replacements(geometry)
+                    for replacement in construction.replacements()
                 ),
                 rationale=rationale,
             )
