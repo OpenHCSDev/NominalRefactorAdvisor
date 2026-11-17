@@ -1991,7 +1991,7 @@ SHARED_MARKER = (
 )
 SHARED_MARKER_PROBE = (
     "from pkg.todos import Blocked, Ready, State, blocked\n"
-    "print(Ready.is_open(), Blocked.is_open(), State.is_open(), blocked(Blocked()), blocked(Ready()), "
+    "print(Ready.is_open(), Blocked.is_open(), State.is_open(), blocked(Blocked()), blocked(Ready()), Ready() == Ready(), "
     "[k.__name__ for k in Blocked.__mro__])\n"
 )
 
