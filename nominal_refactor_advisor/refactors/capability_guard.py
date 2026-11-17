@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import re
 from dataclasses import dataclass
 
 from nominal_refactor_advisor.codemod_payload import (
@@ -32,6 +33,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.probe_owner import InferredReceiverType, ReceiverSpan
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
 
 
@@ -110,8 +112,9 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
     its body becomes the raise.
 
     The proof is the MRO of every class `x` can be: the subject's declared family
-    (the enclosing class for `cls` or `self`, else the parameter's annotation,
-    `type[T]` or `T`). For each, `method_name` must resolve to the capability's
+    (the enclosing class for `cls` or `self`, else the parameter's or field's
+    annotation, `type[T]` or `T`, read through re-exports; an unannotated subject
+    takes the type checker's class at the guard). For each, `method_name` must resolve to the capability's
     override exactly when the class is one, and to `base` otherwise. Another
     declaration of the name on the way, or a class that reaches neither, refuses.
     """
@@ -237,44 +240,98 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
     def subject_family(self, snapshot, answered, owner, function, guard, parents, source_path) -> frozenset[str]:
         """Every class the guarded subject can be: a declared type and its descendants."""
 
-        index = snapshot.required_class_family_index
+        declared = self.declared_subject(snapshot, answered, owner, function, guard, parents, source_path)
+        return frozenset((declared, *snapshot.required_class_family_index.descendant_symbols(declared)))
+
+    @classmethod
+    def declared_subject(cls, snapshot, answered, owner, function, guard, parents, source_path) -> str:
+        """The class the guarded subject is declared as: the enclosing class for its
+        receiver, else its parameter's or field's annotation."""
+
         first = function.args.args[0].arg if function.args.args else None
+        annotation: ast.expr | None = None
         match guard.subject:
             case ast.Name(id=name) if owner is not None and name == first:
                 declared = owner.required_symbol(snapshot)
             case ast.Name(id=name):
-                declared = self.annotated(
-                    answered, guard, parents, source_path,
-                    next(
-                        (
-                            argument.annotation
-                            for argument in (*function.args.args, *function.args.kwonlyargs)
-                            if argument.arg == name
-                        ),
-                        None,
+                annotation = next(
+                    (
+                        argument.annotation
+                        for argument in (*function.args.args, *function.args.kwonlyargs)
+                        if argument.arg == name
                     ),
+                    None,
                 )
+                declared = cls.annotated(answered, guard, parents, source_path, annotation)
             case ast.Attribute(value=ast.Name(id=name), attr=field) if owner is not None and name == first:
-                declared = self.annotated(
-                    answered, guard, parents, source_path,
-                    next(
-                        (
-                            statement.annotation
-                            for statement in owner.node.body
-                            if isinstance(statement, ast.AnnAssign)
-                            and isinstance(statement.target, ast.Name)
-                            and statement.target.id == field
-                        ),
-                        None,
+                annotation = next(
+                    (
+                        statement.annotation
+                        for statement in owner.node.body
+                        if isinstance(statement, ast.AnnAssign)
+                        and isinstance(statement.target, ast.Name)
+                        and statement.target.id == field
                     ),
+                    None,
                 )
+                declared = cls.annotated(answered, guard, parents, source_path, annotation)
             case _:
                 declared = None
+        if declared is None and annotation is None:
+            declared = cls.inferred(snapshot, guard.subject, source_path)
         if declared is None:
-            raise ValueError(
-                f"`{ast.unparse(guard.subject)}` has no annotation naming a class the scan declares"
-            )
-        return frozenset((declared, *index.descendant_symbols(declared)))
+            raise ValueError(cls.undeclared(function, guard.subject, annotation))
+        return declared
+
+    @staticmethod
+    def inferred(snapshot: CodemodSourceSnapshot, subject: ast.expr, source_path: str) -> str | None:
+        """The class the type checker gives the unannotated subject where it is tested:
+        one class the scan declares, every value an instance and none of them None,
+        since `x.method()` runs on every value the test used to skip."""
+
+        span = ReceiverSpan.of(source_path, subject)
+        answer = snapshot.type_checker.receiver_types((span,)).get(span)
+        if not isinstance(answer, InferredReceiverType):
+            return None
+        spelled = ast.unparse(subject)
+        match answer.classes:
+            case (symbol,) if symbol in snapshot.required_class_family_index.classes_by_symbol:
+                if re.search(r"\bNone\b", answer.spelled) or not answer.instances:
+                    raise ValueError(
+                        f"the type checker infers `{answer.spelled}` for `{spelled}`, whose values are not all "
+                        "instances with methods: it needs the value decoded into the family where it enters"
+                    )
+                return symbol
+        raise ValueError(
+            f"the type checker infers `{answer.spelled}` for `{spelled}`, which is not one class the scan "
+            "declares: it needs the value decoded into the family where it enters"
+        )
+
+    @staticmethod
+    def undeclared(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, subject: ast.expr, annotation: ast.expr | None
+    ) -> str:
+        """Why the subject names no class of the scan, and the input that would."""
+
+        spelled = ast.unparse(subject)
+        parameters = {argument.arg for argument in ast.walk(function.args) if isinstance(argument, ast.arg)}
+        match subject:
+            case _ if annotation is not None:
+                return (
+                    f"`{spelled}` is annotated `{ast.unparse(annotation)}`, which names no one class the scan "
+                    "declares: it needs the value decoded into the family where it enters"
+                )
+            case ast.Name(id=name) if name in parameters:
+                return f"`{spelled}` has no annotation naming a class the scan declares: it needs one"
+            case ast.Name():
+                return (
+                    f"`{spelled}` has no annotation naming a class the scan declares: it is a local of "
+                    f"`{function.name}`, and needs its binding's class (an annotation, or the iterable's element type)"
+                )
+        return (
+            f"`{spelled}` has no annotation naming a class the scan declares: it needs the declared "
+            "class of that expression"
+        )
 
     @staticmethod
     def annotated(answered, guard, parents, source_path, annotation: ast.expr | None) -> str | None:
