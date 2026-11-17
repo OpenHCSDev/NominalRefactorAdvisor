@@ -148,10 +148,10 @@ class ClassAttributeReaders:
     snapshot: CodemodSourceSnapshot
 
     def reaches(self, module: ParsedModule, read: ast.expr, indexed: CompactIndexedClass) -> bool:
-        """Whether the read can see `indexed`'s own attribute: `X.__bases__`,
-        `X.__dict__` and `vars(X)` are `X`'s own, and `X.__orig_bases__` is `X`'s or
-        an ancestor's, so a read of a named class whose order does not hold
-        `indexed` never sees them."""
+        """Whether the read can see `indexed`'s own attribute: a read of a named
+        class's own entry (`reads_its_own`) sees it only when that class is
+        `indexed`, and any other read of a named class only when its order holds
+        `indexed`."""
 
         match read:
             case ast.Attribute(value=receiver) | ast.Call(func=ast.Name(id="vars"), args=[receiver]):
@@ -165,10 +165,28 @@ class ClassAttributeReaders:
         named = self.named(module, receiver)
         if named is None or verdicts.class_index.class_for(named) is None:
             return True
+        if self.reads_its_own(read, named):
+            return named == indexed.symbol
         try:
             return indexed.symbol in verdicts.linearized(named)
         except NeedsInput:
             return True
+
+    def reads_its_own(self, read: ast.expr, named: str) -> bool:
+        """Whether the read of the named class sees only that class's own entry:
+        `X.__bases__`, `X.__dict__` and `vars(X)` always do, and `X.__orig_bases__`
+        does when `X`'s header subscripts a base, which sets it in `X`'s namespace;
+        otherwise it is the nearest ancestor's."""
+
+        match read:
+            case ast.Attribute(attr="__bases__" | "__dict__") | ast.Call():
+                return True
+            case ast.Attribute(attr="__orig_bases__"):
+                return any(
+                    isinstance(base, ast.Subscript)
+                    for base in OverlapClass.for_symbol(self.snapshot, named).node.bases
+                )
+        return False
 
     def family_holds(self, family: str, indexed: CompactIndexedClass) -> bool:
         """Whether a value of `type[family]`, `family` or a subclass, can be
