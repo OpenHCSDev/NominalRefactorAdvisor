@@ -13,18 +13,13 @@ from collections.abc import (
     Iterator,
     Mapping,
 )
-from dataclasses import (
-    dataclass,
-    field,
-)
+from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 from typing import (
     ClassVar,
-    Generic,
     Self,
     TypeGuard,
-    TypeVar,
 )
 
 from metaclass_registry import (
@@ -1221,9 +1216,7 @@ class ProjectDecoderOwners:
     @classmethod
     def of(cls, snapshot: CodemodSourceSnapshot, module_name: str) -> Self:
         root = module_name.partition(".")[0]
-        return _PROJECT_OWNERS.for_snapshot(snapshot).setdefault(
-            root, cls(snapshot, root)
-        )
+        return snapshot.derived((cls, root), lambda: cls(snapshot, root))
 
     @property
     def generated_module(self) -> str:
@@ -1396,26 +1389,6 @@ class ProjectDecoderOwners:
                     ImportedClassReference(f"{module}.{name}").import_source
                 )
         return tuple(sources)
-
-
-CachedT = TypeVar("CachedT")
-
-
-@dataclass
-class SnapshotCache(Generic[CachedT]):
-    """Per-root values for the one snapshot synthesis is reading now."""
-
-    snapshot: CodemodSourceSnapshot | None = None
-    values: dict[str, CachedT] = field(default_factory=dict)
-
-    def for_snapshot(self, snapshot: CodemodSourceSnapshot) -> dict[str, CachedT]:
-        if self.snapshot is not snapshot:
-            self.snapshot = snapshot
-            self.values = {}
-        return self.values
-
-
-_PROJECT_OWNERS = SnapshotCache[ProjectDecoderOwners]()
 
 
 @dataclass(frozen=True)
@@ -1919,9 +1892,7 @@ class PendingDecoderMigration:
 
     @classmethod
     def of(cls, owners: ProjectDecoderOwners) -> PendingDecoderMigration:
-        return _MIGRATIONS.for_snapshot(owners.snapshot).setdefault(
-            owners.root, cls(owners)
-        )
+        return owners.snapshot.derived((cls, owners.root), lambda: cls(owners))
 
     @cached_property
     def declared_snapshot(self) -> CodemodSourceSnapshot:
@@ -2014,7 +1985,6 @@ class PendingDecoderMigration:
         return f"{Path(self.routes[0].file_path).name}:{self.routes[0].symbol}"
 
 
-_MIGRATIONS = SnapshotCache[PendingDecoderMigration]()
 
 
 @dataclass(frozen=True)
