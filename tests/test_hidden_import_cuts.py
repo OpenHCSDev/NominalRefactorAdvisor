@@ -97,20 +97,25 @@ def test_one_hub_cut_frees_both_hidden_readers(tmp_path: Path):
         assert (tmp_path / f"pkg/{reader}.py").read_text().startswith("from pkg.record import Record\n")
 
 
-def test_a_closure_reading_back_names_its_reader(tmp_path: Path):
+def test_a_closure_reading_back_from_its_only_reader_moves_into_it(tmp_path: Path):
+    """`Record` reads `a_value` from `pkg.a`, its only reader: no module below
+    both can hold it, so it moves into `pkg.a`, after the function its body
+    reads when the class is created."""
+
     _write(
         tmp_path,
         {
             "pkg/hub.py": "from pkg.a import a_value\n\n\nclass Record:\n    size = a_value\n",
             "pkg/a.py": READER.format(name="a_value"),
+            "main.py": "from pkg.a import a_value\n\nprint(a_value() is a_value)\n",
         },
     )
-    [stays] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
-    assert isinstance(stays, HubStays)
-    [(refusal, need)] = stays.needs
-    assert refusal.hidden.module.module_name == "pkg.a"
-    assert str(need) == "`pkg.hub.Record` reads `a_value` from `pkg.a`, so it cannot sit below `pkg.a`"
-    assert need.needs == (NeededInput.SOURCE_CHANGE,)
+    expected = _run(tmp_path)
+    [cut] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
+    assert isinstance(cut, HubCut) and (cut.moved, cut.destination) == (("Record",), "pkg.a")
+    _apply_all(tmp_path, HiddenImportCycleDetector())
+    assert _run(tmp_path) == expected
+    assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
 
 
 def test_a_reader_whose_cut_goes_down_alone_is_cut_without_the_one_that_reads_back(tmp_path: Path):
@@ -151,19 +156,24 @@ def test_a_step_creating_an_undeclared_file_refuses_rather_than_losing_its_sourc
 
 
 @pytest.mark.parametrize(
-    ("reader", "rewritten"),
+    ("reader", "threads", "rewritten"),
     (
-        ("from pkg import threads\n\n\ndef count():\n    return threads.LIMIT\n", True),
-        ("def count():\n    from pkg import threads\n\n    return threads.LIMIT\n", False),
+        ("from pkg import threads\n\n\ndef count():\n    return threads.LIMIT\n", "LIMIT = 3\nKEPT = 4\n", True),
+        ("def count():\n    from pkg import threads\n\n    return threads.LIMIT\n", "LIMIT = 3\n", True),
+        ("def count():\n    from pkg import threads\n\n    return threads.LIMIT\n", "LIMIT = 3\nKEPT = 4\n", False),
     ),
-    ids=("module-level", "function-local"),
+    ids=("module-level", "function-local-whole-module", "function-local"),
 )
-def test_a_moved_name_read_off_the_module_object_is_rewritten_or_refused(tmp_path: Path, reader: str, rewritten: bool):
+def test_a_moved_name_read_off_the_module_object_is_rewritten_or_refused(
+    tmp_path: Path, reader: str, threads: str, rewritten: bool
+):
     """A module-level binding of the source module has its `threads.LIMIT` read
-    rewritten; a function binding it by its own import is not rewritten, so the
-    move refuses rather than leave a read of a name that left."""
+    rewritten, and so does a function's own import when the whole module moves:
+    the alias then names the new module. A function binding it by its own
+    import while other names stay is not rewritten, so the move refuses rather
+    than leave a read of a name that left."""
 
-    _write(tmp_path, {"pkg/threads.py": "LIMIT = 3\n", "pkg/registry.py": reader})
+    _write(tmp_path, {"pkg/threads.py": threads, "pkg/registry.py": reader})
     snapshot = _snapshot(tmp_path)
     move = relocation_to(
         snapshot, SourceRewriteTarget(file_path=(tmp_path / "pkg/threads.py").as_posix(), qualname="LIMIT"),
