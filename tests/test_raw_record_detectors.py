@@ -225,3 +225,28 @@ def decode(row):
     assert len(mirrors) == 1 and mirrors[0].authority_evidence.symbol == "Record"
     checks = RedundantTypeCheckDetector().detect(parsed, DetectorConfig())
     assert len(checks) == 1 and checks[0].evidence[1].symbol == "Record.alpha"
+
+
+def test_a_read_of_some_fields_uses_the_record_and_a_read_of_every_field_mirrors_it(tmp_path):
+    """Two shared keys say neither that the dict is this record nor that the reader
+    restates its schema; reading every field does both."""
+    parsed = modules(
+        tmp_path,
+        """
+from dataclasses import dataclass
+@dataclass
+class Record:
+    alpha: str
+    beta: int
+    gamma: str
+    delta: str
+
+def some(row):
+    return row['alpha'], row['beta']
+
+def every(row):
+    return row['alpha'], row['beta'], row['gamma'], row['delta']
+""",
+    )
+    findings = SemanticMirrorWithoutDescentDetector().detect(ParsedModuleSet.of(parsed), DetectorConfig())
+    assert {f.evidence[0].symbol for f in findings if "mapping read" in f.why} == {"every:row"}
