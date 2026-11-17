@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -422,6 +423,83 @@ def test_a_reordered_composer_whose_field_order_reaches_a_digest_is_not_composed
 
     assert report.stage_count == 0
     assert (tmp_path / "pkg/records.py").read_text() == digested
+
+
+ORDER_CODEC = (
+    "from dataclasses import fields\n\n\n"
+    "class Codec:\n"
+    "    @classmethod\n"
+    "    def plans(cls, record: type) -> tuple[str, ...]:\n"
+    "        return cls._plan(record)\n\n"
+    "    @classmethod\n"
+    "    def _plan(cls, record: type) -> tuple[str, ...]:\n"
+    "        return tuple(item.name for item in fields(record))\n"
+)
+
+ORDER_TABLE = (
+    "from pkg.codec import Codec\n\n\n"
+    "class Table:\n"
+    "    @classmethod\n"
+    "    def columns(cls) -> str:\n"
+    "        return ', '.join(Codec.plans(cls))\n\n\n"
+    "class Other(Table):\n"
+    "    pass\n"
+)
+
+
+def test_a_reordered_composer_whose_inherited_code_reads_its_field_order_is_not_composed(
+    tmp_path: Path,
+) -> None:
+    """A base's class-level code hands the class to a codec that walks
+    `dataclasses.fields` in order, as a table derives its stored column order:
+    reordering the composer's fields changes what it builds, so the pick
+    refuses, naming the reader, before any construction is keyworded."""
+
+    tabled = (
+        REORDERED.replace(
+            "from dataclasses import dataclass\n",
+            "from dataclasses import dataclass\n\nfrom pkg.tables import Table\n",
+        )
+        .replace("class First:", "class First(Table):")
+        .replace("class Second:", "class Second(Table):")
+        + "\n\ndef build():\n    return First(0, 1, 'x')\n"
+    )
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/codec.py": ORDER_CODEC,
+        "pkg/tables.py": ORDER_TABLE,
+        "pkg/records.py": tabled,
+    }
+    _write(tmp_path, files)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert {path: (tmp_path / path).read_text() for path in files} == files
+    refusal = json.dumps(json_report_object(report))
+    assert "`Table.columns`" in refusal and "`Codec._plan` -> `dataclasses.fields`" in refusal
+
+
+def test_a_reordered_composer_that_reads_its_own_fields_in_order_is_not_composed(
+    tmp_path: Path,
+) -> None:
+    """A method that takes the instance's fields as a tuple reads their order."""
+
+    rowed = REORDERED.replace(
+        "from dataclasses import dataclass\n", "from dataclasses import astuple, dataclass\n"
+    ).replace(
+        "    own_second: int = 0\n",
+        "    own_second: int = 0\n\n"
+        "    def row(self) -> tuple[object, ...]:\n"
+        "        return astuple(self)\n",
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": rowed})
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert (tmp_path / "pkg/records.py").read_text() == rowed
+    assert "`Second.row`" in json.dumps(json_report_object(report))
 
 
 def test_a_picks_file_makes_the_picked_findings_the_only_targets(tmp_path: Path) -> None:

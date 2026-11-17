@@ -65,6 +65,14 @@ class KeywordCuredReceipt(Receipt):
     constructed: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class ReorderingReceipt(Receipt):
+    """A move that reorders these classes' dataclass fields; what reads their
+    order is proved on the source when the move is picked."""
+
+    reordered: tuple[str, ...] = ()
+
+
 class ScoredByReceipts:
     """A verdict whose score is the sum of its receipts and whose guards name what it needs."""
 
@@ -95,5 +103,18 @@ class ScoredByReceipts:
             return ()
         return tuple(dict.fromkeys(symbol for receipt in cured for symbol in receipt.constructed))
 
+    @property
+    def reordered(self) -> tuple[str, ...]:
+        """The classes whose dataclass fields the move reorders."""
 
-__all__ = ("KeywordCuredReceipt", "Receipt", "ReceiptKind", "ScoredByReceipts")
+        return tuple(
+            dict.fromkeys(
+                symbol
+                for receipt in self.receipts
+                if isinstance(receipt, ReorderingReceipt)
+                for symbol in receipt.reordered
+            )
+        )
+
+
+__all__ = ("KeywordCuredReceipt", "Receipt", "ReceiptKind", "ReorderingReceipt", "ScoredByReceipts")

@@ -53,6 +53,7 @@ from nominal_refactor_advisor.receipts import (
     KeywordCuredReceipt,
     Receipt,
     ReceiptKind,
+    ReorderingReceipt,
     ScoredByReceipts,
 )
 from nominal_refactor_advisor.models import SourceLocation
@@ -1293,7 +1294,8 @@ class BlockOwnerQuestion:
         receipt, and a construction of a reordered composer or a descendant
         that binds by position refuses. The re-proof also refuses `order=True`,
         an own `__init__` or `__match_args__`, positional class patterns and
-        the class handed on as a value. An existing owner would have to become
+        the class handed on as a value; picking the owner refuses when class code
+        reads a reordered composer's field order. An existing owner would have to become
         keyword-only for its other users too, which is not proved here, so a
         reorder refuses it. A field whose position is unknown leaves the order
         unproved.
@@ -1321,7 +1323,7 @@ class BlockOwnerQuestion:
         receipts = []
         if reordered and keyword_only_route:
             receipts.append(
-                Receipt(
+                ReorderingReceipt(
                     OwnerReceiptKind.KEYWORD_ONLY_COMPOSITION,
                     f"composing `{owner.qualname}` reorders the dataclass fields of "
                     + ", ".join(f"`{name}`" for name in reordered_names)
@@ -1329,6 +1331,7 @@ class BlockOwnerQuestion:
                     "and field order change",
                     (_location(owner),),
                     count=len(reordered),
+                    reordered=tuple(reordered),
                 )
             )
             # A keyword-only owner makes its fields keyword-only in every composer,
