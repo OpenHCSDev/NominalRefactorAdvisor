@@ -197,3 +197,18 @@ def test_a_namespace_read_of_an_instance_parameter_sees_no_class(tmp_path: Path)
     assert "pkg/read.py:24" in evaluation.rejection_reason
     _write(tmp_path, {"pkg/read.py": source.split("\n\n\ndef classes")[0] + "\n"})
     assert _evaluation(tmp_path, "Child").rejection_reason == ""
+
+
+def test_a_namespace_read_through_type_of_a_family_sees_only_that_family(tmp_path: Path):
+    source = (
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n\n\n"
+        "class Capability:\n    pass\n\n\n"
+        "def table(owner: type[Capability]):\n    return dict(vars(owner).items())\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/read.py": source})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""
+    _write(tmp_path, {"pkg/read.py": source.replace("type[Capability]", "type[Base]")})
+    evaluation = _evaluation(tmp_path, "Child")
+    assert "pkg/read.py:16" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
