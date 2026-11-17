@@ -261,7 +261,8 @@ class NamespaceReaders(ClassAttributeReaders):
     def require_unread(self, indexed: CompactIndexedClass, deleted: frozenset[str]) -> None:
         """Every namespace read the syntax does not settle is asked of the type
         checker, in one batch: a receiver whose every value is an instance that is
-        not a class reads that instance's own `__dict__`."""
+        not a class reads that instance's own `__dict__`, and one typed `type[C]`
+        reads only `C` or a subclass, never a class that does not subclass `C`."""
 
         open_reads = {
             ReceiverSpan.of(module.file_path, receiver): (module, read, parent)
@@ -277,10 +278,11 @@ class NamespaceReaders(ClassAttributeReaders):
         NeedsInput.every(
             *(
                 partial(
-                    answers[span].require_instances,
+                    answers[span].require_namespace_unseen,
                     f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
                     f"namespace, and deleting {', '.join(f'`{name}`' for name in sorted(deleted))} from "
                     f"`{indexed.qualname}` could change what it sees",
+                    partial(self.family_holds, indexed=indexed),
                 )
                 for span, (module, read, parent) in open_reads.items()
             )

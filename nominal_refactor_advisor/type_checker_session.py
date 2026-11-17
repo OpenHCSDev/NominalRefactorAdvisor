@@ -295,6 +295,24 @@ def _instances_only(found: Type) -> bool:
     return False
 
 
+def _families_of(found: Type) -> tuple[str, ...]:
+    """The classes `C` when every value of a mypy type is a class `C` or a subclass:
+    `type[C]` for a class that is no protocol, or a union of them; otherwise none."""
+
+    types = importlib.import_module("mypy.types")
+    proper = types.get_proper_type(found)
+    match proper:
+        case types.TypeType():
+            item = types.get_proper_type(proper.item)
+            if isinstance(item, types.Instance) and not item.type.is_protocol:
+                return (item.type.fullname,)
+        case types.UnionType():
+            families = tuple(_families_of(item) for item in proper.items)
+            if all(families):
+                return tuple(chain.from_iterable(families))
+    return ()
+
+
 @dataclass(frozen=True)
 class BuiltTypeChecker(TypeCheckerSession):
     """A finished build's types for the scanned files, keyed by expression span."""
@@ -332,6 +350,7 @@ class BuiltTypeChecker(TypeCheckerSession):
                         format_type_bare(found, options, verbosity=2),
                         _classes_of(found),
                         _instances_only(found),
+                        _families_of(found),
                     )
         return cls(inferred, shared)
 

@@ -161,15 +161,25 @@ class ClassAttributeReaders:
         verdicts = self.snapshot.class_overlap_verdicts
         family = self.annotated_family(module, read, receiver)
         if family is not None:
-            try:
-                return family in verdicts.linearized(indexed.symbol)
-            except NeedsInput:
-                return True
+            return self.family_holds(family, indexed)
         named = self.named(module, receiver)
         if named is None or verdicts.class_index.class_for(named) is None:
             return True
         try:
             return indexed.symbol in verdicts.linearized(named)
+        except NeedsInput:
+            return True
+
+    def family_holds(self, family: str, indexed: CompactIndexedClass) -> bool:
+        """Whether a value of `type[family]`, `family` or a subclass, can be
+        `indexed`: only when `indexed` subclasses `family`, read from its order; a
+        family outside the scan or an order that needs input may hold it."""
+
+        verdicts = self.snapshot.class_overlap_verdicts
+        if verdicts.class_index.class_for(family) is None:
+            return True
+        try:
+            return family in verdicts.linearized(indexed.symbol)
         except NeedsInput:
             return True
 
