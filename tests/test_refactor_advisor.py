@@ -211,6 +211,7 @@ from nominal_refactor_advisor.refactors.target_deletion import (
     DeleteTargetOperation,
     EraseDeadCompatibilityOperation,
 )
+from nominal_refactor_advisor.stored_records import StoredRecords
 from nominal_refactor_advisor.codemod import (
     ArchitectureGuardRule,
     ArchitectureGuardSuite,
@@ -27930,6 +27931,39 @@ def test_carrier_replacement_refuses_an_abstract_carrier_with_members(tmp_path: 
         operation.source_edits(snapshot)
 
 
+def test_carrier_replacement_refuses_a_record_a_stored_field_holds(tmp_path: Path) -> None:
+    """A class is stored when a stored record's field holds it, not only when it is
+    below a durable base: its values are written in that record's rows."""
+
+    module_path = tmp_path / "pkg/mod.py"
+    _write_module(
+        tmp_path,
+        "pkg/mod.py",
+        "from dataclasses import dataclass\nfrom typing import ClassVar\n\n\n"
+        "class DurableTables:\n    pass\n\n\n"
+        "@dataclass(frozen=True)\nclass Stats:\n    count: int\n    history: tuple[str, ...]\n\n\n"
+        "@dataclass(frozen=True)\nclass Reply:\n    count: int\n    name: str\n\n\n"
+        "@dataclass(frozen=True)\nclass Live:\n    count: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Kind:\n    label: Stats\n\n\n"
+        "@dataclass(frozen=True)\nclass Row(DurableTables):\n    reply: Reply\n    kind: type[Kind]\n"
+        "    live: ClassVar[type[Live]] = Live\n\n\n"
+        "def reply(stats: Stats) -> Reply:\n    return Reply(count=stats.count, name='x')\n",
+    )
+    (tmp_path / "pyproject.toml").write_text(
+        '[tool.nominal-refactor-advisor]\ndurable-bases = ["pkg.mod:DurableTables"]\n'
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    records = StoredRecords.of(snapshot, module_path.as_posix()).records
+    assert records == ("pkg.mod.Reply", "pkg.mod.Row"), "a `type[Kind]` field keeps Kind's name, not its fields"
+    operation = ReplaceFieldsWithCarrierOperation(
+        target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Reply"),
+        carrier_field_declaration="stats: Stats",
+        field_projections=(CarrierFieldProjection("count", "count"),),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match=r"`pkg.mod.Reply`'s values are already stored"):
+        operation.source_edits(snapshot)
+
+
 def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_path: Path) -> None:
     module_path = tmp_path / "pkg/mod.py"
     _write_module(
@@ -27950,7 +27984,7 @@ def test_carrier_replacement_refuses_a_record_on_a_declared_durable_base(tmp_pat
         '[tool.nominal-refactor-advisor]\ndurable-bases = ["pkg.mod:DurableTables"]\n'
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    with pytest.raises(CodemodOperationPreflightError, match=r"moves its keys \(count -> stats.count\)"):
+    with pytest.raises(CodemodOperationPreflightError, match=r"already stored: holding the carrier moves its keys \(count -> stats.count\)"):
         operation.source_edits(snapshot)
     (tmp_path / "pyproject.toml").write_text("[tool.nominal-refactor-advisor]\n")
     simulation = RefactorRecipe("carrier").with_operation(operation).simulate(

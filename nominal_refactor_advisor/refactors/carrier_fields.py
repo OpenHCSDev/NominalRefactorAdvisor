@@ -3,7 +3,6 @@ from __future__ import annotations
 import ast
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
 
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.ast_projection import CallKeywords
@@ -17,9 +16,9 @@ from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
-from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.stored_records import StoredRecords
 from nominal_refactor_advisor.refactors.answered_method import AnsweredField
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import (
@@ -251,22 +250,21 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
         )
 
     def require_not_stored(self, context: CodemodSourceSnapshot, target: ResolvedClassTarget) -> None:
-        """Rows of a class below a root of stored state the repository declares
-        (``durable-bases``) keep their old keys, so holding the carrier is a data
-        migration this move does not carry. A live reply needs no declaration: its
-        typed readers move with it, or the move refuses."""
+        """Rows that keep a stored class's values (`StoredRecords`: below a root the
+        repository declares in ``durable-bases``, or held by a stored field) keep
+        their old keys, so holding the carrier is a data migration this move does not
+        carry. A live reply needs no declaration: its typed readers move with it, or
+        the move refuses."""
 
         symbol = target.required_symbol(context)
-        lineage = {symbol, *context.required_class_family_index.ancestor_symbols(symbol)}
-        stored = sorted(lineage & DeclaredRoot.durable_bases_for(Path(target.file_path)))
-        if stored:
+        if symbol in StoredRecords.of(context, target.file_path).records:
             moved = ", ".join(
                 f"{name} -> {self.carrier_field_name}.{attribute}"
                 for name, attribute in self.field_projection_map.items()
             )
             raise NeedsInput(
-                f"`{symbol}` is a `{stored[0]}`, whose rows are already stored: holding "
-                f"the carrier moves its keys ({moved}), a migration this move does not carry", NeededInput.OPERATION
+                f"`{symbol}`'s values are already stored: holding the carrier moves its "
+                f"keys ({moved}), a migration this move does not carry", NeededInput.OPERATION
             )
 
     def require_concrete_carrier(
