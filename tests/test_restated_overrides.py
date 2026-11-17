@@ -212,3 +212,23 @@ def test_a_namespace_read_through_type_of_a_family_sees_only_that_family(tmp_pat
     evaluation = _evaluation(tmp_path, "Child")
     assert "pkg/read.py:16" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_namespace_read_of_a_derived_key_sees_no_member_name(tmp_path: Path):
+    source = (
+        "class Fact:\n"
+        "    def __init__(self, derive):\n        self.derive = derive\n\n"
+        "    def __set_name__(self, owner, name):\n        self.slot = f\"_{name.lstrip('_')}_derived\"\n\n"
+        "    def __get__(self, instance, owner):\n"
+        "        if self.slot not in owner.__dict__:\n"
+        "            setattr(owner, self.slot, self.derive(owner))\n"
+        "        return owner.__dict__[self.slot]\n\n\n"
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/facts.py": source})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""
+    _write(tmp_path, {"pkg/facts.py": source + "\n\ndef rename(fact):\n    fact.slot = 'value'\n"})
+    evaluation = _evaluation(tmp_path, "Child")
+    assert "owner.__dict__" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs

@@ -189,7 +189,7 @@ class NamespaceReaders(ClassAttributeReaders):
 
     def require_unread(self, indexed: CompactIndexedClass, deleted: frozenset[str]) -> None:
         for module, read, parent, around in self.snapshot.module_set.fact(NamespaceReads).reads:
-            if not self.reaches(module, read, indexed) or self.asks_another_key(read, parent, around, deleted):
+            if not self.reaches(module, read, indexed) or self.asks_another_key(module, read, parent, around, deleted):
                 continue
             raise NeedsInput(
                 f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
@@ -199,15 +199,26 @@ class NamespaceReaders(ClassAttributeReaders):
                 NeededInput.PROOF,
             )
 
-    @staticmethod
     def asks_another_key(
-        read: ast.expr, parent: ast.AST | None, around: ast.AST | None, deleted: frozenset[str]
+        self,
+        module: ParsedModule,
+        read: ast.expr,
+        parent: ast.AST | None,
+        around: ast.AST | None,
+        deleted: frozenset[str],
     ) -> bool:
-        """Whether the read asks only for one constant key that is not deleted:
-        `ns["k"]`, `ns.get("k")` or `"k" in ns`."""
+        """Whether the read asks only for keys no deleted name can be: one
+        constant key that is not deleted (`ns["k"]`, `ns.get("k")`, `"k" in ns`),
+        or `self.<attribute>` whose every write builds a text with a constant
+        prefix or suffix no deleted name has."""
 
         def other(key: ast.AST | None) -> bool:
-            return isinstance(key, ast.Constant) and isinstance(key.value, str) and key.value not in deleted
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                return key.value not in deleted
+            match key:
+                case ast.Attribute(value=ast.Name(id="self"), attr=attribute):
+                    return self.keys_avoid(module, read, attribute, deleted)
+            return False
 
         match parent:
             case ast.Subscript(value=value, slice=key) if value is read:
@@ -219,6 +230,55 @@ class NamespaceReaders(ClassAttributeReaders):
                     around.args[0]
                 )
         return False
+
+    def keys_avoid(self, module: ParsedModule, read: ast.expr, attribute: str, deleted: frozenset[str]) -> bool:
+        """Every write of `attribute` in the repository is `self.<attribute> = f"..."`
+        inside the class that reads it, and each written text starts or ends with a
+        constant that no deleted name starts or ends with."""
+
+        owners = [
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.ClassDef) and any(inner is read for inner in ast.walk(node))
+        ]
+        if not owners:
+            return False
+        owner = min(owners, key=lambda node: sum(1 for _ in ast.walk(node)))
+        owned = {id(node) for node in ast.walk(owner)}
+        writes = 0
+        for scanned in self.snapshot.module_set:
+            for node in ast.walk(scanned.module):
+                match node:
+                    case ast.Assign(targets=targets, value=value):
+                        written = [target for target in targets if isinstance(target, ast.Attribute) and target.attr == attribute]
+                    case ast.AugAssign(target=ast.Attribute(attr=name) as target, value=value) if name == attribute:
+                        return False
+                    case ast.Call(func=ast.Name(id="setattr"), args=[_, ast.Constant(value=name), *_]) if name == attribute:
+                        return False
+                    case _:
+                        continue
+                for target in written:
+                    if not (
+                        scanned is module
+                        and id(target) in owned
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "self"
+                        and self.text_avoids(value, deleted)
+                    ):
+                        return False
+                    writes += 1
+        return writes > 0
+
+    @staticmethod
+    def text_avoids(value: ast.expr, deleted: frozenset[str]) -> bool:
+        if not isinstance(value, ast.JoinedStr) or not value.values:
+            return False
+        first, last = value.values[0], value.values[-1]
+        prefix = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
+        suffix = last.value if isinstance(last, ast.Constant) and isinstance(last.value, str) else ""
+        return bool(prefix or suffix) and not any(
+            name.startswith(prefix) and name.endswith(suffix) for name in deleted
+        )
 
 
 @dataclass(frozen=True)
