@@ -107,9 +107,13 @@ def test_the_else_block_becomes_the_base_default(tmp_path: Path) -> None:
         (("        count = shape.corners()\n", "        count = shape.corners() + offset\n"),
          "reads the function's locals"),
         (("        count = shape.corners()\n", "        return\n"), "returns or yields"),
-        (("    out.append('done')\n", "    out.append(str(count))\n"), "which the function reads after it"),
+        (("    out.append('done')\n", "    out.append(str(count))\n"), "which the function also uses outside it"),
         (("        count = shape.corners()\n", "        shape = Circle('c')\n        count = 4\n"),
          "rebinds"),
+        (("        count = shape.corners()\n", "        count = shape.corners()\n        out = []\n"),
+         "which the function also uses outside it"),
+        (("        count = shape.corners()\n", "        count = [shape for shape in out]\n"), "rebinds"),
+        (("        count = shape.corners()\n", "        count = super().corners()\n"), "super"),
     ),
 )
 def test_a_block_that_cannot_run_as_a_method_names_what_it_needs(
@@ -135,3 +139,41 @@ def test_another_answer_on_the_way_is_refused(tmp_path: Path) -> None:
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="declares 'describe_corners'"):
         _operation(path, source).source_edits(snapshot)
+
+
+def test_closures_and_comprehensions_in_the_block_read_the_new_receiver(tmp_path: Path) -> None:
+    source = SHAPES.replace(
+        "        out.append(f'{shape.name} has {count}')\n",
+        "        out.extend(f'{shape.name}{n}' for n in range(count))\n"
+        "        out.append((lambda: shape.name.upper())())\n",
+    )
+    path = _package(tmp_path, source)
+    before = _run(tmp_path)
+    _apply(tmp_path, _operation(path, source))
+    assert "lambda: self.name.upper()" in Path(path).read_text()
+    assert _run(tmp_path) == before == "['a', 'a0', 'a1', 'a2', 'a3', 'A', 'done', 'b', 'done']\n"
+
+
+def test_the_override_s_module_imports_what_the_block_reads(tmp_path: Path) -> None:
+    """The block moves to the tested class's module: the names it reads there are
+    imported the way the function's module binds them (move_member's import carry)."""
+    shapes = SHAPES.split("def describe")[0].rstrip() + "\n"
+    describe = (
+        "import json\n\nfrom pkg.shapes import Shape, Square\n\n\n"
+        + "def describe" + SHAPES.split("def describe")[1].replace(
+            "        out.append(f'{shape.name} has {count}')\n",
+            "        out.append(json.dumps([shape.name, count]))\n",
+        )
+    )
+    path = _package(tmp_path, shapes)
+    (tmp_path / "pkg/describe.py").write_text(describe)
+    probe = PROBE.replace("from pkg.shapes import Circle, Square, describe", "from pkg.shapes import Circle, Square\nfrom pkg.describe import describe")
+    run = lambda: subprocess.run([sys.executable, "-c", probe], cwd=tmp_path, capture_output=True, text=True, check=True).stdout
+    before = run()
+    operation = _operation((tmp_path / "pkg/describe.py").as_posix(), describe)
+    _apply(tmp_path, GuardedBlockToOverrideOperation(
+        target=operation.target, base=SourceRewriteTarget(file_path=path, qualname="Shape"),
+        method_name=operation.method_name, line=operation.line,
+    ))
+    assert "import json" in Path(path).read_text()
+    assert run() == before == '[\'a\', \'["a", 4]\', \'done\', \'b\', \'done\']\n'

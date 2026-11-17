@@ -23,11 +23,13 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextGeometry,
     SourceTextSpanReplacement,
 )
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
 from nominal_refactor_advisor.refactors.capability_guard import (
     CapabilityGuardToOverrideOperation,
 )
+from nominal_refactor_advisor.refactors.member_move import carried_imports
 
 BUILTIN_NAMES = frozenset(dir(builtins))
 
@@ -63,11 +65,13 @@ class GuardedBlock:
         return self.subject.id if isinstance(self.subject, ast.Name) else ""
 
     def occurrences(self, statements) -> tuple[ast.expr, ...]:
-        """Every spelling of the subject in the statements: the nodes renamed `self`."""
+        """Every spelling of the subject in the statements, closures included: the nodes
+        renamed `self`."""
 
         return tuple(
             node
-            for node in _walk(statements)
+            for statement in statements
+            for node in ast.walk(statement)
             if isinstance(node, ast.expr)
             and isinstance(node, type(self.subject))
             and ast.dump(node, include_attributes=False).replace("Store()", "Load()")
@@ -75,14 +79,9 @@ class GuardedBlock:
         )
 
     def reads(self, statements) -> set[str]:
-        """The names the statements read, the subject's own spelling aside."""
+        """The names the statements read from the function, the subject's own spelling aside."""
 
-        inside = {id(node) for occurrence in self.occurrences(statements) for node in ast.walk(occurrence)}
-        return {
-            node.id
-            for node in _walk(statements)
-            if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and id(node) not in inside
-        }
+        return _free_reads(statements, frozenset(id(node) for node in self.occurrences(statements)))
 
     @property
     def root(self) -> str:
@@ -109,7 +108,9 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
     reads after it, and leaves the function by falling through, never by
     `return`, `yield`, `break` or `continue`. Parameters it reads become the
     method's parameters, passed by name. A block that reads the enclosing
-    receiver beyond the subject needs a name for it, and is refused.
+    receiver beyond the subject needs a name for it, and is refused. A body that
+    lands in another module brings the module names it reads, imported the way
+    the function's module binds them (move_member's `carried_imports`).
     """
 
     line: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
@@ -184,7 +185,6 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
         source_path = self.required_source_path(snapshot, self.operation_key())
-        module = snapshot.module_nodes_by_file_path[source_path]
         function, owner = self.function_at(snapshot, self.target)
         function_name = function.name
         block = GuardedBlock.at(function, self.line)
@@ -202,7 +202,7 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
         for answering in (base, capability_class):
             if self.method_name in answering.bound_names:
                 raise ValueError(f"`{answering.qualname}` already binds {self.method_name!r}")
-        arguments = self.arguments(module, function, block)
+        arguments = self.arguments(function, block)
         source = snapshot.sources_by_file_path[source_path]
         asynchronous = any(isinstance(node, ast.Await) for node in _walk(block.statement.body))
         if asynchronous and not isinstance(function, ast.AsyncFunctionDef):
@@ -241,7 +241,21 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
             geometry(capability_class.file_path), capability_class.node,
             f"{signature}\n{textwrap.indent(override, '    ')}",
         ))
-        return tuple(
+        imports = tuple(
+            mutation
+            for destination, statements in (
+                (capability_class.file_path, block.statement.body),
+                (base.file_path, block.statement.orelse),
+            )
+            if destination != source_path and statements
+            for mutation in carried_imports(
+                snapshot, source_path, destination,
+                self.module_reads(function, block, statements),
+                self.module_reads(function, block, statements),
+                f"{function_name}'s block",
+            )
+        )
+        return imports + tuple(
             geometry(file_path).nominal_edit(
                 file_path=file_path,
                 replacements=tuple(
@@ -258,12 +272,11 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
 
     def arguments(
         self,
-        module: ast.Module,
         function: ast.FunctionDef | ast.AsyncFunctionDef,
         block: GuardedBlock,
     ) -> tuple[str, ...]:
         """The function's parameters the block reads, in their declared order.
-        Every other name it reads must be the subject, bound by the block itself,
+        Every other name it reads must be the subject, bound by the block alone,
         a module name or a builtin."""
 
         statements = (*block.statement.body, *block.statement.orelse)
@@ -271,22 +284,24 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
             raise ValueError("the block returns or yields: the call site would need its answer")
         if any(isinstance(node, (ast.Break, ast.Continue)) for node in _walk(statements, loops=False)):
             raise ValueError("the block breaks or continues the function's loop")
-        bound = _bound(statements)
-        later = {
+        if any(isinstance(node, (ast.Global, ast.Nonlocal)) for node in _walk(statements)):
+            raise ValueError("the block declares a global or nonlocal name")
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(statements)
+        inside = {id(node) for statement in statements for node in ast.walk(statement)}
+        outside = {
             node.id
-            for node in _own_scope(function)
-            if isinstance(node, ast.Name)
-            and isinstance(node.ctx, ast.Load)
-            and node.lineno > (block.statement.end_lineno or block.statement.lineno)
+            for node in ast.walk(function)
+            if isinstance(node, ast.Name) and id(node) not in inside
         }
-        if escaping := sorted(bound & later):
-            raise ValueError(f"the block binds {escaping!r}, which the function reads after it")
-        if block.subject_name in bound or any(
-            isinstance(node, (ast.Name, ast.Attribute)) and not isinstance(node.ctx, ast.Load)
-            for node in block.occurrences(statements)
+        if block.root in bound | _nested_bindings(statements) or any(
+            not isinstance(node.ctx, ast.Load) for node in block.occurrences(statements)
         ):
-            raise ValueError(f"the block rebinds `{ast.unparse(block.subject)}`")
+            raise ValueError(f"the block rebinds `{block.root}`")
+        if escaping := sorted(bound & outside):
+            raise ValueError(f"the block binds {escaping!r}, which the function also uses outside it")
         read = block.reads(statements)
+        if read & {"super", "__class__"}:
+            raise ValueError("the block calls super(): its class would change")
         if block.root != block.subject_name and block.root in read:
             raise ValueError(
                 f"the block reads `{block.root}` beyond `{ast.unparse(block.subject)}`: "
@@ -299,12 +314,26 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
                 *(argument for argument in (function.args.vararg, function.args.kwarg) if argument),
             )
         ]
-        free = read - bound - _module_names(module) - BUILTIN_NAMES - {block.subject_name}
-        if locals_read := sorted(free - set(parameters)):
-            raise ValueError(f"the block reads the function's locals {locals_read!r}")
-        if "self" in free and block.subject_name != "self":
+        free = read - bound - {block.subject_name}
+        if "self" in free and block.subject_name != "self" and "self" in parameters:
             raise ValueError("the block reads the enclosing receiver: it needs a parameter name for it")
+        if locals_read := sorted(free & (LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body) - bound)):
+            raise ValueError(f"the block reads the function's locals {locals_read!r}")
         return tuple(name for name in parameters if name in free)
+
+    def module_reads(
+        self,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        block: GuardedBlock,
+        statements: list[ast.stmt],
+    ) -> frozenset[str]:
+        """The module names the statements read: what their new module must bind the same way."""
+
+        own = (
+            LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
+            | {argument.arg for argument in ast.walk(function.args) if isinstance(argument, ast.arg)}
+        )
+        return frozenset(block.reads(statements) - own - BUILTIN_NAMES - {block.subject_name})
 
     @staticmethod
     def method_source(source: str, block: GuardedBlock, statements: list[ast.stmt]) -> str:
@@ -358,22 +387,57 @@ def _walk(statements, *, loops: bool = True) -> Iterator[ast.AST]:
         pending.extend(ast.iter_child_nodes(node))
 
 
-def _bound(statements) -> set[str]:
-    return {
-        node.id for node in _walk(statements) if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
-    }
+def _free_reads(nodes, skipped: frozenset[int] = frozenset()) -> set[str]:
+    """The names the nodes read from the scope around them: their own loads and
+    augmented targets, and what their functions, lambdas and comprehensions read
+    from outside themselves. Nodes in `skipped` are left out with their subtrees."""
+
+    reads: set[str] = set()
+    pending: list[ast.AST] = list(nodes)
+    while pending:
+        node = pending.pop()
+        if id(node) in skipped:
+            continue
+        match node:
+            case ast.ClassDef():
+                raise ValueError("the block declares a class")
+            case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Lambda():
+                arguments = node.args
+                body = node.body if isinstance(node.body, list) else [node.body]
+                pending.extend((*arguments.defaults, *(each for each in arguments.kw_defaults if each)))
+                if not isinstance(node, ast.Lambda):
+                    pending.extend(node.decorator_list)
+                own = {argument.arg for argument in ast.walk(arguments) if isinstance(argument, ast.arg)}
+                reads |= _free_reads(body, skipped) - own - LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
+                continue
+            case ast.ListComp() | ast.SetComp() | ast.DictComp() | ast.GeneratorExp():
+                targets = {
+                    name.id for generator in node.generators for name in ast.walk(generator.target)
+                    if isinstance(name, ast.Name)
+                }
+                inner = [child for child in ast.iter_child_nodes(node) if not isinstance(child, ast.comprehension)]
+                inner.extend(part for generator in node.generators for part in (generator.iter, *generator.ifs))
+                reads |= _free_reads(inner, skipped) - targets
+                continue
+            case ast.Name(id=name, ctx=ast.Load()) | ast.AugAssign(target=ast.Name(id=name)):
+                reads.add(name)
+        pending.extend(ast.iter_child_nodes(node))
+    return reads
 
 
-def _module_names(module: ast.Module) -> set[str]:
+def _nested_bindings(statements) -> set[str]:
+    """The names the functions, lambdas and comprehensions inside the statements bind."""
+
     names: set[str] = set()
-    for statement in module.body:
-        match statement:
-            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name):
-                names.add(name)
-            case ast.Import(names=aliases) | ast.ImportFrom(names=aliases):
-                names |= {(alias.asname or alias.name).split(".")[0] for alias in aliases}
-            case _:
-                names |= _bound([statement])
+    for statement in statements:
+        for node in ast.walk(statement):
+            match node:
+                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.Lambda():
+                    names |= {argument.arg for argument in ast.walk(node.args) if isinstance(argument, ast.arg)}
+                    body = node.body if isinstance(node.body, list) else [node.body]
+                    names |= LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(body)
+                case ast.comprehension(target=target):
+                    names |= {name.id for name in ast.walk(target) if isinstance(name, ast.Name)}
     return names
 
 
