@@ -2341,11 +2341,17 @@ def require_owner_candidate(
     verdict requested on the anchor and a class declaring every name itself, as
     a step of a larger move asks below the reporting floor.
 
+    The anchor can restate the block with several classes. Any one proved
+    verdict answers: the owner is declared from the anchor's own declarations,
+    and each composer's composition is proved by its own step. Only when every
+    such verdict refuses does the first refusal stand.
+
     With ``tolerate_inherited``, INHERITED_DECLARATION receipts do not refuse:
     the caller filters the block to the declarations both classes own."""
 
     wanted = frozenset(member_names)
     verdicts = snapshot.class_overlap_verdicts
+    refused: NeedsInput | None = None
     for verdict in chain(
         verdicts.candidates_touching(frozenset((anchor_symbol,))),
         verdicts.requested_verdicts_restating(anchor_symbol, sorted(wanted)),
@@ -2367,18 +2373,21 @@ def require_owner_candidate(
                     )
                 )
                 if blocking:
-                    raise NeedsInput(
+                    refused = refused or NeedsInput(
                         "The move needs: "
                         + "; ".join(receipt.detail for receipt in blocking),
                         *(receipt.kind.needs for receipt in blocking),
                     )
-                if not owner.permitted:
-                    raise NeedsInput(
+                elif not owner.permitted:
+                    refused = refused or NeedsInput(
                         f"`{owner.candidate_id}` needs: "
                         + "; ".join(receipt.detail for receipt in owner.refusals),
                         *(receipt.kind.needs for receipt in owner.refusals),
                     )
-                return verdict, owner
+                else:
+                    return verdict, owner
+    if refused is not None:
+        raise refused
     raise ValueError(
         f"The current source offers no extract-mixin {owner_kind.__name__} "
         f"`{'+'.join(subject)}` for "

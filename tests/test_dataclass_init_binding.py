@@ -130,7 +130,6 @@ def test_construction_parameters_follow_the_generated_init_along_the_mro():
     (
         ("    def __init__(self, a: int) -> None:\n        self.a = a\n", "defines the `__init__`"),
         ("    def __new__(cls, *args, **kwargs):\n        return super().__new__(cls)\n", "`__new__`"),
-        ("    def __init_subclass__(cls) -> None:\n        pass\n", "no closed runtime MRO"),
     ),
 )
 def test_construction_parameters_refuse_what_rebinds_the_call(body, refusal):
@@ -143,12 +142,12 @@ def test_construction_parameters_refuse_what_rebinds_the_call(body, refusal):
 
 
 def test_construction_parameters_refuse_an_outside_base_with_its_own_construction():
-    """`Exception` brings its own `__new__` and `__init__`; the runtime MRO
-    admits no outside base but `object` and `ABC`, so the class stays open."""
+    """`Exception` brings its own `__new__` and `__init__`; the declared MRO
+    admits no outside base but `object` and `ABC`, so the parameters stay unknown."""
 
     source = "from dataclasses import dataclass\n\n@dataclass\nclass Failed(Exception):\n    a: int\n"
     modules = (SourceModule(Path("failed.py"), "failed", source).parse(),)
     with ScanCache.scope():
         index = CompactClassFamilyIndex.from_modules(modules)
-        with pytest.raises(ValueError, match="no closed runtime MRO"):
+        with pytest.raises(ValueError, match="outside the scan"):
             index.construction_parameters("failed.Failed")

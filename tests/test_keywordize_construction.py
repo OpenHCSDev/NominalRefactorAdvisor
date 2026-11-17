@@ -173,6 +173,10 @@ def test_a_metaclass_that_stores_no_init_keeps_the_declared_parameters(tmp_path:
             ),
             "defines `__call__`",
         ),
+        (
+            ("    x: int\n", "    x: int\n\n    def __init_subclass__(cls):\n        cls.__init__ = None\n"),
+            "sets what a call binds",
+        ),
     ),
 )
 def test_a_metaclass_that_may_change_what_a_call_binds_refuses(
