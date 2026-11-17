@@ -73,6 +73,14 @@ class OwnerPicks:
                     judgement=(
                         None if item.get("judgement") is None else str(item["judgement"])
                     ),
+                    hoisted_name=(
+                        None if item.get("hoisted_name") is None else str(item["hoisted_name"])
+                    ),
+                    hoisted_judgement=(
+                        None
+                        if item.get("hoisted_judgement") is None
+                        else str(item["hoisted_judgement"])
+                    ),
                 )
                 for item in payload["picks"]
             ),

@@ -627,6 +627,108 @@ FIELD_PROBE = (
 )
 
 
+HOISTED = (
+    'from dataclasses import dataclass\n'
+    '\n'
+    '\n'
+    '@dataclass(frozen=True, kw_only=True)\n'
+    'class Action:\n'
+    '    problem: str\n'
+    '    order: int\n'
+    "    request: str = ''\n"
+    '\n'
+    "    def bound_to(self, request: str) -> 'Action':\n"
+    '        return self\n'
+    '\n'
+    '\n'
+    '@dataclass(frozen=True, kw_only=True)\n'
+    'class Other(Action):\n'
+    '    revision: int = 0\n'
+    '\n'
+    '\n'
+    '@dataclass(frozen=True, kw_only=True)\n'
+    'class Create(Action):\n'
+    '    repo: str\n'
+    '    text: str\n'
+    '\n'
+    '    def reserve(self) -> str:\n'
+    '        return self.repo + self.text\n'
+    '\n'
+    '\n'
+    '@dataclass(frozen=True, kw_only=True)\n'
+    'class Phase:\n'
+    '    review: float = 1.0\n'
+    '\n'
+    '    def due(self) -> float:\n'
+    '        return self.review\n'
+    '\n'
+    '\n'
+    '@dataclass(frozen=True, kw_only=True)\n'
+    'class Task(Phase):\n'
+    '    problem: str\n'
+    '    repo: str\n'
+    '    text: str\n'
+    '    order: int\n'
+    '\n'
+    '    def checked(self) -> bool:\n'
+    '        return self.review > 0\n'
+)
+
+
+HOISTED_PROBE = (
+    "from pkg.records import Create, Other, Task\n"
+    "print(Create(problem='p', order=1, repo='r', text='t').reserve(), "
+    "Other(problem='q', order=2, revision=3).bound_to('x'), "
+    "Task(problem='p', repo='r', text='t', order=1).checked())\n"
+)
+
+
+def test_an_inherited_share_is_hoisted_out_of_its_base_then_the_rest_is_extracted(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": HOISTED})
+    before = _run(tmp_path, HOISTED_PROBE)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    (mixin,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin.stable_id,
+                    owner="hoisting_mixin:pkg.records",
+                    because="hoists_inherited",
+                    name="Filed",
+                    judgement="the repository and text a problem is filed with",
+                    hoisted_name="Numbered",
+                    hoisted_judgement="the problem and the order it belongs to",
+                ),
+            ),
+        ),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert "class Numbered:\n" in source and "class Filed:\n" in source
+    assert "class Action(Numbered):\n    request: str = ''\n" in source
+    assert "class Create(Filed, Action):\n    def reserve" in source
+    assert "class Task(Filed, Numbered, Phase):\n    def checked" in source
+    assert _run(tmp_path, HOISTED_PROBE) == before
+
+
 def _field_mixin(records: str) -> CreateMixinOperation:
     return CreateMixinOperation(
         target=SourceRewriteTarget(file_path=records, qualname="First"),

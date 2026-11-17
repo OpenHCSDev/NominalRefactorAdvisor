@@ -178,6 +178,26 @@ def test_a_wrapped_field_with_no_default_is_stored_by_init():
     } == {"path": "stored_init", "line": "unresolved"}
 
 
+def test_a_default_built_by_calling_a_scanned_class_is_a_stored_field():
+    (records,) = CompactModuleClassProjectionFamily.collect_modules(
+        (
+            _module(
+                "pkg.records",
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\nclass Precondition:\n    goal: str = ''\n\n\n"
+                "class Built:\n    def __new__(cls):\n        return object.__new__(cls)\n\n\n"
+                "@dataclass(frozen=True)\nclass Action:\n"
+                "    expect: Precondition = Precondition()\n"
+                "    built: Built = Built()\n",
+            ),
+        )
+    )
+    action = next(item for item in records.classes if item.qualname == "Action")
+    assert {
+        member.name: member.role.value for member in action.dataclass_declaration.fields
+    } == {"expect": "stored_init", "built": "unresolved"}
+
+
 def test_a_keyword_only_field_with_no_default_is_the_bare_field():
     overlap = _index(
         (

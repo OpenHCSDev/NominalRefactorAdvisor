@@ -30,7 +30,15 @@ from importlib import import_module
 
 from metaclass_registry.core import AutoRegisterMeta
 
-from nominal_refactor_advisor.class_index import ClassMroAuthority, CompactIndexedClass
+from nominal_refactor_advisor.class_index import (
+    ClassMemberAnswersABC,
+    CompactAnnotatedMethod,
+    CompactAnnotatedProperty,
+    CompactCallableMemberDeclaration,
+    CompactClassMemberDeclaration,
+    CompactIndexedClass,
+    CompactUnannotatedCallable,
+)
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
@@ -268,20 +276,6 @@ class ClassCreationProof:
         )
         return {name: by_name[name] for name in names[0 if static else 1:] if name in by_name}
 
-    def new_class_method(self, name: str) -> CreationCode | None:
-        """The composer's own resolution of a method its creation calls on it."""
-
-        mro_type = ClassMroAuthority(self.class_index.classes_by_symbol).resolve(
-            self.composer.symbol
-        ).mro_type
-        if mro_type is None:
-            raise NeedsInput(f"`{self.composer.qualname}` has an open MRO", NeededInput.PROOF)
-        for declaration in mro_type.declarations:
-            indexed = self.class_index.class_for(declaration.symbol)
-            if indexed is not None and (code := self.method(indexed, name)) is not None:
-                return code
-        return None
-
 
 @dataclass
 class CreationReads:
@@ -435,9 +429,9 @@ class CreationReads:
             case ast.Attribute(attr=attr):
                 call = self.parents.get(parent)
                 if isinstance(call, ast.Call) and call.func is parent:
-                    code = self.proof.new_class_method(attr)
-                    if code is None:
-                        self.refuse(call, "calls a method the class does not declare")
+                    code = self.proof.class_index.declared_member(
+                        self.proof.composer.symbol, attr
+                    ).answer(NewClassCall(self, call))
                     self.descend(code, {ClassCreationProof.first_parameter(code.node): Role.NEW_CLASS}, call, 1)
                 return
             case ast.Return() | ast.Assign() | ast.Compare() | ast.AnnAssign():
@@ -505,3 +499,62 @@ class CreationReads:
                 return self.proof.method(indexed, attr) if indexed is not None else None
         return None
 
+
+@dataclass(frozen=True)
+class NewClassCall(ClassMemberAnswersABC[CreationCode]):
+    """A method creation calls on the new class, resolved along its declared MRO.
+
+    The move leaves that resolution unchanged: the new owner binds only names it
+    takes from the composer's own body, which came first in the MRO already.
+    """
+
+    reads: CreationReads
+    call: ast.Call
+
+    def assigned(
+        self, owner: CompactIndexedClass, declaration: CompactClassMemberDeclaration
+    ) -> CreationCode:
+        self.reads.refuse(self.call, f"calls a value `{owner.qualname}` assigns, not a method it defines")
+
+    def annotated_property(
+        self, owner: CompactIndexedClass, declaration: CompactAnnotatedProperty
+    ) -> CreationCode:
+        return self.defined(owner, declaration)
+
+    def annotated_method(
+        self, owner: CompactIndexedClass, declaration: CompactAnnotatedMethod
+    ) -> CreationCode:
+        return self.defined(owner, declaration)
+
+    def unannotated_callable(
+        self, owner: CompactIndexedClass, declaration: CompactUnannotatedCallable
+    ) -> CreationCode:
+        return self.defined(owner, declaration)
+
+    def defined(
+        self, owner: CompactIndexedClass, declaration: CompactCallableMemberDeclaration
+    ) -> CreationCode:
+        code = self.reads.proof.method(owner, declaration.name)
+        if code is None:
+            self.reads.refuse(self.call, f"calls `{declaration.name}`, which `{owner.qualname}` binds without a def")
+        return code
+
+    def missing(self) -> CreationCode:
+        self.reads.refuse(self.call, "calls a method no class in its MRO declares")
+
+    def ambiguous(self) -> CreationCode:
+        self.reads.refuse(self.call, "calls a method its first declaring class binds twice")
+
+    def open(self) -> CreationCode:
+        authority = self.reads.proof.class_index.declared_mro_authority
+        mro = authority.resolve(self.reads.proof.composer.symbol).mro_type
+        outside = (
+            [entry.__name__ for entry in mro.__mro__ if authority.bases.is_opaque(entry)]
+            if mro is not None
+            else []
+        )
+        self.reads.refuse(
+            self.call,
+            f"calls a method no scanned class declares; the MRO reaches {outside or 'an unresolved base'} "
+            "outside the scan",
+        )

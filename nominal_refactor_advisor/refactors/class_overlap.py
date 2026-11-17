@@ -17,6 +17,7 @@ from dataclasses import (
     replace,
 )
 from functools import cached_property
+from itertools import chain
 from importlib import import_module
 from typing import Self
 
@@ -104,8 +105,10 @@ from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
     ExistingClassOwner,
     HoldSourceOwner,
+    HoistingMixinOwner,
     NewMixinOwner,
     OwnerCandidate,
+    PickedOwner,
     SharedBaseOwner,
 )
 from nominal_refactor_advisor.refactor_concepts import ClassBodyCompositionConcept
@@ -2144,20 +2147,24 @@ def require_owner_candidate(
 ) -> tuple[ClassOverlapCandidate, OwnerCandidate]:
     """An extract-mixin verdict over the anchor whose block holds these names and
     that offers an owner of this kind about this subject, with no guard fired on
-    the verdict or the owner.
+    the verdict or the owner. A reported verdict answers first; otherwise the
+    verdict requested on the anchor and a class declaring every name itself, as
+    a step of a larger move asks below the reporting floor.
 
     With ``tolerate_inherited``, INHERITED_DECLARATION receipts do not refuse:
     the caller filters the block to the declarations both classes own."""
 
     wanted = frozenset(member_names)
-    for verdict in snapshot.class_overlap_verdicts.candidates_touching(
-        frozenset((anchor_symbol,))
+    verdicts = snapshot.class_overlap_verdicts
+    for verdict in chain(
+        verdicts.candidates_touching(frozenset((anchor_symbol,))),
+        verdicts.requested_verdicts_restating(anchor_symbol, sorted(wanted)),
     ):
         if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
             continue
         for owner in verdict.owner_candidates:
             if (
-                type(owner) is owner_kind
+                isinstance(owner, owner_kind)
                 and owner.subject == subject
                 and anchor_symbol in owner.composers
             ):
@@ -2313,6 +2320,30 @@ class MixinCreation:
                 rationale=rationale,
             ),
         )
+
+
+def in_order_edits(
+    snapshot: CodemodSourceSnapshot,
+    steps: Sequence[RepositorySourceReprovedOperation],
+    recipe_id: str,
+    rationale: str,
+) -> tuple[NominalSourceEdit, ...]:
+    """The edits of these steps run in order, each proved on the source the
+    previous one left; any refusal refuses them all."""
+
+    current = snapshot
+    for step in steps:
+        result = RefactorRecipe(recipe_id=recipe_id).with_operation(step).simulate(current)
+        result.preflight_report.require_clean()
+        current = current.with_virtual_sources(result.simulation.rewritten_sources)
+    return tuple(
+        edit
+        for file_path, source in snapshot.sources_by_file_path.items()
+        if current.sources_by_file_path.get(file_path, source) != source
+        for edit in _line_difference_edits(
+            file_path, source, current.sources_by_file_path[file_path], rationale
+        )
+    )
 
 
 @dataclass(frozen=True)
@@ -2487,26 +2518,17 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
                 (*self.target.qualname.split(".")[:-1], self.mixin_name)
             ),
         )
-        current = snapshot
-        for step in (
-            replace(self, composers=()),
-            *(
-                ComposeExistingClassOperation(target=composer, owner=mixin)
-                for composer in self.composers
+        return in_order_edits(
+            snapshot,
+            (
+                replace(self, composers=()),
+                *(
+                    ComposeExistingClassOperation(target=composer, owner=mixin)
+                    for composer in self.composers
+                ),
             ),
-        ):
-            result = RefactorRecipe(recipe_id=f"create-{self.mixin_name}").with_operation(
-                step
-            ).simulate(current)
-            result.preflight_report.require_clean()
-            current = current.with_virtual_sources(result.simulation.rewritten_sources)
-        return tuple(
-            edit
-            for file_path, source in snapshot.sources_by_file_path.items()
-            if current.sources_by_file_path.get(file_path, source) != source
-            for edit in _line_difference_edits(
-                file_path, source, current.sources_by_file_path[file_path], rationale
-            )
+            f"create-{self.mixin_name}",
+            rationale,
         )
 
     def current_source_authority_claims(
@@ -2519,6 +2541,39 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
                 authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
             ),
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CreateMixinsInOrderOperation(RepositorySourceReprovedOperation):
+    """Create several mixins as one step, each on the source the one before it
+    left: a block one class inherits is hoisted out of its base before the rest
+    of the block is extracted."""
+
+    steps: tuple[CreateMixinOperation, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(CreateMixinOperation)
+    )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        return in_order_edits(
+            snapshot,
+            self.steps,
+            "create-" + "-".join(step.mixin_name for step in self.steps),
+            self.rationale_text(
+                "Declare "
+                + "; ".join(
+                    f"{', '.join(step.member_names)} once on `{step.mixin_name}`"
+                    for step in self.steps
+                )
+                + "."
+            ),
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        return self.steps[0].current_source_authority_claims(context)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2642,47 +2697,28 @@ class ClassOverlapFindingRecipeSynthesizer(
             if (indexed_class := verdicts.class_index.class_for(symbol)) is not None
         )
         match owner:
-            case NewMixinOwner():
-                anchor = next(
-                    (
-                        indexed_class
-                        for indexed_class in composers
-                        if indexed_class.module_name == owner.module_name
-                    ),
-                    None,
+            case HoistingMixinOwner():
+                base = verdicts.class_index.class_for(owner.base)
+                restater = verdicts.class_index.class_for(owner.restater)
+                if base is None or restater is None:
+                    raise NeedsInput("the hoisting base left the source", NeededInput.OWNER_PICK)
+                if pick.hoisted_name is None or pick.hoisted_judgement is None:
+                    raise NeedsInput("a hoist needs the pick's hoisted_name and hoisted_judgement", NeededInput.OWNER_PICK)
+                hoist = CreateMixinOperation(
+                    target=source_rewrite_target(base),
+                    member_names=owner.hoisted,
+                    mixin_name=pick.hoisted_name,
+                    docstring=pick.hoisted_judgement[:1].upper() + pick.hoisted_judgement[1:].rstrip(".") + ".",
+                    composers=(source_rewrite_target(base), source_rewrite_target(restater)),
                 )
-                if anchor is None or pick.name is None:
-                    raise NeedsInput(f"no composing class lives in `{owner.module_name}`", NeededInput.OWNER_PICK)
-                if pick.judgement is None:
-                    raise NeedsInput("a new mixin needs the pick's judgement for its docstring", NeededInput.OWNER_PICK)
-                verdict_match = next(
-                    (
-                        v for v in verdicts.candidates_touching(
-                            frozenset(owner.composers[:2])
-                        )
-                        if v.move is ExtractMixin
-                        and frozenset(owner.block) <= frozenset(v.shared_names)
-                    ),
-                    None,
-                )
-                inherited = verdict_match.inherited_names if verdict_match else frozenset()
-                block = tuple(
-                    name for name in owner.block if name not in inherited
-                )
-                if not block:
-                    raise NeedsInput("every shared declaration is inherited; nothing to extract", NeededInput.OWNER_PICK)
+                rest = ClassOverlapFindingRecipeSynthesizer.new_mixin(owner, pick, composers, verdicts)
                 return (
-                    CreateMixinOperation(
-                        target=source_rewrite_target(anchor),
-                        member_names=block,
-                        mixin_name=pick.name,
-                        docstring=pick.judgement[:1].upper() + pick.judgement[1:].rstrip(".") + ".",
-                        composers=tuple(
-                            source_rewrite_target(indexed_class)
-                            for indexed_class in composers
-                        ),
+                    CreateMixinsInOrderOperation(
+                        target=hoist.target, steps=(hoist, *rest)
                     ),
                 )
+            case NewMixinOwner():
+                return ClassOverlapFindingRecipeSynthesizer.new_mixin(owner, pick, composers, verdicts)
             case ExistingClassOwner():
                 existing = verdicts.class_index.class_for(owner.symbol)
                 missing = tuple(name for name in owner.block if name not in owner.held)
@@ -2742,6 +2778,57 @@ class ClassOverlapFindingRecipeSynthesizer(
                     for copier in composers
                 )
         raise NeedsInput(f"`{owner.kind}` owners have no move", NeededInput.OPERATION)
+
+    @staticmethod
+    def new_mixin(
+        owner: NewMixinOwner,
+        pick: PickedOwner,
+        composers: tuple[CompactIndexedClass, ...],
+        verdicts: ClassOverlapVerdicts,
+    ) -> tuple[CreateMixinOperation, ...]:
+        """The new mixin of the names both composers declare themselves, declared
+        before the composing class in its module."""
+
+        anchor = next(
+            (
+                indexed_class
+                for indexed_class in composers
+                if indexed_class.module_name == owner.module_name
+            ),
+            None,
+        )
+        if anchor is None or pick.name is None:
+            raise NeedsInput(f"no composing class lives in `{owner.module_name}`", NeededInput.OWNER_PICK)
+        if pick.judgement is None:
+            raise NeedsInput("a new mixin needs the pick's judgement for its docstring", NeededInput.OWNER_PICK)
+        verdict_match = next(
+            (
+                v for v in verdicts.candidates_touching(
+                    frozenset(owner.composers[:2])
+                )
+                if v.move is ExtractMixin
+                and frozenset(owner.block) <= frozenset(v.shared_names)
+            ),
+            None,
+        )
+        inherited = verdict_match.inherited_names if verdict_match else frozenset()
+        block = tuple(
+            name for name in owner.block if name not in inherited
+        )
+        if not block:
+            raise NeedsInput("every shared declaration is inherited; nothing to extract", NeededInput.OWNER_PICK)
+        return (
+            CreateMixinOperation(
+                target=source_rewrite_target(anchor),
+                member_names=block,
+                mixin_name=pick.name,
+                docstring=pick.judgement[:1].upper() + pick.judgement[1:].rstrip(".") + ".",
+                composers=tuple(
+                    source_rewrite_target(indexed_class)
+                    for indexed_class in composers
+                ),
+            ),
+        )
 
     @staticmethod
     def keywordings(

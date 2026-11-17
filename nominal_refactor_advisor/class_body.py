@@ -355,11 +355,7 @@ class ClassBodyIndex:
 
     @cached_property
     def field_declarations(self) -> FieldDeclarationIndex:
-        return FieldDeclarationIndex.of_wrappers(
-            wrapper
-            for projection in self.projections
-            for wrapper in projection.field_declaration_wrappers
-        )
+        return FieldDeclarationIndex.of_projections(self.projections)
 
     @cached_property
     def classes_by_symbol(self) -> Mapping[str, CompactIndexedClass]:
