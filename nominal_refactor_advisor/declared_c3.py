@@ -13,7 +13,12 @@ from collections.abc import Sequence
 from functools import cached_property
 
 from nominal_refactor_advisor.class_index import CompactIndexedClass
-from nominal_refactor_advisor.class_mro import NativeMroBase, namespace_read_native
+from nominal_refactor_advisor.class_mro import (
+    DeclarationMroType,
+    NativeMroBase,
+    RuntimeProofBases,
+    namespace_read_native,
+)
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 BASES_READ_AT_CREATION = frozenset(("typing.Protocol", "typing_extensions.Protocol"))
@@ -29,12 +34,6 @@ class DeclaredC3(ABC):
         """The class a base names, or None when nothing NRA reads declares it."""
 
         raise NotImplementedError
-
-    @cached_property
-    def declared_orders(self) -> dict[str, tuple[str, ...]]:
-        """Each class's order over its declared bases, once computed."""
-
-        return {}
 
     def declared(self, symbol: str) -> CompactIndexedClass:
         indexed = self.ancestor(symbol)
@@ -58,41 +57,53 @@ class DeclaredC3(ABC):
             for qualified_name in (".".join(reference.resolved_parts),)
         ) + declared.implicit_base_names or (NativeMroBase.OBJECT.value,)
 
+    @cached_property
+    def inert_types(self) -> dict[str, type]:
+        """Each class's inert stand-in, once built: Python's own C3 orders them."""
+
+        return {}
+
+    def inert(self, symbol: str) -> type:
+        """The inert class standing for `symbol` in an MRO: a native as
+        `RuntimeProofBases` stands it in, a declaration by the shared
+        `DeclarationMroType` factory over its declared bases."""
+
+        if symbol not in self.inert_types:
+            native = RuntimeProofBases().foreign_base(symbol)
+            self.inert_types[symbol] = (
+                native if native is not None else self.composed(symbol, self.bases(symbol))
+            )
+        return self.inert_types[symbol]
+
+    def composed(self, symbol: str, bases: tuple[str, ...]) -> type:
+        """An inert `symbol` over `bases`; Python refusing their order is a proof
+        the class needs."""
+
+        try:
+            return DeclarationMroType.from_declaration(
+                self.declared(symbol), tuple(self.inert(base) for base in bases)
+            )
+        except TypeError as refused:
+            raise NeedsInput(
+                f"`{symbol.rpartition('.')[2]}` has no C3 order with bases "
+                + ", ".join(f"`{base.rpartition('.')[2]}`" for base in bases),
+                NeededInput.PROOF,
+            ) from refused
+
+    @staticmethod
+    def entry_symbol(entry: type) -> str:
+        """The symbol an inert MRO entry stands for."""
+
+        if isinstance(entry, DeclarationMroType):
+            return entry.declaration.symbol
+        native = NativeMroBase.for_python_type(entry)
+        return entry.__name__ if native is None else native.value
+
     def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Python's C3 order of `symbol`, over its declared bases or `bases`."""
 
-        if bases is None and symbol in self.declared_orders:
-            return self.declared_orders[symbol]
-        native = NativeMroBase.for_qualified_name(symbol)
-        if native is NativeMroBase.OBJECT:
-            return (symbol,)
-        if native is not None or namespace_read_native(symbol):
-            return (symbol, NativeMroBase.OBJECT.value)
-        declared = self.bases(symbol) if bases is None else bases
-        sequences = [list(self.linearized(base)) for base in declared] + [list(declared)]
-        order = [symbol]
-        while any(sequences):
-            head = next(
-                (
-                    sequence[0]
-                    for sequence in sequences
-                    if sequence and not any(sequence[0] in other[1:] for other in sequences)
-                ),
-                None,
-            )
-            if head is None:
-                raise NeedsInput(
-                    f"`{symbol.rpartition('.')[2]}` has no C3 order with bases "
-                    + ", ".join(f"`{base.rpartition('.')[2]}`" for base in declared),
-                    NeededInput.PROOF,
-                )
-            order.append(head)
-            for sequence in sequences:
-                if sequence and sequence[0] == head:
-                    sequence.pop(0)
-        if bases is None:
-            self.declared_orders[symbol] = tuple(order)
-        return tuple(order)
+        entry = self.inert(symbol) if bases is None else self.composed(symbol, bases)
+        return tuple(self.entry_symbol(ancestor) for ancestor in entry.__mro__)
 
     def restated_bases(
         self, symbol: str, plain: Sequence[bool], leading: tuple[str, ...] = ()
