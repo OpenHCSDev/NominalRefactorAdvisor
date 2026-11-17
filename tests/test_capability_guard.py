@@ -175,3 +175,75 @@ def test_an_exact_class_test_with_descendants_is_refused(tmp_path: Path) -> None
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match="descend from it"):
         operation.source_edits(snapshot)
+
+
+def _messages(root: Path, imports: str, annotation: str) -> CapabilityGuardToOverrideOperation:
+    (root / "pkg").mkdir(exist_ok=True)
+    (root / "pkg/__init__.py").write_text("")
+    (root / "pkg/message.py").write_text(
+        "class Message:\n    pass\n\n\nclass Close(Message):\n    pass\n\n\nclass Open(Message):\n    pass\n"
+    )
+    (root / "pkg/messages.py").write_text("from pkg.message import Close, Message, Open\n")
+    (root / "pkg/driver.py").write_text(
+        f"{imports}from pkg.message import Close\n\n\n"
+        f"def close(message: {annotation}) -> str:\n"
+        "    if not isinstance(message, Close):\n"
+        "        raise ValueError('only a close')\n"
+        "    return type(message).__name__\n"
+    )
+    return CapabilityGuardToOverrideOperation(
+        target=SourceRewriteTarget(file_path=(root / "pkg/driver.py").as_posix(), qualname="close"),
+        base=SourceRewriteTarget(file_path=(root / "pkg/message.py").as_posix(), qualname="Message"),
+        method_name="require_close",
+    )
+
+
+@pytest.mark.parametrize(
+    ("imports", "annotation"),
+    (("from pkg import messages\n", "messages.Message"), ("from pkg.messages import Message\n", "Message")),
+)
+def test_an_annotation_through_a_re_export_names_its_declaring_class(
+    tmp_path: Path, imports: str, annotation: str
+) -> None:
+    """`messages.Message` and `from pkg.messages import Message`, where `pkg.messages`
+    imports `Message` from `pkg.message`, name `pkg.message.Message` (Textual's
+    `Driver.process_message(self, message: messages.Message)`)."""
+    probe = (
+        "from pkg.driver import close\nfrom pkg.message import Close, Open\n"
+        "print(close(Close()))\n"
+        "try:\n    close(Open())\nexcept ValueError as error:\n    print(error)\n"
+    )
+    operation = _messages(tmp_path, imports, annotation)
+    before = _run(tmp_path, probe)
+    _apply(tmp_path, operation)
+    assert "    message.require_close()\n" in (tmp_path / "pkg/driver.py").read_text()
+    assert _run(tmp_path, probe) == before == "Close\nonly a close\n"
+
+
+@pytest.mark.parametrize(
+    ("returned", "outcome"),
+    (
+        ("Message", None),
+        ("Message | None", "whose values are not all instances"),
+        ("int", "which is not one class the scan declares"),
+    ),
+)
+def test_an_unannotated_subject_takes_the_type_checker_s_class(
+    tmp_path: Path, returned: str, outcome: str | None
+) -> None:
+    """A local has no annotation; its type at the guard, from the scan's type-checker
+    build, is its declared class. A type with None, or no scanned class, refuses: the
+    call would run on values the guard refused."""
+    operation = _messages(tmp_path, "from pkg.message import Message\n", "Message")
+    driver = tmp_path / "pkg/driver.py"
+    driver.write_text(
+        driver.read_text()
+        .replace("def close(message: Message) -> str:\n", f"def pick(value: object) -> {returned}:\n    return value  # type: ignore[return-value]\n\n\ndef close(value: object) -> str:\n    message = pick(value)\n")
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    if outcome is not None:
+        with pytest.raises(CodemodOperationPreflightError, match=outcome):
+            operation.source_edits(snapshot)
+        return
+    _apply(tmp_path, operation)
+    assert "    message.require_close()\n" in driver.read_text()
