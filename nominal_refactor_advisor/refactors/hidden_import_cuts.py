@@ -164,26 +164,32 @@ class HiddenImportCuts:
         source = self.snapshot.module_import_graph.unique_source_file_for_module_name(hub)
         if not edges or source is None:
             return (HubStays(hub, (), tuple(needs)),)
-        whole = self.cut(hub, source.file_path, tuple(edges))
+        cycle = tuple(sorted({refusal.hidden.module.module_name for refusal in refusals}))
+        whole = self.cut(hub, source.file_path, tuple(edges), cycle)
         readers = sorted({edge.reader for edge in edges})
         if (isinstance(whole, HubCut) and not whole.needs) or len(readers) == 1:
             return (whole, HubStays(hub, (), tuple(needs))) if needs else (whole,)
         alone = tuple(
-            self.cut(hub, source.file_path, tuple(edge for edge in edges if edge.reader == reader))
+            self.cut(hub, source.file_path, tuple(edge for edge in edges if edge.reader == reader), cycle)
             for reader in readers
         )
         cuts = tuple(plan for plan in alone if isinstance(plan, HubCut))
         left = (*needs, *(need for plan in alone for need in plan.needs))
         return (*cuts, HubStays(hub, (), left)) if left else cuts
 
-    def cut(self, hub: str, file_path: str, edges: tuple[HubEdge, ...]) -> HubPlan:
-        """Moving every name `edges` read, with its closure, down to one module."""
+    def cut(
+        self, hub: str, file_path: str, edges: tuple[HubEdge, ...], cycle: tuple[str, ...]
+    ) -> HubPlan:
+        """Moving every name `edges` read, with its closure, down to one module.
+        The destination sits below every module `cycle` holds, each a reader of the
+        hub through a refused import, not only the readers this cut frees: a
+        declaration moved into another reader stays inside the cycle it leaves."""
 
         closure = MovedClosure.of_roots(self.snapshot, file_path, tuple(sorted({n for e in edges for n in e.names})))
         readers = tuple(sorted({edge.reader for edge in edges}))
         users = (hub, *self.importers(hub, frozenset(closure.qualnames)))
         try:
-            destination = self.destination(hub, users, readers, closure)
+            destination = self.destination(hub, users, tuple(sorted({*readers, *cycle})), closure)
         except NeedsInput as need:
             return HubStays(hub, (), tuple((edge.refusal, need) for edge in edges))
         reached = self.reached_by(destination, closure)
