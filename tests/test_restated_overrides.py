@@ -262,11 +262,13 @@ def test_a_namespace_read_the_type_checker_types_as_an_instance_sees_no_class(tm
         "    parser = argparse.ArgumentParser()\n"
         "    arguments = parser.parse_args([])\n"
         "    return vars(arguments)\n\n\n"
-        "def held(value: object):\n    return vars(value)\n"
+        "def held(value: object):\n    return vars(value)\n\n\n"
+        "def also(value: object):\n    return value.__dict__\n"
     )
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/read.py": source})
     evaluation = _evaluation(tmp_path, "Child")
     assert "pkg/read.py:21" in evaluation.rejection_reason
+    assert "pkg/read.py:25" in evaluation.rejection_reason
     assert "whose values can be classes" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
     _write(tmp_path, {"pkg/read.py": source.split("\n\n\ndef held")[0] + "\n"})
