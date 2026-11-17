@@ -998,12 +998,22 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         threads: dict[int, OptionalParameterThread],
         copies: dict[int, frozenset[str]],
     ) -> Iterator[RestatingSite]:
-        """One site per caller parameter whose `None` default reaches a threaded copy:
-        the declaration that owns the absence."""
+        """One site per caller parameter whose `None` default reaches a threaded copy
+        that probes it: the declaration that owns the absence. A copy that only
+        passes the value on, or reads it some other way (`row_type or cls`), asks
+        nothing of the absence."""
 
         seen: set[tuple[int, str]] = set()
         for definition in definitions:
-            for parameter in sorted(copies.get(id(definition.node), ())):
+            probed = {
+                node.left.id
+                for node in function_nodes(definition.node)
+                if isinstance(node, ast.Compare)
+                and isinstance(node.left, ast.Name)
+                and isinstance(node.ops[0], ast.Is | ast.IsNot)
+                and spells_none(node.comparators[0])
+            }
+            for parameter in sorted(copies.get(id(definition.node), frozenset()) & probed):
                 pending = [(definition, parameter)]
                 while pending:
                     callee, name = pending.pop()

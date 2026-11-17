@@ -411,14 +411,16 @@ def test_a_reactive_callback_takes_the_value_textual_passes(tmp_path):
 
 def test_a_none_threaded_through_private_callees_is_reported_where_it_starts(tmp_path):
     """agent-comms TypedTable._query and Textual App._register_child: the private callee
-    probes the `None` its callers' defaults pass down; the absence starts at each default."""
+    probes the `None` its callers' defaults pass down; the absence starts at each default.
+    `row_type`, which `_query` reads as `row_type or cls` and never probes, starts nothing."""
     source = (
         "class Table:\n"
-        "    @classmethod\n    def rows(cls, where: str, limit: int | None = None) -> list:\n"
-        "        return list(cls._query(where, limit))\n\n"
-        "    @classmethod\n    def first(cls, *, limit: int | None = None) -> list:\n"
-        "        return list(cls._query('', limit=limit))\n\n"
-        "    @classmethod\n    def _query(cls, where: str, limit: int | None) -> list:\n"
+        "    @classmethod\n    def rows(cls, where: str, limit: int | None = None, row_type: type | None = None) -> list:\n"
+        "        return list(cls._query(where, limit, row_type))\n\n"
+        "    @classmethod\n    def first(cls, *, limit: int | None = None, row_type: type | None = None) -> list:\n"
+        "        return list(cls._query('', limit=limit, row_type=row_type))\n\n"
+        "    @classmethod\n    def _query(cls, where: str, limit: int | None, row_type: type | None) -> list:\n"
+        "        selected = row_type or cls\n"
         "        clause = ' LIMIT ?' if limit is not None else ''\n"
         "        return [where + clause, *((limit,) if limit is not None else ())]\n\n"
         "    def set_scroll(self, x: float | None) -> None:\n"
@@ -426,5 +428,5 @@ def test_a_none_threaded_through_private_callees_is_reported_where_it_starts(tmp
     )
     findings = _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": source}))
     assert sorted((f.evidence[0].symbol, f.evidence[0].line) for f in findings) == [
-        ("Table.first", 7), ("Table.rows", 3), ("Table.set_scroll", 16),
+        ("Table.first", 7), ("Table.rows", 3), ("Table.set_scroll", 17),
     ]
