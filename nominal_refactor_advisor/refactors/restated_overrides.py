@@ -17,6 +17,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import partial
 
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -273,12 +274,17 @@ class NamespaceReaders(ClassAttributeReaders):
         if not open_reads:
             return
         answers = self.snapshot.type_checker.receiver_types(open_reads)
-        for span, (module, read, parent) in open_reads.items():
-            answers[span].require_instances(
-                f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
-                f"namespace, and deleting {', '.join(f'`{name}`' for name in sorted(deleted))} from "
-                f"`{indexed.qualname}` could change what it sees"
+        NeedsInput.every(
+            *(
+                partial(
+                    answers[span].require_instances,
+                    f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
+                    f"namespace, and deleting {', '.join(f'`{name}`' for name in sorted(deleted))} from "
+                    f"`{indexed.qualname}` could change what it sees",
+                )
+                for span, (module, read, parent) in open_reads.items()
             )
+        )
 
     def asks_another_key(
         self,
