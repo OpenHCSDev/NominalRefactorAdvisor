@@ -300,6 +300,9 @@ class HoistingMixinOwner(NewMixinOwner):
     """The class of the two that declares those names itself."""
     hoisted: tuple[str, ...]
     """The inherited block names, in the ancestor's order."""
+    hoist_composers: tuple[str, ...]
+    """The classes that compose the hoisted mixin: the ancestor, the restater,
+    and every other class that declares all the hoisted names itself."""
 
     def pick_refusals(self, pick: OwnerPick) -> Iterator[str]:
         yield from super().pick_refusals(pick)
@@ -1034,7 +1037,7 @@ class BlockOwnerQuestion:
                         ),
                         *self._field_order_receipts(
                             base, hoisted, keyword_only_route=True,
-                            composers=(base.symbol, restater.symbol),
+                            composers=self._hoist_composers(base, restater, hoisted),
                         ),
                     ),
                     cost=replace(
@@ -1046,6 +1049,7 @@ class BlockOwnerQuestion:
                     base=base.symbol,
                     restater=restater.symbol,
                     hoisted=hoisted,
+                    hoist_composers=self._hoist_composers(base, restater, hoisted),
                 )
             if not hoists:
                 yield NewMixinOwner(
@@ -1311,6 +1315,19 @@ class BlockOwnerQuestion:
                 (_location(owner),),
             ),
         )
+
+    def _hoist_composers(
+        self,
+        base: CompactIndexedClass,
+        restater: CompactIndexedClass,
+        hoisted: Sequence[str],
+    ) -> tuple[str, ...]:
+        """The ancestor and the restater, then every other class declaring all
+        the hoisted names itself: a hoisted mixin is composed like any new
+        mixin, by each class that restates its block."""
+
+        whole = frozenset.intersection(*(self.own_holders_of(name) for name in hoisted))
+        return (base.symbol, restater.symbol, *sorted(whole - {base.symbol, restater.symbol}))
 
     def _co_restaters(self) -> tuple[str, ...]:
         """Other classes that declare the whole block identically themselves."""

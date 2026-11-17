@@ -2908,7 +2908,11 @@ class ClassOverlapFindingRecipeSynthesizer(
                     member_names=owner.hoisted,
                     mixin_name=pick.hoisted_name,
                     docstring=pick.hoisted_judgement[:1].upper() + pick.hoisted_judgement[1:].rstrip(".") + ".",
-                    composers=(source_rewrite_target(base), source_rewrite_target(restater)),
+                    composers=tuple(
+                        source_rewrite_target(composer)
+                        for symbol in owner.hoist_composers
+                        if (composer := verdicts.class_index.class_for(symbol)) is not None
+                    ),
                 )
                 rest = ClassOverlapFindingRecipeSynthesizer.new_mixin(owner, pick, composers, verdicts)
                 return (
