@@ -47,7 +47,7 @@ class ClassOverlapDetectorABC(
         return tuple(
             candidate
             for candidate in verdicts.candidates
-            if candidate.shape is type(self).shape
+            if candidate.shape is type(self).shape and candidate.offered is None
         )
 
     def _finding_for_candidate(self, candidate: ClassOverlapCandidate) -> RefactorFinding:

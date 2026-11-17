@@ -1436,7 +1436,7 @@ class ComposedAncestry:
         abstract_owners = tuple(
             owner
             for owner in self.owners
-            if NativeMroBase.ABSTRACT_ROOT.value in self.linearized(owner.symbol)
+            if NativeMroBase.ABSTRACT_ROOT.value in self.c3.linearized(owner.symbol)
         )
         kept = frozenset(
             name for owner in abstract_owners for name in self.names(owner.symbol, composed=False)
@@ -1448,59 +1448,12 @@ class ComposedAncestry:
         )
         return replace(proof, abstract_moved=proof.abstract_moved - kept)
 
-    def declared(self, symbol: str) -> CompactIndexedClass:
-        """A class of the ancestry, scanned or installed: `require_static_c3` read
-        every one of them through this same lookup."""
+    @property
+    def c3(self) -> ClassOverlapVerdicts:
+        """The C3 orders of the ancestry, scanned or installed: `require_static_c3`
+        read every one of them through this same lookup."""
 
-        indexed = self.snapshot.class_overlap_verdicts.ancestor(symbol)
-        assert indexed is not None
-        return indexed
-
-    def bases(self, symbol: str) -> tuple[str, ...]:
-        """Its bases, each by the symbol it resolves to: a re-export is the class it
-        names. Creation's own last bases follow the named ones, before and after
-        composing alike."""
-
-        declared = self.declared(symbol)
-        return tuple(
-            qualified_name
-            if NativeMroBase.for_qualified_name(qualified_name) or namespace_read_native(qualified_name)
-            else self.declared(qualified_name).symbol
-            for reference in declared.base_references
-            for qualified_name in (".".join(reference.resolved_parts),)
-        ) + declared.implicit_base_names or (NativeMroBase.OBJECT.value,)
-
-    def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
-        """Python's C3 order of `symbol`, over its declared bases or `bases`."""
-
-        native = NativeMroBase.for_qualified_name(symbol)
-        if native is NativeMroBase.OBJECT:
-            return (symbol,)
-        if native is not None or namespace_read_native(symbol):
-            return (symbol, NativeMroBase.OBJECT.value)
-        declared = self.bases(symbol) if bases is None else bases
-        sequences = [list(self.linearized(base)) for base in declared] + [list(declared)]
-        order = [symbol]
-        while any(sequences):
-            head = next(
-                (
-                    sequence[0]
-                    for sequence in sequences
-                    if sequence and not any(sequence[0] in other[1:] for other in sequences)
-                ),
-                None,
-            )
-            if head is None:
-                raise NeedsInput(
-                    f"`{self.composer.qualname}` has no C3 order with "
-                    f"{', '.join(f'`{owner.qualname}`' for owner in self.owners)} first",
-                    NeededInput.PROOF,
-                )
-            order.append(head)
-            for sequence in sequences:
-                if sequence and sequence[0] == head:
-                    sequence.pop(0)
-        return tuple(order)
+        return self.snapshot.class_overlap_verdicts
 
     def names(self, symbol: str, *, composed: bool) -> frozenset[str]:
         """What a class declares; the composer, once composed, without its deleted names."""
@@ -1509,7 +1462,7 @@ class ComposedAncestry:
             return frozenset()
         if (native := namespace_read_native(symbol)) is not None:
             return native_declared_names(native)
-        declared = frozenset(declaration.name for declaration in self.declared(symbol).body_declarations)
+        declared = frozenset(declaration.name for declaration in self.c3.declared(symbol).body_declarations)
         if composed and symbol == self.composer.symbol:
             return declared - self.deleted
         return declared
@@ -1518,12 +1471,12 @@ class ComposedAncestry:
     def before(self) -> tuple[str, ...]:
         """The composer's C3 order as declared."""
 
-        return self.linearized(self.composer.symbol)
+        return self.c3.linearized(self.composer.symbol)
 
     @cached_property
     def kept_bases(self) -> tuple[str, ...]:
         return tuple(
-            base for base in self.bases(self.composer.symbol) if base != NativeMroBase.OBJECT.value
+            base for base in self.c3.bases(self.composer.symbol) if base != NativeMroBase.OBJECT.value
         )
 
     @cached_property
@@ -1531,37 +1484,26 @@ class ComposedAncestry:
         """The composer's C3 order with its owners as its first bases."""
 
         owner_symbols = tuple(owner.symbol for owner in self.owners)
-        return self.linearized(self.composer.symbol, (*owner_symbols, *self.kept_bases))
+        return self.c3.linearized(self.composer.symbol, (*owner_symbols, *self.kept_bases))
 
     @cached_property
-    def redundant_bases(self) -> tuple[ast.expr, ...]:
-        """The composer's direct bases its owners already supply: a plain name an
-        owner's C3 order holds, whose removal leaves the composed C3 order exactly
-        as it is with it. Every lookup, and so the class, is then the same without
-        it. Each is tried on the bases the earlier drops left, and a subscripted
-        or computed base is never one."""
+    def restated(self) -> tuple[tuple[ast.expr, str], ...]:
+        """Each direct base of the composer another of its bases, its owners first,
+        already supplies, with that base (`DeclaredC3.restated_bases`)."""
 
         referenced = tuple(_referenced_bases(self.composer.node))
         if len(referenced) != len(self.composer.node.bases):
             return ()
-        owner_symbols = tuple(owner.symbol for owner in self.owners)
-        supplied = frozenset(
-            symbol for owner in self.owners for symbol in self.linearized(owner.symbol)[1:]
+        restated = self.c3.restated_bases(
+            self.composer.symbol,
+            tuple(isinstance(node, (ast.Name, ast.Attribute)) for node, _parts in referenced),
+            tuple(owner.symbol for owner in self.owners),
         )
-        kept = self.kept_bases
-        dropped: list[ast.expr] = []
-        for (node, _parts), symbol in zip(referenced, self.bases(self.composer.symbol)):
-            if not isinstance(node, (ast.Name, ast.Attribute)) or symbol not in supplied:
-                continue
-            without = tuple(base for base in kept if base != symbol)
-            try:
-                order = self.linearized(self.composer.symbol, (*owner_symbols, *without))
-            except NeedsInput:
-                continue
-            if order == self.after:
-                kept = without
-                dropped.append(node)
-        return tuple(dropped)
+        return tuple((referenced[index][0], supplier) for index, supplier in restated)
+
+    @cached_property
+    def redundant_bases(self) -> tuple[ast.expr, ...]:
+        return tuple(node for node, _supplier in self.restated)
 
     def header_bases(self, header: ClassHeaderSpanSourceAuthority) -> tuple[str, ...]:
         """The composer's new base list: its owners first, then every base it
@@ -1581,9 +1523,8 @@ class ComposedAncestry:
                 rationale,
                 *(
                     f"Drops `{ast.unparse(node)}` from `{self.composer.qualname}`'s bases: "
-                    + " + ".join(f"`{owner.qualname}`" for owner in self.owners)
-                    + " already supplies it."
-                    for node in self.redundant_bases
+                    f"`{supplier.rpartition('.')[2]}` already supplies it."
+                    for node, supplier in self.restated
                 ),
             )
         )
@@ -1649,7 +1590,7 @@ class ComposedAncestry:
             )
         if namespace_read_native(symbol) is not None:
             return
-        indexed = self.declared(symbol)
+        indexed = self.c3.declared(symbol)
         if indexed.metaclass_names or "metaclass" in indexed.class_keyword_names:
             raise NeedsInput(
                 f"Composing gives `{self.composer.qualname}` the metaclass of `{indexed.qualname}`",

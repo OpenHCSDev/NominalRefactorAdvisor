@@ -22,6 +22,7 @@ expression it could not prove.
 from __future__ import annotations
 
 import ast
+import inspect
 import types
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -72,7 +73,7 @@ REGISTRY_NAMES = frozenset(
 """The names a modelled metaclass reads from a class being created."""
 
 INTROSPECTION = frozenset(
-    ("__mro__", "__bases__", "__dict__", "__annotations__", "__annotate__", "mro")
+    ("__mro__", "__bases__", "__orig_bases__", "__dict__", "__annotations__", "__annotate__", "mro")
 )
 """Attributes that show a class's bases or own body, which the move changes."""
 
@@ -388,7 +389,34 @@ class ClassCreationProof:
                 NeededInput.PROOF,
             )
         for code, roles in self.creation_code():
-            CreationReads(self, code, roles).require()
+            self.reads(code, roles).require()
+
+    def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
+        """How one creation function's reads are judged: here, a new owner joins the bases."""
+
+        return CreationReads(self, code, roles)
+
+    @classmethod
+    def dropping(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        composer: CompactIndexedClass,
+        ancestry: tuple[CompactIndexedClass, ...],
+        dropped: tuple[str, ...],
+    ) -> ClassCreationProof:
+        """The proof that dropping restated bases leaves the class's creation as it
+        is: its order does not change, so only creation code reading `bases` sees it."""
+
+        return BaseDropCreationProof(
+            snapshot,
+            composer,
+            ancestry,
+            " + ".join(f"`{symbol.rpartition('.')[2]}`" for symbol in dropped),
+            frozenset(),
+            frozenset(),
+            MroWalk.unmoved(ancestry),
+            dropped,
+        )
 
     @classmethod
     def constructing(
@@ -939,8 +967,8 @@ class CreationReads:
             return
         self.refuse(parent or node, "reads a base of the class")
 
-    def constant_plain_dispatch(self, call: ast.Call, base: str) -> bool:
-        """`X.handler_for(type(base))(base)` on the base `base` names."""
+    def dispatch_table(self, call: ast.Call, base: str) -> ast.ClassDef | None:
+        """The class `X` of `X.handler_for(type(base))(base)` on the base `base` names."""
 
         match call:
             case ast.Call(
@@ -951,28 +979,49 @@ class CreationReads:
                 args=[ast.Name(id=passed)],
             ) if dispatched == passed == base:
                 owner = self.code.owner if table in ("cls", "self") else None
-                if owner is None:
-                    return False
-                node = self.proof.class_node(owner)
-                for statement in node.body:
+                return None if owner is None else self.proof.class_node(owner)
+        return None
+
+    @staticmethod
+    def handlers(table: ast.ClassDef) -> Iterator[tuple[tuple[str, ...], ast.FunctionDef]]:
+        """Each `@handles(...)` method of a dispatch table, with what it handles."""
+
+        for statement in table.body:
+            if isinstance(statement, ast.FunctionDef):
+                for decorator in statement.decorator_list:
                     if (
-                        isinstance(statement, ast.FunctionDef)
-                        and any(
-                            isinstance(decorator, ast.Call)
-                            and isinstance(decorator.func, ast.Name)
-                            and decorator.func.id == "handles"
-                            and [ast.unparse(argument) for argument in decorator.args] == ["type"]
-                            for decorator in statement.decorator_list
-                        )
+                        isinstance(decorator, ast.Call)
+                        and isinstance(decorator.func, ast.Name)
+                        and decorator.func.id == "handles"
                     ):
-                        body = [
-                            item for item in statement.body
-                            if not (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant))
-                        ]
-                        return len(body) == 1 and isinstance(body[0], ast.Return) and (
-                            body[0].value is None or self.is_literal(body[0].value)
-                        )
-        return False
+                        yield tuple(ast.unparse(argument) for argument in decorator.args), statement
+
+    def answer(self, handler: ast.FunctionDef) -> ast.expr | None:
+        """The literal a handler returns, when it does nothing else."""
+
+        body = [
+            item for item in handler.body
+            if not (isinstance(item, ast.Expr) and isinstance(item.value, ast.Constant))
+        ]
+        if len(body) == 1 and isinstance(body[0], ast.Return):
+            value = body[0].value
+            if value is None:
+                return ast.Constant(None)
+            if self.is_literal(value):
+                return value
+        return None
+
+    def plain_answer(self, table: ast.ClassDef) -> ast.expr | None:
+        return next(
+            (self.answer(handler) for names, handler in self.handlers(table) if names == ("type",)),
+            None,
+        )
+
+    def constant_plain_dispatch(self, call: ast.Call, base: str) -> bool:
+        """`X.handler_for(type(base))(base)` where `X`'s handler for `type` answers a constant."""
+
+        table = self.dispatch_table(call, base)
+        return table is not None and self.plain_answer(table) is not None
 
     @staticmethod
     def is_literal(node: ast.expr) -> bool:
@@ -1314,6 +1363,79 @@ class CreationReads:
                 indexed = self.proof.class_index.class_for(qualified)
                 return self.proof.method(indexed, attr) if indexed is not None else None
         return None
+
+
+@dataclass(frozen=True)
+class BaseDropCreationProof(ClassCreationProof):
+    """Dropping restated bases leaves the class's creation unchanged."""
+
+    dropped: tuple[str, ...] = ()
+    """The symbols of the bases the drop removes."""
+
+    def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
+        return BaseDropReads(self, code, roles)
+
+
+@dataclass
+class BaseDropReads(CreationReads):
+    """One creation function's reads of a base list a drop shortens: truthiness and
+    passing it on stay the same; reading any one base could meet the dropped one."""
+
+    proof: BaseDropCreationProof
+
+    @property
+    def unproved(self) -> str:
+        return f"NRA needs a proof that dropping {self.proof.owner_name} leaves it unchanged"
+
+    def require_base(self, node: ast.Name, parent: ast.AST | None) -> None:
+        """A base's metaclass dispatched on, and the answers flattened: a dropped
+        native base reaches the handler for `type`, and an empty answer adds nothing."""
+
+        dispatch = parent
+        if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name) and parent.func.id == "type":
+            handler = self.parents.get(parent)
+            dispatch = self.parents.get(handler) if handler is not None else None
+        flattened = isinstance(dispatch, ast.Call) and (
+            isinstance(loop := self.parents.get(dispatch), ast.comprehension) and loop.iter is dispatch
+        )
+        table = self.dispatch_table(dispatch, node.id) if isinstance(dispatch, ast.Call) else None
+        if flattened and table is not None and self.dropped_reach_empty_plain_answer(table):
+            return
+        self.refuse(parent or node, "reads a base of the class, which may be a dropped one")
+
+    def dropped_reach_empty_plain_answer(self, table: ast.ClassDef) -> bool:
+        answer = self.plain_answer(table)
+        if answer is None or ast.literal_eval(answer) not in ((), [], None, frozenset(), set()):
+            return False
+        metaclasses = tuple(
+            type(native) for symbol in self.proof.dropped if (native := native_root_type(symbol)) is not None
+        )
+        if len(metaclasses) != len(self.proof.dropped):
+            return False
+        ancestors = frozenset(
+            f"{ancestor.__module__}.{ancestor.__qualname__}"
+            for metaclass in metaclasses
+            for ancestor in inspect.getmro(metaclass)
+            if ancestor not in (type, object)
+        )
+        return not any(
+            self.handled_symbol(name, handler) in ancestors
+            for names, handler in self.handlers(table)
+            if names != ("type",)
+            for name in names
+        )
+
+    def handled_symbol(self, name: str, handler: ast.FunctionDef) -> str:
+        """The qualified name a handler's `@handles` argument spells in its module."""
+
+        owner = self.code.owner
+        if owner is None:
+            return name
+        module = self.proof.snapshot.parsed_module_for_source_path(owner.file_path)
+        witness = self.proof.snapshot.module_binding_proof.reference_or_builtin_witness_at(
+            module, ast.parse(name, mode="eval").body, line=handler.lineno
+        )
+        return name if witness is None else witness.qualified_name
 
 
 @dataclass

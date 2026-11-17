@@ -30,3 +30,4 @@ class OverlapReceiptKind(ReceiptKind):
     INHERITED_DECLARATION = "inherited_declaration", 0.0, True, NeededInput.OPERATION
     UNWANTED_SUPPLY = "unwanted_supply", 0.0, True, NeededInput.OPERATION
     DECLARATION_DIFFERS = "declaration_differs", 0.0, True, NeededInput.SOURCE_CHANGE
+    STRONGER_MOVE_NEEDS = "stronger_move_needs", 0.0, False

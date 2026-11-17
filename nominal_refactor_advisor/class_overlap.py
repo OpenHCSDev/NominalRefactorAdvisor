@@ -65,6 +65,7 @@ from nominal_refactor_advisor.class_index import (
     InstalledClassDeclarations,
     followed_reexports,
 )
+from nominal_refactor_advisor.declared_c3 import DeclaredC3
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
@@ -608,6 +609,16 @@ class ClassOverlapCandidate(ScoredByReceipts):
     co_restating: CompactIndexedClass | None = None
     owner_candidates: tuple[OwnerCandidate, ...] = ()
     """For a move that needs an owner decision, where the block could live (#67)."""
+    offered: ClassOverlapCandidate | None = None
+    """The rung below a move only its own guards refuse: the extraction that
+    shares the block on a mixin and keeps both identities (paper1 Thm 4.8). The
+    pair's finding is that rung; a move that asks for this one still finds it."""
+
+    @property
+    def rungs(self) -> tuple[ClassOverlapCandidate, ...]:
+        """This verdict, then the repair it offers below its own move."""
+
+        return (self,) if self.offered is None else (self, self.offered)
 
     @property
     def confidence(self) -> float:
@@ -723,8 +734,9 @@ class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
 
 
 @dataclass(frozen=True)
-class ClassOverlapVerdicts:
-    """Every overlap worth a verdict in one scan, with its receipts."""
+class ClassOverlapVerdicts(DeclaredC3):
+    """Every overlap worth a verdict in one scan, with its receipts, over the
+    scan's classes and the installed ones they name, in their C3 orders."""
 
     projections: tuple[CompactModuleClassProjection, ...]
     class_index: CompactClassFamilyIndex
@@ -837,7 +849,7 @@ class ClassOverlapVerdicts:
         for overlap in overlaps:
             candidate = self.verdict(overlap)
             if candidate is not None:
-                candidates.append(candidate)
+                candidates.extend(candidate.rungs)
                 judged.add((overlap.first.symbol, overlap.second.symbol))
         for first, second in sorted(inheriting_pairs - judged):
             overlap = self.bodies.overlap(first, second).with_inherited(
@@ -848,7 +860,7 @@ class ClassOverlapVerdicts:
                 and not self._restated_through_an_ancestor(overlap)
                 and (candidate := self.verdict(overlap)) is not None
             ):
-                candidates.append(candidate)
+                candidates.extend(candidate.rungs)
         return tuple(candidates)
 
     def resolved_declarations(
@@ -1047,15 +1059,72 @@ class ClassOverlapVerdicts:
                 )
         else:
             return None
-        repair = PairRepair(move, owner, restating, co_restating)
-        if self._supplied_member_receipts(
-            move, owner, tuple(item for item in (restating, co_restating) if item is not None)
+        judged = self._candidate(
+            overlap,
+            shape,
+            floor.judged_repair(PairRepair(move, owner, restating, co_restating), first, second),
+            extractable,
+            members,
+            shared_receipts,
+            (*axis_receipts, *differing_receipts),
+        )
+        if judged.permitted or judged.move is ExtractMixin:
+            return judged
+        extraction = self._candidate(
+            overlap,
+            shape,
+            PairRepair(ExtractMixin, first, second, None),
+            extractable,
+            members,
+            shared_receipts,
+            (*axis_receipts, *differing_receipts),
+        )
+        # paper1 Thm 4.8: when only the move itself refuses (it changes an
+        # identity, keeps an owner whose construction, inherited copies or
+        # ancestry the others lack), the implementations still agree, so the
+        # verdict offers the rung below: share them on a mixin, keep identities.
+        # A rung is offered only when it is a repair: one of its owners is
+        # permitted, or permitted once built by keyword.
+        own = frozenset((receipt.kind, receipt.detail) for receipt in extraction.refusals)
+        if not own.isdisjoint(
+            (receipt.kind, receipt.detail) for receipt in judged.refusals
+        ) or not any(
+            owner.permitted or owner.keyword_cure for owner in extraction.owner_candidates
         ):
-            # Keeping a class as owner would hand a composer members nobody
-            # requires of it: the block needs a mixin of its own, so that is the
-            # repair the verdict judges, and its owner is the picker's question.
-            repair = PairRepair(ExtractMixin, first, second, None)
-        move, owner, restating, co_restating = floor.judged_repair(repair, first, second)
+            return judged
+        return replace(
+            judged,
+            offered=replace(
+                extraction,
+                receipts=(
+                    *extraction.receipts,
+                    Receipt(
+                        OverlapReceiptKind.STRONGER_MOVE_NEEDS,
+                        f"`{judged.move.value}` would need: "
+                        + "; ".join(receipt.detail for receipt in judged.refusals)
+                        + ", so the pair shares a mixin and keeps both identities",
+                        tuple(
+                            location for receipt in judged.refusals for location in receipt.evidence
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+    def _candidate(
+        self,
+        overlap: ClassBodyOverlap,
+        shape: ClassOverlapShape,
+        repair: PairRepair,
+        extractable: tuple[SharedClassBodyDeclaration, ...],
+        members: frozenset[str],
+        shared_receipts: tuple[Receipt, ...],
+        difference_receipts: tuple[Receipt, ...],
+    ) -> ClassOverlapCandidate:
+        """The verdict on one repair of the pair: its move, owner and receipts."""
+
+        first, second = self.resolved(overlap.first), self.resolved(overlap.second)
+        move, owner, restating, co_restating = repair
         return ClassOverlapCandidate(
             shape=shape,
             move=move,
@@ -1087,8 +1156,7 @@ class ClassOverlapVerdicts:
                         ),
                     )
                 ),
-                *axis_receipts,
-                *differing_receipts,
+                *difference_receipts,
                 *(
                     self._inherited_receipts(overlap)
                     if move is not ExtractMixin

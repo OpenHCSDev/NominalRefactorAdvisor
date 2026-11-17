@@ -27110,13 +27110,13 @@ class DispatchFamily(ABC):
         return self.templates(request)
 
 
-class GuidedPolicy(DispatchFamily, ABC):
+class GuidedPolicy(DispatchFamily):
     @classmethod
     def matches_mode(cls, request) -> bool:
         return request.mode == "guided"
 
 
-class HybridPolicy(DispatchFamily, ABC):
+class HybridPolicy(DispatchFamily):
     @classmethod
     def matches_mode(cls, request) -> bool:
         return request.mode == "hybrid"
