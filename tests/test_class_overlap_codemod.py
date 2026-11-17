@@ -169,6 +169,47 @@ def test_a_requested_composition_is_judged_below_the_reporting_floor(tmp_path: P
     ]
 
 
+def _tagged_family(hook: str) -> str:
+    return (
+        "from dataclasses import dataclass\n\n\n"
+        "class Tagged:\n"
+        "    def __init_subclass__(cls, *, tag: str = '', **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        f"        {hook}\n\n\n"
+        "@dataclass(frozen=True)\nclass Located:\n    file_path: str\n    line: int\n\n\n"
+        "@dataclass(frozen=True)\nclass Finding(Tagged, tag='f'):\n"
+        "    file_path: str\n    line: int\n    message: str\n"
+    )
+
+
+def test_a_class_created_with_keywords_composes_an_owner_its_hook_cannot_see(tmp_path: Path) -> None:
+    """Class keywords leave C3 alone; the hook reads only its keyword and stores it."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _tagged_family("cls.tag = tag")})
+    path = (tmp_path / "pkg/located.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+        ),
+    )
+    assert _run(tmp_path, SMALL_PROBE + "print(Finding.tag)\n").split()[-2:] == ["True", "f"]
+
+
+def test_a_creation_hook_that_reads_the_bases_stops_the_composition_at_its_line(tmp_path: Path) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _tagged_family("cls.depth = len(cls.__mro__)")})
+    path = (tmp_path / "pkg/located.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"located.py:7 `cls.__mro__` introspects the new class") as raised:
+        operation.source_edits(snapshot)
+    assert raised.value.needs == (NeededInput.PROOF,)
+
+
 def test_a_restating_class_composes_the_owner_and_runs_the_same(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/surface.py": SURFACE})
     before = _run(tmp_path, SURFACE_PROBE).splitlines()

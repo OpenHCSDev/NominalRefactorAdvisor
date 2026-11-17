@@ -1276,13 +1276,21 @@ class ClassOverlapVerdicts:
             differences.append("decorator safety")
         if not differences:
             differences.append("class creation")
-        if move is ExtractMixin and all(
-            d.startswith("class keywords") for d in differences
+        if (
+            all(d.startswith("class keywords") for d in differences)
+            and (
+                move is ExtractMixin
+                or (
+                    move is ComposeExisting
+                    and not (first.class_keyword_names and second.class_keyword_names)
+                )
+            )
         ):
             return (
                 Receipt(
                     OverlapReceiptKind.SAME_CONSTRUCTION,
-                    "class keywords differ but a new mixin does not inherit them",
+                    "class keywords differ, but the owner gets none: a composer keeps "
+                    "its own, and what its creation reads is proved at the move",
                     (_location(first), _location(second)),
                 ),
             )

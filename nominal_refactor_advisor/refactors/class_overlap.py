@@ -20,6 +20,7 @@ from functools import cached_property
 from importlib import import_module
 from typing import Self
 
+from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, declared_names
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
@@ -36,7 +37,6 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
-    CLASS_METHOD_OWNERSHIP_HOOK_NAMES,
     CompactIndexedClass,
     NATIVE_METACLASS_BASES,
     module_import_aliases,
@@ -380,20 +380,6 @@ def source_rewrite_target(indexed_class: CompactIndexedClass) -> SourceRewriteTa
     )
 
 
-def declared_names(statement: ast.stmt) -> frozenset[str]:
-    """The class-scope names one declaration statement binds."""
-
-    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return frozenset((statement.name,))
-    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name):
-        return frozenset((statement.target.id,))
-    if isinstance(statement, ast.Assign):
-        return frozenset(
-            target.id for target in statement.targets if isinstance(target, ast.Name)
-        )
-    return frozenset()
-
-
 @dataclass(frozen=True)
 class RestatedDeclarations:
     """Declarations a restating class makes exactly as a source class does.
@@ -624,9 +610,10 @@ def require_static_c3(
 ) -> tuple[CompactIndexedClass, ...]:
     """The class and its ancestors, when type's own C3 orders them all.
 
-    Every base resolves to an indexed class or a native root, no class passes
-    creation keywords other than a metaclass, no metaclass overrides `mro`,
-    and no class declares `__init_subclass__`. Returns the closed ancestry.
+    Every base resolves to an indexed class or a native root and no metaclass
+    overrides `mro`. Class keywords and `__init_subclass__` leave the order to
+    type's C3; what they read as a class is created is `ClassCreationProof`'s.
+    Returns the closed ancestry.
     """
 
     class_index = snapshot.class_overlap_verdicts.class_index
@@ -648,17 +635,6 @@ def require_static_c3(
                 raise NeedsInput(
                     f"`{current.qualname}` has base `{qualified_name}` outside the index", NeededInput.PROOF
                 )
-        if set(current.class_keyword_names) - {"metaclass"}:
-            raise NeedsInput(
-                f"`{current.qualname}` passes class creation keywords: NRA needs a proof "
-                "that the new base leaves what its class creation sees unchanged",
-                NeededInput.PROOF,
-            )
-        if any(
-            declaration.name in CLASS_METHOD_OWNERSHIP_HOOK_NAMES
-            for declaration in current.body_declarations
-        ):
-            raise NeedsInput(f"`{current.qualname}` runs a subclass creation hook", NeededInput.PROOF)
         if "metaclass" in current.class_keyword_names:
             MetaclassMroProof(snapshot, current).require_type_mro()
     return tuple(reached.values())
@@ -700,7 +676,10 @@ class MetaclassMroProof:
                 continue
             seen.add(current)
             metaclass = class_index.class_for(current)
-            if metaclass is None or not metaclass.base_references_are_complete:
+            if metaclass is None:
+                self._require_native(current)
+                continue
+            if not metaclass.base_references_are_complete:
                 raise NeedsInput(f"Metaclass `{current}` has an unproved ancestry", NeededInput.PROOF)
             if any(declaration.name == "mro" for declaration in metaclass.body_declarations):
                 raise NeedsInput(f"Metaclass `{current}` overrides `mro`", NeededInput.PROOF)
@@ -977,6 +956,9 @@ class ClassComposition:
         ancestry = require_static_c3(self.snapshot, restating.facts)
         if any(ancestor.symbol == owner.symbol for ancestor in ancestry):
             raise ValueError(f"`{owner.qualname}` is already an ancestor")
+        ClassCreationProof.composing(
+            self.snapshot, restating.facts, ancestry, ((owner.qualname, owner.node),)
+        ).require_unchanged()
         if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
             restating
         ):
@@ -1158,7 +1140,8 @@ class CoveringComposition:
                     NeededInput.PROOF,
                 )
         for composer in self.composers:
-            ancestry = {ancestor.symbol for ancestor in require_static_c3(self.snapshot, composer.facts)}
+            closed = require_static_c3(self.snapshot, composer.facts)
+            ancestry = {ancestor.symbol for ancestor in closed}
             for owner in self.owners:
                 if owner.symbol in ancestry:
                     raise ValueError(f"`{owner.qualname}` is already an ancestor")
@@ -1175,6 +1158,10 @@ class CoveringComposition:
                     raise NeedsInput(
                         f"`{owner.qualname}` is declared after `{composer.qualname}`", NeededInput.SOURCE_CHANGE
                     )
+            ClassCreationProof.composing(
+                self.snapshot, composer.facts, closed,
+                tuple((owner.qualname, owner.node) for owner in self.owners),
+            ).require_unchanged()
             header = ClassHeaderSpanSourceAuthority(
                 composer.node, self.snapshot.sources_by_file_path[composer.file_path]
             )
