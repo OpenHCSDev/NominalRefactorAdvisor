@@ -509,6 +509,18 @@ class ForeignSubject(SubjectReading):
     UNION_FORMS: ClassVar[frozenset[str]] = frozenset(
         ("typing.Union", "typing.Optional", "typing_extensions.Union", "typing_extensions.Optional")
     )
+    ITERABLE_FORMS: ClassVar[frozenset[str]] = frozenset(
+        f"{module}.{name}"
+        for module, names in (
+            ("typing", ("Iterable", "Iterator", "Collection", "Sequence", "MutableSequence",
+                        "AbstractSet", "Set", "FrozenSet", "List", "Tuple")),
+            ("collections.abc", ("Iterable", "Iterator", "Collection", "Sequence",
+                                 "MutableSequence", "Set")),
+            ("builtins", ("list", "tuple", "set", "frozenset")),
+        )
+        for name in names
+    )
+    """Annotations whose one type argument is the type of each element a `for` reads."""
 
     def restated(self, names: tuple[str, ...], scope: DeclaredClassScope) -> tuple[str, ...]:
         return ()
@@ -554,6 +566,20 @@ class ForeignUnionSubject(ForeignSubject):
         if any(not scope.declares_module_of(member) for member in self.members):
             return ()
         return names
+
+
+@dataclass(frozen=True)
+class BinaryOperandSubject(ForeignSubject):
+    """A method's other operand, annotated as its own class or one of its listed bases
+    (`Update.can_replace(self, message: Message)`). Like `__eq__`, the answer depends on
+    both objects, so no override of the receiver alone can answer which class the
+    operand is: the test of the receiver's own class or that base decodes the operand.
+    A test of any other class still restates the family."""
+
+    decoded: tuple[str, ...]
+
+    def restated(self, names: tuple[str, ...], scope: DeclaredClassScope) -> tuple[str, ...]:
+        return tuple(name for name in names if name not in self.decoded)
 
 
 @dataclass(frozen=True)

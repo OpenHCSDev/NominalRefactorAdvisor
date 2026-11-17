@@ -96,6 +96,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceFileCreation,
     SourceFileDeletion,
     SourceInsertion,
+    SourceSpanEdit,
     SourceTargetEditor,
     SourceTextGeometry,
     SourceTextSpanReplacement,
@@ -104,6 +105,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     TextFileEdit,
 )
 from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.refactors.downstream_consumers import DownstreamConsumers
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyProjection,
 )
@@ -1485,7 +1487,7 @@ class _SourceModuleObjectReads:
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
         index = parsed.fact(ModuleNodeIndex)
-        cls._refuse_function_reads(index, identity, source_parts, moved_names, file_path)
+        cls._refuse_function_reads(index, identity, source_parts, moved_names, file_path, retargeted)
         imported = frozenset(
             chain
             for chain in cls._bound_chains(index, identity, source_parts)
@@ -1625,11 +1627,13 @@ class _SourceModuleObjectReads:
         source_parts: tuple[str, ...],
         moved_names: frozenset[str],
         file_path: str,
+        retargeted: frozenset[str],
     ) -> None:
         """A function binding the source module by its own import shadows the
         module-level name, so its `module.Name` reads are not this class's to
         rewrite; reading a moved name there would break once it leaves, so the
-        move refuses, naming the function."""
+        move refuses, naming the function. A binding `_SourceModuleAliasRetargets`
+        points at the names' one owner is already rewritten."""
 
         for node in index.imports:
             function = index.parents.get(node)
@@ -1638,6 +1642,8 @@ class _SourceModuleObjectReads:
             if function is None:
                 continue
             for chain in cls._chains_of(node, identity, source_parts):
+                if chain[0] in retargeted:
+                    continue
                 for name in ast.walk(function):
                     if not (isinstance(name, ast.Name) and name.id == chain[0]):
                         continue
@@ -1888,6 +1894,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                 )
                 for module_text, names, scope in self_binding_removals
             ),
+            *cls._destination_local_self_imports(
+                context,
+                source_path=request.source_path,
+                destination_path=request.destination_path,
+                moved_symbol_names=moved_symbol_names,
+                rationale=request.rationale or "The destination now declares these names itself.",
+            ),
             *name_redirect.consumer_edits(
                 context,
                 excluded_paths=frozenset(
@@ -1998,6 +2011,99 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
                         (ImportFromModuleName.from_node(statement).source, names, scope)
                     )
         return tuple(removals)
+
+    @staticmethod
+    def _destination_local_self_imports(
+        context: CodemodSelectorContext,
+        *,
+        source_path: str,
+        destination_path: str,
+        moved_symbol_names: tuple[str, ...],
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        """A function of the destination that imports a moved declaration from
+        the source, inside its body: once the declaration lands there, the name
+        is the module's own, so the function reads it with no import. The other
+        names the statement imports stay; a body it empties keeps a `pass`. A
+        function binding the name any other way refuses."""
+
+        import_graph = context.module_import_graph
+        source_module_name = import_graph.module_name_for_file_path(source_path)
+        destination_file = import_graph.source_file_for_path(destination_path)
+        if source_module_name is None or destination_file is None:
+            return ()
+        moved = frozenset(moved_symbol_names)
+        parsed = context.parsed_module_for_source_path(destination_path)
+        index = parsed.fact(ModuleNodeIndex)
+        module_level = {
+            id(statement) for scope in ModuleImportScope for statement in scope.import_statements(parsed.module)
+        }
+        edits: list[NominalSourceEdit] = []
+        for statement in index.import_froms():
+            if id(statement) in module_level or (
+                destination_file.module_path_identity.resolve_import_from_module(
+                    imported_module=statement.module, level=statement.level
+                )
+                != source_module_name
+            ):
+                continue
+            leaving = tuple(
+                alias for alias in statement.names if alias.name in moved and alias.asname in (None, alias.name)
+            )
+            if not leaving:
+                continue
+            function = index.parents.get(statement)
+            while function is not None and not isinstance(function, ast.FunctionDef | ast.AsyncFunctionDef):
+                function = index.parents.get(function)
+            names = {alias.name for alias in leaving}
+            rebound = sorted(
+                {
+                    node.id
+                    for node in (ast.walk(function) if function is not None else ())
+                    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id in names
+                }
+            )
+            if rebound:
+                raise ValueError(
+                    f"{destination_path!r} imports {rebound!r} inside a function that also binds them, "
+                    "so they cannot become the module's own"
+                )
+            kept = tuple(alias for alias in statement.names if alias not in leaving)
+            parent = index.parents.get(statement)
+            block = next(
+                (
+                    body
+                    for field in ("body", "orelse", "finalbody")
+                    if isinstance(body := getattr(parent, field, None), list) and statement in body
+                ),
+                [statement],
+            )
+            indent = " " * statement.col_offset
+            replacement = (
+                (
+                    indent
+                    + ImportFromSource(
+                        module_name=ImportFromModuleName.from_node(statement).source,
+                        aliases=kept,
+                        layout=ImportLayout.of(statement, destination_path),
+                    ).source.strip().replace("\n", "\n" + indent)
+                    + "\n",
+                )
+                if kept
+                else (indent + "pass\n",)
+                if block == [statement]
+                else ()
+            )
+            edits.append(
+                SourceSpanEdit.from_replacement_lines(
+                    file_path=destination_path,
+                    start_line=statement.lineno,
+                    end_line=statement.end_lineno or statement.lineno,
+                    replacement_lines=replacement,
+                    rationale=rationale,
+                )
+            )
+        return tuple(edits)
 
     @staticmethod
     def _validate_destination(
@@ -3413,9 +3519,20 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
         """An entry point or setting naming a moved name on the source, which no
         longer binds it, names the name's owner instead."""
 
+        redirect = self.move_plan(context).name_redirect
+        import_graph = context.module_import_graph
+        source_path = self.required_source_path(context, self.operation_key())
+        homes = {
+            name: home
+            for name, path in redirect.destinations.items()
+            if (home := import_graph.module_name_for_file_path(path)) is not None
+        }
         return (
             *super().text_file_changes(context),
             *self.relocated_strings(context).manifest_edits(context, self),
+            *DownstreamConsumers.of(Path(source_path)).edits(
+                type(self), redirect.source_module_name(import_graph), homes
+            ),
         )
 
     def move_source_edits(

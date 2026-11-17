@@ -39,6 +39,7 @@ from nominal_refactor_advisor.observation_shapes import (
     FieldObservation,
     ClassIdentityTestShape,
     ForeignSubject,
+    BinaryOperandSubject,
     ForeignUnionSubject,
     NoBranchSubject,
     SubjectReading,
@@ -1066,24 +1067,49 @@ class TypeArgumentResolver:
 
     @cached_property
     def aliases(self) -> dict[str, ast.expr]:
+        """Once-assigned module-level names whose value is a collection of types:
+        `A = (B, C)`, `A = B | C`, `A: TypeAlias = Union[B, C]`, or a quoted form
+        of the last two."""
+
         assignments = [
-            (statement.targets[0].id, statement.value)
+            (target.id, self._alias_value(value))
             for statement in self.parsed_module.module.body
-            if isinstance(statement, ast.Assign)
-            and len(statement.targets) == 1
-            and isinstance(statement.targets[0], ast.Name)
+            for target, value in self._assigned(statement)
+            if isinstance(target, ast.Name)
         ]
         counts = Counter(name for name, _value in assignments)
         return {
             name: value
             for name, value in assignments
-            if counts[name] == 1 and self._is_member_collection(value)
+            if counts[name] == 1 and value is not None
         }
+
+    @staticmethod
+    def _assigned(statement: ast.stmt) -> tuple[tuple[ast.expr, ast.expr], ...]:
+        match statement:
+            case ast.Assign(targets=[target], value=value):
+                return ((target, value),)
+            case ast.AnnAssign(target=target, value=ast.expr() as value):
+                return ((target, value),)
+        return ()
+
+    @classmethod
+    def _alias_value(cls, node: ast.expr) -> ast.expr | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            try:
+                node = ast.parse(node.value, mode="eval").body
+            except SyntaxError:
+                return None
+        return node if cls._is_member_collection(node) else None
 
     @staticmethod
     def _is_member_collection(node: ast.AST) -> bool:
         match node:
             case ast.Tuple() | ast.BinOp(op=ast.BitOr()):
+                return True
+            case ast.Subscript(
+                value=ast.Name(id="Union" | "Optional") | ast.Attribute(attr="Union" | "Optional")
+            ):
                 return True
         return False
 
@@ -1104,6 +1130,13 @@ class TypeArgumentResolver:
                 return (
                     *self.members(left, scope, expanding),
                     *self.members(right, scope, expanding),
+                )
+            case ast.Subscript(slice=argument) if self._is_member_collection(node):
+                elements = argument.elts if isinstance(argument, ast.Tuple) else (argument,)
+                return tuple(
+                    member
+                    for element in elements
+                    for member in self.members(element, scope, expanding)
                 )
             case ast.Name(id=name) if (
                 name in self.aliases and not scope.hides(name) and name not in expanding
@@ -1251,8 +1284,14 @@ def _union_members(
                 return tuple(alternative for member in members for alternative in alternatives(member))
             case ast.Constant(value=None):
                 return ()
+            case ast.Name(id=name) if (
+                name in resolver.aliases and not scope.hides(name) and name not in expanding
+            ):
+                expanding.add(name)
+                return alternatives(resolver.aliases[name])
         return (node,)
 
+    expanding: set[str] = set()
     members = alternatives(annotation)
     if len(members) < 2:
         return None
@@ -1288,7 +1327,7 @@ def _subject_reading(
         return SubjectReading()
     function = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_parameter(subject, ancestors)
     if function is None:
-        return SubjectReading()
+        return _element_reading(subject, ancestors, resolver)
     annotation = LEXICAL_SCOPE_BINDING_AUTHORITY.declared_annotation(function, subject.id)
     match annotation:
         case ast.Name(id=declared) | ast.Constant(value=declared) if (
@@ -1302,12 +1341,109 @@ def _subject_reading(
             == [subject.id]
         ):
             return ForeignSubject()
-    members = _union_members(
-        annotation, resolver, ancestors[: next((i for i, a in enumerate(ancestors) if a is function), len(ancestors))]
-    )
+    outside = ancestors[: next((i for i, a in enumerate(ancestors) if a is function), len(ancestors))]
+    members = _union_members(annotation, resolver, outside)
     if members is not None:
         return ForeignUnionSubject(members)
-    return SubjectReading()
+    return _binary_operand_reading(function, subject, outside, resolver)
+
+
+def _element_reading(
+    subject: ast.Name, ancestors: Sequence[ast.AST], resolver: TypeArgumentResolver
+) -> SubjectReading:
+    """`ForeignUnionSubject` when the tested name is a `for` target bound only there,
+    iterating a parameter whose elements are annotated as a union with a foreign
+    member: `*items: A | str`, or `items: Iterable[A | str]` and the other iterable
+    forms (`ForeignSubject.ITERABLE_FORMS`). Each element is foreign until the test
+    decodes it, as the parameter itself would be."""
+
+    loop_at = next(
+        (
+            position
+            for position in range(len(ancestors) - 1, -1, -1)
+            if isinstance(ancestors[position], ast.For | ast.AsyncFor)
+            and isinstance(ancestors[position].target, ast.Name)
+            and ancestors[position].target.id == subject.id
+            and any(statement is ancestors[position + 1] for statement in ancestors[position].body)
+        ),
+        None,
+    )
+    if loop_at is None or not LEXICAL_SCOPE_BINDING_AUTHORITY.bound_once(subject, ancestors):
+        return SubjectReading()
+    loop = ancestors[loop_at]
+    if not isinstance(loop.iter, ast.Name):
+        return SubjectReading()
+    function = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_parameter(loop.iter, ancestors[: loop_at + 1])
+    if function is None or isinstance(function, ast.Lambda):
+        return SubjectReading()
+    outside = ancestors[: next((i for i, a in enumerate(ancestors) if a is function), len(ancestors))]
+    vararg = function.args.vararg
+    if vararg is not None and vararg.arg == loop.iter.id:
+        element = vararg.annotation
+    else:
+        element = _iterated_element(
+            LEXICAL_SCOPE_BINDING_AUTHORITY.declared_annotation(function, loop.iter.id),
+            resolver,
+            outside,
+        )
+    members = _union_members(element, resolver, outside)
+    return SubjectReading() if members is None else ForeignUnionSubject(members)
+
+
+def _iterated_element(
+    annotation: ast.expr | None, resolver: TypeArgumentResolver, ancestors: Sequence[ast.AST]
+) -> ast.expr | None:
+    """The element type an iterable annotation declares: `Iterable[T]`, `list[T]`,
+    `tuple[T, ...]`; None for any other shape."""
+
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return None
+    match annotation:
+        case ast.Subscript(value=form, slice=argument) if (
+            resolver.qualified_name(form, resolver.scope_at(ancestors))
+            in ForeignSubject.ITERABLE_FORMS
+        ):
+            match argument:
+                case ast.Tuple(elts=[element, ast.Constant(value=rest)]) if rest is Ellipsis:
+                    return element
+                case ast.Tuple():
+                    return None
+            return argument
+    return None
+
+
+def _binary_operand_reading(
+    function: ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda,
+    subject: ast.Name,
+    outside: Sequence[ast.AST],
+    resolver: TypeArgumentResolver,
+) -> SubjectReading:
+    """`BinaryOperandSubject` when the tested name is a method's later positional
+    parameter annotated as the method's own module-level class or one of its listed
+    bases; otherwise the value is held as itself."""
+
+    if isinstance(function, ast.Lambda) or len(outside) != 2:
+        return SubjectReading()
+    owner = outside[-1]
+    positional = [argument.arg for argument in (*function.args.posonlyargs, *function.args.args)]
+    if not isinstance(owner, ast.ClassDef) or subject.id not in positional[1:]:
+        return SubjectReading()
+    scope = resolver.scope_at(outside)
+    annotation = LEXICAL_SCOPE_BINDING_AUTHORITY.declared_annotation(function, subject.id)
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return SubjectReading()
+    declared = None if annotation is None else resolver.qualified_name(annotation, scope)
+    own = resolver.qualified_name(ast.Name(id=owner.name), resolver.scope_at(outside[:1]))
+    bases = tuple(resolver.qualified_name(base, scope) for base in owner.bases)
+    if declared is None or own is None or declared not in (own, *bases):
+        return SubjectReading()
+    return BinaryOperandSubject(tuple(sorted({own, declared})))
 
 
 def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:

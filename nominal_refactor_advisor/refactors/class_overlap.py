@@ -109,6 +109,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceInsertion,
     SourceTextGeometry,
     SourceTextSpanReplacement,
+    TextFileChange,
 )
 from nominal_refactor_advisor.codemod_statement_source import (
     StatementDeletionSource,
@@ -2805,7 +2806,8 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
 class RelocationStep:
     """An operation one of whose steps relocates declarations: the files that
     relocation creates, a new module and any package of it, are created first,
-    so every step sees them and the edits fill them as any existing module."""
+    so every step sees them and the edits fill them as any existing module; the
+    files outside the scan it rewrites are rewritten with them."""
 
     def relocation(
         self, snapshot: CodemodSourceSnapshot
@@ -2815,6 +2817,21 @@ class RelocationStep:
     def source_file_creations(self, context: CodemodSelectorContext) -> tuple[SourceFileCreation, ...]:
         relocation = self.relocation(context.execution_snapshot())
         return () if relocation is None else relocation.source_file_creations(context)
+
+    def relocation_state(self, snapshot: CodemodSourceSnapshot) -> CodemodSourceSnapshot:
+        """The source the relocation runs on: the operation's own, as it is the
+        first step, unless a step of the operation comes before it."""
+
+        return snapshot
+
+    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileChange, ...]:
+        """What the relocation keeps true outside the scanned source, read on
+        the source it runs on: a manifest naming a moved name, a dependent
+        checkout importing one."""
+
+        snapshot = context.execution_snapshot()
+        relocation = self.relocation(snapshot)
+        return () if relocation is None else relocation.text_file_changes(self.relocation_state(snapshot))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3639,6 +3656,18 @@ class CreateMixinOperation(RelocationStep, RepositorySourceReprovedOperation):
         mixin = self.declared(self.creation(snapshot))
         return relocation_to(snapshot, mixin, self.home_module, (mixin.qualname,))
 
+    def relocation_state(self, snapshot: CodemodSourceSnapshot) -> CodemodSourceSnapshot:
+        """The source the first step leaves, which declares the mixin the
+        relocation moves."""
+
+        return in_order_states(snapshot, (self.first_step,), f"create-{self.mixin_name}")[-1]
+
+    @property
+    def first_step(self) -> CreateMixinOperation:
+        """The mixin declared beside its anchor, composed by nobody yet."""
+
+        return replace(self, composers=())
+
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
@@ -3660,7 +3689,7 @@ class CreateMixinOperation(RelocationStep, RepositorySourceReprovedOperation):
         return in_order_edits(
             snapshot,
             (
-                replace(self, composers=()),
+                self.first_step,
                 *moves,
                 *(
                     ComposeExistingClassOperation(target=composer, owner=mixin)

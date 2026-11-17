@@ -130,6 +130,25 @@ class HiddenImport(ABC):
     def bindings(self) -> tuple[ImportedBinding, ...]:
         return ImportedBinding.of(self.module, self.statement)
 
+    @property
+    def symbol(self) -> str:
+        """The dotted class and function names enclosing the import; empty at
+        module level."""
+
+        return ".".join(
+            node.name
+            for node in reversed(self.module.syntax_index.parent_index.ancestors(self.statement))
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        )
+
+    @property
+    def identity(self) -> str:
+        """The import as a move leaves it: its file, the symbol it sits in and
+        the names it binds. A move shifts its line and may change the module it
+        imports from; none of these."""
+
+        return f"{self.module.file_path}::{self.symbol}::{','.join(sorted(b.bound for b in self.bindings))}"
+
     @abstractmethod
     def require_promotable(self, scope: RuntimeBindings) -> None:
         """Raises, naming the input it needs, when moving this import to the
@@ -272,6 +291,20 @@ class LocalImport(HiddenImport):
             for other in self.block
         ):
             raise NeedsInput("another statement shares its lines", NeededInput.OPERATION)
+        changed = next(
+            (
+                node.lineno
+                for node in ast.walk(self.function)
+                if isinstance(node, ast.stmt | ast.expr) and node.lineno < first and changes_import_path(node)
+            ),
+            None,
+        )
+        if changed is not None:
+            raise NeedsInput(
+                f"it runs after `{self.function.name}` changes `sys.path` at line {changed}; at the "
+                "module's top it would run before, so the path setup moves to load time first",
+                NeededInput.SOURCE_CHANGE,
+            )
         others, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(self.function.body)
         here = others | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.function)
         enclosing = frozenset(
@@ -320,6 +353,31 @@ class LocalImport(HiddenImport):
                 )
             ),
         )
+
+
+SYS_PATH_CHANGES = frozenset({"insert", "append", "extend", "remove", "pop", "clear"})
+
+
+def changes_import_path(node: ast.AST) -> bool:
+    """`sys.path.insert(...)` and its kin, or an assignment to `sys.path` or one
+    of its items: what an import after it may need in order to resolve."""
+
+    def is_sys_path(expr: ast.expr) -> bool:
+        return (
+            isinstance(expr, ast.Attribute)
+            and expr.attr == "path"
+            and isinstance(expr.value, ast.Name)
+            and expr.value.id == "sys"
+        )
+
+    match node:
+        case ast.Call(func=ast.Attribute(value=target, attr=method)) if method in SYS_PATH_CHANGES:
+            return is_sys_path(target)
+        case ast.Assign(targets=targets):
+            return any(is_sys_path(t) or isinstance(t, ast.Subscript) and is_sys_path(t.value) for t in targets)
+        case ast.AugAssign(target=target):
+            return is_sys_path(target)
+    return False
 
 
 class HiddenImportRefusal(ABC):
@@ -414,12 +472,23 @@ class HiddenImportPlan(ParsedModuleSetFact):
     def refused_in(self, file_path: str) -> tuple[HiddenImportRefusal, ...]:
         return tuple(refusal for refusal in self.refused if refusal.hidden.module.file_path == file_path)
 
-    def edits_for(self, file_path: str, rationale: str) -> tuple[NominalSourceEdit, ...]:
-        """Every accepted import of one file moved to its top, each seeing the
-        scope with the imports accepted before it bound; when none is accepted,
-        what each refused one needs."""
+    def freed_by(self, before: HiddenImportPlan) -> tuple[HiddenImport, ...]:
+        """The imports this plan accepts that `before`, the plan of the source a
+        change started from, refused: what the change freed."""
 
-        accepted = self.accepted_in(file_path)
+        refused = frozenset(refusal.hidden.identity for refusal in before.refused)
+        return tuple(hidden for hidden in self.accepted if hidden.identity in refused)
+
+    def edits_for(
+        self, file_path: str, rationale: str, only: frozenset[str] | None = None
+    ) -> tuple[NominalSourceEdit, ...]:
+        """Every accepted import of one file, or those of them `only` names by
+        identity, moved to its top, each seeing the scope with the imports
+        accepted before it bound; when none is, what each refused one needs."""
+
+        accepted = tuple(
+            hidden for hidden in self.accepted_in(file_path) if only is None or hidden.identity in only
+        )
         if not accepted:
             needs = tuple(refusal.need for refusal in self.refused_in(file_path))
             raise NeedsInput(
