@@ -247,12 +247,49 @@ class NotStandardDataclass(ValueError):
     """A class that is not a standard `dataclasses.dataclass` declaration."""
 
 
+class DataclassFrozenness(StrEnum):
+    """What a class's dataclass decorator declares about frozen instances.
+
+    Python refuses a frozen dataclass whose dataclass bases are not frozen, and
+    the reverse, so one dataclass mixin is composed only by dataclasses of one
+    frozenness. A class no dataclass decorator declares takes no part in that
+    check, and a non-literal `frozen=` leaves it unknown, which agrees with
+    nothing.
+    """
+
+    FROZEN = "frozen"
+    MUTABLE = "mutable"
+    UNKNOWN = "unknown"
+    UNDECLARED = "undeclared"
+
+    @classmethod
+    def of_keywords(cls, keywords: Iterable[ast.keyword]) -> DataclassFrozenness:
+        """The frozenness a dataclass decorator call's `frozen=` keyword declares."""
+
+        values = tuple(keyword.value for keyword in keywords if keyword.arg == "frozen")
+        if not values:
+            return cls.MUTABLE
+        if len(values) > 1 or not (
+            isinstance(values[0], ast.Constant) and isinstance(values[0].value, bool)
+        ):
+            return cls.UNKNOWN
+        return cls.FROZEN if values[0].value else cls.MUTABLE
+
+    @staticmethod
+    def agree(frozenness: Iterable[DataclassFrozenness]) -> bool:
+        """Whether classes of these frozennesses can compose one dataclass mixin."""
+
+        declared = frozenset(frozenness) - {DataclassFrozenness.UNDECLARED}
+        return len(declared) <= 1 and DataclassFrozenness.UNKNOWN not in declared
+
+
 class CompactDataclassFacet(ABC):
     """A class's dataclass facet: a dataclass-like declaration, or none."""
 
     runtime_declaration: DataclassRuntimeDeclaration | None
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...]
+    frozenness: DataclassFrozenness
 
     def with_settled_field_declarations(self, index: FieldDeclarationIndex) -> Self:
         settled = tuple(member.settled(index) for member in self.fields)
@@ -305,6 +342,7 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
     runtime_declaration: DataclassRuntimeDeclaration | None
     fields: tuple[CompactDataclassFieldDeclaration, ...]
     failures: tuple[CompactProductDeclarationFailure, ...] = ()
+    frozenness: DataclassFrozenness = DataclassFrozenness.MUTABLE
 
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         if (
@@ -348,6 +386,7 @@ class NoDataclassDeclaration(CompactDataclassFacet):
     runtime_declaration = None
     fields = ()
     failures = ()
+    frozenness = DataclassFrozenness.UNDECLARED
 
     def require_standard(self, reason: str) -> CompactDataclassDeclaration:
         raise NotStandardDataclass(reason)
@@ -6217,6 +6256,9 @@ def _dataclass_declaration(
         ),
         fields=fields,
         failures=tuple(dict.fromkeys(failures)),
+        frozenness=DataclassFrozenness.of_keywords(
+            decorator.keywords if isinstance(decorator, ast.Call) else ()
+        ),
     )
 
 

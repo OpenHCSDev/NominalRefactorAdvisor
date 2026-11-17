@@ -39,7 +39,7 @@ from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import ClassVar, TypeVar
 
-from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.class_index import CompactIndexedClass, DataclassFrozenness
 from nominal_refactor_advisor.json_reports import (
     SemanticRecord,
     json_report_field,
@@ -93,6 +93,8 @@ class OwnerReceiptKind(ReceiptKind):
     INHERITED_SHARE = "inherited_share", 0.0, True, NeededInput.OPERATION
     HOISTS_INHERITED = "hoists_inherited", -0.25, False
     ALSO_DECLARED_BY = "also_declared_by", -0.5, False
+    FROZEN_DIFFERS = "frozen_differs", 0.0, True, NeededInput.SOURCE_CHANGE
+    KEEPS_OWN_DECLARATION = "keeps_own_declaration", 0.0, False
 
 
 SERVED_CONSUMER_CAP = 4
@@ -1009,6 +1011,9 @@ class BlockOwnerQuestion:
                     (),
                 ),
                 *self._restater_receipts(restaters),
+                *self._frozenness_receipts(
+                    (self.first.symbol, self.second.symbol), self._whole_block_restaters()
+                ),
                 *import_receipts,
                 *order_receipts,
                 *owned_elsewhere,
@@ -1034,6 +1039,10 @@ class BlockOwnerQuestion:
                             + f": they move into a new class `{base.qualname}` and "
                             f"`{restater.qualname}` compose",
                             (_location(base),),
+                        ),
+                        *self._frozenness_receipts(
+                            (base.symbol, restater.symbol),
+                            self._hoist_restaters((base.symbol, restater.symbol), hoisted),
                         ),
                         *self._field_order_receipts(
                             base, hoisted, keyword_only_route=True,
@@ -1323,17 +1332,104 @@ class BlockOwnerQuestion:
         hoisted: Sequence[str],
     ) -> tuple[str, ...]:
         """The ancestor and the restater, then every other class declaring all
-        the hoisted names itself: a hoisted mixin is composed like any new
-        mixin, by each class that restates its block."""
+        the hoisted names itself that can compose the same dataclass mixin: a
+        hoisted mixin is composed like any new mixin, by each class that
+        restates its block."""
 
+        required = (base.symbol, restater.symbol)
+        kept, _ = self._frozenness_split(required, self._hoist_restaters(required, hoisted))
+        return (*required, *kept)
+
+    def _hoist_restaters(self, required: Sequence[str], hoisted: Sequence[str]) -> tuple[str, ...]:
         whole = frozenset.intersection(*(self.own_holders_of(name) for name in hoisted))
-        return (base.symbol, restater.symbol, *sorted(whole - {base.symbol, restater.symbol}))
+        return tuple(sorted(whole - set(required)))
 
-    def _co_restaters(self) -> tuple[str, ...]:
+    def _whole_block_restaters(self) -> tuple[str, ...]:
         """Other classes that declare the whole block identically themselves."""
 
         whole = frozenset.intersection(*(self.own_holders_of(name) for name in self.block))
         return tuple(sorted(whole - {self.first.symbol, self.second.symbol}))
+
+    def _co_restaters(self) -> tuple[str, ...]:
+        """The other classes declaring the whole block identically that can compose
+        the dataclass owner the two classes compose."""
+
+        kept, _ = self._frozenness_split(
+            (self.first.symbol, self.second.symbol), self._whole_block_restaters()
+        )
+        return kept
+
+    def _frozenness_of(self, symbol: str) -> DataclassFrozenness:
+        indexed_class = self.class_for(symbol)
+        if indexed_class is None:
+            return DataclassFrozenness.UNKNOWN
+        return indexed_class.dataclass_declaration.frozenness
+
+    def _frozenness_split(
+        self, required: Sequence[str], optional: Sequence[str]
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """The optional composers that agree with the required ones on frozenness,
+        and those left out. When the required ones disagree the owner refuses,
+        so none is left out."""
+
+        frozenness = tuple(self._frozenness_of(symbol) for symbol in required)
+        if not DataclassFrozenness.agree(frozenness):
+            return tuple(optional), ()
+        kept = tuple(
+            symbol
+            for symbol in optional
+            if DataclassFrozenness.agree((*frozenness, self._frozenness_of(symbol)))
+        )
+        return kept, tuple(symbol for symbol in optional if symbol not in kept)
+
+    def _frozenness_receipts(
+        self, required: Sequence[str], optional: Sequence[str]
+    ) -> tuple[Receipt, ...]:
+        """A refusal when the classes that must compose one dataclass mixin differ
+        in frozenness, and a note naming each optional composer left out."""
+
+        _, left_out = self._frozenness_split(required, optional)
+        receipts: list[Receipt] = []
+        if not DataclassFrozenness.agree(self._frozenness_of(symbol) for symbol in required):
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.FROZEN_DIFFERS,
+                    "Python refuses a frozen dataclass with a non-frozen dataclass base "
+                    "and the reverse, so one mixin cannot serve "
+                    + ", ".join(
+                        f"`{self._qualname_of(symbol)}` ({self._frozenness_of(symbol)})"
+                        for symbol in required
+                    ),
+                    tuple(
+                        _location(indexed_class)
+                        for symbol in required
+                        if (indexed_class := self.class_for(symbol)) is not None
+                    ),
+                )
+            )
+        if left_out:
+            receipts.append(
+                Receipt(
+                    OwnerReceiptKind.KEEPS_OWN_DECLARATION,
+                    ", ".join(
+                        f"`{self._qualname_of(symbol)}` ({self._frozenness_of(symbol)})"
+                        for symbol in left_out
+                    )
+                    + " also declare(s) the block but cannot compose a dataclass mixin "
+                    "of the other frozenness: it keeps its own declaration",
+                    tuple(
+                        _location(indexed_class)
+                        for symbol in left_out
+                        if (indexed_class := self.class_for(symbol)) is not None
+                    ),
+                    count=len(left_out),
+                )
+            )
+        return tuple(receipts)
+
+    def _qualname_of(self, symbol: str) -> str:
+        indexed_class = self.class_for(symbol)
+        return symbol if indexed_class is None else indexed_class.qualname
 
     def _restater_receipts(self, restaters: Sequence[str]) -> tuple[Receipt, ...]:
         if not restaters:
