@@ -42,8 +42,11 @@ DECODER_NAMES = frozenset({"decode", "parse", "from_wire", "from_json", "from_di
 
 
 def _behaviour(body: list[ast.stmt]) -> str:
-    """One branch, normalized: its statements without positions or comments."""
+    """One branch, normalized: its statements without positions or comments; no
+    statements is the code after the test."""
 
+    if not body:
+        return FALLS_THROUGH
     return ast.dump(ast.Module(body=body, type_ignores=[]), annotate_fields=False)
 
 
@@ -86,20 +89,22 @@ def _builds_a_class(body: list[ast.stmt]) -> bool:
     return False
 
 
-def _literals(test: ast.expr) -> tuple[ast.expr, tuple[str, ...]] | None:
-    """`x == "a"`, `"a" == x`, `x in ("a", "b")`, `x.startswith("a")`: the subject and its literals."""
+def _literals(test: ast.expr) -> tuple[ast.expr, tuple[str, ...], bool] | None:
+    """`x == "a"`, `"a" == x`, `x in ("a", "b")`, `x.startswith("a")`: the subject,
+    its literals, and whether the test is negated (`!=`, `not in`), so that its
+    literals take the else branch and every other value the body."""
 
     match test:
-        case ast.Compare(left=left, ops=[ast.Eq()], comparators=[ast.Constant(value=str() as literal)]):
-            return left, (literal,)
-        case ast.Compare(left=ast.Constant(value=str() as literal), ops=[ast.Eq()], comparators=[right]):
-            return right, (literal,)
-        case ast.Compare(left=left, ops=[ast.In()], comparators=[ast.Tuple(elts=elements) | ast.Set(elts=elements) | ast.List(elts=elements)]):
+        case ast.Compare(left=left, ops=[ast.Eq() | ast.NotEq() as op], comparators=[ast.Constant(value=str() as literal)]):
+            return left, (literal,), isinstance(op, ast.NotEq)
+        case ast.Compare(left=ast.Constant(value=str() as literal), ops=[ast.Eq() | ast.NotEq() as op], comparators=[right]):
+            return right, (literal,), isinstance(op, ast.NotEq)
+        case ast.Compare(left=left, ops=[ast.In() | ast.NotIn() as op], comparators=[ast.Tuple(elts=elements) | ast.Set(elts=elements) | ast.List(elts=elements)]):
             values = tuple(e.value for e in elements if isinstance(e, ast.Constant) and isinstance(e.value, str))
             if values and len(values) == len(elements):
-                return left, values
+                return left, values, isinstance(op, ast.NotIn)
         case ast.Call(func=ast.Attribute(value=subject, attr="startswith"), args=[ast.Constant(value=str() as prefix)]):
-            return subject, (prefix + "*",)
+            return subject, (prefix + "*",), False
     return None
 
 
@@ -218,7 +223,10 @@ class StringKeySiteFamily(ShapeFamily[StringKeySiteModule]):
         nested: set[int],
         decoder: bool,
     ) -> StringKeySite | None:
-        """An if/elif chain testing one subject: each `elif` is the next arm, the last `else` the default."""
+        """An if/elif chain testing one subject: each `elif` is the next arm, the last `else` the default.
+
+        A negated first test is a site of its own: its literals take the else, and
+        everything else the body; a negated test later in a chain ends it."""
 
         arms: list[tuple[str, list[ast.stmt]]] = []
         subject_text: str | None = None
@@ -227,14 +235,18 @@ class StringKeySiteFamily(ShapeFamily[StringKeySiteModule]):
         default: list[ast.stmt] | None = None
         while current is not None:
             found = _literals(current.test)
-            if found is None:
+            if found is None or (found[2] and arms):
                 default = [current]
                 break
-            tested, literals = found
+            tested, literals, negated = found
             if subject_text is None:
                 subject_text, subject = ast.unparse(tested), tested
             elif ast.unparse(tested) != subject_text:
                 default = [current]
+                break
+            if negated:
+                arms.extend((literal, current.orelse) for literal in literals)
+                default = current.body
                 break
             arms.extend((literal, current.body) for literal in literals)
             nested.add(id(current))

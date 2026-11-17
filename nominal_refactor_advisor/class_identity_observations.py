@@ -1333,7 +1333,8 @@ LISTED_DECLARATIONS = 4
 class MemberSpellings:
     """A class keyword or constant whose explicit values are distinct among the siblings declaring it.
 
-    `members` are the explicit values with their classes; `family_bases` are the
+    `families` are the sibling groups, each under the base its members share,
+    with the explicit values and their classes; `family_bases` are the
     classes below which it names members: the bases of those siblings, the
     classes whose `__init_subclass__` consumes it, and the classes that declare
     it as a `ClassVar` slot. A keyword may also be derived
@@ -1342,11 +1343,29 @@ class MemberSpellings:
     """
 
     attribute: str
-    members: tuple[tuple[str, SourceLocation], ...]
+    families: tuple[tuple[str, tuple[tuple[str, SourceLocation], ...]], ...]
     family_bases: frozenset[str]
     declared_by_keyword: bool
     slotted: bool
     declared_at: tuple[SourceLocation, ...]
+
+    @property
+    def members(self) -> tuple[tuple[str, SourceLocation], ...]:
+        """Every family's explicit values with their classes."""
+
+        return tuple(member for _base, group in self.families for member in group)
+
+    def families_spelling(
+        self, literals: Iterable[str]
+    ) -> tuple[tuple[str, tuple[tuple[str, SourceLocation], ...]], ...]:
+        """The families that spell at least one of the literals."""
+
+        wanted = frozenset(literals)
+        return tuple(
+            (base, group)
+            for base, group in self.families
+            if any(value in wanted for value, _location in group)
+        )
 
     @property
     def identity(self) -> str:
@@ -1460,7 +1479,9 @@ class DeclaredIdentities:
                             siblings[(attribute, base, by_keyword)].append(
                                 (value, location)
                             )
-        members: dict[str, list[tuple[str, SourceLocation]]] = defaultdict(list)
+        families: dict[
+            str, list[tuple[str, tuple[tuple[str, SourceLocation], ...]]]
+        ] = defaultdict(list)
         family_bases: dict[str, set[str]] = defaultdict(set)
         keyword_attributes: set[str] = set(consumers)
         for (attribute, base, by_keyword), group in siblings.items():
@@ -1470,7 +1491,7 @@ class DeclaredIdentities:
                 and len(set(values)) == len(values)
                 and not cls.protocol_name(attribute)
             ):
-                members[attribute].extend(group)
+                families[attribute].append((base, tuple(group)))
                 family_bases[attribute].add(base)
                 if by_keyword:
                     keyword_attributes.add(attribute)
@@ -1487,14 +1508,18 @@ class DeclaredIdentities:
             members={
                 attribute: MemberSpellings(
                     attribute=attribute,
-                    members=tuple(members[attribute]),
+                    families=tuple(families[attribute]),
                     family_bases=frozenset(found),
                     declared_by_keyword=attribute in keyword_attributes,
                     slotted=attribute in slots,
                     declared_at=(
                         *consumers.get(attribute, ()),
                         *slots.get(attribute, ()),
-                        *(location for _value, location in members[attribute]),
+                        *(
+                            location
+                            for _base, group in families[attribute]
+                            for _value, location in group
+                        ),
                     ),
                 )
                 for attribute, found in family_bases.items()
@@ -1565,21 +1590,30 @@ class DeclaredIdentities:
         among its siblings still names itself.
         """
 
-        added: dict[str, list[tuple[str, SourceLocation]]] = defaultdict(list)
+        added: dict[str, dict[str, list[tuple[str, SourceLocation]]]] = defaultdict(
+            lambda: defaultdict(list)
+        )
         for attribute, value, location in explicit:
             spellings = self.members.get(attribute)
             if (
                 spellings is not None
                 and (spellings.declared_by_keyword or spellings.slotted)
                 and (value, location) not in spellings.members
-                and self.in_family(location.symbol, spellings)
+                and (base := self.family_base(location.symbol, spellings)) is not None
             ):
-                added[attribute].append((value, location))
+                added[attribute][base].append((value, location))
         return replace(
             self,
             members={
                 attribute: replace(
-                    spellings, members=(*spellings.members, *added.get(attribute, ()))
+                    spellings,
+                    families=(
+                        *spellings.families,
+                        *(
+                            (base, tuple(group))
+                            for base, group in added.get(attribute, {}).items()
+                        ),
+                    ),
                 )
                 for attribute, spellings in self.members.items()
             },
@@ -1630,10 +1664,20 @@ class DeclaredIdentities:
                     frontier.append(base)
         return tuple(found)
 
-    def in_family(self, name: str, spellings: MemberSpellings) -> bool:
-        return any(
-            ancestor in spellings.family_bases for ancestor in self.ancestors(name)
+    def family_base(self, name: str, spellings: MemberSpellings) -> str | None:
+        """The nearest class, the class itself or an ancestor, below which the spelling names members."""
+
+        return next(
+            (
+                ancestor
+                for ancestor in self.ancestors(name)
+                if ancestor in spellings.family_bases
+            ),
+            None,
         )
+
+    def in_family(self, name: str, spellings: MemberSpellings) -> bool:
+        return self.family_base(name, spellings) is not None
 
     def per_object(self, name: str, attribute: str) -> bool:
         """Whether the class or an ancestor declares the attribute as per-object state."""
