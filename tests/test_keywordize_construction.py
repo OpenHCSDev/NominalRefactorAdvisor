@@ -124,3 +124,61 @@ def test_keywording_refuses_an_unknown_keyword_only_option(tmp_path: Path) -> No
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
     with pytest.raises(CodemodOperationPreflightError, match="`pkg.records.Point`'s field `x` is keyword-only by a non-literal"):
         _simulate(tmp_path, "Point")
+
+
+FAMILY = (
+    "class Family(type):\n"
+    "    def __new__(mcs, name, bases, namespace, *, affix=None, **options):\n"
+    "        namespace['declared_name'] = name.lower()\n"
+    "        cls = super().__new__(mcs, name, bases, namespace, **options)\n"
+    "        cls.family_root = cls\n"
+    "        return cls\n\n\n"
+)
+
+FAMILY_RECORDS = RECORDS.replace(
+    "\n\n\n@dataclass(frozen=True)\nclass Point:",
+    "\n\n\n" + FAMILY + "@dataclass(frozen=True)\nclass Point(metaclass=Family, affix='p'):",
+    1,
+)
+
+
+def test_a_metaclass_that_stores_no_init_keeps_the_declared_parameters(tmp_path: Path) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": FAMILY_RECORDS, "pkg/users.py": USERS})
+    before = _run(tmp_path)
+
+    result = _simulate(tmp_path, "Point")
+    assert result.is_clean is True
+    for path, source in result.simulation.rewritten_sources.items():
+        Path(path).write_text(source, encoding="utf-8")
+
+    assert "P(x=1)" in (tmp_path / "pkg/users.py").read_text()
+    assert _run(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    (
+        (
+            ("        cls.family_root = cls\n", "        cls.__init__ = lambda self: None\n"),
+            "sets what a call binds",
+        ),
+        (
+            ("namespace['declared_name']", "namespace['__init__']"),
+            "keeps the parameters a call binds",
+        ),
+        (
+            (
+                "        return cls\n\n\n",
+                "        return cls\n\n    def __call__(cls, *args):\n        return super().__call__()\n\n\n",
+            ),
+            "defines `__call__`",
+        ),
+    ),
+)
+def test_a_metaclass_that_may_change_what_a_call_binds_refuses(
+    tmp_path: Path, change: tuple[str, str], refusal: str
+) -> None:
+    records = FAMILY_RECORDS.replace(*change, 1)
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records, "pkg/users.py": USERS})
+    with pytest.raises(CodemodOperationPreflightError, match=re.escape(refusal)):
+        _simulate(tmp_path, "Point")

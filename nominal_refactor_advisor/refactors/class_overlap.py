@@ -2074,6 +2074,10 @@ class ConstructionKeywording:
         return keywording
 
     def parameter_names(self, symbol: str) -> tuple[str, ...]:
+        indexed = OverlapClass.for_symbol(self.snapshot, symbol).facts
+        ClassCreationProof.constructing(
+            self.snapshot, indexed, require_static_c3(self.snapshot, indexed)
+        ).require_construction_kept()
         return self.snapshot.class_overlap_verdicts.class_index.construction_parameters(symbol)
 
     @cached_property
