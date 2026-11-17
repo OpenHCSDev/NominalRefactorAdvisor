@@ -3,7 +3,10 @@ from __future__ import annotations
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.codemod_workflow import CodemodWorkflowScan
 from nominal_refactor_advisor.refactor_search import (
+    PlayableMove,
+    RefactorSearch,
     ScoredMove,
+    SearchBudget,
     SearchTurn,
     StateScore,
     UnscoredMove,
@@ -31,7 +34,6 @@ def scored(
             derived=START.derived,
             add_member_edits=START.add_member_edits - add_member,
         ),
-        end=EMPTY,
         following=following,
     )
 
@@ -69,3 +71,25 @@ def test_edit_tokens_count_the_removed_and_written_lines_of_every_file() -> None
     removed_and_written = len("old line\n") + len("new line!\n") + len("abcd\n") + len("xyz\n")
     assert edit_tokens(before, after) == -(-removed_and_written // 4)
     assert edit_tokens(before, before) == 0
+
+
+def playable(move: ScoredMove) -> PlayableMove:
+    return PlayableMove(**{name: getattr(move, name) for name in (
+        "concept", "stages", "tokens", "before", "after", "following")}, end=EMPTY)
+
+
+def test_only_moves_lookahead_can_still_play_keep_their_end_state() -> None:
+    """A whole scanned tree per concept held to the end of a turn ran agent-comms
+    out of memory: a move outside the front's first `width` never re-enters it,
+    so its end state goes at once."""
+
+    best = playable(scored("best", removed=3, tokens=100))
+    second = playable(scored("second", removed=1, tokens=1000, add_member=10))
+    third = playable(scored("third", removed=1, tokens=1001, add_member=9))
+    search = RefactorSearch((), config=None, budget=SearchBudget(width=2))  # type: ignore[arg-type]
+
+    kept = search.playable((best, second, third), START, depth=2)
+
+    assert [type(move) for move in kept] == [PlayableMove, PlayableMove, ScoredMove]
+    assert kept[2] == third.released()
+    assert all(type(move) is ScoredMove for move in search.playable(kept, START, depth=1))
