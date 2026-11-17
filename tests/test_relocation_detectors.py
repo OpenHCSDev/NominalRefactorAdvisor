@@ -350,3 +350,81 @@ def test_a_parameter_rebound_by_a_capture_is_uncounted_but_a_nested_parameter_is
     assert all(
         any(f"/m.py:{line}{end}" in uncounted for end in ",.") for line in rebound_lines
     ), finding.summary
+
+
+@pytest.mark.parametrize(
+    "decoder",
+    (
+        # toad SessionIdentity.for_thread: the None branch builds the local member
+        "class SessionIdentity:\n    @classmethod\n    def for_thread(cls, thread: str, root: str | None):\n"
+        "        if root is None:\n            return LocalThreadIdentity(thread)\n"
+        "        return RootedThreadIdentity(thread, root)\n\n"
+        "class LocalThreadIdentity(SessionIdentity):\n    def __init__(self, thread):\n        self.thread = thread\n\n"
+        "class RootedThreadIdentity(SessionIdentity):\n    def __init__(self, thread, root):\n        self.root = root\n",
+        # toad CursorStatus.external: the None branch answers with the hidden member class
+        "class CursorStatus:\n    @classmethod\n    def external(cls, value: str | None) -> type['CursorStatus']:\n"
+        "        if value is None:\n            return HiddenCursorStatus\n        return cls\n\n"
+        "class HiddenCursorStatus(CursorStatus):\n    pass\n",
+    ),
+)
+def test_a_none_branch_answering_with_a_family_member_is_the_decoder(tmp_path, decoder):
+    assert _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": decoder})) == []
+
+
+def test_a_none_branch_answering_with_a_class_outside_any_family_still_threads(tmp_path):
+    source = (
+        "class Counter:\n    pass\n\n"
+        "def count(value: str | None):\n    if value is None:\n        return Counter()\n    return value\n"
+    )
+    findings = _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": source}))
+    assert [finding.evidence[0].line for finding in findings] == [5]
+
+
+def test_a_boundary_decoder_is_where_absence_is_decided(tmp_path):
+    """agent-comms ClientId.decode: `@boundary_decoder` marks the one decode of a wire value."""
+    source = (
+        "def boundary_decoder(function):\n    return function\n\n"
+        "class Wire:\n    @classmethod\n    @boundary_decoder\n"
+        "    def decode(cls, value: str | None) -> 'Wire':\n"
+        "        if value is None:\n            return EMPTY\n        return cls()\n\n"
+        "EMPTY = Wire()\n"
+    )
+    assert _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": source})) == []
+
+
+def test_a_reactive_callback_takes_the_value_textual_passes(tmp_path):
+    """Textual ListView.validate_index and watch_index: the reactive's own value, by its
+    declaration; a `watch_` method for no declared reactive is still a probe."""
+    source = (
+        "from textual.reactive import reactive\n\n"
+        "class ListView:\n    index = reactive[int | None](None, init=False)\n\n"
+        "    def validate_index(self, index: int | None) -> int | None:\n"
+        "        if index is None:\n            return None\n        return max(index, 0)\n\n"
+        "    def watch_index(self, index: int | None) -> None:\n"
+        "        if index is not None:\n            self.scroll(index)\n\n"
+        "    def watch_other(self, other: int | None) -> None:\n"
+        "        if other is not None:\n            self.scroll(other)\n"
+    )
+    findings = _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": source}))
+    assert [finding.evidence[0].symbol for finding in findings] == ["ListView.watch_other"]
+
+
+def test_a_none_threaded_through_private_callees_is_reported_where_it_starts(tmp_path):
+    """agent-comms TypedTable._query and Textual App._register_child: the private callee
+    probes the `None` its callers' defaults pass down; the absence starts at each default."""
+    source = (
+        "class Table:\n"
+        "    @classmethod\n    def rows(cls, where: str, limit: int | None = None) -> list:\n"
+        "        return list(cls._query(where, limit))\n\n"
+        "    @classmethod\n    def first(cls, *, limit: int | None = None) -> list:\n"
+        "        return list(cls._query('', limit=limit))\n\n"
+        "    @classmethod\n    def _query(cls, where: str, limit: int | None) -> list:\n"
+        "        clause = ' LIMIT ?' if limit is not None else ''\n"
+        "        return [where + clause, *((limit,) if limit is not None else ())]\n\n"
+        "    def set_scroll(self, x: float | None) -> None:\n"
+        "        if x is not None:\n            self.x = x\n"
+    )
+    findings = _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": source}))
+    assert sorted((f.evidence[0].symbol, f.evidence[0].line) for f in findings) == [
+        ("Table.first", 7), ("Table.rows", 3), ("Table.set_scroll", 16),
+    ]
