@@ -126,6 +126,18 @@ class DeclaredRoot:
         return cls.declared_names_for(path, "durable-bases")
 
     @classmethod
+    def composition_roots_for(cls, path: Path) -> frozenset[str]:
+        """The composition roots ``path``'s repository declares, as qualified
+        class names: each builds its services from the services it hands them,
+        and those constructor arguments are the repository's layering::
+
+            [tool.nominal-refactor-advisor]
+            composition-roots = ["package.module:Root", ...]
+        """
+
+        return cls.declared_names_for(path, "composition-roots")
+
+    @classmethod
     def keyword_binders_for(cls, path: Path) -> frozenset[str]:
         """The functions ``path``'s repository declares build a class handed to
         them only by field name, or never (an encoder, a decoder, a query that
