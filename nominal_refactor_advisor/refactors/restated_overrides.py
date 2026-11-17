@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import partial
+from typing import ClassVar
 
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -253,6 +254,125 @@ class AnnotationNames(ParsedModuleSetFact):
                         yield from cls.spelled(parsed)
 
 
+ANNOTATION_SLOTS = frozenset({"__annotations__", "__annotate__"})
+
+
+@dataclass(frozen=True)
+class OwnAnnotationKeys:
+    """Which names, at one read of `vars(R)` inside a function, only hold names
+    `R`'s own annotations declare. `R` keeps one value around the read: a
+    parameter never rebound, or the target of the one loop it is bound by. The
+    key is bound only by loops the read sits in, each iterating `R`'s own
+    annotations within that value of `R`: `get_annotations(R, ...)` or
+    `R.__annotations__`, through `tuple`, `list`, `sorted`, `reversed`, `iter` or
+    `enumerate` (the second target), or a name assigned one of those as a
+    statement of that region before the read."""
+
+    scope: ast.FunctionDef | ast.AsyncFunctionDef
+    parents: dict[ast.AST, ast.AST]
+    read: ast.expr
+    receiver: str
+    region: ast.FunctionDef | ast.AsyncFunctionDef | ast.For | ast.AsyncFor
+
+    WRAPPERS: ClassVar[frozenset[str]] = frozenset({"tuple", "list", "sorted", "reversed", "iter"})
+
+    @classmethod
+    def hold(cls, module: ParsedModule, read: ast.expr, key: str) -> bool:
+        """Whether `key`, at this read, only holds names its receiver's own
+        annotations declare."""
+
+        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        scope: ast.AST | None = parents.get(read)
+        while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = parents.get(scope)
+        match scope, NamespaceReads.receiver(read):
+            case ast.FunctionDef() | ast.AsyncFunctionDef(), (ast.Name(id=receiver),):
+                return any(
+                    keys.holds(key) for keys in cls(scope, parents, read, receiver, scope).bound_once()
+                )
+        return False
+
+    def bound_once(self) -> tuple[OwnAnnotationKeys, ...]:
+        """This reader with `region` the node within which `R` keeps one value,
+        when there is one."""
+
+        stores = self.stores(self.receiver)
+        if self.receiver in self.parameters():
+            return () if stores else (self,)
+        match stores:
+            case [store]:
+                loop = self.parents.get(store)
+                if isinstance(loop, (ast.For, ast.AsyncFor)) and loop.target is store and self.inside(loop.body, self.read):
+                    return (replace(self, region=loop),)
+        return ()
+
+    def holds(self, key: str) -> bool:
+        stores = self.stores(key)
+        return bool(stores) and key not in self.parameters() and all(self.loop_binds(store) for store in stores)
+
+    def loop_binds(self, store: ast.Name) -> bool:
+        target = self.parents.get(store)
+        if isinstance(target, ast.Tuple) and len(target.elts) == 2 and target.elts[1] is store:
+            loop = self.parents.get(target)
+            if not (isinstance(loop, (ast.For, ast.AsyncFor)) and loop.target is target):
+                return False
+            match loop.iter:
+                case ast.Call(func=ast.Name(id="enumerate"), args=[keys], keywords=[]):
+                    pass
+                case _:
+                    return False
+        elif isinstance(target, (ast.For, ast.AsyncFor)) and target.target is store:
+            loop, keys = target, target.iter
+        else:
+            return False
+        return self.inside(loop.body, self.read) and self.inside([self.region], loop) and self.annotations(keys, loop)
+
+    def annotations(self, keys: ast.expr, loop: ast.stmt) -> bool:
+        match keys:
+            case ast.Call(func=ast.Name(id=wrapper), args=[inner], keywords=[]) if wrapper in self.WRAPPERS:
+                return self.annotations(inner, loop)
+            case ast.Call(func=ast.Name(id="get_annotations") | ast.Attribute(attr="get_annotations"), args=[ast.Name(id=owner), *_]):
+                return owner == self.receiver and self.inside(self.region_body(), keys)
+            case ast.Attribute(value=ast.Name(id=owner), attr="__annotations__"):
+                return owner == self.receiver and self.inside(self.region_body(), keys)
+            case ast.Name(id=name) if name not in self.parameters():
+                stores = self.stores(name)
+                body = self.region_body()
+                reading = next((index for index, statement in enumerate(body) if self.inside([statement], loop)), None)
+                return bool(stores) and reading is not None and all(
+                    isinstance(assigned := self.parents.get(store), ast.Assign)
+                    and assigned.targets == [store]
+                    and assigned in body[:reading]
+                    and self.annotations(assigned.value, loop)
+                    for store in stores
+                )
+        return False
+
+    def region_body(self) -> list[ast.stmt]:
+        return self.region.body
+
+    def parameters(self) -> frozenset[str]:
+        arguments = self.scope.args
+        return frozenset(
+            argument.arg
+            for argument in (
+                *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                *(extra for extra in (arguments.vararg, arguments.kwarg) if extra is not None),
+            )
+        )
+
+    def stores(self, name: str) -> list[ast.Name]:
+        return [
+            node
+            for node in ast.walk(self.scope)
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del))
+        ]
+
+    @staticmethod
+    def inside(statements: list[ast.stmt] | list[ast.AST], node: ast.AST) -> bool:
+        return any(inner is node for statement in statements for inner in ast.walk(statement))
+
+
 @dataclass(frozen=True)
 class NamespaceReaders(ClassAttributeReaders):
     """Every read of a class namespace in the repository, judged against the
@@ -268,7 +388,7 @@ class NamespaceReaders(ClassAttributeReaders):
             ReceiverSpan.of(module.file_path, receiver): (module, read, parent)
             for module, read, parent, around in self.snapshot.module_set.fact(NamespaceReads).reads
             if self.reaches(module, read, indexed)
-            and not self.asks_another_key(module, read, parent, around, deleted)
+            and not self.asks_another_key(module, read, parent, around, indexed, deleted)
             and not self.resolves_annotations_only(module, read, deleted)
             for receiver in NamespaceReads.receiver(read)
         }
@@ -294,12 +414,15 @@ class NamespaceReaders(ClassAttributeReaders):
         read: ast.expr,
         parent: ast.AST | None,
         around: ast.AST | None,
+        indexed: CompactIndexedClass,
         deleted: frozenset[str],
     ) -> bool:
         """Whether the read asks only for keys no deleted name can be: one
         constant key that is not deleted (`ns["k"]`, `ns.get("k")`, `"k" in ns`),
-        or `self.<attribute>` whose every write builds a text with a constant
-        prefix or suffix no deleted name has."""
+        `self.<attribute>` whose every write builds a text with a constant
+        prefix or suffix no deleted name has, or a name that only holds what the
+        read class's own annotations declare (`OwnAnnotationKeys`) while the
+        class losing the members annotates none of them."""
 
         def other(key: ast.AST | None) -> bool:
             if isinstance(key, ast.Constant) and isinstance(key.value, str):
@@ -307,6 +430,13 @@ class NamespaceReaders(ClassAttributeReaders):
             match key:
                 case ast.Attribute(value=ast.Name(id="self"), attr=attribute):
                     return self.keys_avoid(module, read, attribute, deleted)
+                case ast.Name(id=name):
+                    annotated = self.own_annotations(indexed)
+                    return (
+                        annotated is not None
+                        and deleted.isdisjoint(annotated)
+                        and OwnAnnotationKeys.hold(module, read, name)
+                    )
             return False
 
         match parent:
@@ -319,6 +449,31 @@ class NamespaceReaders(ClassAttributeReaders):
                     around.args[0]
                 )
         return False
+
+    def own_annotations(self, indexed: CompactIndexedClass) -> frozenset[str] | None:
+        """The names `indexed`'s own body annotates, or None when the body also
+        spells `__annotations__` or `__annotate__` and so may set others."""
+
+        module = self.snapshot.parsed_module_for_source_path(indexed.file_path)
+        for node in ast.walk(module.module):
+            if (
+                isinstance(node, ast.ClassDef)
+                and node.name == indexed.simple_name
+                and indexed.line in (node.lineno, *(decorator.lineno for decorator in node.decorator_list))
+            ):
+                if any(
+                    isinstance(inner, ast.Name) and inner.id in ANNOTATION_SLOTS
+                    or isinstance(inner, ast.Attribute) and inner.attr in ANNOTATION_SLOTS
+                    or isinstance(inner, ast.Constant) and inner.value in ANNOTATION_SLOTS
+                    for inner in ast.walk(node)
+                ):
+                    return None
+                return frozenset(
+                    statement.target.id
+                    for statement in node.body
+                    if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
+                )
+        return None
 
     def resolves_annotations_only(self, module: ParsedModule, read: ast.expr, deleted: frozenset[str]) -> bool:
         """The namespace only becomes `localns` of `get_type_hints`, directly or
