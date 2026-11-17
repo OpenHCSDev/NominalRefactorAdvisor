@@ -25,7 +25,8 @@ from nominal_refactor_advisor.refactors.carrier_fields import (
     CarrierFieldProjection,
     ReplaceFieldsWithCarrierOperation,
 )
-from nominal_refactor_advisor.refactors.class_creation import declared_names
+from nominal_refactor_advisor.class_mro import ClassMroAuthority
+from nominal_refactor_advisor.refactors.class_creation import CreationOrder, declared_names
 from nominal_refactor_advisor.refactors.class_member_authority import ClassMemberMoveProofContext
 from nominal_refactor_advisor.refactors.class_overlap import (
     CreateMixinOperation,
@@ -1995,15 +1996,14 @@ SHARED_MARKER_PROBE = (
 )
 
 
-def test_a_refused_merge_folds_its_block_into_the_base_the_two_alone_share(tmp_path: Path) -> None:
-    """The merge of `Ready` and `Blocked` is refused (a type test tells them
-    apart), so the verdict offers the extraction; its owner is `Open`, the empty
-    base both inherit first. Picking it folds `is_open` there: the fold step
-    judges the pair as the fold it makes, not as the refused merge."""
+def _fold_picked_marker(root: Path, source: str, probe: str) -> str:
+    """Pick the marker `pkg.todos.Open` as the owner the refused merge's
+    extraction offers, run the goal, and return the rewritten source after
+    checking one stage ran and the probe prints as before."""
 
-    _write(tmp_path, {"pkg/__init__.py": "", "pkg/todos.py": SHARED_MARKER})
-    before = _run(tmp_path, SHARED_MARKER_PROBE)
-    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    _write(root, {"pkg/__init__.py": "", "pkg/todos.py": source})
+    before = _run(root, probe)
+    modules = parse_python_modules(root, use_parse_cache=False)
     findings = analyze_modules(modules, DetectorConfig())
     (offered,) = (
         finding
@@ -2011,7 +2011,7 @@ def test_a_refused_merge_folds_its_block_into_the_base_the_two_alone_share(tmp_p
         if isinstance(finding.metrics, ClassOverlapMetrics) and finding.metrics.move is ExtractMixin
     )
     report = CodemodRefactorGoalRunner(
-        roots=(tmp_path,),
+        roots=(root,),
         config=DetectorConfig(),
         dry_run=False,
         guard_suite=ArchitectureGuardSuite(),
@@ -2030,9 +2030,86 @@ def test_a_refused_merge_folds_its_block_into_the_base_the_two_alone_share(tmp_p
             ),
         ),
     ).run()
-
-    source = (tmp_path / "pkg/todos.py").read_text()
     assert report.stage_count == 1, report.stop_causes
+    assert _run(root, probe) == before
+    return (root / "pkg/todos.py").read_text()
+
+
+def test_a_refused_merge_folds_its_block_into_the_base_the_two_alone_share(tmp_path: Path) -> None:
+    """The merge of `Ready` and `Blocked` is refused (a type test tells them
+    apart), so the verdict offers the extraction; its owner is `Open`, the empty
+    base both inherit first. Picking it folds `is_open` there: the fold step
+    judges the pair as the fold it makes, not as the refused merge."""
+
+    source = _fold_picked_marker(tmp_path, SHARED_MARKER, SHARED_MARKER_PROBE)
     assert "class Open:\n    __slots__ = ()\n\n    @classmethod\n    def is_open(cls) -> bool:\n        return True\n" in source
     assert source.count("return True") == 1
-    assert _run(tmp_path, SHARED_MARKER_PROBE) == before
+
+
+FAMILY_MARKER = (
+    "from abc import ABCMeta\n\n\n"
+    "class FamilyMeta(ABCMeta):\n"
+    "    def __new__(mcs, name, bases, namespace, *, affix=None, **options):\n"
+    "        namespace['_affix'] = affix or ''\n"
+    "        cls = super().__new__(mcs, name, bases, namespace, **options)\n"
+    "        cls.family_root = cls\n"
+    "        return cls\n\n\n"
+    "class Family(metaclass=FamilyMeta):\n"
+    "    def __init_subclass__(cls, *, affix=None, **kwargs):\n"
+    "        super().__init_subclass__(**kwargs)\n\n"
+    "    @classmethod\n    def is_open(cls) -> bool:\n        return False\n\n\n"
+    "class State(Family, affix='State'):\n    pass\n\n\n"
+    "class Open:\n    __slots__ = ()\n\n\n"
+    "class Ready(Open, State):\n"
+    "    @classmethod\n    def is_open(cls) -> bool:\n        return True\n\n\n"
+    "class Blocked(Open, State):\n"
+    "    @classmethod\n    def is_open(cls) -> bool:\n        return True\n\n\n"
+    "def blocked(state: State) -> bool:\n    return type(state) is Blocked\n"
+)
+FAMILY_MARKER_PROBE = SHARED_MARKER_PROBE.replace("State, blocked", "State, blocked, Family")
+
+
+def _family_order(root: Path, source: str, symbol: str) -> tuple[str, ...] | None:
+    _write(root, {"pkg/__init__.py": "", "pkg/todos.py": source})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root, use_parse_cache=False))
+    mro_type = CreationOrder(snapshot).authority().resolve(symbol).mro_type
+    return None if mro_type is None else tuple(item.symbol for item in mro_type.declarations)
+
+
+def test_a_metaclass_that_hands_its_bases_on_keeps_the_declared_order(tmp_path: Path) -> None:
+    """`FamilyMeta.__new__` writes a namespace entry, sets an attribute on the
+    class it built and takes an `affix=` keyword, but hands its own `bases` to
+    `super().__new__` and returns what it built: Python's order is C3's over the
+    declared bases, so the order is closed. The strict runtime policy still
+    leaves it open; only a proof that reads the creation code closes it."""
+
+    order = _family_order(tmp_path, FAMILY_MARKER, "pkg.todos.Blocked")
+    assert order == ("pkg.todos.Blocked", "pkg.todos.Open", "pkg.todos.State", "pkg.todos.Family")
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path, use_parse_cache=False))
+    strict = ClassMroAuthority(snapshot.class_overlap_verdicts.class_index.classes_by_symbol)
+    assert strict.resolve("pkg.todos.Blocked").mro_type is None
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        FAMILY_MARKER.replace("        namespace['_affix'] = affix or ''\n", "        bases = (*bases, object)\n"),
+        FAMILY_MARKER.replace(
+            "class FamilyMeta(ABCMeta):\n",
+            "class FamilyMeta(ABCMeta):\n    def mro(cls):\n        return super().mro()\n\n",
+        ),
+        FAMILY_MARKER + "\n\nBlocked.__bases__ = (Open, State)\n",
+    ),
+    ids=("rebinds-bases", "defines-mro", "stores-bases"),
+)
+def test_creation_that_may_change_the_order_leaves_it_open(tmp_path: Path, source: str) -> None:
+    assert _family_order(tmp_path, source, "pkg.todos.Blocked") is None
+
+
+def test_a_refused_merge_folds_into_the_marker_under_a_family_metaclass(tmp_path: Path) -> None:
+    """The same fold as above with the states in a `DeclaredFamily`-shaped family:
+    creation runs code, which a proof reads, so the fold goes ahead."""
+
+    source = _fold_picked_marker(tmp_path, FAMILY_MARKER, FAMILY_MARKER_PROBE)
+    assert "class Open:\n    __slots__ = ()\n\n    @classmethod\n    def is_open(cls) -> bool:\n        return True\n" in source
+    assert source.count("return True") == 1

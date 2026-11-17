@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import ClassVar, Self, cast
 
 from nominal_refactor_advisor.declared_root import DeclaredRoot
-from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, MroWalk, declared_names
+from nominal_refactor_advisor.refactors.class_creation import (
+    ClassCreationProof,
+    CreationOrder,
+    MroWalk,
+    declared_names,
+)
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
@@ -54,7 +59,6 @@ from nominal_refactor_advisor.class_index import (
     native_identity,
 )
 from nominal_refactor_advisor.class_mro import (
-    ClassMroAuthority,
     NativeMroBase,
     namespace_read_native,
     native_declared_names,
@@ -688,7 +692,7 @@ class RestatedDeclarations:
         resolver = snapshot.class_reference_resolver_for_source_path(
             self.restating.file_path
         ).reference_resolution
-        mro_authority = ClassMroAuthority(class_index.classes_by_symbol)
+        mro_authority = CreationOrder(snapshot).authority()
         for statement in self.statements:
             value = getattr(statement, "value", None)
             for call in () if value is None else ast.walk(value):
@@ -2072,6 +2076,7 @@ class BaseFold:
         fold = cls(snapshot, base, children, restated)
         fold.require_dataclass_family()
         fold.require_lookup()
+        fold.require_creation_unchanged()
         for restatement in restated:
             restatement.require_no_owner_bound_values(snapshot)
             fold.require_movable(restatement)
@@ -2133,6 +2138,23 @@ class BaseFold:
                     f"`{descendant.qualname}` declares its own construction surface", NeededInput.PROOF
                 )
 
+    def require_creation_unchanged(self) -> None:
+        """Each child's creation reads none of the names leaving its body: the
+        order stays as it is, and only creation code reading them sees the move."""
+
+        authority = CreationOrder(self.snapshot).authority()
+        for child in self.children:
+            mro_type = authority.resolve(child.symbol).mro_type
+            if mro_type is None:
+                raise NeedsInput(f"`{child.symbol}` has an open MRO", NeededInput.PROOF)
+            ancestry = mro_type.declarations
+            order = tuple(declaration.symbol for declaration in ancestry)
+            ClassCreationProof(
+                self.snapshot, child.facts, ancestry, self.base.qualname,
+                frozenset(self.names), frozenset(),
+                MroWalk(order, order, child.symbol, frozenset(self.names)),
+            ).require_unchanged()
+
     def require_lookup(self) -> None:
         """Each moved name resolves to the base wherever it resolved to a child.
 
@@ -2146,7 +2168,7 @@ class BaseFold:
         if dunders:
             raise NeedsInput(f"Moving {dunders} could expose a native declaration", NeededInput.PROOF)
         class_index = self.snapshot.class_overlap_verdicts.class_index
-        authority = ClassMroAuthority(class_index.classes_by_symbol)
+        authority = CreationOrder(self.snapshot).authority()
         children = frozenset(child.symbol for child in self.children)
         for symbol in self.descendant_symbols:
             mro_type = authority.resolve(symbol).mro_type
@@ -3732,7 +3754,7 @@ class OwnerExtension:
 
     def require_lookup(self) -> None:
         class_index = self.snapshot.class_overlap_verdicts.class_index
-        authority = ClassMroAuthority(class_index.classes_by_symbol)
+        authority = CreationOrder(self.snapshot).authority()
         for symbol in self.family:
             mro_type = authority.resolve(symbol).mro_type
             if mro_type is None:
