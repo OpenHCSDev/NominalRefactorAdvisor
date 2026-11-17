@@ -868,6 +868,21 @@ class ClassOverlapVerdicts:
             )
         return resolved[symbol]
 
+    def declared_through_ancestry(self, symbol: str) -> Mapping[str, ResolvedClassBodyDeclaration]:
+        """Every name the class or any scanned ancestor declares, with the first
+        class along its ancestry to declare it. Whether a class has a member does
+        not depend on which ancestor wins its lookup, so this reads past a base the
+        lookup prefix cannot order."""
+
+        found: dict[str, ResolvedClassBodyDeclaration] = {}
+        for declaring in (symbol, *self.class_index.ancestor_symbols(symbol)):
+            indexed = self.bodies.classes_by_symbol.get(declaring)
+            if indexed is None:
+                continue
+            for name, declaration in self.bodies.declarations_of(declaring).items():
+                found.setdefault(name, ResolvedClassBodyDeclaration(declaration, indexed))
+        return found
+
     def _restated_through_an_ancestor(self, overlap: ClassBodyOverlap) -> bool:
         """One class has every shared copy exactly as one of its ancestors has
         it: that ancestor and the other class are the overlap, judged as their
@@ -1542,10 +1557,10 @@ class ClassOverlapVerdicts:
         no later addition cancels (a dataclass field among them also changes
         how the class is built)."""
 
-        owned = self.resolved_declarations(owner.symbol)
+        owned = self.declared_through_ancestry(owner.symbol)
         receipts: list[Receipt] = []
         for receiver in move.receiving_classes(restating):
-            had = self.resolved_declarations(receiver.symbol)
+            had = self.declared_through_ancestry(receiver.symbol)
             gained = sorted(name for name in owned if name not in had)
             if gained:
                 receipts.append(

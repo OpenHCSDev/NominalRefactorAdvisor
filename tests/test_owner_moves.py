@@ -885,6 +885,25 @@ def test_composing_an_owner_never_hands_a_class_its_ancestors_members(
 
 
 
+def test_a_member_inherited_past_an_unordered_base_is_already_had(tmp_path: Path) -> None:
+    """`Task` already inherits `Step`, behind a base the scan cannot order: it has
+    `Step`'s members whichever ancestor wins their lookup, so composing `Action`
+    hands it nothing new."""
+
+    records = ALONE.replace(
+        "from dataclasses import dataclass\n", "from dataclasses import dataclass\n\nfrom vendor import External\n", 1
+    ).replace("class Task(Phase):", "class Task(External, Step, Phase):")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
+    verdicts = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path, use_parse_cache=False)
+    ).class_overlap_verdicts
+    verdict = verdicts.verdict(
+        verdicts.bodies.overlap("pkg.records.Action", "pkg.records.Task"), NO_FLOOR
+    )
+    assert verdict is not None
+    assert not [r for r in verdict.receipts if r.kind is OverlapReceiptKind.UNWANTED_SUPPLY]
+
+
 LAYOUTS = (
     "from dataclasses import dataclass\n\n\n"
     "@dataclass(frozen=True, slots=True)\n"
