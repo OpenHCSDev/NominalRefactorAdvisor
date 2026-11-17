@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import difflib
+import inspect
 import keyword as keyword_module
 import tokenize
 from abc import (
@@ -41,6 +42,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
+    PER_CLASS_NAMES,
     ClassMemberAnswersABC,
     CompactIndexedClass,
     NATIVE_METACLASS_BASES,
@@ -263,6 +265,30 @@ class OverlapClass(ABC):
             raise NeedsInput(f"`{self.qualname}` has {len(decorators)} decorators", NeededInput.PROOF)
 
     @property
+    def lays_out_instance_dict(self) -> bool:
+        """Its instances get a `__dict__` from it: it neither declares
+        `__slots__` nor is a slotted dataclass."""
+
+        return self.option("slots") != "True" and not any(
+            isinstance(statement, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "__slots__" for target in statement.targets)
+            for statement in self.node.body
+        )
+
+    def require_dataclass_base(self, base: OverlapClass) -> None:
+        """Composing `base` leaves this class's generated methods, its frozenness
+        and its instance layout as they were."""
+
+        if bool(base.dataclass_options_key) != bool(self.dataclass_options_key) or any(
+            not role.base_serves(base.option(name), self.option(name))
+            for name, role in DATACLASS_OPTION_ROLES.items()
+        ) or (base.lays_out_instance_dict and not self.lays_out_instance_dict):
+            raise NeedsInput(
+                f"`{base.qualname}` and `{self.qualname}` differ as dataclasses",
+                NeededInput.SOURCE_CHANGE,
+            )
+
+    @property
     @abstractmethod
     def dataclass_options_key(self) -> tuple[tuple[str, ...], ...]:
         """The dataclass decorator's arguments, if decorated, for kind comparison."""
@@ -405,7 +431,7 @@ class DataclassOverlapClass(OverlapClass):
             key, separator, value = option.partition("=")
             if separator and key.strip() == name:
                 return value.strip()
-        return "False"
+        return DATACLASS_OPTION_DEFAULTS.get(name, "False")
 
     def require_dataclass(self) -> None:
         self._require_single_decorator()
@@ -417,10 +443,83 @@ def source_rewrite_target(indexed_class: CompactIndexedClass) -> SourceRewriteTa
     )
 
 
-PER_CLASS_NAMES = frozenset(("__slots__",))
-"""Names class creation reads from the class's own body, never through its
-bases: `__slots__` restated in a subclass is not a copy, since without it the
-subclass's instances get a `__dict__`."""
+class DataclassOptionRole(ABC):
+    """What one `dataclass` option means to a class that inherits a dataclass base.
+
+    The subclass's own decorator decides its methods, except one it does not
+    generate: that it inherits. So a base serves a composer only if every method
+    the base generates the composer generates too, the two agree on what Python
+    requires them to share, and the base adds no instance `__dict__` to a
+    composer that has none.
+    """
+
+    @abstractmethod
+    def base_serves(self, base_value: str, composer_value: str) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def mixin_value(self, name: str, values: frozenset[str]) -> str:
+        """The value a new mixin declares, given every composer's."""
+        raise NotImplementedError
+
+
+class GeneratedMethodOption(DataclassOptionRole):
+    """`init`, `repr`, `eq`, ...: a method the decorator writes on its own class."""
+
+    def base_serves(self, base_value: str, composer_value: str) -> bool:
+        return base_value in ("False", composer_value)
+
+    def mixin_value(self, name: str, values: frozenset[str]) -> str:
+        (value,) = values if len(values) == 1 else ("False",)
+        return value
+
+
+class SharedOption(DataclassOptionRole):
+    """`frozen`: Python refuses a frozen dataclass over a non-frozen dataclass base
+    and the reverse."""
+
+    def base_serves(self, base_value: str, composer_value: str) -> bool:
+        return base_value == composer_value
+
+    def mixin_value(self, name: str, values: frozenset[str]) -> str:
+        if len(values) != 1:
+            raise NeedsInput(
+                f"the composers differ in `{name}` ({', '.join(sorted(values))}): "
+                "Python lets no dataclass serve both as a base",
+                NeededInput.SOURCE_CHANGE,
+            )
+        (value,) = values
+        return value
+
+
+class OwnLayoutOption(DataclassOptionRole):
+    """`kw_only`, `slots`, `weakref_slot`: each class's own fields and layout.
+    Field order has its own proof and the layout is compared as a whole; a new
+    mixin lays out nothing and gets its keyword-only-ness from that proof."""
+
+    def base_serves(self, base_value: str, composer_value: str) -> bool:
+        return True
+
+    def mixin_value(self, name: str, values: frozenset[str]) -> str:
+        return DATACLASS_OPTION_DEFAULTS[name]
+
+
+DATACLASS_OPTION_DEFAULTS: dict[str, str] = {
+    name: repr(parameter.default)
+    for name, parameter in inspect.signature(dataclass).parameters.items()
+    if parameter.kind is parameter.KEYWORD_ONLY
+}
+"""Each `dataclass` option with the value its own signature gives an unwritten one."""
+
+DATACLASS_OPTION_ROLES: dict[str, DataclassOptionRole] = {
+    name: {
+        "frozen": SharedOption(),
+        "kw_only": OwnLayoutOption(),
+        "slots": OwnLayoutOption(),
+        "weakref_slot": OwnLayoutOption(),
+    }.get(name, GeneratedMethodOption())
+    for name in DATACLASS_OPTION_DEFAULTS
+}
 
 
 @dataclass(frozen=True)
@@ -1445,13 +1544,7 @@ class ClassComposition:
         ComposedAncestry.require(
             self.snapshot, restating, (owner,), self.restated.deleted_names
         ).creation().require_unchanged()
-        if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
-            restating
-        ):
-            raise NeedsInput(
-                f"`{owner.qualname}` and `{restating.qualname}` differ as dataclasses",
-                NeededInput.SOURCE_CHANGE,
-            )
+        restating.require_dataclass_base(owner)
         header = ClassHeaderSpanSourceAuthority(
             restating.node, self.snapshot.sources_by_file_path[restating.file_path]
         )
@@ -1632,13 +1725,7 @@ class CoveringComposition:
                 (name for restatement in restatements for name in restatement.deleted_names),
             )
             for owner in self.owners:
-                if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
-                    composer
-                ):
-                    raise NeedsInput(
-                        f"`{owner.qualname}` and `{composer.qualname}` differ as dataclasses",
-                        NeededInput.SOURCE_CHANGE,
-                    )
+                composer.require_dataclass_base(owner)
                 if owner.file_path == composer.file_path and (
                     owner.node.lineno > composer.node.lineno
                 ):
@@ -2193,19 +2280,6 @@ def keyword_only_decorator_source(decorator_source: str, decorator: ast.expr) ->
     return f"{opened}{separator}kw_only=True)"
 
 
-def dataclass_options_besides_kw_only(
-    overlap_class: OverlapClass,
-) -> tuple[tuple[str, ...], ...]:
-    """The dataclass options, keyword-only-ness aside: what composition must keep."""
-
-    return tuple(
-        tuple(
-            option for option in options if option.partition("=")[0].strip() != "kw_only"
-        )
-        for options in overlap_class.dataclass_options_key
-    )
-
-
 def composed_field_order(
     snapshot: CodemodSourceSnapshot, owner_fields: Iterable[str], composer: OverlapClass
 ) -> tuple[list[str], list[str]]:
@@ -2714,12 +2788,18 @@ def movable_members(
 class MixinCreation:
     """A new class declares a block several classes restate; nothing uses it yet.
 
-    The class is a root (`[mixin, object]`) with the anchor's own dataclass
-    declaration, inserted right before the anchor in the anchor's module, so
+    The class is a root (`[mixin, object]`), inserted right before the anchor in
+    the anchor's module, so
     every free name of the copied statements is bound there exactly as in the
     anchor. Each statement must move without reading the anchor's class scope
     or learning its owner. Creating it changes no behaviour; each restating
     class then composes it through its own compose-existing verdict.
+
+    Its dataclass declaration is the one every composer can inherit: each method
+    the composers' decorators agree on generating, none they disagree on, their
+    common frozenness, and no instance layout of its own. When a composer is
+    slotted, the mixin declares `__slots__ = ()`, so each composer slots the
+    mixin's fields itself and none gains a `__dict__` or a second layout.
     """
 
     snapshot: CodemodSourceSnapshot
@@ -2728,9 +2808,13 @@ class MixinCreation:
     name: str
     docstring: str
     keyword_only: bool
-    """Created keyword-only when composing it reorders some composer's fields or
-    some composer is keyword-only already; each other composer then becomes
-    keyword-only as it composes the mixin."""
+    """Created keyword-only when the anchor is, when composing it reorders some
+    composer's fields, or when some composer is keyword-only already; each other
+    composer then becomes keyword-only as it composes the mixin."""
+    options: tuple[str, ...]
+    """The mixin's `dataclass` arguments besides `kw_only`, as `name=value`."""
+    empty_slots: bool
+    """Some composer is slotted, so the mixin declares `__slots__ = ()`."""
     carried_documentation: tuple[tuple[str, str], ...] = ()
     """Each member the anchor leaves undocumented and another composer documents,
     with that docstring's source: the one copy kept carries it."""
@@ -2769,14 +2853,22 @@ class MixinCreation:
         # A composer keeps its fields only if they stay in order and it matches the
         # mixin's keyword-only-ness: one already keyword-only, made so by an earlier
         # step, needs a keyword-only mixin just as a reordered one does.
-        keyword_only = anchor.option("kw_only") != "True" and any(
+        composers = tuple(OverlapClass.for_symbol(snapshot, symbol) for symbol in owner.composers)
+        keyword_only = anchor.option("kw_only") == "True" or any(
             before != after or composer.option("kw_only") == "True"
-            for symbol in owner.composers
-            for composer in (OverlapClass.for_symbol(snapshot, symbol),)
+            for composer in composers
             for before, after in (composed_field_order(snapshot, mixin_fields, composer),)
+        )
+        declared = tuple(
+            (name_, role.mixin_value(name_, frozenset(composer.option(name_) for composer in (anchor, *composers))))
+            for name_, role in DATACLASS_OPTION_ROLES.items()
         )
         return cls(
             snapshot, anchor, restated, name, docstring, keyword_only,
+            tuple(
+                f"{name_}={value}" for name_, value in declared if value != DATACLASS_OPTION_DEFAULTS[name_]
+            ),
+            any(not composer.lays_out_instance_dict for composer in (anchor, *composers)),
             cls.documentation_to_carry(snapshot, anchor, owner.composers, restated.deleted_names),
         )
 
@@ -2818,10 +2910,10 @@ class MixinCreation:
         return tuple(carried)
 
     def decorator_source(self, source: str, decorator: ast.expr) -> str:
-        copied = ast.get_source_segment(source, decorator) or ""
-        if not self.keyword_only:
-            return copied
-        return keyword_only_decorator_source(copied, decorator)
+        function = decorator.func if isinstance(decorator, ast.Call) else decorator
+        options = (*self.options, *(("kw_only=True",) if self.keyword_only else ()))
+        named = ast.get_source_segment(source, function) or ""
+        return f"{named}({', '.join(options)})" if options else named
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         anchor = self.anchor
@@ -2865,6 +2957,7 @@ class MixinCreation:
                     *decorators,
                     f"{indentation}class {self.name}:\n",
                     f'{member_indentation}"""{self.docstring}"""\n\n',
+                    *((f"{member_indentation}__slots__ = ()\n\n",) if self.empty_slots else ()),
                     *members,
                     "\n\n",
                 ),

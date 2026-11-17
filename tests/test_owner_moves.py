@@ -882,6 +882,91 @@ def test_composing_an_owner_never_hands_a_class_its_ancestors_members(
     assert bool(refusals) == bool(gained) and verdict.permitted is not bool(gained)
 
 
+
+LAYOUTS = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class Viewer:\n"
+    "    viewer: str\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class Basis:\n"
+    "    root: str\n"
+    "    project: str\n"
+    "    peer: str\n"
+    "    shown: int\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class Identity(Viewer):\n"
+    "    root: str\n"
+    "    project: str\n"
+    "    peer: str\n"
+    "    seen: int\n\n\n"
+    "@dataclass(frozen=True, eq=False)\n"
+    "class Loose:\n"
+    "    root: str\n"
+    "    project: str\n"
+    "    peer: str\n"
+    "    note: str = ''\n"
+)
+
+LAYOUTS_PROBE = (
+    "from pkg.records import Basis, Identity, Loose\n"
+    "made = (Basis(root='r', project='p', peer='q', shown=1), Identity(viewer='v', root='r', project='p', peer='q', seen=2),"
+    " Loose(root='r', project='p', peer='q'))\n"
+    "for value in made:\n"
+    "    kind = type(value)\n"
+    "    print(repr(value), value == kind(**{k: getattr(value, k) for k in kind.__dataclass_fields__}),"
+    " hasattr(value, '__dict__'), kind.__eq__ is object.__eq__, list(kind.__dataclass_fields__))\n"
+)
+
+
+def test_a_mixin_takes_the_declaration_every_composer_can_inherit(tmp_path: Path) -> None:
+    """`Basis` and `Identity` are slotted and `Identity` already has a slotted
+    base with a field, so a slotted mixin would be a second layout; `Loose` has
+    a `__dict__` and no `__eq__`. The mixin lays out nothing, generates no
+    `__eq__`, and each class keeps its layout, equality and fields."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": LAYOUTS})
+    before = _run(tmp_path, LAYOUTS_PROBE)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    mixin = next(
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.summary.startswith("`Identity` restate")
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin.stable_id,
+                    owner="new_mixin:pkg.records",
+                    because="new_class",
+                    name="Located",
+                    judgement="the root, project and peer a record is about",
+                ),
+            ),
+        ),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked", "covered", "covered"]
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert (
+        "@dataclass(eq=False, frozen=True)\nclass Located:\n"
+        '    """The root, project and peer a record is about."""\n\n    __slots__ = ()\n\n    root: str\n'
+    ) in source, source
+    assert "class Identity(Located, Viewer):\n" in source, source
+    assert _run(tmp_path, LAYOUTS_PROBE) == before
+
+
 def _field_mixin(records: str) -> CreateMixinOperation:
     return CreateMixinOperation(
         target=SourceRewriteTarget(file_path=records, qualname="First"),

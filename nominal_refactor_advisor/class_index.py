@@ -3786,6 +3786,13 @@ class ClassBodyModuleScope:
         return None
 
 
+PER_CLASS_NAMES = frozenset(("__slots__",))
+"""Names class creation reads from the class's own body, never through its
+bases: `__slots__` restated in a subclass is not a copy, since without it the
+subclass's instances get a `__dict__`, and one in a base is no declaration the
+subclass shares."""
+
+
 @dataclass(frozen=True)
 class ClassBodyNormalForm:
     """One class-body declaration as Python evaluates it.
@@ -3865,7 +3872,8 @@ class ClassBodyNormalForm:
         node: ast.ClassDef,
         scope: ClassBodyModuleScope,
     ) -> tuple[ClassBodyNormalForm, ...]:
-        """Every direct declaration of one class body, in source order."""
+        """Every direct declaration of one class body a subclass can share, in
+        source order: the per-class names are no such declaration."""
 
         class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
         declarations: list[ClassBodyNormalForm] = []
@@ -3876,7 +3884,7 @@ class ClassBodyNormalForm:
                 declarations.extend(
                     cls.of_assignment(statement, scope, class_bound_names)
                 )
-        return tuple(declarations)
+        return tuple(declaration for declaration in declarations if declaration.name not in PER_CLASS_NAMES)
 
     @classmethod
     def of_method(
