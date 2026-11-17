@@ -94,6 +94,7 @@ class GuardedBlock:
         raise ValueError(f"`{ast.unparse(self.subject)}` is neither a name nor an attribute of one")
 
 
+@dataclass(frozen=True, kw_only=True)
 class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
     """Turn `if isinstance(x, C): <body>` into `x.method_name(...)`: `C` overrides
     `method_name` with the body, and `base` declares it as the default, empty or
@@ -113,13 +114,52 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
 
     line: int = codemod_payload_field(RequiredIntegerPayloadValueCodec())
 
-    def source_edits_from_snapshot(
-        self, snapshot: CodemodSourceSnapshot
-    ) -> tuple[NominalSourceEdit, ...]:
-        source_path = self.required_source_path(snapshot, self.operation_key())
-        qualname = self.target.qualname or ""
-        class_name, _, function_name = qualname.rpartition(".")
-        module = snapshot.module_nodes_by_file_path[source_path]
+    @classmethod
+    def at_site(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        target: SourceRewriteTarget,
+        line: int,
+        method_name: str,
+    ) -> GuardedBlockToOverrideOperation:
+        """The operation for the block at `line` of `target`, with `base` derived:
+        the class the subject is declared as, so no pick restates it."""
+
+        source_path = target.file_path or ""
+        function, owner = cls.function_at(snapshot, target)
+        block = GuardedBlock.at(function, line)
+        classes = snapshot.required_class_family_index.classes_by_symbol
+        reader = owner or next(
+            (
+                ResolvedClassTarget.from_rewrite_target(
+                    snapshot, SourceRewriteTarget(file_path=source_path, qualname=declaration.qualname)
+                )
+                for declaration in classes.values()
+                if declaration.file_path == source_path
+            ),
+            None,
+        )
+        if reader is None:
+            raise ValueError(f"{source_path!r} declares no class to read its bindings through: it needs a base pick")
+        parents = snapshot.parsed_module_for_source_path(source_path).fact(ModuleNodeIndex).parents
+        declared = cls.declared_subject(
+            snapshot, AnsweredMethod(snapshot, reader, function), owner, function, block, parents, source_path
+        )
+        return cls(
+            target=target,
+            base=cls.class_target(snapshot, declared),
+            method_name=method_name,
+            line=line,
+        )
+
+    @staticmethod
+    def function_at(
+        snapshot: CodemodSourceSnapshot, target: SourceRewriteTarget
+    ) -> tuple[ast.FunctionDef | ast.AsyncFunctionDef, ResolvedClassTarget | None]:
+        """The target function and the class it is a method of, if any."""
+
+        source_path = target.file_path or ""
+        class_name, _, function_name = (target.qualname or "").rpartition(".")
         owner = (
             ResolvedClassTarget.from_rewrite_target(
                 snapshot, SourceRewriteTarget(file_path=source_path, qualname=class_name)
@@ -127,7 +167,7 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
             if class_name
             else None
         )
-        body = module.body if owner is None else owner.node.body
+        body = snapshot.module_nodes_by_file_path[source_path].body if owner is None else owner.node.body
         function = next(
             (
                 node
@@ -137,7 +177,16 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
             None,
         )
         if function is None:
-            raise ValueError(f"{qualname!r} is not a function declared in {source_path!r}")
+            raise ValueError(f"{target.qualname!r} is not a function declared in {source_path!r}")
+        return function, owner
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        source_path = self.required_source_path(snapshot, self.operation_key())
+        module = snapshot.module_nodes_by_file_path[source_path]
+        function, owner = self.function_at(snapshot, self.target)
+        function_name = function.name
         block = GuardedBlock.at(function, self.line)
         base = ResolvedClassTarget.from_rewrite_target(snapshot, self.base)
         base_answer = AnsweredMethod(snapshot, base, function)

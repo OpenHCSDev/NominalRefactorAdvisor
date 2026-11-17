@@ -237,13 +237,20 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
     def subject_family(self, snapshot, answered, owner, function, guard, parents, source_path) -> frozenset[str]:
         """Every class the guarded subject can be: a declared type and its descendants."""
 
-        index = snapshot.required_class_family_index
+        declared = self.declared_subject(snapshot, answered, owner, function, guard, parents, source_path)
+        return frozenset((declared, *snapshot.required_class_family_index.descendant_symbols(declared)))
+
+    @classmethod
+    def declared_subject(cls, snapshot, answered, owner, function, guard, parents, source_path) -> str:
+        """The class the guarded subject is declared as: the enclosing class for its
+        receiver, else its parameter's or field's annotation."""
+
         first = function.args.args[0].arg if function.args.args else None
         match guard.subject:
             case ast.Name(id=name) if owner is not None and name == first:
                 declared = owner.required_symbol(snapshot)
             case ast.Name(id=name):
-                declared = self.annotated(
+                declared = cls.annotated(
                     answered, guard, parents, source_path,
                     next(
                         (
@@ -255,7 +262,7 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
                     ),
                 )
             case ast.Attribute(value=ast.Name(id=name), attr=field) if owner is not None and name == first:
-                declared = self.annotated(
+                declared = cls.annotated(
                     answered, guard, parents, source_path,
                     next(
                         (
@@ -274,7 +281,7 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
             raise ValueError(
                 f"`{ast.unparse(guard.subject)}` has no annotation naming a class the scan declares"
             )
-        return frozenset((declared, *index.descendant_symbols(declared)))
+        return declared
 
     @staticmethod
     def annotated(answered, guard, parents, source_path, annotation: ast.expr | None) -> str | None:

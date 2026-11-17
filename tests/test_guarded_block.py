@@ -1,0 +1,137 @@
+"""A block guarded by a type test becomes the tested class's override."""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.codemod import (
+    CodemodOperationPreflightError,
+    CodemodSourceSnapshot,
+    GuardedBlockToOverrideOperation,
+    RefactorRecipe,
+    SourceRewriteTarget,
+)
+
+SHAPES = (
+    "class Shape:\n"
+    "    def __init__(self, name: str) -> None:\n"
+    "        self.name = name\n\n\n"
+    "class Square(Shape):\n"
+    "    def corners(self) -> int:\n"
+    "        return 4\n\n\n"
+    "class Circle(Shape):\n"
+    "    pass\n\n\n"
+    "def describe(shape: Shape, out: list[str]) -> None:\n"
+    "    out.append(shape.name)\n"
+    "    if isinstance(shape, Square):\n"
+    "        count = shape.corners()\n"
+    "        out.append(f'{shape.name} has {count}')\n"
+    "    out.append('done')\n"
+)
+
+PROBE = (
+    "from pkg.shapes import Circle, Square, describe\n"
+    "out = []\n"
+    "describe(Square('a'), out)\n"
+    "describe(Circle('b'), out)\n"
+    "print(out)\n"
+)
+
+
+def _run(root: Path) -> str:
+    return subprocess.run(
+        [sys.executable, "-c", PROBE], cwd=root, capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _package(root: Path, source: str) -> str:
+    (root / "pkg").mkdir(exist_ok=True)
+    (root / "pkg/__init__.py").write_text("")
+    (root / "pkg/shapes.py").write_text(source)
+    return (root / "pkg/shapes.py").as_posix()
+
+
+def _operation(path: str, source: str) -> GuardedBlockToOverrideOperation:
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if "if isinstance" in text)
+    return GuardedBlockToOverrideOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="describe"),
+        base=SourceRewriteTarget(file_path=path, qualname="Shape"),
+        method_name="describe_corners",
+        line=line,
+    )
+
+
+def _apply(root: Path, operation: GuardedBlockToOverrideOperation) -> None:
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root))
+    simulation = RefactorRecipe("guarded").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    for path, source in simulation.simulation.rewritten_sources.items():
+        Path(path).write_text(source)
+
+
+def test_the_block_becomes_the_tested_class_s_override_and_the_base_default(tmp_path: Path) -> None:
+    path = _package(tmp_path, SHAPES)
+    before = _run(tmp_path)
+    _apply(tmp_path, _operation(path, SHAPES))
+    source = Path(path).read_text()
+    assert "isinstance" not in source
+    assert "    shape.describe_corners(out=out)\n    out.append('done')\n" in source
+    assert (
+        "    def describe_corners(self, out) -> None:\n"
+        "        count = self.corners()\n"
+        "        out.append(f'{self.name} has {count}')\n"
+    ) in source
+    assert _run(tmp_path) == before == "['a', 'a has 4', 'done', 'b', 'done']\n"
+
+
+def test_the_else_block_becomes_the_base_default(tmp_path: Path) -> None:
+    source = SHAPES.replace(
+        "        out.append(f'{shape.name} has {count}')\n",
+        "        out.append(f'{shape.name} has {count}')\n    else:\n        out.append('round')\n",
+    )
+    path = _package(tmp_path, source)
+    before = _run(tmp_path)
+    _apply(tmp_path, _operation(path, source))
+    assert _run(tmp_path) == before == "['a', 'a has 4', 'done', 'b', 'round', 'done']\n"
+    assert "        out.append('round')\n" in Path(path).read_text().split("class Square")[0]
+
+
+@pytest.mark.parametrize(
+    ("change", "refusal"),
+    (
+        (("        count = shape.corners()\n", "        count = shape.corners() + offset\n"),
+         "reads the function's locals"),
+        (("        count = shape.corners()\n", "        return\n"), "returns or yields"),
+        (("    out.append('done')\n", "    out.append(str(count))\n"), "which the function reads after it"),
+        (("        count = shape.corners()\n", "        shape = Circle('c')\n        count = 4\n"),
+         "rebinds"),
+    ),
+)
+def test_a_block_that_cannot_run_as_a_method_names_what_it_needs(
+    tmp_path: Path, change: tuple[str, str], refusal: str
+) -> None:
+    source = SHAPES.replace(*change)
+    if "offset" in source:
+        source = source.replace("    out.append(shape.name)\n", "    offset = 1\n    out.append(shape.name)\n")
+    path = _package(tmp_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=refusal):
+        _operation(path, source).source_edits(snapshot)
+
+
+def test_another_answer_on_the_way_is_refused(tmp_path: Path) -> None:
+    """A class between the base and the tested class already answering the name would
+    take the call: the old block never ran for it."""
+    source = SHAPES.replace(
+        "class Circle(Shape):\n    pass\n",
+        "class Circle(Shape):\n    def describe_corners(self, out) -> None:\n        out.append('x')\n",
+    )
+    path = _package(tmp_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="declares 'describe_corners'"):
+        _operation(path, source).source_edits(snapshot)
