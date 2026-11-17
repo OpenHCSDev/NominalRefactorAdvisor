@@ -496,7 +496,9 @@ class CreationReads:
                 owner = self.code.owner
                 if owner is None:
                     return None
-                qualified = self.proof.qualified(owner, func.value, self.code.node.lineno)
+                # A function body looks a global up when it runs: the module's final binding.
+                end = len(self.proof.snapshot.sources_by_file_path[owner.file_path].splitlines()) + 1
+                qualified = self.proof.qualified(owner, func.value, end)
                 if qualified in MODELLED_METACLASSES:
                     return True
                 indexed = self.proof.class_index.class_for(qualified)
