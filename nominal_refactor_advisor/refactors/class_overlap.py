@@ -482,6 +482,8 @@ class ClassReferenceSite:
     role: ClassReferenceRole
     is_annotation: bool
     is_base: bool
+    symbol: str
+    """The class the read resolves to."""
 
     @property
     def location(self) -> str:
@@ -709,7 +711,8 @@ class ClassReferenceSites:
                 parent = nodes[parents[index]] if parents[index] >= 0 else None
                 if isinstance(parent, ast.Attribute) and parent.value is node:
                     continue
-                if resolver.symbol_for_node(node) not in self.symbols:
+                symbol = resolver.symbol_for_node(node)
+                if symbol not in self.symbols:
                     continue
                 grandparent = (
                     nodes[parents[parents[index]]]
@@ -725,6 +728,7 @@ class ClassReferenceSites:
                     ),
                     is_annotation=self._in_annotation(index, nodes, parents),
                     is_base=isinstance(parent, ast.ClassDef) and node in parent.bases,
+                    symbol=symbol,
                 )
 
     @staticmethod
@@ -770,7 +774,9 @@ class ClassReferenceSites:
         """Every read builds the class by keyword, tests it, annotates or subclasses.
 
         Any other read hands the class on as a value, and whoever calls that
-        value may bind fields by position.
+        value may bind fields by position, unless the class binds none: a call
+        to one whose fields are all keyword-only already names every field, so
+        a move that keeps them keyword-only cannot shift it.
         """
 
         for site in self.sites:
@@ -786,12 +792,24 @@ class ClassReferenceSites:
                 or site.is_annotation
                 or site.is_base
                 or self.binders.binds_by_keyword(site)
+                or not proved_construction_parameters(self.snapshot, site.symbol)
             ):
                 continue
             raise NeedsInput(
                 f"{site.location} passes `{ast.unparse(site.node)}` on as a value; "
                 "how its callers bind fields is unproved", NeededInput.PROOF
             )
+
+
+def proved_construction_parameters(snapshot: CodemodSourceSnapshot, symbol: str) -> tuple[str, ...]:
+    """The fields a call to `symbol` binds by position, once its creation is
+    proved to keep what its declarations bind; refuses when that is unproved."""
+
+    indexed = OverlapClass.for_symbol(snapshot, symbol).facts
+    ClassCreationProof.constructing(
+        snapshot, indexed, require_static_c3(snapshot, indexed)
+    ).require_construction_kept()
+    return snapshot.class_overlap_verdicts.class_index.construction_parameters(symbol)
 
 
 def require_static_c3(
@@ -2073,16 +2091,9 @@ class ConstructionKeywording:
             construction.require_keywordable()
         return keywording
 
-    def parameter_names(self, symbol: str) -> tuple[str, ...]:
-        indexed = OverlapClass.for_symbol(self.snapshot, symbol).facts
-        ClassCreationProof.constructing(
-            self.snapshot, indexed, require_static_c3(self.snapshot, indexed)
-        ).require_construction_kept()
-        return self.snapshot.class_overlap_verdicts.class_index.construction_parameters(symbol)
-
     @cached_property
     def constructions(self) -> tuple[PositionalConstruction, ...]:
-        parameters = self.parameter_names(self.target.symbol)
+        parameters = proved_construction_parameters(self.snapshot, self.target.symbol)
         direct = tuple(
             PositionalConstruction(site.file_path, site.parent, parameters)
             for site in ClassReferenceSites(self.snapshot, frozenset((self.target.symbol,))).sites
@@ -2110,7 +2121,7 @@ class ConstructionKeywording:
         for symbol in self.snapshot.class_overlap_verdicts.class_index.descendant_symbols(
             self.target.symbol
         ):
-            if self.parameter_names(symbol)[:widest] != parameters[:widest]:
+            if proved_construction_parameters(self.snapshot, symbol)[:widest] != parameters[:widest]:
                 raise NeedsInput(
                     f"`{symbol}` takes other positional parameters than "
                     f"`{self.target.qualname}`, and its receiver may be one", NeededInput.PROOF
