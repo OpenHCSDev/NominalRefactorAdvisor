@@ -15,7 +15,11 @@ import ast
 from collections.abc import Iterator
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import (
+    ParsedModule,
+    ParsedModuleSet,
+    ParsedModuleSetFact,
+)
 from nominal_refactor_advisor.class_index import CompactIndexedClass
 from nominal_refactor_advisor.class_symbols import _referenced_bases
 from nominal_refactor_advisor.codemod_declaration_source import (
@@ -102,32 +106,28 @@ class RestatedBaseDrop:
 
 
 @dataclass(frozen=True)
-class BasesReaders:
-    """Every read of a class's `__bases__` or `__orig_bases__` in the repository."""
+class BaseListReads(ParsedModuleSetFact):
+    """Every read of a class's `__bases__` or `__orig_bases__` in one state's
+    modules, found once for every drop proved over that state."""
 
-    snapshot: CodemodSourceSnapshot
+    reads: tuple[tuple[ParsedModule, ast.expr, ast.AST | None], ...]
+    """Each module, the read, and the node it is read in."""
 
-    def require_unread(self, indexed: CompactIndexedClass, dropped: tuple[str, ...]) -> None:
-        """Each read either tests a named class none of `dropped` is, or keeps only
-        bases that subclass a named class none of `dropped` subclasses."""
-
-        verdicts = self.snapshot.class_overlap_verdicts
-        orders = {symbol: verdicts.linearized(symbol) for symbol in dropped}
-        for module in self.snapshot.parsed_modules:
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> BaseListReads:
+        found = []
+        for module in modules:
+            reads = tuple(cls.found(module.module))
+            if not reads:
+                continue
             parents = {
                 child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
             }
-            for read in self.reads(module.module):
-                if not self.unaffected(module, read, parents, orders):
-                    raise NeedsInput(
-                        f"{module.file_path}:{read.lineno} `{ast.unparse(parents.get(read, read))}` "
-                        f"reads bases, and dropping {', '.join(f'`{symbol.rpartition(".")[2]}`' for symbol in dropped)} "
-                        f"from `{indexed.qualname}` could change what it sees",
-                        NeededInput.PROOF,
-                    )
+            found.extend((module, read, parents.get(read)) for read in reads)
+        return cls(tuple(found))
 
     @staticmethod
-    def reads(tree: ast.AST) -> Iterator[ast.expr]:
+    def found(tree: ast.AST) -> Iterator[ast.expr]:
         for node in ast.walk(tree):
             match node:
                 case ast.Attribute(attr=attr, ctx=ast.Load()) if attr in BASES_ATTRIBUTES:
@@ -139,14 +139,35 @@ class BasesReaders:
                 case ast.Subscript(slice=ast.Constant(value=str() as key)) if key in BASES_ATTRIBUTES:
                     yield node
 
+
+@dataclass(frozen=True)
+class BasesReaders:
+    """Every read of a class's `__bases__` or `__orig_bases__` in the repository."""
+
+    snapshot: CodemodSourceSnapshot
+
+    def require_unread(self, indexed: CompactIndexedClass, dropped: tuple[str, ...]) -> None:
+        """Each read either tests a named class none of `dropped` is, or keeps only
+        bases that subclass a named class none of `dropped` subclasses."""
+
+        verdicts = self.snapshot.class_overlap_verdicts
+        orders = {symbol: verdicts.linearized(symbol) for symbol in dropped}
+        for module, read, parent in self.snapshot.module_set.fact(BaseListReads).reads:
+            if not self.unaffected(module, read, parent, orders):
+                raise NeedsInput(
+                    f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` "
+                    f"reads bases, and dropping {', '.join(f'`{symbol.rpartition(".")[2]}`' for symbol in dropped)} "
+                    f"from `{indexed.qualname}` could change what it sees",
+                    NeededInput.PROOF,
+                )
+
     def unaffected(
         self,
         module: ParsedModule,
         read: ast.expr,
-        parents: dict[ast.AST, ast.AST],
+        parent: ast.AST | None,
         orders: dict[str, tuple[str, ...]],
     ) -> bool:
-        parent = parents.get(read)
         match parent:
             case ast.Compare(left=tested, ops=[ast.In() | ast.NotIn()], comparators=[comparator]) if (
                 comparator is read
@@ -277,6 +298,7 @@ class RestatedBaseFindingRecipeSynthesizer(
 
 
 __all__ = (
+    "BaseListReads",
     "BasesReaders",
     "DropRestatedBasesOperation",
     "RestatedBaseDrop",
