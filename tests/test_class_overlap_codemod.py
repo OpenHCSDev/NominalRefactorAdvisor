@@ -424,6 +424,24 @@ def test_the_fold_follows_a_class_in_a_type_form_into_a_keyword_binder(
     assert _fold(tmp_path).source_edits(snapshot)
 
 
+def test_a_keyword_binder_naming_no_function_refuses(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pyproject.toml": "[tool.nominal-refactor-advisor]\n"
+                'keyword-binders = ["pkg.codec:missing"]\n',
+                "pkg/codec.py": "def encode(value):\n    return str(value)\n",
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.codec import encode\n\nKEY = encode(ConveyorProof)\n",
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="names `pkg.codec.missing`"):
+        _fold(tmp_path).source_edits(snapshot)
+
+
 def test_the_fold_refuses_a_class_handed_to_a_function_that_calls_it(
     tmp_path: Path,
 ) -> None:

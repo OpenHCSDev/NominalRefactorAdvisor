@@ -593,12 +593,44 @@ class KeywordBinders:
             return False
         return True
 
+    def declared(self, module: ParsedModule) -> frozenset[str]:
+        """The repository's keyword binders, each naming a function that exists: a
+        stale entry would silently prove nothing, so it refuses instead."""
+
+        names = DeclaredRoot.keyword_binders_for(Path(module.file_path))
+        for name in sorted(names):
+            if not self.names_a_function(name):
+                raise NeedsInput(
+                    f"keyword-binders names `{name}`, which no scanned or importable "
+                    "class or module defines", NeededInput.SOURCE_CHANGE
+                )
+        return names
+
+    def names_a_function(self, name: str) -> bool:
+        owner, _, attribute = name.rpartition(".")
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        if class_index.class_for(owner) is not None:
+            return bool(class_index.declared_member(owner, attribute).answer(DeclaringClass()))
+        if any(
+            parsed.module_name == owner
+            and any(
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == attribute
+                for statement in parsed.module.body
+            )
+            for parsed in self.snapshot.parsed_modules
+        ):
+            return True
+        try:
+            return callable(getattr(import_module(owner), attribute))
+        except (ImportError, AttributeError, ValueError):
+            return False
+
     def declared_binder(self, module: ParsedModule, func: ast.expr, qualified_name: str) -> bool:
         """Whether the repository declares this callee a keyword binder: by its
         own name, or, for a method looked up on a scanned class, by the name of
         the class that declares the method."""
 
-        readers = DeclaredRoot.keyword_binders_for(Path(module.file_path))
+        readers = self.declared(module)
         if qualified_name in readers:
             return True
         class_name, _, attribute = qualified_name.rpartition(".")
