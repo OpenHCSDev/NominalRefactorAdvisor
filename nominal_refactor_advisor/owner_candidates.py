@@ -524,6 +524,7 @@ class ModuleImportGraph:
         reads: Iterable[str] = (),
         *,
         homes_among_users: Iterable[str] = (),
+        above: Iterable[str] = (),
         modes: Mapping[str, object] = MappingProxyType({}),
         source: str = "",
     ) -> LowerHome | None:
@@ -532,7 +533,9 @@ class ModuleImportGraph:
         imports none of them, in their lowest common package, and no package's
         `__init__`, which is the package's interface rather than a home. A user in
         `homes_among_users` may hold it too. Every module in `reads`, which the
-        moved code imports names from, must be importable there without a cycle.
+        moved code imports names from, must be importable there without a cycle,
+        and neither the home nor any module in `reads` is or reaches a module in
+        `above`, which will import it but need not yet.
 
         Of several, one keeping `source`'s annotation mode (`modes`) first, then
         one no user is, then the highest, the one no other such module imports,
@@ -541,6 +544,9 @@ class ModuleImportGraph:
         importers = frozenset(users)
         allowed = frozenset(homes_among_users) & importers
         read_modules = frozenset(reads)
+        readers = frozenset(above)
+        if any(read in readers or self.reaches(read, reader) for read in read_modules for reader in readers):
+            return None
         package = common_package(importers)
         within = package + "."
         qualifying = tuple(
@@ -552,6 +558,8 @@ class ModuleImportGraph:
             and all(self.reaches(importer, module) for importer in importers if importer != module)
             and not any(self.reaches(module, importer) for importer in importers if importer != module)
             and all(self.can_bind_at(module, read, importers) for read in read_modules)
+            and module not in readers
+            and not any(self.reaches(module, reader) for reader in readers)
         )
         ranked = sorted(
             qualifying,
