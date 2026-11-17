@@ -3750,6 +3750,10 @@ class ClassBodyDeclarationDigest(NamedTuple):
     unbound: tuple[str, ...]
     field_declaration: CompactFieldFact = NoFieldFact()
     """The bare field, `name: annotation`, the declaration makes, if any."""
+    reads_its_class: bool = False
+    """Whether its meaning depends on the class body it sits in
+    (`ClassBodyNormalForm.reads_its_class`), so a copy in another class means
+    something else even when the two are the same declaration."""
 
 
 @dataclass(frozen=True)
@@ -3826,6 +3830,30 @@ class ClassBodyModuleScope:
         return None
 
 
+def reads_class_cell_or_private_name(statement: ast.stmt) -> bool:
+    """Whether a class-body statement reads the class it sits in: a zero-argument
+    `super()` or `__class__` reads the class cell, and a `__name` identifier is
+    mangled with the class's name."""
+
+    for node in ast.walk(statement):
+        match node:
+            case ast.Call(func=ast.Name(id="super"), args=[], keywords=[]) | ast.Name(id="__class__"):
+                return True
+            case ast.Name(id=name) | ast.Attribute(attr=name) if _is_private_name(name):
+                return True
+            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name) if (
+                _is_private_name(name)
+            ):
+                return True
+            case ast.arg(arg=name) if _is_private_name(name):
+                return True
+    return False
+
+
+def _is_private_name(name: str) -> bool:
+    return name.startswith("__") and not name.endswith("__")
+
+
 PER_CLASS_NAMES = frozenset(("__slots__",))
 """Names class creation reads from the class's own body, never through its
 bases: `__slots__` restated in a subclass is not a copy, since without it the
@@ -3855,6 +3883,11 @@ class ClassBodyNormalForm:
     deferred_names: tuple[StarDeferredName, ...]
     unresolved_names: tuple[str, ...]
     field_declaration: CompactFieldFact = NoFieldFact()
+    reads_its_class: bool = False
+    """It reads the class it sits in: a zero-argument `super()` or `__class__`
+    (the class cell), a private name the class's name mangles, or a free name
+    the class body binds. Equality ignores it; whether a copy in a subclass
+    restates the definition it would inherit does not."""
 
     @property
     def is_resolved(self) -> bool:
@@ -3904,6 +3937,7 @@ class ClassBodyNormalForm:
             self.deferred_names,
             self.unresolved_names,
             self.field_declaration,
+            self.reads_its_class,
         )
 
     @classmethod
@@ -4095,6 +4129,7 @@ class ClassBodyNormalForm:
             class_scope_names=tuple(class_scope_names),
             deferred_names=tuple(deferred_names),
             unresolved_names=tuple(unresolved_names),
+            reads_its_class=bool(class_scope_names) or reads_class_cell_or_private_name(statement),
         )
 
     @classmethod

@@ -624,6 +624,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.MRO_ORDERING,),
     )
+    RESTATED_OVERRIDE = _pattern(
+        stable_id=52,
+        display_name="Restated Override",
+        required_relation=(
+            "A class declares a member exactly as the next class in its C3 "
+            "order that declares it, so lookup without it reaches the same "
+            "declaration bound to the same names: a second copy of one answer."
+        ),
+        witness_capabilities=(CapabilityTag.MRO_ORDERING,),
+    )
 
     def __new__(
         cls,
