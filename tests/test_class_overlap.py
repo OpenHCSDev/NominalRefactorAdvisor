@@ -21,6 +21,7 @@ from nominal_refactor_advisor.class_overlap import (
     ClassOverlapCandidate,
     ComposeExisting,
     DeleteAndRedirect,
+    ExtractMixin,
     PromoteToSharedBase,
     ClassOverlapShape,
     ClassOverlapVerdicts,
@@ -49,6 +50,14 @@ def _verdicts(*modules: tuple[str, str]) -> tuple[ClassOverlapCandidate, ...]:
     return ClassOverlapVerdicts(
         tuple(projections), build_compact_class_family_index(projections)
     ).candidates
+
+
+def _reported(*modules: tuple[str, str]) -> tuple[ClassOverlapCandidate, ...]:
+    """Each pair's own verdict, without the rung it offers below a refused move."""
+
+    candidates = _verdicts(*modules)
+    offered = {id(candidate.offered) for candidate in candidates if candidate.offered}
+    return tuple(candidate for candidate in candidates if id(candidate) not in offered)
 
 
 def _kinds(candidate: ClassOverlapCandidate) -> set[OverlapReceiptKind]:
@@ -129,7 +138,7 @@ def test_a_class_restating_another_with_an_extra_base_composes_it():
 
 def test_a_type_test_on_the_owner_refuses_the_move_and_says_where():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
-    (tested,) = _verdicts(
+    (tested,) = _reported(
         (
             "pkg.surface",
             SURFACE
@@ -142,6 +151,9 @@ def test_a_type_test_on_the_owner_refuses_the_move_and_says_where():
     assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
     assert refusal.evidence[0].symbol == "is_family"
     assert tested.confidence == plain.confidence
+    # A mixin both compose leaves the owner's type test answering as before.
+    assert tested.offered is not None and tested.offered.move is ExtractMixin
+    assert tested.offered.permitted
 
 
 def test_a_type_test_on_the_composing_class_leaves_the_composition_permitted():
@@ -178,9 +190,10 @@ def test_a_type_test_on_the_composing_class_leaves_the_composition_permitted():
     ),
 )
 def test_a_subclass_test_on_the_owner_refuses_only_when_its_answer_changes(consumer, permitted):
-    (candidate,) = _verdicts(("pkg.surface", SURFACE + "\n\n" + consumer))
+    (candidate,) = _reported(("pkg.surface", SURFACE + "\n\n" + consumer))
     assert candidate.move is ComposeExisting
     assert candidate.permitted is permitted
+    assert (candidate.offered is None) is permitted
     if not permitted:
         (refusal,) = candidate.refusals
         assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
@@ -205,7 +218,7 @@ def test_a_subclass_test_on_the_owner_refuses_only_when_its_answer_changes(consu
     ),
 )
 def test_a_subscript_keys_by_the_class_only_outside_a_type(consumer, permitted):
-    (candidate,) = _verdicts(("pkg.surface", SURFACE + "\n\n" + consumer))
+    (candidate,) = _reported(("pkg.surface", SURFACE + "\n\n" + consumer))
     assert candidate.move is ComposeExisting
     assert candidate.permitted is permitted
 
@@ -407,6 +420,53 @@ def test_a_star_settled_builtin_and_a_direct_builtin_are_one_declaration():
     assert set(verdict.shared_names) == {"file_path", "line", "symbol"}
 
 
+KEYWORDED_FAMILY = (
+    "class Family:\n"
+    "    def __init_subclass__(cls, *, affix='', **kwargs):\n"
+    "        super().__init_subclass__(**kwargs)\n\n\n"
+    "class Tagged(Family, affix='Tag'):\n"
+    "    def render(self):\n        return 'x'\n\n"
+    "    def width(self):\n        return 1\n\n\n"
+    "class Marked(Family, affix='Mark'):\n"
+    "    def render(self):\n        return 'x'\n\n"
+    "    def width(self):\n        return 1\n"
+)
+
+
+def test_a_merge_refused_by_identity_offers_the_extraction_that_keeps_both():
+    """Deleting `Marked` for `Tagged` would drop a class its keyword registers
+    (paper1 Thm 4.8): the merge stays refused, and the pair's finding is the rung
+    below, a mixin both compose, with the merge's needs named on it."""
+
+    candidates = _verdicts(("pkg.parts", KEYWORDED_FAMILY))
+    merge, extraction = candidates
+    assert merge.move is DeleteAndRedirect
+    assert {receipt.kind for receipt in merge.refusals} == {OverlapReceiptKind.IDENTITY_DECLARED}
+    assert merge.offered is extraction
+    assert extraction.move is ExtractMixin
+    assert extraction.offered is None
+    assert extraction.permitted
+    assert {owner.candidate_id for owner in extraction.owner_candidates if owner.permitted} == {
+        "shared_base:pkg.parts.Family",
+        "new_mixin:pkg.parts",
+    }
+    (named,) = (
+        receipt
+        for receipt in extraction.receipts
+        if receipt.kind is OverlapReceiptKind.STRONGER_MOVE_NEEDS
+    )
+    assert "`delete_and_redirect` would need: `" in named.detail
+    assert "class keywords affix run at creation" in named.detail
+    assert not named.kind.guards
+
+
+def test_a_permitted_move_offers_no_lower_rung():
+    (plain,) = _verdicts(("pkg.surface", SURFACE))
+    assert plain.permitted
+    assert plain.move is ComposeExisting
+    assert plain.offered is None
+
+
 def test_a_shared_field_declared_differently_refuses_the_move():
     records = (
         "from dataclasses import dataclass\n"
@@ -421,6 +481,8 @@ def test_a_shared_field_declared_differently_refuses_the_move():
     (refusal,) = candidate.refusals
     assert refusal.kind is OverlapReceiptKind.DECLARATION_DIFFERS
     assert not candidate.permitted
+    # The two answers differ, so no rung shares them: nothing is offered.
+    assert candidate.offered is None
 
 
 def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
