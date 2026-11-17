@@ -123,12 +123,30 @@ class DeclaredRoot:
             durable-bases = ["package.module:Root", ...]
         """
 
+        return cls.declared_names_for(path, "durable-bases")
+
+    @classmethod
+    def keyword_binders_for(cls, path: Path) -> frozenset[str]:
+        """The functions ``path``'s repository declares build a class handed to
+        them only by field name, or never (an encoder, a decoder, a query that
+        binds its filters), as qualified names::
+
+            [tool.nominal-refactor-advisor]
+            keyword-binders = ["package.module:Codec.decode", ...]
+        """
+
+        return cls.declared_names_for(path, "keyword-binders")
+
+    @classmethod
+    def declared_names_for(cls, path: Path, key: str) -> frozenset[str]:
+        """The qualified names listed under ``key`` in ``path``'s repository's table."""
+
         pyproject = cls.nearest_pyproject(path)
         if pyproject is None:
             return frozenset()
         match tomllib.loads(pyproject.read_text()):
-            case {"tool": {"nominal-refactor-advisor": {"durable-bases": list(bases)}}}:
-                return frozenset(str(base).replace(":", ".") for base in bases)
+            case {"tool": {"nominal-refactor-advisor": {**table}}} if isinstance(table.get(key), list):
+                return frozenset(str(name).replace(":", ".") for name in table[key])
         return frozenset()
 
     @classmethod

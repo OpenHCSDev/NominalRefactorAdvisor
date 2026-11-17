@@ -83,6 +83,8 @@ class OwnerReceiptKind(ReceiptKind):
     DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True, NeededInput.SOURCE_CHANGE
     CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True, NeededInput.SOURCE_CHANGE
     COPIED_FROM = "copied_from", 0.0, True, NeededInput.OPERATION
+    COPIED_HERE_ONLY = "copied_here_only", -0.25, False
+    BUILT_WITHOUT_SOURCE = "built_without_source", 0.0, True, NeededInput.SOURCE_CHANGE
     COPIES_ONE_VALUE = "copies_one_value", 1.0, False
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
     NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True, NeededInput.PROOF
@@ -90,6 +92,7 @@ class OwnerReceiptKind(ReceiptKind):
     PLAYS_SAME_ROLE = "plays_same_role", 1.0, False
     INHERITED_SHARE = "inherited_share", 0.0, True, NeededInput.OPERATION
     HOISTS_INHERITED = "hoists_inherited", -0.25, False
+    ALSO_DECLARED_BY = "also_declared_by", -0.5, False
 
 
 SERVED_CONSUMER_CAP = 4
@@ -509,22 +512,34 @@ class BlockOwnerQuestion:
 
     def candidates(self) -> tuple[OwnerCandidate, ...]:
         covering = self._covering_owners()
+        composed = (self._covering_candidate(covering),) if covering else ()
         found: tuple[BlockOwnerCandidate, ...] = (
             *self._shared_bases(),
             *self._existing_classes(),
-            *((self._covering_candidate(covering),) if covering else ()),
-            *self._new_mixins(covering),
+            *composed,
+            *self._new_mixins(covering, any(owner.permitted for owner in composed)),
         )
         copy = self._copy()
         if copy is None:
             return ranked(found)
         copier, source, locations = copy
-        refusal = Receipt(
-            OwnerReceiptKind.COPIED_FROM,
-            f"`{copier.qualname}` is built from the block copied field by field off "
-            f"one value: an owner both compose keeps both copies",
-            locations[:4],
-            count=len(locations),
+        copy_owner = self._copy_owner(copier, source, locations)
+        refusal = (
+            Receipt(
+                OwnerReceiptKind.COPIED_FROM,
+                f"`{copier.qualname}` is built from the block copied field by field off "
+                f"one value: an owner both compose keeps both copies",
+                locations[:4],
+                count=len(locations),
+            )
+            if copy_owner.permitted
+            else Receipt(
+                OwnerReceiptKind.COPIED_HERE_ONLY,
+                f"`{copier.qualname}` is built from the block copied off one value here, "
+                "and from other values elsewhere: both keep their copy of the block",
+                locations[:4],
+                count=len(locations),
+            )
         )
         return ranked(
             (
@@ -534,7 +549,7 @@ class BlockOwnerQuestion:
                     else candidate
                     for candidate in found
                 ),
-                self._copy_owner(copier, source, locations),
+                copy_owner,
             )
         )
 
@@ -585,9 +600,30 @@ class BlockOwnerQuestion:
                 block=self.block,
                 symbol=source.symbol,
             )
+        copied = frozenset((location.file_path, location.line) for location in locations)
+        elsewhere = tuple(
+            location
+            for location in self.constructions_of(copier.symbol)
+            if (location.file_path, location.line) not in copied
+        )
         return HoldSourceOwner(
             module_name=copier.module_name,
-            receipts=(receipt,),
+            receipts=(
+                receipt,
+                *(
+                    (
+                        Receipt(
+                            OwnerReceiptKind.BUILT_WITHOUT_SOURCE,
+                            f"`{copier.qualname}` is also built from other values: there is "
+                            f"no `{source.qualname}` to hold there",
+                            elsewhere[:4],
+                            count=len(elsewhere),
+                        ),
+                    )
+                    if elsewhere
+                    else ()
+                ),
+            ),
             cost=cost,
             composers=(copier.symbol,),
             block=self.block,
@@ -897,7 +933,7 @@ class BlockOwnerQuestion:
         )
 
     def _new_mixins(
-        self, covering: tuple[CompactIndexedClass, ...]
+        self, covering: tuple[CompactIndexedClass, ...], covering_composes: bool
     ) -> Iterator[NewMixinOwner]:
         declared = tuple(
             name
@@ -926,6 +962,15 @@ class BlockOwnerQuestion:
                     "the block is already declared by "
                     + " + ".join(f"`{owner.qualname}`" for owner in covering)
                     + ", which other classes compose: a new mixin would be another copy",
+                    tuple(_location(owner) for owner in covering),
+                )
+                if covering_composes
+                else Receipt(
+                    OwnerReceiptKind.ALSO_DECLARED_BY,
+                    "the block is also declared by "
+                    + " + ".join(f"`{owner.qualname}`" for owner in covering)
+                    + ", which both classes cannot compose: identical declarations "
+                    "there are evidence of one concept, not its owner",
                     tuple(_location(owner) for owner in covering),
                 ),
             )
@@ -978,6 +1023,7 @@ class BlockOwnerQuestion:
                     module_name=module_name,
                     receipts=(
                         *receipts,
+                        *self._declared_part(declared).refusals_of_new_mixin(module_name),
                         Receipt(
                             OwnerReceiptKind.HOISTS_INHERITED,
                             f"`{base.qualname}` declares the inherited "
@@ -1009,6 +1055,28 @@ class BlockOwnerQuestion:
                     composers=self._composers(),
                     block=self.block,
                 )
+
+    def _declared_part(self, declared: Sequence[str]) -> BlockOwnerQuestion:
+        """The same question about the part of the block both classes declare: the
+        block a hoist leaves for the new mixin."""
+
+        kept = frozenset(declared)
+        return replace(
+            self,
+            block=tuple(declared),
+            block_fields=self.block_fields & kept,
+            required_fields=self.required_fields & kept,
+        )
+
+    def refusals_of_new_mixin(self, module_name: str) -> tuple[Receipt, ...]:
+        """What refuses a new mixin of this block in `module_name`."""
+
+        return tuple(
+            receipt
+            for candidate in self.candidates()
+            if type(candidate) is NewMixinOwner and candidate.module_name == module_name
+            for receipt in candidate.refusals
+        )
 
     def _hoists(
         self, declared: Sequence[str]
@@ -1096,9 +1164,11 @@ class BlockOwnerQuestion:
                     count=len(reordered),
                 )
             )
+            # A keyword-only owner makes its fields keyword-only in every composer,
+            # reordered or not, so a positional construction of any of them breaks.
             constructed = {
                 member: locations
-                for symbol in reordered
+                for symbol in composers
                 for member in (symbol, *self.descendants_of(symbol))
                 if (locations := self.positional_constructions_of(member))
             }

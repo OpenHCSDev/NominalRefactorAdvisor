@@ -343,6 +343,123 @@ def test_the_fold_refuses_a_class_handed_on_as_a_value(tmp_path: Path) -> None:
         _fold(tmp_path).source_edits(snapshot)
 
 
+def test_the_fold_reads_a_type_form_of_its_class_as_a_type(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nKINDS = (type[ConveyorProof],)\n"
+            }
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
+
+KEYWORD_BINDER = {
+    "pyproject.toml": "[tool.nominal-refactor-advisor]\n"
+    'keyword-binders = ["pkg.codec:encode"]\n',
+    "pkg/codec.py": "def encode(value):\n    return f'{value.__module__}.{value.__qualname__}'\n",
+    "pkg/caller.py": "from pkg.codec import encode\n\n\n"
+    "def literal(value):\n    return encode(value) if value is not None else 'NULL'\n\n\n"
+    "def build(value):\n    return value()\n",
+}
+
+
+def test_the_fold_follows_a_class_into_a_function_that_only_encodes_it(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **KEYWORD_BINDER,
+            **{
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.caller import literal\n\nKEY = literal(ConveyorProof)\n"
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
+
+def test_the_fold_follows_a_class_into_a_reader_its_declaring_class_names(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pyproject.toml": "[tool.nominal-refactor-advisor]\n"
+                'keyword-binders = ["pkg.rows:Table.select"]\n',
+                "pkg/rows.py": "class Table:\n    @classmethod\n"
+                "    def select(cls, **key):\n        return [key]\n\n\n"
+                "class Rows(Table):\n    pass\n",
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.rows import Rows\n\nFOUND = Rows.select(kind=ConveyorProof)\n",
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
+
+def test_the_fold_follows_a_class_in_a_type_form_into_a_keyword_binder(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pyproject.toml": "[tool.nominal-refactor-advisor]\n"
+                'keyword-binders = ["pkg.codec:decode"]\n',
+                "pkg/codec.py": "def decode(form, data):\n    return data\n",
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.codec import decode\n\nREAD = decode(tuple[ConveyorProof, ...], [])\n",
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
+
+def test_a_keyword_binder_naming_no_function_refuses(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pyproject.toml": "[tool.nominal-refactor-advisor]\n"
+                'keyword-binders = ["pkg.codec:missing"]\n',
+                "pkg/codec.py": "def encode(value):\n    return str(value)\n",
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.codec import encode\n\nKEY = encode(ConveyorProof)\n",
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="names `pkg.codec.missing`"):
+        _fold(tmp_path).source_edits(snapshot)
+
+
+def test_the_fold_refuses_a_class_handed_to_a_function_that_calls_it(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **KEYWORD_BINDER,
+            **{
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.caller import build\n\nMADE = build(ConveyorProof)\n"
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="as a value"):
+        _fold(tmp_path).source_edits(snapshot)
+
+
 def test_the_fold_refuses_a_positional_construction_behind_a_local_import(
     tmp_path: Path,
 ) -> None:

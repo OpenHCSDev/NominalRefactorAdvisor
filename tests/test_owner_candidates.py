@@ -298,6 +298,9 @@ def test_existing_classes_that_cover_the_block_refuse_a_new_mixin() -> None:
 
 
 def test_a_covering_owner_that_brings_behaviour_is_offered_but_refused() -> None:
+    """The covering owners cannot be composed, so their identical declarations
+    are evidence against a new mixin, not a refusal: whether they are one
+    concept is the pick's nominal judgement (paper1 Thm 4.8)."""
     owners_module = (
         SPLIT_OWNERS[0],
         SPLIT_OWNERS[1].replace(
@@ -313,4 +316,7 @@ def test_a_covering_owner_that_brings_behaviour_is_offered_but_refused() -> None
     assert OwnerReceiptKind.OWNER_NOT_CONTAINED in {
         receipt.kind for receipt in kinds["compose_existing"].refusals
     }
-    assert not kinds["new_mixin"].permitted
+    assert kinds["new_mixin"].permitted
+    assert OwnerReceiptKind.ALSO_DECLARED_BY in {
+        receipt.kind for receipt in kinds["new_mixin"].receipts
+    }

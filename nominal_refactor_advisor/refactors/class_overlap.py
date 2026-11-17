@@ -19,8 +19,10 @@ from dataclasses import (
 from functools import cached_property
 from itertools import chain
 from importlib import import_module
-from typing import Self
+from pathlib import Path
+from typing import ClassVar, Self
 
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, declared_names
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
@@ -38,6 +40,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
+    ClassMemberAnswersABC,
     CompactIndexedClass,
     NATIVE_METACLASS_BASES,
     module_import_aliases,
@@ -485,6 +488,174 @@ class ClassReferenceSite:
         return f"{self.file_path}:{self.node.lineno}"
 
 
+class DeclaringClass(ClassMemberAnswersABC[tuple[str, ...]]):
+    """The class whose `def` a member lookup reaches; none for anything else."""
+
+    def assigned(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return ()
+
+    def annotated_property(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return (owner.symbol,)
+
+    def annotated_method(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return (owner.symbol,)
+
+    def unannotated_callable(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return (owner.symbol,)
+
+    def missing(self) -> tuple[str, ...]:
+        return ()
+
+    def ambiguous(self) -> tuple[str, ...]:
+        return ()
+
+    def open(self) -> tuple[str, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class KeywordBinders:
+    """Which calls a class handed on as a value reaches only to be built by field
+    name, or never built.
+
+    A callee the repository declares a keyword binder (`keyword-binders`) is one:
+    an encoder, a decoder, a query binding its filters. So is a scanned top-level
+    function whose parameter the class binds is only compared, tested as a type,
+    or handed to a keyword binder in turn. The class may travel inside a type
+    form (`tuple[X, ...]`), as a decoder's target does.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    DEPTH: ClassVar[int] = 4
+
+    def binds_by_keyword(self, site: ClassReferenceSite) -> bool:
+        module = self.snapshot.parsed_module_for_source_path(site.file_path)
+        parents = {
+            child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
+        }
+        argument: ast.AST = site.node
+        parent = parents.get(argument)
+        while isinstance(parent, ast.Tuple) or (
+            isinstance(parent, ast.Subscript) and parent.slice is argument
+        ):
+            argument, parent = parent, parents.get(parent)
+        if isinstance(parent, ast.keyword):
+            argument, parent = parent.value, parents.get(parent)
+        return (
+            isinstance(parent, ast.Call)
+            and isinstance(argument, ast.expr)
+            and self.call_binds_by_keyword(module, parent, argument, 0)
+        )
+
+    def call_binds_by_keyword(
+        self, module: ParsedModule, call: ast.Call, argument: ast.expr, depth: int
+    ) -> bool:
+        if depth > self.DEPTH or argument is call.func:
+            return False
+        # A function body looks a global up when it runs: the module's final binding.
+        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
+            module, call.func, line=len(module.source.splitlines()) + 1
+        )
+        if witness is None:
+            return False
+        if self.declared_binder(module, call.func, witness.qualified_name):
+            return True
+        callee_module, _, name = witness.qualified_name.rpartition(".")
+        function = next(
+            (
+                statement
+                for parsed in self.snapshot.parsed_modules
+                if parsed.module_name == callee_module
+                for statement in parsed.module.body
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and statement.name == name
+            ),
+            None,
+        )
+        parameter = self.parameter(function, call, argument) if function is not None else None
+        if function is None or parameter is None:
+            return False
+        reader = next(parsed for parsed in self.snapshot.parsed_modules if parsed.module_name == callee_module)
+        parents = {child: parent for parent in ast.walk(function) for child in ast.iter_child_nodes(parent)}
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Name) and node.id == parameter):
+                continue
+            if not isinstance(node.ctx, ast.Load):
+                return False
+            parent = parents.get(node)
+            match parent:
+                case ast.arg() | ast.Compare():
+                    continue
+                case ast.Call(func=ast.Name(id="isinstance" | "issubclass")):
+                    continue
+                case ast.Call() if self.call_binds_by_keyword(reader, parent, node, depth + 1):
+                    continue
+            return False
+        return True
+
+    def declared(self, module: ParsedModule) -> frozenset[str]:
+        """The repository's keyword binders, each naming a function that exists: a
+        stale entry would silently prove nothing, so it refuses instead."""
+
+        names = DeclaredRoot.keyword_binders_for(Path(module.file_path))
+        for name in sorted(names):
+            if not self.names_a_function(name):
+                raise NeedsInput(
+                    f"keyword-binders names `{name}`, which no scanned or importable "
+                    "class or module defines", NeededInput.SOURCE_CHANGE
+                )
+        return names
+
+    def names_a_function(self, name: str) -> bool:
+        owner, _, attribute = name.rpartition(".")
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        if class_index.class_for(owner) is not None:
+            return bool(class_index.declared_member(owner, attribute).answer(DeclaringClass()))
+        if any(
+            parsed.module_name == owner
+            and any(
+                isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == attribute
+                for statement in parsed.module.body
+            )
+            for parsed in self.snapshot.parsed_modules
+        ):
+            return True
+        try:
+            return callable(getattr(import_module(owner), attribute))
+        except (ImportError, AttributeError, ValueError):
+            return False
+
+    def declared_binder(self, module: ParsedModule, func: ast.expr, qualified_name: str) -> bool:
+        """Whether the repository declares this callee a keyword binder: by its
+        own name, or, for a method looked up on a scanned class, by the name of
+        the class that declares the method."""
+
+        readers = self.declared(module)
+        if qualified_name in readers:
+            return True
+        class_name, _, attribute = qualified_name.rpartition(".")
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        if not isinstance(func, ast.Attribute) or class_index.class_for(class_name) is None:
+            return False
+        declaring = class_index.declared_member(class_name, attribute).answer(DeclaringClass())
+        return any(f"{symbol}.{attribute}" in readers for symbol in declaring)
+
+    @staticmethod
+    def parameter(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, call: ast.Call, argument: ast.expr
+    ) -> str | None:
+        """The parameter of a plain function that `argument` binds at `call`."""
+
+        positional = [item.arg for item in (*function.args.posonlyargs, *function.args.args)]
+        if argument in call.args:
+            index = call.args.index(argument)
+            return positional[index] if index < len(positional) else None
+        for keyword in call.keywords:
+            if keyword.value is argument and keyword.arg in (*positional, *(item.arg for item in function.args.kwonlyargs)):
+                return keyword.arg
+        return None
+
+
 @dataclass(frozen=True)
 class ClassReferenceSites:
     """Every read of some classes in the current source, by role.
@@ -497,6 +668,10 @@ class ClassReferenceSites:
 
     snapshot: CodemodSourceSnapshot
     symbols: frozenset[str]
+
+    @cached_property
+    def binders(self) -> KeywordBinders:
+        return KeywordBinders(self.snapshot)
 
     @cached_property
     def sites(self) -> tuple[ClassReferenceSite, ...]:
@@ -554,6 +729,10 @@ class ClassReferenceSites:
 
     @staticmethod
     def _in_annotation(index: int, nodes: tuple[ast.AST, ...], parents) -> bool:
+        """Whether the read sits in a type: an annotation, or the class of a
+        `type[...]` form, which calling builds a `type`, never the class; the
+        class comes back out of either only through a decoder."""
+
         child = nodes[index]
         position = parents[index]
         while position >= 0:
@@ -563,6 +742,12 @@ class ClassReferenceSites:
                 or (
                     isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and parent.returns is child
+                )
+                or (
+                    isinstance(parent, ast.Subscript)
+                    and parent.slice is child
+                    and isinstance(parent.value, ast.Name)
+                    and parent.value.id == "type"
                 )
             ):
                 return True
@@ -600,6 +785,7 @@ class ClassReferenceSites:
                 or site.role.distinguishes_identity
                 or site.is_annotation
                 or site.is_base
+                or self.binders.binds_by_keyword(site)
             ):
                 continue
             raise NeedsInput(
