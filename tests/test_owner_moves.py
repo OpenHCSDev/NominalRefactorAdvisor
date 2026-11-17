@@ -25,9 +25,13 @@ from nominal_refactor_advisor.refactors.carrier_fields import (
     CarrierFieldProjection,
     ReplaceFieldsWithCarrierOperation,
 )
+from nominal_refactor_advisor.refactors.class_creation import declared_names
+from nominal_refactor_advisor.refactors.class_member_authority import ClassMemberMoveProofContext
 from nominal_refactor_advisor.refactors.class_overlap import (
     CreateMixinOperation,
     ExtendOwnerOperation,
+    OverlapClass,
+    movable_members,
 )
 from nominal_refactor_advisor.codemod import (
     CodemodOperationPreflightError,
@@ -258,6 +262,151 @@ def test_a_goal_run_executes_the_picked_owner_and_reports_the_pick(tmp_path: Pat
     assert "class Second(Lettered):\n    own_second: int = 0\n" in source
     assert _run(tmp_path, PROBE) == before
 
+
+ABSTRACT_BLOCK = (
+    "    @abstractmethod\n"
+    "    def gamma(self) -> str: ...\n\n"
+    "    def delta(self) -> str:\n"
+    "        return self.gamma() + '!'\n\n"
+    "    def epsilon(self) -> str:\n"
+    "        return self.delta() * 2\n\n"
+)
+
+ABSTRACT_RECORDS = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "class First(ABC):\n" + ABSTRACT_BLOCK + "    def own_first(self) -> int:\n        return 1\n\n\n"
+    "class Second(ABC):\n" + ABSTRACT_BLOCK + "    def own_second(self) -> int:\n        return 2\n"
+)
+
+ABSTRACT_ROOTS = "from abc import ABC\n\n\nclass RootA(ABC):\n    pass\n\n\nclass RootB(ABC):\n    pass\n"
+
+ABSTRACT_PROBE = (
+    "from pkg.records import First, Second\n"
+    "class Concrete(First):\n"
+    "    def gamma(self) -> str:\n"
+    "        return 'c'\n"
+    "print(sorted(First.__abstractmethods__), sorted(Second.__abstractmethods__), Concrete().epsilon())\n"
+    "for abstract in (First, Second):\n"
+    "    try:\n"
+    "        abstract()\n"
+    "    except TypeError:\n"
+    "        print(abstract.__name__, 'stays abstract')\n"
+)
+
+
+def _run_picked_mixin(root: Path) -> None:
+    modules = parse_python_modules(root, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    (mixin,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(root,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin.stable_id,
+                    owner="new_mixin:pkg.records",
+                    because="new_class",
+                    name="Lettered",
+                    judgement="a lettered record",
+                ),
+            ),
+        ),
+    ).run()
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+
+
+@pytest.mark.parametrize(
+    ("files", "first_header", "second_header", "import_line"),
+    (
+        ({"pkg/records.py": ABSTRACT_RECORDS}, "class First(Lettered, ABC):", "class Second(Lettered, ABC):", None),
+        (
+            {
+                "pkg/base.py": ABSTRACT_ROOTS,
+                "pkg/records.py": ABSTRACT_RECORDS.replace(
+                    "from abc import ABC, abstractmethod\n",
+                    "from abc import abstractmethod\n\nfrom pkg.base import RootA, RootB\n",
+                )
+                .replace("class First(ABC)", "class First(RootA)")
+                .replace("class Second(ABC)", "class Second(RootB)"),
+            },
+            "class First(Lettered, RootA):",
+            "class Second(Lettered, RootB):",
+            "from abc import ABC, abstractmethod\n",
+        ),
+    ),
+    ids=("abc_bound", "abc_imported"),
+)
+def test_a_new_mixin_taking_an_abstract_method_is_an_abc_that_keeps_it_abstract(
+    tmp_path: Path,
+    files: dict[str, str],
+    first_header: str,
+    second_header: str,
+    import_line: str | None,
+) -> None:
+    """`ABCMeta` reads a composer's abstract names from its namespace and its bases'
+    `__abstractmethods__`: the mixin is an `ABC`, so each composer keeps them."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", **files})
+    before = _run(tmp_path, ABSTRACT_PROBE)
+    assert before.splitlines()[0] == "['gamma'] ['gamma'] c!c!"
+
+    _run_picked_mixin(tmp_path)
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert (
+        'class Lettered(ABC):\n    """A lettered record."""\n\n'
+        "    @abstractmethod\n    def gamma(self) -> str: ...\n"
+    ) in source, source
+    assert f"{first_header}\n    def own_first(self) -> int:\n" in source, source
+    assert f"{second_header}\n    def own_second(self) -> int:\n" in source, source
+    assert import_line is None or source.startswith(import_line), source
+    assert _run(tmp_path, ABSTRACT_PROBE) == before
+
+
+def test_an_abstract_block_one_composer_is_no_abc_of_is_refused_naming_it(tmp_path: Path) -> None:
+    records = ABSTRACT_RECORDS.replace("class Second(ABC):", "class Second:")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = CreateMixinOperation(
+        target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/records.py"), qualname="First"),
+        member_names=("gamma", "delta", "epsilon"),
+        mixin_name="Lettered",
+        docstring="A lettered record.",
+    )
+
+    with pytest.raises(
+        CodemodOperationPreflightError, match=r"`Second` does not derive from `abc\.ABC`"
+    ):
+        operation.source_edits(snapshot)
+
+
+def test_an_abstract_method_moves_only_into_a_new_abc(tmp_path: Path) -> None:
+    """`abstractmethod` is admitted only where the receiving class is a new `ABC`:
+    an existing class it moved onto would become abstract itself."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": ABSTRACT_RECORDS})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    first = OverlapClass.require(
+        snapshot, SourceRewriteTarget(file_path=str(tmp_path / "pkg/records.py"), qualname="First")
+    )
+    context = ClassMemberMoveProofContext.between(snapshot, first.target, first.target)
+    gamma = tuple(statement for statement in first.node.body if declared_names(statement) == {"gamma"})
+
+    with pytest.raises(ValueError, match="custom_method_decorator"):
+        movable_members(context, first, gamma)
+    movable_members(context.into_new_abc(), first, gamma)
 
 def test_a_pick_citing_a_receipt_its_owner_lacks_is_rejected(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS})

@@ -129,6 +129,8 @@ class MethodPromotionInspection:
     decorators and annotations are evaluated."""
     class_bound_names: frozenset[str]
     source_lines: tuple[str, ...]
+    admitted_decorators: frozenset[str]
+    """What each decorator may resolve to and still promote onto the receiving class."""
 
 
 @dataclass(frozen=True)
@@ -211,10 +213,11 @@ def _decorator_head(decorator: ast.expr) -> str | None:
 
 def _has_custom_method_decorator(inspection: MethodPromotionInspection) -> bool:
     """A decorator promotes only when it is a name path the class statement's bindings
-    resolve to a promotable declaration; a name the class body binds first is the class's."""
+    resolve to a declaration the receiving class admits; a name the class body binds
+    first is the class's."""
 
     bound = inspection.binding_snapshot.decorators_bound_to(
-        inspection.method, PROMOTABLE_METHOD_DECORATOR_IDENTITIES
+        inspection.method, inspection.admitted_decorators
     )
     return any(
         (head := _decorator_head(decorator)) is None
@@ -335,12 +338,14 @@ class ClassMethodPromotionSafetyProfile:
         class_bound_names: frozenset[str] = frozenset(),
         *,
         source_lines: tuple[str, ...],
+        admitted_decorators: frozenset[str] = PROMOTABLE_METHOD_DECORATOR_IDENTITIES,
     ) -> ClassMethodPromotionSafetyProfile:
         inspection = MethodPromotionInspection(
             method,
             binding_snapshot,
             class_bound_names,
             source_lines,
+            admitted_decorators,
         )
         return cls(
             ClassScopeDependency.from_node(method)

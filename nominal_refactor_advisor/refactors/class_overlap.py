@@ -51,6 +51,7 @@ from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingWitness,
     NATIVE_METACLASS_BASES,
     module_import_aliases,
+    native_identity,
 )
 from nominal_refactor_advisor.class_mro import (
     ClassMroAuthority,
@@ -1543,9 +1544,9 @@ class ClassComposition:
     """A class restates an existing class's whole body; it composes that class instead.
 
     The owner becomes the first base and the restated declarations go. With
-    the owner's own C3 order `[owner, object]` and the owner not already an
-    ancestor, C3 places it right after the class and leaves every other
-    ancestor in order, so a name the class kept resolves as before and a
+    the owner's own C3 order `[owner, object]`, or `[owner, ABC, object]` for a
+    class already an `ABC`, and the owner not already an ancestor, C3 places it
+    right after the class and leaves every other ancestor in order, so a name the class kept resolves as before and a
     deleted name resolves to the owner's equal declaration. Dataclass
     collection then walks the old ancestors, the owner, the class: the field
     order is compared, not assumed.
@@ -1696,8 +1697,8 @@ class CoveringComposition:
 
     The proof is the extract-mixin verdict's permitted `compose_existing`
     owner on the current source. Each composer restates every owner's whole
-    body, so deleting its copies loses nothing; each owner is a root, so C3
-    places the owners right after the composer, in the given order, ahead of
+    body, so deleting its copies loses nothing; each owner is a root, or an
+    `ABC` composed into an `ABC`, so C3 places the owners right after the composer, in the given order, ahead of
     its old ancestors. The owners are declared in other modules or before
     every composer, and the composers' dataclass field order must come out
     the same: no keyword-only route is taken for owners other classes use.
@@ -2029,16 +2030,11 @@ class BaseFold:
 
     def require_movable(self, restatement: RestatedDeclarations) -> None:
         child = restatement.restating
-        context = ClassMemberMoveProofContext.between(
-            self.snapshot, child.target, self.base.target
+        movable_members(
+            ClassMemberMoveProofContext.between(self.snapshot, child.target, self.base.target),
+            child,
+            restatement.statements,
         )
-        for statement in restatement.statements:
-            member = ClassMemberPromotionStatement.for_statement(statement)
-            if member is None:
-                raise NeedsInput(
-                    f"`{child.qualname}` line {statement.lineno} is no movable member", NeededInput.OPERATION
-                )
-            member.require_safe_move(context)
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         base = self.base
@@ -3108,14 +3104,12 @@ def require_owner_candidate(
 
 
 def movable_members(
-    snapshot: CodemodSourceSnapshot,
+    context: ClassMemberMoveProofContext,
     source: OverlapClass,
-    destination: OverlapClass,
     statements: tuple[ast.stmt, ...],
 ) -> None:
     """Each statement is a member that moves without reading its class's scope."""
 
-    context = ClassMemberMoveProofContext.between(snapshot, source.target, destination.target)
     for statement in statements:
         member = ClassMemberPromotionStatement.for_statement(statement)
         if member is None:
@@ -3129,7 +3123,8 @@ def movable_members(
 class MixinCreation:
     """A new class declares a block several classes restate; nothing uses it yet.
 
-    The class is a root (`[mixin, object]`), inserted right before the anchor in
+    The class is a root (`[mixin, object]`), or, when the block declares abstract
+    methods, an `ABC` (`[mixin, ABC, object]`), inserted right before the anchor in
     the anchor's module, so
     every free name of the copied statements is bound there exactly as in the
     anchor. Each statement must move without reading the anchor's class scope
@@ -3141,6 +3136,13 @@ class MixinCreation:
     common frozenness, and no instance layout of its own. When a composer is
     slotted, the mixin declares `__slots__ = ()`, so each composer slots the
     mixin's fields itself and none gains a `__dict__` or a second layout.
+
+    `ABCMeta` gives a class the abstract names of its own namespace and those of
+    each base's `__abstractmethods__` it still resolves to an abstract function.
+    A plain root has none, so an abstract method moved there would stop being
+    enforced; an `ABC` mixin carries it into each composer, whose
+    `__abstractmethods__` then stay as they were. Every composer must derive from
+    `ABC` already, so composing the mixin adds no ancestor and keeps its metaclass.
     """
 
     snapshot: CodemodSourceSnapshot
@@ -3159,6 +3161,8 @@ class MixinCreation:
     carried_documentation: tuple[tuple[str, str], ...] = ()
     """Each member the anchor leaves undocumented and another composer documents,
     with that docstring's source: the one copy kept carries it."""
+    abstract_names: tuple[str, ...] = ()
+    """The block's abstract methods: when there are any, the mixin is an `ABC`."""
 
     @classmethod
     def require(
@@ -3188,8 +3192,15 @@ class MixinCreation:
         )
         restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
         NeedsInput.every(
-            lambda: movable_members(snapshot, anchor, anchor, restated.statements),
+            lambda: movable_members(
+                ClassMemberMoveProofContext.between(snapshot, anchor.target, anchor.target).into_new_abc(),
+                anchor,
+                restated.statements,
+            ),
             lambda: restated.require_no_owner_bound_values(snapshot),
+        )
+        abstract_names = tuple(
+            name for name in anchor.facts.abstract_method_names if name in restated.names
         )
         mixin_fields = tuple(
             name for name in anchor.own_field_names if name in restated.names
@@ -3198,6 +3209,14 @@ class MixinCreation:
         # mixin's keyword-only-ness: one already keyword-only, made so by an earlier
         # step, needs a keyword-only mixin just as a reordered one does.
         composers = tuple(OverlapClass.for_symbol(snapshot, symbol) for symbol in owner.composers)
+        if abstract_names:
+            NeedsInput.every(
+                lambda: cls.abc_import(snapshot, anchor),
+                *(
+                    lambda composer=composer: cls.require_abstract_composer(snapshot, composer, abstract_names)
+                    for composer in (anchor, *composers)
+                ),
+            )
         keyword_only = anchor.option("kw_only") == "True" or any(
             before != after or composer.option("kw_only") == "True"
             for composer in composers
@@ -3214,7 +3233,49 @@ class MixinCreation:
             ),
             any(not composer.lays_out_instance_dict for composer in (anchor, *composers)),
             cls.documentation_to_carry(snapshot, anchor, owner.composers, restated.deleted_names),
+            abstract_names,
         )
+
+    @staticmethod
+    def require_abstract_composer(
+        snapshot: CodemodSourceSnapshot, composer: OverlapClass, abstract_names: tuple[str, ...]
+    ) -> None:
+        """The composer derives from `ABC`, so `ABCMeta` or a subclass creates it and
+        composing an `ABC` mixin adds no ancestor besides the mixin."""
+
+        if not any(
+            ".".join(reference.resolved_parts) == native_identity(ABC)
+            for indexed in require_static_c3(snapshot, composer.facts)
+            for reference in indexed.base_references
+        ):
+            raise NeedsInput(
+                f"`{composer.qualname}` does not derive from `abc.ABC`: a mixin taking abstract "
+                f"{list(abstract_names)} is an `ABC`, which composing would add to "
+                f"`{composer.qualname}`'s ancestors. NRA needs `{composer.qualname}` to "
+                "derive from `ABC` first",
+                NeededInput.SOURCE_CHANGE,
+            )
+
+    @staticmethod
+    def abc_import(snapshot: CodemodSourceSnapshot, anchor: OverlapClass) -> tuple[str, ...]:
+        """The import binding `ABC` where the mixin is declared: none when the
+        anchor's module binds it to `abc.ABC` there already; refuses another binding."""
+
+        witness = snapshot.module_binding_proof.reference_or_builtin_witness_at(
+            snapshot.parsed_module_for_source_path(anchor.file_path),
+            ast.Name(id=ABC.__name__, ctx=ast.Load()),
+            line=anchor.node.lineno,
+        )
+        if witness is None:
+            return (f"from {ABC.__module__} import {ABC.__name__}",)
+        if witness.qualified_name != native_identity(ABC):
+            raise NeedsInput(
+                f"`{ABC.__name__}` is `{witness.qualified_name}` in {anchor.file_path}, so the mixin "
+                f"cannot name `{native_identity(ABC)}` as its base: NRA needs that "
+                "binding renamed",
+                NeededInput.SOURCE_CHANGE,
+            )
+        return ()
 
     @staticmethod
     def require_pickable(name: str, docstring: str, bound: frozenset[str], file_path: str) -> None:
@@ -3277,6 +3338,10 @@ class MixinCreation:
         named = ast.get_source_segment(source, function) or ""
         return f"{named}({', '.join(options)})" if options else named
 
+    @property
+    def bases_source(self) -> str:
+        return f"({ABC.__name__})" if self.abstract_names else ""
+
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         anchor = self.anchor
         source = self.snapshot.sources_by_file_path[anchor.file_path]
@@ -3317,13 +3382,19 @@ class MixinCreation:
                 insertion_line=first_line,
                 inserted_lines=(
                     *decorators,
-                    f"{indentation}class {self.name}:\n",
+                    f"{indentation}class {self.name}{self.bases_source}:\n",
                     f'{member_indentation}"""{self.docstring}"""\n\n',
                     *((f"{member_indentation}__slots__ = ()\n\n",) if self.empty_slots else ()),
                     *members,
                     "\n\n",
                 ),
                 rationale=rationale,
+            ),
+            *(
+                ModuleImportMutation.from_source(
+                    file_path=anchor.file_path, import_source=import_source, rationale=rationale
+                )
+                for import_source in (self.abc_import(self.snapshot, anchor) if self.abstract_names else ())
             ),
         )
 
@@ -3492,7 +3563,11 @@ class OwnerExtension:
                 NeededInput.SOURCE_CHANGE,
             )
         restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
-        movable_members(snapshot, anchor, owner, restated.statements)
+        movable_members(
+            ClassMemberMoveProofContext.between(snapshot, anchor.target, owner.target),
+            anchor,
+            restated.statements,
+        )
         restated.require_no_owner_bound_values(snapshot)
         extension = cls(snapshot, owner, anchor, restated)
         extension.require_construction()
