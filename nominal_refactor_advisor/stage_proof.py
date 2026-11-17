@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from typing import Generic, TypeVar
 
 ScanT = TypeVar("ScanT")
+ChangeT = TypeVar("ChangeT")
 
 
 class TrajectoryScans(ABC, Generic[ScanT]):
@@ -51,6 +52,13 @@ class StageProof(ABC):
     def certified(cls, scans: TrajectoryScans[ScanT], scan: ScanT) -> ScanT:
         """The scan a terminal state and its report are judged on."""
         raise NotImplementedError
+
+    @classmethod
+    def unjustified(cls, increased: tuple[ChangeT, ...]) -> tuple[ChangeT, ...]:
+        """The finding classes a terminal state grew that its stages answer for:
+        every one, since a stage may have written what a new finding cites."""
+
+        return increased
 
 
 class RescannedStages(StageProof):
@@ -99,7 +107,20 @@ class OperationCertifiedStages(StageProof):
         return scans.settled(scan)
 
 
+class ImportScopeStages(RescannedStages):
+    """Stages that only move import statements, each proved to close no load-time
+    cycle and to shadow no binding: they bind the same objects earlier, so they
+    change which names a detector can resolve and nothing any line does. A
+    finding class they grow cites code that was there before; it is revealed,
+    not debt, and the next scan reports it."""
+
+    @classmethod
+    def unjustified(cls, increased: tuple[ChangeT, ...]) -> tuple[ChangeT, ...]:
+        return ()
+
+
 __all__ = (
+    "ImportScopeStages",
     "OperationCertifiedStages",
     "RescannedStages",
     "StageProof",

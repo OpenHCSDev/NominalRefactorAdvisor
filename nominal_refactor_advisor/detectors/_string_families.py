@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     DeclaredIdentityFamily,
-    MemberSpellings,
 )
 from nominal_refactor_advisor.detectors._base import (
     CompactMultiModuleProjectionDetectorMixin,
@@ -17,7 +16,12 @@ from nominal_refactor_advisor.detectors._base import (
     IssueDetector,
     finding_spec_template,
 )
-from nominal_refactor_advisor.models import FindingMetrics, ImpactDelta, RefactorFinding
+from nominal_refactor_advisor.models import (
+    FindingMetrics,
+    ImpactDelta,
+    RefactorFinding,
+    SourceLocation,
+)
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.string_families import (
     StringFamily,
@@ -99,14 +103,12 @@ class StringKeyedFamilyDetector(
         found = []
         for family in sorted(families, key=lambda family: -family.weight):
             declared = context.members.get(family.key)
-            spelled = (
-                set()
-                if declared is None
-                else {value for value, _location in declared.members}
+            extended = (
+                () if declared is None else declared.families_spelling(family.literals)
             )
+            spelled = {value for _base, group in extended for value, _location in group}
             if self.admits(family) and not set(family.literals) <= spelled:
-                partly = declared if spelled & set(family.literals) else None
-                found.append(self._finding(family, partly, spelled))
+                found.append(self._finding(family, extended, spelled))
         return found
 
     @staticmethod
@@ -125,7 +127,7 @@ class StringKeyedFamilyDetector(
     def _finding(
         self,
         family: StringFamily,
-        extended: MemberSpellings | None,
+        extended: tuple[tuple[str, tuple[tuple[str, SourceLocation], ...]], ...],
         spelled: set[str],
     ) -> RefactorFinding:
         members = family.members
@@ -149,17 +151,18 @@ class StringKeyedFamilyDetector(
             if family.boundary_share
             else ""
         )
-        if extended is None:
+        declared_at = tuple(
+            dict.fromkeys(location for _base, group in extended for _value, location in group)
+        )
+        if not extended:
             owner = "Declare the family base with one method per site, one member per literal group overriding each"
-            declared_at = ()
         else:
             missing = ", ".join(repr(literal) for literal in family.literals if literal not in spelled)
-            bases = ", ".join(f"`{base}`" for base in sorted(extended.family_bases)[:LISTED])
+            bases = ", ".join(f"`{base}`" for base in sorted({base for base, _group in extended})[:LISTED])
             owner = (
                 f"The family is declared below {bases}, whose `{family.key}` spells some of the literals; "
                 f"add a member for each of {missing}, declare one method per site on the base, override it in each member"
             )
-            declared_at = extended.declared_at
         return self.build_finding(
             f"`.{family.key}` selects behaviour by {len(family.literals)} string(s) at "
             f"{len(family.sites)} site(s) in {len(methods)} function(s) "

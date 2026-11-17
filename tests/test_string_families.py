@@ -173,3 +173,34 @@ def test_a_partly_declared_family_names_the_family_to_extend(tmp_path: Path):
         "actions.py",
         "steps.py",
     }
+
+
+def test_only_the_declared_family_spelling_a_literal_is_the_one_to_extend(tmp_path: Path):
+    shapes = "class Shape:\n    kind: ClassVar[str]\n\n\n" + "".join(
+        f"class {name.title()}(Shape):\n    kind = {name!r}\n\n\n" for name in ("circle", "square")
+    )
+    (tmp_path / "steps.py").write_text(_declared("clear", "set") + shapes)
+    (finding,) = _findings(tmp_path, ACTIONS)
+    assert "declared below `Step`," in finding.summary
+    assert {location.symbol for location in finding.evidence if location.file_path.endswith("steps.py")} == {
+        "Clear",
+        "Set",
+    }
+
+
+NEGATED = (
+    "def apply(action, state):\n"
+    "    if action.kind == 'set':\n        state.add(action.value)\n"
+    "    elif action.kind == 'pause':\n        state.hold()\n\n\n"
+    "def skip(action):\n"
+    "    if action.kind != 'clear':\n        return action.value\n"
+    "    return 0\n"
+)
+
+
+def test_a_negated_test_sends_its_literal_to_the_else(tmp_path: Path):
+    (finding,) = _findings(tmp_path, NEGATED)
+    metrics = finding.metrics
+    assert metrics.methods == ("apply", "skip")
+    # `skip` answers 'set' and 'pause' alike and 'clear' apart; `apply` splits the other two.
+    assert metrics.members == (("clear",), ("pause",), ("set",))
