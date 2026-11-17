@@ -8,6 +8,8 @@ sites into findings. A family differs from another only in what it matches.
 from __future__ import annotations
 
 import ast
+import configparser
+import os
 import re
 import tomllib
 from abc import ABC, abstractmethod
@@ -15,6 +17,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from fnmatch import fnmatch
 from pathlib import Path
 from typing import TypeVar
 
@@ -945,6 +948,20 @@ class ModuleReferenceFacts:
     imported: tuple[str, ...]
     named: tuple[str, ...]
     referenced: tuple[tuple[str, int], ...]
+    enumerated: tuple[str, ...] = ()
+    """Packages an enumerator lists through an imported package object (`pkg.__path__`)."""
+    paths: tuple[str, ...] = ()
+    """Path strings this module spells: a file it runs or reads, or a directory of them."""
+
+    def reached_files(self) -> Iterator[str]:
+        """Each path string resolved against this module's directory: a file or a
+        directory that exists, never one holding this module (`..` reaches no file)."""
+
+        directory = Path(self.file_path).parent
+        for path in self.paths:
+            candidate = Path(os.path.normpath(directory / path))
+            if candidate.exists() and not directory.is_relative_to(candidate):
+                yield str(candidate)
 
     @property
     def module_identity(self) -> PythonModulePathIdentity:
@@ -1013,10 +1030,23 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
         referenced: dict[str, int] = {}
         for name, line in used:
             referenced[name] = min(line, referenced.get(name, line))
-        named = {
+        texts = tuple(
             node.value
             for _node_index, node in index.indexed_nodes_of_type(ast.Constant)
-            if isinstance(node.value, str) and cls.DOTTED_NAME.fullmatch(node.value)
+            if isinstance(node.value, str)
+        )
+        named = {text for text in texts if cls.DOTTED_NAME.fullmatch(text)}
+        named.update(name for text in texts for name in cls.code_imports(text))
+        bound = cls.bound_modules(parsed_module)
+        enumerated = {
+            bound[argument.value.id]
+            for _i, call in index.indexed_nodes_of_type(ast.Call)
+            if cls.is_enumerator(call)
+            for argument in call.args[:1]
+            if isinstance(argument, ast.Attribute)
+            and argument.attr == "__path__"
+            and isinstance(argument.value, ast.Name)
+            and argument.value.id in bound
         }
         return [
             ModuleReferenceFacts(
@@ -1034,8 +1064,62 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                 imported=tuple(sorted(imported)),
                 named=tuple(sorted(named)),
                 referenced=tuple(sorted(referenced.items())),
+                enumerated=tuple(sorted(enumerated)),
+                paths=tuple(sorted({text for text in texts if cls.is_path(text)})),
             )
         ]
+
+    @staticmethod
+    def is_path(text: str) -> bool:
+        """A relative or absolute file-system path: a `.py` file or a directory with a
+        separator, never a URL or a sentence."""
+
+        return (
+            "://" not in text
+            and not any(character.isspace() for character in text)
+            and (text.endswith(".py") or "/" in text)
+        )
+
+    @staticmethod
+    def code_imports(text: str) -> Iterator[str]:
+        """The modules an import line inside a string of code names: a generated
+        script imports them as surely as this module would."""
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith(("import ", "from ")):
+                continue
+            try:
+                statement = ast.parse(stripped).body
+            except SyntaxError:
+                continue
+            for node in statement:
+                if isinstance(node, ast.Import):
+                    yield from (alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+                    yield node.module
+
+    @staticmethod
+    def bound_modules(parsed_module: ParsedModule) -> dict[str, str]:
+        """Each name an import binds to a module: `import a.b` binds `a`, `import a.b as c`
+        binds `c` to `a.b`, `from a import b` binds `b` to `a.b`."""
+
+        bound: dict[str, str] = {}
+        identity = parsed_module.module_path_identity
+        for node in ast.walk(parsed_module.module):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.asname:
+                        bound[alias.asname] = alias.name
+                    else:
+                        first = alias.name.partition(".")[0]
+                        bound[first] = first
+            elif isinstance(node, ast.ImportFrom):
+                base = identity.resolve_import_from_module(imported_module=node.module, level=node.level)
+                if base is not None:
+                    for alias in node.names:
+                        bound[alias.asname or alias.name] = f"{base}.{alias.name}"
+        return bound
 
     @classmethod
     def is_enumerator(cls, call: ast.Call) -> bool:
@@ -1091,6 +1175,76 @@ class ProjectEntryPoints:
 
 
 @dataclass(frozen=True)
+class TestCollection:
+    """The files a project's test runner loads by collection, read from its pytest
+    configuration: a collected test is an entry point, like a console script."""
+
+    root: Path | None
+    testpaths: tuple[str, ...]
+    python_files: tuple[str, ...]
+
+    DEFAULT_FILES = ("test_*.py", "*_test.py")
+    CONFTEST = "conftest.py"
+
+    @classmethod
+    def declared_for(cls, path: Path) -> TestCollection:
+        """pytest's own precedence: the nearest directory holding `pytest.ini`, a
+        `pyproject.toml` with `[tool.pytest.ini_options]`, `tox.ini` with `[pytest]` or
+        `setup.cfg` with `[tool:pytest]` is the root, and its options apply."""
+
+        for directory in path.parents:
+            options = cls.options_in(directory)
+            if options is not None:
+                return cls(
+                    directory,
+                    cls.listed(options.get("testpaths")),
+                    cls.listed(options.get("python_files")) or cls.DEFAULT_FILES,
+                )
+        return cls(None, (), cls.DEFAULT_FILES)
+
+    @staticmethod
+    def options_in(directory: Path) -> Mapping[str, object] | None:
+        ini = directory / "pytest.ini"
+        if ini.is_file():
+            # pytest.ini is the root even with no [pytest] section; its options are then the defaults.
+            return dict(TestCollection.ini_section(ini, "pytest") or {})
+        pyproject = directory / "pyproject.toml"
+        if pyproject.is_file():
+            table = tomllib.loads(pyproject.read_text()).get("tool", {}).get("pytest", {})
+            if "ini_options" in table:
+                return table["ini_options"]
+        for name, section in (("tox.ini", "pytest"), ("setup.cfg", "tool:pytest")):
+            config = directory / name
+            if config.is_file() and (found := TestCollection.ini_section(config, section)) is not None:
+                return dict(found)
+        return None
+
+    @staticmethod
+    def ini_section(path: Path, section: str) -> Mapping[str, str] | None:
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(path)
+        return parser[section] if parser.has_section(section) else None
+
+    @staticmethod
+    def listed(value: object) -> tuple[str, ...]:
+        """An ini option is one whitespace-separated string; a pyproject option is a list."""
+
+        if isinstance(value, str):
+            return tuple(value.split())
+        return tuple(str(item) for item in value) if isinstance(value, list) else ()
+
+    def collects(self, file_path: str) -> bool:
+        path = Path(file_path)
+        if path.name == self.CONFTEST:
+            return True
+        if not any(fnmatch(path.name, pattern) for pattern in self.python_files):
+            return False
+        if self.root is None or not self.testpaths:
+            return True
+        return any(path.is_relative_to(self.root / testpath) for testpath in self.testpaths)
+
+
+@dataclass(frozen=True)
 class UnreachedModules:
     """Scanned modules that nothing imports, names, lists as a package member, or declares as an entry point."""
 
@@ -1119,9 +1273,24 @@ class UnreachedModules:
         listable = (
             {module.package_name for module in facts if module.enumerates_modules}
             | {name for module in facts for name in module.named}
+            | {name for module in facts for name in module.enumerated}
             if any(module.enumerates_modules for module in facts)
             else set()
         )
+        # A module run or read by its file path, or kept in a directory a path names.
+        by_path = frozenset(path for module in facts for path in module.reached_files())
+        collections: dict[Path, TestCollection] = {}
+
+        def collected(file_path: str) -> bool:
+            directory = Path(file_path).parent
+            if directory not in collections:
+                collections[directory] = TestCollection.declared_for(Path(file_path))
+            return collections[directory].collects(file_path)
+
+        def reached_by_path(file_path: str) -> bool:
+            path = Path(os.path.normpath(file_path))
+            return any(str(candidate) in by_path for candidate in (path, *path.parents))
+
         return cls(
             frozenset(
                 module.module_name
@@ -1129,6 +1298,8 @@ class UnreachedModules:
                 if not module.is_package_entry_file
                 and not module.runs_as_script
                 and module.module_name not in entry_points.module_names
+                and not collected(module.file_path)
+                and not reached_by_path(module.file_path)
                 and not reached_by[module.module_name] - {module.module_name}
                 and not any(
                     module.module_name.startswith(f"{package}.") for package in listable
