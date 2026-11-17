@@ -8,7 +8,7 @@ way owner picks already are.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from enum import StrEnum
 from typing import Self
 
@@ -44,6 +44,25 @@ class NeedsInput(ValueError):
     def __init__(self, message: str, *needs: NeededInput) -> None:
         super().__init__(message)
         self.needs = NeededInput.distinct(needs)
+
+    @classmethod
+    def every(cls, *checks: Callable[[], object]) -> None:
+        """Run each independent check and refuse once, naming every check that
+        refused: one scan then shows all a step still needs, not its first."""
+
+        refused: list[ValueError] = []
+        for check in checks:
+            try:
+                check()
+            except ValueError as error:
+                refused.append(error)
+        if len(refused) == 1:
+            raise refused[0]
+        if refused:
+            raise cls(
+                "; ".join(str(error) for error in refused),
+                *(need for error in refused for need in cls.needs_of(error)),
+            )
 
     @staticmethod
     def needs_of(error: BaseException) -> tuple[NeededInput, ...]:

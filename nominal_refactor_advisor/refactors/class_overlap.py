@@ -1479,6 +1479,26 @@ class ComposedAncestry:
                 )
 
 
+def require_no_creation_keywords(owner: OverlapClass) -> None:
+    if owner.node.keywords:
+        raise NeedsInput(
+            f"`{owner.qualname}` passes class creation keywords: NRA needs a proof "
+            "that the new base leaves what its class creation sees unchanged",
+            NeededInput.PROOF,
+        )
+
+
+def require_rewritable_header(snapshot: CodemodSourceSnapshot, composer: OverlapClass) -> None:
+    header = ClassHeaderSpanSourceAuthority(composer.node, snapshot.sources_by_file_path[composer.file_path])
+    if not header.can_rewrite:
+        raise NeedsInput(f"`{composer.qualname}` has an unrewritable header", NeededInput.OPERATION)
+
+
+def require_declared_before(owner: OverlapClass, composer: OverlapClass) -> None:
+    if owner.file_path == composer.file_path and owner.node.lineno > composer.node.lineno:
+        raise NeedsInput(f"`{owner.qualname}` is declared after `{composer.qualname}`", NeededInput.SOURCE_CHANGE)
+
+
 @dataclass(frozen=True)
 class ClassComposition:
     """A class restates an existing class's whole body; it composes that class instead.
@@ -1522,34 +1542,28 @@ class ClassComposition:
             (declaration.name for declaration in owner.facts.body_declarations),
         )
         composition = cls(snapshot, owner, restating, restated)
-        composition.require_owner_is_a_root()
-        composition.require_field_order()
-        restated.require_no_owner_bound_values(snapshot)
         class_index = snapshot.class_overlap_verdicts.class_index
-        ClassReferenceSites(snapshot, frozenset((owner.symbol,))).require_no_identity_reads(
-            {owner.symbol: AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)}
+        NeedsInput.every(
+            composition.require_owner_is_a_root,
+            composition.require_field_order,
+            lambda: restated.require_no_owner_bound_values(snapshot),
+            lambda: ClassReferenceSites(snapshot, frozenset((owner.symbol,))).require_no_identity_reads(
+                {owner.symbol: AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)}
+            ),
+            lambda: owner.file_path != restating.file_path or composition.relocation.require_safe(snapshot),
         )
-        if owner.file_path == restating.file_path:
-            composition.relocation.require_safe(snapshot)
         return composition
 
     def require_owner_is_a_root(self) -> None:
         owner, restating = self.owner, self.restating
-        if owner.node.keywords:
-            raise NeedsInput(
-                f"`{owner.qualname}` passes class creation keywords: NRA needs a proof "
-                "that the new base leaves what its class creation sees unchanged",
-                NeededInput.PROOF,
-            )
-        ComposedAncestry.require(
-            self.snapshot, restating, (owner,), self.restated.deleted_names
-        ).creation().require_unchanged()
-        restating.require_dataclass_base(owner)
-        header = ClassHeaderSpanSourceAuthority(
-            restating.node, self.snapshot.sources_by_file_path[restating.file_path]
+        NeedsInput.every(
+            lambda: require_no_creation_keywords(owner),
+            lambda: ComposedAncestry.require(
+                self.snapshot, restating, (owner,), self.restated.deleted_names
+            ).creation().require_unchanged(),
+            lambda: restating.require_dataclass_base(owner),
+            lambda: require_rewritable_header(self.snapshot, restating),
         )
-        if not header.can_rewrite:
-            raise NeedsInput(f"`{restating.qualname}` has an unrewritable header", NeededInput.OPERATION)
 
     def require_field_order(self) -> None:
         """Old and new dataclass collection bind the same values.
@@ -1710,34 +1724,30 @@ class CoveringComposition:
         return composition
 
     def require_roots(self) -> None:
-        for owner in self.owners:
-            if owner.node.keywords:
-                raise NeedsInput(
-                f"`{owner.qualname}` passes class creation keywords: NRA needs a proof "
-                "that the new base leaves what its class creation sees unchanged",
-                NeededInput.PROOF,
-            )
-        for composer, restatements in zip(self.composers, self.restated, strict=True):
-            composed = ComposedAncestry.require(
-                self.snapshot,
-                composer,
-                self.owners,
-                (name for restatement in restatements for name in restatement.deleted_names),
-            )
-            for owner in self.owners:
-                composer.require_dataclass_base(owner)
-                if owner.file_path == composer.file_path and (
-                    owner.node.lineno > composer.node.lineno
-                ):
-                    raise NeedsInput(
-                        f"`{owner.qualname}` is declared after `{composer.qualname}`", NeededInput.SOURCE_CHANGE
-                    )
-            composed.creation().require_unchanged()
-            header = ClassHeaderSpanSourceAuthority(
-                composer.node, self.snapshot.sources_by_file_path[composer.file_path]
-            )
-            if not header.can_rewrite:
-                raise NeedsInput(f"`{composer.qualname}` has an unrewritable header", NeededInput.OPERATION)
+        NeedsInput.every(
+            *(lambda owner=owner: require_no_creation_keywords(owner) for owner in self.owners),
+            *(
+                check
+                for composer, restatements in zip(self.composers, self.restated, strict=True)
+                for check in (
+                    lambda composer=composer, restatements=restatements: ComposedAncestry.require(
+                        self.snapshot,
+                        composer,
+                        self.owners,
+                        (name for restatement in restatements for name in restatement.deleted_names),
+                    ).creation().require_unchanged(),
+                    *(
+                        lambda composer=composer, owner=owner: composer.require_dataclass_base(owner)
+                        for owner in self.owners
+                    ),
+                    *(
+                        lambda composer=composer, owner=owner: require_declared_before(owner, composer)
+                        for owner in self.owners
+                    ),
+                    lambda composer=composer: require_rewritable_header(self.snapshot, composer),
+                )
+            ),
+        )
 
     def require_field_order(self) -> None:
         for composer in self.composers:
@@ -2829,24 +2839,23 @@ class MixinCreation:
         docstring: str,
     ) -> Self:
         anchor = OverlapClass.require(snapshot, anchor_reference)
-        if not docstring.strip() or '"""' in docstring or "\\" in docstring:
-            raise NeedsInput("A mixin needs a one-line docstring without quotes", NeededInput.OWNER_PICK)
         module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+            snapshot.parsed_module_for_source_path(anchor.file_path).module.body
+        )
+        NeedsInput.every(
+            lambda: cls.require_pickable(name, docstring, bound, anchor.file_path),
+            lambda: anchor.dataclass_options_key,
+        )
         _, owner = require_owner_candidate(
             snapshot, anchor.symbol, NewMixinOwner, (module_name,), member_names,
             tolerate_inherited=True,
         )
-        if not name.isidentifier() or keyword_module.iskeyword(name):
-            raise NeedsInput(f"`{name}` is no class name", NeededInput.OWNER_PICK)
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-            snapshot.parsed_module_for_source_path(anchor.file_path).module.body
-        )
-        if name in bound:
-            raise NeedsInput(f"`{name}` is already bound in {anchor.file_path}", NeededInput.OWNER_PICK)
-        anchor.dataclass_options_key
         restated = RestatedDeclarations.require(snapshot, anchor, anchor, member_names)
-        movable_members(snapshot, anchor, anchor, restated.statements)
-        restated.require_no_owner_bound_values(snapshot)
+        NeedsInput.every(
+            lambda: movable_members(snapshot, anchor, anchor, restated.statements),
+            lambda: restated.require_no_owner_bound_values(snapshot),
+        )
         mixin_fields = tuple(
             name for name in anchor.own_field_names if name in restated.names
         )
@@ -2871,6 +2880,24 @@ class MixinCreation:
             any(not composer.lays_out_instance_dict for composer in (anchor, *composers)),
             cls.documentation_to_carry(snapshot, anchor, owner.composers, restated.deleted_names),
         )
+
+    @staticmethod
+    def require_pickable(name: str, docstring: str, bound: frozenset[str], file_path: str) -> None:
+        """The pick's class name and docstring can be written where the mixin goes."""
+
+        def one_line_docstring() -> None:
+            if not docstring.strip() or '"""' in docstring or "\\" in docstring:
+                raise NeedsInput("A mixin needs a one-line docstring without quotes", NeededInput.OWNER_PICK)
+
+        def class_name() -> None:
+            if not name.isidentifier() or keyword_module.iskeyword(name):
+                raise NeedsInput(f"`{name}` is no class name", NeededInput.OWNER_PICK)
+
+        def unbound_name() -> None:
+            if name in bound:
+                raise NeedsInput(f"`{name}` is already bound in {file_path}", NeededInput.OWNER_PICK)
+
+        NeedsInput.every(one_line_docstring, class_name, unbound_name)
 
     @staticmethod
     def documentation_to_carry(

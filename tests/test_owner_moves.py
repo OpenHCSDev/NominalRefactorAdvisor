@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 
@@ -16,6 +17,7 @@ from nominal_refactor_advisor.class_overlap import (
     ComposeExisting,
     ExtractMixin,
 )
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.refactors.carrier_fields import (
     CarrierFieldProjection,
@@ -993,6 +995,33 @@ def test_a_field_default_moves_into_the_new_mixin(tmp_path: Path) -> None:
     assert source.count("field(default_factory=list, compare=False)") == 1
     assert "class First(Lettered):" in source and "class Second(Lettered):" in source
     assert _run(tmp_path, FIELD_PROBE) == before
+
+
+def test_a_mixin_step_names_every_input_it_still_needs(tmp_path: Path) -> None:
+    """Independent checks all run: a bad class name and a quoted docstring are
+    both named in one refusal, so one scan shows everything the pick lacks."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": FIELD_RECORDS})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = replace(_field_mixin(str(tmp_path / "pkg/records.py")), mixin_name="class", docstring='say """hi"""')
+
+    with pytest.raises(CodemodOperationPreflightError) as refused:
+        operation.source_edits(snapshot)
+    assert "one-line docstring" in str(refused.value) and "`class` is no class name" in str(refused.value)
+
+
+def test_every_raises_one_refusal_with_each_need() -> None:
+    def proof() -> None:
+        raise NeedsInput("a proof", NeededInput.PROOF)
+
+    def pick() -> None:
+        raise NeedsInput("a pick", NeededInput.OWNER_PICK)
+
+    with pytest.raises(NeedsInput) as refused:
+        NeedsInput.every(proof, lambda: None, pick)
+    assert str(refused.value) == "a proof; a pick"
+    assert refused.value.needs == (NeededInput.OWNER_PICK, NeededInput.PROOF)
+    NeedsInput.every(lambda: None)
 
 
 def test_a_moved_value_from_an_unindexed_class_still_refuses(tmp_path: Path) -> None:
