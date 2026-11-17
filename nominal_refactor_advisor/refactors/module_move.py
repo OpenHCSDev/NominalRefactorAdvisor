@@ -105,6 +105,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     TextFileEdit,
 )
 from nominal_refactor_advisor.codemod_spacing import DestinationInsertionSpacing
+from nominal_refactor_advisor.refactors.downstream_consumers import DownstreamConsumers
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyProjection,
 )
@@ -3518,9 +3519,20 @@ class SourceBindingRelocatingModuleSymbolMoveOperationABC(
         """An entry point or setting naming a moved name on the source, which no
         longer binds it, names the name's owner instead."""
 
+        redirect = self.move_plan(context).name_redirect
+        import_graph = context.module_import_graph
+        source_path = self.required_source_path(context, self.operation_key())
+        homes = {
+            name: home
+            for name, path in redirect.destinations.items()
+            if (home := import_graph.module_name_for_file_path(path)) is not None
+        }
         return (
             *super().text_file_changes(context),
             *self.relocated_strings(context).manifest_edits(context, self),
+            *DownstreamConsumers.of(Path(source_path)).edits(
+                type(self), redirect.source_module_name(import_graph), homes
+            ),
         )
 
     def move_source_edits(
