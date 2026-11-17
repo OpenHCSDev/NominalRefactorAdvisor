@@ -37,6 +37,7 @@ from __future__ import annotations
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from types import MappingProxyType
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import ClassVar, TypeVar
@@ -493,37 +494,99 @@ class ModuleImportGraph:
             reachable = self._reachable[start] = frozenset(seen)
         return goal in reachable
 
-    def shared_lower_module(self, users: Iterable[str]) -> str | None:
+    def module_of(self, qualified_name: str) -> str | None:
+        """The scanned module declaring `qualified_name`: its longest scanned prefix."""
+
+        parts = qualified_name.split(".")
+        return next(
+            (
+                ".".join(parts[:length])
+                for length in range(len(parts) - 1, 0, -1)
+                if ".".join(parts[:length]) in self.imports
+            ),
+            None,
+        )
+
+    def can_bind_at(self, home: str, read: str, users: Iterable[str]) -> bool:
+        """`home` can import a name from `read` with no cycle: `read` is `home`,
+        or it neither reaches `home` nor is or reaches a module importing it."""
+
+        return read == home or not (
+            self.reaches(read, home)
+            or any(read == user or self.reaches(read, user) for user in users if user != home)
+        )
+
+    def shared_lower_module(
+        self,
+        users: Iterable[str],
+        reads: Iterable[str] = (),
+        *,
+        homes_among_users: Iterable[str] = (),
+        modes: Mapping[str, object] = MappingProxyType({}),
+        source: str = "",
+    ) -> LowerHome | None:
         """The module a declaration all of `users` import can live in without
         closing a cycle: one each of them already imports, directly or not, that
         imports none of them, in their lowest common package, and no package's
-        `__init__`, which is the package's interface rather than a home. Of
-        several, the highest, the one no other such module imports, first by
-        name; None when there is none."""
+        `__init__`, which is the package's interface rather than a home. A user in
+        `homes_among_users` may hold it too. Every module in `reads`, which the
+        moved code imports names from, must be importable there without a cycle.
+
+        Of several, one keeping `source`'s annotation mode (`modes`) first, then
+        one no user is, then the highest, the one no other such module imports,
+        then by name; None when there is none."""
 
         importers = frozenset(users)
+        allowed = frozenset(homes_among_users) & importers
+        read_modules = frozenset(reads)
         package = common_package(importers)
         within = package + "."
         qualifying = tuple(
             module
             for module in sorted(self.imports)
-            if module not in importers
+            if (module not in importers or module in allowed)
             and module.startswith(within)
             and not any(other.startswith(module + ".") for other in self.imports)
-            and all(self.reaches(importer, module) for importer in importers)
-            and not any(self.reaches(module, importer) for importer in importers)
+            and all(self.reaches(importer, module) for importer in importers if importer != module)
+            and not any(self.reaches(module, importer) for importer in importers if importer != module)
+            and all(self.can_bind_at(module, read, importers) for read in read_modules)
         )
-        return next(
-            (
-                module
-                for module in qualifying
-                if not any(
-                    other != module and self.reaches(other, module) for other in qualifying
-                )
+        ranked = sorted(
+            qualifying,
+            key=lambda module: (
+                modes.get(module) != modes.get(source),
+                module in importers,
+                any(other != module and self.reaches(other, module) for other in qualifying),
+                module,
             ),
-            None,
+        )
+        return (
+            LowerHome(ranked[0], modes.get(ranked[0]) == modes.get(source))
+            if ranked
+            else None
         )
 
+    def pinning_reads(self, users: Iterable[str], reads: Iterable[str]) -> tuple[str, ...]:
+        """The read modules no home below `users` can import without a cycle:
+        each is a user, or reaches one."""
+
+        importers = frozenset(users)
+        return tuple(
+            sorted(
+                read
+                for read in frozenset(reads)
+                if read in importers or any(self.reaches(read, user) for user in importers)
+            )
+        )
+
+
+@dataclass(frozen=True)
+class LowerHome:
+    """Where a moved declaration goes to avoid a cycle, and whether that module
+    evaluates annotations as its source module does."""
+
+    module: str
+    keeps_annotation_mode: bool
 
 def common_package(modules: Iterable[str]) -> str:
     """The deepest package that holds every one of `modules`; empty when they
@@ -1609,17 +1672,28 @@ class BlockOwnerQuestion:
         closing = next(
             receipt for receipt in receipts if receipt.kind is OwnerReceiptKind.CYCLE_CREATED
         )
-        lower = self.imports.shared_lower_module(composer_modules)
+        reads = self._block_reads(anchor_module)
+        lower = self.imports.shared_lower_module(composer_modules, reads)
         if lower is not None:
-            imports, cycles, receipts = self._import_receipts(lower, ())
+            imports, cycles, receipts = self._import_receipts(lower.module, ())
             placed = Receipt(
                 OwnerReceiptKind.PLACED_BELOW,
-                f"not in `{anchor_module}`: {closing.detail}; `{lower}` is imported, "
+                f"not in `{anchor_module}`: {closing.detail}; `{lower.module}` is imported, "
                 f"directly or not, by {importers} and imports none of them",
                 (),
             )
-            return lower, NewMixinOwner, imports, cycles, (placed, *receipts)
+            return lower.module, NewMixinOwner, imports, cycles, (placed, *receipts)
         package = common_package(composer_modules)
+        pinned = self.imports.pinning_reads(composer_modules, reads)
+        if pinned:
+            unplaced = Receipt(
+                OwnerReceiptKind.CYCLE_CREATED,
+                f"not in `{anchor_module}`: {closing.detail}; and the block reads names from "
+                + ", ".join(f"`{module}`" for module in pinned)
+                + f", which no module below {importers} can import without a cycle",
+                (),
+            )
+            return anchor_module, NewMixinOwner, imports, cycles, (*receipts, unplaced)
         if package:
             placed = Receipt(
                 OwnerReceiptKind.PLACED_BELOW,
@@ -1642,6 +1716,20 @@ class BlockOwnerQuestion:
             (),
         )
         return anchor_module, NewMixinOwner, imports, cycles, (*receipts, unplaced)
+
+    def _block_reads(self, anchor_module: str) -> frozenset[str]:
+        """The scanned modules the block's declarations, as the anchor in
+        `anchor_module` writes them, import names from."""
+
+        anchors = tuple(indexed for indexed in self.pair if indexed.module_name == anchor_module)
+        return frozenset(
+            module
+            for anchor in anchors[:1]
+            for declaration in anchor.body_declarations
+            if declaration.name in self.block
+            for _name, qualified in declaration.bindings
+            if (module := self.imports.module_of(qualified)) is not None
+        )
 
     def _import_receipts(
         self, module_name: str, owners: Sequence[CompactIndexedClass]
