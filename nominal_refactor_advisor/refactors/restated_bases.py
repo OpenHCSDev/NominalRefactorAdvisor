@@ -158,13 +158,58 @@ class ClassAttributeReaders:
                 pass
             case _:
                 return True
+        verdicts = self.snapshot.class_overlap_verdicts
+        family = self.annotated_family(module, read, receiver)
+        if family is not None:
+            try:
+                return family in verdicts.linearized(indexed.symbol)
+            except NeedsInput:
+                return True
         named = self.named(module, receiver)
-        if named is None or self.snapshot.class_overlap_verdicts.class_index.class_for(named) is None:
+        if named is None or verdicts.class_index.class_for(named) is None:
             return True
         try:
-            return indexed.symbol in self.snapshot.class_overlap_verdicts.linearized(named)
+            return indexed.symbol in verdicts.linearized(named)
         except NeedsInput:
             return True
+
+    def annotated_family(self, module: ParsedModule, read: ast.expr, receiver: ast.expr) -> str | None:
+        """The scanned class `C` when the receiver is a parameter or local every
+        annotation of which is `type[C]`: the read sees only `C` or a subclass."""
+
+        if not isinstance(receiver, ast.Name):
+            return None
+        scopes = [
+            node
+            for node in ast.walk(module.module)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and any(inner is read for inner in ast.walk(node))
+        ]
+        if not scopes:
+            return None
+        scope = min(scopes, key=lambda node: sum(1 for _ in ast.walk(node)))
+        annotations = [
+            argument.annotation
+            for argument in (*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs)
+            if argument.arg == receiver.id
+        ] + [
+            statement.annotation
+            for statement in ast.walk(scope)
+            if isinstance(statement, ast.AnnAssign)
+            and isinstance(statement.target, ast.Name)
+            and statement.target.id == receiver.id
+        ]
+        families = set()
+        for annotation in annotations:
+            match annotation:
+                case ast.Subscript(value=ast.Name(id="type" | "Type") | ast.Attribute(attr="type" | "Type"), slice=held):
+                    family = self.named(module, held)
+                    if family is None or self.snapshot.class_overlap_verdicts.class_index.class_for(family) is None:
+                        return None
+                    families.add(family)
+                case _:
+                    return None
+        return families.pop() if len(families) == 1 else None
 
     def named(self, module: ParsedModule, node: ast.expr) -> str | None:
         """The class or function a name or attribute chain spells in `module`: an
