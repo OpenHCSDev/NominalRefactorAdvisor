@@ -215,6 +215,19 @@ class MroBasePolicy(ABC):
     def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
         raise NotImplementedError
 
+    def creation_may_keep_order(self, declaration: CompactIndexedClass) -> bool:
+        """Whether creation that runs code could still be proved to keep the order
+        C3 gives the declared bases: only code a proof reads, never a computed
+        base or a decorator that may replace the class."""
+        return False
+
+    def creation_keeps_order(
+        self, declaration: CompactIndexedClass, ancestry: tuple[CompactIndexedClass, ...]
+    ) -> bool:
+        """Whether the code creating `declaration`, whose declared order is
+        `ancestry`, is proved to pass its bases on unchanged."""
+        return False
+
     def foreign_base(self, qualified_name: str) -> type | None:
         """The type standing for a base the scan does not declare, or None when it
         has none: a native root itself, a namespace-read native by its stand-in."""
@@ -247,6 +260,27 @@ class RuntimeProofBases(MroBasePolicy):
             and declaration.class_decorators_are_promotion_safe
             and not declaration.has_class_creation_hook
         )
+
+
+@dataclass(frozen=True)
+class ProvedCreationBases(RuntimeProofBases):
+    """The runtime order, also for a class whose creation runs code a proof reads.
+
+    Python builds the order from the bases a metaclass's `__new__` hands to
+    `type.__new__`, so creation code that passes them on unchanged, defines no
+    `mro` and assigns no `__bases__` leaves the order C3 gives the declared
+    bases. `keeps_order` is that proof's answer (`class_creation.CreationOrder`).
+    """
+
+    keeps_order: Callable[[CompactIndexedClass, tuple[CompactIndexedClass, ...]], bool]
+
+    def creation_may_keep_order(self, declaration: CompactIndexedClass) -> bool:
+        return declaration.mro_bases_are_static and declaration.class_decorators_are_promotion_safe
+
+    def creation_keeps_order(
+        self, declaration: CompactIndexedClass, ancestry: tuple[CompactIndexedClass, ...]
+    ) -> bool:
+        return self.keeps_order(declaration, ancestry)
 
 
 @dataclass
@@ -361,7 +395,8 @@ class ClassMroAuthority:
         declaration = self.classes_by_symbol.get(symbol)
         if declaration is None:
             return MissingDeclaration(symbol)
-        if not self.bases.creation_is_static(declaration):
+        static = self.bases.creation_is_static(declaration)
+        if not static and not self.bases.creation_may_keep_order(declaration):
             return DynamicClassDeclaration(symbol)
         native_bases = tuple(
             (
@@ -399,4 +434,6 @@ class ClassMroAuthority:
             projected = DeclarationMroType.from_declaration(declaration, tuple(bases))
         except TypeError:
             return InconsistentHierarchy(symbol)
+        if not static and not self.bases.creation_keeps_order(declaration, projected.declarations):
+            return DynamicClassDeclaration(symbol)
         return ResolvedClassMro(symbol, projected)
