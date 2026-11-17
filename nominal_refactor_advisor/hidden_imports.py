@@ -1,0 +1,449 @@
+"""Imports a module makes where the runtime import graph cannot see them, and
+which of them can move to the module's top.
+
+A `TYPE_CHECKING`-guarded import and a function-local import are both edges the
+load-time graph leaves out (`SourceModuleImportGraph` reads top-level statements
+only). An edge that closes no cycle hides nothing but a fear of one, so it moves
+to the top with no input from anyone. The plan accepts edges in one fixed order
+and adds each accepted edge to the graph before judging the next, so a batch of
+promotions never closes a cycle that no single proof saw. A refused edge keeps
+what stopped it: the module that reaches back (`ClosesCycle`), which a cut of
+that cycle starts from, or the binding that makes moving it unsound.
+"""
+
+from __future__ import annotations
+
+import ast
+import builtins
+from abc import ABC, abstractmethod
+from collections.abc import Mapping
+from dataclasses import dataclass
+
+from nominal_refactor_advisor.ast_tools import (
+    ParsedModule,
+    ParsedModuleSet,
+    ParsedModuleSetFact,
+)
+from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_import_scopes import (
+    ModuleImportScope,
+    TypeCheckingGuardProjection,
+)
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
+from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, SourceSpanEdit
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
+
+ImportStatement = ast.Import | ast.ImportFrom
+FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+BUILTIN_NAMES = frozenset(vars(builtins))
+
+
+@dataclass(frozen=True)
+class ImportedBinding:
+    """One name an import binds, as what it binds: the module and the member
+    read from it (none for `import m`), so two spellings of one import agree."""
+
+    bound: str
+    module: str
+    member: str | None
+
+    @staticmethod
+    def of(module: ParsedModule, statement: ImportStatement) -> tuple[ImportedBinding, ...]:
+        if isinstance(statement, ast.Import):
+            return tuple(
+                ImportedBinding(alias.asname or alias.name.partition(".")[0], alias.name, None)
+                for alias in statement.names
+            )
+        source = module.module_path_identity.resolve_import_from_module(
+            imported_module=statement.module, level=statement.level
+        )
+        return tuple(
+            ImportedBinding(alias.asname or alias.name, source or "", alias.name) for alias in statement.names
+        )
+
+
+@dataclass(frozen=True)
+class RuntimeBindings:
+    """What a module's scope binds once it has loaded: each name a plain
+    top-level import binds, with what it binds, and every name bound any other
+    way. A guard binds nothing at runtime; a builtin, and a name some function
+    declares `global`, count as bound some other way."""
+
+    imported: frozenset[ImportedBinding]
+    other: frozenset[str]
+
+    @classmethod
+    def of(cls, module: ParsedModule) -> RuntimeBindings:
+        body = module.module.body
+        guards = TypeCheckingGuardProjection.from_module(module.module).guards
+        runtime = (
+            *(statement for statement in body if statement not in guards),
+            *(statement for guard in guards for statement in guard.orelse),
+        )
+        others, sole = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(runtime)
+        direct = {name: statement for name, statement in sole.items() if statement in body}
+        declared_global = frozenset(
+            name for node in ast.walk(module.module) if isinstance(node, ast.Global) for name in node.names
+        )
+        return cls(
+            frozenset(
+                binding
+                for statement in {id(statement): statement for statement in direct.values()}.values()
+                for binding in ImportedBinding.of(module, statement)
+                if binding.bound in direct
+            ),
+            others | (sole.keys() - direct.keys()) | declared_global | (BUILTIN_NAMES - direct.keys()),
+        )
+
+    def with_promoted(self, bindings: tuple[ImportedBinding, ...]) -> RuntimeBindings:
+        return RuntimeBindings(self.imported | frozenset(bindings), self.other)
+
+    def already_bound(self, binding: ImportedBinding) -> bool:
+        """Whether the module already binds this name to exactly this; needs a
+        source change when it binds the name to anything else."""
+
+        if binding in self.imported:
+            return True
+        if binding.bound in self.other or any(held.bound == binding.bound for held in self.imported):
+            raise NeedsInput(
+                f"`{binding.bound}` is already bound at module scope to something else",
+                NeededInput.SOURCE_CHANGE,
+            )
+        return False
+
+
+@dataclass(frozen=True, eq=False)
+class HiddenImport(ABC):
+    """One import statement the load-time graph does not see, and the scanned
+    modules it would load."""
+
+    module: ParsedModule
+    statement: ImportStatement
+    targets: frozenset[str]
+
+    @property
+    def location(self) -> str:
+        return f"{self.module.file_path}:{self.statement.lineno}"
+
+    @property
+    def bindings(self) -> tuple[ImportedBinding, ...]:
+        return ImportedBinding.of(self.module, self.statement)
+
+    @abstractmethod
+    def require_promotable(self, scope: RuntimeBindings) -> None:
+        """Raises, naming the input it needs, when moving this import to the
+        module's top would change what a name means."""
+
+        raise NotImplementedError
+
+    @abstractmethod
+    def source_edits(
+        self, scope: RuntimeBindings, moved: frozenset[ast.stmt], rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        """The edits that move it, given the module's scope before it moves and
+        every statement of the file the same plan moves."""
+
+        raise NotImplementedError
+
+    @staticmethod
+    def collected(module: ParsedModule, graph: SourceModuleImportGraph) -> tuple[HiddenImport, ...]:
+        """The module's hidden imports of scanned modules: guarded ones first,
+        then local ones, each in line order."""
+
+        source_file = graph.source_file_for_path(module.file_path)
+        if source_file is None:
+            return ()
+
+        def targets(statement: ImportStatement) -> frozenset[str]:
+            return graph.statement_edges(source_file, statement) - {module.module_name}
+
+        parents = module.syntax_index.parent_index
+        guarded = (
+            GuardedImport(module, statement, targets(statement), guard)
+            for guard in TypeCheckingGuardProjection.from_module(module.module).guards
+            for statement in guard.body
+            if isinstance(statement, ast.Import | ast.ImportFrom)
+        )
+        local = (
+            LocalImport(module, node, targets(node), function)
+            for node in ast.walk(module.module)
+            if isinstance(node, ast.Import | ast.ImportFrom)
+            and (function := parents.enclosing_function(node)) is not None
+        )
+        return (
+            *sorted((hidden for hidden in guarded if hidden.targets), key=lambda hidden: hidden.statement.lineno),
+            *sorted((hidden for hidden in local if hidden.targets), key=lambda hidden: hidden.statement.lineno),
+        )
+
+
+@dataclass(frozen=True, eq=False)
+class GuardedImport(HiddenImport):
+    """An import under `if TYPE_CHECKING:`; promoting it moves it out of the guard."""
+
+    guard: ast.If
+
+    def require_promotable(self, scope: RuntimeBindings) -> None:
+        if not isinstance(self.statement, ast.ImportFrom) or any(alias.asname for alias in self.statement.names):
+            raise NeedsInput(
+                "only an unaliased guarded `from ... import` moves out of its guard",
+                NeededInput.OPERATION,
+            )
+        if self.guard.orelse:
+            raise NeedsInput(
+                "the guard's `else` binds names at runtime",
+                NeededInput.SOURCE_CHANGE,
+            )
+        for binding in self.bindings:
+            scope.already_bound(binding)
+
+    def source_edits(
+        self, scope: RuntimeBindings, moved: frozenset[ast.stmt], rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        statement = self.statement
+        assert isinstance(statement, ast.ImportFrom)
+        return GuardedImport.promotion_edits(
+            self.module.file_path,
+            "." * statement.level + (statement.module or ""),
+            tuple(alias.name for alias in statement.names),
+            rationale,
+        )
+
+    @staticmethod
+    def promotion_edits(
+        file_path: str, module_name: str, names: tuple[str, ...], rationale: str
+    ) -> tuple[ModuleImportMutation, ...]:
+        """Remove the names from the guard and import them at runtime."""
+
+        return (
+            ModuleImportMutation.remove_names(
+                file_path=file_path,
+                module_name=module_name,
+                names=names,
+                scope=ModuleImportScope.TYPE_CHECKING,
+                rationale=rationale,
+            ),
+            ModuleImportMutation.from_source(
+                file_path=file_path,
+                import_source=f"from {module_name} import {', '.join(names)}\n",
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True, eq=False)
+class LocalImport(HiddenImport):
+    """An import inside a function body; promoting it deletes it there and
+    imports it once at the module's top."""
+
+    function: FunctionNode
+
+    @property
+    def ancestors(self) -> tuple[ast.AST, ...]:
+        return self.module.syntax_index.parent_index.ancestors(self.statement)
+
+    @property
+    def block(self) -> list[ast.stmt]:
+        """The statement list that holds it."""
+
+        parent = self.ancestors[0]
+        return next(
+            block
+            for field in ("body", "orelse", "finalbody")
+            if isinstance(block := getattr(parent, field, None), list) and self.statement in block
+        )
+
+    def require_promotable(self, scope: RuntimeBindings) -> None:
+        ancestors = self.ancestors
+        within = ancestors[: ancestors.index(self.function)]
+        if any(isinstance(ancestor, ast.ClassDef) for ancestor in within):
+            raise NeedsInput(
+                "an import in a class body binds a class attribute",
+                NeededInput.OPERATION,
+            )
+        if any(isinstance(ancestor, ast.Try | ast.TryStar) for ancestor in within):
+            raise NeedsInput(
+                "an import inside `try` may be handling its own failure",
+                NeededInput.PROOF,
+            )
+        first, last = self.statement.lineno, self.statement.end_lineno or self.statement.lineno
+        if any(
+            other is not self.statement and other.lineno <= last and (other.end_lineno or other.lineno) >= first
+            for other in self.block
+        ):
+            raise NeedsInput("another statement shares its lines", NeededInput.OPERATION)
+        others, imported = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(self.function.body)
+        here = others | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(self.function)
+        enclosing = frozenset(
+            name
+            for outer in ancestors
+            if isinstance(outer, FunctionNode) and outer is not self.function
+            for name in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(outer.body)
+            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(outer)
+        )
+        for binding in self.bindings:
+            if binding.bound in here or imported.get(binding.bound) is not self.statement:
+                raise NeedsInput(
+                    f"`{binding.bound}` is bound in `{self.function.name}` by more than this import",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            if binding.bound in enclosing:
+                raise NeedsInput(
+                    f"an enclosing function binds `{binding.bound}`, which would shadow the module's",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            scope.already_bound(binding)
+
+    def source_edits(
+        self, scope: RuntimeBindings, moved: frozenset[ast.stmt], rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        block = self.block
+        emptied = block[0] is self.statement and all(statement in moved for statement in block)
+        bound = all(scope.already_bound(binding) for binding in self.bindings)
+        return (
+            SourceSpanEdit.from_replacement_lines(
+                file_path=self.module.file_path,
+                start_line=self.statement.lineno,
+                end_line=self.statement.end_lineno or self.statement.lineno,
+                replacement_lines=(" " * self.statement.col_offset + "pass\n",) if emptied else (),
+                rationale=rationale,
+            ),
+            *(
+                ()
+                if bound
+                else (
+                    ModuleImportMutation.from_source(
+                        file_path=self.module.file_path,
+                        import_source=ast.unparse(self.statement) + "\n",
+                        rationale=rationale,
+                    ),
+                )
+            ),
+        )
+
+
+class HiddenImportRefusal(ABC):
+    """Why one hidden import stays where it is, and the input moving it needs."""
+
+    hidden: HiddenImport
+
+    @property
+    @abstractmethod
+    def need(self) -> NeedsInput:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ClosesCycle(HiddenImportRefusal):
+    """Loading the import would run `reaching`, which already loads the importer
+    at load time: the cycle a cut starts from."""
+
+    hidden: HiddenImport
+    reaching: str
+
+    @property
+    def need(self) -> NeedsInput:
+        return NeedsInput(
+            f"{self.hidden.location}: `{self.reaching}` already imports `{self.hidden.module.module_name}` "
+            "at load; the import hides a cycle, so a declaration has to move first",
+            NeededInput.SOURCE_CHANGE,
+        )
+
+
+@dataclass(frozen=True)
+class UnpromotableImport(HiddenImportRefusal):
+    """Moving the import would change what a name means, or no operation moves it."""
+
+    hidden: HiddenImport
+    reason: NeedsInput
+
+    @property
+    def need(self) -> NeedsInput:
+        return NeedsInput(f"{self.hidden.location}: {self.reason}", *self.reason.needs)
+
+
+@dataclass(frozen=True)
+class HiddenImportPlan(ParsedModuleSetFact):
+    """Every hidden import of one module set, accepted or refused. Modules go in
+    path order, and within one, guarded imports before local ones (a local
+    import of a name its guard imports then needs no top-level import of its
+    own), each in line order; each is judged against the graph holding every
+    import accepted before it."""
+
+    accepted: tuple[HiddenImport, ...]
+    refused: tuple[HiddenImportRefusal, ...]
+    scopes: Mapping[str, RuntimeBindings]
+    """Each planned module's scope before any import moves."""
+
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> HiddenImportPlan:
+        graph = SourceModuleImportGraph.of_modules(modules)
+        accepted: list[HiddenImport] = []
+        refused: list[HiddenImportRefusal] = []
+        scopes: dict[str, RuntimeBindings] = {}
+        for module in sorted(modules, key=lambda parsed: parsed.file_path):
+            found = HiddenImport.collected(module, graph)
+            if not found:
+                continue
+            scope = scopes[module.file_path] = RuntimeBindings.of(module)
+            for hidden in found:
+                try:
+                    hidden.require_promotable(scope)
+                except NeedsInput as need:
+                    refused.append(UnpromotableImport(hidden, need))
+                    continue
+                reaching = next(
+                    (
+                        back
+                        for target in sorted(hidden.targets)
+                        if (back := graph.reaching_back(module.module_name, target)) is not None
+                    ),
+                    None,
+                )
+                if reaching is not None:
+                    refused.append(ClosesCycle(hidden, reaching))
+                    continue
+                accepted.append(hidden)
+                graph = graph.with_edges(module.module_name, hidden.targets)
+                scope = scope.with_promoted(hidden.bindings)
+        return cls(tuple(accepted), tuple(refused), scopes)
+
+    def accepted_in(self, file_path: str) -> tuple[HiddenImport, ...]:
+        return tuple(hidden for hidden in self.accepted if hidden.module.file_path == file_path)
+
+    def refused_in(self, file_path: str) -> tuple[HiddenImportRefusal, ...]:
+        return tuple(refusal for refusal in self.refused if refusal.hidden.module.file_path == file_path)
+
+    def edits_for(self, file_path: str, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        """Every accepted import of one file moved to its top, each seeing the
+        scope with the imports accepted before it bound; when none is accepted,
+        what each refused one needs."""
+
+        accepted = self.accepted_in(file_path)
+        if not accepted:
+            needs = tuple(refusal.need for refusal in self.refused_in(file_path))
+            raise NeedsInput(
+                "; ".join(map(str, needs)) or f"{file_path} hides no import of a scanned module",
+                *(kind for need in needs for kind in need.needs),
+            )
+        moved = frozenset(hidden.statement for hidden in accepted)
+        scope = self.scopes[file_path]
+        edits: list[NominalSourceEdit] = []
+        for hidden in accepted:
+            edits.extend(hidden.source_edits(scope, moved, rationale))
+            scope = scope.with_promoted(hidden.bindings)
+        return tuple(edits)
+
+
+__all__ = (
+    "BUILTIN_NAMES",
+    "ClosesCycle",
+    "GuardedImport",
+    "HiddenImport",
+    "HiddenImportPlan",
+    "HiddenImportRefusal",
+    "ImportedBinding",
+    "LocalImport",
+    "RuntimeBindings",
+    "UnpromotableImport",
+)

@@ -20,7 +20,7 @@ import enum
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cache, cached_property
 from pathlib import Path
@@ -1410,6 +1410,14 @@ class DeclaredIdentities:
         default_factory=dict
     )
     rewritten_files: dict[str, tuple[str, ...]] = field(default_factory=dict)
+
+    @classmethod
+    def from_projection_groups(
+        cls, groups: Mapping[type, Sequence[object]]
+    ) -> DeclaredIdentities:
+        """The scan's declared identities, out of its projections grouped by family."""
+
+        return cls.from_modules(DeclaredIdentityFamily.modules_in(groups))
 
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> DeclaredIdentities:
