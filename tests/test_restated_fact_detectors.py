@@ -1236,6 +1236,43 @@ def test_a_test_on_a_value_annotated_object_is_the_decoder_not_slop(tmp_path: Pa
     assert _lines(findings) == [12]
 
 
+def test_a_union_with_a_foreign_member_is_decoded_by_the_test(tmp_path: Path):
+    # `Circle | str` admits a value the scan declares no class for, so the test
+    # tells which one arrived (BOUND-1). A union of own members, an optional own
+    # type, or an unresolved member still restates the family.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from typing import Optional, Union\n"
+                "from shapes import Circle, Shape, Square\n"
+                "def parse(value: Circle | str) -> int:\n"
+                "    if isinstance(value, Circle):\n        return 1\n"
+                "    return 0\n"
+                "def legacy(value: Union[Circle, int, None]) -> int:\n"
+                "    if isinstance(value, Circle):\n        return 1\n"
+                "    return 0\n"
+                "def quoted(value: 'Circle | bytes') -> int:\n"
+                "    if isinstance(value, Circle):\n        return 1\n"
+                "    return 0\n"
+                "def own(value: Circle | Square) -> int:\n"
+                "    if isinstance(value, Circle):\n        return 1\n"
+                "    return 0\n"
+                "def optional(value: Optional[Shape]) -> int:\n"
+                "    if isinstance(value, Circle):\n        return 1\n"
+                "    return 0\n"
+                "def unknown(value: Circle | Missing) -> int:\n"
+                "    if isinstance(value, Circle):\n        return 1\n"
+                "    return 0\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [16, 20, 24]
+
+
 def test_a_comparison_methods_operand_is_the_decoder_annotated_or_not(tmp_path: Path):
     # The data model hands `__eq__` any object; `merge` receives what its
     # callers pass, so its test still restates the family.
