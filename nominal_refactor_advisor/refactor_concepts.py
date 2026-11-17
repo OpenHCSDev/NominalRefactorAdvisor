@@ -205,6 +205,11 @@ class HiddenImportCutConcept(NominalBoundaryConcept):
     reader, so the import loads with no cycle."""
 
 
+class LayeringViolationConcept(NominalBoundaryConcept):
+    """Move a declaration placed above the composition-root layer that reads it
+    down into that layer, so the layer loads nothing built on it."""
+
+
 class PackageMoveConcept(RefactorConcept):
     """Move each flat module into the package a destination table declares for it."""
 

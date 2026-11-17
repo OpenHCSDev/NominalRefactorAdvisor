@@ -527,6 +527,7 @@ class ModuleImportGraph:
         above: Iterable[str] = (),
         modes: Mapping[str, object] = MappingProxyType({}),
         source: str = "",
+        layer: frozenset[str] = frozenset(),
     ) -> LowerHome | None:
         """The module a declaration all of `users` import can live in without
         closing a cycle: one each of them already imports, directly or not, that
@@ -537,9 +538,10 @@ class ModuleImportGraph:
         and neither the home nor any module in `reads` is or reaches a module in
         `above`, which will import it but need not yet.
 
-        Of several, one keeping `source`'s annotation mode (`modes`) first, then
-        one no user is, then the highest, the one no other such module imports,
-        then by name; None when there is none."""
+        Of several, one of `layer`, the modules a composition root's service the
+        declaration belongs to loads, first; then one keeping `source`'s
+        annotation mode (`modes`), then one no user is, then the highest, the one
+        no other such module imports, then by name; None when there is none."""
 
         importers = frozenset(users)
         allowed = frozenset(homes_among_users) & importers
@@ -564,6 +566,7 @@ class ModuleImportGraph:
         ranked = sorted(
             qualifying,
             key=lambda module: (
+                bool(layer) and module not in layer,
                 modes.get(module) != modes.get(source),
                 module in importers,
                 any(other != module and self.reaches(other, module) for other in qualifying),

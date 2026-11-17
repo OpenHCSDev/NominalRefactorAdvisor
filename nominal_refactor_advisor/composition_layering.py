@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import ast
 from collections import defaultdict
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -236,33 +236,33 @@ class CompositionRoot:
 
 @dataclass(frozen=True)
 class CompositionRootLayering(ParsedModuleSetFact):
-    """Every declared composition root of one module set, and each read above a
-    root's layering its function-local imports make."""
+    """Every declared composition root of one module set, and each read of a
+    declaration placed above the layer reading it."""
 
     roots: tuple[CompositionRoot, ...]
     reads: tuple[LayerRead, ...]
-    imports: ModuleImportGraph
+    bindings: ModuleBindings
 
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> CompositionRootLayering:
         parsed = tuple(modules)
+        declared = DeclaredRoot.composition_roots_for(Path(parsed[0].file_path)) if parsed else frozenset()
+        if not declared:
+            return cls((), (), ModuleBindings({}, {}, {}))
         graph = SourceModuleImportGraph.of_modules(parsed)
         imports = ModuleImportGraph(graph.import_edges_by_module)
-        if not parsed:
-            return cls((), (), imports)
         bindings = ModuleBindings.of(modules)
-        declared = DeclaredRoot.composition_roots_for(Path(parsed[0].file_path))
         roots = tuple(
             root
             for qualified in sorted(declared)
-            if (root := cls.root(qualified, modules, bindings, imports)) is not None
+            if (root := cls.root(qualified, bindings, imports)) is not None
         )
         reads = tuple(read for root in roots for read in cls.reads_of(root, parsed, graph, bindings))
-        return cls(roots, reads, imports)
+        return cls(roots, reads, bindings)
 
     @staticmethod
     def root(
-        qualified: str, modules: ParsedModuleSet, bindings: ModuleBindings, imports: ModuleImportGraph
+        qualified: str, bindings: ModuleBindings, imports: ModuleImportGraph
     ) -> CompositionRoot | None:
         module = imports.module_of(qualified)
         if module is None:
@@ -331,20 +331,13 @@ class CompositionRootLayering(ParsedModuleSetFact):
         layer = root.home(frozenset(read.lower for read in reads), frozenset(read.reader for read in reads))
         return None if layer is None else (root, layer)
 
-    def destination(self, declaration: tuple[str, str]) -> str | None:
-        """A module of the home layer every reader and every top-level importer of
-        the declaration reaches, that imports none of them; none when the layer
-        has no such module."""
+    def layer_of(self, module: str, names: Iterable[str]) -> frozenset[str]:
+        """The modules the home layer of `module`'s misplaced declarations among
+        `names` loads, where a move of them belongs; empty when none of them is
+        misplaced."""
 
-        home = self.home(declaration)
-        if home is None:
-            return None
-        root, layer = home
-        readers = frozenset(read.reader for read in self.by_declaration[declaration])
-        lower = self.imports.shared_lower_module(readers)
-        if lower is None or lower.module not in root.closures[layer] or lower.module == declaration[0]:
-            return None
-        return lower.module
+        homes = [home for name in names if (home := self.home((module, name))) is not None]
+        return frozenset.intersection(*(root.closures[layer] for root, layer in homes)) if homes else frozenset()
 
 
 def closure(imports: ModuleImportGraph, start: str) -> set[str]:

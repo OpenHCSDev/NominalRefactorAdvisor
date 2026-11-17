@@ -665,6 +665,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    LAYERING_VIOLATION = _pattern(
+        stable_id=56,
+        display_name="Layering Violation",
+        required_relation=(
+            "A declared composition root builds each service from the services it "
+            "hands it, and code one service loads reads a declaration only a "
+            "service built on it loads: the declaration sits above its readers' layer."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,
