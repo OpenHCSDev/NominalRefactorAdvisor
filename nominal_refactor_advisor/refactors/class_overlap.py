@@ -19,8 +19,10 @@ from dataclasses import (
 from functools import cached_property
 from itertools import chain
 from importlib import import_module
-from typing import Self
+from pathlib import Path
+from typing import ClassVar, Self
 
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, declared_names
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
@@ -486,6 +488,86 @@ class ClassReferenceSite:
 
 
 @dataclass(frozen=True)
+class ClassValueReaders:
+    """Which calls a class handed on as a value reaches only as its identity.
+
+    A callee the repository declares an identity reader (`identity-readers`)
+    encodes or compares what it is given and never calls it. A scanned
+    top-level function is one too when the parameter the class binds is only
+    compared, tested as a type, or handed to an identity reader in turn.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    DEPTH: ClassVar[int] = 4
+
+    def reads_identity(self, site: ClassReferenceSite) -> bool:
+        return isinstance(site.parent, ast.Call) and self.call_reads_identity(
+            self.snapshot.parsed_module_for_source_path(site.file_path), site.parent, site.node, 0
+        )
+
+    def call_reads_identity(
+        self, module: ParsedModule, call: ast.Call, argument: ast.expr, depth: int
+    ) -> bool:
+        if depth > self.DEPTH or argument is call.func:
+            return False
+        # A function body looks a global up when it runs: the module's final binding.
+        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
+            module, call.func, line=len(module.source.splitlines()) + 1
+        )
+        if witness is None:
+            return False
+        if witness.qualified_name in DeclaredRoot.identity_readers_for(Path(module.file_path)):
+            return True
+        callee_module, _, name = witness.qualified_name.rpartition(".")
+        function = next(
+            (
+                statement
+                for parsed in self.snapshot.parsed_modules
+                if parsed.module_name == callee_module
+                for statement in parsed.module.body
+                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and statement.name == name
+            ),
+            None,
+        )
+        parameter = self.parameter(function, call, argument) if function is not None else None
+        if function is None or parameter is None:
+            return False
+        reader = next(parsed for parsed in self.snapshot.parsed_modules if parsed.module_name == callee_module)
+        parents = {child: parent for parent in ast.walk(function) for child in ast.iter_child_nodes(parent)}
+        for node in ast.walk(function):
+            if not (isinstance(node, ast.Name) and node.id == parameter):
+                continue
+            if not isinstance(node.ctx, ast.Load):
+                return False
+            parent = parents.get(node)
+            match parent:
+                case ast.arg() | ast.Compare():
+                    continue
+                case ast.Call(func=ast.Name(id="isinstance" | "issubclass")):
+                    continue
+                case ast.Call() if self.call_reads_identity(reader, parent, node, depth + 1):
+                    continue
+            return False
+        return True
+
+    @staticmethod
+    def parameter(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, call: ast.Call, argument: ast.expr
+    ) -> str | None:
+        """The parameter of a plain function that `argument` binds at `call`."""
+
+        positional = [item.arg for item in (*function.args.posonlyargs, *function.args.args)]
+        if argument in call.args:
+            index = call.args.index(argument)
+            return positional[index] if index < len(positional) else None
+        for keyword in call.keywords:
+            if keyword.value is argument and keyword.arg in (*positional, *(item.arg for item in function.args.kwonlyargs)):
+                return keyword.arg
+        return None
+
+
+@dataclass(frozen=True)
 class ClassReferenceSites:
     """Every read of some classes in the current source, by role.
 
@@ -497,6 +579,10 @@ class ClassReferenceSites:
 
     snapshot: CodemodSourceSnapshot
     symbols: frozenset[str]
+
+    @cached_property
+    def readers(self) -> ClassValueReaders:
+        return ClassValueReaders(self.snapshot)
 
     @cached_property
     def sites(self) -> tuple[ClassReferenceSite, ...]:
@@ -610,6 +696,7 @@ class ClassReferenceSites:
                 or site.role.distinguishes_identity
                 or site.is_annotation
                 or site.is_base
+                or self.readers.reads_identity(site)
             ):
                 continue
             raise NeedsInput(

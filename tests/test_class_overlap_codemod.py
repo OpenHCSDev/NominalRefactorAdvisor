@@ -357,6 +357,51 @@ def test_the_fold_reads_a_type_form_of_its_class_as_a_type(tmp_path: Path) -> No
     assert _fold(tmp_path).source_edits(snapshot)
 
 
+IDENTITY_READER = {
+    "pyproject.toml": "[tool.nominal-refactor-advisor]\n"
+    'identity-readers = ["pkg.codec:encode"]\n',
+    "pkg/codec.py": "def encode(value):\n    return f'{value.__module__}.{value.__qualname__}'\n",
+    "pkg/caller.py": "from pkg.codec import encode\n\n\n"
+    "def literal(value):\n    return encode(value) if value is not None else 'NULL'\n\n\n"
+    "def build(value):\n    return value()\n",
+}
+
+
+def test_the_fold_follows_a_class_into_a_function_that_only_encodes_it(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **IDENTITY_READER,
+            **{
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.caller import literal\n\nKEY = literal(ConveyorProof)\n"
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
+
+def test_the_fold_refuses_a_class_handed_to_a_function_that_calls_it(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **IDENTITY_READER,
+            **{
+                "pkg/conveyor.py": CONVEYOR
+                + "\n\nfrom pkg.caller import build\n\nMADE = build(ConveyorProof)\n"
+            },
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match="as a value"):
+        _fold(tmp_path).source_edits(snapshot)
+
+
 def test_the_fold_refuses_a_positional_construction_behind_a_local_import(
     tmp_path: Path,
 ) -> None:
