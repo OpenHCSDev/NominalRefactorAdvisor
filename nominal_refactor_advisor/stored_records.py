@@ -6,7 +6,9 @@ class), and an enum field keeps the member's value. So deleting a class or an
 enum member that a stored field can hold leaves rows naming a meaning the code
 no longer declares: the next schema rebuild or decode fails on them. Which
 classes are stored is the repository's declaration (`durable-bases`,
-`DeclaredRoot.durable_bases_for`); a record is a class below one of them.
+`DeclaredRoot.durable_bases_for`): a record is a class below one of them, or a
+class a record's stored field can hold, since its values are written in that
+record's rows.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 
 @dataclass(frozen=True)
@@ -43,19 +46,29 @@ class StoredRecords:
 
     @cached_property
     def records(self) -> tuple[str, ...]:
-        """Every scanned class below a declared durable base."""
+        """Every scanned class whose values a stored row keeps: each class below a
+        declared durable base, and each class a stored class's field can hold, its
+        own or inherited, through every field that class holds in turn."""
 
         index = self.snapshot.compact_class_index
-        return tuple(
-            sorted(
-                {
-                    record
-                    for base in self.durable_bases
-                    if base in index.classes_by_symbol
-                    for record in index.descendant_symbols(base)
-                }
-            )
-        )
+        pending = [
+            record
+            for base in self.durable_bases
+            if base in index.classes_by_symbol
+            for record in index.descendant_symbols(base)
+        ]
+        stored: set[str] = set()
+        while pending:
+            symbol = pending.pop()
+            if symbol in stored or symbol not in index.classes_by_symbol:
+                continue
+            stored.add(symbol)
+            pending.extend(index.descendant_symbols(symbol))
+            for declaring in (symbol, *index.ancestor_symbols(symbol)):
+                if declaring in index.classes_by_symbol:
+                    for _field, annotation in self.annotated_fields(declaring):
+                        pending.extend(self.named_classes(declaring, annotation))
+        return tuple(sorted(stored))
 
     def fields_holding(self, symbols: frozenset[str]) -> tuple[str, ...]:
         """Each `Record.field` whose annotation names one of `symbols`: its rows
@@ -76,8 +89,24 @@ class StoredRecords:
         ).node
         for statement in node.body:
             match statement:
-                case ast.AnnAssign(target=ast.Name(id=field), annotation=annotation):
+                case ast.AnnAssign(target=ast.Name(id=field), annotation=annotation) if (
+                    not self.is_class_variable(annotation)
+                ):
                     yield field, annotation
+
+    @classmethod
+    def is_class_variable(cls, annotation: ast.expr) -> bool:
+        """A `ClassVar` annotation declares no stored field."""
+
+        match annotation:
+            case ast.Subscript(value=value):
+                return cls.is_class_variable(value)
+            case ast.Constant(value=str() as text):
+                try:
+                    return cls.is_class_variable(ast.parse(text, mode="eval").body)
+                except SyntaxError:
+                    return False
+        return cls.chain(annotation) in (("ClassVar",), ("typing", "ClassVar"))
 
     def named_classes(self, record: str, annotation: ast.expr) -> frozenset[str]:
         """The scanned classes an annotation spells, string annotations included."""
@@ -123,7 +152,8 @@ class StoredRecords:
 
         holding = self.fields_holding(symbols)
         if holding:
-            raise ValueError(
+            raise NeedsInput(
                 f"deleting {deleted} leaves stored rows naming it: {', '.join(holding)} "
-                "can hold it (durable-bases), so this is a data migration, not a refactor"
+                "can hold it (durable-bases), so this is a data migration, not a refactor",
+                NeededInput.OPERATION,
             )
