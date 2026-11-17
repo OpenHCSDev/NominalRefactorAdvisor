@@ -246,42 +246,63 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
         receiver, else its parameter's or field's annotation."""
 
         first = function.args.args[0].arg if function.args.args else None
+        annotation: ast.expr | None = None
         match guard.subject:
             case ast.Name(id=name) if owner is not None and name == first:
                 declared = owner.required_symbol(snapshot)
             case ast.Name(id=name):
-                declared = cls.annotated(
-                    answered, guard, parents, source_path,
-                    next(
-                        (
-                            argument.annotation
-                            for argument in (*function.args.args, *function.args.kwonlyargs)
-                            if argument.arg == name
-                        ),
-                        None,
+                annotation = next(
+                    (
+                        argument.annotation
+                        for argument in (*function.args.args, *function.args.kwonlyargs)
+                        if argument.arg == name
                     ),
+                    None,
                 )
+                declared = cls.annotated(answered, guard, parents, source_path, annotation)
             case ast.Attribute(value=ast.Name(id=name), attr=field) if owner is not None and name == first:
-                declared = cls.annotated(
-                    answered, guard, parents, source_path,
-                    next(
-                        (
-                            statement.annotation
-                            for statement in owner.node.body
-                            if isinstance(statement, ast.AnnAssign)
-                            and isinstance(statement.target, ast.Name)
-                            and statement.target.id == field
-                        ),
-                        None,
+                annotation = next(
+                    (
+                        statement.annotation
+                        for statement in owner.node.body
+                        if isinstance(statement, ast.AnnAssign)
+                        and isinstance(statement.target, ast.Name)
+                        and statement.target.id == field
                     ),
+                    None,
                 )
+                declared = cls.annotated(answered, guard, parents, source_path, annotation)
             case _:
                 declared = None
         if declared is None:
-            raise ValueError(
-                f"`{ast.unparse(guard.subject)}` has no annotation naming a class the scan declares"
-            )
+            raise ValueError(cls.undeclared(function, guard.subject, annotation))
         return declared
+
+    @staticmethod
+    def undeclared(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, subject: ast.expr, annotation: ast.expr | None
+    ) -> str:
+        """Why the subject names no class of the scan, and the input that would."""
+
+        spelled = ast.unparse(subject)
+        parameters = {argument.arg for argument in ast.walk(function.args) if isinstance(argument, ast.arg)}
+        match subject:
+            case _ if annotation is not None:
+                return (
+                    f"`{spelled}` is annotated `{ast.unparse(annotation)}`, which names no one class the scan "
+                    "declares: it needs the value decoded into the family where it enters"
+                )
+            case ast.Name(id=name) if name in parameters:
+                return f"`{spelled}` has no annotation naming a class the scan declares: it needs one"
+            case ast.Name():
+                return (
+                    f"`{spelled}` has no annotation naming a class the scan declares: it is a local of "
+                    f"`{function.name}`, and needs its binding's class (an annotation, or the iterable's element type)"
+                )
+        return (
+            f"`{spelled}` has no annotation naming a class the scan declares: it needs the declared "
+            "class of that expression"
+        )
 
     @staticmethod
     def annotated(answered, guard, parents, source_path, annotation: ast.expr | None) -> str | None:

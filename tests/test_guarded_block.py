@@ -177,3 +177,41 @@ def test_the_override_s_module_imports_what_the_block_reads(tmp_path: Path) -> N
     ))
     assert "import json" in Path(path).read_text()
     assert run() == before == '[\'a\', \'["a", 4]\', \'done\', \'b\', \'done\']\n'
+
+
+@pytest.mark.parametrize(
+    ("imports", "annotation"),
+    (
+        ("from pkg import messages\n", "messages.Message"),
+        ("from pkg.messages import Message\n", "Message"),
+    ),
+)
+def test_a_re_exported_annotation_names_its_declaring_class(
+    tmp_path: Path, imports: str, annotation: str
+) -> None:
+    """`messages.Message` and `from pkg.messages import Message`, where `pkg.messages`
+    imports `Message` from `pkg.message`, both name `pkg.message.Message` (Textual's
+    `Driver.process_message(self, message: messages.Message)`)."""
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg/__init__.py").write_text("")
+    (tmp_path / "pkg/message.py").write_text(
+        "class Message:\n    pass\n\n\nclass Close(Message):\n    pass\n"
+    )
+    (tmp_path / "pkg/messages.py").write_text("from pkg.message import Close, Message\n")
+    driver = (
+        f"{imports}from pkg.message import Close\n\n\n"
+        f"def process(message: {annotation}, out: list[str]) -> None:\n"
+        "    if isinstance(message, Close):\n"
+        "        out.append('closed')\n"
+        "        out.append(type(message).__name__)\n"
+    )
+    (tmp_path / "pkg/driver.py").write_text(driver)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    path = (tmp_path / "pkg/driver.py").as_posix()
+    operation = GuardedBlockToOverrideOperation.at_site(
+        snapshot, SourceRewriteTarget(file_path=path, qualname="process"), 6, "on_process"
+    )
+    assert operation.base.qualname == "Message"
+    assert operation.base.file_path == (tmp_path / "pkg/message.py").as_posix()
+    _apply(tmp_path, operation)
+    assert "    message.on_process(out=out)\n" in Path(path).read_text()

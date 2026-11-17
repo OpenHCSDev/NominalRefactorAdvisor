@@ -129,19 +129,19 @@ class GuardedBlockToOverrideOperation(CapabilityGuardToOverrideOperation):
         source_path = target.file_path or ""
         function, owner = cls.function_at(snapshot, target)
         block = GuardedBlock.at(function, line)
-        classes = snapshot.required_class_family_index.classes_by_symbol
+        # Any scanned class reads the bindings: which family it is only labels the
+        # classes found, and `declared_subject` takes the symbol either way.
         reader = owner or next(
             (
                 ResolvedClassTarget.from_rewrite_target(
-                    snapshot, SourceRewriteTarget(file_path=source_path, qualname=declaration.qualname)
+                    snapshot, SourceRewriteTarget(file_path=declaration.file_path, qualname=declaration.qualname)
                 )
-                for declaration in classes.values()
-                if declaration.file_path == source_path
+                for declaration in snapshot.required_class_family_index.classes_by_symbol.values()
             ),
             None,
         )
         if reader is None:
-            raise ValueError(f"{source_path!r} declares no class to read its bindings through: it needs a base pick")
+            raise ValueError("the scan declares no class: no family can answer the test")
         parents = snapshot.parsed_module_for_source_path(source_path).fact(ModuleNodeIndex).parents
         declared = cls.declared_subject(
             snapshot, AnsweredMethod(snapshot, reader, function), owner, function, block, parents, source_path
