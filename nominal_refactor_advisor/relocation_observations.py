@@ -851,22 +851,33 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         definitions = list(scoped_definitions(parsed_module))
         threads = {id(definition.node): OptionalParameterThread.of(definition) for definition in definitions}
         copies = cls.threaded_copies(definitions, threads)
+        decided = frozenset(id(definition.node) for definition in definitions if cls.decides(definition))
         for definition in definitions:
-            name = definition.node.name
-            if name.startswith("__") and name.endswith("__"):
-                continue
-            if any(
-                ExpressionReference.decoded(decorator).terminal_name == "boundary_decoder"
-                for decorator in definition.node.decorator_list
-            ):
-                continue
-            if isinstance(definition.owner, ast.ClassDef) and (
-                callback := REACTIVE_CALLBACK.fullmatch(name)
-            ) and callback["reactive"] in reactive_names(definition.owner):
+            if id(definition.node) in decided:
                 continue
             optional = threads[id(definition.node)].optional - copies.get(id(definition.node), frozenset())
             yield from cls.probes(parsed_module, resolver, definition, optional)
-        yield from cls.origins(parsed_module, definitions, threads, copies)
+        yield from cls.origins(parsed_module, definitions, threads, copies, decided)
+
+    @staticmethod
+    def decides(definition: ScopedDefinition) -> bool:
+        """Whether the function is where absence is decided, by its own declaration: a
+        dunder, a `@boundary_decoder`, or a Textual callback of a reactive its class declares."""
+
+        name = definition.node.name
+        if name.startswith("__") and name.endswith("__"):
+            return True
+        if any(
+            ExpressionReference.decoded(decorator).terminal_name == "boundary_decoder"
+            for decorator in definition.node.decorator_list
+        ):
+            return True
+        callback = REACTIVE_CALLBACK.fullmatch(name)
+        return (
+            isinstance(definition.owner, ast.ClassDef)
+            and callback is not None
+            and callback["reactive"] in reactive_names(definition.owner)
+        )
 
     @classmethod
     def probes(
@@ -997,9 +1008,12 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         definitions: list[ScopedDefinition],
         threads: dict[int, OptionalParameterThread],
         copies: dict[int, frozenset[str]],
+        decided: frozenset[int],
     ) -> Iterator[RestatingSite]:
-        """One site per caller parameter whose `None` default reaches a threaded copy
-        that probes it: the declaration that owns the absence. A copy that only
+        """One site per caller parameter whose `None` reaches a threaded copy that
+        probes it: the outermost declaration in the module that owns the absence, its
+        `None` default or the optional it is passed itself, unless that caller decides
+        absence (`decides`). A copy that only
         passes the value on, or reads it some other way (`row_type or cls`), asks
         nothing of the absence."""
 
@@ -1025,11 +1039,16 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         seen.add((id(caller.node), passed.id))
                         if passed.id in copies.get(id(caller.node), frozenset()):
                             pending.append((caller, passed.id))
-                        elif _none_default(caller.node, passed.id):
+                        elif id(caller.node) not in decided:
                             yield RestatingSite(
                                 parsed_module.file_path,
                                 _optional_parameters(caller.node)[passed.id].lineno,
                                 caller.qualname,
                                 passed.id,
-                                (f"defaults to None, threaded to `{definition.node.name}`", ""),
+                                (
+                                    f"defaults to None, threaded to `{definition.node.name}`"
+                                    if _none_default(caller.node, passed.id)
+                                    else f"is passed on as `X | None` to `{definition.node.name}`",
+                                    "",
+                                ),
                             )

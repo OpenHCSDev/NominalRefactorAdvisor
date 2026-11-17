@@ -430,3 +430,37 @@ def test_a_none_threaded_through_private_callees_is_reported_where_it_starts(tmp
     assert sorted((f.evidence[0].symbol, f.evidence[0].line) for f in findings) == [
         ("Table.first", 7), ("Table.rows", 3), ("Table.set_scroll", 17),
     ]
+
+
+def test_a_none_passed_on_from_an_undefaulted_parameter_starts_at_that_parameter(tmp_path):
+    """The caller's own `X | None` parameter, passed on unprobed, is where the module's
+    absence starts. A reactive callback passing its value on (Textual
+    ListView.validate_index to _is_valid_index) decides absence, so nothing is reported."""
+    from textwrap import dedent
+
+    source = dedent(
+        """\
+        from textual.reactive import reactive
+
+        class Clock:
+            def tick(self, interval: float | None) -> None:
+                self._schedule(interval)
+
+            def _schedule(self, interval: float | None) -> None:
+                if interval is not None:
+                    self.run(interval)
+
+        class ListView:
+            index = reactive[int | None](None)
+
+            def validate_index(self, index: int | None) -> int | None:
+                return index if self._is_valid_index(index) else None
+
+            def _is_valid_index(self, index: int | None) -> bool:
+                if index is None:
+                    return False
+                return index >= 0
+        """
+    )
+    findings = _findings(ThreadedAbsenceDetector, _sources(tmp_path, {"m": source}))
+    assert [(f.evidence[0].symbol, f.evidence[0].line) for f in findings] == [("Clock.tick", 4)]
