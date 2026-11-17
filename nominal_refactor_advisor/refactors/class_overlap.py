@@ -676,7 +676,10 @@ class MetaclassMroProof:
                 continue
             seen.add(current)
             metaclass = class_index.class_for(current)
-            if metaclass is None or not metaclass.base_references_are_complete:
+            if metaclass is None:
+                self._require_native(current)
+                continue
+            if not metaclass.base_references_are_complete:
                 raise NeedsInput(f"Metaclass `{current}` has an unproved ancestry", NeededInput.PROOF)
             if any(declaration.name == "mro" for declaration in metaclass.body_declarations):
                 raise NeedsInput(f"Metaclass `{current}` overrides `mro`", NeededInput.PROOF)
