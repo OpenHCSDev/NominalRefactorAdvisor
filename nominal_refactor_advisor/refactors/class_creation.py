@@ -513,6 +513,11 @@ class ClassCreationProof:
                 if keyword.arg == "metaclass":
                     yield self.qualified(indexed, keyword.value, node.lineno)
 
+    def module_end(self, indexed: CompactIndexedClass) -> int:
+        """The line after `indexed`'s module: where a name reads its final binding."""
+
+        return len(self.snapshot.parsed_module_for_source_path(indexed.file_path).source.splitlines()) + 1
+
     def qualified(self, indexed: CompactIndexedClass, reference: ast.expr, line: int) -> str:
         witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
             self.snapshot.parsed_module_for_source_path(indexed.file_path), reference, line=line
@@ -961,8 +966,7 @@ class CreationReads:
         match call.func:
             case ast.Attribute(value=receiver, attr=attr) if node in call.args and self.code.owner is not None:
                 owner = self.code.owner
-                end = len(self.proof.snapshot.sources_by_file_path[owner.file_path].splitlines()) + 1
-                container = self.builtin_container(receiver, owner, end)
+                container = self.builtin_container(receiver, owner, self.proof.module_end(owner))
                 if container is None or attr not in REFERENCE_STORES[container.kind]:
                     return False
                 if container.kind is not list:
@@ -1057,8 +1061,7 @@ class CreationReads:
                 if owner is None:
                     return None
                 # A function body looks a global up when it runs: the module's final binding.
-                end = len(self.proof.snapshot.sources_by_file_path[owner.file_path].splitlines()) + 1
-                qualified = self.proof.qualified(owner, func.value, end)
+                qualified = self.proof.qualified(owner, func.value, self.proof.module_end(owner))
                 if qualified in MODELLED_METACLASSES:
                     return True
                 indexed = self.proof.class_index.class_for(qualified)
