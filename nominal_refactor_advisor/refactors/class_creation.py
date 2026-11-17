@@ -42,6 +42,7 @@ from nominal_refactor_advisor.class_index import (
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 MODELLED_METACLASSES = frozenset(
@@ -102,6 +103,27 @@ def declared_names(statement: ast.stmt) -> frozenset[str]:
             target.id for target in statement.targets if isinstance(target, ast.Name)
         )
     return frozenset()
+
+
+def installed_class_node(indexed: CompactIndexedClass) -> ast.ClassDef:
+    """A class an installed module declares, from that module's parsed source."""
+
+    parsed = InstalledModule.parsed(indexed.module_name)
+    body: list[ast.stmt] = [] if parsed is None else parsed.module.body
+    node: ast.ClassDef | None = None
+    for name in indexed.qualname.split("."):
+        node = next(
+            (statement for statement in body if isinstance(statement, ast.ClassDef) and statement.name == name),
+            None,
+        )
+        if node is None:
+            raise NeedsInput(
+                f"{indexed.file_path}:{indexed.line} `{indexed.qualname}` has no declaration NRA can read",
+                NeededInput.PROOF,
+            )
+        body = node.body
+    assert node is not None
+    return node
 
 
 class Role(Enum):
@@ -243,6 +265,10 @@ class ClassCreationProof:
                 yield CreationCode(statement, f"{indexed.file_path}:{statement.lineno}", indexed)
 
     def class_node(self, indexed: CompactIndexedClass) -> ast.ClassDef:
+        """Its declaration: the scan's, or else the installed module's source."""
+
+        if self.class_index.class_for(indexed.symbol) is None:
+            return installed_class_node(indexed)
         return ResolvedClassTarget.from_rewrite_target(
             self.snapshot,
             SourceRewriteTarget(file_path=indexed.file_path, qualname=indexed.qualname),

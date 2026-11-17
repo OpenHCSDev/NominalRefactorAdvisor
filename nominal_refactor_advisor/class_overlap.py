@@ -60,6 +60,8 @@ from nominal_refactor_advisor.class_index import (
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
+    CompactRepositoryPublicExposureIndex,
+    InstalledClassDeclarations,
     followed_reexports,
 )
 from nominal_refactor_advisor.class_references import (
@@ -565,6 +567,20 @@ class ClassOverlapVerdicts:
     @cached_property
     def bodies(self) -> ClassBodyIndex:
         return ClassBodyIndex.from_projections(self.projections)
+
+    @cached_property
+    def exposure(self) -> CompactRepositoryPublicExposureIndex:
+        """What the scanned modules export, for reading a class outside them."""
+
+        return CompactRepositoryPublicExposureIndex(self.projections)
+
+    def ancestor(self, qualified_name: str) -> CompactIndexedClass | None:
+        """The class a base names: the scan's, or else one an installed module
+        declares in its `.py` source, read without running it, re-exports followed."""
+
+        return self.class_index.class_for(qualified_name) or InstalledClassDeclarations.declaration(
+            qualified_name, self.exposure
+        )
 
     @cached_property
     def uses(self) -> ClassUseIndex:

@@ -830,13 +830,14 @@ def require_static_c3(
 ) -> tuple[CompactIndexedClass, ...]:
     """The class and its ancestors, when type's own C3 orders them all.
 
-    Every base resolves to an indexed class or a native root and no metaclass
-    overrides `mro`. Class keywords and `__init_subclass__` leave the order to
-    type's C3; what they read as a class is created is `ClassCreationProof`'s.
-    Returns the closed ancestry.
+    Every base resolves to a native root, a scanned class, or a class an
+    installed module declares in `.py` source (`ClassOverlapVerdicts.ancestor`),
+    and no metaclass overrides `mro`. Class keywords and `__init_subclass__`
+    leave the order to type's C3; what they read as a class is created is
+    `ClassCreationProof`'s. Returns the closed ancestry.
     """
 
-    class_index = snapshot.class_overlap_verdicts.class_index
+    verdicts = snapshot.class_overlap_verdicts
     reached: dict[str, CompactIndexedClass] = {}
     pending = [indexed_class]
     while pending:
@@ -848,14 +849,21 @@ def require_static_c3(
             raise NeedsInput(f"`{current.qualname}` has unresolved bases", NeededInput.PROOF)
         for reference in current.base_references:
             qualified_name = ".".join(reference.resolved_parts)
-            base = class_index.class_for(qualified_name)
-            if base is not None:
-                pending.append(base)
-            elif NativeMroBase.for_qualified_name(qualified_name) is None:
+            if NativeMroBase.for_qualified_name(qualified_name) is not None:
+                continue
+            base = verdicts.ancestor(qualified_name)
+            if base is None:
                 raise NeedsInput(
-                    f"`{current.qualname}` has base `{qualified_name}` outside the index", NeededInput.PROOF
+                    f"`{current.qualname}` has base `{qualified_name}`, which neither the scan "
+                    "nor an installed `.py` source declares", NeededInput.PROOF
                 )
+            pending.append(base)
         if "metaclass" in current.class_keyword_names:
+            if verdicts.class_index.class_for(current.symbol) is None:
+                raise NeedsInput(
+                    f"Installed `{current.symbol}` declares a metaclass: NRA needs a proof "
+                    "that it orders bases with type's own `mro`", NeededInput.PROOF
+                )
             MetaclassMroProof(snapshot, current).require_type_mro()
     return tuple(reached.values())
 
@@ -1169,15 +1177,21 @@ class ComposedAncestry:
         )
         return replace(proof, abstract_moved=proof.abstract_moved - kept)
 
-    @property
-    def class_index(self):
-        return self.snapshot.class_overlap_verdicts.class_index
+    def declared(self, symbol: str) -> CompactIndexedClass:
+        """A class of the ancestry, scanned or installed: `require_static_c3` read
+        every one of them through this same lookup."""
+
+        indexed = self.snapshot.class_overlap_verdicts.ancestor(symbol)
+        assert indexed is not None
+        return indexed
 
     def bases(self, symbol: str) -> tuple[str, ...]:
-        indexed = self.class_index.class_for(symbol)
-        assert indexed is not None
+        """Its bases, each by the symbol it resolves to: a re-export is the class it names."""
+
         return tuple(
-            ".".join(reference.resolved_parts) for reference in indexed.base_references
+            qualified_name if NativeMroBase.for_qualified_name(qualified_name) else self.declared(qualified_name).symbol
+            for reference in self.declared(symbol).base_references
+            for qualified_name in (".".join(reference.resolved_parts),)
         ) or (NativeMroBase.OBJECT.value,)
 
     def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
@@ -1215,10 +1229,9 @@ class ComposedAncestry:
     def names(self, symbol: str, *, composed: bool) -> frozenset[str]:
         """What a class declares; the composer, once composed, without its deleted names."""
 
-        indexed = self.class_index.class_for(symbol)
-        if indexed is None:
+        if NativeMroBase.for_qualified_name(symbol) is not None:
             return frozenset()
-        declared = frozenset(declaration.name for declaration in indexed.body_declarations)
+        declared = frozenset(declaration.name for declaration in self.declared(symbol).body_declarations)
         if composed and symbol == self.composer.symbol:
             return declared - self.deleted
         return declared
@@ -1281,8 +1294,7 @@ class ComposedAncestry:
             raise NeedsInput(
                 f"Composing makes `{self.composer.qualname}` a `{symbol}`", NeededInput.PROOF
             )
-        indexed = self.class_index.class_for(symbol)
-        assert indexed is not None
+        indexed = self.declared(symbol)
         if indexed.metaclass_names or "metaclass" in indexed.class_keyword_names:
             raise NeedsInput(
                 f"Composing gives `{self.composer.qualname}` the metaclass of `{indexed.qualname}`",
