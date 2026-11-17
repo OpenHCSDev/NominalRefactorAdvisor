@@ -31,6 +31,7 @@ from importlib import import_module
 
 from metaclass_registry.core import AutoRegisterMeta
 
+from nominal_refactor_advisor.ast_tools import AstParentIndex
 from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedMethod,
@@ -103,6 +104,75 @@ changes nothing a call to it binds. The builtins' surface does not say which
 methods call their arguments, so this table declares it."""
 
 BUILTIN_CONTAINERS = {f"builtins.{kind.__name__}": kind for kind in REFERENCE_STORES}
+
+
+@dataclass(frozen=True)
+class FunctionDecorator:
+    """What a modelled decorator makes of the value it decorates: a value of
+    `returns` (None: the same value), with `stores` set on it."""
+
+    returns: type | None
+    stores: frozenset[str] = frozenset()
+
+
+FUNCTION_DECORATORS = {
+    "abc.abstractmethod": FunctionDecorator(None, frozenset(("__isabstractmethod__",))),
+    "builtins.classmethod": FunctionDecorator(classmethod),
+    "builtins.staticmethod": FunctionDecorator(staticmethod),
+    "builtins.property": FunctionDecorator(property),
+    "typing.final": FunctionDecorator(None, frozenset(("__final__",))),
+    "typing.override": FunctionDecorator(None, frozenset(("__override__",))),
+}
+"""The decorators whose result NRA knows: the attributes a value they build
+from a plain function has are its type's and the ones they store."""
+
+
+@dataclass(frozen=True)
+class FunctionReference:
+    """One place a module may refer to a function by its name."""
+
+    node: ast.AST
+    parents: AstParentIndex
+
+    def decorates(self) -> bool:
+        """`@function`: the decorated value is the call's only argument."""
+
+        match self.parents.get(self.node):
+            case ast.FunctionDef(decorator_list=decorators) | ast.AsyncFunctionDef(
+                decorator_list=decorators
+            ) | ast.ClassDef(decorator_list=decorators):
+                return any(decorator is self.node for decorator in decorators)
+        return False
+
+    def called_to_decorate(self) -> bool:
+        """`@factory(...)`: what the call returns receives the decorated value."""
+
+        match self.parents.get(self.node):
+            case ast.Call(func=func) as call if func is self.node:
+                return FunctionReference(call, self.parents).decorates()
+        return False
+
+    def returned_by(self, factory: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+        """`return function`, a statement of `factory`'s own body."""
+
+        match self.parents.get(self.node):
+            case ast.Return(value=value) as statement if value is self.node:
+                return any(own is statement for own in factory.body)
+        return False
+
+    def exported(self) -> bool:
+        """Whether a constant is an element of the module's `__all__`."""
+
+        sequence = self.parents.get(self.node)
+        match sequence, self.parents.get(sequence) if sequence is not None else None:
+            case (
+                ast.List() | ast.Tuple(),
+                ast.Assign(targets=[ast.Name(id="__all__")], value=value)
+                | ast.AugAssign(target=ast.Name(id="__all__"), value=value)
+                | ast.AnnAssign(target=ast.Name(id="__all__"), value=value),
+            ):
+                return value is sequence
+        return False
 
 
 def declared_names(statement: ast.stmt) -> frozenset[str]:
@@ -376,22 +446,24 @@ class ClassCreationProof:
     def class_index(self):
         return self.snapshot.class_overlap_verdicts.class_index
 
-    def carriers(self, order: tuple[str, ...], composed: bool, attributes: frozenset[str]) -> tuple[str, ...]:
+    def carriers(
+        self, order: tuple[str, ...], composed: bool, attributes: frozenset[str], stored: frozenset[str]
+    ) -> tuple[str, ...]:
         """The names a first-found walk of `order` meets whose winning value may
-        have one of `attributes`, in the order it meets them."""
+        have one of `attributes`, in the order it meets them; `stored` are those
+        scanned code may store on a function a class body declares."""
 
         found: dict[str, bool] = {}
         for symbol in order:
             if native_root_type(symbol) is not None:
                 continue
+            indexed = self.walked(symbol)
             for name, statement in self.own_bindings(symbol, composed):
-                found.setdefault(name, self.may_carry(statement, attributes))
+                found.setdefault(name, self.may_carry(indexed, statement, attributes, stored))
         return tuple(name for name, carries in found.items() if carries)
 
-    def own_bindings(self, symbol: str, composed: bool) -> Iterator[tuple[str, ast.stmt]]:
-        """Each name a scanned class's own body puts in `vars()`, with the
-        statement binding it, in binding order; once composed, the composer's
-        body no longer binds the names it deletes."""
+    def walked(self, symbol: str) -> CompactIndexedClass:
+        """A class the walk of the composer's MRO visits: the scan's or an installed one."""
 
         indexed = self.snapshot.class_overlap_verdicts.ancestor(symbol)
         if indexed is None:
@@ -400,6 +472,14 @@ class ClassCreationProof:
                 f"`{self.composer.qualname}`'s MRO reads its names",
                 NeededInput.PROOF,
             )
+        return indexed
+
+    def own_bindings(self, symbol: str, composed: bool) -> Iterator[tuple[str, ast.stmt]]:
+        """Each name a scanned class's own body puts in `vars()`, with the
+        statement binding it, in binding order; once composed, the composer's
+        body no longer binds the names it deletes."""
+
+        indexed = self.walked(symbol)
         for statement in self.class_node(indexed).body:
             names = declared_names(statement)
             if not names and not (
@@ -447,14 +527,29 @@ class ClassCreationProof:
         if before != after:
             reads.refuse(node, f"selects {list(before)} for `{name}`, and {list(after)} once composed,")
 
-    @staticmethod
-    def may_carry(statement: ast.stmt, attributes: frozenset[str]) -> bool:
-        """Whether the value one statement binds may have one of `attributes`:
-        a plain function has only a function's; a literal only its own type's."""
+    def may_carry(
+        self,
+        indexed: CompactIndexedClass,
+        statement: ast.stmt,
+        attributes: frozenset[str],
+        stored: frozenset[str],
+    ) -> bool:
+        """Whether the value one statement of `indexed`'s body binds may have one
+        of `attributes`. A function has its type's, those `stored` on functions,
+        and what each modelled decorator applied to it makes of it; a literal
+        only its own type's. Anything else may have any."""
 
         match statement:
-            case ast.FunctionDef(decorator_list=[]) | ast.AsyncFunctionDef(decorator_list=[]):
-                return any(hasattr(types.FunctionType, attribute) for attribute in attributes)
+            case ast.FunctionDef(decorator_list=decorators) | ast.AsyncFunctionDef(decorator_list=decorators):
+                kind: type = types.FunctionType
+                carried = set(stored)
+                for decorator in reversed(decorators):
+                    modelled = self.function_decorator(indexed, decorator)
+                    if modelled is None:
+                        return True
+                    kind = modelled.returns or kind
+                    carried |= modelled.stores
+                return any(hasattr(kind, attribute) or attribute in carried for attribute in attributes)
             case ast.Assign(value=value) | ast.AnnAssign(value=value) if value is not None:
                 try:
                     literal = ast.literal_eval(value)
@@ -463,16 +558,132 @@ class ClassCreationProof:
                 return any(hasattr(literal, attribute) for attribute in attributes)
         return True
 
+    def function_decorator(self, indexed: CompactIndexedClass, decorator: ast.expr) -> FunctionDecorator | None:
+        """The model of a decorator a scanned class body names, resolved where the
+        body runs; none for a call, a name the body binds, or a class outside the scan."""
+
+        if self.class_index.class_for(indexed.symbol) is None:
+            return None
+        match decorator:
+            case ast.Name() | ast.Attribute():
+                body = self.class_node(indexed).body
+                qualified = self.resolved(
+                    indexed,
+                    decorator,
+                    decorator.lineno,
+                    frozenset(name for statement in body for name in declared_names(statement)),
+                )
+                return None if qualified is None else FUNCTION_DECORATORS.get(qualified)
+        return None
+
+    def stored_on_functions(self, attributes: frozenset[str]) -> frozenset[str]:
+        """Those of `attributes` scanned code may store on a function a class body
+        declares: each `X.<attribute> = ...`, `setattr(X, "<attribute>", ...)` and
+        `X.__dict__["<attribute>"] = ...` whose `X` is not the function a decorator
+        receives. A store under a name no constant spells is not seen."""
+
+        stored: set[str] = set()
+        for module in self.snapshot.parsed_modules:
+            if not any(attribute in module.source for attribute in attributes):
+                continue
+            parents = module.syntax_index.parent_index
+            for node in ast.walk(module.module):
+                match node:
+                    case (
+                        ast.Attribute(value=subject, attr=str(attribute), ctx=ast.Store())
+                        | ast.Call(
+                            func=ast.Name(id="setattr"), args=[subject, ast.Constant(value=str(attribute)), *_]
+                        )
+                        | ast.Subscript(
+                            value=ast.Attribute(value=subject, attr="__dict__")
+                            | ast.Call(func=ast.Name(id="vars"), args=[subject]),
+                            slice=ast.Constant(value=str(attribute)),
+                            ctx=ast.Store(),
+                        )
+                    ) if attribute in attributes and not self.decorated_parameter(subject, parents):
+                        stored.add(attribute)
+        return frozenset(stored)
+
+    def decorated_parameter(self, subject: ast.expr, parents: AstParentIndex) -> bool:
+        """Whether `subject` is what a decorator receives: the first parameter,
+        never rebound, of an undecorated function applied only as `@function`, or
+        returned by an undecorated factory applied only as `@factory(...)`, read
+        in that function's own body, outside any lambda."""
+
+        function = parents.enclosing_function(subject)
+        if function is None:
+            return False
+        ancestors = parents.ancestors(subject)
+        within = (subject, *ancestors[: ancestors.index(function)])
+        if any(isinstance(node, ast.Lambda) for node in within) or not any(
+            statement is within[-1] for statement in function.body
+        ):
+            return False
+        match subject, function:
+            case ast.Name(id=parameter), ast.FunctionDef(decorator_list=[]) | ast.AsyncFunctionDef(
+                decorator_list=[]
+            ) if parameter == self.first_parameter(function):
+                pass
+            case _:
+                return False
+        for node in ast.walk(function):
+            match node:
+                case (
+                    ast.Name(id=name, ctx=ast.Store() | ast.Del())
+                    | ast.FunctionDef(name=name)
+                    | ast.AsyncFunctionDef(name=name)
+                    | ast.ClassDef(name=name)
+                    | ast.ExceptHandler(name=str(name))
+                    | ast.MatchAs(name=str(name))
+                    | ast.MatchStar(name=str(name))
+                    | ast.MatchMapping(rest=str(name))
+                ) if name == parameter and node is not function:
+                    return False
+                case ast.alias(name=imported, asname=renamed) if (renamed or imported.partition(".")[0]) == parameter:
+                    return False
+                case ast.Global(names=names) | ast.Nonlocal(names=names) if parameter in names:
+                    return False
+        uses = tuple(self.uses(function.name))
+        if all(use.decorates() for use in uses):
+            return True
+        match parents.get(function):
+            case ast.FunctionDef(decorator_list=[]) | ast.AsyncFunctionDef(decorator_list=[]) as factory:
+                return all(use.returned_by(factory) for use in uses) and all(
+                    use.called_to_decorate() for use in self.uses(factory.name)
+                )
+        return False
+
+    def uses(self, name: str) -> Iterator[FunctionReference]:
+        """Each place scanned code may refer to a function by `name`: a name, an
+        attribute, a renaming import, or a constant string outside `__all__`."""
+
+        for module in self.snapshot.parsed_modules:
+            if name not in module.source:
+                continue
+            parents = module.syntax_index.parent_index
+            for node in ast.walk(module.module):
+                reference = FunctionReference(node, parents)
+                match node:
+                    case ast.Name(id=found) | ast.Attribute(attr=found) if found == name:
+                        yield reference
+                    case ast.alias(name=found, asname=str(renamed)) if (
+                        found.rpartition(".")[2] == name and renamed != name
+                    ):
+                        yield reference
+                    case ast.Constant(value=str(found)) if found == name and not reference.exported():
+                        yield reference
+
     def require_walk_kept(self, attributes: frozenset[str], node: ast.AST, reads: CreationReads) -> None:
         """A walk reading only `attributes` of each name's winner answers the same
-        when those winners keep their values and the names carrying them keep
-        their order. The name check of the composed ancestry keeps every value;
-        this keeps the order."""
+        when those winners keep their values and the names whose winners may
+        carry one of them keep their order. The name check of the composed
+        ancestry keeps every value; this keeps the order."""
 
         if any(hasattr(kind, attribute) for kind in _IMPLICIT_VALUES for attribute in attributes):
             reads.refuse(node, "reads an attribute what class creation binds by itself may have")
-        before = self.carriers(self.walk.before, False, attributes)
-        after = self.carriers(self.walk.after, True, attributes)
+        stored = self.stored_on_functions(attributes)
+        before = self.carriers(self.walk.before, False, attributes, stored)
+        after = self.carriers(self.walk.after, True, attributes, stored)
         if before != after:
             reads.refuse(
                 node,
@@ -519,15 +730,31 @@ class ClassCreationProof:
         return len(self.snapshot.parsed_module_for_source_path(indexed.file_path).source.splitlines()) + 1
 
     def qualified(self, indexed: CompactIndexedClass, reference: ast.expr, line: int) -> str:
-        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
-            self.snapshot.parsed_module_for_source_path(indexed.file_path), reference, line=line
-        )
-        if witness is None:
+        qualified = self.resolved(indexed, reference, line)
+        if qualified is None:
             raise NeedsInput(
                 f"{indexed.file_path}:{line} `{ast.unparse(reference)}` is unbound at class creation",
                 NeededInput.PROOF,
             )
-        return self.canonical(witness.qualified_name)
+        return qualified
+
+    def resolved(
+        self,
+        indexed: CompactIndexedClass,
+        reference: ast.expr,
+        line: int,
+        class_bound: frozenset[str] = frozenset(),
+    ) -> str | None:
+        """What `reference` names in `indexed`'s module at `line`, unless it is
+        unbound there or one of `class_bound`, which a class body binds first."""
+
+        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
+            self.snapshot.parsed_module_for_source_path(indexed.file_path),
+            reference,
+            line=line,
+            preceding_class_bound_names=class_bound,
+        )
+        return None if witness is None else self.canonical(witness.qualified_name)
 
     def canonical(self, qualified_name: str) -> str:
         """The defining module's spelling of an importable name; a scanned name as is."""
