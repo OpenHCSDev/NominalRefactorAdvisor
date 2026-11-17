@@ -14,7 +14,10 @@ from typing import ClassVar, Self
 
 
 def snake_case(name: str) -> str:
-    return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+    """`TextRouteUpdate` -> `text_route_update`; an acronym or a constant stays
+    one word: `ACPFailure` -> `acp_failure`, `LIMIT` -> `limit`."""
+
+    return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name).lower()
 
 
 class UnknownMember(LookupError):

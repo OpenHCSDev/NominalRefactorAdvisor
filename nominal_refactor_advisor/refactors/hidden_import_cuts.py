@@ -34,13 +34,15 @@ from nominal_refactor_advisor.codemod_runtime import (
 )
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.composition_layering import CompositionRootLayering
 from nominal_refactor_advisor.hidden_imports import ClosesCycle, HiddenImportPlan
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.owner_candidates import ModuleImportGraph, common_package
-from nominal_refactor_advisor.refactor_concepts import HiddenImportCutConcept
+from nominal_refactor_advisor.refactor_concepts import HiddenImportCutConcept, LayeringViolationConcept
 from nominal_refactor_advisor.refactors.class_overlap import (
     MovedClosure,
+    RelocationStep,
     annotation_modes,
     in_order_edits,
     in_order_states,
@@ -109,7 +111,7 @@ class HubCut(HubPlan):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CutHiddenCycleOperation(RepositorySourceReprovedOperation):
+class CutHiddenCycleOperation(RelocationStep, RepositorySourceReprovedOperation):
     """Move `moved` from the target hub to `destination`, then import at the top
     every hidden import the moved state no longer needs to hide.
 
@@ -312,14 +314,19 @@ class HiddenImportCuts:
         self, hub: str, users: tuple[str, ...], readers: tuple[str, ...], closure: MovedClosure
     ) -> str:
         """A module below the hub and every importer of the moved names that
-        reaches no reader; else a new module of their package, named for the
-        first moved declaration. Needs a source change, naming each declaration
-        that reads back, when the moved code reads a module that reaches them."""
+        reaches no reader; else a new module of the hub's package, named for the
+        first declaration the move is for. Needs a source change, naming each declaration
+        that reads back, when the moved code reads a module that reaches them.
 
+        When the moved names are misplaced in a composition root's layering, the
+        module is one that layer loads, or the new module reads only modules it
+        loads: a cut never moves a declaration to another place above its readers."""
+
+        layer = self.snapshot.module_set.fact(CompositionRootLayering).layer_of(hub, closure.qualnames)
         lower = self.imports.shared_lower_module(
-            users, closure.reads, above=readers, modes=annotation_modes(self.snapshot), source=hub
+            users, closure.reads, above=readers, modes=annotation_modes(self.snapshot), source=hub, layer=layer
         )
-        if lower is not None:
+        if lower is not None and (not layer or lower.module in layer):
             return lower.module
         pinned = frozenset(self.imports.pinning_reads((*users, *readers), closure.reads))
         if pinned:
@@ -337,8 +344,16 @@ class HiddenImportCuts:
                 ),
                 NeededInput.SOURCE_CHANGE,
             )
-        package = common_package(users)
-        home = f"{package}.{snake_case(closure.qualnames[0])}"
+        above_layer = sorted(closure.reads - layer) if layer else ()
+        if above_layer:
+            raise NeedsInput(
+                f"`{hub}.{closure.roots[0]}` belongs to a composition-root layer that loads none of "
+                + ", ".join(f"`{module}`" for module in above_layer)
+                + ", which the moved code reads",
+                NeededInput.SOURCE_CHANGE,
+            )
+        package = common_package((hub,))
+        home = f"{package}.{snake_case(closure.roots[0])}"
         if not package or home in self.imports.imports:
             raise NeedsInput(
                 f"no module below `{hub}` and its importers avoids the cycle, and no new one can hold it",
@@ -403,6 +418,59 @@ class HiddenImportCutFindingRecipeSynthesizer(
         )
 
 
+class LayeringViolationFindingRecipeSynthesizer(
+    PrimaryEvidenceActionKeysMixin,
+    FindingRecipeSynthesizer,
+    LayeringViolationConcept,
+):
+    """The cut of one misplaced declaration, with what its module's own
+    declarations need of it, into its home layer."""
+
+    def evaluate_recipe_for_finding(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext | None = None,
+    ) -> FindingRecipeEvaluation:
+        evidence = finding.primary_evidence
+        if context is None or evidence is None:
+            return self.rejected_evaluation("moving a misplaced declaration needs source context and its declaration")
+        snapshot = context.execution_snapshot()
+        layering = snapshot.module_set.fact(CompositionRootLayering)
+        module = snapshot.parsed_module_for_source_path(evidence.file_path).module_name
+        if evidence.symbol == module:
+            return self.rejected_evaluation(
+                f"code below its layer imports the module `{module}` itself; a move takes named declarations",
+                (NeededInput.OPERATION,),
+            )
+        reads = layering.by_declaration.get((module, evidence.symbol))
+        if not reads:
+            return self.rejected_evaluation(f"`{module}.{evidence.symbol}` is read from no layer below it")
+        if not layering.layer_of(module, (evidence.symbol,)):
+            return self.rejected_evaluation(
+                f"no service at or below {', '.join(sorted({f'`{read.lower}`' for read in reads}))} "
+                f"loads every module reading `{evidence.symbol}`",
+                (NeededInput.SOURCE_CHANGE,),
+            )
+        cuts = HiddenImportCuts.of(snapshot)
+        closure = MovedClosure.of_roots(snapshot, evidence.file_path, (evidence.symbol,))
+        users = (module, *cuts.importers(module, frozenset(closure.qualnames)))
+        try:
+            destination = cuts.destination(module, users, tuple(sorted({read.reader for read in reads})), closure)
+            operation = HubCut(module, (), (), evidence.file_path, closure.qualnames, destination).operation()
+            operation.source_edits(context)
+        except (NeedsInput, ValueError) as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
+                reason=(
+                    f"Moving {len(closure.qualnames)} declaration(s) to `{destination}` puts "
+                    f"`{evidence.symbol}` in the layer of the {len(reads)} read(s) of it."
+                ),
+            ).with_operation(operation)
+        )
+
+
 __all__ = (
     "CutHiddenCycleOperation",
     "HiddenImportCutFindingRecipeSynthesizer",
@@ -411,4 +479,5 @@ __all__ = (
     "HubEdge",
     "HubPlan",
     "HubStays",
+    "LayeringViolationFindingRecipeSynthesizer",
 )

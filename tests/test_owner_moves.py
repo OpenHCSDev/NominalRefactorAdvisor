@@ -1600,9 +1600,9 @@ def _composition(root: Path):
 
 def test_an_owner_composing_would_close_a_cycle_moves_down_first(tmp_path: Path) -> None:
     """`Omitted` restates `Unsupplied`, but `pkg.tools`, which declares the owner,
-    imports `pkg.wire`: composing it there closes a cycle. The owner moves to
-    `pkg.base`, which both import and which imports neither, and `Omitted`
-    composes it there."""
+    imports `pkg.wire`: composing it there closes a cycle. `pkg.base`, which both
+    import, is merely low enough: the owner reads nothing from it. It moves to
+    `pkg.wire`, beside `Omitted`, which composes it there."""
 
     from nominal_refactor_advisor.codemod import CodemodPlanSequence
 
@@ -1621,9 +1621,10 @@ def test_an_owner_composing_would_close_a_cycle_moves_down_first(tmp_path: Path)
     assert simulation.is_clean
     simulation.apply()
 
-    assert "class Unsupplied:" in (tmp_path / "pkg/base.py").read_text()
+    assert (tmp_path / "pkg/base.py").read_text() == "UNIT = 1\n"
+    wire = (tmp_path / "pkg/wire.py").read_text()
+    assert "class Unsupplied:" in wire and "class Omitted(Unsupplied):" in wire
     assert "class Unsupplied" not in (tmp_path / "pkg/tools.py").read_text()
-    assert "class Omitted(Unsupplied):" in (tmp_path / "pkg/wire.py").read_text()
     assert _run(tmp_path, probe) == before
 
 
@@ -1723,12 +1724,12 @@ def test_a_moved_owner_whose_reads_pin_it_refuses_naming_them(tmp_path: Path) ->
     )
 
 
-def test_a_moved_owner_prefers_a_home_evaluating_annotations_as_its_module_does(
+def test_a_moved_owner_lands_in_no_module_merely_low_enough(
     tmp_path: Path,
 ) -> None:
-    """`pkg.annotated` and `pkg.base` both qualify; `pkg.annotated` comes first by name,
-    but it stringizes annotations and `pkg.tools` does not, so the owner goes to
-    `pkg.base`, whose annotations evaluate as before."""
+    """`pkg.annotated` and `pkg.base` are both low enough, and `pkg.annotated`
+    stringizes annotations. The owner reads neither, so it goes beside its
+    composer in `pkg.wire`, whose annotations evaluate as `pkg.tools`'s did."""
 
     from nominal_refactor_advisor.codemod import CodemodPlanSequence
 
@@ -1748,7 +1749,9 @@ def test_a_moved_owner_prefers_a_home_evaluating_annotations_as_its_module_does(
     assert simulation.is_clean
     simulation.apply()
 
-    assert "class Unsupplied:" in (tmp_path / "pkg/base.py").read_text()
+    home = (tmp_path / "pkg/wire.py").read_text()
+    assert "class Unsupplied:" in home and "from __future__" not in home
+    assert (tmp_path / "pkg/base.py").read_text() == "UNIT = 1\n"
     assert "class Unsupplied" not in (tmp_path / "pkg/annotated.py").read_text()
 
 

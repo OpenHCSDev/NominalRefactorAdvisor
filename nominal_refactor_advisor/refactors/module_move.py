@@ -1485,6 +1485,7 @@ class _SourceModuleObjectReads:
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
         index = parsed.fact(ModuleNodeIndex)
+        cls._refuse_function_reads(index, identity, source_parts, moved_names, file_path)
         imported = frozenset(
             chain
             for chain in cls._bound_chains(index, identity, source_parts)
@@ -1614,25 +1615,67 @@ class _SourceModuleObjectReads:
         """The attribute chain that reaches the source module from each binding."""
 
         for node in index.imports:
-            if isinstance(node, ast.Import):
-                for alias in node.names:
-                    alias_parts = tuple(alias.name.split("."))
-                    if alias.asname is None and alias_parts[0] == source_parts[0]:
-                        yield source_parts
-                    elif alias.asname is not None and source_parts[: len(alias_parts)] == alias_parts:
-                        yield (alias.asname, *source_parts[len(alias_parts) :])
-            elif isinstance(node, ast.ImportFrom):
-                package = identity.resolve_import_from_module(
-                    imported_module=node.module,
-                    level=node.level,
-                )
-                for alias in node.names:
-                    alias_parts = (*(package or "").split("."), alias.name)
-                    if package and source_parts[: len(alias_parts)] == alias_parts:
-                        yield (
-                            ImportBoundNameProjection(node).alias_bound_name(alias),
-                            *source_parts[len(alias_parts) :],
+            yield from _SourceModuleObjectReads._chains_of(node, identity, source_parts)
+
+    @classmethod
+    def _refuse_function_reads(
+        cls,
+        index: ModuleNodeIndex,
+        identity: PythonModulePathIdentity,
+        source_parts: tuple[str, ...],
+        moved_names: frozenset[str],
+        file_path: str,
+    ) -> None:
+        """A function binding the source module by its own import shadows the
+        module-level name, so its `module.Name` reads are not this class's to
+        rewrite; reading a moved name there would break once it leaves, so the
+        move refuses, naming the function."""
+
+        for node in index.imports:
+            function = index.parents.get(node)
+            while function is not None and not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                function = index.parents.get(function)
+            if function is None:
+                continue
+            for chain in cls._chains_of(node, identity, source_parts):
+                for name in ast.walk(function):
+                    if not (isinstance(name, ast.Name) and name.id == chain[0]):
+                        continue
+                    _outermost, parts = cls._read_chain(name, index.parents, len(chain) + 1)
+                    if parts[: len(chain)] == chain and len(parts) > len(chain) and parts[-1] in moved_names:
+                        raise ValueError(
+                            f"{file_path!r} imports the source module {'.'.join(source_parts)!r} "
+                            f"inside {function.name!r} and reads {parts[-1]!r} off it there, "
+                            "which this move does not rewrite"
                         )
+
+    @staticmethod
+    def _chains_of(
+        node: ast.Import | ast.ImportFrom,
+        identity: PythonModulePathIdentity,
+        source_parts: tuple[str, ...],
+    ) -> Iterator[tuple[str, ...]]:
+        """The attribute chain that reaches the source module from one import's bindings."""
+
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                alias_parts = tuple(alias.name.split("."))
+                if alias.asname is None and alias_parts[0] == source_parts[0]:
+                    yield source_parts
+                elif alias.asname is not None and source_parts[: len(alias_parts)] == alias_parts:
+                    yield (alias.asname, *source_parts[len(alias_parts) :])
+        elif isinstance(node, ast.ImportFrom):
+            package = identity.resolve_import_from_module(
+                imported_module=node.module,
+                level=node.level,
+            )
+            for alias in node.names:
+                alias_parts = (*(package or "").split("."), alias.name)
+                if package and source_parts[: len(alias_parts)] == alias_parts:
+                    yield (
+                        ImportBoundNameProjection(node).alias_bound_name(alias),
+                        *source_parts[len(alias_parts) :],
+                    )
 
     @classmethod
     def _aliased_chains(

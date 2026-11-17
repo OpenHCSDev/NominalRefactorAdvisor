@@ -484,6 +484,11 @@ class ModuleImportGraph:
         return importer == imported or imported in self.imports.get(importer, ())
 
     def reaches(self, start: str, goal: str) -> bool:
+        return goal in self.reachable(start)
+
+    def reachable(self, start: str) -> frozenset[str]:
+        """Every module loading `start` loads, `start` included."""
+
         reachable = self._reachable.get(start)
         if reachable is None:
             seen = {start}
@@ -494,7 +499,7 @@ class ModuleImportGraph:
                         seen.add(imported)
                         pending.append(imported)
             reachable = self._reachable[start] = frozenset(seen)
-        return goal in reachable
+        return reachable
 
     def module_of(self, qualified_name: str) -> str | None:
         """The scanned module declaring `qualified_name`: its longest scanned prefix."""
@@ -527,19 +532,23 @@ class ModuleImportGraph:
         above: Iterable[str] = (),
         modes: Mapping[str, object] = MappingProxyType({}),
         source: str = "",
+        layer: frozenset[str] = frozenset(),
     ) -> LowerHome | None:
         """The module a declaration all of `users` import can live in without
         closing a cycle: one each of them already imports, directly or not, that
         imports none of them, in their lowest common package, and no package's
         `__init__`, which is the package's interface rather than a home. A user in
-        `homes_among_users` may hold it too. Every module in `reads`, which the
+        `homes_among_users` may hold it too. A declaration moving out of `source`
+        lands only in such a user: a module merely low enough says nothing
+        about what the declaration is, so the caller names a new one instead. Every module in `reads`, which the
         moved code imports names from, must be importable there without a cycle,
         and neither the home nor any module in `reads` is or reaches a module in
         `above`, which will import it but need not yet.
 
-        Of several, one keeping `source`'s annotation mode (`modes`) first, then
-        one no user is, then the highest, the one no other such module imports,
-        then by name; None when there is none."""
+        Of several, one of `layer`, the modules a composition root's service the
+        declaration belongs to loads, first; then one keeping `source`'s
+        annotation mode (`modes`), then one no user is, then the highest, the one
+        no other such module imports, then by name; None when there is none."""
 
         importers = frozenset(users)
         allowed = frozenset(homes_among_users) & importers
@@ -554,6 +563,7 @@ class ModuleImportGraph:
             for module in sorted(self.imports)
             if (module not in importers or module in allowed)
             and module.startswith(within)
+            and (not source or module in allowed)
             and not any(other.startswith(module + ".") for other in self.imports)
             and all(self.reaches(importer, module) for importer in importers if importer != module)
             and not any(self.reaches(module, importer) for importer in importers if importer != module)
@@ -564,6 +574,7 @@ class ModuleImportGraph:
         ranked = sorted(
             qualifying,
             key=lambda module: (
+                bool(layer) and module not in layer,
                 modes.get(module) != modes.get(source),
                 module in importers,
                 any(other != module and self.reaches(other, module) for other in qualifying),
