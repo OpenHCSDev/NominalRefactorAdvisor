@@ -21,7 +21,7 @@ from functools import cached_property
 from itertools import chain
 from importlib import import_module
 from pathlib import Path
-from typing import ClassVar, Self
+from typing import ClassVar, Self, cast
 
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, declared_names
@@ -194,6 +194,29 @@ class OverlapClass(ABC):
         if declaration is None:
             raise ValueError(f"`{self.qualname}` does not declare `{name}` itself")
         return declaration.require_proved(f"`{self.qualname}.{name}`")
+
+    def attribute_docstring(self, statement: ast.stmt) -> ast.Expr | None:
+        """The string statement right after a field, which documents it."""
+
+        if not isinstance(statement, (ast.AnnAssign, ast.Assign)):
+            return None
+        body = self.node.body
+        index = next(position for position, member in enumerate(body) if member is statement)
+        following = body[index + 1] if index + 1 < len(body) else None
+        return following if following is not None and is_docstring_statement(following) else None
+
+    def documentation(self, name: str) -> str | None:
+        """What the class documents a member with: a definition's own docstring,
+        or the string statement after a field."""
+
+        for statement in self.node.body:
+            if name not in declared_names(statement):
+                continue
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                return ast.get_docstring(statement, clean=False)
+            documented = self.attribute_docstring(statement)
+            return None if documented is None else cast(ast.Constant, documented.value).value
+        return None
 
     def statements_declaring(self, names: Iterable[str]) -> tuple[ast.stmt, ...]:
         """The body statements that declare exactly these names, each wholly."""
@@ -433,6 +456,12 @@ class RestatedDeclarations:
                     f"`{restating.qualname}.{name}` differs from "
                     f"`{source.qualname}.{name}`", NeededInput.SOURCE_CHANGE
                 )
+            documented = restating.documentation(name)
+            if documented is not None and documented != source.documentation(name):
+                raise NeedsInput(
+                    f"`{restating.qualname}.{name}` is documented as `{source.qualname}.{name}` "
+                    "is not: the move would drop its docstring", NeededInput.SOURCE_CHANGE
+                )
         return cls(source, restating, names)
 
     @cached_property
@@ -445,6 +474,18 @@ class RestatedDeclarations:
     @cached_property
     def statements(self) -> tuple[ast.stmt, ...]:
         return self.restating.statements_declaring(self.deleted_names)
+
+    @cached_property
+    def written_statements(self) -> tuple[ast.stmt, ...]:
+        """The statements as written: each field followed by the docstring after it,
+        which moves and goes with the field."""
+
+        return tuple(
+            written
+            for statement in self.statements
+            for written in (statement, self.restating.attribute_docstring(statement))
+            if written is not None
+        )
 
     def require_no_owner_bound_values(self, snapshot: CodemodSourceSnapshot) -> None:
         """A value built by a class with `__set_name__` learns the class it sits in.
@@ -1352,7 +1393,10 @@ class ClassComposition:
             snapshot, (restating.symbol,), ComposeExisting, owner_symbol=owner.symbol
         )
         body = owner.node.body[1:] if is_docstring_statement(owner.node.body[0]) else owner.node.body
-        if not body or any(not declared_names(statement) for statement in body):
+        # A string statement documents the field before it and runs nothing.
+        if not body or any(
+            not declared_names(statement) and not is_docstring_statement(statement) for statement in body
+        ):
             raise NeedsInput(f"`{owner.qualname}` runs statements beyond declarations", NeededInput.SOURCE_CHANGE)
         restated = RestatedDeclarations.require(
             snapshot,
@@ -1468,7 +1512,7 @@ class ClassComposition:
             *deletion.physical_edits(
                 file_path=restating.file_path,
                 replacements=deletion.replacements_for_statements(
-                    self.restated.statements
+                    self.restated.written_statements
                 ),
                 rationale=rationale,
             ),
@@ -1623,7 +1667,7 @@ class CoveringComposition:
             statements = tuple(
                 statement
                 for restatement in restatements
-                for statement in restatement.statements
+                for statement in restatement.written_statements
             )
             for owner in self.owners:
                 if owner.file_path == composer.file_path or (
@@ -1865,7 +1909,7 @@ class BaseFold:
                                     statement, (ast.FunctionDef, ast.AsyncFunctionDef)
                                 ),
                             )
-                            for statement in first.statements
+                            for statement in first.written_statements
                         )
                     ),
                 ),
@@ -1893,7 +1937,7 @@ class BaseFold:
         return (
             *deletion.physical_edits(
                 file_path=child.file_path,
-                replacements=deletion.replacements_for_statements(restatement.statements),
+                replacements=deletion.replacements_for_statements(restatement.written_statements),
                 rationale=rationale,
             ),
             *obsolete_import_edits(
@@ -2669,6 +2713,9 @@ class MixinCreation:
     """Created keyword-only when composing it reorders some composer's fields or
     some composer is keyword-only already; each other composer then becomes
     keyword-only as it composes the mixin."""
+    carried_documentation: tuple[tuple[str, str], ...] = ()
+    """Each member the anchor leaves undocumented and another composer documents,
+    with that docstring's source: the one copy kept carries it."""
 
     @classmethod
     def require(
@@ -2710,7 +2757,47 @@ class MixinCreation:
             for composer in (OverlapClass.for_symbol(snapshot, symbol),)
             for before, after in (composed_field_order(snapshot, mixin_fields, composer),)
         )
-        return cls(snapshot, anchor, restated, name, docstring, keyword_only)
+        return cls(
+            snapshot, anchor, restated, name, docstring, keyword_only,
+            cls.documentation_to_carry(snapshot, anchor, owner.composers, restated.deleted_names),
+        )
+
+    @staticmethod
+    def documentation_to_carry(
+        snapshot: CodemodSourceSnapshot,
+        anchor: OverlapClass,
+        composers: Iterable[str],
+        names: Iterable[str],
+    ) -> tuple[tuple[str, str], ...]:
+        """One docstring per member across every composer; refuses two."""
+
+        others = tuple(OverlapClass.for_symbol(snapshot, symbol) for symbol in composers)
+        carried: list[tuple[str, str]] = []
+        for name in names:
+            documented = {
+                text: composer
+                for composer in (anchor, *others)
+                if (text := composer.documentation(name)) is not None
+            }
+            if len(documented) > 1:
+                raise NeedsInput(
+                    f"`{name}` is documented differently by "
+                    + ", ".join(f"`{composer.qualname}`" for composer in documented.values())
+                    + ": one docstring must go", NeededInput.SOURCE_CHANGE
+                )
+            if documented and anchor.documentation(name) is None:
+                (composer,) = documented.values()
+                (statement,) = (
+                    statement for statement in composer.node.body if name in declared_names(statement)
+                )
+                literal = (
+                    statement.body[0]
+                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                    else composer.attribute_docstring(statement)
+                )
+                source = snapshot.sources_by_file_path[composer.file_path]
+                carried.append((name, ast.get_source_segment(source, cast(ast.Expr, literal)) or ""))
+        return tuple(carried)
 
     def decorator_source(self, source: str, decorator: ast.expr) -> str:
         copied = ast.get_source_segment(source, decorator) or ""
@@ -2733,14 +2820,25 @@ class MixinCreation:
             f"{indentation}@{self.decorator_source(source, decorator)}\n"
             for decorator in anchor.node.decorator_list
         )
+        carried = dict(self.carried_documentation)
         members: list[str] = []
-        for statement in self.restated.statements:
+        for statement in self.restated.written_statements:
             member = StatementSource(source=source, node=statement).member_source(
                 member_indentation
             )
             if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and members:
                 members.append("\n")
-            members.append(member if member.endswith("\n") else member + "\n")
+            member = member if member.endswith("\n") else member + "\n"
+            literal = next((carried[name] for name in declared_names(statement) if name in carried), None)
+            if literal is not None and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                lines = member.splitlines(keepends=True)
+                header = statement.body[0].lineno - min(
+                    (decorator.lineno for decorator in statement.decorator_list), default=statement.lineno
+                )
+                member = "".join((*lines[:header], f"{member_indentation}    {literal}\n", *lines[header:]))
+            elif literal is not None:
+                member += f"{member_indentation}{literal}\n"
+            members.append(member)
         return (
             SourceInsertion(
                 file_path=anchor.file_path,
@@ -2903,7 +3001,7 @@ class OwnerExtension:
                                     statement, (ast.FunctionDef, ast.AsyncFunctionDef)
                                 ),
                             )
-                            for statement in self.restated.statements
+                            for statement in self.restated.written_statements
                         )
                     ),
                 ),
