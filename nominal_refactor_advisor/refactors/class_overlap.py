@@ -581,11 +581,16 @@ class EmbeddedSources(ParsedModuleFact):
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
         index = parsed_module.syntax_index
+        nodes, parents = index.depth_first_nodes, index.parent_indices
         literals = (
             node
             for position in index.node_indices_by_type.get(ast.Constant, ())
-            for node in (index.depth_first_nodes[position],)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str) and "import" in node.value
+            for node in (nodes[position],)
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and "import" in node.value
+            # A part of an f-string is a fragment of text the program assembles.
+            and not (parents[position] >= 0 and isinstance(nodes[parents[position]], ast.JoinedStr))
         )
         return cls(tuple(source for literal in literals for source in cls.parsed(parsed_module, literal)))
 
