@@ -16,6 +16,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_paths import SourcePathResolutionAuthority
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
@@ -244,8 +245,13 @@ class SemanticMirrorRecipeBuilder(CodemodSourceSnapshot, ABC):
 
     @classmethod
     def builder_types(cls) -> tuple[type[Self], ...]:
-        """Derive concrete builders from this nominal domain branch."""
+        """Derive concrete builders from this nominal domain branch.
 
+        A builder sits beside the operation it builds, so reading the operation
+        registry, which imports its declared package, loads every builder first:
+        a builder's membership never depends on an importer loading its module."""
+
+        RefactorRecipeOperation.__registry__.keys()
         return tuple(
             cast(type[Self], builder_type)
             for builder_type in loaded_concrete_nominal_descendants(cls)
@@ -294,10 +300,16 @@ class SemanticMirrorRecipeBuilder(CodemodSourceSnapshot, ABC):
     def rejection_reason(self) -> str:
         raise NotImplementedError
 
+    def rejection_needs(self) -> tuple[NeededInput, ...]:
+        """The input that would close this builder's proof; none by default."""
+
+        return ()
+
     def proof_obstacle(self) -> FindingRecipeProofObstacle:
         return FindingRecipeProofObstacle(
             executable_declaration_type=type(self),
             reason=self.rejection_reason(),
+            needs=self.rejection_needs(),
         )
 
 

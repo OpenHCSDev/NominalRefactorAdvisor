@@ -1497,14 +1497,17 @@ class RegistrationSemanticMirrorRecipeStrategy(
                 reason=manual_evaluation.rejection_reason,
             ),
         )
+        offer = next((obstacle for obstacle in obstacles if obstacle.needs), None)
         return RejectedRecipeEvaluation(
             reason=(
                 "a class-family recipe needs a proof of an executable exact "
                 "derivation; no declaration has one yet"
+                if offer is None
+                else offer.reason
             ),
             evaluation_declaration_type=type(self),
             obstacles=obstacles,
-            needs=(NeededInput.PROOF,),
+            needs=(NeededInput.PROOF,) if offer is None else offer.needs,
         )
 
 
