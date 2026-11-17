@@ -168,24 +168,6 @@ class DeclaredRoot:
         return cls.declared_names_for(path, "composition-roots")
 
     @classmethod
-    def downstream_roots_for(cls, path: Path) -> tuple[Path, ...]:
-        """The checkouts ``path``'s repository declares import its modules, as
-        directories relative to its ``pyproject.toml``: a move of a name out of
-        one of its modules keeps their imports true too::
-
-            [tool.nominal-refactor-advisor]
-            downstream-roots = ["../toad", ...]
-        """
-
-        pyproject = cls.nearest_pyproject(path)
-        if pyproject is None:
-            return ()
-        match tomllib.loads(pyproject.read_text()):
-            case {"tool": {"nominal-refactor-advisor": {"downstream-roots": list(roots)}}}:
-                return tuple((pyproject.parent / str(root)).resolve() for root in roots)
-        return ()
-
-    @classmethod
     def keyword_binders_for(cls, path: Path) -> frozenset[str]:
         """The functions ``path``'s repository declares build a class handed to
         them only by field name, or never (an encoder, a decoder, a query that

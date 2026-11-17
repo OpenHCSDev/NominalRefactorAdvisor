@@ -2,18 +2,25 @@
 
 A move redirects every importer it scans; a consumer in another checkout is not
 scanned, so a moved name it imports from the old module breaks it while the
-move's own plan stays clean. A repository declares those checkouts
-(`DeclaredRoot.downstream_roots_for`), and a move of names out of a module
+move's own plan stays clean. Which checkouts consume the repository is the
+consumers' own fact: each declares the dependency in its `pyproject.toml`. So
+the roots are derived, never restated here: a sibling checkout of the project
+root, or a path its uv workspace or sources name, is downstream when its
+`[project]` dependencies, optional dependencies or dependency groups name this
+project's distribution (PEP 503 normalized). A move of names out of a module
 rewrites each `from <module> import <name>` there to the name's new home, in
 the same plan. A use it cannot rewrite (the module object read as
-`module.Name`, a star import, the module spelled in a string) refuses, naming
-the file and line: the consumer has to change first.
+`module.Name`, a star import, the module spelled in a string), or a declared
+path that is not checked out, refuses, naming the file: the consumer has to
+change first.
 """
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterator, Mapping
+import re
+import tomllib
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -62,27 +69,81 @@ class DownstreamImport:
         return f"from {module} import (\n" + "".join(f"{indent}    {name},\n" for name in names) + f"{indent})"
 
 
+def distribution(name: str) -> str:
+    """A distribution name as PEP 503 compares it."""
+
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_names(project: Mapping[str, object]) -> frozenset[str]:
+    """The distributions a `pyproject.toml` depends on: `[project]` dependencies
+    and optional dependencies, and its dependency groups."""
+
+    declared = project.get("project")
+    table = declared if isinstance(declared, dict) else {}
+    requirements: list[object] = list(table.get("dependencies", ()))
+    for group in (table.get("optional-dependencies") or {}).values():
+        requirements.extend(group)
+    for group in (project.get("dependency-groups") or {}).values():
+        requirements.extend(group)
+    return frozenset(
+        distribution(found[0])
+        for requirement in requirements
+        if isinstance(requirement, str) and (found := re.match(r"[A-Za-z0-9][A-Za-z0-9._-]*", requirement.strip()))
+    )
+
+
 @dataclass(frozen=True)
 class DownstreamConsumers:
-    """The declared checkouts importing the repository of `anchor`."""
+    """The checkouts whose `pyproject.toml` depends on the project holding `anchor`."""
 
+    project: str
     roots: tuple[Path, ...]
 
     @classmethod
     def of(cls, anchor: Path) -> DownstreamConsumers:
-        return cls(DeclaredRoot.downstream_roots_for(anchor))
+        pyproject = DeclaredRoot.nearest_pyproject(anchor)
+        if pyproject is None:
+            return cls("", ())
+        declared = tomllib.loads(pyproject.read_text())
+        name = (declared.get("project") or {}).get("name")
+        if not isinstance(name, str):
+            return cls("", ())
+        project = distribution(name)
+        named = tuple(cls.uv_paths(pyproject.parent, declared))
+        missing = sorted(str(path) for path in named if not (path / "pyproject.toml").is_file())
+        if missing:
+            raise NeedsInput(
+                "needs the consumer's checkout: " + ", ".join(f"`{path}`" for path in missing)
+                + f" is named by `{pyproject}` but not checked out, so a move cannot keep its imports true",
+                NeededInput.SOURCE_CHANGE,
+            )
+        siblings = (path for path in sorted(pyproject.parent.parent.iterdir()) if (path / "pyproject.toml").is_file())
+        roots = tuple(
+            dict.fromkeys(
+                root.resolve()
+                for root in (*siblings, *named)
+                if root.resolve() != pyproject.parent.resolve()
+                and project in requirement_names(tomllib.loads((root / "pyproject.toml").read_text()))
+            )
+        )
+        return cls(project, roots)
 
-    def files(self) -> Iterator[Path]:
-        for root in self.roots:
-            if not root.is_dir():
-                raise NeedsInput(
-                    f"`{root}` is declared a downstream root but is not checked out there; "
-                    "a move cannot keep its imports true",
-                    NeededInput.SOURCE_CHANGE,
-                )
-            for path in sorted(root.rglob("*.py")):
-                if not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts):
-                    yield path
+    @staticmethod
+    def uv_paths(root: Path, declared: Mapping[str, object]) -> Iterable[Path]:
+        """The checkouts the project's uv workspace members and path sources name."""
+
+        uv = ((declared.get("tool") or {}).get("uv")) or {}
+        for member in (uv.get("workspace") or {}).get("members", ()):
+            yield from (path for path in root.glob(member) if path.is_dir()) if "*" in member else ((root / member).resolve(),)
+        for source in (uv.get("sources") or {}).values():
+            if isinstance(source, dict) and isinstance(source.get("path"), str):
+                yield (root / source["path"]).resolve()
+
+    def files(self, root: Path) -> Iterator[Path]:
+        for path in sorted(root.rglob("*.py")):
+            if not SKIPPED_DIRECTORIES.intersection(path.relative_to(root).parts):
+                yield path
 
     def edits(self, operation_type: type, source_module: str, homes: Mapping[str, str]) -> tuple[TextFileEdit, ...]:
         """Each consumer's imports of a moved name, pointed at its home; refuses,
@@ -93,7 +154,7 @@ class DownstreamConsumers:
         package, _, leaf = source_module.rpartition(".")
         edits: list[TextFileEdit] = []
         refusals: list[str] = []
-        for path in self.files():
+        for root, path in ((root, path) for root in self.roots for path in self.files(root)):
             source = path.read_text(encoding="utf-8")
             if leaf not in source:
                 continue
@@ -117,7 +178,10 @@ class DownstreamConsumers:
                         )
                         for found in imports
                     ),
-                    rationale=f"A consumer's imports of names leaving {source_module!r} follow them.",
+                    rationale=(
+                        f"Consumer `{root}` depends on {self.project!r}: its imports of names "
+                        f"leaving {source_module!r} follow them."
+                    ),
                 )
             )
         if refusals:
