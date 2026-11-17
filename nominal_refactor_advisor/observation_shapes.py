@@ -409,8 +409,8 @@ class SubjectReading:
     """What a type test's subject is before the test: a value the code already
     holds as itself, so dispatch on it would answer what the test asks."""
 
-    def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
-        """The tested classes whose membership the test restates."""
+    def restated(self, names: tuple[str, ...], scope: DeclaredClassScope) -> tuple[str, ...]:
+        """The tested classes whose membership the test restates, given what the scan declares."""
 
         return names
 
@@ -420,7 +420,7 @@ class AssertedSubject(SubjectReading):
     """A type test inside an `assert`: it observes what a value is to check a
     contract, and selects no behaviour, so no method on the family could replace it."""
 
-    def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
+    def restated(self, names: tuple[str, ...], scope: DeclaredClassScope) -> tuple[str, ...]:
         return ()
 
     @staticmethod
@@ -506,8 +506,11 @@ class ForeignSubject(SubjectReading):
     COMPARISON_METHODS: ClassVar[frozenset[str]] = frozenset(
         ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__")
     )
+    UNION_FORMS: ClassVar[frozenset[str]] = frozenset(
+        ("typing.Union", "typing.Optional", "typing_extensions.Union", "typing_extensions.Optional")
+    )
 
-    def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
+    def restated(self, names: tuple[str, ...], scope: DeclaredClassScope) -> tuple[str, ...]:
         return ()
 
     @staticmethod
@@ -534,6 +537,23 @@ class ForeignSubject(SubjectReading):
                 case _:
                     return False
         return False
+
+
+@dataclass(frozen=True)
+class ForeignUnionSubject(ForeignSubject):
+    """A parameter declared as a union of `members`, each a resolved class name. When
+    one member is a class the scan does not declare (a builtin, a library type), the
+    value is foreign until the test decodes which member arrived, as an `object`
+    parameter is (BOUND-1): no family the scan owns holds `str` beside `Color`, so no
+    override could answer the test. A union of the scan's own classes is still held
+    as one of them, and the test restates the family."""
+
+    members: tuple[str, ...]
+
+    def restated(self, names: tuple[str, ...], scope: DeclaredClassScope) -> tuple[str, ...]:
+        if any(not scope.declares_module_of(member) for member in self.members):
+            return ()
+        return names
 
 
 @dataclass(frozen=True)
@@ -565,7 +585,7 @@ class TypeTestShape(RestatingSite):
     def own_type_names(self, scope: DeclaredClassScope) -> tuple[str, ...]:
         """The declared tested classes whose membership this test restates."""
 
-        return self.reading.restated(self.declared_type_names(scope))
+        return self.reading.restated(self.declared_type_names(scope), scope)
 
     def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
         """Whether no tested class is declared in the scan."""

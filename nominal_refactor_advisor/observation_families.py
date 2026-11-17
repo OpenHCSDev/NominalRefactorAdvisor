@@ -39,6 +39,7 @@ from nominal_refactor_advisor.observation_shapes import (
     FieldObservation,
     ClassIdentityTestShape,
     ForeignSubject,
+    ForeignUnionSubject,
     NoBranchSubject,
     SubjectReading,
     TypeTestModule,
@@ -1222,12 +1223,58 @@ def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
 
 
 
-def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> SubjectReading:
+def _union_members(
+    annotation: ast.expr | None, resolver: TypeArgumentResolver, ancestors: Sequence[ast.AST]
+) -> tuple[str, ...] | None:
+    """The resolved classes a union annotation admits besides `None`: `A | B`,
+    `Union[A, B]`, `Optional[A]` or a quoted form of them. None unless the
+    annotation offers at least two alternatives and each resolves, so an optional
+    own type or an unresolved member keeps the test a finding (fail closed)."""
+
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            annotation = ast.parse(annotation.value, mode="eval").body
+        except SyntaxError:
+            return None
+    if annotation is None:
+        return None
+    scope = resolver.scope_at(ancestors)
+
+    def alternatives(node: ast.expr) -> tuple[ast.expr, ...]:
+        match node:
+            case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+                return (*alternatives(left), *alternatives(right))
+            case ast.Subscript(value=form, slice=argument) if (
+                resolver.qualified_name(form, scope) in ForeignSubject.UNION_FORMS
+            ):
+                members = argument.elts if isinstance(argument, ast.Tuple) else (argument,)
+                return tuple(alternative for member in members for alternative in alternatives(member))
+            case ast.Constant(value=None):
+                return ()
+        return (node,)
+
+    members = alternatives(annotation)
+    if len(members) < 2:
+        return None
+    names = tuple(
+        resolver.qualified_name(member.value if isinstance(member, ast.Subscript) else member, scope)
+        for member in members
+    )
+    if None in names:
+        return None
+    return tuple(sorted(set(name for name in names if name is not None)))
+
+
+def _subject_reading(
+    subject: ast.expr, ancestors: Sequence[ast.AST], resolver: TypeArgumentResolver
+) -> SubjectReading:
     """`NoBranchSubject` when no branch hangs on the test (an `assert`, a raising
     guard, a comprehension filter);
     `ForeignSubject` when the tested value is a parameter nothing rebinds
     (`LexicalScopeBindingAuthority.bound_parameter`) that is annotated `object`
-    or is a comparison method's operand; otherwise the value is held as itself.
+    or is a comparison method's operand; `ForeignUnionSubject` when that
+    parameter is annotated as a union, which the scan's scope judges; otherwise
+    the value is held as itself.
 
     `ancestors` run from the module down to the test expression holding the
     subject (the comparison or call); no scope lies between it and the subject.
@@ -1242,7 +1289,8 @@ def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> Subject
     function = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_parameter(subject, ancestors)
     if function is None:
         return SubjectReading()
-    match LEXICAL_SCOPE_BINDING_AUTHORITY.declared_annotation(function, subject.id):
+    annotation = LEXICAL_SCOPE_BINDING_AUTHORITY.declared_annotation(function, subject.id)
+    match annotation:
         case ast.Name(id=declared) | ast.Constant(value=declared) if (
             declared == object.__name__
         ):
@@ -1254,6 +1302,11 @@ def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> Subject
             == [subject.id]
         ):
             return ForeignSubject()
+    members = _union_members(
+        annotation, resolver, ancestors[: next((i for i, a in enumerate(ancestors) if a is function), len(ancestors))]
+    )
+    if members is not None:
+        return ForeignUnionSubject(members)
     return SubjectReading()
 
 
@@ -1306,7 +1359,7 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 group=ast.dump(subject),
                 detail=names,
                 reading=_subject_reading(
-                    subject, (*index.ancestor_nodes(node_index), comparison)
+                    subject, (*index.ancestor_nodes(node_index), comparison), resolver
                 ),
             )
     for node_index, node in index.indexed_nodes_of_type(ast.Call):
@@ -1324,7 +1377,7 @@ def type_test_shapes(parsed_module: ParsedModule) -> Iterator[TypeTestShape]:
                 group=ast.dump(arguments[0]),
                 detail=names,
                 reading=_subject_reading(
-                    arguments[0], (*index.ancestor_nodes(node_index), node)
+                    arguments[0], (*index.ancestor_nodes(node_index), node), resolver
                 ),
             )
 
