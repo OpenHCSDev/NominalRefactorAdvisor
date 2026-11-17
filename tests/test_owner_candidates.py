@@ -320,3 +320,119 @@ def test_a_covering_owner_that_brings_behaviour_is_offered_but_refused() -> None
     assert OwnerReceiptKind.ALSO_DECLARED_BY in {
         receipt.kind for receipt in kinds["new_mixin"].receipts
     }
+
+
+FIELDS = "    alpha: int\n    beta: str\n    gamma: float\n"
+
+
+def _dataclass(name: str, options: str, own: str) -> str:
+    return f"@dataclass({options})\nclass {name}:\n" + FIELDS + f"    {own}: int = 0\n\n\n"
+
+
+def _new_mixin(verdict):
+    return next(owner for owner in verdict.owner_candidates if owner.kind == "new_mixin")
+
+
+def test_a_frozen_and_a_mutable_dataclass_never_share_one_mixin() -> None:
+    """Python refuses a frozen dataclass with a non-frozen dataclass base and the
+    reverse, so no one mixin serves both."""
+
+    for options in ("", "frozen=FLAG"):
+        (verdict,) = _mixin_verdicts(
+            (
+                "pkg.records",
+                "from dataclasses import dataclass\n\nFLAG = True\n\n\n"
+                + _dataclass("First", "frozen=True", "own_first")
+                + _dataclass("Second", options, "own_second"),
+            ),
+        )
+        owner = _new_mixin(verdict)
+        assert not owner.permitted
+        (refusal,) = (r for r in owner.refusals if r.kind is OwnerReceiptKind.FROZEN_DIFFERS)
+        assert "`First`" in refusal.detail and "`Second`" in refusal.detail
+
+
+def test_a_co_restater_of_the_other_frozenness_keeps_its_own_declaration() -> None:
+    (verdict,) = (
+        verdict
+        for verdict in _mixin_verdicts(
+            (
+                "pkg.records",
+                "from dataclasses import dataclass\n\n\n"
+                + _dataclass("First", "frozen=True", "own_first")
+                + _dataclass("Second", "frozen=True", "own_second")
+                + _dataclass("Third", "", "own_third"),
+            ),
+        )
+        if {verdict.owner.symbol, *verdict.restating_symbols}
+        == {"pkg.records.First", "pkg.records.Second"}
+    )
+    owner = _new_mixin(verdict)
+    assert owner.permitted
+    assert "pkg.records.Third" not in owner.composers
+    (kept,) = (r for r in owner.receipts if r.kind is OwnerReceiptKind.KEEPS_OWN_DECLARATION)
+    assert "`Third`" in kept.detail
+
+
+HOIST = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(kw_only=True)\n"
+    "class Action:\n"
+    "    problem: str\n"
+    "    order: int\n"
+    "    request: str = ''\n\n\n"
+    "@dataclass(kw_only=True)\n"
+    "class Create(Action):\n"
+    "    repo: str\n"
+    "    text: str\n\n"
+    "    def reserve(self) -> str:\n"
+    "        return self.repo\n\n\n"
+    "@dataclass(kw_only=True)\n"
+    "class Task:\n"
+    "    problem: str\n"
+    "    repo: str\n"
+    "    text: str\n"
+    "    order: int\n\n"
+    "    def checked(self) -> bool:\n"
+    "        return True\n\n\n"
+    "@dataclass(frozen=True, kw_only=True)\n"
+    "class Frozen:\n"
+    "    problem: str\n"
+    "    order: int\n"
+    "    label: str = ''\n"
+)
+
+
+def test_a_hoist_leaves_out_a_composer_of_the_other_frozenness() -> None:
+    (verdict,) = (
+        verdict
+        for verdict in _mixin_verdicts(("pkg.records", HOIST))
+        if {verdict.owner.symbol, *verdict.restating_symbols}
+        == {"pkg.records.Create", "pkg.records.Task"}
+    )
+    (hoist,) = (owner for owner in verdict.owner_candidates if owner.kind == "hoisting_mixin")
+    assert hoist.hoist_composers == ("pkg.records.Action", "pkg.records.Task")
+    (kept,) = (r for r in hoist.receipts if r.kind is OwnerReceiptKind.KEEPS_OWN_DECLARATION)
+    assert "`Frozen`" in kept.detail
+
+
+def test_a_hoist_out_of_a_base_of_the_other_frozenness_refuses() -> None:
+    source = HOIST.replace(
+        "@dataclass(kw_only=True)\nclass Action:", "@dataclass(frozen=True, kw_only=True)\nclass Action:"
+    ).replace(
+        "@dataclass(kw_only=True)\nclass Create(Action):",
+        "@dataclass(frozen=True, kw_only=True)\nclass Create(Action):",
+    )
+    (verdict,) = (
+        verdict
+        for verdict in _mixin_verdicts(("pkg.records", source))
+        if {verdict.owner.symbol, *verdict.restating_symbols}
+        == {"pkg.records.Create", "pkg.records.Task"}
+    )
+    (hoist,) = (owner for owner in verdict.owner_candidates if owner.kind == "hoisting_mixin")
+    assert not hoist.permitted
+    assert any(
+        "`Action`" in refusal.detail and "`Task`" in refusal.detail
+        for refusal in hoist.refusals
+        if refusal.kind is OwnerReceiptKind.FROZEN_DIFFERS
+    )
