@@ -40,7 +40,7 @@ from nominal_refactor_advisor.class_index import (
     CompactIndexedClass,
     CompactUnannotatedCallable,
 )
-from nominal_refactor_advisor.class_mro import NativeMroBase
+from nominal_refactor_advisor.class_mro import native_root_type
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
@@ -382,7 +382,7 @@ class ClassCreationProof:
 
         found: dict[str, bool] = {}
         for symbol in order:
-            if NativeMroBase.for_qualified_name(symbol) is not None:
+            if native_root_type(symbol) is not None:
                 continue
             for name, statement in self.own_bindings(symbol, composed):
                 found.setdefault(name, self.may_carry(statement, attributes))
@@ -428,8 +428,8 @@ class ClassCreationProof:
             symbol
             for symbol in order
             if (
-                name in vars(native.python_type)
-                if (native := NativeMroBase.for_qualified_name(symbol)) is not None
+                name in vars(native)
+                if (native := native_root_type(symbol)) is not None
                 else any(bound == name for bound, _ in self.own_bindings(symbol, composed))
             )
         )

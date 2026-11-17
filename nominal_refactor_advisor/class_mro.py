@@ -10,6 +10,7 @@ from typing import (
     Generic,
     TYPE_CHECKING,
     TypeVar,
+    cast,
 )
 
 from nominal_refactor_advisor.native_declarations import QualifiedDeclaration
@@ -41,6 +42,35 @@ class NativeMroBase(StrEnum):
         return next(
             (member for member in cls if member.python_type is python_type), None
         )
+
+
+NAMESPACE_READ_NATIVES: tuple[type, ...] = (Generic,)
+"""Natively implemented terminal bases with no source to read: each one's own
+namespace (`vars()`) names every member it binds, and its only base is
+`object`. `Generic`'s creation hook reads just the type parameters its
+subclass's `__orig_bases__` name, which a base declaring none leaves as they were."""
+
+
+def namespace_read_native(qualified_name: str) -> type | None:
+    return next(
+        (native for native in NAMESPACE_READ_NATIVES if f"{native.__module__}.{native.__qualname__}" == qualified_name),
+        None,
+    )
+
+
+def native_root_type(qualified_name: str) -> type | None:
+    """The native class a terminal base names: a `NativeMroBase` root or a
+    namespace-read native."""
+
+    native = NativeMroBase.for_qualified_name(qualified_name)
+    return native.python_type if native is not None else namespace_read_native(qualified_name)
+
+
+def native_declared_names(native: type) -> frozenset[str]:
+    """What a native's own namespace binds besides what type creation gives
+    every class (`__module__`, `__doc__`, `__dict__`, `__weakref__`, ...)."""
+
+    return frozenset(vars(native)) - frozenset(vars(type("Plain", (), {})))
 
 
 MroDeclarationT = TypeVar("MroDeclarationT", bound=QualifiedDeclaration)
@@ -165,6 +195,10 @@ class MroBasePolicy(ABC):
         """Whether an MRO entry stands for a base whose members nothing declares."""
         return False
 
+    def stops_lookup(self, entry: type, member_name: str) -> bool:
+        """Whether a lookup of `member_name` learns nothing past this entry."""
+        return self.is_opaque(entry)
+
 
 class RuntimeProofBases(MroBasePolicy):
     """The MRO Python builds at runtime: class creation runs no code, every base is known."""
@@ -188,11 +222,19 @@ class DeclaredBases(MroBasePolicy):
 
     Class creation hooks, metaclasses and subscripted bases (`Base[T]`) do not
     change which class declares a member, so they do not open the order. A
-    base the scan does not declare stands in as an opaque placeholder: its
-    members are unknown, so a lookup that reaches it learns nothing past it.
+    base the scan does not declare is read from its installed source when
+    `installed` finds it and its own bases resolve the same way; any other
+    stands in as an opaque placeholder: its members are unknown, so a lookup
+    that reaches it learns nothing past it.
     """
 
+    installed: Callable[[str], CompactIndexedClass | None] = lambda qualified_name: None
+    """The class an installed module outside the scan declares under a name."""
     _placeholders: dict[str, type] = field(default_factory=dict)
+    _installed: dict[str, type | None] = field(default_factory=dict)
+    _natives: dict[str, tuple[type, frozenset[str]]] = field(default_factory=dict)
+    """Each namespace-read native as an inert stand-in, with the names it binds:
+    a real `Generic` base would run its creation hook, which refuses a plain base."""
 
     def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
         return True
@@ -201,7 +243,47 @@ class DeclaredBases(MroBasePolicy):
         native = NativeMroBase.for_qualified_name(qualified_name)
         if native is not None:
             return native.python_type
-        return self._placeholders.setdefault(qualified_name, type(qualified_name, (), {}))
+        return (
+            self.namespace_native(qualified_name)
+            or self.installed_base(qualified_name)
+            or self._placeholders.setdefault(qualified_name, type(qualified_name, (), {}))
+        )
+
+    def namespace_native(self, qualified_name: str) -> type | None:
+        native = namespace_read_native(qualified_name)
+        if native is None:
+            return None
+        if qualified_name not in self._natives:
+            self._natives[qualified_name] = (type(qualified_name, (), {}), native_declared_names(native))
+        return self._natives[qualified_name][0]
+
+    def stops_lookup(self, entry: type, member_name: str) -> bool:
+        native = self._natives.get(entry.__name__)
+        if native is not None and native[0] is entry:
+            return member_name in native[1]
+        return self.is_opaque(entry)
+
+    def installed_base(self, qualified_name: str) -> type | None:
+        """The installed class, as an MRO entry carrying its declaration, once its
+        whole ancestry resolves; a cycle or an unknown base leaves it opaque."""
+
+        if qualified_name in self._installed:
+            return self._installed[qualified_name]
+        self._installed[qualified_name] = None
+        declaration = self.installed(qualified_name)
+        if declaration is None or not declaration.base_references_are_complete:
+            return None
+        bases = tuple(
+            self.foreign_base(reference.qualified_name) for reference in declaration.base_references
+        )
+        if any(self.is_opaque(base) for base in bases if base is not None) or None in bases:
+            return None
+        try:
+            entry = DeclarationMroType.from_declaration(declaration, cast(tuple[type, ...], bases))
+        except TypeError:
+            return None
+        self._installed[qualified_name] = entry
+        return entry
 
     def is_opaque(self, entry: type) -> bool:
         return self._placeholders.get(entry.__name__) is entry
