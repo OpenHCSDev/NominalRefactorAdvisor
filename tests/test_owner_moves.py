@@ -531,6 +531,43 @@ def test_a_positional_construction_in_a_script_is_keyworded_first_too(
     assert "class First(Lettered):\n" in (tmp_path / "pkg/records.py").read_text()
     assert _run(tmp_path, probe) == before
 
+
+DOCUMENTED = REORDERED.replace(
+    "class Second:\n    alpha: int\n    beta: str\n\n    def gamma(self) -> str:\n        return",
+    "class Second:\n    alpha: int\n    beta: str\n    \"\"\"The letter.\"\"\"\n\n"
+    "    def gamma(self) -> str:\n        \"\"\"Letter then number.\"\"\"\n        return",
+)
+
+
+def test_the_one_copy_kept_carries_every_composers_documentation(tmp_path: Path) -> None:
+    """The anchor's copies are undocumented; the other composer documents a
+    method and a field. The mixin keeps both docstrings, and the field's
+    docstring goes with its field instead of staying behind."""
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": DOCUMENTED})
+    before = _run(tmp_path, REORDERED_PROBE)
+
+    _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert '    beta: str\n    """The letter."""\n\n    def gamma(self) -> str:\n        """Letter then number."""\n' in source
+    assert source.count('"""The letter."""') == 1
+    assert "class Second(Lettered):\n    own_second: int = 0\n" in source
+    assert _run(tmp_path, REORDERED_PROBE) == before
+
+
+def test_two_docstrings_for_one_member_refuse(tmp_path: Path) -> None:
+    documented = DOCUMENTED.replace(
+        "class First:\n    lead: int\n    alpha: int\n    beta: str\n",
+        "class First:\n    lead: int\n    alpha: int\n    beta: str\n    \"\"\"A letter.\"\"\"\n",
+    )
+    assert documented != DOCUMENTED
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": documented})
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert "class Lettered" not in (tmp_path / "pkg/records.py").read_text()
+
 COPIED = (
     "from dataclasses import dataclass\n\n\n"
     "@dataclass(frozen=True)\n"
