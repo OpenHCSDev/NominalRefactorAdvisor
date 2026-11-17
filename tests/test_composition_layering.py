@@ -101,7 +101,7 @@ def test_a_store_declared_with_the_higher_service_moves_into_the_layer_reading_i
     assert _run(tmp_path) == expected
 
 
-def test_a_moved_store_stays_in_its_package_rather_than_a_module_merely_low_enough(tmp_path: Path):
+def test_a_moved_store_gets_a_module_named_for_it_rather_than_one_merely_low_enough(tmp_path: Path):
     _write(
         tmp_path,
         {
@@ -120,10 +120,12 @@ def test_a_moved_store_stays_in_its_package_rather_than_a_module_merely_low_enou
             ),
             "pkg/relations.py": (
                 "from pkg.support.clock import TICK\n\n\n"
+                "def _key(root):\n"
+                "    return f'store at {root}'\n\n\n"
                 "class RelationStore:\n"
                 "    @classmethod\n"
                 "    def at(cls, root):\n"
-                "        return f'store at {root}'\n\n\n"
+                "        return _key(root)\n\n\n"
                 "class Relations:\n"
                 "    def __init__(self, threads):\n"
                 "        self.threads = threads\n"
@@ -135,7 +137,8 @@ def test_a_moved_store_stays_in_its_package_rather_than_a_module_merely_low_enou
     [finding] = _findings(tmp_path)
     _apply(tmp_path, finding)
     assert (tmp_path / "pkg/support/clock.py").read_text() == "TICK = 1\n"
-    assert "class RelationStore" in (tmp_path / "pkg/relation_store.py").read_text()
+    home = (tmp_path / "pkg/relation_store.py").read_text()
+    assert "def _key" in home and "class RelationStore" in home
     assert _findings(tmp_path) == []
     assert _run(tmp_path) == expected
 
@@ -250,3 +253,64 @@ def test_dependencies_declared_through_a_base_init_and_a_cached_property(tmp_pat
         "bus": frozenset({"registry"}),
         "goals": frozenset({"registry", "bus"}),
     }
+
+
+def test_a_module_read_as_a_namespace_names_the_declarations_read_off_it(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/root.py": ROOT,
+            "pkg/registry.py": (
+                "class Registry:\n"
+                "    def __init__(self, root):\n"
+                "        self.root = root\n\n"
+                "    def thread_count(self):\n"
+                "        from pkg import threads\n\n"
+                "        return threads.LIMIT\n"
+            ),
+            "pkg/threads.py": (
+                "LIMIT = 3\n\n\n"
+                "class Threads:\n"
+                "    def __init__(self, root, registry):\n"
+                "        self.root = root\n"
+                "        self.registry = registry\n\n"
+                "    def states(self):\n"
+                "        return self.registry.thread_count()\n"
+            ),
+            "pkg/relations.py": "class Relations:\n    def __init__(self, threads):\n        self.threads = threads\n",
+        },
+    )
+    [finding] = _findings(tmp_path)
+    assert "`pkg.threads.LIMIT`" in finding.summary
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path, use_parse_cache=False))
+    evaluation = LayeringViolationDetector().evaluate_recipe_for_finding(finding, snapshot)
+    assert "inside 'thread_count' and reads 'LIMIT' off it there" in evaluation.rejection_reason
+
+
+def test_a_module_object_used_whole_stays_a_module_read(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/root.py": ROOT,
+            "pkg/registry.py": (
+                "class Registry:\n"
+                "    def __init__(self, root):\n"
+                "        self.root = root\n\n"
+                "    def thread_count(self):\n"
+                "        from pkg import threads\n\n"
+                "        return getattr(threads, 'LIMIT')\n"
+            ),
+            "pkg/threads.py": (
+                "LIMIT = 3\n\n\n"
+                "class Threads:\n"
+                "    def __init__(self, root, registry):\n"
+                "        self.root = root\n"
+                "        self.registry = registry\n\n"
+                "    def states(self):\n"
+                "        return self.registry.thread_count()\n"
+            ),
+            "pkg/relations.py": "class Relations:\n    def __init__(self, threads):\n        self.threads = threads\n",
+        },
+    )
+    [finding] = _findings(tmp_path)
+    assert "`pkg.threads` is read" in finding.summary

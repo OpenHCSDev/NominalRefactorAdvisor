@@ -295,7 +295,10 @@ class CompositionRootLayering(ParsedModuleSetFact):
             ]
             for statement in statements:
                 local = hidden.get(id(statement))
-                for loaded, declaration in import_reads(ImportedBinding.of(module, statement), bindings, known):
+                scope = module.module if local is None else local.function
+                for loaded, declaration in import_reads(
+                    ImportedBinding.of(module, statement), bindings, known, scope
+                ):
                     placement = (
                         root.placement(module.module_name, loaded) if local is not None else None
                     ) or root.co_declared(module.module_name, declaration)
@@ -349,11 +352,12 @@ def enclosing_symbol(hidden: LocalImport) -> str:
 
 
 def import_reads(
-    imported: tuple[ImportedBinding, ...], bindings: ModuleBindings, known: frozenset[str]
+    imported: tuple[ImportedBinding, ...], bindings: ModuleBindings, known: frozenset[str], scope: ast.AST
 ) -> Iterator[tuple[str, tuple[str, str | None]]]:
     """Each module the import loads, with the declaration it reads there: the
     module itself for `import m` or a submodule, else the name's declaring
-    module and name."""
+    module and name. A module bound by name and used in `scope` only as
+    `alias.Name` also reads each such name, the declarations a move can take."""
 
     modules: set[str] = set()
     for binding in imported:
@@ -363,18 +367,41 @@ def import_reads(
             modules.add(binding.module)
             yield binding.module, (binding.module, None)
         if binding.member is None:
+            if "." not in binding.module or binding.bound != binding.module.partition(".")[0]:
+                yield from attribute_reads(binding.bound, binding.module, bindings, known, scope)
             continue
         submodule = f"{binding.module}.{binding.member}"
         if submodule in known:
             if submodule not in modules:
                 modules.add(submodule)
                 yield submodule, (submodule, None)
+            yield from attribute_reads(binding.bound, submodule, bindings, known, scope)
             continue
         owner = bindings.owner(binding.module, binding.member)
         if owner[0] != binding.module and owner[0] in known:
             yield owner[0], owner
         elif owner[1] is not None:
             yield binding.module, owner
+
+
+def attribute_reads(
+    alias: str, module: str, bindings: ModuleBindings, known: frozenset[str], scope: ast.AST
+) -> Iterator[tuple[str, tuple[str, str | None]]]:
+    """The declarations `scope` reads as `alias.Name` off `module`, when it
+    uses `alias` no other way; none when the module object itself is used."""
+
+    uses = [node for node in ast.walk(scope) if isinstance(node, ast.Name) and node.id == alias]
+    attributes = [
+        node
+        for node in ast.walk(scope)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id == alias
+    ]
+    if not attributes or len(attributes) != len(uses):
+        return
+    for name in sorted({node.attr for node in attributes}):
+        owner = bindings.owner(module, name)
+        if owner[1] is not None and owner[0] in known and f"{module}.{name}" not in known:
+            yield owner[0], owner
 
 
 @dataclass(frozen=True)

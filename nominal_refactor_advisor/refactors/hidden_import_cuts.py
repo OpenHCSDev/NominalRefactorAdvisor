@@ -315,7 +315,7 @@ class HiddenImportCuts:
     ) -> str:
         """A module below the hub and every importer of the moved names that
         reaches no reader; else a new module of the hub's package, named for the
-        first moved declaration. Needs a source change, naming each declaration
+        first declaration the move is for. Needs a source change, naming each declaration
         that reads back, when the moved code reads a module that reaches them.
 
         When the moved names are misplaced in a composition root's layering, the
@@ -347,13 +347,13 @@ class HiddenImportCuts:
         above_layer = sorted(closure.reads - layer) if layer else ()
         if above_layer:
             raise NeedsInput(
-                f"`{hub}.{closure.qualnames[0]}` belongs to a composition-root layer that loads none of "
+                f"`{hub}.{closure.roots[0]}` belongs to a composition-root layer that loads none of "
                 + ", ".join(f"`{module}`" for module in above_layer)
                 + ", which the moved code reads",
                 NeededInput.SOURCE_CHANGE,
             )
         package = common_package((hub,))
-        home = f"{package}.{snake_case(closure.qualnames[0])}"
+        home = f"{package}.{snake_case(closure.roots[0])}"
         if not package or home in self.imports.imports:
             raise NeedsInput(
                 f"no module below `{hub}` and its importers avoids the cycle, and no new one can hold it",

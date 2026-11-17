@@ -19,7 +19,8 @@ from nominal_refactor_advisor.detectors._hidden_imports import HiddenImportDetec
 from nominal_refactor_advisor.hidden_imports import HiddenImportPlan
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.refactors.class_overlap import changed_source_edits
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.refactors.class_overlap import changed_source_edits, relocation_to
 from nominal_refactor_advisor.refactors.hidden_import_cuts import (
     CutHiddenCycleOperation,
     HiddenImportCuts,
@@ -147,3 +148,35 @@ def test_a_step_creating_an_undeclared_file_refuses_rather_than_losing_its_sourc
     )
     with pytest.raises(NeedsInput, match="does not declare, so its source would be lost"):
         changed_source_edits(snapshot, snapshot.with_source_file_creations((created,)), "")
+
+
+@pytest.mark.parametrize(
+    ("reader", "rewritten"),
+    (
+        ("from pkg import threads\n\n\ndef count():\n    return threads.LIMIT\n", True),
+        ("def count():\n    from pkg import threads\n\n    return threads.LIMIT\n", False),
+    ),
+    ids=("module-level", "function-local"),
+)
+def test_a_moved_name_read_off_the_module_object_is_rewritten_or_refused(tmp_path: Path, reader: str, rewritten: bool):
+    """A module-level binding of the source module has its `threads.LIMIT` read
+    rewritten; a function binding it by its own import is not rewritten, so the
+    move refuses rather than leave a read of a name that left."""
+
+    _write(tmp_path, {"pkg/threads.py": "LIMIT = 3\n", "pkg/registry.py": reader})
+    snapshot = _snapshot(tmp_path)
+    move = relocation_to(
+        snapshot, SourceRewriteTarget(file_path=(tmp_path / "pkg/threads.py").as_posix(), qualname="LIMIT"),
+        "pkg.limit", ("LIMIT",),
+    )
+    plan = CodemodPlanSequence.from_operations((move,))
+    if not rewritten:
+        with pytest.raises(ValueError, match="inside 'count' and reads 'LIMIT' off it there"):
+            plan.simulate(snapshot)
+        return
+    simulation = plan.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    assert subprocess.check_output(
+        [sys.executable, "-c", "from pkg.registry import count; print(count())"], cwd=tmp_path, text=True
+    ) == "3\n"

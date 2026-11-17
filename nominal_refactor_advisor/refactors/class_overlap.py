@@ -3322,8 +3322,10 @@ class MovedClosure:
     """Module-level declarations with every declaration of their module they
     read, which move with them, and each name those declarations read from
     another scanned module: the modules their new home must import without a
-    cycle, and which declaration needs each."""
+    cycle, and which declaration needs each. The roots are the declarations
+    the move is for, which name a new home; the rest go with them."""
 
+    roots: tuple[str, ...]
     qualnames: tuple[str, ...]
     read_names: tuple[ClosureRead, ...]
 
@@ -3346,6 +3348,7 @@ class MovedClosure:
         bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
         # A name the module does not bind is a builtin: no module provides it.
         return cls(
+            roots,
             tuple(item.name for item in selection.declarations),
             tuple(
                 ClosureRead(item.name, name, owner)
