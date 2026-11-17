@@ -386,6 +386,12 @@ def source_rewrite_target(indexed_class: CompactIndexedClass) -> SourceRewriteTa
     )
 
 
+PER_CLASS_NAMES = frozenset(("__slots__",))
+"""Names class creation reads from the class's own body, never through its
+bases: `__slots__` restated in a subclass is not a copy, since without it the
+subclass's instances get a `__dict__`."""
+
+
 @dataclass(frozen=True)
 class RestatedDeclarations:
     """Declarations a restating class makes exactly as a source class does.
@@ -422,8 +428,15 @@ class RestatedDeclarations:
         return cls(source, restating, names)
 
     @cached_property
+    def deleted_names(self) -> tuple[str, ...]:
+        """The restated names the restating class stops declaring: all but the
+        ones class creation reads from each class's own body."""
+
+        return tuple(name for name in self.names if name not in PER_CLASS_NAMES)
+
+    @cached_property
     def statements(self) -> tuple[ast.stmt, ...]:
-        return self.restating.statements_declaring(self.names)
+        return self.restating.statements_declaring(self.deleted_names)
 
     def require_no_owner_bound_values(self, snapshot: CodemodSourceSnapshot) -> None:
         """A value built by a class with `__set_name__` learns the class it sits in.
@@ -1094,6 +1107,217 @@ def required_name_imports(
 
 
 @dataclass(frozen=True)
+class ComposedAncestry:
+    """A composer's C3 order before and after its owners become its first bases.
+
+    Python looks every name up along the class's C3 order, and the specified
+    lookup winners are fixed by the requirement, whatever the representation
+    (paper1 Theorem 4.17). So composing keeps the class's behaviour exactly
+    when every name keeps its winner: a name the class keeps resolves where it
+    did, a name it deletes resolves to its owner's equal declaration, and it
+    gains no name. The old ancestors keep their order, so dataclass collection
+    walks them as before. An ancestor the class gains besides its owners adds
+    no fields or metaclass and is read as no identity: a type test of it would
+    answer differently for the class. Its creation hook, `__init_subclass__`,
+    is a name like any other, so the composer's creation runs the same hook.
+    """
+
+    snapshot: CodemodSourceSnapshot
+    composer: OverlapClass
+    owners: tuple[OverlapClass, ...]
+    deleted: frozenset[str]
+
+    @classmethod
+    def require(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        composer: OverlapClass,
+        owners: tuple[OverlapClass, ...],
+        deleted: Iterable[str],
+    ) -> Self:
+        """The proof, once composing keeps every lookup; refuses naming the first
+        lookup or identity it changes."""
+
+        proof = cls(snapshot, composer, owners, frozenset(deleted))
+        proof.ancestry
+        return proof
+
+    def creation(self) -> ClassCreationProof:
+        """What the composer's creation reads. An abstract method moved to an owner
+        `ABCMeta` creates stays abstract: `ABCMeta` takes each base's abstract
+        names and keeps those the class still resolves to an abstract function,
+        which is the owner's equal declaration."""
+
+        proof = ClassCreationProof.composing(
+            self.snapshot,
+            self.composer.facts,
+            self.ancestry,
+            tuple((owner.qualname, owner.node) for owner in self.owners),
+        )
+        abstract_owners = tuple(
+            owner
+            for owner in self.owners
+            if NativeMroBase.ABSTRACT_ROOT.value in self.linearized(owner.symbol)
+        )
+        kept = frozenset(
+            name for owner in abstract_owners for name in self.names(owner.symbol, composed=False)
+        ) - frozenset(
+            name
+            for owner in self.owners
+            if owner not in abstract_owners
+            for name in self.names(owner.symbol, composed=False)
+        )
+        return replace(proof, abstract_moved=proof.abstract_moved - kept)
+
+    @property
+    def class_index(self):
+        return self.snapshot.class_overlap_verdicts.class_index
+
+    def bases(self, symbol: str) -> tuple[str, ...]:
+        indexed = self.class_index.class_for(symbol)
+        assert indexed is not None
+        return tuple(
+            ".".join(reference.resolved_parts) for reference in indexed.base_references
+        ) or (NativeMroBase.OBJECT.value,)
+
+    def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
+        """Python's C3 order of `symbol`, over its declared bases or `bases`."""
+
+        native = NativeMroBase.for_qualified_name(symbol)
+        if native is NativeMroBase.OBJECT:
+            return (symbol,)
+        if native is not None:
+            return (symbol, NativeMroBase.OBJECT.value)
+        declared = self.bases(symbol) if bases is None else bases
+        sequences = [list(self.linearized(base)) for base in declared] + [list(declared)]
+        order = [symbol]
+        while any(sequences):
+            head = next(
+                (
+                    sequence[0]
+                    for sequence in sequences
+                    if sequence and not any(sequence[0] in other[1:] for other in sequences)
+                ),
+                None,
+            )
+            if head is None:
+                raise NeedsInput(
+                    f"`{self.composer.qualname}` has no C3 order with "
+                    f"{', '.join(f'`{owner.qualname}`' for owner in self.owners)} first",
+                    NeededInput.PROOF,
+                )
+            order.append(head)
+            for sequence in sequences:
+                if sequence and sequence[0] == head:
+                    sequence.pop(0)
+        return tuple(order)
+
+    def names(self, symbol: str, *, composed: bool) -> frozenset[str]:
+        """What a class declares; the composer, once composed, without its deleted names."""
+
+        indexed = self.class_index.class_for(symbol)
+        if indexed is None:
+            return frozenset()
+        declared = frozenset(declaration.name for declaration in indexed.body_declarations)
+        if composed and symbol == self.composer.symbol:
+            return declared - self.deleted
+        return declared
+
+    @cached_property
+    def ancestry(self) -> tuple[CompactIndexedClass, ...]:
+        """The composed class's closed ancestry."""
+
+        composer = self.composer
+        ancestry = {
+            indexed.symbol: indexed
+            for start in (composer, *self.owners)
+            for indexed in require_static_c3(self.snapshot, start.facts)
+        }
+        owner_symbols = tuple(owner.symbol for owner in self.owners)
+        before = self.linearized(composer.symbol)
+        for owner in self.owners:
+            if owner.symbol in before:
+                raise ValueError(f"`{owner.qualname}` is already an ancestor")
+        kept_bases = tuple(
+            base for base in self.bases(composer.symbol) if base != NativeMroBase.OBJECT.value
+        )
+        after = self.linearized(composer.symbol, (*owner_symbols, *kept_bases))
+        if tuple(symbol for symbol in after if symbol in before) != before:
+            raise NeedsInput(
+                f"Composing reorders `{composer.qualname}`'s ancestors: "
+                f"{[symbol.rpartition('.')[2] for symbol in before]} becomes "
+                f"{[symbol.rpartition('.')[2] for symbol in after]}",
+                NeededInput.PROOF,
+            )
+        gained = tuple(
+            symbol for symbol in after if symbol not in before and symbol not in owner_symbols
+        )
+        for symbol in gained:
+            self.require_inert_gain(symbol)
+        names = frozenset().union(
+            *(self.names(symbol, composed=False) for symbol in after)
+        )
+        for name in sorted(names):
+            was = next(
+                (symbol for symbol in before if name in self.names(symbol, composed=False)), None
+            )
+            becomes = next(
+                (symbol for symbol in after if name in self.names(symbol, composed=True)), None
+            )
+            if name in self.deleted and becomes in owner_symbols:
+                continue
+            if was != becomes:
+                raise NeedsInput(
+                    f"Composing makes `{composer.qualname}.{name}` resolve to "
+                    f"`{becomes or 'nothing'}` instead of `{was or 'nothing'}`",
+                    NeededInput.PROOF,
+                )
+        self.require_slots_fit(kept_bases)
+        ClassReferenceSites(self.snapshot, frozenset(gained)).require_no_identity_reads()
+        return tuple(ancestry.values())
+
+    def require_inert_gain(self, symbol: str) -> None:
+        if NativeMroBase.for_qualified_name(symbol) is not None:
+            raise NeedsInput(
+                f"Composing makes `{self.composer.qualname}` a `{symbol}`", NeededInput.PROOF
+            )
+        indexed = self.class_index.class_for(symbol)
+        assert indexed is not None
+        if indexed.metaclass_names or "metaclass" in indexed.class_keyword_names:
+            raise NeedsInput(
+                f"Composing gives `{self.composer.qualname}` the metaclass of `{indexed.qualname}`",
+                NeededInput.PROOF,
+            )
+        if any(declaration.kind.is_field for declaration in indexed.body_declarations):
+            raise NeedsInput(
+                f"Composing gives `{self.composer.qualname}` the fields of `{indexed.qualname}`",
+                NeededInput.PROOF,
+            )
+
+    def require_slots_fit(self, kept_bases: tuple[str, ...]) -> None:
+        """Two bases with non-empty instance slots cannot share one layout."""
+
+        if not kept_bases:
+            return
+        for owner in self.owners:
+            declared = any(
+                isinstance(statement, ast.Assign)
+                and any(
+                    isinstance(target, ast.Name) and target.id == "__slots__"
+                    for target in statement.targets
+                )
+                and not (isinstance(statement.value, (ast.Tuple, ast.List)) and not statement.value.elts)
+                for statement in owner.node.body
+            )
+            if declared or (owner.option("slots") == "True" and owner.own_field_names):
+                raise NeedsInput(
+                    f"`{owner.qualname}` lays out instance slots beside "
+                    f"`{self.composer.qualname}`'s other bases",
+                    NeededInput.PROOF,
+                )
+
+
+@dataclass(frozen=True)
 class ClassComposition:
     """A class restates an existing class's whole body; it composes that class instead.
 
@@ -1151,21 +1375,9 @@ class ClassComposition:
                 "that the new base leaves what its class creation sees unchanged",
                 NeededInput.PROOF,
             )
-        if not owner.facts.base_references_are_complete or any(
-            ".".join(reference.resolved_parts) != NativeMroBase.OBJECT.value
-            for reference in owner.facts.base_references
-        ):
-            raise NeedsInput(
-                f"`{owner.qualname}` has bases: NRA needs a proof for a C3 order "
-                "other than [owner, object]",
-                NeededInput.PROOF,
-            )
-        ancestry = require_static_c3(self.snapshot, restating.facts)
-        if any(ancestor.symbol == owner.symbol for ancestor in ancestry):
-            raise ValueError(f"`{owner.qualname}` is already an ancestor")
-        ClassCreationProof.composing(
-            self.snapshot, restating.facts, ancestry, ((owner.qualname, owner.node),)
-        ).require_unchanged()
+        ComposedAncestry.require(
+            self.snapshot, restating, (owner,), self.restated.deleted_names
+        ).creation().require_unchanged()
         if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
             restating
         ):
@@ -1337,21 +1549,14 @@ class CoveringComposition:
                 "that the new base leaves what its class creation sees unchanged",
                 NeededInput.PROOF,
             )
-            if not owner.facts.base_references_are_complete or any(
-                ".".join(reference.resolved_parts) != NativeMroBase.OBJECT.value
-                for reference in owner.facts.base_references
-            ):
-                raise NeedsInput(
-                    f"`{owner.qualname}` has bases: NRA needs a proof for a C3 order "
-                    "other than [owner, object]",
-                    NeededInput.PROOF,
-                )
-        for composer in self.composers:
-            closed = require_static_c3(self.snapshot, composer.facts)
-            ancestry = {ancestor.symbol for ancestor in closed}
+        for composer, restatements in zip(self.composers, self.restated, strict=True):
+            composed = ComposedAncestry.require(
+                self.snapshot,
+                composer,
+                self.owners,
+                (name for restatement in restatements for name in restatement.deleted_names),
+            )
             for owner in self.owners:
-                if owner.symbol in ancestry:
-                    raise ValueError(f"`{owner.qualname}` is already an ancestor")
                 if dataclass_options_besides_kw_only(owner) != dataclass_options_besides_kw_only(
                     composer
                 ):
@@ -1365,10 +1570,7 @@ class CoveringComposition:
                     raise NeedsInput(
                         f"`{owner.qualname}` is declared after `{composer.qualname}`", NeededInput.SOURCE_CHANGE
                     )
-            ClassCreationProof.composing(
-                self.snapshot, composer.facts, closed,
-                tuple((owner.qualname, owner.node) for owner in self.owners),
-            ).require_unchanged()
+            composed.creation().require_unchanged()
             header = ClassHeaderSpanSourceAuthority(
                 composer.node, self.snapshot.sources_by_file_path[composer.file_path]
             )
