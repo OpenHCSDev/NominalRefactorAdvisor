@@ -125,6 +125,16 @@ class CompactClassReference(NamedTuple):
     from a single value `x`: fields copied off another object."""
 
 
+class CompactScriptScope(NamedTuple):
+    """The class reads of one script a module's string literal holds, which a
+    child interpreter runs as a module of its own: that module's name, its own
+    imports, and its reads, each line the holding file's."""
+
+    module_name: str
+    import_aliases: tuple[tuple[str, str], ...]
+    class_references: tuple[CompactClassReference, ...]
+
+
 _GENERIC_ALIAS_ROOTS = frozenset(
     ("builtins", "typing", "typing_extensions", "collections")
 )

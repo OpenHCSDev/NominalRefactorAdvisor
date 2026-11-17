@@ -59,7 +59,8 @@ from nominal_refactor_advisor.refactors.answered_method import (
     ReceiverBinding,
     TypedReceiver,
 )
-from nominal_refactor_advisor.refactors.class_overlap import ClassReferenceSites, ModuleSource, ReadSource
+from nominal_refactor_advisor.read_sources import ModuleSource, ReadSource
+from nominal_refactor_advisor.refactors.class_overlap import ClassReferenceSites
 from nominal_refactor_advisor.stored_records import StoredRecords
 
 _Declaration = ast.FunctionDef | ast.AsyncFunctionDef | ast.AnnAssign | ast.Assign

@@ -8,6 +8,7 @@ import math
 from pathlib import Path
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.class_references import ClassReferenceRole
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
@@ -460,6 +461,35 @@ def test_a_use_through_a_renamed_re_export_names_the_class_it_binds() -> None:
 
     assert {use.consumer for use in scan.uses.uses_for("pkg.a.X")} == {"by_name", "through_module"}
 
+
+
+def test_a_construction_in_a_script_is_a_use_at_its_line_in_the_file() -> None:
+    """A string holding Python a child interpreter runs resolves its own imports;
+    its call of `X` is a positional construction on the line that holds it."""
+
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules(
+            tuple(
+                _module(name, source)
+                for name, source in (
+                    ("pkg.a", "class X:\n    pass\n"),
+                    (
+                        "pkg.b",
+                        "SCRIPT = (\n"
+                        '    "from pkg.a import X\\n"\n'
+                        '    "X(1, 2)\\n"\n'
+                        ")\n",
+                    ),
+                )
+            )
+        )
+    )
+    scan = ClassOverlapVerdicts(projections, build_compact_class_family_index(projections))
+    (use,) = scan.uses.uses_for("pkg.a.X")
+
+    assert (use.role, use.reference.line, use.reference.positional_arguments) == (
+        ClassReferenceRole.CONSTRUCTION, 3, 2
+    )
 
 def test_a_re_export_cycle_stops_at_the_name_it_comes_back_to() -> None:
     aliases = {"pkg": {"Y": "pkg.other.Z"}, "pkg.other": {"Z": "pkg.Y"}}
