@@ -20,6 +20,13 @@ from dataclasses import dataclass
 
 from nominal_refactor_advisor.audit.family import snake_case
 from nominal_refactor_advisor.codemod_module_declarations import SourceTopLevelDeclarationIndex
+from nominal_refactor_advisor.codemod_payload import (
+    RequiredStringPayloadValueCodec,
+    StringArrayPayloadValueCodec,
+    codemod_payload_field,
+)
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
+from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
@@ -35,12 +42,15 @@ from nominal_refactor_advisor.refactor_concepts import HiddenImportCutConcept
 from nominal_refactor_advisor.refactors.class_overlap import (
     MovedClosure,
     annotation_modes,
+    in_order_edits,
+    in_order_states,
     relocation_to,
 )
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
+from nominal_refactor_advisor.refactors.hidden_imports import PromoteHiddenImportsOperation
 from nominal_refactor_advisor.refactors.module_move import (
     ImportedNameOwner,
     RelocateSymbolsToModuleOperation,
@@ -90,14 +100,50 @@ class HubCut(HubPlan):
     def yield_per_declaration(self) -> float:
         return len(self.dissolved) / len(self.moved)
 
-    def operation(
+    def operation(self) -> CutHiddenCycleOperation:
+        return CutHiddenCycleOperation(
+            target=SourceRewriteTarget(file_path=self.file_path, qualname=self.moved[0]),
+            moved=self.moved,
+            destination=self.destination,
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class CutHiddenCycleOperation(RepositorySourceReprovedOperation):
+    """Move `moved` from the target hub to `destination`, then import at the top
+    every hidden import the moved state no longer needs to hide.
+
+    The relocation redirects each importer of a moved name, the hidden ones
+    included, in place; those it frees would stay guarded or function-local,
+    a new hidden import the cut wrote. So the cut is the relocation followed by
+    the promotion of every module whose hidden imports the plan, derived again
+    on the moved source, now accepts, each step proved on the source the
+    previous one left."""
+
+    moved: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+    destination: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def relocation(
         self, snapshot: CodemodSourceSnapshot
     ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
-        return relocation_to(
+        return relocation_to(snapshot, self.target, self.destination, self.moved)
+
+    def source_edits_from_snapshot(self, snapshot: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
+        relocation = self.relocation(snapshot)
+        (_, moved) = in_order_states(snapshot, (relocation,), f"cut-{self.moved[0]}")
+        plan = moved.module_set.fact(HiddenImportPlan)
+        freed = sorted({hidden.module.file_path for hidden in plan.accepted})
+        return in_order_edits(
             snapshot,
-            SourceRewriteTarget(file_path=self.file_path, qualname=self.moved[0]),
-            self.destination,
-            self.moved,
+            (
+                relocation,
+                *(PromoteHiddenImportsOperation(target=SourceRewriteTarget(file_path=path)) for path in freed),
+            ),
+            f"cut-{self.moved[0]}",
+            self.rationale_text(
+                f"Move {', '.join(f'`{name}`' for name in self.moved)} to `{self.destination}` "
+                f"and import the {len(plan.accepted)} hidden import(s) that move frees at their modules' tops."
+            ),
         )
 
 
@@ -341,7 +387,7 @@ class HiddenImportCutFindingRecipeSynthesizer(
                 *(kind for _refusal, need in plan.needs for kind in need.needs),
             )
             return self.stopped_evaluation(need)
-        operation = plan.operation(snapshot)
+        operation = plan.operation()
         try:
             operation.source_edits(context)
         except ValueError as error:
@@ -358,6 +404,7 @@ class HiddenImportCutFindingRecipeSynthesizer(
 
 
 __all__ = (
+    "CutHiddenCycleOperation",
     "HiddenImportCutFindingRecipeSynthesizer",
     "HiddenImportCuts",
     "HubCut",

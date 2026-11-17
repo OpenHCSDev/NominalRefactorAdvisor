@@ -82,11 +82,9 @@ def test_one_hub_cut_frees_both_hidden_readers(tmp_path: Path):
     _apply_all(tmp_path, HiddenImportCycleDetector())
     assert _run(tmp_path) == expected
     plan = HiddenImportPlan.derive(_modules(tmp_path))
-    assert plan.refused == ()
-    assert sorted(hidden.module.module_name for hidden in plan.accepted) == ["pkg.a", "pkg.b"]
-    _apply_all(tmp_path, HiddenImportDetector())
-    assert _run(tmp_path) == expected
-    assert HiddenImportPlan.derive(_modules(tmp_path)).accepted == ()
+    assert (plan.refused, plan.accepted) == ((), ())
+    for reader in ("a", "b"):
+        assert (tmp_path / f"pkg/{reader}.py").read_text().startswith("from pkg.base import Record\n")
 
 
 def test_a_closure_reading_back_names_its_reader(tmp_path: Path):
