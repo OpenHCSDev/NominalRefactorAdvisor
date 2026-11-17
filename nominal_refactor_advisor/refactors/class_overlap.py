@@ -554,6 +554,10 @@ class ClassReferenceSites:
 
     @staticmethod
     def _in_annotation(index: int, nodes: tuple[ast.AST, ...], parents) -> bool:
+        """Whether the read sits in a type: an annotation, or the class of a
+        `type[...]` form, which calling builds a `type`, never the class; the
+        class comes back out of either only through a decoder."""
+
         child = nodes[index]
         position = parents[index]
         while position >= 0:
@@ -563,6 +567,12 @@ class ClassReferenceSites:
                 or (
                     isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
                     and parent.returns is child
+                )
+                or (
+                    isinstance(parent, ast.Subscript)
+                    and parent.slice is child
+                    and isinstance(parent.value, ast.Name)
+                    and parent.value.id == "type"
                 )
             ):
                 return True
