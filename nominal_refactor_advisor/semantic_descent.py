@@ -1951,6 +1951,22 @@ class SemanticMirrorEdgeCandidate:
         return self.projection.kind.is_branch_like
 
     @cached_property
+    def selects(self) -> bool:
+        """Whether the projection reads only some of the authority's fields.
+
+        Reading two keys of a record uses the record; it restates no
+        enumeration the authority owns, and two shared field names do not say
+        which record it is. A read of every field still mirrors the schema.
+        A literal naming some members stays a mirror: the roster's choice
+        belongs on the members, which is the repair its recipe writes.
+        """
+
+        if self.projection.kind is not PresentationProjectionKind.MAPPING_READ:
+            return False
+        named = frozenset(fact.fact_id for fact in self.matched_facts)
+        return any(fact.fact_id not in named for fact in self.facts)
+
+    @cached_property
     def authority_affinity(self) -> SemanticAuthorityAffinityPolicy:
         return SemanticAuthorityAffinityPolicy(
             authority_name=self.authority.name,
@@ -2030,7 +2046,7 @@ class SemanticAuthorityMirrorPolicy(ABC, metaclass=AutoRegisterMeta):
         context: SemanticAuthorityProjectionResolutionContext,
         candidate: SemanticMirrorEdgeCandidate,
     ) -> SemanticAuthorityProjectionResolution:
-        if not self.edge_is_admissible(context, candidate):
+        if candidate.selects or not self.edge_is_admissible(context, candidate):
             return SemanticAuthorityProjectionResolution.suppressed()
         return self.classify_admissible(context, candidate)
 
