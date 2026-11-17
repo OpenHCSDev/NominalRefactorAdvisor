@@ -1976,3 +1976,63 @@ def test_a_block_with_a_field_still_needs_one_frozenness(tmp_path: Path) -> None
     assert not mixin.permitted
     assert any("one mixin cannot serve `First` (frozen), `Second` (mutable)" in receipt.detail
                for receipt in mixin.refusals)
+
+
+SHARED_MARKER = (
+    "class State:\n"
+    "    @classmethod\n    def is_open(cls) -> bool:\n        return False\n\n\n"
+    "class Open:\n    __slots__ = ()\n\n\n"
+    "class Ready(Open, State):\n"
+    "    @classmethod\n    def is_open(cls) -> bool:\n        return True\n\n\n"
+    "class Blocked(Open, State):\n"
+    "    @classmethod\n    def is_open(cls) -> bool:\n        return True\n\n\n"
+    "def blocked(state: State) -> bool:\n    return type(state) is Blocked\n"
+)
+SHARED_MARKER_PROBE = (
+    "from pkg.todos import Blocked, Ready, State, blocked\n"
+    "print(Ready.is_open(), Blocked.is_open(), State.is_open(), blocked(Blocked()), blocked(Ready()), "
+    "[k.__name__ for k in Blocked.__mro__])\n"
+)
+
+
+def test_a_refused_merge_folds_its_block_into_the_base_the_two_alone_share(tmp_path: Path) -> None:
+    """The merge of `Ready` and `Blocked` is refused (a type test tells them
+    apart), so the verdict offers the extraction; its owner is `Open`, the empty
+    base both inherit first. Picking it folds `is_open` there: the fold step
+    judges the pair as the fold it makes, not as the refused merge."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/todos.py": SHARED_MARKER})
+    before = _run(tmp_path, SHARED_MARKER_PROBE)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    (offered,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics) and finding.metrics.move is ExtractMixin
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=offered.stable_id,
+                    owner="shared_base:pkg.todos.Open",
+                    because="ancestor_of_both",
+                    judgement="an open todo is open",
+                ),
+            ),
+        ),
+    ).run()
+
+    source = (tmp_path / "pkg/todos.py").read_text()
+    assert report.stage_count == 1, report.stop_causes
+    assert "class Open:\n    __slots__ = ()\n\n    @classmethod\n    def is_open(cls) -> bool:\n        return True\n" in source
+    assert source.count("return True") == 1
+    assert _run(tmp_path, SHARED_MARKER_PROBE) == before

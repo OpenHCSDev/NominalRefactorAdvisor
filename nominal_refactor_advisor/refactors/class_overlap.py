@@ -1256,6 +1256,10 @@ def require_verdict(
             for candidate in requested
         ):
             matches = tuple(candidate for candidate in requested if candidate is not None)
+    if not matches and owner_symbol is None and len(wanted) == 2:
+        first, second = sorted(wanted)
+        judged = snapshot.class_overlap_verdicts.requested_as(first, second, move)
+        matches = () if judged is None or judged.move is not move else (judged,)
     if not matches or (owner_symbol is None and len(matches) != 1):
         raise ValueError(
             f"The current source has {len(matches)} `{move.value}` verdicts over "
@@ -2105,6 +2109,12 @@ class BaseFold:
         base = self.base
         if frozenset(self.names) & base.target.bound_names:
             raise NeedsInput(f"`{base.qualname}` already binds a moved name", NeededInput.SOURCE_CHANGE)
+        if not base.facts.dataclass_declaration.generates_construction and (
+            self.snapshot.class_overlap_verdicts.takes_no_field(
+                None, self.names, *(child.facts for child in self.children)
+            )
+        ):
+            return
         base.require_accepts_moved_fields(self.frozen)
         class_index = self.snapshot.class_overlap_verdicts.class_index
         for symbol in class_index.ancestor_symbols(base.symbol):
