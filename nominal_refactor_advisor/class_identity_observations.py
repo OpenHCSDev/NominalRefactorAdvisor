@@ -1246,7 +1246,11 @@ ComparedWordSpelling.rewrite_kind = ClassNameSpelling
 
 
 class LookupSpelling(IdentitySpelling):
-    """A string passed to a family's classmethod that returns the member it names."""
+    """A string passed to a family's classmethod that returns the member it names.
+
+    The member is the receiver's own: one of its descendants spelled so. A test
+    of the lookup itself is no site (`IdentityPositions.tests_the_decoder`).
+    """
 
     tag = "lookup"
 
@@ -1393,7 +1397,14 @@ class MemberSpellings:
         )
 
     def spelled(self, literal: str) -> ResolvedIdentity | None:
-        named = tuple(location for value, location in self.members if value == literal)
+        return self.spelled_among(literal, self.members)
+
+    def spelled_among(
+        self, literal: str, members: tuple[tuple[str, SourceLocation], ...]
+    ) -> ResolvedIdentity | None:
+        """The member `literal` spells among `members`: one family's, or every family's."""
+
+        named = tuple(location for value, location in members if value == literal)
         if not named and not self.declared_by_keyword:
             return None
         who = (
@@ -1748,10 +1759,15 @@ class DeclaredIdentities:
         if declaring is None:
             return None
         for spellings in self.members.values():
-            if self.in_family(receiver, spellings) and any(
-                value == literal for value, _location in spellings.members
-            ):
-                return spellings.spelled(literal)
+            if not self.in_family(receiver, spellings):
+                continue
+            own = tuple(
+                (value, location)
+                for value, location in spellings.members
+                if receiver in self.ancestors(location.symbol)
+            )
+            if any(value == literal for value, _location in own):
+                return spellings.spelled_among(literal, own)
         return ResolvedIdentity(
             f"the `{receiver}` member spelled {literal!r}",
             self.classes[declaring][:LISTED_DECLARATIONS],
@@ -2056,11 +2072,46 @@ class IdentityPositions:
             case ast.Call(
                 func=ast.Attribute(value=receiver, attr=method),
                 args=[ast.Constant(value=str() as literal) as literal_node, *_],
-            ) if isinstance(receiver, (ast.Name, ast.Attribute)):
+            ) if isinstance(
+                receiver, (ast.Name, ast.Attribute)
+            ) and not self.tests_the_decoder(node_index):
                 yield self.site(
                     literal_node,
                     LookupSpelling.detail(self.called(receiver), method, literal),
                 )
+
+    REFUSAL_CHECKS: ClassVar[frozenset[str]] = frozenset(
+        ("raises", "assertRaises", "assertRaisesRegex")
+    )
+
+    def tests_the_decoder(self, node_index: int) -> bool:
+        """Whether the call is a test of the decoder it calls: its answer compared by
+        identity (`F.member_named("x") is X`), or a spelling it must refuse: the
+        call as a whole statement inside `raises`.
+
+        The spelling there is the decoder's own input, foreign text by
+        construction; naming the member instead would compare the class with
+        itself or stop exercising the refusal. Every other use of the answer
+        still restates the member.
+        """
+
+        ancestors = self.index.ancestor_nodes(node_index)
+        match ancestors[-1:]:
+            case [ast.Compare(ops=operators)]:
+                return any(
+                    isinstance(operator, (ast.Is, ast.IsNot)) for operator in operators
+                )
+            case [ast.Expr()]:
+                return any(
+                    isinstance(ancestor, (ast.With, ast.AsyncWith))
+                    and any(
+                        isinstance(item.context_expr, ast.Call)
+                        and self.called(item.context_expr.func) in self.REFUSAL_CHECKS
+                        for item in ancestor.items
+                    )
+                    for ancestor in ancestors
+                )
+        return False
 
     def passed_sites(
         self, node_index: int, value: ast.expr, position: str
