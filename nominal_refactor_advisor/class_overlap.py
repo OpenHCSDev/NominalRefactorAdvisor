@@ -42,7 +42,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import NamedTuple, Self
 from enum import StrEnum
 from functools import cached_property
 
@@ -280,9 +280,44 @@ class ReportingFloor:
     weight: float = MINIMUM_SHARED_WEIGHT
     declarations: int = FEW_SHARED_DECLARATIONS
 
+    def judged_repair(
+        self, reported: PairRepair, first: CompactIndexedClass, second: CompactIndexedClass
+    ) -> PairRepair:
+        """The repair the verdict judges: the one the overlap's shape reports."""
+
+        return reported
+
+
+class PairRepair(NamedTuple):
+    """The move a verdict judges, the class it keeps as owner and the classes
+    that restate the owner's block."""
+
+    move: type[ClassOverlapMove]
+    owner: CompactIndexedClass
+    restating: CompactIndexedClass
+    co_restating: CompactIndexedClass | None
+
+
+@dataclass(frozen=True)
+class ExtractionRequest(ReportingFloor):
+    """A step that declares the block once on a new mixin both classes compose
+    asks about the pair as that move, whatever repair the overlap's shape
+    reports. A duplicate class, or a block a third class already declares, can
+    still be extracted; the step proves the extraction it makes, so the verdict
+    judges that and not the other repair."""
+
+    weight: float = 0.0
+    declarations: int = 1
+
+    def judged_repair(
+        self, reported: PairRepair, first: CompactIndexedClass, second: CompactIndexedClass
+    ) -> PairRepair:
+        return PairRepair(ExtractMixin, first, second, None)
+
 
 REPORTED = ReportingFloor()
 NO_FLOOR = ReportingFloor(weight=0.0, declarations=1)
+EXTRACTION = ExtractionRequest()
 
 
 
@@ -743,12 +778,12 @@ class ClassOverlapVerdicts:
 
         return self.verdict(self.bodies.overlap(first, second), NO_FLOOR)
 
-    def requested_verdicts_restating(
+    def requested_extractions_restating(
         self, anchor: str, names: Iterable[str]
     ) -> Iterator[ClassOverlapCandidate]:
-        """The requested verdict between `anchor` and each class that declares
-        every one of `names` itself, as `anchor` answers it: the pairs a move over
-        those names can be asking about."""
+        """The extraction of `names` out of `anchor` into a new mixin, judged on
+        `anchor` and each class that declares every one of them itself: the pairs
+        a step extracting those names can be asking about."""
 
         holders = [
             frozenset(
@@ -761,7 +796,7 @@ class ClassOverlapVerdicts:
         ]
         restaters = frozenset.intersection(*holders) - {anchor} if holders else frozenset()
         for other in sorted(restaters):
-            if (verdict := self.requested_verdict(anchor, other)) is not None:
+            if (verdict := self.verdict(self.bodies.overlap(anchor, other), EXTRACTION)) is not None:
                 yield verdict
 
     def judged(
@@ -964,6 +999,9 @@ class ClassOverlapVerdicts:
                 )
         else:
             return None
+        move, owner, restating, co_restating = floor.judged_repair(
+            PairRepair(move, owner, restating, co_restating), first, second
+        )
         return ClassOverlapCandidate(
             shape=shape,
             move=move,

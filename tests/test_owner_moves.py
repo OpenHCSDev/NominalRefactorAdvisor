@@ -792,6 +792,62 @@ def test_an_inherited_share_is_hoisted_out_of_its_base_then_the_rest_is_extracte
     assert _run(tmp_path, HOISTED_PROBE) == before
 
 
+
+ALONE = HOISTED.replace(
+    "class Action:\n    problem: str\n    order: int\n    request: str = ''\n",
+    "class Step:\n    request: str = ''\n\n    def bound_to(self, request: str) -> 'Step':\n        return self\n\n\n"
+    "@dataclass(frozen=True, kw_only=True)\nclass Action(Step):\n    problem: str\n    order: int\n",
+).replace("    def bound_to(self, request: str) -> 'Action':\n        return self\n\n\n", "\n\n")
+
+
+def test_a_base_declaring_only_the_hoisted_names_is_hoisted_too(tmp_path: Path) -> None:
+    """`Action` declares nothing but the names `Task` restates, so the pair
+    reads as a duplicate class whose repair composes `Action`. The hoist extracts
+    them instead, and its step is proved as that extraction: `Task` must not
+    become a `Step`."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": ALONE})
+    before = _run(tmp_path, HOISTED_PROBE)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+    (mixin,) = (
+        finding
+        for finding in findings
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=mixin.stable_id,
+                    owner="hoisting_mixin:pkg.records",
+                    because="hoists_inherited",
+                    name="Filed",
+                    judgement="the repository and text a problem is filed with",
+                    hoisted_name="Numbered",
+                    hoisted_judgement="the problem and the order it belongs to",
+                ),
+            ),
+        ),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert "class Numbered:\n" in source and "class Filed:\n" in source
+    assert "class Action(Numbered, Step):\n    pass\n" in source
+    assert "class Task(Filed, Numbered, Phase):\n    def checked" in source
+    assert _run(tmp_path, HOISTED_PROBE) == before
+
+
 def _field_mixin(records: str) -> CreateMixinOperation:
     return CreateMixinOperation(
         target=SourceRewriteTarget(file_path=records, qualname="First"),

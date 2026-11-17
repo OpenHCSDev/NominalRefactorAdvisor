@@ -2651,7 +2651,7 @@ def require_owner_candidate(
     refused: NeedsInput | None = None
     for verdict in chain(
         verdicts.candidates_touching(frozenset((anchor_symbol,))),
-        verdicts.requested_verdicts_restating(anchor_symbol, sorted(wanted)),
+        verdicts.requested_extractions_restating(anchor_symbol, sorted(wanted)),
     ):
         if verdict.move is not ExtractMixin or not wanted <= frozenset(verdict.shared_names):
             continue
