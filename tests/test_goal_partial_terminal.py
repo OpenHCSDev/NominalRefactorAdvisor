@@ -58,10 +58,10 @@ def test_a_goal_with_a_refused_target_stops_partially_and_says_why(
     (terminal,) = proof["partial_terminals"]
     (group,) = terminal["remaining_targets"]
     assert group["status"] == FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
-    assert group["reason"] == (
-        "the move needs: `Span` is told apart by type in 1 place(s) (type_test)"
-    )
-    assert group["needs"] == [NeededInput.SOURCE_CHANGE]
+    # Composing `Span` would answer `is_span` otherwise, so the finding is the
+    # rung below, a mixin both compose, whose owner is the picker's question.
+    assert group["reason"] == "an extract-mixin move needs an owner pick (--codemod-owner-picks)"
+    assert group["needs"] == [NeededInput.OWNER_PICK]
     assert group["finding_ids"] == list(report["final_target_finding_ids"])
     delta = terminal["reaching_stages"][0]["finding_delta"]
     assert delta["confirmed_expected_removed_finding_count"] == 1

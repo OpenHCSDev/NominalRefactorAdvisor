@@ -1264,8 +1264,9 @@ def test_an_owner_that_would_hand_over_its_ancestors_members_is_extracted_instea
 ) -> None:
     """`Task` restates all `Action` declares, but inheriting `Action` would also
     give it `Step`'s field and method, which nothing requires `Task` to have. The
-    block needs a mixin of its own, so the verdict judges that extraction and asks
-    where it lives; without `Step`, composing `Action` is sound and stays."""
+    block needs a mixin of its own, so the composition stays refused and the
+    verdict offers that extraction, asking where it lives; without `Step`,
+    composing `Action` is sound and stays."""
 
     def verdict_for(records: str) -> ClassOverlapCandidate:
         _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
@@ -1278,7 +1279,11 @@ def test_an_owner_that_would_hand_over_its_ancestors_members_is_extracted_instea
         assert verdict is not None
         return verdict
 
-    extracted = verdict_for(ALONE)
+    refused = verdict_for(ALONE)
+    assert refused.move is ComposeExisting
+    assert {r.kind for r in refused.refusals} == {OverlapReceiptKind.UNWANTED_SUPPLY}
+    extracted = refused.offered
+    assert extracted is not None
     assert extracted.move is ExtractMixin and extracted.owner_candidates
     assert not [r for r in extracted.receipts if r.kind is OverlapReceiptKind.UNWANTED_SUPPLY]
     composed = verdict_for(ALONE.replace("class Action(Step):", "class Action:"))
