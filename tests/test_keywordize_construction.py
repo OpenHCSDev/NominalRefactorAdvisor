@@ -227,3 +227,61 @@ def test_a_metaclass_that_may_change_what_a_call_binds_refuses(
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records, "pkg/users.py": USERS})
     with pytest.raises(CodemodOperationPreflightError, match=re.escape(refusal)):
         _simulate(tmp_path, "Point")
+
+
+REGISTERED = RECORDS.replace(
+    "from dataclasses import KW_ONLY, dataclass, field\n\n\n",
+    "from dataclasses import KW_ONLY, dataclass, field\nfrom typing import ClassVar\n\n\n"
+    "class Bag:\n    def add(self, value):\n        value.__init__ = None\n\n\n"
+    "class Registry:\n"
+    "    _seen: ClassVar[dict[str, set[type]]] = {}\n"
+    "    _bags: ClassVar[dict[str, Bag]] = {}\n\n\n",
+    1,
+).replace(
+    "    x: int\n",
+    "    x: int\n\n"
+    "    def __init_subclass__(cls, **kwargs):\n"
+    "        super().__init_subclass__(**kwargs)\n"
+    "        Registry._seen.setdefault('points', set()).add(cls)\n",
+    1,
+)
+
+
+def test_a_creation_hook_storing_the_class_in_a_builtin_set_keeps_the_parameters(tmp_path: Path) -> None:
+    """`set.add` only keeps a reference to the class; nothing a call binds changes."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": REGISTERED, "pkg/users.py": USERS})
+    before = _run(tmp_path)
+    result = _simulate(tmp_path, "Point")
+    assert result.is_clean is True
+    for path, source in result.simulation.rewritten_sources.items():
+        Path(path).write_text(source, encoding="utf-8")
+    assert "P(x=1)" in (tmp_path / "pkg/users.py").read_text()
+    assert _run(tmp_path) == before
+
+
+@pytest.mark.parametrize(
+    "stored",
+    (
+        "Registry._bags.setdefault('points', Bag()).add(cls)",
+        "Registry.unknown().add(cls)",
+    ),
+)
+def test_a_creation_hook_storing_the_class_in_an_unproved_container_refuses(
+    tmp_path: Path, stored: str
+) -> None:
+    records = REGISTERED.replace("Registry._seen.setdefault('points', set()).add(cls)", stored)
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records, "pkg/users.py": USERS})
+    with pytest.raises(CodemodOperationPreflightError, match="passes it to a function NRA cannot read"):
+        _simulate(tmp_path, "Point")
+
+
+def test_storing_a_class_whose_metaclass_hashes_it_itself_refuses(tmp_path: Path) -> None:
+    records = REGISTERED.replace(
+        "class Registry:\n",
+        "class Hashing(type):\n    def __hash__(cls):\n        return 0\n\n\nclass Registry:\n",
+        1,
+    ).replace("class Point:", "class Point(metaclass=Hashing):", 1)
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records, "pkg/users.py": USERS})
+    with pytest.raises(CodemodOperationPreflightError, match="own `__hash__` or `__eq__`"):
+        _simulate(tmp_path, "Point")
