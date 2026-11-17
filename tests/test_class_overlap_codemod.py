@@ -343,6 +343,23 @@ def test_the_fold_refuses_a_class_handed_on_as_a_value(tmp_path: Path) -> None:
         _fold(tmp_path).source_edits(snapshot)
 
 
+def test_the_fold_keeps_a_keyword_only_class_handed_on_as_a_value(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        _proof_files(
+            **{
+                "pkg/conveyor.py": CONVEYOR.replace(
+                    "@dataclass(frozen=True)\nclass ConveyorProof",
+                    "@dataclass(frozen=True, kw_only=True)\nclass ConveyorProof",
+                )
+                + "\n\nFACTORIES = (ConveyorProof,)\n"
+            }
+        ),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
+
 def test_the_fold_reads_a_type_form_of_its_class_as_a_type(tmp_path: Path) -> None:
     _write(
         tmp_path,
