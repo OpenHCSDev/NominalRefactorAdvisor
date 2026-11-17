@@ -1019,9 +1019,12 @@ class ClassOverlapVerdicts:
 
         A class that only restates the block too is not its owner; one that
         other classes compose for it already is. The owner is never one of the
-        two classes, nor an ancestor or descendant of either. Between owners,
-        the one with the fewest effective declarations owns least beyond the
-        block.
+        two classes, nor an ancestor or descendant of either, nor a class whose
+        creation makes it an identity (a registry, class keywords, a
+        metaclass): composing it would enroll both classes in what it
+        identifies, so the block stays a mixin to extract, with that class one
+        more declaration of it. Between owners, the one with the fewest
+        effective declarations owns least beyond the block.
         """
 
         candidates: set[str] | None = None
@@ -1055,8 +1058,9 @@ class ClassOverlapVerdicts:
                 candidate,
             )
             for candidate in (candidates or set()) - excluded
-            if self.class_index.class_for(candidate) is not None
+            if (indexed := self.class_index.class_for(candidate)) is not None
             and self.class_index.children_by_symbol.get(candidate)
+            and not _declared_identity_reasons(indexed)
         )
         return self.class_index.class_for(options[0][1]) if options else None
 
