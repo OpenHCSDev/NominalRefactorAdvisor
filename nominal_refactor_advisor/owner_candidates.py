@@ -82,6 +82,7 @@ class OwnerReceiptKind(ReceiptKind):
     PLACED_BELOW = "placed_below", -0.25, False
     CONSTRUCTION_CHANGED = "construction_changed", 0.0, True, NeededInput.SOURCE_CHANGE
     FIELD_ORDER_CHANGED = "field_order_changed", 0.0, True, NeededInput.SOURCE_CHANGE
+    FIELD_ORDER_READ = "field_order_read", 0.0, True, NeededInput.SOURCE_CHANGE
     KEYWORD_ONLY_COMPOSITION = "keyword_only_composition", -0.25, False
     POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True, NeededInput.SOURCE_CHANGE
     BASE_SERVES_OTHERS = "base_serves_others", 0.0, True, NeededInput.OWNER_PICK
@@ -641,6 +642,9 @@ class BlockOwnerQuestion:
     consumers_of: Callable[[CompactIndexedClass], frozenset[tuple[str, str]]]
     use_locations: Callable[[CompactIndexedClass], Mapping[tuple[str, str], SourceLocation]]
     imports: ModuleImportGraph
+    field_order_read: Callable[[Iterable[str]], str | None]
+    """Where class code reads the field order of one of these classes or a
+    descendant (`FieldOrderReads.read_of`); none when nothing does."""
     EXISTING_CLASS_LIMIT: ClassVar[int] = 3
     SHARED_BASE_LIMIT: ClassVar[int] = 3
     COVERING_SET_LIMIT: ClassVar[int] = 3
@@ -1293,10 +1297,10 @@ class BlockOwnerQuestion:
         keyword-only, and each reordered composer becomes keyword-only too,
         so a call that binds by keyword binds the same values: that costs a
         receipt, and a construction of a reordered composer or a descendant
-        that binds by position refuses. The re-proof also refuses `order=True`,
-        an own `__init__` or `__match_args__`, positional class patterns and
-        the class handed on as a value; picking the owner refuses when class code
-        reads a reordered composer's field order. An existing owner would have to become
+        that binds by position refuses, as does class code reading a reordered
+        composer's field order (`field_order_read`). The re-proof also refuses
+        `order=True`, an own `__init__` or `__match_args__`, positional class
+        patterns and the class handed on as a value. An existing owner would have to become
         keyword-only for its other users too, which is not proved here, so a
         reorder refuses it. A field whose position is unknown leaves the order
         unproved.
@@ -1335,6 +1339,13 @@ class BlockOwnerQuestion:
                     reordered=tuple(reordered),
                 )
             )
+            # A class whose code reads its field order (a table deriving its columns)
+            # builds something else once reordered, by keyword or not.
+            read = self.field_order_read(reordered)
+            if read is not None:
+                receipts.append(
+                    Receipt(OwnerReceiptKind.FIELD_ORDER_READ, read, (_location(owner),))
+                )
             # A keyword-only owner makes its fields keyword-only in every composer,
             # reordered or not, so a positional construction of any of them breaks.
             constructed = {

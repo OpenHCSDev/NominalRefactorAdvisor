@@ -82,6 +82,7 @@ from nominal_refactor_advisor.class_method_facets import (
     _compact_class_methods,
     _is_classmethod,
 )
+from nominal_refactor_advisor.field_order_summaries import FunctionOrderSummary
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
@@ -1922,6 +1923,8 @@ class CompactModuleClassProjection(
     class_methods: tuple[CompactClassMethod, ...] = ()
     class_references: tuple[CompactClassReference, ...] = ()
     script_scopes: tuple[CompactScriptScope, ...] = ()
+    field_order_summaries: tuple[FunctionOrderSummary, ...] = ()
+    """What each function contributes to reading a dataclass's fields in order."""
 
     def header_core(self) -> CompactModuleClassProjection:
         """Project only the class declarations required by the family index."""
@@ -5011,6 +5014,11 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 ),
                 class_methods=class_methods,
                 class_references=_compact_class_references(parsed_module),
+                field_order_summaries=FunctionOrderSummary.of_module(
+                    parsed_module.module_name,
+                    parsed_module.module,
+                    module_import_aliases(parsed_module),
+                ),
                 script_scopes=tuple(
                     _compact_script_scope(source)
                     for source in parsed_module.fact(EmbeddedSources).sources

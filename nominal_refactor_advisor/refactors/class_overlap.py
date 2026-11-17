@@ -16,9 +16,7 @@ from collections.abc import (
     Sequence,
 )
 from dataclasses import (
-    astuple,
     dataclass,
-    fields,
     replace,
 )
 from functools import cached_property
@@ -51,9 +49,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
     PER_CLASS_NAMES,
-    ClassMemberAnswersABC,
     CompactIndexedClass,
-    ModuleNominalBindingWitness,
     NATIVE_METACLASS_BASES,
     module_import_aliases,
     native_identity,
@@ -63,6 +59,7 @@ from nominal_refactor_advisor.class_mro import (
     namespace_read_native,
     native_declared_names,
 )
+from nominal_refactor_advisor.field_order_reads import DeclaringClass
 from nominal_refactor_advisor.class_overlap import (
     AnswersFor,
     ClassOverlapCandidate,
@@ -795,31 +792,6 @@ class ClassReferenceSite:
     @property
     def location(self) -> str:
         return f"{self.file_path}:{self.source.line_of(self.node)}"
-
-
-class DeclaringClass(ClassMemberAnswersABC[tuple[str, ...]]):
-    """The class whose `def` a member lookup reaches; none for anything else."""
-
-    def assigned(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
-        return ()
-
-    def annotated_property(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
-        return (owner.symbol,)
-
-    def annotated_method(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
-        return (owner.symbol,)
-
-    def unannotated_callable(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
-        return (owner.symbol,)
-
-    def missing(self) -> tuple[str, ...]:
-        return ()
-
-    def ambiguous(self) -> tuple[str, ...]:
-        return ()
-
-    def open(self) -> tuple[str, ...]:
-        return ()
 
 
 @dataclass(frozen=True)
@@ -2318,7 +2290,7 @@ class KeywordOnlyComposition:
     `str`, `asdict` or `pickle.dumps` of `self`, in a method that calls
     `hashlib` or `json.dumps` without `sort_keys=True`): that digest would
     change with the field order. Nor does their class code read the field
-    order itself (`FieldOrderReaders`), as a table deriving its stored columns
+    order itself (`FieldOrderReads`), as a table deriving its stored columns
     does. Cache identities are refused too until they are told apart from
     persisted ones. The repr text, and the order `fields()` and `astuple()`
     report to code outside the classes, still change.
@@ -2350,7 +2322,7 @@ class KeywordOnlyComposition:
         ).require_keyword_construction()
         require_no_positional_self_construction(self.snapshot, self.family)
         self.require_no_field_order_digest()
-        FieldOrderReaders(self.snapshot).require_unread((self.composer.symbol,))
+        self.snapshot.class_overlap_verdicts.field_order_reads.require_unread((self.composer.symbol,))
 
     def require_no_field_order_digest(self) -> None:
         class_index = self.snapshot.class_overlap_verdicts.class_index
@@ -2454,237 +2426,6 @@ class FieldOrderDigest:
             ):
                 sink = node.lineno if sink is None else sink
         return sink if serializes else None
-
-
-@dataclass(frozen=True)
-class FieldOrderReaders:
-    """Class code that reads a dataclass's fields in their declared order.
-
-    A function a class body declares runs with that class, or a descendant, as
-    its receiver (`cls` or `self`; a bare `staticmethod` has none). It reads the
-    receiver's field order when it passes the receiver to `dataclasses.fields`
-    or `astuple`, iterates its `__dataclass_fields__`, or hands it to a scanned
-    function or method whose parameter reaches such a read in turn, followed up
-    to `DEPTH` calls. A table that derives its columns that way stores them in
-    that order, so a move that reorders the fields changes what it builds.
-    `asdict` keys its result by name and is not a read; a digest of it is
-    `FieldOrderDigest`'s.
-    """
-
-    snapshot: CodemodSourceSnapshot
-    DEPTH: ClassVar[int] = 4
-    READERS: ClassVar[frozenset[str]] = frozenset(
-        (
-            f"{fields.__module__}.{fields.__name__}",
-            f"{astuple.__module__}.{astuple.__name__}",
-        )
-    )
-    TABLE: ClassVar[str] = "__dataclass_fields__"
-
-    def require_unread(self, reordered: Iterable[str]) -> None:
-        """Refuses when class code reads the order of any class in `reordered`, or
-        of a descendant: their fields are the ones a move reorders."""
-
-        class_index = self.snapshot.class_overlap_verdicts.class_index
-        family = dict.fromkeys(
-            member
-            for symbol in reordered
-            for member in (symbol, *class_index.descendant_symbols(symbol))
-        )
-        declaring = dict.fromkeys(
-            (symbol, member)
-            for member in family
-            for symbol in (member, *class_index.ancestor_symbols(member))
-            if class_index.class_for(symbol) is not None
-        )
-        seen: set[str] = set()
-        for symbol, member in declaring:
-            if symbol in seen:
-                continue
-            seen.add(symbol)
-            read = self.first_read(symbol)
-            if read is not None:
-                raise NeedsInput(
-                    f"{read}: the move reorders the fields of "
-                    f"`{OverlapClass.for_symbol(self.snapshot, member).qualname}`, "
-                    "which changes what it builds", NeededInput.SOURCE_CHANGE
-                )
-
-    def first_read(self, symbol: str) -> str | None:
-        """Where a function `symbol` declares reads its receiver's field order."""
-
-        owner = OverlapClass.for_symbol(self.snapshot, symbol)
-        module = self.snapshot.parsed_module_for_source_path(owner.file_path)
-        for function in owner.node.body:
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            receiver = self.receiver(function)
-            if receiver is None:
-                continue
-            path = self.reads(module, symbol, function, receiver, 0, frozenset())
-            if path is not None:
-                return (
-                    f"`{owner.qualname}.{function.name}` ({owner.file_path}:"
-                    f"{function.lineno}) reads its class's dataclass fields in order "
-                    "through " + " -> ".join(f"`{step}`" for step in path)
-                )
-        return None
-
-    @staticmethod
-    def receiver(function: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
-        """The first parameter, which the class or instance binds; a bare
-        `staticmethod` binds none, while one wrapped in a class-level descriptor
-        (a cached class fact) is handed the class."""
-
-        positional = (*function.args.posonlyargs, *function.args.args)
-        bare_static = [ast.unparse(item) for item in function.decorator_list] == [
-            staticmethod.__name__
-        ]
-        return None if bare_static or not positional else positional[0].arg
-
-    @staticmethod
-    def binds_first(function: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        """Whether looking the function up on a class or instance binds its first
-        parameter: every method but a `staticmethod`."""
-
-        return staticmethod.__name__ not in {ast.unparse(item) for item in function.decorator_list}
-
-    def reads(
-        self,
-        module: ParsedModule,
-        declaring: str | None,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        parameter: str,
-        depth: int,
-        visited: frozenset[tuple[int, str]],
-    ) -> tuple[str, ...] | None:
-        """The calls through which `parameter` of `function` reaches an ordered
-        read, ending at the read; none when it reaches none. `declaring` is the
-        class whose body declares `function`, for its receiver's own methods."""
-
-        key = (id(function), parameter)
-        if depth > self.DEPTH or key in visited:
-            return None
-        visited = visited | {key}
-        proof = self.snapshot.module_binding_proof
-        line = len(module.source.splitlines()) + 1
-        receiver = self.receiver(function) if declaring is not None else None
-        for node in ast.walk(function):
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr == self.TABLE
-                and isinstance(node.value, ast.Name)
-                and node.value.id == parameter
-            ):
-                return (f"{parameter}.{self.TABLE}",)
-            if not isinstance(node, ast.Call):
-                continue
-            arguments = [
-                argument
-                for argument in (*node.args, *(item.value for item in node.keywords))
-                if isinstance(argument, ast.Name) and argument.id == parameter
-            ]
-            if not arguments:
-                continue
-            witness = proof.reference_or_builtin_witness_at(module, node.func, line=line)
-            if witness is not None and witness.qualified_name in self.READERS:
-                if node.args[:1] == arguments[:1]:
-                    return (witness.qualified_name,)
-                continue
-            callee = self.callee(node.func, witness, declaring, receiver)
-            if callee is None:
-                continue
-            callee_module, callee_class, callee_function, label = callee
-            for argument in arguments:
-                bound = self.bound_parameter(callee_function, node, argument, callee_class is not None)
-                if bound is None:
-                    continue
-                rest = self.reads(
-                    callee_module, callee_class, callee_function, bound, depth + 1, visited
-                )
-                if rest is not None:
-                    return (label, *rest)
-        return None
-
-    def callee(
-        self,
-        func: ast.expr,
-        witness: ModuleNominalBindingWitness | None,
-        declaring: str | None,
-        receiver: str | None,
-    ) -> tuple[ParsedModule, str | None, ast.FunctionDef | ast.AsyncFunctionDef, str] | None:
-        """The scanned function a call reaches: a top-level function or a class's
-        method by its module binding, or a method of the calling function's own
-        receiver."""
-
-        if (
-            isinstance(func, ast.Attribute)
-            and isinstance(func.value, ast.Name)
-            and receiver is not None
-            and func.value.id == receiver
-            and declaring is not None
-        ):
-            return self.method(declaring, func.attr)
-        if witness is None:
-            return None
-        owner, _, name = witness.qualified_name.rpartition(".")
-        if self.snapshot.class_overlap_verdicts.class_index.class_for(owner) is not None:
-            return self.method(owner, name)
-        parsed = next(
-            (module for module in self.snapshot.parsed_modules if module.module_name == owner), None
-        )
-        function = None if parsed is None else next(
-            (
-                statement
-                for statement in parsed.module.body
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and statement.name == name
-            ),
-            None,
-        )
-        return None if parsed is None or function is None else (parsed, None, function, name)
-
-    def method(
-        self, owner_symbol: str, name: str
-    ) -> tuple[ParsedModule, str | None, ast.FunctionDef | ast.AsyncFunctionDef, str] | None:
-        class_index = self.snapshot.class_overlap_verdicts.class_index
-        for symbol in class_index.declared_member(owner_symbol, name).answer(DeclaringClass()):
-            owner = OverlapClass.for_symbol(self.snapshot, symbol)
-            function = next(
-                (
-                    statement
-                    for statement in owner.node.body
-                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and statement.name == name
-                ),
-                None,
-            )
-            if function is not None:
-                return (
-                    self.snapshot.parsed_module_for_source_path(owner.file_path),
-                    symbol,
-                    function,
-                    f"{owner.qualname}.{name}",
-                )
-        return None
-
-    def bound_parameter(
-        self,
-        function: ast.FunctionDef | ast.AsyncFunctionDef,
-        call: ast.Call,
-        argument: ast.expr,
-        bound_method: bool,
-    ) -> str | None:
-        """The parameter `argument` binds: a method looked up on a class or its
-        receiver binds its first parameter itself, unless it is a
-        `staticmethod`."""
-
-        parameter = KeywordBinders.parameter(function, call, argument)
-        if argument not in call.args or not bound_method or not self.binds_first(function):
-            return parameter
-        positional = [item.arg for item in (*function.args.posonlyargs, *function.args.args)]
-        index = call.args.index(argument) + 1
-        return positional[index] if index < len(positional) else None
 
 
 def _line_difference_edits(
@@ -4060,7 +3801,7 @@ class ClassOverlapFindingRecipeSynthesizer(
         verdicts = snapshot.class_overlap_verdicts
         # Refused before any stage: keywording constructions for a move that
         # cannot land would only churn the source.
-        FieldOrderReaders(snapshot).require_unread(owner.reordered)
+        snapshot.class_overlap_verdicts.field_order_reads.require_unread(owner.reordered)
         if owner.keyword_cure:
             return ClassOverlapFindingRecipeSynthesizer.keywordings(owner.keyword_cure, verdicts)
         composers = tuple(

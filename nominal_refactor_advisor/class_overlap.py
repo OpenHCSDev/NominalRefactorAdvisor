@@ -55,6 +55,7 @@ from nominal_refactor_advisor.class_body import (
     ClassBodyIndex,
     ClassBodyOverlap,
 )
+from nominal_refactor_advisor.field_order_reads import FieldOrderReads
 from nominal_refactor_advisor.class_index import (
     ClassBodyDeclarationKind,
     CompactClassFamilyIndex,
@@ -787,6 +788,13 @@ class ClassOverlapVerdicts(DeclaredC3):
         return ClassUseIndex.from_projections(self.projections, self.class_index)
 
     @cached_property
+    def field_order_reads(self) -> FieldOrderReads:
+        """The scan's ordered field reads: an owner whose composition reorders a
+        class they read is refused here and at its apply, by one proof."""
+
+        return FieldOrderReads(self.projections, self.class_index)
+
+    @cached_property
     def import_aliases_by_module(self) -> Mapping[str, Mapping[str, str]]:
         return {
             projection.module_name: dict(projection.import_aliases)
@@ -1399,6 +1407,7 @@ class ClassOverlapVerdicts(DeclaredC3):
             consumers_of=self.uses.consumers_of,
             use_locations=self.uses.consumer_locations,
             imports=self.module_imports,
+            field_order_read=self.field_order_reads.read_of,
         )
 
     def existing_owner(

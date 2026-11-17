@@ -542,6 +542,36 @@ def test_a_part_of_one_name_is_not_offered():
     assert not whole.repairs and whole.offered is None
 
 
+ROUTES = (
+    "from dataclasses import dataclass, fields\n\n\n"
+    "class Codec:\n    @classmethod\n    def plans(cls, row):\n"
+    "        return tuple(field.name for field in fields(row))\n\n\n"
+    "class Table:\n    @classmethod\n    def columns(cls):\n        return Codec.plans(cls)\n\n\n"
+    "@dataclass(frozen=True)\nclass Counts(Table):\n"
+    "    seq: int\n    target: str\n    sender: str\n    lookup: str\n    timestamp: float\n\n\n"
+    "@dataclass(frozen=True)\nclass Keys(Table):\n"
+    "    target: str\n    sender: str\n    lookup: str\n    first_seq: int\n\n\n"
+    "@dataclass(frozen=True)\nclass Totals(Table):\n    total: int\n"
+)
+
+
+def test_an_owner_reordering_a_table_whose_columns_read_its_field_order_is_refused():
+    """`Table.columns` hands the class to `Codec.plans`, which reads
+    `dataclasses.fields` in order: a mixin of the route key moves `Counts.seq`
+    behind it, so the table it builds changes. The offer is refused by the
+    proof the apply runs, naming the path."""
+
+    (verdict,) = _verdicts(("pkg.routes", ROUTES))
+    assert set(verdict.shared_names) == {"target", "sender", "lookup"}
+    (mixin,) = (owner for owner in verdict.owner_candidates if owner.candidate_id == "new_mixin:pkg.routes")
+    assert not mixin.permitted
+    (read,) = (receipt for receipt in mixin.refusals if receipt.kind is OwnerReceiptKind.FIELD_ORDER_READ)
+    assert "`Table.columns`" in read.detail
+    assert "through `Codec.plans` -> `dataclasses.fields`" in read.detail
+    assert read.detail.endswith("the move reorders the fields of `Counts`, which changes what it builds")
+    assert not verdict.repairs
+
+
 def test_a_permitted_move_offers_no_lower_rung():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     assert plain.permitted
