@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import (
     dataclass,
     field,
+    replace,
 )
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.codemod_paths import (
     SourcePathCandidateSet,
     SourcePathResolutionAuthority,
@@ -30,6 +32,29 @@ class SourceModuleImportGraph:
     source_index: SourceIndex
     module_nodes_by_file_path: Mapping[str, ast.Module] = field(default_factory=dict)
     imported_modules_by_module: Mapping[str, frozenset[str]] | None = None
+
+    @classmethod
+    def of_modules(cls, modules: Iterable[ParsedModule]) -> SourceModuleImportGraph:
+        """The runtime import graph of these parses: it reads only each file's
+        module name and top-level statements, so it needs no target index."""
+
+        parsed = tuple(modules)
+        return cls(
+            source_index=SourceIndex(files=tuple(SourceFileDigest.from_module(module) for module in parsed)),
+            module_nodes_by_file_path={module.file_path: module.module for module in parsed},
+        )
+
+    def with_edges(self, module_name: str, imported: frozenset[str]) -> SourceModuleImportGraph:
+        """This graph once `module_name` also imports `imported` at load."""
+
+        edges = self.import_edges_by_module
+        return replace(
+            self,
+            imported_modules_by_module={
+                **edges,
+                module_name: edges.get(module_name, frozenset()) | imported,
+            },
+        )
 
     @cached_property
     def source_file_by_path(self) -> dict[str, SourceFileDigest]:
@@ -159,14 +184,22 @@ class SourceModuleImportGraph:
         imported_module = self.module_name_for_file_path(imported_file_path)
         if importing_module is None or imported_module is None:
             return True
+        return self.reaching_back(importing_module, imported_module) is not None
+
+    def reaching_back(self, importing_module: str, imported_module: str) -> str | None:
+        """The module an import of `imported_module` would run that already
+        imports `importing_module` at load, directly or not; None when the
+        import closes no cycle. The import triggers the imported module and
+        every ancestor init. The importing module itself is excluded: a package
+        init importing from its own submodules is normal Python (partial
+        initialization)."""
+
         if importing_module == imported_module:
-            return False
-        # The import triggers the imported module and every ancestor init.
-        # The importing module itself is excluded: a package init importing
-        # from its own submodules is normal Python (partial initialization).
+            return None
         triggered = self.known_import_targets(imported_module) - {importing_module}
-        return any(
-            self.module_reaches(target, importing_module) for target in triggered
+        return next(
+            (target for target in sorted(triggered) if self.module_reaches(target, importing_module)),
+            None,
         )
 
     def module_name_for_file_path(self, file_path: str) -> str | None:

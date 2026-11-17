@@ -38,6 +38,7 @@ from nominal_refactor_advisor.codemod_import_bindings import (
     FromModuleImportBindingIdentity,
 )
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.hidden_imports import GuardedImport
 from nominal_refactor_advisor.source_index import SourceFileDigest
 from nominal_refactor_advisor.codemod_import_scopes import (
     ModuleImportScope,
@@ -201,21 +202,8 @@ class PromoteGuardedImportOperation(RefactorRecipeOperation):
         rationale = self.rationale or (
             f"Import {self.import_names!r} from {self.module_name!r} at runtime."
         )
-        return (
-            ModuleImportMutation.remove_names(
-                file_path=source_path,
-                module_name=self.module_name,
-                names=self.import_names,
-                scope=ModuleImportScope.TYPE_CHECKING,
-                rationale=rationale,
-            ),
-            ModuleImportMutation.from_source(
-                file_path=source_path,
-                import_source=(
-                    f"from {self.module_name} import {', '.join(self.import_names)}\n"
-                ),
-                rationale=rationale,
-            ),
+        return GuardedImport.promotion_edits(
+            source_path, self.module_name, self.import_names, rationale
         )
 
 
