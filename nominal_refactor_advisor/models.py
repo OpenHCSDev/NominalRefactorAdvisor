@@ -764,6 +764,16 @@ class ConstructorOwnedMappingMetrics(MappingMetrics):
 
 
 @dataclass(frozen=True)
+class DeclaredBasePick(SemanticRecord):
+    """A picker's new base for the classes one roster names: its class name and
+    the one sentence its docstring says they share. Naming a new identity is the
+    picker's decision; where it goes and what moves onto it is proved."""
+
+    name: str
+    judgement: str
+
+
+@dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
@@ -771,6 +781,8 @@ class RegistrationMetrics(RegistrationFindingMetrics):
     registry_name: str | None = None
     class_names: tuple[str, ...] = ()
     class_key_pairs: tuple[str, ...] = ()
+    base_pick: DeclaredBasePick | None = None
+    """The base a picks file declares for the roster's classes (#67)."""
 
     @classmethod
     def from_class_names(

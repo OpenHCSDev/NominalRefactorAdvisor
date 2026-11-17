@@ -345,7 +345,7 @@ class HoistingMixinOwner(NewMixinOwner):
 
 @dataclass(frozen=True)
 class OwnerPickOutcome(SemanticRecord):
-    """What became of one extract-mixin finding under the picks."""
+    """What became of one extract-mixin or roster finding under the picks."""
 
     finding: str
     outcome: str

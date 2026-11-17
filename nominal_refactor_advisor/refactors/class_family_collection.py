@@ -42,9 +42,10 @@ from nominal_refactor_advisor.codemod_source_edits import (
 )
 from nominal_refactor_advisor.refactor_concepts import ClassFamilyAuthorityConcept
 from nominal_refactor_advisor.semantic_descent import SemanticAuthorityKind
-from nominal_refactor_advisor.source_index import AstTargetNodeKind
+from nominal_refactor_advisor.source_index import AstTargetDigest, AstTargetNodeKind
 from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
 from nominal_refactor_advisor.semantic_match import single_item
+from nominal_refactor_advisor.models import DeclaredBasePick, RegistrationMetrics
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 
@@ -546,11 +547,15 @@ class ClassFamilyCollectionAuthorityProof:
 
 
 @dataclass(frozen=True)
-class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
-    """Exact source proof for deriving one collection from its class authority."""
+class ClassFamilyCollectionSite:
+    """Where one class family's literal sits: the authority class, the module or
+    top-level class whose body holds it, and the proof that reads its members.
+    Deriving a whole family and declaring a base for some of it both start here."""
 
-    candidate: ClassFamilyCollectionCandidate
-    import_source: str | None
+    authority: ResolvedClassTarget
+    projection_module: AstTargetDigest
+    proof: ClassFamilyCollectionAuthorityProof
+    holder_node: ast.ClassDef | None
 
     @classmethod
     def from_context(
@@ -558,7 +563,7 @@ class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
         context: CodemodSelectorContext,
         authority_reference: SourceRewriteTarget,
         projection_reference: SourceRewriteTarget,
-    ) -> ClassFamilyCollectionDerivation:
+    ) -> ClassFamilyCollectionSite:
         _authority_id, authority_digest, authority_node = (
             context.target_node_for_rewrite_target(authority_reference)
         )
@@ -595,25 +600,55 @@ class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
         descendant_symbols = class_index.descendant_symbols(authority_symbol)
         if not descendant_symbols:
             raise ValueError("Class-family authority has no indexed descendants")
-        proof = ClassFamilyCollectionAuthorityProof(
-            reference=reference_proof,
-            class_index=class_index,
-            authority_symbol=authority_symbol,
-            authority_declaration=authority_declaration,
-            descendant_symbols=descendant_symbols,
-            holder_symbol=(
-                None
-                if holder_node is None
-                else reference_proof.resolver.symbol_for_reference(
-                    ast.Name(id=holder_node.name, ctx=ast.Load())
-                )
+        return cls(
+            authority=authority,
+            projection_module=projection_module,
+            proof=ClassFamilyCollectionAuthorityProof(
+                reference=reference_proof,
+                class_index=class_index,
+                authority_symbol=authority_symbol,
+                authority_declaration=authority_declaration,
+                descendant_symbols=descendant_symbols,
+                holder_symbol=(
+                    None
+                    if holder_node is None
+                    else reference_proof.resolver.symbol_for_reference(
+                        ast.Name(id=holder_node.name, ctx=ast.Load())
+                    )
+                ),
             ),
+            holder_node=cast(ast.ClassDef | None, holder_node),
         )
-        statements = (
-            reference_proof.projection_module.module.body
-            if holder_node is None
-            else holder_node.body
+
+    @property
+    def statements(self) -> list[ast.stmt]:
+        return (
+            self.proof.reference.projection_module.module.body
+            if self.holder_node is None
+            else self.holder_node.body
         )
+
+
+@dataclass(frozen=True)
+class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
+    """Exact source proof for deriving one collection from its class authority."""
+
+    candidate: ClassFamilyCollectionCandidate
+    import_source: str | None
+
+    @classmethod
+    def from_context(
+        cls,
+        context: CodemodSelectorContext,
+        authority_reference: SourceRewriteTarget,
+        projection_reference: SourceRewriteTarget,
+    ) -> ClassFamilyCollectionDerivation:
+        site = ClassFamilyCollectionSite.from_context(
+            context, authority_reference, projection_reference
+        )
+        proof = site.proof
+        projection_module = site.projection_module
+        statements = site.statements
         candidates = tuple(
             candidate
             for statement in statements
@@ -637,10 +672,10 @@ class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
             )
         PositionalCollectionReads.require_none(context, candidates[0])
         return cls(
-            authority=authority,
+            authority=site.authority,
             projection_module=projection_module,
             candidate=candidates[0],
-            import_source=reference_proof.required_import_source(context),
+            import_source=proof.reference.required_import_source(context),
         )
 
     def replacement_source(self) -> str:
@@ -732,6 +767,16 @@ class ClassFamilyCollectionSemanticMirrorRecipeBuilder(
     ClassFamilyAuthorityConcept,
 ):
     """Build a source-derived class-family projection recipe."""
+
+    def is_applicable(self) -> bool:
+        """A picked base is the other reading of the roster, and its own builder's."""
+
+        return self.base_pick is None
+
+    @property
+    def base_pick(self) -> DeclaredBasePick | None:
+        metrics = self.finding.metrics
+        return metrics.base_pick if isinstance(metrics, RegistrationMetrics) else None
 
     @cached_property
     def targets(self) -> SemanticMirrorOperationTargets | None:
