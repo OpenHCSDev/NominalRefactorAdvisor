@@ -662,3 +662,86 @@ def test_only_the_typing_qualifiers_and_real_members_name_an_enum(tmp_path: Path
     assert "OWN: Final[Kind] = 'kind_a'\n" in source
     assert "IGNORED: Kind = 'kind_ignored'\n" in source
     assert "QUALIFIED: typing.Final[Kind] = Kind.A\n" in source
+
+
+DERIVED_PYPROJECT = (
+    "[tool.nominal-refactor-advisor]\n"
+    "derived-spellings = [{ family = 'mech:Declared', rule = 'mech:words',"
+    " affix = 'affix', spelling = 'declared_name' }]\n"
+)
+DERIVED_MECHANISM = (
+    "import re\nfrom typing import Self\n\n\n"
+    "def words(stem):\n"
+    "    return re.sub(r'([a-z0-9])([A-Z])', r'\\1_\\2', stem).lower()\n\n\n"
+    "class Declared:\n"
+    "    def __init_subclass__(cls, *, affix=None, declared_name=None, **options):\n"
+    "        super().__init_subclass__(**options)\n\n"
+    "    @classmethod\n"
+    "    def member_named(cls, name: str) -> type[Self]:\n"
+    "        raise NotImplementedError\n\n"
+    "    @classmethod\n"
+    "    def members_with(cls, capability: type) -> tuple[type[Self], ...]:\n"
+    "        raise NotImplementedError\n"
+)
+DERIVED_KINDS = (
+    "from mech import Declared\n\n\n"
+    "class Edit(Declared, affix='Edit'):\n    pass\n\n\n"
+    "class AddEdit(Edit):\n    pass\n\n\n"
+    "class RemoveEdit(Edit):\n    pass\n\n\n"
+    "class RenameEdit(Edit, declared_name='move'):\n    pass\n\n\n"
+    "class Shape(Declared):\n    pass\n\n\n"
+    "class BigCircle(Shape):\n    pass\n"
+)
+
+
+def _derived(tmp_path: Path, use: str) -> tuple[list, dict[str, str]]:
+    (tmp_path / "pyproject.toml").write_text(DERIVED_PYPROJECT)
+    _write(tmp_path, {"mech": DERIVED_MECHANISM, "kinds": DERIVED_KINDS, "use": use})
+    return _replayed(tmp_path)
+
+
+def test_a_lookup_by_a_derived_spelling_becomes_the_member_class(tmp_path: Path):
+    """`Edit` strips its affix, so `AddEdit` spells `add`; `Shape` passes no affix,
+    so `BigCircle` spells `big_circle`; `RenameEdit` writes `move` itself."""
+
+    use = (
+        "from kinds import Edit, Shape\n\n\n"
+        "def add():\n    return Edit.member_named('add')\n\n\n"
+        "def move():\n    return Edit.member_named('move')\n\n\n"
+        "def circle():\n    return Shape.member_named('big_circle')\n"
+    )
+    _records, rewritten = _derived(tmp_path, use)
+    after = rewritten[str(tmp_path / "use.py")]
+    assert "return AddEdit\n" in after
+    assert "return RenameEdit\n" in after
+    assert "return BigCircle\n" in after
+    assert "member_named" not in after
+    assert "from kinds import Edit, Shape, AddEdit, RenameEdit" in after
+    assert "\nfrom kinds import BigCircle" in after
+
+
+def test_an_explicit_spelling_replaces_the_derived_one(tmp_path: Path):
+    """`RenameEdit` declares `move`, so `rename` spells no member and stays a lookup."""
+
+    use = "from kinds import Edit\n\n\ndef rename():\n    return Edit.member_named('rename')\n"
+    _records, rewritten = _derived(tmp_path, use)
+    assert str(tmp_path / "use.py") not in rewritten
+    (finding,) = _identity_findings(tmp_path)
+    assert "the `Edit` member spelled 'rename'" in finding.summary
+    assert "`RenameEdit`" not in finding.summary
+
+
+def test_a_lookup_in_a_scope_that_lists_the_family_is_kept(tmp_path: Path):
+    """The lookup acquires every declaration first; a scope that then lists the
+    family keeps it."""
+
+    use = (
+        "from kinds import Edit\n\n\n"
+        "def listed():\n"
+        "    found = Edit.member_named('remove')\n"
+        "    return found, Edit.members_with(object)\n"
+    )
+    _records, rewritten = _derived(tmp_path, use)
+    assert str(tmp_path / "use.py") not in rewritten
+    (finding,) = _identity_findings(tmp_path)
+    assert "'remove' (`RemoveEdit`)" in finding.summary

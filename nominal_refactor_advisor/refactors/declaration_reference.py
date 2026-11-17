@@ -15,6 +15,7 @@ from nominal_refactor_advisor.class_identity_observations import (
     DeclaredIdentities,
     EnumValueSpelling,
     IdentityPositions,
+    LookupSpelling,
     IdentitySpelling,
     ModuleSpelling,
     NameImport,
@@ -389,7 +390,7 @@ class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
             if named is None:
                 continue
             replacement, how = named
-            found[id(node)] = SpanRewrite(node, replacement)
+            found[id(node)] = SpanRewrite(self.replaced(node, parsed), replacement)
             if how.statement is not None:
                 imported.setdefault(how.statement, {})[how.name] = None
             elif how.created:
@@ -421,6 +422,11 @@ class ReferenceNamedClassOperation(DeclarationReferenceOperation, ABC):
         """The rewritable site's replacement source, and how the file binds the class it names."""
 
         raise NotImplementedError
+
+    def replaced(self, node: ast.expr, parsed: ParsedModule) -> ast.expr:
+        """The expression the site's replacement stands for: the literal itself."""
+
+        return node
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -487,6 +493,37 @@ class ReferenceEnumMemberOperation(ReferenceNamedClassOperation):
         return f"{name}.{member.member}", NameImport(name)
 
 
+@dataclass(frozen=True, kw_only=True)
+class ReferenceLookedUpMemberOperation(ReferenceNamedClassOperation):
+    """Write a lookup of a family member by its spelling, `F.member_named("x")`, as the member class.
+
+    The literal spells one scanned class below the receiver, explicitly or by
+    the repository's declared rule (`DerivedSpelling`), so the call returns that
+    class. The class keeps every use: compared, instantiated, read or passed. A
+    scope that also lists the family keeps its lookup
+    (`LookupSpelling.rewrite`), since the lookup first acquires every
+    declaration of the family. The class is bound as `ReferenceNamedClassOperation`
+    binds one: already bound, added to an earlier `from` statement, or imported
+    after the file's last top-level import (`DeclaredIdentities.class_import`).
+    """
+
+    position_tags: ClassVar[frozenset[str]] = frozenset((LookupSpelling.tag,))
+    default_rationale: ClassVar[str] = (
+        "Name the member class instead of looking it up by its spelling."
+    )
+
+    def named(self, detail, identities, path):
+        _tag, receiver, _method, holding, _reads, literal = detail
+        member = identities.own_member(receiver, literal)
+        if member is None:
+            return None
+        how = identities.class_import(path, int(holding), member)
+        return None if how is None else (how.name, how)
+
+    def replaced(self, node, parsed):
+        return parsed.syntax_index.parent_by_node[node]
+
+
 class DeclarationReferenceFindingRecipeSynthesizer(
     FindingRecipeSynthesizer, DeclarationReferenceConcept, ABC
 ):
@@ -504,6 +541,7 @@ class DeclarationReferenceFindingRecipeSynthesizer(
         ReferenceImportedModuleOperation,
         ReferenceClassNameOperation,
         ReferenceEnumMemberOperation,
+        ReferenceLookedUpMemberOperation,
     )
 
     @staticmethod
