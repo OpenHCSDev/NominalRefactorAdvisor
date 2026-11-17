@@ -138,9 +138,13 @@ from nominal_refactor_advisor.refactors.carrier_fields import (
     ReplaceFieldsWithCarrierOperation,
 )
 from nominal_refactor_advisor.refactors.module_move import (
+    ImportedNameOwner,
     RelocateSymbolsToModuleOperation,
     RelocateSymbolsToNewModuleOperation,
 )
+from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
+from nominal_refactor_advisor.codemod_module_declarations import SourceTopLevelSymbolMoveSelection
+from nominal_refactor_advisor.declaration_dependencies import DeclarationDependencyProjection
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
     SemanticAuthorityKind,
@@ -2678,7 +2682,19 @@ class ComposeMovedOwnerOperation(RepositorySourceReprovedOperation):
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
-        move = relocation_to(snapshot, self.owner, self.home_module)
+        move = relocation_to(
+            snapshot, self.owner, self.home_module, MovedClosure.of(snapshot, self.owner).qualnames
+        )
+        try:
+            RefactorRecipe(recipe_id="placement").with_operation(move).simulate(
+                snapshot
+            ).preflight_report.require_clean()
+        except ValueError as error:
+            raise NeedsInput(
+                f"`{self.owner.qualname}` moves to `{self.home_module}` so composing it "
+                f"closes no import cycle, and that move refuses: {error}",
+                *NeedsInput.needs_of(error),
+            ) from error
         moved = SourceRewriteTarget(file_path=move.destination_path, qualname=self.owner.qualname)
         return in_order_edits(
             snapshot,
@@ -3086,10 +3102,63 @@ def home_subject(snapshot: CodemodSourceSnapshot, home_module: str) -> tuple[str
     return (home_module.rpartition(".")[0],)
 
 
+@dataclass(frozen=True)
+class MovedClosure:
+    """A module-level class with every declaration of its module it reads, which
+    move with it, and the scanned modules those declarations import names from:
+    the modules its new home must import without a cycle."""
+
+    qualnames: tuple[str, ...]
+    reads: frozenset[str]
+
+    @classmethod
+    def of(cls, snapshot: CodemodSourceSnapshot, declaration: SourceRewriteTarget) -> Self:
+        if declaration.file_path is None or declaration.qualname is None:
+            raise NeedsInput("a moved class needs its module and name", NeededInput.OPERATION)
+        selection = SourceTopLevelSymbolMoveSelection.dependency_closure(
+            declaration.file_path,
+            snapshot.module_nodes_by_file_path[declaration.file_path],
+            (declaration.qualname,),
+        )
+        moved = tuple(item.name for item in selection.declarations)
+        module_name = snapshot.parsed_module_for_source_path(declaration.file_path).module_name
+        module = snapshot.module_nodes_by_file_path[declaration.file_path]
+        # A name the module does not bind is a builtin: no module provides it.
+        names = (
+            DeclarationDependencyProjection.from_declarations(
+                tuple(item.node for item in selection.declarations)
+            ).names
+            & LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+        ) - frozenset(moved)
+        return cls(
+            moved,
+            frozenset(
+                module
+                for name in sorted(names)
+                if (module := ImportedNameOwner.declaring_module(snapshot, module_name, name)) is not None
+            ),
+        )
+
+
+def annotation_modes(snapshot: CodemodSourceSnapshot) -> dict[str, type[ModuleAnnotationEvaluationMode]]:
+    """How each scanned module evaluates its annotations, by module name."""
+
+    graph = snapshot.module_import_graph
+    return {
+        module_name: ModuleAnnotationEvaluationMode.from_module(module)
+        for file_path, module in snapshot.module_nodes_by_file_path.items()
+        if (module_name := graph.module_name_for_file_path(file_path)) is not None
+    }
+
+
 def relocation_to(
-    snapshot: CodemodSourceSnapshot, declaration: SourceRewriteTarget, home_module: str
+    snapshot: CodemodSourceSnapshot,
+    declaration: SourceRewriteTarget,
+    home_module: str,
+    moved: tuple[str, ...],
 ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
-    """The module move that declares the module-level class `declaration` names in
+    """The module move that declares the module-level class `declaration` names,
+    with the rest of `moved`, the declarations of its module that go with it, in
     `home_module` instead: into that module when it exists, else into a new module
     of that name beside its package's `__init__`."""
 
@@ -3104,7 +3173,7 @@ def relocation_to(
     existing = graph.unique_source_file_for_module_name(home_module)
     if existing is not None:
         return RelocateSymbolsToModuleOperation(
-            target=source, symbol_qualnames=(qualname,), destination_path=existing.file_path
+            target=source, symbol_qualnames=moved, destination_path=existing.file_path
         )
     package, _, stem = home_module.rpartition(".")
     package_file = graph.unique_source_file_for_module_name(package) if package else None
@@ -3115,7 +3184,7 @@ def relocation_to(
         )
     return RelocateSymbolsToNewModuleOperation(
         target=source,
-        symbol_qualnames=(qualname,),
+        symbol_qualnames=moved,
         destination_path=(Path(package_file.file_path).parent / f"{stem}.py").as_posix(),
     )
 
@@ -3323,7 +3392,9 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
         mixin = SourceRewriteTarget(file_path=self.target.file_path, qualname=qualname)
         moves: tuple[RepositorySourceReprovedOperation, ...] = ()
         if self.home_module is not None:
-            move = relocation_to(snapshot, mixin, self.home_module)
+            # A new mixin moves alone: whether the names it reads can be bound
+            # there was settled when the candidate was placed.
+            move = relocation_to(snapshot, mixin, self.home_module, (qualname,))
             moves = (move,)
             mixin = SourceRewriteTarget(file_path=move.destination_path, qualname=qualname)
         return in_order_edits(
@@ -3676,9 +3747,31 @@ class ClassOverlapFindingRecipeSynthesizer(
         if not closing:
             return None
         users = tuple(dict.fromkeys((owner.module_name, *(c.module_name for c in composers))))
-        lower = ModuleImportGraph(graph.import_edges_by_module).shared_lower_module(users)
+        imports = ModuleImportGraph(graph.import_edges_by_module)
+        closure = MovedClosure.of(snapshot, source_rewrite_target(owner))
+        lower = imports.shared_lower_module(
+            users,
+            closure.reads,
+            homes_among_users=users[1:],
+            modes=annotation_modes(snapshot),
+            source=owner.module_name,
+        )
         if lower is not None:
-            return lower
+            return lower.module
+        pinned = imports.pinning_reads(users, closure.reads)
+        if pinned:
+            raise NeedsInput(
+                f"`{owner.module_name}` already imports, directly or not, "
+                + ", ".join(f"`{module}`" for module in closing)
+                + f", so `{owner.qualname}` moves first; but "
+                + " and ".join(f"`{name}`" for name in closure.qualnames)
+                + " read names from "
+                + ", ".join(f"`{module}`" for module in pinned)
+                + ", which no module below "
+                + ", ".join(f"`{module}`" for module in users)
+                + " can import without a cycle",
+                NeededInput.SOURCE_CHANGE,
+            )
         package = common_package(users)
         if not package:
             raise NeedsInput(

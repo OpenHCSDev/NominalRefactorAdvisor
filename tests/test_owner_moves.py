@@ -1218,3 +1218,110 @@ def test_an_owner_no_module_can_hold_without_a_cycle_refuses_saying_why(tmp_path
         "first; but no module that `tools`, `wire` all import avoids the cycle, and "
         "they share no package to hold a new one"
     )
+
+
+def _delivery_files(package: str) -> dict[str, str]:
+    """`After` restates `Delivered`, whose module imports `After`'s: composing it
+    there closes a cycle. `Delivered` reads `Reference` from `After`'s module and
+    its base `Delivery` from its own, so no module below both can hold it."""
+
+    prefix, dotted = (f"{package}/", f"{package}.") if package else ("", "")
+    files = {
+        f"{prefix}low.py": "UNIT = 1\n",
+        f"{prefix}ref.py": (
+            f"from dataclasses import dataclass\n\nfrom {dotted}low import UNIT\n\n\n"
+            "@dataclass(frozen=True)\nclass Reference:\n    seq: int\n\n\n"
+            "@dataclass(frozen=True)\nclass After:\n    reference: Reference\n\n"
+            "    def refs(self):\n        return (self.reference,)\n\n"
+            "    def cursor(self):\n        return self.reference.seq + UNIT\n"
+        ),
+        f"{prefix}origin.py": (
+            f"from dataclasses import dataclass\n\nfrom {dotted}low import UNIT\n"
+            f"from {dotted}ref import Reference\n\n\n"
+            "class Delivery:\n    def refs(self):\n        raise NotImplementedError\n\n\n"
+            "@dataclass(frozen=True)\nclass Delivered(Delivery):\n    reference: Reference\n\n"
+            "    def refs(self):\n        return (self.reference,)\n\n\n"
+            "class Undelivered(Delivery):\n    def refs(self):\n        return ()\n\n\n"
+            "def both():\n    return Delivered(reference=Reference(seq=3)).refs(), Undelivered().refs(), UNIT\n"
+        ),
+    }
+    if package:
+        files[f"{package}/__init__.py"] = ""
+    return files
+
+
+def test_a_moved_owner_takes_what_it_reads_to_a_home_that_can_import_the_rest(tmp_path: Path) -> None:
+    """`pkg.low` is imported by both and imports neither, but `Delivered` reads
+    `Reference` from `pkg.ref`, which `pkg.low` cannot import without a cycle.
+    So `Delivered` moves into `pkg.ref` itself, taking its base `Delivery` from
+    its own module with it, and `After` composes it there."""
+
+    from nominal_refactor_advisor.codemod import CodemodPlanSequence
+
+    _write(tmp_path, _delivery_files("pkg"))
+    probe = (
+        "from pkg.origin import both\nfrom pkg.ref import After, Reference\n"
+        "after = After(reference=Reference(seq=1))\nprint(both(), after.refs(), after.cursor(), after)\n"
+    )
+    before = _run(tmp_path, probe)
+
+    evaluation, snapshot = _composition(tmp_path)
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+
+    ref = (tmp_path / "pkg/ref.py").read_text()
+    origin = (tmp_path / "pkg/origin.py").read_text()
+    assert "class Delivery:" in ref and "class Delivered(Delivery):" in ref, ref
+    assert "class After(Delivered):" in ref, ref
+    assert "class Delivered" not in origin and "class Delivery:" not in origin, origin
+    assert "class Undelivered(Delivery):" in origin
+    assert "from pkg.low" not in ref.replace("from pkg.low import UNIT", "")
+    assert _run(tmp_path, probe) == before
+
+
+def test_a_moved_owner_whose_reads_pin_it_refuses_naming_them(tmp_path: Path) -> None:
+    """Top-level modules share no package, so only a module both import could
+    hold `Delivered`, and it reads `Reference` from `ref`, one of them."""
+
+    _write(tmp_path, _delivery_files(""))
+
+    evaluation, _ = _composition(tmp_path)
+
+    assert evaluation.rejection_reason == (
+        "`origin` already imports, directly or not, `ref`, so `Delivered` moves first; "
+        "but `Delivery` and `Delivered` read names from `ref`, which no module below "
+        "`origin`, `ref` can import without a cycle"
+    )
+
+
+def test_a_moved_owner_prefers_a_home_evaluating_annotations_as_its_module_does(
+    tmp_path: Path,
+) -> None:
+    """`pkg.annotated` and `pkg.base` both qualify; `pkg.annotated` comes first by name,
+    but it stringizes annotations and `pkg.tools` does not, so the owner goes to
+    `pkg.base`, whose annotations evaluate as before."""
+
+    from nominal_refactor_advisor.codemod import CodemodPlanSequence
+
+    files = _owner_files("pkg")
+    files["pkg/annotated.py"] = "from __future__ import annotations\n\nTWO = 2\n"
+    for name in ("pkg/wire.py", "pkg/tools.py"):
+        files[name] = files[name].replace(
+            "from pkg.base import UNIT\n", "from pkg.base import UNIT\nfrom pkg.annotated import TWO\n"
+        )
+    _write(tmp_path, files)
+
+    evaluation, snapshot = _composition(tmp_path)
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+
+    assert "class Unsupplied:" in (tmp_path / "pkg/base.py").read_text()
+    assert "class Unsupplied" not in (tmp_path / "pkg/annotated.py").read_text()
