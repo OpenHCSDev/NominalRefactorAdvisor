@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -9,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from nominal_refactor_advisor.ast_tools import parse_python_modules
+from nominal_refactor_advisor.class_index import InstalledClassDeclarations
+from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.refactors.class_overlap import (
     ClassReferenceSites,
@@ -268,6 +271,113 @@ def test_the_composition_reads_a_subclass_test_by_the_class_it_asks_about(tmp_pa
     _write(tmp_path, {"pkg/located.py": owner, "pkg/checks.py": flipped})
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match=r"`Located` is told apart by type in 1 place\(s\) \(type_test\)"):
+        operation.source_edits(snapshot)
+
+
+INSTALLED_REPRESENTATION = (
+    "from abc import ABC\n\n"
+    "from nra_installed_base import Dispatch\n\n\n"
+    "class Representation(Dispatch, ABC):\n"
+    "    __slots__ = ()\n\n\n"
+    "class Omitted(Representation):\n"
+    "    def value_or(self, default):\n"
+    "        return default\n\n\n"
+    "class PiOmitted(Representation):\n"
+    "    def value_or(self, default):\n"
+    "        return default\n\n"
+    "    def is_reported(self) -> bool:\n"
+    "        return False\n"
+)
+INSTALLED_PROBE = (
+    "from pkg.omitted import PiOmitted\n"
+    "value = PiOmitted()\n"
+    "print(value.value_or(3), value.is_reported(), value.handle(), [c.__name__ for c in PiOmitted.__mro__])\n"
+)
+
+
+def _installed_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A package outside the scanned root, importable, re-exporting its class."""
+
+    site = tmp_path / "site"
+    (site / "nra_installed_base").mkdir(parents=True)
+    (site / "nra_installed_base/__init__.py").write_text("from .dispatch import Dispatch\n")
+    (site / "nra_installed_base/dispatch.py").write_text(
+        "class Dispatch:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n\n"
+        "    def handle(self) -> str:\n"
+        "        return 'dispatch'\n"
+    )
+    monkeypatch.syspath_prepend(str(site))
+    InstalledModule.located_source.cache_clear()
+    InstalledModule.parsed.cache_clear()
+    InstalledClassDeclarations.module.cache_clear()
+    return site
+
+
+def test_an_owner_whose_ancestry_reaches_an_installed_class_is_composed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Dispatch` lives outside the scan, in installed source NRA reads without
+    running: the C3 orders before and after include it, and every name keeps its
+    winner, so `PiOmitted` composes `Omitted`."""
+
+    site = _installed_site(tmp_path, monkeypatch)
+    project = tmp_path / "project"
+    _write(project, {"pkg/__init__.py": "", "pkg/omitted.py": INSTALLED_REPRESENTATION})
+
+    def ran() -> str:
+        return subprocess.run(
+            [sys.executable, "-c", INSTALLED_PROBE],
+            cwd=project,
+            env={**os.environ, "PYTHONPATH": str(site)},
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+    before = ran()
+    path = (project / "pkg/omitted.py").as_posix()
+    _apply(
+        project,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="PiOmitted"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Omitted"),
+        ),
+    )
+    source = (project / "pkg/omitted.py").read_text()
+    assert "class PiOmitted(Omitted, Representation):\n    def is_reported" in source
+    assert ran().split("[")[0] == before.split("[")[0]
+
+
+def test_a_base_with_no_installed_python_source_is_named_in_the_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`sqlite3.Cursor` is implemented in C: no `.py` source declares it, so its
+    C3 order is unknown and composing an owner built on it refuses, naming it."""
+
+    _installed_site(tmp_path, monkeypatch)
+    _write(
+        tmp_path / "project",
+        {
+            "pkg/__init__.py": "",
+            "pkg/cursors.py": (
+                "from sqlite3 import Cursor\n\n\n"
+                "class Lent(Cursor):\n    def close(self) -> None:\n        pass\n\n\n"
+                "class Plain:\n    def close(self) -> None:\n        pass\n"
+            ),
+        },
+    )
+    path = (tmp_path / "project/pkg/cursors.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path / "project"))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Plain"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Lent"),
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"`Lent` has base `sqlite3.Cursor`, which neither the scan nor an installed `.py` source declares",
+    ):
         operation.source_edits(snapshot)
 
 
