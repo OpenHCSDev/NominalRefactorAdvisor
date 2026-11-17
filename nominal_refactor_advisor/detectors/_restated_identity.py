@@ -16,6 +16,7 @@ from nominal_refactor_advisor.refactors.declaration_reference import (
     ReferenceClassNameOperation,
     ReferenceEnumMemberOperation,
     ReferenceImportedModuleOperation,
+    ReferenceLookedUpMemberOperation,
     UnquoteResolvedTypeNamesOperation,
 )
 from nominal_refactor_advisor.models import (
@@ -44,12 +45,13 @@ class RestatedIdentityDetector(
     restated = RestatedFact(
         fact="The string spells a declared identity (a class name, a module's dotted name, a family member's distinct spelling, or an enum member's value), a second copy of it that a rename or a same-spelled sibling breaks silently.",
         owner="The owner is the declaration itself: the class object, the imported module, a method the family declares, or the enum member.",
-        factoring="Reference the declaration instead of spelling it: name the class (an unquoted annotation, or the class object passed or compared), import the module and pass it or its `__name__`, and replace a comparison of member spellings with the member class or a method the family declares, and write a string in a position a declaration types as an enum as the member it equals, `E.MEMBER` (rewritten when every base up to `StrEnum` keeps the member answering as its string); keep the spelling only in the family's boundary decoder.",
+        factoring="Reference the declaration instead of spelling it: name the class (an unquoted annotation, or the class object passed or compared), import the module and pass it or its `__name__`, replace a comparison of member spellings with the member class or a method the family declares, write a lookup by a member's spelling (`F.member_named('x')`, the spelling explicit or derived by the rule the repository declares in `derived-spellings`) as the member class, and write a string in a position a declaration types as an enum as the member it equals, `E.MEMBER` (rewritten when every base up to `StrEnum` keeps the member answering as its string); keep the spelling only in the family's boundary decoder.",
         operations=(
             UnquoteResolvedTypeNamesOperation,
             ReferenceImportedModuleOperation,
             ReferenceClassNameOperation,
             ReferenceEnumMemberOperation,
+            ReferenceLookedUpMemberOperation,
         ),
     )
     finding_spec = restated.spec(

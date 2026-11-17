@@ -41,6 +41,7 @@ from nominal_refactor_advisor.ast_tools import (
     Setattr,
 )
 from nominal_refactor_advisor.class_index import module_import_aliases
+from nominal_refactor_advisor.declared_root import DeclaredRoot, DerivedSpelling
 from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.annotation_semantics import TypeQualifier
 from nominal_refactor_advisor.quoted_reference import (
@@ -71,7 +72,9 @@ class DeclaredClass:
     `instance_attributes` are the names it declares as per-object state (an
     annotated field that is not a ClassVar, or `self.name = ...` in a method);
     `lookups` are its classmethods that return a member class of the family for
-    an argument. `defines` are the names its body binds with a `def` or an
+    an argument, and `enumerators` those that return a collection of them;
+    `unnamed_keywords` are the class keywords it passes `None`
+    (`declared_name=None`). `defines` are the names its body binds with a `def` or an
     assignment to a bare name: the methods it overrides.
 
     What decides whether the class object's `__name__` is the statement's name:
@@ -93,6 +96,8 @@ class DeclaredClass:
     instance_attributes: tuple[str, ...]
     lookups: tuple[str, ...]
     defines: tuple[str, ...] = ()
+    unnamed_keywords: tuple[str, ...] = ()
+    enumerators: tuple[str, ...] = ()
     top_level: bool = False
     decorators: tuple[str, ...] = ()
     origins: tuple[str, ...] = ()
@@ -464,6 +469,16 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
             lookups=tuple(
                 method.name for method in methods if cls.is_lookup(method, node.name)
             ),
+            enumerators=tuple(
+                method.name
+                for method in methods
+                if cls.is_enumerator(method, node.name)
+            ),
+            unnamed_keywords=tuple(
+                keyword.name
+                for keyword in CallKeywords.of(node.keywords).named
+                if isinstance(keyword.value, ast.Constant) and keyword.value.value is None
+            ),
             defines=tuple(
                 sorted(
                     {method.name for method in methods}
@@ -544,6 +559,29 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
                             value=ast.Name(id=receiver), attr=name, ctx=ast.Store()
                         ) if (receiver == own):
                             yield name
+
+    @staticmethod
+    def is_enumerator(
+        function: ast.FunctionDef | ast.AsyncFunctionDef, owner: str
+    ) -> bool:
+        """A classmethod returning a collection of `type[Self]` or `type[Owner]`."""
+
+        decorated = any(
+            isinstance(decorator, ast.Name) and decorator.id == classmethod.__name__
+            for decorator in function.decorator_list
+        )
+        match function.returns:
+            case ast.Subscript(value=ast.Name(id=outer), slice=elements) if (
+                outer != "type"
+            ):
+                return decorated and any(
+                    isinstance(inner, ast.Subscript)
+                    and isinstance(inner.value, ast.Name)
+                    and inner.value.id == "type"
+                    and ast.unparse(inner.slice) in ("Self", owner)
+                    for inner in ast.walk(elements)
+                )
+        return False
 
     @staticmethod
     def is_lookup(function: ast.FunctionDef | ast.AsyncFunctionDef, owner: str) -> bool:
@@ -816,6 +854,80 @@ class ClassNameOwners:
             if owner is None or not self.keeps_name(owner, visiting | {qualified}):
                 return False
         return True
+
+    def derived_spellings(self) -> Iterator[tuple[str, str, SourceLocation]]:
+        """Each scanned member's spelling a declared rule derives (`DerivedSpelling`).
+
+        A member that writes its spelling, as a class keyword or constant, or
+        passes `None` for it, keeps that: its explicit value is already read, and
+        `None` declares no member.
+        """
+
+        for qualified, declared in self.classes.items():
+            module_name = qualified.rpartition(".")[0]
+            if module_name not in self.scanned:
+                continue
+            module = self.modules[module_name]
+            written = {
+                *(name for name, _value in (*declared.keywords, *declared.constants)),
+                *declared.unnamed_keywords,
+            }
+            for derived in DeclaredRoot.derived_spellings_for(Path(module.file_path)):
+                if derived.spelling in written:
+                    continue
+                for affix in self.member_affix(qualified, derived):
+                    yield (
+                        derived.spelling,
+                        derived.of(declared.name, affix),
+                        SourceLocation(module.file_path, declared.line, declared.name),
+                    )
+
+    def parents(self, qualified: str) -> tuple[str, ...]:
+        """The classes a class's bases resolve to, in order."""
+
+        return tuple(
+            found
+            for origin in self.classes[qualified].origins
+            if origin and (found := self.canonical(origin)) is not None
+        )
+
+    def is_root(self, qualified: str, derived: DerivedSpelling) -> bool:
+        """A root of `derived`'s mechanism: it inherits the mechanism directly, or
+        passes the affix keyword that starts a family of its own."""
+
+        declared = self.classes[qualified]
+        return qualified != derived.family and (
+            derived.family in self.parents(qualified)
+            or any(name == derived.affix for name, _value in declared.keywords)
+        )
+
+    def member_affix(self, qualified: str, derived: DerivedSpelling) -> tuple[str, ...]:
+        """The affix of the root the class is a member below: none for a root, a
+        class outside the family, or one below two roots."""
+
+        if self.is_root(qualified, derived):
+            return ()
+        found: dict[str, None] = {}
+        frontier = list(self.parents(qualified))
+        seen = set(frontier)
+        while frontier:
+            current = frontier.pop(0)
+            if self.is_root(current, derived):
+                found[current] = None
+                continue
+            for parent in self.parents(current):
+                if parent not in seen:
+                    seen.add(parent)
+                    frontier.append(parent)
+        if len(found) != 1:
+            return ()
+        ((root, _none),) = found.items()
+        return (
+            next(
+                (value for name, value in self.classes[root].keywords if name == derived.affix),
+                "",
+            ),
+        )
 
     def references(self, binding: str, literal: str) -> bool:
         """Whether `literal.__name__`, where the name is bound to `binding`, is the literal."""
@@ -1250,14 +1362,35 @@ class LookupSpelling(IdentitySpelling):
 
     The member is the receiver's own: one of its descendants spelled so. A test
     of the lookup itself is no site (`IdentityPositions.tests_the_decoder`).
+
+    The call is the member class, so the class can stand where it stands: the
+    one difference is that a lookup first acquires every declaration of the
+    family, which only a scope that also enumerates the family can see. The
+    detail carries the holding statement and the attributes the call's scope
+    reads off the receiver; a read of an enumerator (`DeclaredClass.enumerators`
+    or the registry) keeps the lookup.
     """
 
     tag = "lookup"
+    REGISTRY: ClassVar[str] = "__registry__"
+
+    @classmethod
+    def rewrite(cls, detail, identities, file_path):
+        _tag, receiver, _method, holding, reads, literal = detail
+        if not holding or identities.enumerates(receiver, frozenset(reads.split(","))):
+            return ReferenceRewrite.NONE
+        member = identities.own_member(receiver, literal)
+        if member is None or identities.class_import(file_path, int(holding), member) is None:
+            return ReferenceRewrite.NONE
+        return ReferenceRewrite.ANY_INTERPRETER
 
     @classmethod
     def resolve(cls, site, identities):
-        _tag, receiver, method, literal = site.detail
+        _tag, receiver, method, _holding, _reads, literal = site.detail
         return identities.member_looked_up(receiver, method, literal)
+
+
+LookupSpelling.rewrite_kind = LookupSpelling
 
 
 class EnumValueSpelling(IdentitySpelling):
@@ -1434,6 +1567,7 @@ class DeclaredIdentities:
     bases: dict[str, tuple[str, ...]]
     instance_attributes: dict[str, frozenset[str]]
     class_names: ClassNameOwners
+    enumerators: dict[str, tuple[str, ...]] = field(default_factory=dict)
     enum_values: dict[str, tuple[EnumMember, ...]] = field(default_factory=dict)
     carriers: dict[tuple[str, str, str], tuple[str, ...]] = field(default_factory=dict)
     covered: dict[tuple[str, str, str], tuple[tuple[str, str], ...]] = field(
@@ -1461,6 +1595,7 @@ class DeclaredIdentities:
         consumers: dict[str, list[SourceLocation]] = defaultdict(list)
         slots: dict[str, list[SourceLocation]] = defaultdict(list)
         lookups: dict[str, set[str]] = defaultdict(set)
+        enumerators: dict[str, set[str]] = defaultdict(set)
         bases: dict[str, set[str]] = defaultdict(set)
         instance_attributes: dict[str, set[str]] = defaultdict(set)
         explicit: list[tuple[str, str, SourceLocation]] = []
@@ -1474,6 +1609,7 @@ class DeclaredIdentities:
                 )
                 classes[declared.name].append(location)
                 lookups[declared.name].update(declared.lookups)
+                enumerators[declared.name].update(declared.enumerators)
                 bases[declared.name].update(declared.base_names)
                 instance_attributes[declared.name].update(declared.instance_attributes)
                 for keyword in declared.consumed_keywords:
@@ -1541,8 +1677,9 @@ class DeclaredIdentities:
                 name: frozenset(found) for name, found in instance_attributes.items()
             },
             class_names=class_names,
+            enumerators={name: tuple(sorted(found)) for name, found in enumerators.items()},
             enum_values=cls.enum_values_of(class_names),
-        ).with_family_values(explicit)
+        ).with_family_values((*explicit, *class_names.derived_spellings()))
 
     @staticmethod
     def enum_values_of(owners: ClassNameOwners) -> dict[str, tuple[EnumMember, ...]]:
@@ -1594,11 +1731,12 @@ class DeclaredIdentities:
     def with_family_values(
         self, explicit: Iterable[tuple[str, str, SourceLocation]]
     ) -> DeclaredIdentities:
-        """Every explicit value of a keyword or slot spelling on a class of its family names that member.
+        """Every explicit or derived value of a keyword or slot spelling on a class of its family names that member.
 
         A family that consumes a keyword, or declares a slot every subclass fills,
         declares the spelling per member, so a member that declares one alone
-        among its siblings still names itself.
+        among its siblings still names itself; a family whose rule derives the
+        spelling (`ClassNameOwners.derived_spellings`) names every member by it.
         """
 
         added: dict[str, dict[str, list[tuple[str, SourceLocation]]]] = defaultdict(
@@ -1745,6 +1883,73 @@ class DeclaredIdentities:
         resolved = self.resolved_class(receiver)
         return not resolved or resolved in spellings.family_bases
 
+    def own_spellings(
+        self, receiver: str, spellings: MemberSpellings
+    ) -> tuple[tuple[str, SourceLocation], ...]:
+        """The spellings, explicit or derived, of the members below `receiver`:
+        the classes its lookup can return."""
+
+        if not self.in_family(receiver, spellings):
+            return ()
+        return tuple(
+            (value, location)
+            for value, location in spellings.members
+            if receiver in self.ancestors(location.symbol)
+        )
+
+    def own_members(self, receiver: str) -> Iterator[tuple[str, SourceLocation]]:
+        for spellings in self.members.values():
+            yield from self.own_spellings(receiver, spellings)
+
+    def own_member(self, receiver: str, literal: str) -> str | None:
+        """The one scanned class below `receiver` that `literal` spells, qualified."""
+
+        found = {
+            f"{module.module_name}.{location.symbol}"
+            for value, location in self.own_members(receiver)
+            if value == literal
+            and (module := self.class_names.by_path.get(location.file_path)) is not None
+        }
+        return next(iter(found)) if len(found) == 1 else None
+
+    def enumerates(self, receiver: str, reads: frozenset[str]) -> bool:
+        """Whether a scope reading `reads` off `receiver` lists the family: its
+        registry, or a classmethod returning a collection of its members."""
+
+        listing = {
+            LookupSpelling.REGISTRY,
+            *(
+                name
+                for ancestor in self.ancestors(receiver)
+                for name in self.enumerators.get(ancestor, ())
+            ),
+        }
+        return not reads.isdisjoint(listing)
+
+    def class_import(self, file_path: str, holding: int, qualified: str) -> NameImport | None:
+        """How the file binds the class `qualified` where the top-level statement
+        `holding` runs: already bound to it, by a name added to an earlier `from`
+        statement, or by a new `from owner import Name`; never over another binding
+        of the name."""
+
+        owners = self.class_names
+        module = owners.by_path.get(file_path)
+        if module is None:
+            return None
+        name = qualified.rpartition(".")[2]
+        binding, free = module.names.reference(holding, name)
+        if binding:
+            return NameImport(name) if owners.canonical(binding) == qualified else None
+        if not free:
+            return None
+        statement = owners.importable(file_path, holding, name)
+        if statement is not None and owners.canonical(f"{statement.module}.{name}") == qualified:
+            return NameImport(name, statement=statement.index)
+        created = owners.new_import(file_path, holding, name)
+        if created is not None and owners.canonical(f"{created}.{name}") == qualified:
+            return NameImport(name, created=created)
+        return None
+
     def member_looked_up(
         self, receiver: str, method: str, literal: str
     ) -> ResolvedIdentity | None:
@@ -1759,13 +1964,7 @@ class DeclaredIdentities:
         if declaring is None:
             return None
         for spellings in self.members.values():
-            if not self.in_family(receiver, spellings):
-                continue
-            own = tuple(
-                (value, location)
-                for value, location in spellings.members
-                if receiver in self.ancestors(location.symbol)
-            )
+            own = self.own_spellings(receiver, spellings)
             if any(value == literal for value, _location in own):
                 return spellings.spelled_among(literal, own)
         return ResolvedIdentity(
@@ -2075,10 +2274,40 @@ class IdentityPositions:
             ) if isinstance(
                 receiver, (ast.Name, ast.Attribute)
             ) and not self.tests_the_decoder(node_index):
+                holding = self.holding(node_index)
                 yield self.site(
                     literal_node,
-                    LookupSpelling.detail(self.called(receiver), method, literal),
+                    LookupSpelling.detail(
+                        self.called(receiver),
+                        method,
+                        "" if holding is None else str(holding),
+                        ",".join(self.receiver_reads(node_index, receiver)),
+                        literal,
+                    ),
                 )
+
+    def receiver_reads(self, node_index: int, receiver: ast.expr) -> tuple[str, ...]:
+        """The attributes the call's scope reads off the same receiver: the
+        innermost enclosing function, or the module."""
+
+        scope = next(
+            (
+                ancestor
+                for ancestor in reversed(self.index.ancestor_nodes(node_index))
+                if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
+            ),
+            self.parsed_module.module,
+        )
+        named = self.called(receiver)
+        return tuple(
+            sorted(
+                {
+                    node.attr
+                    for node in ast.walk(scope)
+                    if isinstance(node, ast.Attribute) and self.called(node.value) == named
+                }
+            )
+        )
 
     REFUSAL_CHECKS: ClassVar[frozenset[str]] = frozenset(
         ("raises", "assertRaises", "assertRaisesRegex")
