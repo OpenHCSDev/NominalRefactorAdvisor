@@ -109,7 +109,8 @@ class AnsweredMethod:
         self, file_path: str, expression: ast.expr, parents: dict[ast.AST, ast.AST]
     ) -> str | None:
         """The scanned class an expression names where it stands: `Name` by its
-        binding, `module.Name` through the module it imports; None for anything else."""
+        binding, `module.Name` by what that module binds the name to, its own class or one it
+        imports; None for anything else."""
 
         scopes = _name_scopes(expression, parents)
         match expression:
@@ -121,7 +122,9 @@ class AnsweredMethod:
                 if not isinstance(binding, OtherModule):
                     return None
                 provider = self.snapshot.module_import_graph.unique_source_file_for_module_name(binding.symbol)
-                found = None if provider is None else self.declared_class(provider.file_path, name)
+                found = None if provider is None else self.named_class(
+                    provider.file_path, name, (self.snapshot.module_nodes_by_file_path[provider.file_path],),
+                )
                 return found.symbol if isinstance(found, (NamedClass, OtherClass)) else None
         return None
 
@@ -417,7 +420,8 @@ class NameBinding:
 
 @dataclass(frozen=True)
 class ImportedName(NameBinding):
-    """`from module import name`: the class it resolves to, or outside the scan."""
+    """`from module import name`: what that module binds the name to (its own class, or one it
+    imports in turn), or outside the scan."""
 
     statement: ast.ImportFrom
     alias: ast.alias
@@ -433,7 +437,9 @@ class ImportedName(NameBinding):
         provider = None if module is None else graph.unique_source_file_for_module_name(module)
         if provider is None:
             return OutsideScan(str(module))
-        declared = moved.declared_class(provider.file_path, self.alias.name)
+        declared = moved.named_class(
+            provider.file_path, self.alias.name, (moved.snapshot.module_nodes_by_file_path[provider.file_path],),
+        )
         submodule = f"{module}.{self.alias.name}"
         if declared is None and graph.unique_source_file_for_module_name(submodule) is not None:
             return OtherModule(submodule)

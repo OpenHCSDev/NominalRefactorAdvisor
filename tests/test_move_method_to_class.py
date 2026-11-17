@@ -404,3 +404,27 @@ def test_a_runtime_read_is_not_answered_by_a_destination_import_guarded_for_type
 
     with pytest.raises(CodemodOperationPreflightError, match="only under TYPE_CHECKING"):
         _simulate(tmp_path)
+
+
+@pytest.mark.native_proof
+@pytest.mark.parametrize(
+    ("binding", "read"),
+    (("import json\n", "json.dumps(self.name)"), ("import os.path as osp\n", "osp.basename(self.name)")),
+)
+def test_a_module_the_method_reads_is_imported_into_the_destination_as_the_source_binds_it(
+    tmp_path: Path, binding: str, read: str
+) -> None:
+    """`import json` binds a module, not a name of the source: the destination imports the
+    module itself, where the carry used to import it from the source module and refuse the
+    cycle that made."""
+
+    threads = binding + THREADS.replace(
+        "'name': replace(self, name=self.name).name}", f"'name': {read}}}",
+    )
+    _write(tmp_path, {"threads": threads, "requests": REQUESTS, "config": CONFIG})
+    result = _simulate(tmp_path)
+
+    assert result.is_clean is True, result.preflight_report
+    moved = _source(tmp_path, result, "requests")
+    assert binding in moved
+    assert "from pkg.threads import json" not in moved and "from pkg.threads import osp" not in moved
