@@ -22,6 +22,7 @@ expression it could not prove.
 from __future__ import annotations
 
 import ast
+import inspect
 import types
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -1380,6 +1381,8 @@ class BaseDropReads(CreationReads):
     """One creation function's reads of a base list a drop shortens: truthiness and
     passing it on stay the same; reading any one base could meet the dropped one."""
 
+    proof: BaseDropCreationProof
+
     @property
     def unproved(self) -> str:
         return f"NRA needs a proof that dropping {self.proof.owner_name} leaves it unchanged"
@@ -1412,7 +1415,7 @@ class BaseDropReads(CreationReads):
         ancestors = frozenset(
             f"{ancestor.__module__}.{ancestor.__qualname__}"
             for metaclass in metaclasses
-            for ancestor in metaclass.__mro__
+            for ancestor in inspect.getmro(metaclass)
             if ancestor not in (type, object)
         )
         return not any(

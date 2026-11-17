@@ -115,7 +115,7 @@ class BaseListReads(ParsedModuleSetFact):
 
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> BaseListReads:
-        found = []
+        found: list[tuple[ParsedModule, ast.expr, ast.AST | None]] = []
         for module in modules:
             reads = tuple(cls.found(module.module))
             if not reads:
