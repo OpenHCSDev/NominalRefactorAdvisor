@@ -153,6 +153,8 @@ class BasesReaders:
         verdicts = self.snapshot.class_overlap_verdicts
         orders = {symbol: verdicts.linearized(symbol) for symbol in dropped}
         for module, read, parent in self.snapshot.module_set.fact(BaseListReads).reads:
+            if not self.reaches(module, read, indexed):
+                continue
             if not self.unaffected(module, read, parent, orders):
                 raise NeedsInput(
                     f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` "
@@ -160,6 +162,21 @@ class BasesReaders:
                     f"from `{indexed.qualname}` could change what it sees",
                     NeededInput.PROOF,
                 )
+
+    def reaches(self, module: ParsedModule, read: ast.expr, indexed: CompactIndexedClass) -> bool:
+        """Whether the read can see `indexed`'s own bases: `X.__bases__` is `X`'s own,
+        and `X.__orig_bases__` is `X`'s or an ancestor's, so a read of a named class
+        whose order does not hold `indexed` never sees them."""
+
+        if not isinstance(read, ast.Attribute):
+            return True
+        receiver = self.named(module, read.value)
+        if receiver is None or self.snapshot.class_overlap_verdicts.class_index.class_for(receiver) is None:
+            return True
+        try:
+            return indexed.symbol in self.snapshot.class_overlap_verdicts.linearized(receiver)
+        except NeedsInput:
+            return True
 
     def unaffected(
         self,

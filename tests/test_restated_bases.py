@@ -159,6 +159,26 @@ def test_a_reader_that_could_meet_the_dropped_base_needs_a_proof(tmp_path: Path)
     assert NeededInput.PROOF in evaluation.needs
 
 
+def test_a_read_of_a_named_class_sees_only_the_bases_in_its_order(tmp_path: Path):
+    reader = (
+        "from pkg.registries import OutcomeViewer\n\n\n"
+        "class Other:\n    pass\n\n\n"
+        "class Viewer(OutcomeViewer):\n    pass\n\n\n"
+        "def unrelated():\n    return [base.__name__ for base in Other.__orig_bases__]\n\n\n"
+    )
+    _write(tmp_path, {**PACKAGE, "pkg/reader.py": reader})
+    finding = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == "OutcomeViewer")
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason == ""
+
+    for read in ("OutcomeViewer.__bases__", "Viewer.__orig_bases__"):
+        _write(tmp_path, {**PACKAGE, "pkg/reader.py": reader + f"def related():\n    return [b.__name__ for b in {read}]\n"})
+        finding = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == "OutcomeViewer")
+        evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+        assert "pkg/reader.py" in evaluation.rejection_reason, read
+        assert NeededInput.PROOF in evaluation.needs
+
+
 FAMILIES = (
     "from abc import ABC, ABCMeta\n\n\n"
     "def handles(kind):\n    def mark(function):\n        function.handled = kind\n        return function\n\n    return mark\n\n\n"
