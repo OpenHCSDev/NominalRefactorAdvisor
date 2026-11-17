@@ -59,7 +59,7 @@ def _apply_all(root: Path) -> None:
 
 
 def test_hidden_import_continues_the_stable_sequence():
-    assert PatternId.HIDDEN_IMPORT == 53
+    assert PatternId.HIDDEN_IMPORT == 54
 
 
 def test_imports_that_close_no_cycle_move_to_the_top(tmp_path: Path):

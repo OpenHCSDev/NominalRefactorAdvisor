@@ -27,20 +27,11 @@ from nominal_refactor_advisor.models import (
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
-from nominal_refactor_advisor.detectors._base import CompactProjectionGroups
 from nominal_refactor_advisor.detectors._restated_facts import (
     JoinedRestatedFactDetector,
     RestatedFact,
     _listed,
 )
-
-
-def _declared_identities(
-    projections_by_family: CompactProjectionGroups,
-) -> DeclaredIdentities:
-    return DeclaredIdentities.from_modules(
-        DeclaredIdentityFamily.modules_in(projections_by_family)
-    )
 
 
 class RestatedIdentityDetector(
@@ -70,7 +61,9 @@ class RestatedIdentityDetector(
         (ObservationTag.SEMANTIC_STRING_LITERAL,),
     )
 
-    compact_shared_group_context_builder = staticmethod(_declared_identities)
+    compact_shared_group_context_builder = staticmethod(
+        DeclaredIdentities.from_projection_groups
+    )
 
     def findings_from_sites(
         self, sites: Iterable[RestatingSite], context: DeclaredIdentities

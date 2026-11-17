@@ -634,8 +634,19 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.MRO_ORDERING,),
     )
-    HIDDEN_IMPORT = _pattern(
+    STRING_KEYED_FAMILY = _pattern(
         stable_id=53,
+        display_name="String-Keyed Family",
+        required_relation=(
+            "Several functions select behaviour by comparing one key with "
+            "overlapping string literals, so the strings are a nominal family "
+            "kept by hand: its members are the literal groups no site tells "
+            "apart, as many as the confusability graph's chromatic number."
+        ),
+        witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
+    )
+    HIDDEN_IMPORT = _pattern(
+        stable_id=54,
         display_name="Hidden Import",
         required_relation=(
             "A module imports a scanned module under `TYPE_CHECKING` or inside a "
