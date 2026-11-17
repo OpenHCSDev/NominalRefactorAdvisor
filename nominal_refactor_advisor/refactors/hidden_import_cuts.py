@@ -133,18 +133,23 @@ class CutHiddenCycleOperation(RelocationStep, RepositorySourceReprovedOperation)
     def source_edits_from_snapshot(self, snapshot: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
         relocation = self.relocation(snapshot)
         (_, moved) = in_order_states(snapshot, (relocation,), f"cut-{self.moved[0]}")
-        plan = moved.module_set.fact(HiddenImportPlan)
-        freed = sorted({hidden.module.file_path for hidden in plan.accepted})
+        freed = moved.module_set.fact(HiddenImportPlan).freed_by(snapshot.module_set.fact(HiddenImportPlan))
+        by_file: dict[str, list[str]] = defaultdict(list)
+        for hidden in freed:
+            by_file[hidden.module.file_path].append(hidden.identity)
         return in_order_edits(
             snapshot,
             (
                 relocation,
-                *(PromoteHiddenImportsOperation(target=SourceRewriteTarget(file_path=path)) for path in freed),
+                *(
+                    PromoteHiddenImportsOperation(target=SourceRewriteTarget(file_path=path), only=tuple(identities))
+                    for path, identities in sorted(by_file.items())
+                ),
             ),
             f"cut-{self.moved[0]}",
             self.rationale_text(
                 f"Move {', '.join(f'`{name}`' for name in self.moved)} to `{self.destination}` "
-                f"and import the {len(plan.accepted)} hidden import(s) that move frees at their modules' tops."
+                f"and import the {len(freed)} hidden import(s) that move frees at their modules' tops."
             ),
         )
 
@@ -231,7 +236,9 @@ class HiddenImportCuts:
         """Moving every name `edges` read, with its closure, down to one module.
         The destination sits below every module `cycle` holds, each a reader of the
         hub through a refused import, not only the readers this cut frees: a
-        declaration moved into another reader stays inside the cycle it leaves."""
+        declaration moved into another reader stays inside the cycle it leaves.
+        Into the sole reader it reads back from, it leaves the cycle: that
+        reader's import of it becomes its own name."""
 
         closure = MovedClosure.of_roots(self.snapshot, file_path, tuple(sorted({n for e in edges for n in e.names})))
         readers = tuple(sorted({edge.reader for edge in edges}))
@@ -241,7 +248,12 @@ class HiddenImportCuts:
         except NeedsInput as need:
             return HubStays(hub, (), tuple((edge.refusal, need) for edge in edges))
         reached = self.reached_by(destination, closure)
-        dissolved = tuple(edge for edge in edges if not any(self.imports.reaches(m, edge.reader) for m in reached))
+        dissolved = tuple(
+            edge
+            for edge in edges
+            if not any(m != edge.reader and self.imports.reaches(m, edge.reader) for m in reached)
+            and (edge.reader == destination or edge.reader not in reached)
+        )
         needs = tuple(
             (
                 edge.refusal,
@@ -329,6 +341,8 @@ class HiddenImportCuts:
         if lower is not None and (not layer or lower.module in layer):
             return lower.module
         pinned = frozenset(self.imports.pinning_reads((*users, *readers), closure.reads))
+        if pinned and (home := self.reader_home(hub, users, readers, closure, layer, pinned)) is not None:
+            return home
         if pinned:
             raise NeedsInput(
                 "; ".join(
@@ -360,6 +374,50 @@ class HiddenImportCuts:
                 NeededInput.SOURCE_CHANGE,
             )
         return home
+
+    def reader_home(
+        self,
+        hub: str,
+        users: tuple[str, ...],
+        readers: tuple[str, ...],
+        closure: MovedClosure,
+        layer: frozenset[str],
+        pinned: frozenset[str],
+    ) -> str | None:
+        """The sole reader, when the moved code reads back only from it: in the
+        reader, what it reads is its own, and the cycle the two modules closed
+        is gone. Only when nothing left in the hub reads a moved name (the hub
+        would then import the reader), the reader loads no other importer of
+        the moved names and can bind every other module the code reads, and,
+        under a composition root, the reader is in the declarations' layer."""
+
+        if len(readers) != 1 or pinned != {readers[0]}:
+            return None
+        reader = readers[0]
+        if layer and reader not in layer:
+            return None
+        others = tuple(user for user in users if user not in (hub, reader))
+        if any(self.imports.reaches(reader, user) for user in others):
+            return None
+        if not all(self.imports.can_bind_at(reader, read, others) for read in closure.reads - {reader}):
+            return None
+        source = self.snapshot.module_import_graph.unique_source_file_for_module_name(hub)
+        if source is None:
+            return None
+        moved = frozenset(closure.qualnames)
+        staying = (
+            statement
+            for statement in self.snapshot.module_nodes_by_file_path[source.file_path].body
+            if not (isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and statement.name in moved)
+            and not isinstance(statement, ast.Import | ast.ImportFrom)
+        )
+        if any(
+            isinstance(node, ast.Name) and node.id in moved
+            for statement in staying
+            for node in ast.walk(statement)
+        ):
+            return None
+        return reader
 
     def reached_by(self, destination: str, closure: MovedClosure) -> tuple[str, ...]:
         """What loading `destination` runs once the cut moves in: the module, its
