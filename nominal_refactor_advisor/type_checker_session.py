@@ -273,6 +273,28 @@ def _classes_of(found: Type) -> tuple[str, ...]:
     return ()
 
 
+def _instances_only(found: Type) -> bool:
+    """Whether every value of a mypy type is an instance that is not a class. A
+    class is itself an instance of `type`, `object`, its metaclass and any
+    protocol it satisfies, so none of those, nor an unknown type, proves it."""
+
+    types = importlib.import_module("mypy.types")
+    proper = types.get_proper_type(found)
+    match proper:
+        case types.Instance():
+            info = proper.type
+            return not (
+                info.is_protocol
+                or info.fullname == "builtins.object"
+                or info.has_base("builtins.type")
+            )
+        case types.TupleType() | types.TypedDictType() | types.LiteralType() | types.NoneType():
+            return True
+        case types.UnionType():
+            return all(_instances_only(item) for item in proper.items)
+    return False
+
+
 @dataclass(frozen=True)
 class BuiltTypeChecker(TypeCheckerSession):
     """A finished build's types for the scanned files, keyed by expression span."""
@@ -309,6 +331,7 @@ class BuiltTypeChecker(TypeCheckerSession):
                     inferred[span] = InferredReceiverType(
                         format_type_bare(found, options, verbosity=2),
                         _classes_of(found),
+                        _instances_only(found),
                     )
         return cls(inferred, shared)
 

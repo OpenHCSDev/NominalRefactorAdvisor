@@ -251,3 +251,23 @@ def test_a_namespace_only_resolving_annotations_sees_no_unannotated_name(tmp_pat
     evaluation = _evaluation(tmp_path, "Child")
     assert "dict(vars(declaration))" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_namespace_read_the_type_checker_types_as_an_instance_sees_no_class(tmp_path: Path):
+    source = (
+        "import argparse\n\n\n"
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n\n\n"
+        "def main():\n"
+        "    parser = argparse.ArgumentParser()\n"
+        "    arguments = parser.parse_args([])\n"
+        "    return vars(arguments)\n\n\n"
+        "def held(value: object):\n    return vars(value)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/read.py": source})
+    evaluation = _evaluation(tmp_path, "Child")
+    assert "pkg/read.py:21" in evaluation.rejection_reason
+    assert "whose values can be classes" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+    _write(tmp_path, {"pkg/read.py": source.split("\n\n\ndef held")[0] + "\n"})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""

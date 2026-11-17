@@ -27,6 +27,7 @@ from nominal_refactor_advisor.declared_receivers import (
     ReceiverPath,
     ReceiverPathBuilder,
 )
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 
 @dataclass(frozen=True)
@@ -158,6 +159,13 @@ class ReceiverType(ABC):
     def owner(self, classes: ScannedClasses) -> ProbeOwner:
         raise NotImplementedError
 
+    @abstractmethod
+    def require_instances(self, read: str) -> None:
+        """Needs a proof unless every value of the receiver is an instance that is
+        not a class, so `vars()` of it or its `__dict__` holds no class member."""
+
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class InferredReceiverType(ReceiverType):
@@ -166,6 +174,16 @@ class InferredReceiverType(ReceiverType):
 
     spelled: str
     classes: tuple[str, ...]
+    instances: bool
+    """Every value is an instance that is not a class: no `type[...]`, metaclass,
+    `object`, protocol or unknown type is among what the checker inferred."""
+
+    def require_instances(self, read: str) -> None:
+        if not self.instances:
+            raise NeedsInput(
+                f"{read}; the type checker infers `{self.spelled}`, whose values can be classes",
+                NeededInput.PROOF,
+            )
 
     def owner(self, classes: ScannedClasses) -> ProbeOwner:
         match self.classes:
@@ -185,6 +203,9 @@ class FailedReceiverType(ReceiverType):
     """The type checker gave no type: not installed, the build failed, or it typed nothing there."""
 
     reason: str
+
+    def require_instances(self, read: str) -> None:
+        raise NeedsInput(f"{read}; type checker: {self.reason}", NeededInput.PROOF)
 
     def owner(self, classes: ScannedClasses) -> ProbeOwner:
         return UnresolvedProbeOwner(f"type checker: {self.reason}")
