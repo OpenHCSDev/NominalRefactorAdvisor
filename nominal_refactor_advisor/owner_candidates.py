@@ -89,6 +89,7 @@ class OwnerReceiptKind(ReceiptKind):
     OWNED_BY_EXISTING_CLASSES = "owned_by_existing_classes", 0.0, True, NeededInput.OWNER_PICK
     PLAYS_SAME_ROLE = "plays_same_role", 1.0, False
     INHERITED_SHARE = "inherited_share", 0.0, True, NeededInput.OPERATION
+    HOISTS_INHERITED = "hoists_inherited", -0.25, False
 
 
 SERVED_CONSUMER_CAP = 4
@@ -284,6 +285,36 @@ class NewMixinOwner(BlockOwnerCandidate):
         return f"new mixin in `{self.module_name}`"
 
 
+@dataclass(frozen=True, kw_only=True)
+class HoistingMixinOwner(NewMixinOwner):
+    """A new mixin for the names both classes declare, after the names one of
+    them inherits are hoisted out of the ancestor that declares them into a
+    second new mixin, which that ancestor and the other class compose."""
+
+    base: str
+    """The ancestor that declares every inherited block name."""
+    restater: str
+    """The class of the two that declares those names itself."""
+    hoisted: tuple[str, ...]
+    """The inherited block names, in the ancestor's order."""
+
+    def pick_refusals(self, pick: OwnerPick) -> Iterator[str]:
+        yield from super().pick_refusals(pick)
+        if not (pick.hoisted_name or "").isidentifier():
+            yield f"hoisting {list(self.hoisted)} out of `{self.base}` needs a class `hoisted_name`"
+        if not (pick.hoisted_judgement or "").strip():
+            yield (
+                f"hoisting {list(self.hoisted)} out of `{self.base}` needs a "
+                "`hoisted_judgement`: what that class is, for its docstring"
+            )
+
+    def describe(self) -> str:
+        return (
+            f"new mixin in `{self.module_name}`, after hoisting {list(self.hoisted)} "
+            f"out of `{self.base}`"
+        )
+
+
 @dataclass(frozen=True)
 class OwnerPickOutcome(SemanticRecord):
     """What became of one extract-mixin finding under the picks."""
@@ -305,6 +336,10 @@ class OwnerPick(SemanticRecord):
     name: str | None = None
     judgement: str | None = None
     """What the owner is, in one sentence: a new mixin's docstring."""
+    hoisted_name: str | None = None
+    """For a hoisting owner, the class the inherited names are hoisted into."""
+    hoisted_judgement: str | None = None
+    """What that hoisted class is, in one sentence: its docstring."""
 
     def resolved(self, candidates: Sequence[OwnerCandidate]) -> OwnerPickResolution:
         """This pick against one finding's candidates: the one place a picks
@@ -325,6 +360,8 @@ class OwnerPick(SemanticRecord):
             because=self.because,
             name=self.name,
             judgement=self.judgement,
+            hoisted_name=self.hoisted_name,
+            hoisted_judgement=self.hoisted_judgement,
             candidate=candidate,
         )
 
@@ -695,6 +732,7 @@ class BlockOwnerQuestion:
                         ),
                     ),
                     keyword_only_route=False,
+                    composers=self._composers(),
                 )
             )
             if not self.same_construction(owner, self.first):
@@ -841,6 +879,7 @@ class BlockOwnerQuestion:
                     for name in owner.own_dataclass_field_names or ()
                 ),
                 keyword_only_route=False,
+                composers=self._composers(),
             )
         )
         return ComposeExistingOwner(
@@ -876,7 +915,8 @@ class BlockOwnerQuestion:
                     (),
                 ),
             )
-            if sum(self.weights[name] for name in declared) < MINIMUM_SHARED_WEIGHT
+            if len(declared) < len(self.block)
+            and sum(self.weights[name] for name in declared) < MINIMUM_SHARED_WEIGHT
             else ()
         )
         owned_elsewhere = (
@@ -911,32 +951,94 @@ class BlockOwnerQuestion:
                     if name in self.block
                 ),
                 keyword_only_route=True,
-            )
-            yield NewMixinOwner(
-                module_name=module_name,
-                receipts=(
-                    Receipt(
-                        OwnerReceiptKind.NEW_CLASS,
-                        f"a new class in `{module_name}` declares the "
-                        f"{len(self.block)}-declaration block",
-                        (),
-                    ),
-                    *self._restater_receipts(restaters),
-                    *import_receipts,
-                    *order_receipts,
-                    *owned_elsewhere,
-                    *inherited_share,
-                ),
-                cost=OwnerCost(
-                    statements_rewritten=1
-                    + len(self.block)
-                    + (2 + len(restaters)) * (1 + len(self.block)),
-                    imports_added=imports,
-                    cycles_created=cycles,
-                ),
                 composers=self._composers(),
-                block=self.block,
             )
+            receipts = (
+                Receipt(
+                    OwnerReceiptKind.NEW_CLASS,
+                    f"a new class in `{module_name}` declares the "
+                    f"{len(self.block)}-declaration block",
+                    (),
+                ),
+                *self._restater_receipts(restaters),
+                *import_receipts,
+                *order_receipts,
+                *owned_elsewhere,
+            )
+            cost = OwnerCost(
+                statements_rewritten=1
+                + len(self.block)
+                + (2 + len(restaters)) * (1 + len(self.block)),
+                imports_added=imports,
+                cycles_created=cycles,
+            )
+            hoists = self._hoists(declared) if inherited_share else ()
+            for base, restater, hoisted in hoists:
+                yield HoistingMixinOwner(
+                    module_name=module_name,
+                    receipts=(
+                        *receipts,
+                        Receipt(
+                            OwnerReceiptKind.HOISTS_INHERITED,
+                            f"`{base.qualname}` declares the inherited "
+                            + ", ".join(f"`{name}`" for name in hoisted)
+                            + f": they move into a new class `{base.qualname}` and "
+                            f"`{restater.qualname}` compose",
+                            (_location(base),),
+                        ),
+                        *self._field_order_receipts(
+                            base, hoisted, keyword_only_route=True,
+                            composers=(base.symbol, restater.symbol),
+                        ),
+                    ),
+                    cost=replace(
+                        cost,
+                        statements_rewritten=cost.statements_rewritten + 3 * (1 + len(hoisted)),
+                    ),
+                    composers=self._composers(),
+                    block=self.block,
+                    base=base.symbol,
+                    restater=restater.symbol,
+                    hoisted=hoisted,
+                )
+            if not hoists:
+                yield NewMixinOwner(
+                    module_name=module_name,
+                    receipts=(*receipts, *inherited_share),
+                    cost=cost,
+                    composers=self._composers(),
+                    block=self.block,
+                )
+
+    def _hoists(
+        self, declared: Sequence[str]
+    ) -> tuple[tuple[CompactIndexedClass, CompactIndexedClass, tuple[str, ...]], ...]:
+        """The one ancestor to hoist the inherited block names out of, if there is one.
+
+        One of the two classes declares the whole block; the other declares only
+        `declared` and inherits the rest from its nearest ancestor that declares
+        all of it, which the first class does not descend from. Hoisting those
+        names into a mixin that ancestor and the first class compose leaves the
+        rest for the new mixin both classes compose.
+        """
+
+        inherited = tuple(name for name in self.block if name not in declared)
+        if not declared or not inherited:
+            return ()
+        for heir, restater in (self.pair, self.pair[::-1]):
+            if not all(restater.symbol in self.own_holders_of(name) for name in self.block):
+                continue
+            for symbol in self.ancestors_of(heir.symbol):
+                base = self.class_for(symbol)
+                if base is None or not all(symbol in self.own_holders_of(name) for name in inherited):
+                    continue
+                if symbol in self.ancestors_of(restater.symbol):
+                    return ()
+                ordered = tuple(
+                    name for name in base.own_dataclass_field_names or () if name in inherited
+                )
+                return ((base, restater, (*ordered, *(name for name in inherited if name not in ordered))),)
+        return ()
 
     def _field_order_receipts(
         self,
@@ -944,6 +1046,7 @@ class BlockOwnerQuestion:
         owner_fields: Sequence[str],
         *,
         keyword_only_route: bool,
+        composers: Sequence[str],
     ) -> tuple[Receipt, ...]:
         """Composing an owner puts its fields ahead of each composer's own.
 
@@ -964,7 +1067,7 @@ class BlockOwnerQuestion:
         moved = frozenset(owner_fields)
         reordered: list[str] = []
         unknown: list[str] = []
-        for symbol in self._composers():
+        for symbol in composers:
             composer = self.class_for(symbol)
             if composer is None:
                 continue

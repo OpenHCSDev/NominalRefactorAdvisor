@@ -120,6 +120,7 @@ from nominal_refactor_advisor.collection_algebra import (
 )
 from nominal_refactor_advisor.class_mro import (
     ClassMroAuthority,
+    NativeMroBase,
     DeclarationMroType,
     DeclaredBases,
 )
@@ -4614,11 +4615,7 @@ def field_declaration_settled_projections(
     """Settle every field whose value calls a function, from the repository's
     field declarations: the one place those roles are decided."""
 
-    index = FieldDeclarationIndex.of_wrappers(
-        wrapper
-        for projection in projections
-        for wrapper in projection.field_declaration_wrappers
-    )
+    index = FieldDeclarationIndex.of_projections(projections)
     return tuple(
         replace(
             projection,
@@ -5600,10 +5597,44 @@ class FieldDeclarationIndex:
     """
 
     wrappers: Mapping[str, CompactFieldDeclarationWrapper]
+    constructors: frozenset[str] = frozenset()
+    """Scanned classes a call builds an instance of: no `__new__` along their
+    ancestry, every base scanned or native. Such a call is a plain default."""
 
     @classmethod
-    def of_wrappers(cls, wrappers: Iterable[CompactFieldDeclarationWrapper]) -> Self:
-        return cls({wrapper.qualified_name: wrapper for wrapper in wrappers})
+    def of_projections(cls, projections: Iterable[CompactModuleClassHeader]) -> Self:
+        projections = tuple(projections)
+        classes = {
+            indexed_class.symbol: indexed_class
+            for projection in projections
+            for indexed_class in projection.classes
+        }
+        built: dict[str, bool] = {}
+
+        def builds_own_instance(symbol: str, pending: frozenset[str]) -> bool:
+            if symbol not in built:
+                indexed_class = classes[symbol]
+                built[symbol] = (
+                    symbol not in pending
+                    and "__new__" not in indexed_class.member_binding_names
+                    and indexed_class.base_references_are_complete
+                    and all(
+                        builds_own_instance(base.qualified_name, pending | {symbol})
+                        if base.qualified_name in classes
+                        else NativeMroBase.for_qualified_name(base.qualified_name) is not None
+                        for base in indexed_class.base_references
+                    )
+                )
+            return built[symbol]
+
+        return cls(
+            {
+                wrapper.qualified_name: wrapper
+                for projection in projections
+                for wrapper in projection.field_declaration_wrappers
+            },
+            frozenset(symbol for symbol in classes if builds_own_instance(symbol, frozenset())),
+        )
 
     @cached_property
     def signatures(self) -> Mapping[str, FieldDeclarationSignature]:
@@ -5649,6 +5680,8 @@ class FieldDeclarationIndex:
         """A stored init field when the call declares a field and nothing on its
         way to `dataclasses.field` names `init`; otherwise unresolved."""
 
+        if call.callee in self.constructors:
+            return CompactDataclassFieldRole.STORED_INIT
         signature = self.signatures.get(call.callee)
         if signature is None or signature.supplied(call) is None or self.supplies(call, "init"):
             return CompactDataclassFieldRole.UNRESOLVED
