@@ -232,3 +232,22 @@ def test_a_namespace_read_of_a_derived_key_sees_no_member_name(tmp_path: Path):
     evaluation = _evaluation(tmp_path, "Child")
     assert "owner.__dict__" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_namespace_only_resolving_annotations_sees_no_unannotated_name(tmp_path: Path):
+    source = (
+        "import sys\nfrom typing import get_type_hints\n\n\n"
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n\n\n"
+        "def hints(declaration: type, annotations: dict):\n"
+        "    return get_type_hints(\n"
+        "        declaration, globalns=vars(sys.modules[declaration.__module__]),\n"
+        "        localns={'T': int} | dict(vars(declaration)),\n"
+        "    )\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/hints.py": source})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""
+    _write(tmp_path, {"pkg/hints.py": source + "\n\ndef annotated(x: 'value') -> None:\n    pass\n"})
+    evaluation = _evaluation(tmp_path, "Child")
+    assert "dict(vars(declaration))" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs

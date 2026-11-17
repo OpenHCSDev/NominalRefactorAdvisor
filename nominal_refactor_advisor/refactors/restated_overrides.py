@@ -176,10 +176,64 @@ class NamespaceReads(ParsedModuleSetFact):
             match node:
                 case ast.Attribute(value=ast.Name(id="self")) | ast.Call(args=[ast.Name(id="self")]):
                     continue
+                case ast.Attribute(value=receiver, attr="__dict__", ctx=ast.Load()) | ast.Call(
+                    func=ast.Name(id="vars"), args=[receiver], keywords=[]
+                ) if NamespaceReads.names_a_module(receiver):
+                    continue
                 case ast.Attribute(attr="__dict__", ctx=ast.Load()):
                     yield node
                 case ast.Call(func=ast.Name(id="vars"), args=[_], keywords=[]):
                     yield node
+
+    @staticmethod
+    def names_a_module(receiver: ast.expr) -> bool:
+        """`sys.modules[...]` is a module, whose namespace holds no class member."""
+
+        match receiver:
+            case ast.Subscript(value=ast.Attribute(value=ast.Name(id="sys"), attr="modules")):
+                return True
+        return False
+
+
+@dataclass(frozen=True)
+class AnnotationNames(ParsedModuleSetFact):
+    """Every name an annotation in one state's modules spells, string annotations
+    included: the only names a namespace passed as `localns` to `get_type_hints`
+    can answer."""
+
+    names: frozenset[str]
+
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> AnnotationNames:
+        names: set[str] = set()
+        for module in modules:
+            for node in ast.walk(module.module):
+                annotations: list[ast.expr | None] = []
+                match node:
+                    case ast.AnnAssign(annotation=annotation):
+                        annotations.append(annotation)
+                    case ast.arg(annotation=annotation):
+                        annotations.append(annotation)
+                    case ast.FunctionDef(returns=returns) | ast.AsyncFunctionDef(returns=returns):
+                        annotations.append(returns)
+                for annotation in annotations:
+                    if annotation is not None:
+                        names.update(cls.spelled(annotation))
+        return cls(frozenset(names))
+
+    @classmethod
+    def spelled(cls, annotation: ast.expr) -> Iterator[str]:
+        for node in ast.walk(annotation):
+            match node:
+                case ast.Name(id=name):
+                    yield name
+                case ast.Constant(value=str() as text):
+                    try:
+                        parsed = ast.parse(text, mode="eval").body
+                    except SyntaxError:
+                        yield from ()
+                    else:
+                        yield from cls.spelled(parsed)
 
 
 @dataclass(frozen=True)
@@ -189,7 +243,11 @@ class NamespaceReaders(ClassAttributeReaders):
 
     def require_unread(self, indexed: CompactIndexedClass, deleted: frozenset[str]) -> None:
         for module, read, parent, around in self.snapshot.module_set.fact(NamespaceReads).reads:
-            if not self.reaches(module, read, indexed) or self.asks_another_key(module, read, parent, around, deleted):
+            if (
+                not self.reaches(module, read, indexed)
+                or self.asks_another_key(module, read, parent, around, deleted)
+                or self.resolves_annotations_only(module, read, deleted)
+            ):
                 continue
             raise NeedsInput(
                 f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
@@ -230,6 +288,29 @@ class NamespaceReaders(ClassAttributeReaders):
                     around.args[0]
                 )
         return False
+
+    def resolves_annotations_only(self, module: ParsedModule, read: ast.expr, deleted: frozenset[str]) -> bool:
+        """The namespace only becomes `localns` of `get_type_hints`, directly or
+        merged through `dict(...)` and `|`, so it answers only names annotations
+        spell: no deleted name is one of them."""
+
+        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        node: ast.AST = read
+        while True:
+            parent = parents.get(node)
+            match parent:
+                case ast.Call(func=ast.Name(id="dict"), args=[only], keywords=[]) if only is node:
+                    node = parent
+                case ast.BinOp(op=ast.BitOr()):
+                    node = parent
+                case ast.keyword(arg="localns"):
+                    call = parents.get(parent)
+                    match call:
+                        case ast.Call(func=ast.Name(id="get_type_hints") | ast.Attribute(attr="get_type_hints")):
+                            return deleted.isdisjoint(self.snapshot.module_set.fact(AnnotationNames).names)
+                    return False
+                case _:
+                    return False
 
     def keys_avoid(self, module: ParsedModule, read: ast.expr, attribute: str, deleted: frozenset[str]) -> bool:
         """Every write of `attribute` in the repository is `self.<attribute> = f"..."`
