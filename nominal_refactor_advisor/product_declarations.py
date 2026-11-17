@@ -47,8 +47,8 @@ class CompactProductAuthorityViolation(StrEnum):
         "custom_class_creation",
         "class keywords or a custom metaclass can change construction semantics",
         (),
-        True,
     )
+    """Whether creation keeps the fields is `ClassCreationProof.require_construction_kept`'s."""
     CUSTOM_PRODUCT_LIFECYCLE = (
         "custom_product_lifecycle",
         "a class-owned lifecycle hook can change construction or field projection",

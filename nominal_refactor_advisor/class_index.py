@@ -2761,20 +2761,28 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
 
     def construction_parameters(self, symbol: str) -> tuple[str, ...]:
         """The positional parameters a call `symbol(...)` binds, in order: those
-        of the `__init__` the first dataclass along its MRO generates.
+        of the `__init__` the first dataclass along its declared MRO generates.
 
-        Only `__init__`, `__new__` and `__init_subclass__` change which
-        parameters a call binds: an `__init__` met first replaces the generated
-        one, a `__new__` anywhere along the MRO sees the arguments as passed,
-        and a creation hook leaves the MRO open. Every other hook
-        (`__post_init__`, `__setattr__`, `__slots__`, ...) runs after the
-        parameters are bound, and any number of parents is fine once Python
-        orders them. Raises, naming the reason, when the parameters are unknown.
+        The caller proves first that creating the class keeps what its
+        declarations bind (`ClassCreationProof.require_construction_kept`).
+        Then only `__init__` and `__new__` decide: an `__init__` met first
+        replaces the generated one, and a `__new__` anywhere along the MRO sees
+        the arguments as passed. Every other hook (`__post_init__`,
+        `__setattr__`, `__slots__`, ...) runs after the parameters are bound,
+        and any number of parents is fine once Python orders them. Raises,
+        naming the reason, when the parameters are unknown.
         """
 
-        mro = self.mro_authority.resolve(symbol).mro_type
+        authority = self.declared_mro_authority
+        mro = authority.resolve(symbol).mro_type
         if mro is None:
-            raise NeedsInput(f"`{symbol}` has no closed runtime MRO: NRA needs a proof of its order", NeededInput.PROOF)
+            raise NeedsInput(f"`{symbol}`'s bases admit no MRO", NeededInput.PROOF)
+        outside = [entry.__name__ for entry in mro.__mro__ if authority.bases.is_opaque(entry)]
+        if outside:
+            raise NeedsInput(
+                f"`{symbol}`'s MRO reaches {outside} outside the scan, which may define `__init__`",
+                NeededInput.PROOF,
+            )
         for declaration in mro.declarations:
             if "__new__" in declaration.member_binding_names:
                 raise ValueError(

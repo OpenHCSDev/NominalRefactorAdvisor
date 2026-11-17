@@ -72,6 +72,19 @@ INTROSPECTION = frozenset(
 )
 """Attributes that show a class's bases or own body, which the move changes."""
 
+CONSTRUCTION_NAMES = frozenset(
+    (
+        "__init__",
+        "__new__",
+        "__signature__",
+        "__annotations__",
+        "__annotate__",
+        "__dataclass_fields__",
+        "__dataclass_params__",
+    )
+)
+"""What decides the parameters a call to a class binds, once its declarations are read."""
+
 SUPER_CREATION = frozenset(("__new__", "__init__", "__init_subclass__", "__prepare__"))
 CREATION_METHODS = frozenset(("__new__", "__init__", "__prepare__"))
 DEPTH = 6
@@ -163,13 +176,57 @@ class ClassCreationProof:
                 f"`{self.composer.qualname}`'s creation reads",
                 NeededInput.PROOF,
             )
+        for code, roles in self.creation_code():
+            CreationReads(self, code, roles).require()
+
+    @classmethod
+    def constructing(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        composer: CompactIndexedClass,
+        ancestry: tuple[CompactIndexedClass, ...],
+    ) -> ClassCreationProof:
+        """The proof that creating `composer` keeps the parameters its declarations give a call."""
+
+        return cls(snapshot, composer, ancestry, composer.qualname, CONSTRUCTION_NAMES, frozenset())
+
+    def require_construction_kept(self) -> None:
+        """Calling the class binds the parameters its declared MRO gives it.
+
+        A decorator may replace the class, a metaclass `__call__` decides what a
+        call binds, and creation code may store an `__init__` or annotations;
+        anything else creation runs leaves the binding alone.
+        """
+
+        for indexed in self.ancestry:
+            if not indexed.class_decorators_are_promotion_safe:
+                raise NeedsInput(
+                    f"{indexed.file_path}:{indexed.line} `{indexed.qualname}` is decorated by code "
+                    "that may replace what a call binds: NRA needs a proof of its parameters",
+                    NeededInput.PROOF,
+                )
+        for metaclass in self.metaclasses():
+            for indexed in self.metaclass_ancestry(metaclass):
+                call = self.method(indexed, "__call__")
+                if call is not None:
+                    raise NeedsInput(
+                        f"{call.location} metaclass `{indexed.qualname}` defines `__call__`, which "
+                        f"decides what a call to `{self.composer.qualname}` binds",
+                        NeededInput.PROOF,
+                    )
+        for code, roles in self.creation_code():
+            ConstructionReads(self, code, roles).require()
+
+    def creation_code(self) -> Iterator[tuple[CreationCode, dict[str, Role]]]:
+        """Each function that runs while the composer is created, with what its names hold."""
+
         for indexed in self.ancestry:
             hook = self.method(indexed, "__init_subclass__")
             if hook is not None:
-                CreationReads(self, hook, {self.first_parameter(hook.node): Role.NEW_CLASS}).require()
+                yield hook, {self.first_parameter(hook.node): Role.NEW_CLASS}
         for metaclass in self.metaclasses():
             for code in self.metaclass_code(metaclass):
-                CreationReads(self, code, self.metaclass_roles(code.node)).require()
+                yield code, self.metaclass_roles(code.node)
 
     @property
     def class_index(self):
@@ -178,11 +235,12 @@ class ClassCreationProof:
     def method(
         self, indexed: CompactIndexedClass, name: str
     ) -> CreationCode | None:
-        node = self.class_node(indexed)
-        for statement in node.body:
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name == name:
-                return CreationCode(statement, f"{indexed.file_path}:{statement.lineno}", indexed)
-        return None
+        return next(self.methods(indexed, frozenset((name,))), None)
+
+    def methods(self, indexed: CompactIndexedClass, names: frozenset[str]) -> Iterator[CreationCode]:
+        for statement in self.class_node(indexed).body:
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name in names:
+                yield CreationCode(statement, f"{indexed.file_path}:{statement.lineno}", indexed)
 
     def class_node(self, indexed: CompactIndexedClass) -> ast.ClassDef:
         return ResolvedClassTarget.from_rewrite_target(
@@ -228,8 +286,15 @@ class ClassCreationProof:
         return f"{value.__module__}.{value.__qualname__}"
 
     def metaclass_code(self, symbol: str) -> Iterator[CreationCode]:
-        """Scanned creation methods along a metaclass's ancestry; a modelled or
-        imported metaclass outside the scan contributes none it has not proved."""
+        """Scanned creation methods along a metaclass's ancestry."""
+
+        hooks = CREATION_METHODS | self.modelled_hooks()
+        for indexed in self.metaclass_ancestry(symbol):
+            yield from self.methods(indexed, hooks)
+
+    def metaclass_ancestry(self, symbol: str) -> Iterator[CompactIndexedClass]:
+        """The scanned classes along a metaclass's ancestry; a modelled metaclass
+        ends its branch, and one outside the scan refuses."""
 
         pending, seen = [symbol], set()
         while pending:
@@ -244,11 +309,7 @@ class ClassCreationProof:
                     "NRA's creation models: NRA needs a proof of what it reads",
                     NeededInput.PROOF,
                 )
-            hooks = CREATION_METHODS | self.modelled_hooks()
-            node = self.class_node(indexed)
-            for statement in node.body:
-                if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and statement.name in hooks:
-                    yield CreationCode(statement, f"{indexed.file_path}:{statement.lineno}", indexed)
+            yield indexed
             pending.extend(".".join(reference.resolved_parts) for reference in indexed.base_references)
 
     @staticmethod
@@ -312,9 +373,13 @@ class CreationReads:
         location = f"{file_path}:{int(start) + line}" if start.isdigit() else self.code.location
         raise NeedsInput(
             f"{location} `{ast.unparse(node)}` {what} while `{self.proof.composer.qualname}` is "
-            f"created: NRA needs a proof that the new base `{self.proof.owner_name}` leaves it unchanged",
+            f"created: {self.unproved}",
             NeededInput.PROOF,
         )
+
+    @property
+    def unproved(self) -> str:
+        return f"NRA needs a proof that the new base `{self.proof.owner_name}` leaves it unchanged"
 
     @staticmethod
     def is_super_call(node: ast.AST, *names: str) -> bool:
@@ -478,7 +543,7 @@ class CreationReads:
             )
             if role is not None and index < len(names):
                 mapped[names[index]] = role
-        CreationReads(self.proof, code, mapped, self.depth + 1).require()
+        type(self)(self.proof, code, mapped, self.depth + 1).require()
 
     def callee(self, func: ast.expr) -> CreationCode | bool | None:
         """The scanned function a call reaches, or True for a modelled one."""
@@ -498,6 +563,37 @@ class CreationReads:
                 indexed = self.proof.class_index.class_for(qualified)
                 return self.proof.method(indexed, attr) if indexed is not None else None
         return None
+
+
+@dataclass
+class ConstructionReads(CreationReads):
+    """One creation function's stores of what a call to the class binds.
+
+    Reading bases, the namespace or the new class changes no parameter; only a
+    store of a name in `CONSTRUCTION_NAMES`, or a function NRA cannot read, can.
+    """
+
+    @property
+    def unproved(self) -> str:
+        return "NRA needs a proof that its creation keeps the parameters a call binds"
+
+    def require_bases(self, node: ast.Name, parent: ast.AST | None) -> None:
+        return
+
+    def require_base(self, node: ast.Name, parent: ast.AST | None) -> None:
+        return
+
+    def require_new_class(self, node: ast.Name, parent: ast.AST | None) -> None:
+        match parent:
+            case ast.Attribute(attr=attr, ctx=ast.Store()) if attr in self.proof.moved:
+                self.refuse(parent, "sets what a call binds")
+            case ast.Attribute(attr=attr, ctx=ast.Load()) if attr in INTROSPECTION:
+                return
+            case ast.Call(func=ast.Name(id="setattr"), args=[value, ast.Constant(value=key), *_]) if (
+                value is node and key in self.proof.moved
+            ):
+                self.refuse(parent, "sets what a call binds")
+        super().require_new_class(node, parent)
 
 
 @dataclass(frozen=True)
