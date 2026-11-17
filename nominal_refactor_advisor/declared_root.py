@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import sys
 import tomllib
 from abc import ABC, abstractmethod
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -62,6 +64,34 @@ class DerivedValue(ValueCarrier):
         if self.derived(class_name) == value:
             return [], []
         return [f"{attribute}={source}"], []
+
+
+@dataclass(frozen=True)
+class DerivedSpelling:
+    """A family whose members' spellings the repository's own function derives.
+
+    Declared once per family mechanism in the repository's table::
+
+        [tool.nominal-refactor-advisor]
+        derived-spellings = [{ family = "package.module:Family",
+                               rule = "package.module:words",
+                               affix = "affix", spelling = "declared_name" }]
+
+    A root below `family` is a class that inherits it directly or passes the
+    `affix` class keyword. A member below a root spells itself by its own
+    `spelling` keyword or class constant, else by `rule` applied to its class
+    name with the root's affix removed. NRA calls `rule`; it never restates it.
+    """
+
+    family: str
+    rule: Callable[[str], object]
+    affix: str
+    spelling: str
+
+    def of(self, name: str, affix: str) -> str:
+        """The spelling `rule` derives for a member class named `name`."""
+
+        return str(self.rule(name.removesuffix(affix)))
 
 
 @dataclass(frozen=True)
@@ -160,6 +190,15 @@ class DeclaredRoot:
             case {"tool": {"nominal-refactor-advisor": {**table}}} if isinstance(table.get(key), list):
                 return frozenset(str(name).replace(":", ".") for name in table[key])
         return frozenset()
+
+    @classmethod
+    def derived_spellings_for(cls, path: Path) -> tuple[DerivedSpelling, ...]:
+        """The families ``path``'s repository declares derive their members' spellings."""
+
+        pyproject = cls.nearest_pyproject(path)
+        if pyproject is None:
+            return ()
+        return _derived_spellings_of(pyproject)
 
     @classmethod
     def first_party_for(cls, path: Path) -> frozenset[str]:
@@ -283,6 +322,56 @@ class DeclaredRoot:
                 f"{pyproject}: {TABLE} expects module:qualname, got {reference!r}"
             )
         return module, qualname
+
+
+@contextmanager
+def _repository_importable(pyproject: Path) -> Iterator[None]:
+    """The repository's own sources first on the import path: the rule a scanned
+    repository declares is its source's, installed or not."""
+
+    roots = [
+        str(directory)
+        for directory in (pyproject.parent / "src", pyproject.parent)
+        if directory.is_dir()
+    ]
+    sys.path[:0] = roots
+    try:
+        yield
+    finally:
+        del sys.path[: len(roots)]
+
+
+DERIVED_SPELLINGS = "derived-spellings"
+
+
+@cache
+def _derived_spellings_of(pyproject: Path) -> tuple[DerivedSpelling, ...]:
+    match tomllib.loads(pyproject.read_text()):
+        case {"tool": {"nominal-refactor-advisor": {"derived-spellings": list(entries)}}}:
+            return tuple(_derived_spelling(pyproject, entry) for entry in entries)
+    return ()
+
+
+def _derived_spelling(pyproject: Path, entry: object) -> DerivedSpelling:
+    match entry:
+        case {
+            "family": str(family),
+            "rule": str(rule),
+            "affix": str(affix),
+            "spelling": str(spelling),
+        }:
+            with _repository_importable(pyproject):
+                found = DeclaredRoot.imported(pyproject, DERIVED_SPELLINGS, rule)
+            if not callable(found):
+                raise ValueError(
+                    f"{pyproject}: {DERIVED_SPELLINGS} rule {rule!r} is not callable"
+                )
+            module, name = DeclaredRoot.reference(pyproject, family)
+            return DerivedSpelling(f"{module}.{name}", found, affix, spelling)
+    raise ValueError(
+        f"{pyproject}: each {DERIVED_SPELLINGS} entry takes family, rule, affix and"
+        f" spelling strings; found {entry!r}"
+    )
 
 
 @cache
