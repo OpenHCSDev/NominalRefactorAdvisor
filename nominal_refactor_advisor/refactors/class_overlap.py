@@ -75,6 +75,7 @@ from nominal_refactor_advisor.class_references import (
     reads_as_type,
     subclass_test_subject,
 )
+from nominal_refactor_advisor.class_symbols import _referenced_bases
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.codemod import RefactorRecipe
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
@@ -1248,10 +1249,10 @@ def require_verdict(
 def obsolete_import_edits(
     snapshot: CodemodSourceSnapshot,
     file_path: str,
-    deleted: tuple[ast.stmt, ...],
+    deleted: tuple[ast.AST, ...],
     rationale: str,
 ) -> tuple[ModuleImportMutation, ...]:
-    """Drop `from` imports that only the deleted statements read.
+    """Drop `from` imports that only the deleted statements and bases read.
 
     A name stays when anything else in the module reads it, when `__all__`
     names it, or when another module imports it from this one.
@@ -1394,21 +1395,6 @@ class ComposedAncestry:
     owners: tuple[OverlapClass, ...]
     deleted: frozenset[str]
 
-    @classmethod
-    def require(
-        cls,
-        snapshot: CodemodSourceSnapshot,
-        composer: OverlapClass,
-        owners: tuple[OverlapClass, ...],
-        deleted: Iterable[str],
-    ) -> Self:
-        """The proof, once composing keeps every lookup; refuses naming the first
-        lookup or identity it changes."""
-
-        proof = cls(snapshot, composer, owners, frozenset(deleted))
-        proof.ancestry
-        return proof
-
     def creation(self) -> ClassCreationProof:
         """What the composer's creation reads. An abstract method moved to an owner
         `ABCMeta` creates stays abstract: `ABCMeta` takes each base's abstract
@@ -1521,6 +1507,61 @@ class ComposedAncestry:
 
         owner_symbols = tuple(owner.symbol for owner in self.owners)
         return self.linearized(self.composer.symbol, (*owner_symbols, *self.kept_bases))
+
+    @cached_property
+    def redundant_bases(self) -> tuple[ast.expr, ...]:
+        """The composer's direct bases its owners already supply: a plain name an
+        owner's C3 order holds, whose removal leaves the composed C3 order exactly
+        as it is with it. Every lookup, and so the class, is then the same without
+        it. Each is tried on the bases the earlier drops left, and a subscripted
+        or computed base is never one."""
+
+        referenced = tuple(_referenced_bases(self.composer.node))
+        if len(referenced) != len(self.composer.node.bases):
+            return ()
+        owner_symbols = tuple(owner.symbol for owner in self.owners)
+        supplied = frozenset(
+            symbol for owner in self.owners for symbol in self.linearized(owner.symbol)[1:]
+        )
+        kept = self.kept_bases
+        dropped: list[ast.expr] = []
+        for (node, _parts), symbol in zip(referenced, self.bases(self.composer.symbol)):
+            if not isinstance(node, (ast.Name, ast.Attribute)) or symbol not in supplied:
+                continue
+            without = tuple(base for base in kept if base != symbol)
+            try:
+                order = self.linearized(self.composer.symbol, (*owner_symbols, *without))
+            except NeedsInput:
+                continue
+            if order == self.after:
+                kept = without
+                dropped.append(node)
+        return tuple(dropped)
+
+    def header_bases(self, header: ClassHeaderSpanSourceAuthority) -> tuple[str, ...]:
+        """The composer's new base list: its owners first, then every base it
+        lists that is not redundant, as the header spells it."""
+
+        dropped = frozenset(id(node) for node in self.redundant_bases)
+        return (
+            *(owner.target.name for owner in self.owners),
+            *(header.item_source(base) for base in self.composer.node.bases if id(base) not in dropped),
+        )
+
+    def rationale(self, rationale: str) -> str:
+        """The step's rationale, naming each base the composer no longer lists."""
+
+        return " ".join(
+            (
+                rationale,
+                *(
+                    f"Drops `{ast.unparse(node)}` from `{self.composer.qualname}`'s bases: "
+                    + " + ".join(f"`{owner.qualname}`" for owner in self.owners)
+                    + " already supplies it."
+                    for node in self.redundant_bases
+                ),
+            )
+        )
 
     @cached_property
     def ancestry(self) -> tuple[CompactIndexedClass, ...]:
@@ -1697,9 +1738,7 @@ class ClassComposition:
         owner, restating = self.owner, self.restating
         NeedsInput.every(
             lambda: require_no_creation_keywords(owner),
-            lambda: ComposedAncestry.require(
-                self.snapshot, restating, (owner,), self.restated.deleted_names
-            ).creation().require_unchanged(),
+            lambda: self.composed.creation().require_unchanged(),
             lambda: restating.require_dataclass_base(owner),
             lambda: require_rewritable_header(self.snapshot, restating),
         )
@@ -1715,6 +1754,14 @@ class ClassComposition:
 
         if self.keyword_only is not None:
             self.keyword_only.require()
+
+    @cached_property
+    def composed(self) -> ComposedAncestry:
+        """The composer's C3 order with the owner first."""
+
+        return ComposedAncestry(
+            self.snapshot, self.restating, (self.owner,), frozenset(self.restated.deleted_names)
+        )
 
     @cached_property
     def keyword_only(self) -> KeywordOnlyComposition | None:
@@ -1748,7 +1795,9 @@ class ClassComposition:
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         restating = self.restating
-        rationale = KeptDocumentation.composing(self.restated).rationale(rationale)
+        rationale = self.composed.rationale(
+            KeptDocumentation.composing(self.restated).rationale(rationale)
+        )
         source = self.snapshot.sources_by_file_path[restating.file_path]
         header = ClassHeaderSpanSourceAuthority(restating.node, source)
         deletion = StatementDeletionSource(
@@ -1765,7 +1814,7 @@ class ClassComposition:
                 else self.owner_import_edits(rationale)
             ),
             *header.source_edits(
-                header.with_prepended_base(self.owner.target.name),
+                header.with_base_items(self.composed.header_bases(header)),
                 file_path=restating.file_path,
                 rationale=rationale,
             ),
@@ -1782,7 +1831,10 @@ class ClassComposition:
                 rationale=rationale,
             ),
             *obsolete_import_edits(
-                self.snapshot, restating.file_path, self.restated.statements, rationale
+                self.snapshot,
+                restating.file_path,
+                (*self.restated.statements, *self.composed.redundant_bases),
+                rationale,
             ),
         )
 
@@ -1868,14 +1920,9 @@ class CoveringComposition:
             *(lambda owner=owner: require_no_creation_keywords(owner) for owner in self.owners),
             *(
                 check
-                for composer, restatements in zip(self.composers, self.restated, strict=True)
+                for composer, composed in zip(self.composers, self.composed, strict=True)
                 for check in (
-                    lambda composer=composer, restatements=restatements: ComposedAncestry.require(
-                        self.snapshot,
-                        composer,
-                        self.owners,
-                        (name for restatement in restatements for name in restatement.deleted_names),
-                    ).creation().require_unchanged(),
+                    lambda composed=composed: composed.creation().require_unchanged(),
                     *(
                         lambda composer=composer, owner=owner: composer.require_dataclass_base(owner)
                         for owner in self.owners
@@ -1887,6 +1934,22 @@ class CoveringComposition:
                     lambda composer=composer: require_rewritable_header(self.snapshot, composer),
                 )
             ),
+        )
+
+    @cached_property
+    def composed(self) -> tuple[ComposedAncestry, ...]:
+        """Each composer's C3 order with the owners first."""
+
+        return tuple(
+            ComposedAncestry(
+                self.snapshot,
+                composer,
+                self.owners,
+                frozenset(
+                    name for restatement in restatements for name in restatement.deleted_names
+                ),
+            )
+            for composer, restatements in zip(self.composers, self.restated, strict=True)
         )
 
     def require_field_order(self) -> None:
@@ -1914,9 +1977,13 @@ class CoveringComposition:
         for restatements in self.restated:
             for restatement in restatements:
                 rationale = KeptDocumentation.composing(restatement).rationale(rationale)
+        for composed in self.composed:
+            rationale = composed.rationale(rationale)
         edits: list[NominalSourceEdit] = []
         imported: set[tuple[str, str]] = set()
-        for composer, restatements in zip(self.composers, self.restated, strict=True):
+        for composer, restatements, composed in zip(
+            self.composers, self.restated, self.composed, strict=True
+        ):
             source = self.snapshot.sources_by_file_path[composer.file_path]
             header = ClassHeaderSpanSourceAuthority(composer.node, source)
             deletion = StatementDeletionSource(
@@ -1938,12 +2005,7 @@ class CoveringComposition:
             edits.extend(
                 (
                     *header.source_edits(
-                        header.with_base_items(
-                            (
-                                *(owner.target.name for owner in self.owners),
-                                *header.base_items,
-                            )
-                        ),
+                        header.with_base_items(composed.header_bases(header)),
                         file_path=composer.file_path,
                         rationale=rationale,
                     ),
@@ -1953,7 +2015,10 @@ class CoveringComposition:
                         rationale=rationale,
                     ),
                     *obsolete_import_edits(
-                        self.snapshot, composer.file_path, statements, rationale
+                        self.snapshot,
+                        composer.file_path,
+                        (*statements, *composed.redundant_bases),
+                        rationale,
                     ),
                 )
             )
