@@ -28,4 +28,5 @@ class OverlapReceiptKind(ReceiptKind):
     IDENTITY_DECLARED = "identity_declared", 0.0, True, NeededInput.PROOF
     POSITIONAL_CONSTRUCTION = "positional_construction", 0.0, True, NeededInput.SOURCE_CHANGE
     INHERITED_DECLARATION = "inherited_declaration", 0.0, True, NeededInput.OPERATION
+    UNWANTED_SUPPLY = "unwanted_supply", 0.0, True, NeededInput.OPERATION
     DECLARATION_DIFFERS = "declaration_differs", 0.0, True, NeededInput.SOURCE_CHANGE

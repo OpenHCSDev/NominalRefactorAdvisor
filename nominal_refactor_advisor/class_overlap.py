@@ -183,6 +183,15 @@ class ClassOverlapMove(Case):
 
         return EveryAnswer()
 
+    @classmethod
+    def receiving_classes(
+        cls, restating: Sequence[CompactIndexedClass]
+    ) -> tuple[CompactIndexedClass, ...]:
+        """The classes that come to have everything the owner has, its ancestry
+        included: none, for a move that keeps no class as owner."""
+
+        return ()
+
 
 class DeleteAndRedirect(ClassOverlapMove):
     """Delete the restating class and point its uses at the owner: its identity is gone."""
@@ -195,6 +204,14 @@ class DeleteAndRedirect(ClassOverlapMove):
         cls, owner: CompactIndexedClass, restating: CompactIndexedClass
     ) -> tuple[CompactIndexedClass, ...]:
         return (restating, owner)
+
+    @classmethod
+    def receiving_classes(
+        cls, restating: Sequence[CompactIndexedClass]
+    ) -> tuple[CompactIndexedClass, ...]:
+        """Every use of a restating class gets an owner instance instead."""
+
+        return tuple(restating)
 
 
 class ComposeExisting(ClassOverlapMove):
@@ -223,6 +240,14 @@ class ComposeExisting(ClassOverlapMove):
         class_index: CompactClassFamilyIndex,
     ) -> SubclassAnswers:
         return AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)
+
+    @classmethod
+    def receiving_classes(
+        cls, restating: Sequence[CompactIndexedClass]
+    ) -> tuple[CompactIndexedClass, ...]:
+        """Each restating class inherits the owner, and with it the owner's ancestry."""
+
+        return tuple(restating)
 
 
 class PromoteToSharedBase(ClassOverlapMove):
@@ -1047,6 +1072,11 @@ class ClassOverlapVerdicts:
                 *self._family_receipts(first, second),
                 *self._construction_receipts(first, second, move),
                 *self._identity_receipts(owner, restating, move),
+                *self._supplied_member_receipts(
+                    move,
+                    owner,
+                    tuple(composer for composer in (restating, co_restating) if composer is not None),
+                ),
                 *(
                     self._positional_construction_receipts(
                         move, (first, second)
@@ -1500,6 +1530,39 @@ class ClassOverlapVerdicts:
                 (_location(first), _location(second)),
             ),
         )
+
+    def _supplied_member_receipts(
+        self,
+        move: type[ClassOverlapMove],
+        owner: CompactIndexedClass,
+        restating: Sequence[CompactIndexedClass],
+    ) -> tuple[Receipt, ...]:
+        """Members a class would come to have from the owner and its ancestors
+        without declaring or inheriting them now: supply nobody required, which
+        no later addition cancels (a dataclass field among them also changes
+        how the class is built)."""
+
+        owned = self.resolved_declarations(owner.symbol)
+        receipts: list[Receipt] = []
+        for receiver in move.receiving_classes(restating):
+            had = self.resolved_declarations(receiver.symbol)
+            gained = sorted(name for name in owned if name not in had)
+            if gained:
+                receipts.append(
+                    Receipt(
+                        OverlapReceiptKind.UNWANTED_SUPPLY,
+                        f"`{receiver.qualname}` would gain "
+                        + ", ".join(
+                            f"`{owned[name].owner.qualname}.{name}`" for name in gained[:6]
+                        )
+                        + (f" and {len(gained) - 6} more" if len(gained) > 6 else "")
+                        + f" through `{owner.qualname}`, which it neither declares "
+                        "nor inherits: the block needs a mixin of its own",
+                        tuple(_location(owned[name].owner, None, name) for name in gained[:4]),
+                        count=len(gained),
+                    )
+                )
+        return tuple(receipts)
 
     def _identity_receipts(
         self,
