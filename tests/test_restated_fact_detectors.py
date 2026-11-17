@@ -518,6 +518,102 @@ def test_a_loader_that_lists_a_package_reaches_every_module_in_it(tmp_path: Path
     assert dead == ["orphan"]
 
 
+def _dead_in(tmp_path: Path, files: dict[str, str]) -> list[str]:
+    for relative, source in files.items():
+        path = tmp_path / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(source)
+    return sorted(
+        finding.evidence[0].symbol
+        for finding in analyze_path(tmp_path)
+        if finding.detector_id == DeadModuleDetector.effective_detector_id()
+    )
+
+
+ANCHORED = {
+    "outside.py": "VALUE = 1\n",
+    "anchor.py": "import outside\n\n\nif __name__ == '__main__':\n    print(outside.VALUE)\n",
+    "orphan.py": "VALUE = 1\n",
+}
+
+
+def test_pytest_collects_the_files_the_repository_config_declares(tmp_path: Path):
+    files = {
+        "pyproject.toml": (
+            '[project]\nname = "x"\n\n[tool.pytest.ini_options]\n'
+            'testpaths = ["tests"]\npython_files = ["check_*.py"]\n'
+        ),
+        "tests/check_one.py": "def test_one():\n    assert True\n",
+        "tests/conftest.py": "VALUE = 1\n",
+        "tests/test_unlisted.py": "def test_two():\n    assert True\n",
+        "elsewhere/check_outside.py": "def test_three():\n    assert True\n",
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["elsewhere.check_outside", "orphan", "tests.test_unlisted"]
+
+
+def test_pytest_defaults_collect_test_files_and_conftest_but_not_helpers(tmp_path: Path):
+    files = {
+        "tests/test_one.py": "def test_one():\n    assert True\n",
+        "tests/two_test.py": "def test_two():\n    assert True\n",
+        "tests/conftest.py": "VALUE = 1\n",
+        "tests/helper.py": "VALUE = 1\n",
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["orphan", "tests.helper"]
+
+
+def test_an_enumerator_over_an_imported_package_path_reaches_its_modules(tmp_path: Path):
+    files = {
+        "plugins/__init__.py": "",
+        "plugins/started.py": "VALUE = 1\n",
+        "installer.py": (
+            "import pkgutil\nimport plugins\n\n\ndef names():\n"
+            "    return [info.name for info in pkgutil.iter_modules(plugins.__path__)]\n\n\n"
+            "if __name__ == '__main__':\n    print(names())\n"
+        ),
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["orphan"]
+
+
+def test_a_path_string_reaches_the_file_or_directory_it_names(tmp_path: Path):
+    files = {
+        "runner.py": (
+            "from pathlib import Path\n\nPROBE = Path(__file__).with_name('probe.py')\n"
+            "DATA = Path(__file__).parent / 'fixtures/data'\n\n\n"
+            "if __name__ == '__main__':\n    print(PROBE, DATA)\n"
+        ),
+        "probe.py": "VALUE = 1\n",
+        "fixtures/data/one.py": "VALUE = 1\n",
+        "missing_user.py": "import outside\nGONE = 'not_there.py'\n",
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["missing_user", "orphan"]
+
+
+def test_a_path_string_naming_an_ancestor_reaches_nothing(tmp_path: Path):
+    files = {
+        "sub/runner.py": (
+            "ROOT = '../'\n\n\nif __name__ == '__main__':\n    print(ROOT)\n"
+        ),
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["orphan"]
+
+
+def test_an_import_inside_a_code_string_reaches_its_module(tmp_path: Path):
+    files = {
+        "launcher.py": (
+            "STUB = 'import sys\\nfrom stub_protocol import serve\\nserve(sys.argv)\\n'\n\n\n"
+            "if __name__ == '__main__':\n    print(STUB)\n"
+        ),
+        "stub_protocol.py": "def serve(argv):\n    return argv\n",
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["orphan"]
+
+
 def test_an_empty_dead_module_dissolves(tmp_path: Path):
     package = tmp_path / "pkg"
     package.mkdir()
@@ -901,6 +997,28 @@ def test_every_form_of_type_test_on_an_own_class_is_a_finding(tmp_path: Path):
 
     assert _lines(findings) == [3, 5, 15, 17, 19, 22]
     assert {finding.evidence[0].symbol for finding in findings} == {"area", "kind", "matched"}
+
+
+def test_a_type_test_inside_an_assert_observes_and_is_not_a_finding(tmp_path: Path):
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle, Square\n"
+                "def checked(shape):\n"
+                "    assert isinstance(shape, Circle)\n"
+                "    assert type(shape) is not Square, 'no squares'\n"
+                "    return shape\n"
+                "def area(shape):\n"
+                "    if isinstance(shape, Circle):\n        return 1\n"
+                "    return 0\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [7]
 
 
 def test_a_constant_compared_by_identity_is_not_a_type_test(tmp_path: Path):
