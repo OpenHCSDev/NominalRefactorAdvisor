@@ -460,6 +460,39 @@ def test_a_merge_refused_by_identity_offers_the_extraction_that_keeps_both():
     assert not named.kind.guards
 
 
+READINGS = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\nclass Reading:\n    label: str\n    unit: str\n\n"
+    "    def describe(self) -> str:\n        return f'{self.label} {self.unit}'\n\n"
+    "    def width(self) -> int:\n        return len(self.label) + len(self.unit)\n\n"
+    "    def stored(self) -> bool:\n        return True\n\n\n"
+    "@dataclass\nclass Gauge:\n    label: str\n    unit: str\n\n"
+    "    def describe(self) -> str:\n        return f'{self.label} {self.unit}'\n\n"
+    "    def width(self) -> int:\n        return len(self.label) + len(self.unit)\n\n"
+    "    def live(self) -> bool:\n        return True\n"
+)
+
+
+def test_a_block_no_owner_can_take_offers_the_part_one_can():
+    """A frozen and a mutable dataclass share two fields and two methods: no
+    mixin holds the fields for both, so the whole block has no permitted owner.
+    The methods alone go on a plain mixin; the fields stay in each class."""
+
+    whole, part = _verdicts(("pkg.readings", READINGS))
+    assert whole.shared_names == ("label", "unit", "describe", "width")
+    assert not whole.repairs
+    assert whole.offered is part and whole.rungs == (whole, part)
+    assert part.move is ExtractMixin and part.repairs and part.offered is None
+    assert part.shared_names == ("describe", "width")
+    assert {shared.name for shared in part.overlap.withheld} == {"label", "unit"}
+    assert not part.overlap.first_is_contained and not part.overlap.second_is_contained
+    (named,) = (receipt for receipt in part.receipts if receipt.kind is OverlapReceiptKind.STRONGER_MOVE_NEEDS)
+    assert "one mixin cannot serve `Gauge` (mutable), `Reading` (frozen)" in named.detail
+    assert named.detail.endswith("moves `describe`, `width` and each class keeps `label`, `unit`")
+    # The detector reports each pair's lowest rung: the part is the finding.
+    assert [candidate for candidate in _verdicts(("pkg.readings", READINGS)) if candidate.offered is None] == [part]
+
+
 def test_a_permitted_move_offers_no_lower_rung():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     assert plain.permitted

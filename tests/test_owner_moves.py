@@ -1957,7 +1957,8 @@ def test_a_slotted_dataclass_composes_a_plain_class_whose_methods_it_restates(
 
 def test_a_block_with_a_field_still_needs_one_frozenness(tmp_path: Path) -> None:
     """A field in the block makes the mixin a dataclass, which Python lets only one
-    frozenness compose."""
+    frozenness compose: the finding is the block without the field, whose mixin
+    stays plain, and each class keeps its own `note`."""
     records = FROZEN_AND_MUTABLE.replace("    lead: int\n", "    lead: int\n    note: str = ''\n").replace(
         "    count: int\n", "    count: int\n    note: str = ''\n"
     )
@@ -1974,9 +1975,23 @@ def test_a_block_with_a_field_still_needs_one_frozenness(tmp_path: Path) -> None
         candidate for candidate in finding.metrics.owner_candidates
         if candidate.candidate_id == "new_mixin:pkg.records"
     )
-    assert not mixin.permitted
-    assert any("one mixin cannot serve `First` (frozen), `Second` (mutable)" in receipt.detail
-               for receipt in mixin.refusals)
+    assert mixin.permitted
+    assert finding.metrics.shared_declaration_names == ("otherwise", "shown", "texts")
+    assert any(
+        "one mixin cannot serve `First` (frozen), `Second` (mutable)" in receipt.detail
+        and receipt.detail.endswith("and each class keeps `note`")
+        for receipt in finding.metrics.receipts
+    )
+
+    before = _run(tmp_path, CONSTRUCTION_PROBE)
+    report = _goal_with_pick(tmp_path, "Shown")
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "\n\n\nclass Shown:\n" in source
+    assert "@dataclass(frozen=True)\nclass First(Shown):\n    lead: int\n    note: str = ''\n" in source
+    assert "@dataclass\nclass Second(Shown):\n    count: int\n    note: str = ''\n" in source
+    assert source.count("def otherwise") == 1
+    assert _run(tmp_path, CONSTRUCTION_PROBE) == before
 
 
 SHARED_MARKER = (
