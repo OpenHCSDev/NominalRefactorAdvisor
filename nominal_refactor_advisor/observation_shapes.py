@@ -440,6 +440,42 @@ class AssertedSubject(SubjectReading):
 
 
 @dataclass(frozen=True)
+class NoBranchSubject(AssertedSubject):
+    """A type test no branch hangs on, so it routes no arm to the tested classes:
+    besides an `assert`, an `if` whose only statement raises checks the same
+    contract, and a comprehension's filter keeps or drops each element as the
+    class it is. A restated test supplies an arm, one implementation of the
+    tested classes, from outside them (paper1 Theorem 4.6); with no arm there is
+    no method for the family to own. The class is the key the test reads
+    (Theorem 3.2), and a test of a family class admits every later member
+    through its base list (Proposition 3.3).
+
+    A test whose answer is a returned, bound or passed bool is not one: it turns
+    the class into a flag some consumer branches on."""
+
+    @staticmethod
+    def holds(ancestors: Sequence[ast.AST]) -> bool:
+        """Whether the test is asserted, or, walking up from it through `and`, `or`
+        and `not`, its first holder is the condition of an `if` whose body only
+        raises, or a comprehension's filter. `ancestors` run from the module down
+        to the test."""
+
+        if AssertedSubject.asserts(ancestors):
+            return True
+        for position in range(len(ancestors) - 2, -1, -1):
+            holder, held = ancestors[position], ancestors[position + 1]
+            match holder:
+                case ast.BoolOp() | ast.UnaryOp(op=ast.Not()):
+                    continue
+                case ast.If(test=test, body=[ast.Raise()], orelse=[]):
+                    return test is held
+                case ast.comprehension(ifs=filters):
+                    return any(condition is held for condition in filters)
+            return False
+        return False
+
+
+@dataclass(frozen=True)
 class ForeignSubject(SubjectReading):
     """A parameter annotated `object`, or the operand of a comparison method: the
     value is foreign until this test decodes it (`__eq__(self, other)`, a codec's
@@ -456,6 +492,31 @@ class ForeignSubject(SubjectReading):
 
     def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
         return ()
+
+    @staticmethod
+    def proved_a_class(subject: ast.expr, ancestors: Sequence[ast.AST]) -> bool:
+        """Whether an `issubclass` test follows `isinstance(subject, type)` in the same
+        `and`: the code did not know the subject was a class, so it is foreign until
+        these tests decode it (an annotation's argument, a codec's target)."""
+
+        match ancestors[-1]:
+            case ast.Call(func=ast.Name(id="issubclass")):
+                pass
+            case _:
+                return False
+        tested = ast.dump(subject)
+        for position in range(len(ancestors) - 2, -1, -1):
+            match ancestors[position]:
+                case ast.BoolOp(op=ast.And(), values=values):
+                    for value in values[: values.index(ancestors[position + 1])]:
+                        match value:
+                            case ast.Call(
+                                func=ast.Name(id="isinstance"), args=[first, ast.Name(id="type")]
+                            ) if ast.dump(first) == tested:
+                                return True
+                case _:
+                    return False
+        return False
 
 
 @dataclass(frozen=True)

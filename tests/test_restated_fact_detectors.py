@@ -1035,6 +1035,67 @@ def test_a_type_test_inside_an_assert_observes_and_is_not_a_finding(tmp_path: Pa
     assert _lines(findings) == [7]
 
 
+def test_a_test_no_branch_hangs_on_routes_no_arm_and_is_not_a_finding(tmp_path: Path):
+    # A comprehension filter keeps each element as the class it is, and a guard that
+    # only raises checks a contract: neither supplies an arm the family could own.
+    # A bool answer (`any`, a predicate lambda) and a guard with an else still branch.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle, Square\n"
+                "def circles(shapes):\n"
+                "    return [shape for shape in shapes if isinstance(shape, Circle)]\n"
+                "def first(shapes):\n"
+                "    return next(s.area for s in shapes if not isinstance(s, Square) and s)\n"
+                "def checked(shape):\n"
+                "    if not isinstance(shape, Circle):\n"
+                "        raise TypeError(shape)\n"
+                "    return shape\n"
+                "def has_circle(shapes):\n"
+                "    return any(isinstance(shape, Circle) for shape in shapes)\n"
+                "def picker():\n"
+                "    return lambda shape: isinstance(shape, Circle)\n"
+                "def area(shape):\n"
+                "    if isinstance(shape, Circle):\n"
+                "        raise TypeError(shape)\n"
+                "    else:\n"
+                "        return 1\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [11, 13, 15]
+
+
+def test_a_value_first_proved_a_class_is_decoded_by_its_subclass_test(tmp_path: Path):
+    # `isinstance(target, type)` says the code did not know the target was a class:
+    # the subclass test after it decodes a foreign value. Without that proof the
+    # same test on a class the code holds still restates the family.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle\n"
+                "def representation(target):\n"
+                "    if isinstance(target, type) and issubclass(target, Circle):\n"
+                "        return 1\n"
+                "    return 0\n"
+                "def kind(cls):\n"
+                "    if issubclass(cls, Circle):\n"
+                "        return 1\n"
+                "    return 0\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [7]
+
+
 def test_a_constant_compared_by_identity_is_not_a_type_test(tmp_path: Path):
     findings = _findings(
         tmp_path,

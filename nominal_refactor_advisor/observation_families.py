@@ -38,8 +38,8 @@ from nominal_refactor_advisor.observation_shapes import (
     DynamicMethodInjectionObservation,
     FieldObservation,
     ClassIdentityTestShape,
-    AssertedSubject,
     ForeignSubject,
+    NoBranchSubject,
     SubjectReading,
     TypeTestModule,
     TypeTestShape,
@@ -1223,7 +1223,8 @@ def _matched_subject(ancestors: Sequence[ast.AST]) -> str:
 
 
 def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> SubjectReading:
-    """`AssertedSubject` when the test sits in an `assert`'s condition;
+    """`NoBranchSubject` when no branch hangs on the test (an `assert`, a raising
+    guard, a comprehension filter);
     `ForeignSubject` when the tested value is a parameter nothing rebinds
     (`LexicalScopeBindingAuthority.bound_parameter`) that is annotated `object`
     or is a comparison method's operand; otherwise the value is held as itself.
@@ -1232,8 +1233,10 @@ def _subject_reading(subject: ast.expr, ancestors: Sequence[ast.AST]) -> Subject
     subject (the comparison or call); no scope lies between it and the subject.
     """
 
-    if AssertedSubject.asserts(ancestors):
-        return AssertedSubject()
+    if NoBranchSubject.holds(ancestors):
+        return NoBranchSubject()
+    if ForeignSubject.proved_a_class(subject, ancestors):
+        return ForeignSubject()
     if not isinstance(subject, ast.Name):
         return SubjectReading()
     function = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_parameter(subject, ancestors)
