@@ -291,6 +291,11 @@ class CompactDataclassFacet(ABC):
     failures: tuple[CompactProductDeclarationFailure, ...]
     frozenness: DataclassFrozenness
 
+    @property
+    @abstractmethod
+    def declared_by(self) -> str:
+        """What declares the class, in a reason's words."""
+
     def with_settled_field_declarations(self, index: FieldDeclarationIndex) -> Self:
         settled = tuple(member.settled(index) for member in self.fields)
         if settled == self.fields:
@@ -356,6 +361,14 @@ class CompactDataclassDeclaration(CompactDataclassFacet):
     def generates_construction(self) -> bool:
         return True
 
+    @property
+    def declared_by(self) -> str:
+        """What declares the class, in a reason's words."""
+
+        if self.runtime_declaration is None:
+            return "a dataclass-like decorator NRA does not know"
+        return f"`{self.runtime_declaration.qualified_name}`"
+
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         raise ValueError(f"`{heir_qualname}` inherits dataclass fields")
 
@@ -394,6 +407,12 @@ class NoDataclassDeclaration(CompactDataclassFacet):
     @property
     def generates_construction(self) -> bool:
         return False
+
+    @property
+    def declared_by(self) -> str:
+        """What declares the class, in a reason's words."""
+
+        return "no dataclass decorator"
 
     def refuse_inherited_fields(self, heir_qualname: str) -> None:
         return None

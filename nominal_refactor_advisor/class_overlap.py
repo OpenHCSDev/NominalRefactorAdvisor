@@ -1039,9 +1039,15 @@ class ClassOverlapVerdicts:
                 )
         else:
             return None
-        move, owner, restating, co_restating = floor.judged_repair(
-            PairRepair(move, owner, restating, co_restating), first, second
-        )
+        repair = PairRepair(move, owner, restating, co_restating)
+        if self._supplied_member_receipts(
+            move, owner, tuple(item for item in (restating, co_restating) if item is not None)
+        ):
+            # Keeping a class as owner would hand a composer members nobody
+            # requires of it: the block needs a mixin of its own, so that is the
+            # repair the verdict judges, and its owner is the picker's question.
+            repair = PairRepair(ExtractMixin, first, second, None)
+        move, owner, restating, co_restating = floor.judged_repair(repair, first, second)
         return ClassOverlapCandidate(
             shape=shape,
             move=move,
@@ -1502,7 +1508,11 @@ class ClassOverlapVerdicts:
             first.dataclass_declaration.runtime_declaration
             != second.dataclass_declaration.runtime_declaration
         ):
-            differences.append("dataclass declaration")
+            differences.append(
+                f"dataclass declaration (`{first.qualname}` has "
+                f"{first.dataclass_declaration.declared_by}, `{second.qualname}` has "
+                f"{second.dataclass_declaration.declared_by})"
+            )
         if first.metaclass_names != second.metaclass_names:
             differences.append(
                 f"metaclass ({first.metaclass_names!r} vs {second.metaclass_names!r})"
