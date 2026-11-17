@@ -422,6 +422,62 @@ def test_a_creation_hook_that_reads_the_bases_stops_the_composition_at_its_line(
     assert raised.value.needs == (NeededInput.PROOF,)
 
 
+def _writers_family(owner_extra: str, composer_extra: str) -> str:
+    """A hook keeping the classes whose own body binds `writes`, as agent-comms
+    `ProjectionOutputs.writer_declarations` does."""
+
+    return (
+        "from dataclasses import dataclass\n\n\n"
+        "class Writer:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        cls.writers = tuple(parent for parent in cls.__mro__ if 'writes' in vars(parent))\n\n\n"
+        f"@dataclass(frozen=True)\nclass Located:\n    file_path: str\n    line: int\n{owner_extra}\n\n"
+        "@dataclass(frozen=True)\nclass Finding(Writer):\n"
+        f"    file_path: str\n    line: int\n{owner_extra}    message: str\n{composer_extra}"
+    )
+
+
+WRITERS_PROBE = (
+    "from pkg.located import Finding\n"
+    "print([writer.__name__ for writer in Finding.writers])\n"
+)
+
+
+def test_a_hook_selecting_the_classes_binding_a_name_composes_an_owner_that_binds_none(
+    tmp_path: Path,
+) -> None:
+    """`Located` binds no `writes`, so the hook keeps the same classes in the same
+    order once `Finding` composes it."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _writers_family("", "    writes = ('table',)\n")})
+    before = _run(tmp_path, WRITERS_PROBE)
+    path = (tmp_path / "pkg/located.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+        ),
+    )
+    assert "class Finding(Located, Writer):" in (tmp_path / "pkg/located.py").read_text()
+    assert _run(tmp_path, WRITERS_PROBE) == before == "['Finding']\n"
+
+
+def test_a_hook_selecting_by_a_name_the_owner_would_take_refuses(tmp_path: Path) -> None:
+    """Moving `writes` to `Located` makes the hook select `Located` for `Finding`."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _writers_family("    writes = ('table',)\n", "")})
+    path = (tmp_path / "pkg/located.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"selects \['pkg.located.Finding'\] for `writes`"):
+        operation.source_edits(snapshot)
+
+
 def _dispatch_family(owner_body: str, composer_body: str, after_walk: str = "") -> str:
     """A hook that walks the MRO for each name's first binding, as
     `metaclass_registry.MroDispatch` does, and keeps the marked ones."""

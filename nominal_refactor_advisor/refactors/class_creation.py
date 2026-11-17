@@ -384,34 +384,68 @@ class ClassCreationProof:
         for symbol in order:
             if NativeMroBase.for_qualified_name(symbol) is not None:
                 continue
-            indexed = self.snapshot.class_overlap_verdicts.ancestor(symbol)
-            if indexed is None:
+            for name, statement in self.own_bindings(symbol, composed):
+                found.setdefault(name, self.may_carry(statement, attributes))
+        return tuple(name for name, carries in found.items() if carries)
+
+    def own_bindings(self, symbol: str, composed: bool) -> Iterator[tuple[str, ast.stmt]]:
+        """Each name a scanned class's own body puts in `vars()`, with the
+        statement binding it, in binding order; once composed, the composer's
+        body no longer binds the names it deletes."""
+
+        indexed = self.snapshot.class_overlap_verdicts.ancestor(symbol)
+        if indexed is None:
+            raise NeedsInput(
+                f"`{symbol}` has no declaration NRA can read, and the walk of "
+                f"`{self.composer.qualname}`'s MRO reads its names",
+                NeededInput.PROOF,
+            )
+        for statement in self.class_node(indexed).body:
+            names = declared_names(statement)
+            if not names and not (
+                isinstance(statement, (ast.Pass, ast.ClassDef))
+                or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+            ):
                 raise NeedsInput(
-                    f"`{symbol}` has no declaration NRA can read, and the walk of "
-                    f"`{self.composer.qualname}`'s MRO reads its names",
+                    f"{indexed.file_path}:{statement.lineno} `{indexed.qualname}` binds names a "
+                    f"statement decides, which the walk of `{self.composer.qualname}`'s MRO reads: "
+                    "NRA needs a proof of the order it binds them",
                     NeededInput.PROOF,
                 )
-            for statement in self.class_node(indexed).body:
-                names = declared_names(statement)
-                if not names and not (
-                    isinstance(statement, (ast.Pass, ast.ClassDef))
-                    or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
-                ):
-                    raise NeedsInput(
-                        f"{indexed.file_path}:{statement.lineno} `{indexed.qualname}` binds names a "
-                        f"statement decides, which the walk of `{self.composer.qualname}`'s MRO reads: "
-                        "NRA needs a proof of the order it binds them",
-                        NeededInput.PROOF,
-                    )
-                if isinstance(statement, ast.ClassDef):
-                    names = frozenset((statement.name,))
-                if isinstance(statement, ast.AnnAssign) and statement.value is None:
-                    continue
-                for name in names:
-                    if composed and symbol == self.walk.composer and name in self.walk.deleted:
-                        continue
-                    found.setdefault(name, self.may_carry(statement, attributes))
-        return tuple(name for name, carries in found.items() if carries)
+            if isinstance(statement, ast.ClassDef):
+                names = frozenset((statement.name,))
+            if isinstance(statement, ast.AnnAssign) and statement.value is None:
+                continue
+            for name in names:
+                if not (composed and symbol == self.walk.composer and name in self.walk.deleted):
+                    yield name, statement
+
+    def binders(self, order: tuple[str, ...], composed: bool, name: str) -> tuple[str, ...]:
+        """The classes of `order` whose own `vars()` holds `name`: what a walk
+        keeping each class with `name in vars(c)` selects."""
+
+        return tuple(
+            symbol
+            for symbol in order
+            if (
+                name in vars(native.python_type)
+                if (native := NativeMroBase.for_qualified_name(symbol)) is not None
+                else any(bound == name for bound, _ in self.own_bindings(symbol, composed))
+            )
+        )
+
+    def require_selection_kept(self, name: str, node: ast.AST, reads: CreationReads) -> None:
+        """A walk keeping the classes whose own body binds `name` selects the same
+        classes in the same order when the move neither gives `name` to a class
+        it adds nor takes it from one it keeps. A dunder name may be bound by
+        class creation itself, which no body shows."""
+
+        if name.startswith("__") and name.endswith("__"):
+            reads.refuse(node, "selects classes by a name class creation binds by itself")
+        before = self.binders(self.walk.before, False, name)
+        after = self.binders(self.walk.after, True, name)
+        if before != after:
+            reads.refuse(node, f"selects {list(before)} for `{name}`, and {list(after)} once composed,")
 
     @staticmethod
     def may_carry(statement: ast.stmt, attributes: frozenset[str]) -> bool:
@@ -720,7 +754,7 @@ class CreationReads:
         match parent:
             case ast.Attribute(attr=attr, ctx=ast.Store()):
                 return
-            case ast.Attribute(attr="__mro__") if self.first_found_walk(parent):
+            case ast.Attribute(attr="__mro__") if self.first_found_walk(parent) or self.binding_walk(parent):
                 return
             case ast.Attribute(attr=attr) if attr in INTROSPECTION:
                 self.refuse(parent, "introspects the new class")
@@ -795,6 +829,34 @@ class CreationReads:
         self.proof.require_walk_kept(attributes, walk, self)
         del inner
         return True
+
+    def binding_walk(self, attribute: ast.Attribute) -> bool:
+        """`(c for c in cls.__mro__ if "<name>" in vars(c))`, as any comprehension:
+        the classes whose own body binds the name, in C3 order."""
+
+        generator = self.parents.get(attribute)
+        comprehension = self.parents.get(generator) if generator is not None else None
+        match generator, comprehension:
+            case (
+                ast.comprehension(
+                    target=ast.Name(id=visited),
+                    iter=walked,
+                    ifs=[
+                        ast.Compare(
+                            left=ast.Constant(value=str() as name),
+                            ops=[ast.In()],
+                            comparators=[ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=owner)], keywords=[])],
+                        )
+                    ],
+                    is_async=0,
+                ),
+                ast.GeneratorExp(elt=ast.Name(id=kept), generators=[_])
+                | ast.ListComp(elt=ast.Name(id=kept), generators=[_])
+                | ast.SetComp(elt=ast.Name(id=kept), generators=[_]),
+            ) if walked is attribute and owner == visited and kept == visited:
+                self.proof.require_selection_kept(name, attribute, self)
+                return True
+        return False
 
     def comprehension_binds(self, node: ast.Name) -> bool:
         """Whether a comprehension around `node` binds its name: its own scope's variable."""
