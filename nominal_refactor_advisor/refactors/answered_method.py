@@ -276,6 +276,13 @@ class AnsweredMethod:
             owner = ProbeOwnerResolver.of(receiver.parsed).owner(receiver.expression).resolved(typing)
             spans = owner.type_checker_spans()
             if spans:
+                if isinstance(receiver.expression, ast.Name) and not receiver.parsed.fact(
+                    ModuleNodeIndex
+                ).bound_once(receiver.expression):
+                    raise ValueError(
+                        f"{receiver.where} reads `{receiver.expression.id}`, which its scope binds "
+                        "more than once, so no one type holds every value it has"
+                    )
                 undeclared[spans[0]] = receiver
             elif self.answers(tuple(getattr(owner, "class_symbols", tuple)()), receiver.where):
                 reached.append((receiver, ReceiverBinding(self.symbol)))

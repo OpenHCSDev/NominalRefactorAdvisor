@@ -18,7 +18,10 @@ from nominal_refactor_advisor.declaration_dependencies import (
     ModuleLexicalDependencyProjection,
     ModuleNameReferenceSurface,
 )
-from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
+from nominal_refactor_advisor.lexical_bindings import (
+    LEXICAL_SCOPE_BINDING_AUTHORITY,
+    ImportBoundNameProjection,
+)
 from nominal_refactor_advisor.lexical_scopes import (
     FunctionBindingProjection,
     ScopeBindingProjection,
@@ -264,6 +267,18 @@ class ModuleNodeIndex(ParsedModuleFact):
         evaluated in the enclosing scope; its parameters belong to it."""
 
         return self._scope_in(self.parents, node)
+
+    def bound_once(self, read: ast.Name) -> bool:
+        """Whether every value `read` can hold there comes from one binding
+        (`LexicalScopeBindingAuthority.bound_once`), so the type checker's type of
+        it, which a later binding from an untyped value leaves in place, holds."""
+
+        ancestors: list[ast.AST] = []
+        node = self.parents.get(read)
+        while node is not None:
+            ancestors.append(node)
+            node = self.parents.get(node)
+        return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_once(read, ancestors[::-1])
 
     @staticmethod
     def _scope_in(parents: AstParentIndex, node: ast.AST) -> ast.AST | None:

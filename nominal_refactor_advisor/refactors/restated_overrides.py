@@ -38,7 +38,6 @@ from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorCo
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
 from nominal_refactor_advisor.models import RefactorFinding
-from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.probe_owner import ReceiverSpan
@@ -427,13 +426,7 @@ class NamespaceReaders(ClassAttributeReaders):
 
         match NamespaceReads.receiver(read):
             case (ast.Name() as name,):
-                parents = module.fact(ModuleNodeIndex).parents
-                ancestors: list[ast.AST] = []
-                node = parents.get(name)
-                while node is not None:
-                    ancestors.append(node)
-                    node = parents.get(node)
-                return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_once(name, ancestors[::-1])
+                return module.fact(ModuleNodeIndex).bound_once(name)
         return True
 
     @staticmethod
