@@ -906,6 +906,14 @@ class ClassOverlapVerdicts:
 
         return self.resolved_declarations(symbol)[name].declaration
 
+    def block_fields(self, symbol: str, block: Iterable[str]) -> frozenset[str]:
+        """The names of the block that the class declares as fields, own or
+        inherited: only a block with one needs a dataclass to hold it."""
+
+        return frozenset(
+            name for name in block if self.declaration(symbol, name).kind.is_field
+        )
+
     def _inheriting_pairs_of(self, symbols: Iterable[str]) -> frozenset[tuple[str, str]]:
         """Pairs where one of `symbols` inherits a declaration another class makes itself.
 
@@ -1091,7 +1099,9 @@ class ClassOverlapVerdicts:
                 *self._kept_difference_receipts(overlap),
                 *self._consumer_receipts(first, second),
                 *self._family_receipts(first, second),
-                *self._construction_receipts(first, second, move),
+                *self._construction_receipts(
+                    first, second, move, owner, tuple(shared.name for shared in extractable)
+                ),
                 *self._identity_receipts(owner, restating, move),
                 *self._supplied_member_receipts(
                     move,
@@ -1199,16 +1209,12 @@ class ClassOverlapVerdicts:
                 for name in block
                 if block_declarations[name].kind is ClassBodyDeclarationKind.FIELD
             ),
-            block_fields=frozenset(
-                name
-                for name in block
-                if block_declarations[name].kind.is_field
-            ),
+            block_fields=self.block_fields(first.symbol, block),
             constructions_of=constructions_of,
             positional_constructions_of=lambda symbol: constructions_of(
                 symbol, positional=True
             ),
-            same_construction=lambda one, other: _construction(one) == _construction(other),
+            same_construction=lambda one, other: self.construction_kept(one, other, block),
             declares_differently=declares_differently,
             class_for=self.class_index.class_for,
             ancestors_of=self.class_index.ancestor_symbols,
@@ -1489,11 +1495,13 @@ class ClassOverlapVerdicts:
             ),
         )
 
-    @staticmethod
     def _construction_receipts(
+        self,
         first: CompactIndexedClass,
         second: CompactIndexedClass,
         move: type[ClassOverlapMove] | None = None,
+        owner: CompactIndexedClass | None = None,
+        block: Sequence[str] = (),
     ) -> tuple[Receipt, ...]:
         if _construction(first) == _construction(second):
             return (
@@ -1504,10 +1512,11 @@ class ClassOverlapVerdicts:
                 ),
             )
         differences: list[str] = []
+        plain_base = self._plain_base(first, second, move, owner, block)
         if (
             first.dataclass_declaration.runtime_declaration
             != second.dataclass_declaration.runtime_declaration
-        ):
+        ) and not plain_base:
             differences.append(
                 f"dataclass declaration (`{first.qualname}` has "
                 f"{first.dataclass_declaration.declared_by}, `{second.qualname}` has "
@@ -1527,6 +1536,15 @@ class ClassOverlapVerdicts:
             != second.class_decorators_are_promotion_safe
         ):
             differences.append("decorator safety")
+        if not differences and plain_base:
+            return (
+                Receipt(
+                    OverlapReceiptKind.SAME_CONSTRUCTION,
+                    "dataclass declarations differ, but the block declares no field and its "
+                    "owner generates no construction: each composer keeps its own",
+                    (_location(first), _location(second)),
+                ),
+            )
         if not differences:
             differences.append("class creation")
         if (
@@ -1554,6 +1572,51 @@ class ClassOverlapVerdicts:
                 f"`{first.qualname}` and `{second.qualname}` differ in {detail}",
                 (_location(first), _location(second)),
             ),
+        )
+
+    def _plain_base(
+        self,
+        first: CompactIndexedClass,
+        second: CompactIndexedClass,
+        move: type[ClassOverlapMove] | None,
+        owner: CompactIndexedClass | None,
+        block: Sequence[str],
+    ) -> bool:
+        """The base each composer gains is a plain class taking no field from the
+        block: a new mixin of a fieldless block, or an existing owner no dataclass
+        decorator declares."""
+
+        if move is ExtractMixin:
+            return self.takes_no_field(None, block, first, second)
+        return move is ComposeExisting and owner is not None and self.takes_no_field(
+            owner, block, first, second
+        )
+
+    def takes_no_field(
+        self, base: CompactIndexedClass | None, block: Sequence[str], *composers: CompactIndexedClass
+    ) -> bool:
+        """Composing `base` (a new mixin when `None`) over `block` changes no
+        composer's construction because of a dataclass declaration: no dataclass
+        decorator declares the base, and no class declares a field in the block.
+        A dataclass collects fields only from dataclass bases, so each composer
+        keeps its own fields, frozenness and generated methods."""
+
+        holders = (*composers, *(() if base is None else (base,)))
+        return (
+            bool(block)
+            and (base is None or not base.dataclass_declaration.generates_construction)
+            and not any(self.block_fields(indexed.symbol, block) for indexed in holders)
+        )
+
+    def construction_kept(
+        self, base: CompactIndexedClass, composer: CompactIndexedClass, block: Sequence[str]
+    ) -> bool:
+        """Composing `base` builds `composer` as before: both are created alike, or
+        they differ only in a dataclass declaration a plain fieldless base leaves alone."""
+
+        return _construction(base) == _construction(composer) or (
+            _construction(base)[1:] == _construction(composer)[1:]
+            and self.takes_no_field(base, block, composer)
         )
 
     def _supplied_member_receipts(

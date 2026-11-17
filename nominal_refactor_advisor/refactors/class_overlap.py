@@ -296,14 +296,39 @@ class OverlapClass(ABC):
             for statement in self.node.body
         )
 
-    def require_dataclass_base(self, base: OverlapClass) -> None:
-        """Composing `base` leaves this class's generated methods, its frozenness
-        and its instance layout as they were."""
+    def require_dataclass_base(self, base: OverlapClass, moved: Iterable[str]) -> None:
+        """Composing `base` for the `moved` declarations leaves this class's
+        generated methods, its frozenness and its instance layout as they were.
 
-        if bool(base.dataclass_options_key) != bool(self.dataclass_options_key) or any(
+        A dataclass collects fields and generated methods only from dataclass
+        bases, so a plain base serves any class, dataclass or not, unless the
+        move takes one of the class's own fields into it: that field would stop
+        being one.
+        """
+
+        layout_changes = base.lays_out_instance_dict and not self.lays_out_instance_dict
+        if not base.dataclass_options_key:
+            taken = (
+                sorted(frozenset(moved) & frozenset(self.own_field_names))
+                if self.dataclass_options_key
+                else ()
+            )
+            if taken:
+                raise NeedsInput(
+                    f"`{base.qualname}` is no dataclass, so moving {taken} into it ends "
+                    f"them as fields of `{self.qualname}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            if layout_changes:
+                raise NeedsInput(
+                    f"`{base.qualname}` gives slotted `{self.qualname}` an instance `__dict__`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            return
+        if not self.dataclass_options_key or any(
             not role.base_serves(base.option(name), self.option(name))
             for name, role in DATACLASS_OPTION_ROLES.items()
-        ) or (base.lays_out_instance_dict and not self.lays_out_instance_dict):
+        ) or layout_changes:
             raise NeedsInput(
                 f"`{base.qualname}` and `{self.qualname}` differ as dataclasses",
                 NeededInput.SOURCE_CHANGE,
@@ -1739,7 +1764,7 @@ class ClassComposition:
         NeedsInput.every(
             lambda: require_no_creation_keywords(owner),
             lambda: self.composed.creation().require_unchanged(),
-            lambda: restating.require_dataclass_base(owner),
+            lambda: restating.require_dataclass_base(owner, self.restated.names),
             lambda: require_rewritable_header(self.snapshot, restating),
         )
 
@@ -1920,12 +1945,16 @@ class CoveringComposition:
             *(lambda owner=owner: require_no_creation_keywords(owner) for owner in self.owners),
             *(
                 check
-                for composer, composed in zip(self.composers, self.composed, strict=True)
+                for composer, composed, restatements in zip(
+                    self.composers, self.composed, self.restated, strict=True
+                )
                 for check in (
                     lambda composed=composed: composed.creation().require_unchanged(),
                     *(
-                        lambda composer=composer, owner=owner: composer.require_dataclass_base(owner)
-                        for owner in self.owners
+                        lambda composer=composer, owner=owner, restatement=restatement: (
+                            composer.require_dataclass_base(owner, restatement.names)
+                        )
+                        for owner, restatement in zip(self.owners, restatements, strict=True)
                     ),
                     *(
                         lambda composer=composer, owner=owner: require_declared_before(owner, composer)
@@ -3298,7 +3327,10 @@ class MixinCreation:
 
     Its dataclass declaration is the one every composer can inherit: each method
     the composers' decorators agree on generating, none they disagree on, their
-    common frozenness, and no instance layout of its own. When a composer is
+    common frozenness, and no instance layout of its own. A block in which no
+    composer declares a field needs no dataclass: the mixin is a plain class,
+    which a dataclass of either frozenness and a plain class all compose, since
+    a dataclass collects fields only from dataclass bases. When a composer is
     slotted, the mixin declares `__slots__ = ()`, so each composer slots the
     mixin's fields itself and none gains a `__dict__` or a second layout.
 
@@ -3323,6 +3355,9 @@ class MixinCreation:
     """The mixin's `dataclass` arguments besides `kw_only`, as `name=value`."""
     empty_slots: bool
     """Some composer is slotted, so the mixin declares `__slots__ = ()`."""
+    holds_fields: bool
+    """Some composer declares a field in the block, so the mixin is a dataclass
+    carrying the anchor's decorator; otherwise it is a plain class."""
     documentation: KeptDocumentation
     """The docstrings the mixin's one copy keeps, judged across every composer."""
     abstract_names: tuple[str, ...] = ()
@@ -3381,21 +3416,30 @@ class MixinCreation:
                     for composer in (anchor, *composers)
                 ),
             )
-        keyword_only = anchor.option("kw_only") == "True" or any(
-            before != after or composer.option("kw_only") == "True"
-            for composer in composers
-            for before, after in (composed_field_order(snapshot, mixin_fields, composer),)
+        holds_fields = any(
+            frozenset(composer.own_field_names) & frozenset(restated.names)
+            for composer in (anchor, *composers)
+            if composer.dataclass_options_key
+        )
+        keyword_only = holds_fields and (
+            anchor.option("kw_only") == "True"
+            or any(
+                before != after or composer.option("kw_only") == "True"
+                for composer in composers
+                for before, after in (composed_field_order(snapshot, mixin_fields, composer),)
+            )
         )
         declared = tuple(
             (name_, role.mixin_value(name_, frozenset(composer.option(name_) for composer in (anchor, *composers))))
             for name_, role in DATACLASS_OPTION_ROLES.items()
-        )
+        ) if holds_fields else ()
         return cls(
             snapshot, anchor, restated, name, docstring, keyword_only,
             tuple(
                 f"{name_}={value}" for name_, value in declared if value != DATACLASS_OPTION_DEFAULTS[name_]
             ),
             any(not composer.lays_out_instance_dict for composer in (anchor, *composers)),
+            holds_fields,
             KeptDocumentation((anchor, *composers), restated.deleted_names),
             abstract_names,
         )
@@ -3483,7 +3527,7 @@ class MixinCreation:
         decorators = tuple(
             f"{indentation}@{self.decorator_source(source, decorator)}\n"
             for decorator in anchor.node.decorator_list
-        )
+        ) if self.holds_fields else ()
         members: list[str] = []
         for member, function in self.restated.member_sources(self.snapshot, member_indentation, self.documentation):
             if function and members:
