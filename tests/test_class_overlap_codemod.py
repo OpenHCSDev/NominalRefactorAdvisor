@@ -135,6 +135,40 @@ def _compose(root: Path) -> ComposeExistingClassOperation:
     )
 
 
+SMALL_OWNER = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\nclass Located:\n    file_path: str\n    line: int\n\n\n"
+    "@dataclass(frozen=True)\nclass Finding:\n    file_path: str\n    line: int\n    message: str\n"
+)
+SMALL_PROBE = (
+    "from dataclasses import fields\n"
+    "from pkg.located import Finding, Located\n"
+    "value = Finding('f.py', 3, 'm')\n"
+    "print([field.name for field in fields(Finding)], value, issubclass(Finding, Located))\n"
+)
+
+
+def test_a_requested_composition_is_judged_below_the_reporting_floor(tmp_path: Path) -> None:
+    """Two shared annotations are too little for the scan to report, but a move
+    that asks for the composition gets the pair's verdict and its guards."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": SMALL_OWNER})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert snapshot.class_overlap_verdicts.candidates == ()
+    path = (tmp_path / "pkg/located.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+        ),
+    )
+    assert _run(tmp_path, SMALL_PROBE).split() == [
+        "['file_path',", "'line',", "'message']",
+        "Finding(file_path='f.py',", "line=3,", "message='m')", "True",
+    ]
+
+
 def test_a_restating_class_composes_the_owner_and_runs_the_same(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/surface.py": SURFACE})
     before = _run(tmp_path, SURFACE_PROBE).splitlines()
