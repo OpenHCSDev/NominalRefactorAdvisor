@@ -416,6 +416,30 @@ class SubjectReading:
 
 
 @dataclass(frozen=True)
+class AssertedSubject(SubjectReading):
+    """A type test inside an `assert`: it observes what a value is to check a
+    contract, and selects no behaviour, so no method on the family could replace it."""
+
+    def restated(self, names: tuple[str, ...]) -> tuple[str, ...]:
+        return ()
+
+    @staticmethod
+    def asserts(ancestors: Sequence[ast.AST]) -> bool:
+        """Whether the innermost statement holding the test is an `assert` and the test
+        is in its condition, not its message. `ancestors` run from the module down."""
+
+        for position in range(len(ancestors) - 1, -1, -1):
+            statement = ancestors[position]
+            if isinstance(statement, ast.stmt):
+                return (
+                    isinstance(statement, ast.Assert)
+                    and position + 1 < len(ancestors)
+                    and ancestors[position + 1] is statement.test
+                )
+        return False
+
+
+@dataclass(frozen=True)
 class ForeignSubject(SubjectReading):
     """A parameter annotated `object`, or the operand of a comparison method: the
     value is foreign until this test decodes it (`__eq__(self, other)`, a codec's
