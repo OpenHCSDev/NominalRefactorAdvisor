@@ -79,6 +79,47 @@ class HubEdge:
         return refusal.hidden.bindings[0].module if isinstance(statement, ast.ImportFrom) else None
 
 
+class ReadsBack(NeedsInput):
+    """The moved code reads a module that reaches a reader, so no module below
+    the readers can hold it. Each kind is one shape of that read, and names the
+    input that would close it."""
+
+    shape = ""
+
+    def __init__(self, hub: str, closure: MovedClosure, below: tuple[str, ...], pins: str) -> None:
+        super().__init__(
+            f"{self.shape.format(hub=hub, roots=', '.join(f'`{root}`' for root in closure.roots), below=', '.join(f'`{m}`' for m in below))}: {pins}",
+            NeededInput.SOURCE_CHANGE,
+        )
+
+
+class DraggedReadsBack(ReadsBack):
+    """Only declarations the roots need, which move with them, read back: the
+    roots go down once they stop needing those, or those stop reading back."""
+
+    shape = "`{hub}`'s {roots} read nothing back themselves; declarations they drag along do"
+
+
+class SoleReaderKept(ReadsBack):
+    """The moved code reads back only from the one reader, which cannot take it."""
+
+    shape = "{roots} read back only from {below}, which cannot take them"
+
+
+class OneReaderReadsBack(ReadsBack):
+    """The moved code reads back toward one module that must load it: the
+    modules between them are the cycle to cut, one inversion."""
+
+    shape = "{roots} read back toward {below} alone"
+
+
+class HubFanReadsBack(ReadsBack):
+    """The moved code reads back toward several modules that must load it:
+    inverting what it reads is a decision about their layering, not a move."""
+
+    shape = "{roots} read back toward {below}: a hub fan, inverting it is a design input"
+
+
 @dataclass(frozen=True)
 class HubPlan(ABC):
     """What cutting one hub does: the edges it dissolves, and what each edge it
@@ -341,23 +382,30 @@ class HiddenImportCuts:
         if lower is not None and (not layer or lower.module in layer):
             return lower.module
         pinned = frozenset(self.imports.pinning_reads((*users, *readers), closure.reads))
-        if pinned and (home := self.reader_home(hub, users, readers, closure, layer, pinned)) is not None:
-            return home
         if pinned:
-            raise NeedsInput(
-                "; ".join(
-                    f"`{hub}.{read.declaration}` reads `{read.name}` from `{read.module}`, so it cannot "
-                    "sit below "
-                    + ", ".join(
-                        f"`{module}`"
-                        for module in (*users, *readers)
-                        if module == read.module or self.imports.reaches(read.module, module)
-                    )
-                    for read in closure.read_names
-                    if read.module in pinned
-                ),
-                NeededInput.SOURCE_CHANGE,
+            home = self.reader_home(hub, users, readers, closure, layer, pinned)
+            if home is not None:
+                return home
+            backs = {
+                read: tuple(
+                    module
+                    for module in (*users, *readers)
+                    if module == read.module or self.imports.reaches(read.module, module)
+                )
+                for read in closure.read_names
+                if read.module in pinned
+            }
+            pins = "; ".join(
+                f"`{hub}.{read.declaration}` reads `{read.name}` from `{read.module}`, so it cannot "
+                "sit below " + ", ".join(f"`{module}`" for module in back)
+                for read, back in backs.items()
             )
+            below = tuple(sorted({module for back in backs.values() for module in back}))
+            if not {read.declaration for read in backs} & set(closure.roots):
+                raise DraggedReadsBack(hub, closure, below, pins)
+            if len(below) == 1:
+                raise OneReaderReadsBack(hub, closure, below, pins)
+            raise HubFanReadsBack(hub, closure, below, pins)
         above_layer = sorted(closure.reads - layer) if layer else ()
         if above_layer:
             raise NeedsInput(
@@ -389,18 +437,26 @@ class HiddenImportCuts:
         is gone. Only when nothing left in the hub reads a moved name (the hub
         would then import the reader), the reader loads no other importer of
         the moved names and can bind every other module the code reads, and,
-        under a composition root, the reader is in the declarations' layer."""
+        under a composition root, the reader is in the declarations' layer.
+        A sole reader that fails one of those refuses, naming which."""
 
         if len(readers) != 1 or pinned != {readers[0]}:
             return None
         reader = readers[0]
+
+        def kept(reason: str) -> SoleReaderKept:
+            return SoleReaderKept(hub, closure, (reader,), reason)
+
         if layer and reader not in layer:
-            return None
+            raise kept(f"`{reader}` is outside the composition-root layer of the moved declarations")
         others = tuple(user for user in users if user not in (hub, reader))
-        if any(self.imports.reaches(reader, user) for user in others):
-            return None
-        if not all(self.imports.can_bind_at(reader, read, others) for read in closure.reads - {reader}):
-            return None
+        if loaded := next((user for user in others if self.imports.reaches(reader, user)), None):
+            raise kept(f"`{reader}` loads `{loaded}`, another importer of the moved names")
+        if unbound := next(
+            (read for read in sorted(closure.reads - {reader}) if not self.imports.can_bind_at(reader, read, others)),
+            None,
+        ):
+            raise kept(f"`{reader}` cannot import `{unbound}`, which the moved code reads, without a cycle")
         source = self.snapshot.module_import_graph.unique_source_file_for_module_name(hub)
         if source is None:
             return None
@@ -411,12 +467,11 @@ class HiddenImportCuts:
             if not (isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and statement.name in moved)
             and not isinstance(statement, ast.Import | ast.ImportFrom)
         )
-        if any(
-            isinstance(node, ast.Name) and node.id in moved
-            for statement in staying
-            for node in ast.walk(statement)
+        if read := next(
+            (node.id for statement in staying for node in ast.walk(statement) if isinstance(node, ast.Name) and node.id in moved),
+            None,
         ):
-            return None
+            raise kept(f"`{hub}` keeps reading `{read}`, so it would import `{reader}`")
         return reader
 
     def reached_by(self, destination: str, closure: MovedClosure) -> tuple[str, ...]:
