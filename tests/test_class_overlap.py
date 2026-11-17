@@ -7,6 +7,8 @@ import json
 import math
 from pathlib import Path
 
+import pytest
+
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
@@ -145,6 +147,59 @@ def test_a_type_test_on_the_composing_class_leaves_the_composition_permitted():
     )
     assert tested.move is ComposeExisting
     assert tested.permitted
+
+
+@pytest.mark.parametrize(
+    ("consumer", "permitted"),
+    (
+        # The class asked about does not descend from the restating class: its
+        # answer is the same before and after the restating class inherits the owner.
+        ("def kept():\n    return issubclass(LineWitness, FunctionFamilyEvidenceSurface)\n", True),
+        # The restating class itself gains the owner: False becomes True.
+        (
+            "def flipped():\n"
+            "    return issubclass(FunctionEvidenceLocationsCandidate, FunctionFamilyEvidenceSurface)\n",
+            False,
+        ),
+        # A parameter shadows the class name, so the subject is any class at all.
+        (
+            "def shadowed(LineWitness):\n"
+            "    return issubclass(LineWitness, FunctionFamilyEvidenceSurface)\n",
+            False,
+        ),
+    ),
+)
+def test_a_subclass_test_on_the_owner_refuses_only_when_its_answer_changes(consumer, permitted):
+    (candidate,) = _verdicts(("pkg.surface", SURFACE + "\n\n" + consumer))
+    assert candidate.move is ComposeExisting
+    assert candidate.permitted is permitted
+    if not permitted:
+        (refusal,) = candidate.refusals
+        assert refusal.kind is OverlapReceiptKind.IDENTITY_USED
+
+
+@pytest.mark.parametrize(
+    ("consumer", "permitted"),
+    (
+        # A generic subscripted in an annotation names the class as a type
+        # parameter, as a bare annotation does.
+        (
+            "class Box[T]:\n    pass\n\n\n"
+            "def take(items: Box[FunctionFamilyEvidenceSurface]) -> Box[FunctionFamilyEvidenceSurface]:\n"
+            "    held: Box[FunctionFamilyEvidenceSurface] = items\n    return held\n",
+            True,
+        ),
+        # A table keyed by the class, read at run time, answers by its identity.
+        (
+            "HANDLERS = {}\n\n\ndef handler():\n    return HANDLERS[FunctionFamilyEvidenceSurface]\n",
+            False,
+        ),
+    ),
+)
+def test_a_subscript_keys_by_the_class_only_outside_a_type(consumer, permitted):
+    (candidate,) = _verdicts(("pkg.surface", SURFACE + "\n\n" + consumer))
+    assert candidate.move is ComposeExisting
+    assert candidate.permitted is permitted
 
 
 def test_identical_bodies_bases_and_construction_delete_the_restating_class():

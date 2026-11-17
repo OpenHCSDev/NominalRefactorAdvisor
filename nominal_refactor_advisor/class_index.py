@@ -84,6 +84,8 @@ from nominal_refactor_advisor.class_method_facets import (
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
+    reads_as_type,
+    subclass_test_subject,
 )
 from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
@@ -5031,9 +5033,22 @@ def _compact_class_references(
     nodes = syntax_index.depth_first_nodes
     parent_indices = syntax_index.parent_indices
     references: dict[
-        tuple[str, tuple[str, ...], ClassReferenceRole],
+        tuple[str, tuple[str, ...], ClassReferenceRole, tuple[str, ...]],
         tuple[int, int, bool, tuple[str, ...]],
     ] = {}
+
+    def module_level_chain(expression: ast.expr | None, scope) -> tuple[str, ...]:
+        """The name chain `expression` spells, when its root is bound at module
+        level and no enclosing function rebinds it."""
+
+        parts = None if expression is None else ExpressionReference.decoded(expression).attribute_chain
+        if parts is None or parts[0] not in module_bound_names or any(
+            parts[0] in locals_by_function_index.get(function_index, ())
+            for function_index in scope.function_node_indices
+        ):
+            return ()
+        return parts
+
     for node_type in (ast.Name, ast.Attribute):
         for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
             node = nodes[node_index]
@@ -5060,8 +5075,11 @@ def _compact_class_references(
                     continue
             grandparent_index = parent_indices[parent_index] if parent is not None else -1
             grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
-            role = ClassReferenceRole.of_reference(node, parent, grandparent, import_aliases)
-            key = (".".join(scope.names), parts, role)
+            role = ClassReferenceRole.of_reference(
+                node, parent, grandparent, import_aliases, reads_as_type(node_index, nodes, parent_indices)
+            )
+            tested = module_level_chain(subclass_test_subject(node, parent, grandparent), scope)
+            key = (".".join(scope.names), parts, role, tested)
             positional, unpacked = (
                 (
                     len(parent.args),
@@ -5086,8 +5104,8 @@ def _compact_class_references(
                 max(seen_copied, copied, key=lambda names: (len(names), names)),
             )
     return tuple(
-        CompactClassReference(consumer, parts, role, *facts)
-        for (consumer, parts, role), facts in sorted(
+        CompactClassReference(consumer, parts, role, *facts, tested_subclass=tested)
+        for (consumer, parts, role, tested), facts in sorted(
             references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
         )
     )
