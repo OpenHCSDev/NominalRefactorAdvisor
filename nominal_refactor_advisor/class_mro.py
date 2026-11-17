@@ -6,6 +6,7 @@ from abc import ABC, ABCMeta, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from functools import cache
 from typing import (
     Generic,
     TYPE_CHECKING,
@@ -56,6 +57,34 @@ def namespace_read_native(qualified_name: str) -> type | None:
         (native for native in NAMESPACE_READ_NATIVES if f"{native.__module__}.{native.__qualname__}" == qualified_name),
         None,
     )
+
+
+@dataclass(frozen=True)
+class NativeStandIn:
+    """The inert MRO entry standing for a namespace-read native, one per native:
+    a real `Generic` base would run its creation hook, which refuses a plain base.
+    A lookup learns nothing past it for the names the native binds."""
+
+    entry: type
+    names: frozenset[str]
+
+    @staticmethod
+    @cache
+    def for_qualified_name(qualified_name: str) -> NativeStandIn | None:
+        native = namespace_read_native(qualified_name)
+        if native is None:
+            return None
+        return NativeStandIn(type(qualified_name, (), {}), native_declared_names(native))
+
+    @staticmethod
+    def stops(entry: type, member_name: str) -> bool | None:
+        """Whether a lookup of `member_name` stops at `entry`, or None when `entry`
+        stands for no native."""
+
+        stand_in = NativeStandIn.for_qualified_name(entry.__name__)
+        if stand_in is None or stand_in.entry is not entry:
+            return None
+        return member_name in stand_in.names
 
 
 def native_root_type(qualified_name: str) -> type | None:
@@ -186,10 +215,14 @@ class MroBasePolicy(ABC):
     def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
         raise NotImplementedError
 
-    @abstractmethod
     def foreign_base(self, qualified_name: str) -> type | None:
-        """The type standing for a base the scan does not declare, or None when it has none."""
-        raise NotImplementedError
+        """The type standing for a base the scan does not declare, or None when it
+        has none: a native root itself, a namespace-read native by its stand-in."""
+        native = NativeMroBase.for_qualified_name(qualified_name)
+        if native is not None:
+            return native.python_type
+        stand_in = NativeStandIn.for_qualified_name(qualified_name)
+        return None if stand_in is None else stand_in.entry
 
     def is_opaque(self, entry: type) -> bool:
         """Whether an MRO entry stands for a base whose members nothing declares."""
@@ -197,11 +230,15 @@ class MroBasePolicy(ABC):
 
     def stops_lookup(self, entry: type, member_name: str) -> bool:
         """Whether a lookup of `member_name` learns nothing past this entry."""
-        return self.is_opaque(entry)
+        native = NativeStandIn.stops(entry, member_name)
+        return self.is_opaque(entry) if native is None else native
 
 
 class RuntimeProofBases(MroBasePolicy):
-    """The MRO Python builds at runtime: class creation runs no code, every base is known."""
+    """The MRO Python builds at runtime: no scanned class runs code at creation,
+    and every base is known. A namespace-read native stands in inert: its own
+    order is itself then `object`, so C3 places the stand-in where it places the
+    native, and its creation hook binds no member a lookup reads."""
 
     def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
         return (
@@ -210,10 +247,6 @@ class RuntimeProofBases(MroBasePolicy):
             and declaration.class_decorators_are_promotion_safe
             and not declaration.has_class_creation_hook
         )
-
-    def foreign_base(self, qualified_name: str) -> type | None:
-        native = NativeMroBase.for_qualified_name(qualified_name)
-        return None if native is None else native.python_type
 
 
 @dataclass
@@ -232,36 +265,16 @@ class DeclaredBases(MroBasePolicy):
     """The class an installed module outside the scan declares under a name."""
     _placeholders: dict[str, type] = field(default_factory=dict)
     _installed: dict[str, type | None] = field(default_factory=dict)
-    _natives: dict[str, tuple[type, frozenset[str]]] = field(default_factory=dict)
-    """Each namespace-read native as an inert stand-in, with the names it binds:
-    a real `Generic` base would run its creation hook, which refuses a plain base."""
 
     def creation_is_static(self, declaration: CompactIndexedClass) -> bool:
         return True
 
     def foreign_base(self, qualified_name: str) -> type | None:
-        native = NativeMroBase.for_qualified_name(qualified_name)
-        if native is not None:
-            return native.python_type
         return (
-            self.namespace_native(qualified_name)
+            super().foreign_base(qualified_name)
             or self.installed_base(qualified_name)
             or self._placeholders.setdefault(qualified_name, type(qualified_name, (), {}))
         )
-
-    def namespace_native(self, qualified_name: str) -> type | None:
-        native = namespace_read_native(qualified_name)
-        if native is None:
-            return None
-        if qualified_name not in self._natives:
-            self._natives[qualified_name] = (type(qualified_name, (), {}), native_declared_names(native))
-        return self._natives[qualified_name][0]
-
-    def stops_lookup(self, entry: type, member_name: str) -> bool:
-        native = self._natives.get(entry.__name__)
-        if native is not None and native[0] is entry:
-            return member_name in native[1]
-        return self.is_opaque(entry)
 
     def installed_base(self, qualified_name: str) -> type | None:
         """The installed class, as an MRO entry carrying its declaration, once its
@@ -377,6 +390,11 @@ class ClassMroAuthority:
             if resolution.mro_type is None:
                 return resolution
             bases.append(resolution.mro_type)
+        for qualified_name in declaration.implicit_base_names:
+            implicit = self.bases.foreign_base(qualified_name)
+            if implicit is None:
+                return UnresolvedBases(symbol)
+            bases.append(implicit)
         try:
             projected = DeclarationMroType.from_declaration(declaration, tuple(bases))
         except TypeError:

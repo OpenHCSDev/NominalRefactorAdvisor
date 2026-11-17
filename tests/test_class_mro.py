@@ -9,7 +9,10 @@ import pytest
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_index import (
+    CompactClassFamilyIndex,
     CompactClassFamilyIndexBuilder,
+    MissingClassMember,
+    OpenClassMember,
     CompactModuleClassProjectionFamily,
 )
 from nominal_refactor_advisor.class_mro import (
@@ -23,20 +26,20 @@ from nominal_refactor_advisor.class_mro import (
 )
 
 
-def _authority(source: str) -> ClassMroAuthority:
+def _index(source: str) -> CompactClassFamilyIndex:
     module = ParsedModule(
         path=Path("probe.py"),
         module_name="probe",
         module=ast.parse(source),
         source=source,
     )
-    return (
-        CompactClassFamilyIndexBuilder(
-            CompactModuleClassProjectionFamily.collect_modules((module,))
-        )
-        .build()
-        .mro_authority
-    )
+    return CompactClassFamilyIndexBuilder(
+        CompactModuleClassProjectionFamily.collect_modules((module,))
+    ).build()
+
+
+def _authority(source: str) -> ClassMroAuthority:
+    return _index(source).mro_authority
 
 
 @pytest.mark.parametrize(
@@ -171,3 +174,46 @@ def test_changed_base_order_reproves_native_types() -> None:
     assert first is not second
     assert first.declarations[1].symbol == "probe.Left"
     assert second.declarations[1].symbol == "probe.Right"
+
+
+TYPE_PARAMETER_SOURCES = (
+    "from abc import ABC\nclass Base: pass\nclass Leaf[T](Base, ABC): pass\n",
+    "class Leaf[T]: pass\n",
+)
+
+
+@pytest.mark.parametrize("source", TYPE_PARAMETER_SOURCES)
+@pytest.mark.parametrize("policy", ("mro_authority", "declared_mro_authority"))
+def test_type_parameters_end_the_order_as_creation_does(source: str, policy: str) -> None:
+    """`class C[T]` ends its bases with `Generic`, unless it names `Protocol`."""
+
+    namespace = {"__name__": "probe"}
+    exec(source, namespace)
+    expected = tuple(owner.__name__ for owner in namespace["Leaf"].__mro__)
+    resolution = getattr(_index(source), policy).resolve("probe.Leaf")
+    assert resolution.mro_type is not None
+    assert tuple(entry.__name__.rpartition(".")[2] for entry in resolution.mro_type.__mro__) == expected
+
+
+def test_a_protocol_with_type_parameters_gains_no_generic() -> None:
+    """`Protocol` is generic itself, so creation appends nothing; its creation
+    hook leaves the order unproved."""
+
+    index = _index("from typing import Protocol\nclass Leaf[T](Protocol): pass\n")
+    leaf = index.class_for("probe.Leaf")
+    assert leaf is not None and leaf.implicit_base_names == ()
+    assert type(index.mro_authority.resolve("probe.Leaf")) is UnresolvedBases
+
+
+@pytest.mark.parametrize(
+    "source,lookup",
+    (
+        (TYPE_PARAMETER_SOURCES[0], OpenClassMember),
+        ("from abc import ABC\nclass Base: pass\nclass Leaf(Base, ABC): pass\n", MissingClassMember),
+    ),
+)
+def test_a_name_generic_binds_is_read_at_generic(source: str, lookup: type) -> None:
+    """No scanned class binds `__class_getitem__`; `Generic` does, so only a class
+    with type parameters reads it, from a native whose code nothing declares."""
+
+    assert type(_index(source).member_in_mro("probe.Leaf", "__class_getitem__")) is lookup
