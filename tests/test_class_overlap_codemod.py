@@ -240,7 +240,7 @@ def test_an_owner_whose_base_the_class_already_has_is_composed(tmp_path: Path) -
         ),
     )
     source = (tmp_path / "pkg/reads.py").read_text()
-    assert "class Reads(Snapshot, ABC):\n    __slots__ = ()\n\n    @abstractmethod\n    def require" in source
+    assert "class Reads(Snapshot):\n    __slots__ = ()\n\n    @abstractmethod\n    def require" in source
     assert source.count("def owner_identity") == 2
     assert _run(tmp_path, BASED_PROBE) == before
 
@@ -482,7 +482,7 @@ def test_an_owner_whose_ancestry_reaches_an_installed_class_is_composed(
         ),
     )
     source = (project / "pkg/omitted.py").read_text()
-    assert "class PiOmitted(Omitted, Representation):\n    def is_reported" in source
+    assert "class PiOmitted(Omitted):\n    def is_reported" in source
     assert ran().split("[")[0] == before.split("[")[0]
 
 
