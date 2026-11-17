@@ -293,13 +293,13 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
         if not isinstance(answer, InferredReceiverType):
             return None
         spelled = ast.unparse(subject)
-        if re.search(r"\bNone\b", answer.spelled) or not answer.instances:
-            raise ValueError(
-                f"the type checker infers `{answer.spelled}` for `{spelled}`, whose values are not all "
-                "instances with methods: it needs the value decoded into the family where it enters"
-            )
         match answer.classes:
             case (symbol,) if symbol in snapshot.required_class_family_index.classes_by_symbol:
+                if re.search(r"\bNone\b", answer.spelled) or not answer.instances:
+                    raise ValueError(
+                        f"the type checker infers `{answer.spelled}` for `{spelled}`, whose values are not all "
+                        "instances with methods: it needs the value decoded into the family where it enters"
+                    )
                 return symbol
         raise ValueError(
             f"the type checker infers `{answer.spelled}` for `{spelled}`, which is not one class the scan "
