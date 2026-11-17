@@ -77,6 +77,7 @@ from nominal_refactor_advisor.codemod_declaration_source import (
 )
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
+    OptionalStringPayloadValueCodec,
     PayloadRecordArrayValueCodec,
     PayloadRecordValueCodec,
     RequiredStringPayloadValueCodec,
@@ -119,15 +120,23 @@ from nominal_refactor_advisor.owner_candidates import (
     ExistingClassOwner,
     HoldSourceOwner,
     HoistingMixinOwner,
+    ModuleImportGraph,
     NewMixinOwner,
+    NewModuleMixinOwner,
     OwnerCandidate,
     PickedOwner,
     SharedBaseOwner,
+    common_package,
 )
+from nominal_refactor_advisor.audit.family import snake_case
 from nominal_refactor_advisor.refactor_concepts import ClassBodyCompositionConcept
 from nominal_refactor_advisor.refactors.carrier_fields import (
     CarrierFieldProjection,
     ReplaceFieldsWithCarrierOperation,
+)
+from nominal_refactor_advisor.refactors.module_move import (
+    RelocateSymbolsToModuleOperation,
+    RelocateSymbolsToNewModuleOperation,
 )
 from nominal_refactor_advisor.semantic_descent import (
     AuthorityClaim,
@@ -2615,6 +2624,54 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
 
 
 @dataclass(frozen=True, kw_only=True)
+class ComposeMovedOwnerOperation(RepositorySourceReprovedOperation):
+    """Move an existing owner to `home_module`, then make the target and each other
+    composer compose it there: composing it where it is closes an import cycle.
+
+    The move is the module-move operation's, which redirects every importer of
+    the owner and refuses what it cannot carry; each composition is then proved
+    on the source the move left."""
+
+    owner: SourceRewriteTarget = codemod_payload_field(
+        PayloadRecordValueCodec(SourceRewriteTarget)
+    )
+    home_module: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    """A module every composer already imports and that imports none of them, or
+    a new module of their lowest common package."""
+    composers: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
+    )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        move = relocation_to(snapshot, self.owner, self.home_module)
+        moved = SourceRewriteTarget(file_path=move.destination_path, qualname=self.owner.qualname)
+        return in_order_edits(
+            snapshot,
+            (
+                move,
+                *(
+                    ComposeExistingClassOperation(target=composer, owner=moved)
+                    for composer in (self.target, *self.composers)
+                ),
+            ),
+            f"compose-moved-{self.owner.qualname}",
+            self.rationale_text(
+                f"Move `{self.owner.qualname}` to `{self.home_module}` and compose it there "
+                "instead of restating its body."
+            ),
+        )
+
+    def current_source_authority_claims(
+        self, context: CodemodSelectorContext
+    ) -> tuple[AuthorityClaim, ...]:
+        return ComposeExistingClassOperation(
+            target=self.target, owner=self.owner
+        ).current_source_authority_claims(context)
+
+
+@dataclass(frozen=True, kw_only=True)
 class ComposeExistingClassesOperation(RepositorySourceReprovedOperation):
     """Make every class restating a block compose the existing classes that own it."""
 
@@ -2827,13 +2884,17 @@ class MixinCreation:
         member_names: tuple[str, ...],
         name: str,
         docstring: str,
+        home: tuple[str, ...] | None = None,
     ) -> Self:
+        """`home` is the subject of the new-mixin candidate that proves the
+        creation, when the mixin is declared away from the anchor's module."""
+
         anchor = OverlapClass.require(snapshot, anchor_reference)
         if not docstring.strip() or '"""' in docstring or "\\" in docstring:
             raise NeedsInput("A mixin needs a one-line docstring without quotes", NeededInput.OWNER_PICK)
         module_name = snapshot.parsed_module_for_source_path(anchor.file_path).module_name
         _, owner = require_owner_candidate(
-            snapshot, anchor.symbol, NewMixinOwner, (module_name,), member_names,
+            snapshot, anchor.symbol, NewMixinOwner, home or (module_name,), member_names,
             tolerate_inherited=True,
         )
         if not name.isidentifier() or keyword_module.iskeyword(name):
@@ -2964,6 +3025,49 @@ class MixinCreation:
                 rationale=rationale,
             ),
         )
+
+
+def home_subject(snapshot: CodemodSourceSnapshot, home_module: str) -> tuple[str, ...]:
+    """The subject of the new-mixin candidate placed in `home_module`: the module
+    when it exists, else the package a new module of that name is created in."""
+
+    if snapshot.module_import_graph.unique_source_file_for_module_name(home_module):
+        return (home_module,)
+    return (home_module.rpartition(".")[0],)
+
+
+def relocation_to(
+    snapshot: CodemodSourceSnapshot, declaration: SourceRewriteTarget, home_module: str
+) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
+    """The module move that declares the module-level class `declaration` names in
+    `home_module` instead: into that module when it exists, else into a new module
+    of that name beside its package's `__init__`."""
+
+    qualname = declaration.qualname
+    if declaration.file_path is None or qualname is None or "." in qualname:
+        raise NeedsInput(
+            f"`{qualname}` is no module-level class to move to `{home_module}`",
+            NeededInput.OPERATION,
+        )
+    graph = snapshot.module_import_graph
+    source = SourceRewriteTarget(file_path=declaration.file_path)
+    existing = graph.unique_source_file_for_module_name(home_module)
+    if existing is not None:
+        return RelocateSymbolsToModuleOperation(
+            target=source, symbol_qualnames=(qualname,), destination_path=existing.file_path
+        )
+    package, _, stem = home_module.rpartition(".")
+    package_file = graph.unique_source_file_for_module_name(package) if package else None
+    if package_file is None or Path(package_file.file_path).name != "__init__.py":
+        raise NeedsInput(
+            f"`{home_module}` would be a new module, but `{package}` is no package "
+            "with an `__init__.py` to create it beside", NeededInput.SOURCE_CHANGE,
+        )
+    return RelocateSymbolsToNewModuleOperation(
+        target=source,
+        symbol_qualnames=(qualname,),
+        destination_path=(Path(package_file.file_path).parent / f"{stem}.py").as_posix(),
+    )
 
 
 def in_order_edits(
@@ -3141,10 +3245,17 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
     composers: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
         PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
     )
+    home_module: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(), default=None
+    )
+    """The module the mixin is declared in when declaring it beside the anchor
+    closes an import cycle: an existing module, or a new one in its package. The
+    mixin is created beside the anchor, moved there, then composed."""
 
     def creation(self, snapshot: CodemodSourceSnapshot) -> MixinCreation:
         return MixinCreation.require(
-            snapshot, self.target, self.member_names, self.mixin_name, self.docstring
+            snapshot, self.target, self.member_names, self.mixin_name, self.docstring,
+            None if self.home_module is None else home_subject(snapshot, self.home_module),
         )
 
     def source_edits_from_snapshot(
@@ -3155,17 +3266,21 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
         )
         creation = self.creation(snapshot)
         if not self.composers:
+            # The first step alone: declared beside the anchor, proved by the
+            # candidate for wherever it is going.
             return creation.source_edits(rationale)
-        mixin = SourceRewriteTarget(
-            file_path=self.target.file_path,
-            qualname=".".join(
-                (*self.target.qualname.split(".")[:-1], self.mixin_name)
-            ),
-        )
+        qualname = ".".join((*creation.anchor.qualname.split(".")[:-1], self.mixin_name))
+        mixin = SourceRewriteTarget(file_path=self.target.file_path, qualname=qualname)
+        moves: tuple[RepositorySourceReprovedOperation, ...] = ()
+        if self.home_module is not None:
+            move = relocation_to(snapshot, mixin, self.home_module)
+            moves = (move,)
+            mixin = SourceRewriteTarget(file_path=move.destination_path, qualname=qualname)
         return in_order_edits(
             snapshot,
             (
                 replace(self, composers=()),
+                *moves,
                 *(
                     ComposeExistingClassOperation(target=composer, owner=mixin)
                     for composer in self.composers
@@ -3435,18 +3550,27 @@ class ClassOverlapFindingRecipeSynthesizer(
         verdicts: ClassOverlapVerdicts,
     ) -> tuple[CreateMixinOperation, ...]:
         """The new mixin of the names both composers declare themselves, declared
-        before the composing class in its module."""
+        before the anchor in its module, then moved to the owner's module when
+        that is another one, a new module included."""
 
         anchor = next(
-            (
-                indexed_class
-                for indexed_class in composers
-                if indexed_class.module_name == owner.module_name
-            ),
+            (indexed_class for indexed_class in composers if indexed_class.symbol == owner.anchor),
             None,
         )
         if anchor is None or pick.name is None:
-            raise NeedsInput(f"no composing class lives in `{owner.module_name}`", NeededInput.OWNER_PICK)
+            raise NeedsInput(f"the anchor `{owner.anchor}` left the source", NeededInput.OWNER_PICK)
+        home_module = (
+            f"{owner.module_name}.{snake_case(pick.name)}"
+            if isinstance(owner, NewModuleMixinOwner)
+            else None
+            if owner.module_name == anchor.module_name
+            else owner.module_name
+        )
+        if isinstance(owner, NewModuleMixinOwner) and home_module in verdicts.module_imports.imports:
+            raise NeedsInput(
+                f"`{home_module}` already exists and does not avoid the cycle: the new "
+                "module needs another mixin name", NeededInput.OWNER_PICK,
+            )
         if pick.judgement is None:
             raise NeedsInput("a new mixin needs the pick's judgement for its docstring", NeededInput.OWNER_PICK)
         verdict_match = next(
@@ -3475,8 +3599,54 @@ class ClassOverlapFindingRecipeSynthesizer(
                     source_rewrite_target(indexed_class)
                     for indexed_class in composers
                 ),
+                home_module=home_module,
             ),
         )
+
+    @staticmethod
+    def owner_home(
+        snapshot: CodemodSourceSnapshot,
+        owner: CompactIndexedClass,
+        composers: tuple[CompactIndexedClass, ...],
+    ) -> str | None:
+        """Where an existing owner moves before its composers compose it: None
+        when none of them importing it where it is closes a cycle. Otherwise a
+        module the owner's and every composer's module already import and that
+        imports none of them; failing that, a new module of their lowest common
+        package named for the owner. Refuses, naming why, when there is neither."""
+
+        graph = snapshot.module_import_graph
+        closing = tuple(
+            composer.module_name
+            for composer in composers
+            if graph.import_would_create_cycle(
+                importing_file_path=composer.file_path, imported_file_path=owner.file_path
+            )
+        )
+        if not closing:
+            return None
+        users = tuple(dict.fromkeys((owner.module_name, *(c.module_name for c in composers))))
+        lower = ModuleImportGraph(graph.import_edges_by_module).shared_lower_module(users)
+        if lower is not None:
+            return lower
+        package = common_package(users)
+        if not package:
+            raise NeedsInput(
+                f"`{owner.module_name}` already imports, directly or not, "
+                + ", ".join(f"`{module}`" for module in closing)
+                + f", so `{owner.qualname}` moves first; but no module that "
+                + ", ".join(f"`{module}`" for module in users)
+                + " all import avoids the cycle, and they share no package to hold "
+                "a new one",
+                NeededInput.SOURCE_CHANGE,
+            )
+        home_module = f"{package}.{snake_case(owner.qualname)}"
+        if graph.unique_source_file_for_module_name(home_module) is not None:
+            raise NeedsInput(
+                f"`{owner.qualname}` moves first to avoid a cycle, but `{home_module}` "
+                "already exists and does not avoid it", NeededInput.SOURCE_CHANGE,
+            )
+        return home_module
 
     @staticmethod
     def keywordings(
@@ -3543,13 +3713,30 @@ class ClassOverlapFindingRecipeSynthesizer(
             )
             if owner is None or None in restating:
                 return self.rejected_evaluation("the overlap's classes left the source")
-            operations: tuple[RepositorySourceReprovedOperation, ...] = tuple(
-                ComposeExistingClassOperation(
-                    target=source_rewrite_target(indexed_class),
-                    owner=source_rewrite_target(owner),
+            composers = tuple(
+                indexed_class for indexed_class in restating if indexed_class is not None
+            )
+            try:
+                home_module = self.owner_home(snapshot, owner, composers)
+            except NeedsInput as missing:
+                return self.stopped_evaluation(missing)
+            operations: tuple[RepositorySourceReprovedOperation, ...] = (
+                tuple(
+                    ComposeExistingClassOperation(
+                        target=source_rewrite_target(indexed_class),
+                        owner=source_rewrite_target(owner),
+                    )
+                    for indexed_class in composers
                 )
-                for indexed_class in restating
-                if indexed_class is not None
+                if home_module is None
+                else (
+                    ComposeMovedOwnerOperation(
+                        target=source_rewrite_target(composers[0]),
+                        owner=source_rewrite_target(owner),
+                        home_module=home_module,
+                        composers=tuple(source_rewrite_target(item) for item in composers[1:]),
+                    ),
+                )
             )
         elif metrics.move is PromoteToSharedBase:
             first, second = (

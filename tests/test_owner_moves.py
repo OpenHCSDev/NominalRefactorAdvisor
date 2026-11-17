@@ -1007,3 +1007,185 @@ def test_a_moved_value_from_an_unindexed_class_still_refuses(tmp_path: Path) -> 
 
     with pytest.raises(CodemodOperationPreflightError, match="field order .* is unknown"):
         _field_mixin(str(tmp_path / "pkg/records.py")).source_edits(snapshot)
+
+
+LETTERED = (
+    "    alpha: int\n"
+    "    beta: str\n\n"
+    "    def gamma(self) -> str:\n"
+    "        return f'{self.beta}{self.alpha}'\n\n"
+)
+LAYERED = {
+    "pkg/__init__.py": "",
+    "pkg/base.py": "UNIT = 1\n",
+    "pkg/low.py": (
+        "from dataclasses import dataclass\n\nfrom pkg.base import UNIT\n\n\n"
+        "@dataclass(frozen=True)\nclass First:\n" + LETTERED + "    own_first: int = 0\n\n\n"
+        "def unit():\n    return UNIT\n"
+    ),
+    "pkg/high.py": (
+        "from dataclasses import dataclass\n\nfrom pkg.base import UNIT\nfrom pkg.low import First\n\n\n"
+        "@dataclass(frozen=True)\nclass Second:\n" + LETTERED + "    own_second: int = 0\n\n\n"
+        "def pair():\n    return First(alpha=1, beta='x'), Second(alpha=2, beta='y')\n"
+    ),
+}
+LAYERED_PROBE = (
+    "from pkg.high import pair\n"
+    "print([(value.gamma(), value) for value in pair()])\n"
+)
+
+
+def _mixin_finding(root: Path):
+    return next(
+        finding
+        for finding in analyze_modules(
+            parse_python_modules(root, use_parse_cache=False), DetectorConfig()
+        )
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ExtractMixin
+    )
+
+
+def test_a_mixin_whose_anchor_module_would_close_a_cycle_lands_in_a_module_both_import(
+    tmp_path: Path,
+) -> None:
+    """`pkg.high` imports `pkg.low`, so a mixin declared beside `Second` would close
+    a cycle when `First` composes it. Copied from `Second`, it is declared in
+    `pkg.base` instead, which both import and which imports neither; both compose
+    it there and the program runs as before."""
+
+    _write(tmp_path, LAYERED)
+    before = _run(tmp_path, LAYERED_PROBE)
+    finding = _mixin_finding(tmp_path)
+    assert "new_mixin:pkg.base" in {
+        owner.candidate_id for owner in finding.metrics.owner_candidates
+    }
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(
+            modules=modules, findings=analyze_modules(modules, DetectorConfig())
+        ),
+        migration_type=ClassBodyCompositionConcept,
+        owner_picks=OwnerPicks(
+            "picks.json",
+            "0",
+            (
+                OwnerPick(
+                    finding=finding.stable_id,
+                    owner="new_mixin:pkg.base",
+                    because="placed_below",
+                    name="Lettered",
+                    judgement="a lettered record",
+                ),
+            ),
+        ),
+    ).run()
+
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+    base = (tmp_path / "pkg/base.py").read_text()
+    assert "class Lettered:" in base and "import pkg" not in base and "from pkg" not in base
+    assert "class First(Lettered):" in (tmp_path / "pkg/low.py").read_text()
+    assert "class Second(Lettered):" in (tmp_path / "pkg/high.py").read_text()
+    assert _run(tmp_path, LAYERED_PROBE) == before
+    assert _run(
+        tmp_path,
+        "import pkg.low, pkg.high\n"
+        "print(pkg.low.First.__mro__[1] is pkg.high.Second.__mro__[1], "
+        "pkg.low.First.__mro__[1].__module__)\n",
+    ) == "True pkg.base\n"
+
+
+def _owner_files(package: str) -> dict[str, str]:
+    prefix, dotted = (f"{package}/", f"{package}.") if package else ("", "")
+    body = (
+        "    name: str\n    reason: str\n\n"
+        "    def value_or(self, default):\n        return default\n\n"
+        "    def label(self):\n        return f'{self.name}: {self.reason}'\n"
+    )
+    files = {
+        f"{prefix}base.py": "UNIT = 1\n",
+        f"{prefix}wire.py": (
+            f"from dataclasses import dataclass\n\nfrom {dotted}base import UNIT\n\n\n"
+            "@dataclass(frozen=True)\nclass Omitted:\n" + body + "\n"
+            "    def wire(self):\n        return {'omitted': self.name}\n\n\n"
+            "def omitted(name):\n    return Omitted(name=name, reason='unit')\n"
+        ),
+        f"{prefix}tools.py": (
+            f"from dataclasses import dataclass\n\nfrom {dotted}base import UNIT\n"
+            f"from {dotted}wire import omitted\n\n\n"
+            "@dataclass(frozen=True)\nclass Unsupplied:\n" + body + "\n\n"
+            "def unsupplied(name):\n    return Unsupplied(name=name, reason='missing'), omitted(name)\n"
+        ),
+    }
+    if package:
+        files[f"{package}/__init__.py"] = ""
+    return files
+
+
+def _composition(root: Path):
+    from nominal_refactor_advisor.refactors.class_overlap import (
+        ClassOverlapFindingRecipeSynthesizer,
+    )
+
+    (finding,) = (
+        finding
+        for finding in analyze_modules(
+            parse_python_modules(root, use_parse_cache=False), DetectorConfig()
+        )
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+        and finding.metrics.move is ComposeExisting
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root, use_parse_cache=False))
+    return ClassOverlapFindingRecipeSynthesizer().evaluate_recipe_for_finding(finding, snapshot), snapshot
+
+
+def test_an_owner_composing_would_close_a_cycle_moves_down_first(tmp_path: Path) -> None:
+    """`Omitted` restates `Unsupplied`, but `pkg.tools`, which declares the owner,
+    imports `pkg.wire`: composing it there closes a cycle. The owner moves to
+    `pkg.base`, which both import and which imports neither, and `Omitted`
+    composes it there."""
+
+    from nominal_refactor_advisor.codemod import CodemodPlanSequence
+
+    _write(tmp_path, _owner_files("pkg"))
+    probe = (
+        "from pkg.tools import unsupplied\n"
+        "print([(value.label(), value.value_or(3), value) for value in unsupplied('n')])\n"
+    )
+    before = _run(tmp_path, probe)
+
+    evaluation, snapshot = _composition(tmp_path)
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(
+        evaluation.required_recipe.operations
+    ).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+
+    assert "class Unsupplied:" in (tmp_path / "pkg/base.py").read_text()
+    assert "class Unsupplied" not in (tmp_path / "pkg/tools.py").read_text()
+    assert "class Omitted(Unsupplied):" in (tmp_path / "pkg/wire.py").read_text()
+    assert _run(tmp_path, probe) == before
+
+
+def test_an_owner_no_module_can_hold_without_a_cycle_refuses_saying_why(tmp_path: Path) -> None:
+    """Here `wire` does not import `base`, so no module both import avoids the
+    cycle, and top-level modules share no package for a new one: the move
+    refuses and says so."""
+
+    files = _owner_files("")
+    files["wire.py"] = files["wire.py"].replace("from base import UNIT\n", "")
+    _write(tmp_path, files)
+
+    evaluation, _ = _composition(tmp_path)
+
+    assert evaluation.rejection_reason == (
+        "`tools` already imports, directly or not, `wire`, so `Unsupplied` moves "
+        "first; but no module that `tools`, `wire` all import avoids the cycle, and "
+        "they share no package to hold a new one"
+    )
