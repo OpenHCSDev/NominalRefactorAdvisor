@@ -995,3 +995,84 @@ def test_classes_restating_a_block_owned_by_two_classes_compose_both(tmp_path: P
     assert "class AuthorityShape(ClassNameMixin, SourceLineReference):" in source
     assert "file_path: str" not in source
     assert source.count("from pkg.owners import") + source.count("from .owners import") == 1
+
+
+def _installed_dispatch_family(hook: str, module: str) -> dict[str, str]:
+    """A hook calling an inherited classmethod while a class is created whose MRO
+    passes an installed class and `typing.Generic` before the classmethod's owner,
+    as agent-comms `WakeClaim` passes `metaclass_registry.MroDispatch`."""
+
+    return {
+        "repo/pkg/__init__.py": "",
+        "repo/pkg/located.py": (
+            "from dataclasses import dataclass\n"
+            "from typing import Generic, TypeVar\n\n"
+            f"from {module} import Dispatch\n\n"
+            "T = TypeVar('T')\n\n\n"
+            "class Outputs:\n"
+            "    @classmethod\n"
+            "    def writer_names(cls):\n"
+            "        return tuple(parent for parent in cls.__mro__ if 'writes' in vars(parent))\n\n\n"
+            "class Source(Outputs):\n"
+            "    def __init_subclass__(cls, **kwargs):\n"
+            "        super().__init_subclass__(**kwargs)\n"
+            "        cls.writers = cls.writer_names()\n\n\n"
+            "class Holder(Generic[T]):\n"
+            "    pass\n\n\n"
+            "@dataclass(frozen=True)\nclass Located:\n    file_path: str\n    line: int\n\n\n"
+            "@dataclass(frozen=True)\nclass Finding(Dispatch, Holder[int], Source):\n"
+            "    file_path: str\n    line: int\n    message: str\n    writes = ('table',)\n"
+        ),
+        f"site/{module}.py": f"class Dispatch:\n{hook}",
+    }
+
+
+def test_a_hook_reaches_its_classmethod_past_an_installed_base_and_generic(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`Dispatch` is read from its installed source and binds no `writer_names`;
+    `Generic` is a native root. The lookup finds `Outputs.writer_names` and the
+    composition keeps what the hook stores."""
+
+    _write(tmp_path, _installed_dispatch_family("    pass\n", "extdispatch_kept"))
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    probe = "from pkg.located import Finding\nprint([w.__name__ for w in Finding.writers], Finding.__mro__[1].__name__)\n"
+
+    def run() -> str:
+        return subprocess.run(
+            [sys.executable, "-c", probe], cwd=tmp_path / "repo", check=True, capture_output=True, text=True,
+            env={**os.environ, "PYTHONPATH": str(tmp_path / "site")},
+        ).stdout
+
+    before = run()
+    path = (tmp_path / "repo/pkg/located.py").as_posix()
+    _apply(
+        tmp_path / "repo",
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+        ),
+    )
+    assert "class Finding(Located, Dispatch, Holder[int], Source):" in Path(path).read_text()
+    assert run().split()[0] == before.split()[0] == "['Finding']"
+
+
+def test_an_installed_base_binding_the_called_name_is_read_as_its_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the installed class binds `writer_names` itself, the call resolves to
+    the installed source, which NRA reads: one handing the class to a function
+    it cannot read refuses."""
+
+    _write(tmp_path, _installed_dispatch_family(
+        "    @classmethod\n    def writer_names(cls):\n        return opaque(cls)\n", "extdispatch_binding"
+    ))
+    monkeypatch.syspath_prepend(str(tmp_path / "site"))
+    path = (tmp_path / "repo/pkg/located.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path / "repo"))
+    with pytest.raises(CodemodOperationPreflightError, match=r"extdispatch_binding.py:\d+ `opaque\(cls\)`"):
+        operation.source_edits(snapshot)

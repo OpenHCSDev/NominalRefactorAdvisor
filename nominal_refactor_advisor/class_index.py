@@ -2645,7 +2645,16 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     def declared_mro_authority(self) -> ClassMroAuthority:
         """The MRO the declarations state, for reading declared member types (`DeclaredBases`)."""
 
-        return ClassMroAuthority(self.classes_by_symbol, DeclaredBases())
+        scanned_modules = frozenset(declaration.module_name for declaration in self.classes_by_symbol.values())
+        unscanned = CompactRepositoryPublicExposureIndex(())
+
+        def installed(qualified_name: str) -> CompactIndexedClass | None:
+            # A module the scan holds is read from the scan, never an installed copy.
+            if qualified_name.rpartition(".")[0] in scanned_modules:
+                return None
+            return InstalledClassDeclarations.declaration(qualified_name, unscanned)
+
+        return ClassMroAuthority(self.classes_by_symbol, DeclaredBases(installed))
 
     def member_in_mro(self, owner_symbol: str, member_name: str) -> ClassMemberLookup:
         """The binding of `member_name` that an instance of `owner_symbol` reads at runtime."""
@@ -2677,7 +2686,7 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
             mro = authority.resolve(owner_symbol).mro_type
             if mro is None:
                 return OpenClassMember()
-            owners = mro.declarations_before(authority.bases.is_opaque)
+            owners = mro.declarations_before(lambda entry: authority.bases.stops_lookup(entry, member_name))
         for current in owners:
             assigned = tuple(
                 declaration
@@ -2698,15 +2707,15 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
                     return CallableClassMember(current, declaration)
             return AmbiguousClassMember()
         if not self._binds_member(owner, member_name) and self._reaches_opaque_base(
-            owner_symbol, authority
+            owner_symbol, authority, member_name
         ):
             return OpenClassMember()
         return MissingClassMember()
 
     @staticmethod
-    def _reaches_opaque_base(owner_symbol: str, authority: ClassMroAuthority) -> bool:
+    def _reaches_opaque_base(owner_symbol: str, authority: ClassMroAuthority, member_name: str) -> bool:
         mro = authority.resolve(owner_symbol).mro_type
-        return mro is not None and any(authority.bases.is_opaque(entry) for entry in mro.__mro__)
+        return mro is not None and any(authority.bases.stops_lookup(entry, member_name) for entry in mro.__mro__)
 
     @staticmethod
     def _binds_member(owner: CompactIndexedClass, member_name: str) -> bool:

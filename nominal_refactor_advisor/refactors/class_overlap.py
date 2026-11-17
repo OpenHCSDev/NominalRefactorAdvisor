@@ -52,6 +52,8 @@ from nominal_refactor_advisor.class_index import (
 from nominal_refactor_advisor.class_mro import (
     ClassMroAuthority,
     NativeMroBase,
+    namespace_read_native,
+    native_declared_names,
 )
 from nominal_refactor_advisor.class_overlap import (
     AnswersFor,
@@ -984,7 +986,8 @@ def require_static_c3(
 ) -> tuple[CompactIndexedClass, ...]:
     """The class and its ancestors, when type's own C3 orders them all.
 
-    Every base resolves to a native root, a scanned class, or a class an
+    Every base resolves to a native root (`NativeMroBase`, or one whose
+    namespace NRA reads, `NAMESPACE_READ_NATIVES`), a scanned class, or a class an
     installed module declares in `.py` source (`ClassOverlapVerdicts.ancestor`),
     and no metaclass overrides `mro`. Class keywords and `__init_subclass__`
     leave the order to type's C3; what they read as a class is created is
@@ -1003,7 +1006,7 @@ def require_static_c3(
             raise NeedsInput(f"`{current.qualname}` has unresolved bases", NeededInput.PROOF)
         for reference in current.base_references:
             qualified_name = ".".join(reference.resolved_parts)
-            if NativeMroBase.for_qualified_name(qualified_name) is not None:
+            if NativeMroBase.for_qualified_name(qualified_name) is not None or namespace_read_native(qualified_name):
                 continue
             base = verdicts.ancestor(qualified_name)
             if base is None:
@@ -1344,7 +1347,9 @@ class ComposedAncestry:
         """Its bases, each by the symbol it resolves to: a re-export is the class it names."""
 
         return tuple(
-            qualified_name if NativeMroBase.for_qualified_name(qualified_name) else self.declared(qualified_name).symbol
+            qualified_name
+            if NativeMroBase.for_qualified_name(qualified_name) or namespace_read_native(qualified_name)
+            else self.declared(qualified_name).symbol
             for reference in self.declared(symbol).base_references
             for qualified_name in (".".join(reference.resolved_parts),)
         ) or (NativeMroBase.OBJECT.value,)
@@ -1355,7 +1360,7 @@ class ComposedAncestry:
         native = NativeMroBase.for_qualified_name(symbol)
         if native is NativeMroBase.OBJECT:
             return (symbol,)
-        if native is not None:
+        if native is not None or namespace_read_native(symbol):
             return (symbol, NativeMroBase.OBJECT.value)
         declared = self.bases(symbol) if bases is None else bases
         sequences = [list(self.linearized(base)) for base in declared] + [list(declared)]
@@ -1386,6 +1391,8 @@ class ComposedAncestry:
 
         if NativeMroBase.for_qualified_name(symbol) is not None:
             return frozenset()
+        if (native := namespace_read_native(symbol)) is not None:
+            return native_declared_names(native)
         declared = frozenset(declaration.name for declaration in self.declared(symbol).body_declarations)
         if composed and symbol == self.composer.symbol:
             return declared - self.deleted
