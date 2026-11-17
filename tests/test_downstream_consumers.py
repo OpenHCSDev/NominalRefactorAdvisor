@@ -16,8 +16,11 @@ import pytest
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
+from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportCycleDetector
 from nominal_refactor_advisor.refactors.class_overlap import relocation_to
 from nominal_refactor_advisor.refactors.downstream_consumers import DownstreamConsumers
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 EXT = "class Update:\n    kind = 'update'\n\n\nclass Other:\n    kind = 'other'\n"
 CONSUMER = "from pkg.ext import (\n    Other,\n    Update,\n)\n\nprint(Update.kind, Other.kind)\n"
@@ -100,3 +103,39 @@ def test_the_consumer_root_comes_only_from_its_own_pyproject_and_is_named(tmp_pa
     [edit] = consumers.edits(object, "pkg.ext", {"Update": "pkg.update"})
     assert edit.file_path.endswith("b/consumer.py")
     assert f"Consumer `{(tmp_path / 'b').resolve()}` depends on 'a-project'" in edit.rationale
+
+
+def test_a_cut_carries_the_consumer_rewrite_of_the_move_it_runs(tmp_path: Path):
+    """The cut composes the move: the consumer edit the move makes is the cut's."""
+
+    files = {
+        "a/pyproject.toml": '[project]\nname = "a-project"\n',
+        "a/pkg/__init__.py": "",
+        "a/pkg/base.py": "LIMIT = 3\n",
+        "a/pkg/hub.py": (
+            "from pkg.base import LIMIT\nfrom pkg.a import a_value\n\n\n"
+            "class Record:\n    size = LIMIT\n\n\ndef total():\n    return a_value()\n"
+        ),
+        "a/pkg/a.py": "def a_value():\n    from pkg.hub import Record\n\n    return Record.size\n",
+        "b/pyproject.toml": '[project]\nname = "b"\ndependencies = ["a-project"]\n',
+        "b/consumer.py": "from pkg.hub import Record, total\n\nprint(Record.size, total())\n",
+    }
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    expected = _run(tmp_path)
+    detector = HiddenImportCycleDetector()
+    with ScanCache.scope():
+        [finding] = detector.detect(
+            parse_python_modules(tmp_path / "a", use_parse_cache=False), DetectorConfig()
+        )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path / "a", use_parse_cache=False))
+    evaluation = detector.evaluate_recipe_for_finding(finding, snapshot)
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(evaluation.required_recipe.operations).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    assert (tmp_path / "b/consumer.py").read_text().startswith(
+        "from pkg.hub import total\nfrom pkg.record import Record\n"
+    )
+    assert _run(tmp_path) == expected

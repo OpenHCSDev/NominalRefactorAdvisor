@@ -109,6 +109,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceInsertion,
     SourceTextGeometry,
     SourceTextSpanReplacement,
+    TextFileChange,
 )
 from nominal_refactor_advisor.codemod_statement_source import (
     StatementDeletionSource,
@@ -2805,7 +2806,8 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
 class RelocationStep:
     """An operation one of whose steps relocates declarations: the files that
     relocation creates, a new module and any package of it, are created first,
-    so every step sees them and the edits fill them as any existing module."""
+    so every step sees them and the edits fill them as any existing module; the
+    files outside the scan it rewrites are rewritten with them."""
 
     def relocation(
         self, snapshot: CodemodSourceSnapshot
@@ -2815,6 +2817,13 @@ class RelocationStep:
     def source_file_creations(self, context: CodemodSelectorContext) -> tuple[SourceFileCreation, ...]:
         relocation = self.relocation(context.execution_snapshot())
         return () if relocation is None else relocation.source_file_creations(context)
+
+    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileChange, ...]:
+        """What the relocation keeps true outside the scanned source: a manifest
+        naming a moved name, a dependent checkout importing one."""
+
+        relocation = self.relocation(context.execution_snapshot())
+        return () if relocation is None else relocation.text_file_changes(context)
 
 
 @dataclass(frozen=True, kw_only=True)
