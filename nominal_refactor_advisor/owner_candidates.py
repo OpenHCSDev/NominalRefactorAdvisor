@@ -1165,7 +1165,7 @@ class BlockOwnerQuestion:
                 ),
                 *self._restater_receipts(restaters),
                 *self._frozenness_receipts(
-                    (self.first.symbol, self.second.symbol), self._whole_block_restaters()
+                    (self.first.symbol, self.second.symbol), self._whole_block_restaters(), self.block
                 ),
                 *import_receipts,
                 *order_receipts,
@@ -1197,6 +1197,7 @@ class BlockOwnerQuestion:
                         *self._frozenness_receipts(
                             (base.symbol, restater.symbol),
                             self._hoist_restaters((base.symbol, restater.symbol), hoisted),
+                            hoisted,
                         ),
                         *self._field_order_receipts(
                             base, hoisted, keyword_only_route=True,
@@ -1494,7 +1495,7 @@ class BlockOwnerQuestion:
         restates its block."""
 
         required = (base.symbol, restater.symbol)
-        kept, _ = self._frozenness_split(required, self._hoist_restaters(required, hoisted))
+        kept, _ = self._frozenness_split(required, self._hoist_restaters(required, hoisted), hoisted)
         return (*required, *kept)
 
     def _hoist_restaters(self, required: Sequence[str], hoisted: Sequence[str]) -> tuple[str, ...]:
@@ -1512,7 +1513,7 @@ class BlockOwnerQuestion:
         the dataclass owner the two classes compose."""
 
         kept, _ = self._frozenness_split(
-            (self.first.symbol, self.second.symbol), self._whole_block_restaters()
+            (self.first.symbol, self.second.symbol), self._whole_block_restaters(), self.block
         )
         return kept
 
@@ -1523,14 +1524,15 @@ class BlockOwnerQuestion:
         return indexed_class.dataclass_declaration.frozenness
 
     def _frozenness_split(
-        self, required: Sequence[str], optional: Sequence[str]
+        self, required: Sequence[str], optional: Sequence[str], moved: Sequence[str]
     ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """The optional composers that agree with the required ones on frozenness,
         and those left out. When the required ones disagree the owner refuses,
-        so none is left out."""
+        so none is left out. A mixin of `moved` that takes no field is a plain
+        class every frozenness composes, so none is left out either."""
 
         frozenness = tuple(self._frozenness_of(symbol) for symbol in required)
-        if not DataclassFrozenness.agree(frozenness):
+        if not self.block_fields & frozenset(moved) or not DataclassFrozenness.agree(frozenness):
             return tuple(optional), ()
         kept = tuple(
             symbol
@@ -1540,14 +1542,17 @@ class BlockOwnerQuestion:
         return kept, tuple(symbol for symbol in optional if symbol not in kept)
 
     def _frozenness_receipts(
-        self, required: Sequence[str], optional: Sequence[str]
+        self, required: Sequence[str], optional: Sequence[str], moved: Sequence[str]
     ) -> tuple[Receipt, ...]:
         """A refusal when the classes that must compose one dataclass mixin differ
-        in frozenness, and a note naming each optional composer left out."""
+        in frozenness, and a note naming each optional composer left out. A mixin
+        of `moved` that takes no field is no dataclass, so frozenness never refuses it."""
 
-        _, left_out = self._frozenness_split(required, optional)
+        _, left_out = self._frozenness_split(required, optional, moved)
         receipts: list[Receipt] = []
-        if not DataclassFrozenness.agree(self._frozenness_of(symbol) for symbol in required):
+        if self.block_fields & frozenset(moved) and not DataclassFrozenness.agree(
+            self._frozenness_of(symbol) for symbol in required
+        ):
             receipts.append(
                 Receipt(
                     OwnerReceiptKind.FROZEN_DIFFERS,

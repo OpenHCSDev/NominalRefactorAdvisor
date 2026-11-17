@@ -1854,3 +1854,125 @@ def test_a_generic_composer_keeps_abc_and_a_dropped_base_drops_its_import(tmp_pa
     assert "class Lone(Gammaed):" in lone
     assert "from abc import abstractmethod\n" in lone
     assert _run(tmp_path, probe) == before
+
+
+METHOD_BLOCK = (
+    "    def otherwise(self, default: int) -> int:\n"
+    "        return default\n\n"
+    "    def shown(self) -> str:\n"
+    "        return f'<{self.otherwise(0)}>'\n\n"
+    "    def texts(self) -> tuple[str, ...]:\n"
+    "        return ()\n"
+)
+
+FROZEN_AND_MUTABLE = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True)\n"
+    "class First:\n"
+    "    lead: int\n\n"
+    f"{METHOD_BLOCK}\n\n"
+    "@dataclass\n"
+    "class Second:\n"
+    "    count: int\n\n"
+    f"{METHOD_BLOCK}"
+)
+
+CONSTRUCTION_PROBE = (
+    "import dataclasses, inspect\n"
+    "from pkg.records import First, Second\n"
+    "for record in (First(1), Second(2)):\n"
+    "    kind = type(record)\n"
+    "    print(kind.__name__, kind.__dataclass_params__, inspect.signature(kind.__init__),\n"
+    "          [field.name for field in dataclasses.fields(kind)], hasattr(record, '__dict__'),\n"
+    "          record.otherwise(3), record.shown(), record.texts(), record == kind(*dataclasses.astuple(record)), repr(record))\n"
+    "    try:\n"
+    "        record.__setattr__(dataclasses.fields(kind)[0].name, 9)\n"
+    "        print('assigned', record)\n"
+    "    except dataclasses.FrozenInstanceError:\n"
+    "        print('frozen')\n"
+)
+
+
+def test_a_method_block_a_frozen_and_a_mutable_dataclass_share_is_a_plain_mixin(
+    tmp_path: Path,
+) -> None:
+    """A dataclass collects fields and generated methods only from dataclass bases,
+    so a block of methods needs no dataclass: a plain mixin serves both frozennesses,
+    where a dataclass mixin could serve neither pair."""
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": FROZEN_AND_MUTABLE})
+    before = _run(tmp_path, CONSTRUCTION_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Shown")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "\n\n\nclass Shown:\n" in source
+    assert "@dataclass(frozen=True)\nclass First(Shown):\n    lead: int\n" in source
+    assert "@dataclass\nclass Second(Shown):\n    count: int\n" in source
+    assert source.count("def otherwise") == 1
+    assert _run(tmp_path, CONSTRUCTION_PROBE) == before
+
+
+SLOTTED_AND_PLAIN = (
+    "from dataclasses import dataclass\n\n\n"
+    "@dataclass(frozen=True, slots=True)\n"
+    "class First:\n"
+    "    lead: int\n\n"
+    f"{METHOD_BLOCK}\n\n"
+    "class Second:\n"
+    "    __slots__ = ()\n\n"
+    f"{METHOD_BLOCK}"
+)
+
+
+def test_a_slotted_dataclass_composes_a_plain_class_whose_methods_it_restates(
+    tmp_path: Path,
+) -> None:
+    """The plain owner brings no field, no generated method and no `__dict__`, so the
+    frozen slotted dataclass keeps how it is built once it composes it."""
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": SLOTTED_AND_PLAIN})
+    probe = CONSTRUCTION_PROBE.replace("(First(1), Second(2))", "(First(1),)") + (
+        "print(Second().otherwise(4), Second().shown(), Second().texts())\n"
+    )
+    before = _run(tmp_path, probe)
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+    findings = analyze_modules(modules, DetectorConfig())
+
+    report = CodemodRefactorGoalRunner(
+        roots=(tmp_path,),
+        config=DetectorConfig(),
+        dry_run=False,
+        guard_suite=ArchitectureGuardSuite(),
+        initial_scan=CodemodWorkflowScan(modules=modules, findings=findings),
+        migration_type=ClassBodyCompositionConcept,
+    ).run()
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "@dataclass(frozen=True, slots=True)\nclass First(Second):\n    lead: int\n" in source
+    assert source.count("def otherwise") == 1
+    assert _run(tmp_path, probe) == before
+
+
+def test_a_block_with_a_field_still_needs_one_frozenness(tmp_path: Path) -> None:
+    """A field in the block makes the mixin a dataclass, which Python lets only one
+    frozenness compose."""
+    records = FROZEN_AND_MUTABLE.replace("    lead: int\n", "    lead: int\n    note: str = ''\n").replace(
+        "    count: int\n", "    count: int\n    note: str = ''\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
+    modules = parse_python_modules(tmp_path, use_parse_cache=False)
+
+    (finding,) = (
+        finding
+        for finding in analyze_modules(modules, DetectorConfig())
+        if isinstance(finding.metrics, ClassOverlapMetrics)
+    )
+
+    (mixin,) = (
+        candidate for candidate in finding.metrics.owner_candidates
+        if candidate.candidate_id == "new_mixin:pkg.records"
+    )
+    assert not mixin.permitted
+    assert any("one mixin cannot serve `First` (frozen), `Second` (mutable)" in receipt.detail
+               for receipt in mixin.refusals)
