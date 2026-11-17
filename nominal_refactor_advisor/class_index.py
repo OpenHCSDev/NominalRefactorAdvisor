@@ -68,6 +68,7 @@ from nominal_refactor_advisor.ast_tools import (
     CompactModuleIdentity,
     CollectedFamily,
     LexicalSyntaxScope,
+    ModuleAnnotationEvaluationMode,
     ParsedModule,
     ParsedModuleFact,
     SourceModule,
@@ -843,8 +844,8 @@ class CompactDataclassFieldRole(StrEnum):
         CompactProductAuthorityViolation.UNRESOLVED_FIELD_ROLE,
         (),
     )
-    """A value that calls a function the module cannot judge alone; the
-    repository's field declarations settle it to a role."""
+    """A value that calls something, or names something, the module cannot
+    judge alone; the repository's field declarations settle it to a role."""
 
     contributes_stored_init_field: bool
     contributes_semantic_field: bool
@@ -889,21 +890,22 @@ class CompactDataclassFieldRole(StrEnum):
         class_aliases: dict[str, str],
         preceding_class_bound_names: frozenset[str],
     ) -> CompactFieldDeclarationCall | None:
-        """The call a member declared by a call makes, kept for the repository to judge."""
+        """The call or reference a member's value makes, kept for the repository to judge."""
 
-        if self is not CompactDataclassFieldRole.DECLARED_BY_CALL or not isinstance(
-            statement.value, ast.Call
-        ):
+        value = statement.value
+        if self is not CompactDataclassFieldRole.DECLARED_BY_CALL or value is None:
             return None
         callee = _class_scope_qualified_import_name(
             module_binding_snapshot,
             class_aliases,
-            statement.value.func,
+            value.func if isinstance(value, ast.Call) else value,
             preceding_class_bound_names,
         )
         if callee is None:
             return None
-        return CompactFieldDeclarationCall.of_call(callee, statement.value)
+        if isinstance(value, ast.Call):
+            return CompactFieldDeclarationCall.of_call(callee, value)
+        return CompactFieldDeclarationCall.of_reference(callee)
 
     def binding_of_later_fields(
         self, binding: DataclassInitBinding
@@ -3067,6 +3069,10 @@ class ModuleNominalBindingSnapshot(DecoratorBindings):
     """Exact known and unresolved bindings before one module source position."""
 
     bindings_by_name: dict[str, CompactNominalBinding]
+    annotation_mode: type[ModuleAnnotationEvaluationMode]
+    """How the module's annotations are evaluated: an annotation naming nothing
+    bound reaches `dataclasses` as a string or forward reference unless they
+    execute where they are declared."""
     unresolved_bound_names: frozenset[str] = frozenset()
     star_import_ambiguity: bool = False
     star_import_excluded_names: frozenset[str] = frozenset()
@@ -3137,12 +3143,53 @@ class ModuleNominalBindingSnapshot(DecoratorBindings):
     ) -> bool:
         """Prove that one bare name still resolves through Python builtins."""
 
+        return self.binds_nothing_to(
+            name, preceding_class_bound_names=preceding_class_bound_names
+        ) and name in vars(builtins)
+
+    def binds_nothing_to(
+        self,
+        name: str,
+        *,
+        preceding_class_bound_names: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Prove that the module's namespace holds no `name` here: no binding, no
+        binding NRA cannot read, no star import that may bind it, and no earlier
+        class-body binding. Builtins are not in that namespace."""
+
         return (
             (not self.star_import_ambiguity or name in self.star_import_excluded_names)
             and name not in self.bindings_by_name
             and name not in self.unresolved_bound_names
             and name not in preceding_class_bound_names
-            and name in vars(builtins)
+        )
+
+    def reads_as_absent(
+        self,
+        annotation: ast.expr,
+        root_name: str,
+        *,
+        preceding_class_bound_names: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Whether `dataclasses` reads a string annotation rooted at `root_name` as
+        naming nothing: the module binds nothing to the name at the class.
+
+        For a string annotation, `dataclasses._is_type` matches its leading
+        `[module.]name` and looks the name up in the module's namespace while
+        the class is created (CPython `Lib/dataclasses.py`), never in builtins,
+        so a name bound only later, or never, is no `ClassVar`, `InitVar` or
+        `KW_ONLY`. A module that stores its annotations without executing them
+        (`from __future__ import annotations`) stores strings. A deferred
+        annotation (PEP 649) is evaluated with builtins, which another module
+        may extend, so an unbound name there stays unjudged.
+        """
+
+        mode = self.annotation_mode
+        return self.binds_nothing_to(
+            root_name, preceding_class_bound_names=preceding_class_bound_names
+        ) and (
+            (mode.stores_variable_annotations_at_definition and not mode.annotations_execute_at_declaration)
+            or (isinstance(annotation, ast.Constant) and isinstance(annotation.value, str))
         )
 
 
@@ -4103,6 +4150,7 @@ def _module_nominal_binding_snapshots(
     bindings: dict[str, CompactNominalBinding] = {}
     unresolved_bound_names: set[str] = set()
     star_import_ambiguity = False
+    annotation_mode = ModuleAnnotationEvaluationMode.from_module(parsed_module.module)
     statements = iter(parsed_module.module.body)
     statement = next(statements, None)
     snapshots: dict[int | None, ModuleNominalBindingSnapshot] = {}
@@ -4110,6 +4158,7 @@ def _module_nominal_binding_snapshots(
     def snapshot() -> ModuleNominalBindingSnapshot:
         return ModuleNominalBindingSnapshot(
             bindings_by_name=dict(bindings),
+            annotation_mode=annotation_mode,
             unresolved_bound_names=frozenset(unresolved_bound_names),
             star_import_ambiguity=star_import_ambiguity,
             star_import_excluded_names=star_import_excluded_names,
@@ -5206,6 +5255,16 @@ def _dataclass_field_role(
                 preceding_class_bound_names=preceding_class_bound_names,
             )
         )
+        or (
+            annotation_root is not None
+            and (root_name := nominal_reference_root_name(annotation_root)) is not None
+            and root_name not in class_aliases
+            and module_binding_snapshot.reads_as_absent(
+                statement.annotation,
+                root_name,
+                preceding_class_bound_names=preceding_class_bound_names,
+            )
+        )
     )
     if not annotation_is_resolved_plain_field:
         return CompactDataclassFieldRole.UNRESOLVED
@@ -5231,8 +5290,31 @@ class DataclassFieldDefaultRole(StatementValueQuestion[CompactDataclassFieldRole
         value = supplied.value
         if _is_literal_default(value):
             return CompactDataclassFieldRole.STORED_INIT
+        if isinstance(value, ast.Name | ast.Attribute):
+            # A bare reference: the repository judges whether it names a class.
+            return (
+                CompactDataclassFieldRole.UNRESOLVED
+                if _class_scope_qualified_import_name(
+                    self.module_binding_snapshot,
+                    self.class_aliases,
+                    value,
+                    self.preceding_class_bound_names,
+                )
+                is None
+                else CompactDataclassFieldRole.DECLARED_BY_CALL
+            )
         if not isinstance(value, ast.Call):
             return CompactDataclassFieldRole.UNRESOLVED
+        if (
+            isinstance(value.func, ast.Name)
+            and self.module_binding_snapshot.resolves_unshadowed_builtin(
+                value.func.id, preceding_class_bound_names=self.preceding_class_bound_names
+            )
+            and isinstance(vars(builtins)[value.func.id], type)
+        ):
+            # Calling a builtin type returns an instance of it or, for `type`,
+            # a class: never a `dataclasses.Field`, so a plain default.
+            return CompactDataclassFieldRole.STORED_INIT
         qualified_default_factory = _class_scope_qualified_import_name(
             self.module_binding_snapshot,
             self.class_aliases,
@@ -5299,6 +5381,12 @@ class CompactFieldDeclarationCall(NamedTuple):
     positional_count: int
     keywords: tuple[str, ...]
     splats: bool
+    called: bool = True
+    """False for a bare reference: the value is the callee itself."""
+
+    @classmethod
+    def of_reference(cls, callee: str) -> Self:
+        return cls(callee=callee, positional_count=0, keywords=(), splats=False, called=False)
 
     @classmethod
     def of_call(
@@ -5641,43 +5729,94 @@ class FieldDeclarationIndex:
     """
 
     wrappers: Mapping[str, CompactFieldDeclarationWrapper]
-    constructors: frozenset[str] = frozenset()
-    """Scanned classes a call builds an instance of: no `__new__` along their
-    ancestry, every base scanned or native. Such a call is a plain default."""
+    classes: RegisteringMetaclassAuthority[CompactIndexedClass]
+    """The repository's classes, and installed ones read from source, as bases
+    and metaclasses resolve to them."""
+    built: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
+    """`builds_own_instance`, remembered per class symbol."""
 
     @classmethod
     def of_projections(cls, projections: Iterable[CompactModuleClassHeader]) -> Self:
         projections = tuple(projections)
-        classes = {
-            indexed_class.symbol: indexed_class
-            for projection in projections
-            for indexed_class in projection.classes
-        }
-        built: dict[str, bool] = {}
-
-        def builds_own_instance(symbol: str, pending: frozenset[str]) -> bool:
-            if symbol not in built:
-                indexed_class = classes[symbol]
-                built[symbol] = (
-                    symbol not in pending
-                    and "__new__" not in indexed_class.member_binding_names
-                    and indexed_class.base_references_are_complete
-                    and all(
-                        builds_own_instance(base.qualified_name, pending | {symbol})
-                        if base.qualified_name in classes
-                        else NativeMroBase.for_qualified_name(base.qualified_name) is not None
-                        for base in indexed_class.base_references
-                    )
-                )
-            return built[symbol]
-
         return cls(
             {
                 wrapper.qualified_name: wrapper
                 for projection in projections
                 for wrapper in projection.field_declaration_wrappers
             },
-            frozenset(symbol for symbol in classes if builds_own_instance(symbol, frozenset())),
+            RegisteringMetaclassAuthority(
+                {
+                    indexed_class.symbol: indexed_class
+                    for projection in projections
+                    for indexed_class in projection.classes
+                },
+                CompactRepositoryPublicExposureIndex(projections),
+            ),
+        )
+
+    def named_class(self, qualified_name: str) -> CompactIndexedClass | None:
+        """The class a qualified name reaches, scanned or installed, re-exports followed."""
+
+        found = InstalledClassDeclarations.declaration(qualified_name, self.classes.exposure)
+        return None if found is None else self.classes.scanned.get(found.symbol, found)
+
+    def builds_own_instance(
+        self, declaration: CompactIndexedClass, pending: frozenset[str] = frozenset()
+    ) -> bool:
+        """Calling the class returns an instance of it, never a `dataclasses.Field`.
+
+        `type.__call__` returns what the class's `__new__` returns, so no class
+        along the ancestry defines `__new__`; every ancestor is read from source
+        or is a native root; and no metaclass, nor any ancestor of one, defines
+        `__call__`, which would replace `type.__call__`.
+        """
+
+        symbol = declaration.symbol
+        if symbol in pending:
+            return False
+        if symbol not in self.built:
+            module_name = declaration.module_name
+            self.built[symbol] = (
+                "__new__" not in declaration.member_binding_names
+                and declaration.base_references_are_complete
+                and all(
+                    self.keeps_type_call(reference, module_name, pending | {symbol})
+                    for reference in declaration.registry_facts.metaclass_references
+                )
+                and all(
+                    self.native_root(reference, module_name)
+                    or (
+                        (base := self.classes.declaration_for(reference, module_name)) is not None
+                        and self.builds_own_instance(base, pending | {symbol})
+                    )
+                    for reference in declaration.registry_facts.base_references
+                )
+            )
+        return self.built[symbol]
+
+    def native_root(self, reference: CompactNominalReference, module_name: str) -> bool:
+        qualified_name = reference.settled_qualified_name(self.classes, module_name)
+        return qualified_name is not None and NativeMroBase.for_qualified_name(qualified_name) is not None
+
+    def keeps_type_call(
+        self, reference: CompactNominalReference, module_name: str, pending: frozenset[str]
+    ) -> bool:
+        """A metaclass that calls its classes with `type.__call__`: neither it nor
+        an ancestor defines `__call__`. `type` and `abc.ABCMeta` define none."""
+
+        qualified_name = reference.settled_qualified_name(self.classes, module_name)
+        if qualified_name in ("builtins.type", "abc.ABCMeta"):
+            return True
+        metaclass = self.classes.declaration_for(reference, module_name)
+        if metaclass is None or metaclass.symbol in pending:
+            return False
+        return (
+            "__call__" not in metaclass.member_binding_names
+            and metaclass.base_references_are_complete
+            and all(
+                self.keeps_type_call(base, metaclass.module_name, pending | {metaclass.symbol})
+                for base in metaclass.registry_facts.base_references
+            )
         )
 
     @cached_property
@@ -5724,8 +5863,13 @@ class FieldDeclarationIndex:
         """A stored init field when the call declares a field and nothing on its
         way to `dataclasses.field` names `init`; otherwise unresolved."""
 
-        if call.callee in self.constructors:
+        named = self.named_class(call.callee)
+        if named is not None and (not call.called or self.builds_own_instance(named)):
+            # A class object is an instance of its metaclass, a `type`, which
+            # `Field`'s instance layout cannot share: it is never a `Field`.
             return CompactDataclassFieldRole.STORED_INIT
+        if not call.called:
+            return CompactDataclassFieldRole.UNRESOLVED
         signature = self.signatures.get(call.callee)
         if signature is None or signature.supplied(call) is None or self.supplies(call, "init"):
             return CompactDataclassFieldRole.UNRESOLVED
