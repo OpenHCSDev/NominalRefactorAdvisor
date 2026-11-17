@@ -155,3 +155,33 @@ def test_an_import_whose_name_the_module_binds_otherwise_stays(tmp_path: Path):
     ]
     assert all(refusal.need.needs == (NeededInput.SOURCE_CHANGE,) for refusal in plan.refused)
     assert _findings(tmp_path) == []
+
+
+def test_an_import_after_its_function_changes_sys_path_names_the_path_setup_it_needs(tmp_path: Path):
+    """A hook that puts a checkout on `sys.path` and then imports from it: at the
+    module's top the import would run before the path is set. Another function's
+    import, with no path change before it, still moves."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/base.py": "LIMIT = 3\n",
+            "pkg/hook.py": (
+                "import sys\nfrom pathlib import Path\n\n\n"
+                "def gate():\n"
+                "    sys.path.insert(0, str(Path(__file__).parent))\n"
+                "    from pkg.base import LIMIT\n\n"
+                "    return LIMIT\n\n\n"
+                "def plain():\n"
+                "    from pkg.base import LIMIT\n\n"
+                "    return LIMIT\n"
+            ),
+        },
+    )
+    plan = _plan(tmp_path)
+    [refused] = plan.refused
+    assert isinstance(refused, UnpromotableImport) and refused.hidden.symbol == "gate"
+    assert "changes `sys.path` at line 6" in str(refused.need)
+    assert NeededInput.SOURCE_CHANGE in refused.need.needs
+    [accepted] = plan.accepted
+    assert accepted.symbol == "plain"

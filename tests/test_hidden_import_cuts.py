@@ -180,3 +180,69 @@ def test_a_moved_name_read_off_the_module_object_is_rewritten_or_refused(tmp_pat
     assert subprocess.check_output(
         [sys.executable, "-c", "from pkg.registry import count; print(count())"], cwd=tmp_path, text=True
     ) == "3\n"
+
+
+def test_a_cut_promotes_only_the_hidden_imports_it_frees(tmp_path: Path):
+    """`pkg.other` hides an import that was promotable before the cut and that
+    the cut has nothing to do with; the cut leaves it as written."""
+
+    other = "def limit():\n    from pkg.base import LIMIT\n\n    return LIMIT\n"
+    _write(
+        tmp_path,
+        {
+            "pkg/base.py": "LIMIT = 3\n",
+            "pkg/hub.py": HUB,
+            "pkg/a.py": READER.format(name="a_value"),
+            "pkg/b.py": READER.format(name="b_value"),
+            "pkg/other.py": other,
+            "main.py": "from pkg.hub import total\n\nprint(total())\n",
+        },
+    )
+    expected = _run(tmp_path)
+    _apply_all(tmp_path, HiddenImportCycleDetector())
+    assert _run(tmp_path) == expected
+    assert (tmp_path / "pkg/other.py").read_text() == other
+    for reader in ("a", "b"):
+        assert (tmp_path / f"pkg/{reader}.py").read_text().startswith("from pkg.record import Record\n")
+
+
+def test_a_declaration_reading_back_only_from_its_sole_reader_moves_into_it(tmp_path: Path):
+    """`FailedUpdate` reads `Failure` from `pkg.failure`, its only reader, which
+    imports it back inside `publish`: no module below both can hold it, but the
+    reader can, and moving it there closes the two-module cycle."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/base.py": "class Update:\n    pass\n",
+            "pkg/ext.py": (
+                "from pkg.base import Update\nfrom pkg.failure import Failure\n\n\n"
+                "class FailedUpdate(Update):\n"
+                "    def text(self):\n"
+                "        return Failure.describe()\n\n\n"
+                "class Other(Update):\n"
+                "    pass\n"
+            ),
+            "pkg/failure.py": (
+                "class Failure:\n"
+                "    @staticmethod\n"
+                "    def describe():\n"
+                "        return 'failed'\n\n\n"
+                "def publish():\n"
+                "    from pkg.ext import FailedUpdate\n\n"
+                "    return FailedUpdate().text()\n"
+            ),
+            "main.py": "from pkg.failure import publish\n\nprint(publish())\n",
+        },
+    )
+    expected = _run(tmp_path)
+    [cut] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
+    assert isinstance(cut, HubCut)
+    assert (cut.hub, cut.moved, cut.destination) == ("pkg.ext", ("FailedUpdate",), "pkg.failure")
+    _apply_all(tmp_path, HiddenImportCycleDetector())
+    assert _run(tmp_path) == expected
+    failure = (tmp_path / "pkg/failure.py").read_text()
+    assert "class FailedUpdate(Update):" in failure and "from pkg.ext import" not in failure
+    assert "class FailedUpdate" not in (tmp_path / "pkg/ext.py").read_text()
+    plan = HiddenImportPlan.derive(_modules(tmp_path))
+    assert plan.refused == ()
