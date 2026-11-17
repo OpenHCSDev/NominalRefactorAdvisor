@@ -764,6 +764,48 @@ def test_a_positional_construction_in_a_script_is_keyworded_first_too(
     assert _run(tmp_path, probe) == before
 
 
+KEYWORD_ONLY_FIRST = RECORDS.replace(
+    "@dataclass(frozen=True)\nclass First:", "@dataclass(frozen=True, kw_only=True)\nclass First:"
+)
+
+
+def test_a_composer_built_by_position_beside_a_keyword_only_one_is_keyworded_first(
+    tmp_path: Path,
+) -> None:
+    """No field moves, but `First` is keyword-only, so the mixin and each composer
+    become keyword-only: the goal binds `Second(3, 'y')` by keyword, then composes."""
+    positional = KEYWORD_ONLY_FIRST + "\n\ndef build():\n    return Second(3, 'y')\n"
+    probe = PROBE + "from pkg.records import build\nprint(build(), build().gamma())\n"
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": positional})
+    before = _run(tmp_path, probe)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 2
+    assert "return Second(alpha=3, beta='y')" in source, source
+    assert "@dataclass(frozen=True, kw_only=True)\nclass Second(Lettered):\n" in source, source
+    assert "class First(Lettered):\n" in source, source
+    assert _run(tmp_path, probe) == before
+
+
+def test_a_composer_handed_on_as_a_value_beside_a_keyword_only_one_is_not_composed(
+    tmp_path: Path,
+) -> None:
+    """Whoever calls the value may bind by position: no keyword rewrite reaches it,
+    so the direct positional call is not rewritten either."""
+    handed_on = KEYWORD_ONLY_FIRST + (
+        "\n\ndef build(make=Second):\n    return make(3, 'y')\n\n\n"
+        "def direct():\n    return Second(3, 'y')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": handed_on})
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 0
+    assert (tmp_path / "pkg/records.py").read_text() == handed_on
+
+
 DOCUMENTED = REORDERED.replace(
     "class Second:\n    alpha: int\n    beta: str\n\n    def gamma(self) -> str:\n        return",
     "class Second:\n    alpha: int\n    beta: str\n    \"\"\"The letter.\"\"\"\n\n"
