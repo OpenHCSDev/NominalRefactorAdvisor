@@ -138,7 +138,8 @@ def test_a_creation_hook_reading_bases_needs_a_proof(tmp_path: Path):
 def test_a_membership_test_of_another_class_leaves_the_drop_proved(tmp_path: Path):
     reader = (
         "from pkg.reads import RecipientPositions\nfrom pkg.registries import OutcomeViewer\n\n\n"
-        "def direct(cls):\n    return RecipientPositions in cls.__bases__\n\n\n"
+        "class Marker:\n    pass\n\n\n"
+        "def direct(cls):\n    return RecipientPositions in cls.__bases__ or Marker not in cls.__bases__\n\n\n"
         "def families(cls):\n    return tuple(base for base in cls.__bases__ if issubclass(base, RecipientPositions))\n"
     )
     _write(tmp_path, {**PACKAGE, "pkg/reader.py": reader})
@@ -154,3 +155,43 @@ def test_a_reader_that_could_meet_the_dropped_base_needs_a_proof(tmp_path: Path)
     evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
     assert "pkg/reader.py:2" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+FAMILIES = (
+    "from abc import ABC, ABCMeta\n\n\n"
+    "def handles(kind):\n    def mark(function):\n        function.handled = kind\n        return function\n\n    return mark\n\n\n"
+    "class Dispatch:\n    @classmethod\n    def handler_for(cls, kind):\n"
+    "        for ancestor in kind.__mro__:\n            for value in vars(cls).values():\n"
+    "                if getattr(value, 'handled', None) is ancestor:\n                    return value.__func__\n"
+    "        raise TypeError(kind)\n\n\n"
+    "class FamilyMeta(ABCMeta):\n    def __new__(mcs, name, bases, namespace, **kwargs):\n"
+    "        cls = super().__new__(mcs, name, bases, namespace, **kwargs)\n"
+    "        cls.families = FamilyBases.of(bases)\n        return cls\n\n\n"
+    "class FamilyBases(Dispatch):\n    @handles(FamilyMeta)\n    @staticmethod\n    def declared(base):\n        return (base,)\n\n"
+    "    @handles(type)\n    @staticmethod\n    def plain(base):\n        return ()\n\n"
+    "    @classmethod\n    def of(cls, bases):\n"
+    "        return tuple(family for base in bases for family in cls.handler_for(type(base))(base))\n\n\n"
+    "class Root(ABC, metaclass=FamilyMeta):\n    pass\n\n\n"
+    "class Member(Root, ABC):\n    pass\n"
+)
+FAMILIES_MAIN = (
+    "from pkg.families import Member\n\n"
+    "print([k.__name__ for k in Member.__mro__], [k.__name__ for k in Member.families], type(Member).__name__)\n"
+)
+
+
+def test_a_native_base_dropped_from_a_metaclass_dispatch_adds_nothing(tmp_path: Path):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": FAMILIES, "main.py": FAMILIES_MAIN})
+    expected = _run(tmp_path)
+    (finding,) = _findings(tmp_path)
+    assert finding.primary_evidence.symbol == "Member"
+    snapshot = _snapshot(tmp_path)
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, snapshot)
+    assert evaluation.rejection_reason == ""
+    simulation = CodemodPlanSequence.from_operations(evaluation.required_recipe.operations).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    assert (tmp_path / "pkg/families.py").read_text() == FAMILIES.replace(
+        "class Member(Root, ABC):", "class Member(Root):"
+    )
+    assert _run(tmp_path) == expected

@@ -189,14 +189,21 @@ class BasesReaders:
         return False
 
     def named(self, module: ParsedModule, node: ast.expr) -> str | None:
-        """The class or function a name or attribute chain spells in `module`."""
+        """The class or function a name or attribute chain spells in `module`: an
+        imported or builtin one, or a class the module itself declares."""
 
+        verdicts = self.snapshot.class_overlap_verdicts
         witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
             module, node, line=node.lineno
         )
         if witness is None:
-            return None
-        indexed = self.snapshot.class_overlap_verdicts.ancestor(witness.qualified_name)
+            local = (
+                verdicts.class_index.class_for(f"{module.module_name}.{node.id}")
+                if isinstance(node, ast.Name)
+                else None
+            )
+            return None if local is None else local.symbol
+        indexed = verdicts.ancestor(witness.qualified_name)
         return witness.qualified_name if indexed is None else indexed.symbol
 
 
