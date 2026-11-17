@@ -748,7 +748,8 @@ KEYWORD_BINDER = {
     "pkg/codec.py": "def encode(value):\n    return f'{value.__module__}.{value.__qualname__}'\n",
     "pkg/caller.py": "from pkg.codec import encode\n\n\n"
     "def literal(value):\n    return encode(value) if value is not None else 'NULL'\n\n\n"
-    "def build(value):\n    return value()\n",
+    "def build(value):\n    return value((), (), 'c', 0)\n\n\n"
+    "def build_named(value, edges):\n    return value(roots=(), edges=edges, component='c', delta=2)\n",
 }
 
 
@@ -860,8 +861,38 @@ def test_the_fold_refuses_a_class_handed_to_a_function_that_calls_it(
         ),
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    with pytest.raises(CodemodOperationPreflightError, match="as a value"):
+    with pytest.raises(CodemodOperationPreflightError, match="as a value to `build`"):
         _fold(tmp_path).source_edits(snapshot)
+
+
+def test_the_fold_follows_a_class_into_a_function_that_builds_it_by_name(
+    tmp_path: Path,
+) -> None:
+    """A parameter called with keywords alone binds every field by name: a fold
+    that reorders the fields leaves that call as it was."""
+
+    conveyor = CONVEYOR + (
+        "\n\nfrom pkg.caller import build_named\nfrom pkg.shapes import Edge\n\n"
+        "MADE = build_named(ConveyorProof, (Edge('a'),))\n"
+    )
+    _write(tmp_path, _proof_files(**KEYWORD_BINDER, **{"pkg/conveyor.py": conveyor}))
+    before = _run(tmp_path, "from pkg.conveyor import MADE\nprint(MADE.reason(), MADE.delta)\n")
+    _apply(tmp_path, _fold(tmp_path))
+    assert _run(tmp_path, "from pkg.conveyor import MADE\nprint(MADE.reason(), MADE.delta)\n") == before
+
+
+def test_the_fold_follows_a_class_super_reads(tmp_path: Path) -> None:
+    """`super(C, obj)` looks names up along `C`'s MRO and never calls `C`."""
+
+    conveyor = CONVEYOR.replace(
+        "    def reason(self) -> str:\n",
+        "    def is_bare(self) -> bool:\n"
+        "        return super(ConveyorProof, self).__repr__ is not None\n\n"
+        "    def reason(self) -> str:\n",
+    )
+    _write(tmp_path, _proof_files(**{"pkg/conveyor.py": conveyor}))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
 
 
 def test_the_fold_refuses_a_positional_construction_behind_a_local_import(
