@@ -732,8 +732,9 @@ def require_verdict(
     """The scan's verdict for this move over these classes, with no guard fired.
 
     With `owner_symbol`, `classes` restate that owner, possibly in several
-    pair verdicts that must all permit the move; without it, `classes` are
-    exactly one overlap's two classes.
+    pair verdicts that must all permit the move; when the scan reports none,
+    each pair is judged on its own, below the reporting floor. Without it,
+    `classes` are exactly one overlap's two classes.
     """
 
     wanted = frozenset(classes)
@@ -751,6 +752,18 @@ def require_verdict(
         )
         and owner_symbol in (None, candidate.owner.symbol)
     )
+    if not matches and owner_symbol is not None:
+        requested = tuple(
+            snapshot.class_overlap_verdicts.requested_verdict(owner_symbol, symbol)
+            for symbol in sorted(wanted)
+        )
+        if all(
+            candidate is not None
+            and candidate.move is move
+            and candidate.owner.symbol == owner_symbol
+            for candidate in requested
+        ):
+            matches = tuple(candidate for candidate in requested if candidate is not None)
     if not matches or (owner_symbol is None and len(matches) != 1):
         raise ValueError(
             f"The current source has {len(matches)} `{move.value}` verdicts over "

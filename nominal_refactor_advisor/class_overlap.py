@@ -600,6 +600,14 @@ class ClassOverlapVerdicts:
             if not symbols.isdisjoint((candidate.owner.symbol, *candidate.restating_symbols))
         )
 
+    def requested_verdict(self, first: str, second: str) -> ClassOverlapCandidate | None:
+        """The verdict on one pair a move asks about, judged without the reporting
+        floor. `MINIMUM_SHARED_WEIGHT` decides which overlaps a scan reports; a
+        composition a move asks for, such as a new mixin's composer, is judged on
+        its own pair with every other receipt and guard."""
+
+        return self.verdict(self.bodies.overlap(first, second), minimum=0.0)
+
     def judged(
         self,
         overlaps: Iterable[ClassBodyOverlap],
@@ -723,7 +731,9 @@ class ClassOverlapVerdicts:
 
         return self.class_index.class_for(indexed_class.symbol) or indexed_class
 
-    def verdict(self, overlap: ClassBodyOverlap) -> ClassOverlapCandidate | None:
+    def verdict(
+        self, overlap: ClassBodyOverlap, minimum: float = MINIMUM_SHARED_WEIGHT
+    ) -> ClassOverlapCandidate | None:
         first, second = self.resolved(overlap.first), self.resolved(overlap.second)
         if second.symbol in self.class_index.ancestor_symbols(
             first.symbol
@@ -766,7 +776,7 @@ class ClassOverlapVerdicts:
             for shared in overlap.shared
             if shared.name in axis
         )
-        if sum(receipt.weight for receipt in shared_receipts) < MINIMUM_SHARED_WEIGHT:
+        if sum(receipt.weight for receipt in shared_receipts) < minimum:
             return None
         if not members and (overlap.first_is_contained or overlap.second_is_contained):
             shape = ClassOverlapShape.DUPLICATE_CLASS
