@@ -83,6 +83,8 @@ class OwnerReceiptKind(ReceiptKind):
     DIFFERENT_CONSTRUCTION = "different_construction", 0.0, True, NeededInput.SOURCE_CHANGE
     CONFLICTING_DECLARATION = "conflicting_declaration", 0.0, True, NeededInput.SOURCE_CHANGE
     COPIED_FROM = "copied_from", 0.0, True, NeededInput.OPERATION
+    COPIED_HERE_ONLY = "copied_here_only", -0.25, False
+    BUILT_WITHOUT_SOURCE = "built_without_source", 0.0, True, NeededInput.SOURCE_CHANGE
     COPIES_ONE_VALUE = "copies_one_value", 1.0, False
     SERVES_CALL_SITES = "serves_call_sites", 0.5, False
     NO_EXACT_SUBSTITUTION = "no_exact_substitution", 0.0, True, NeededInput.PROOF
@@ -521,12 +523,23 @@ class BlockOwnerQuestion:
         if copy is None:
             return ranked(found)
         copier, source, locations = copy
-        refusal = Receipt(
-            OwnerReceiptKind.COPIED_FROM,
-            f"`{copier.qualname}` is built from the block copied field by field off "
-            f"one value: an owner both compose keeps both copies",
-            locations[:4],
-            count=len(locations),
+        copy_owner = self._copy_owner(copier, source, locations)
+        refusal = (
+            Receipt(
+                OwnerReceiptKind.COPIED_FROM,
+                f"`{copier.qualname}` is built from the block copied field by field off "
+                f"one value: an owner both compose keeps both copies",
+                locations[:4],
+                count=len(locations),
+            )
+            if copy_owner.permitted
+            else Receipt(
+                OwnerReceiptKind.COPIED_HERE_ONLY,
+                f"`{copier.qualname}` is built from the block copied off one value here, "
+                "and from other values elsewhere: both keep their copy of the block",
+                locations[:4],
+                count=len(locations),
+            )
         )
         return ranked(
             (
@@ -536,7 +549,7 @@ class BlockOwnerQuestion:
                     else candidate
                     for candidate in found
                 ),
-                self._copy_owner(copier, source, locations),
+                copy_owner,
             )
         )
 
@@ -587,9 +600,30 @@ class BlockOwnerQuestion:
                 block=self.block,
                 symbol=source.symbol,
             )
+        copied = frozenset((location.file_path, location.line) for location in locations)
+        elsewhere = tuple(
+            location
+            for location in self.constructions_of(copier.symbol)
+            if (location.file_path, location.line) not in copied
+        )
         return HoldSourceOwner(
             module_name=copier.module_name,
-            receipts=(receipt,),
+            receipts=(
+                receipt,
+                *(
+                    (
+                        Receipt(
+                            OwnerReceiptKind.BUILT_WITHOUT_SOURCE,
+                            f"`{copier.qualname}` is also built from other values: there is "
+                            f"no `{source.qualname}` to hold there",
+                            elsewhere[:4],
+                            count=len(elsewhere),
+                        ),
+                    )
+                    if elsewhere
+                    else ()
+                ),
+            ),
             cost=cost,
             composers=(copier.symbol,),
             block=self.block,
@@ -1130,9 +1164,11 @@ class BlockOwnerQuestion:
                     count=len(reordered),
                 )
             )
+            # A keyword-only owner makes its fields keyword-only in every composer,
+            # reordered or not, so a positional construction of any of them breaks.
             constructed = {
                 member: locations
-                for symbol in reordered
+                for symbol in composers
                 for member in (symbol, *self.descendants_of(symbol))
                 if (locations := self.positional_constructions_of(member))
             }
