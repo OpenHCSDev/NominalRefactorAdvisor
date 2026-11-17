@@ -779,10 +779,27 @@ class CreationReads:
                 value is node and isinstance(key, ast.Constant) and key.value not in INTROSPECTION
             ):
                 return
+            case ast.Call(func=ast.Name() as func, args=[value], keywords=[]) if (
+                value is node and self.is_builtin(func, "builtins.vars")
+            ):
+                # `vars(cls)` is the new class's own namespace: a read of it
+                # is the namespace's read, which the moved names leave alone
+                # unless it asks for one of them or reads all of it.
+                self.require_namespace(parent, self.parents.get(parent))
+                return
             case ast.Call() if node in parent.args:
                 self.follow(parent, node, NEW_CLASS)
                 return
         self.refuse(parent or node, "uses the new class")
+
+    def is_builtin(self, func: ast.Name, qualified_name: str) -> bool:
+        """Whether `func` names this builtin where the function body runs: its
+        module's final binding of the name."""
+
+        owner = self.code.owner
+        return owner is not None and (
+            self.proof.qualified(owner, func, self.proof.module_end(owner)) == qualified_name
+        )
 
     def first_found_walk(self, attribute: ast.Attribute) -> bool:
         """`for o in cls.__mro__: for n, v in vars(o).items(): found.setdefault(n, v)`:

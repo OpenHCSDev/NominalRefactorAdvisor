@@ -559,6 +559,49 @@ def test_a_hook_walking_the_mro_refuses_what_the_name_check_does_not_cover(
         _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
 
 
+def _declared_file_family(key: str) -> str:
+    """A base whose subclass hook asks whether the new class's own body binds `key`."""
+
+    return (
+        "class Root:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        f"        if {key!r} in vars(cls) and not getattr(cls, 'durable', False):\n"
+        "            raise TypeError(cls.__qualname__)\n\n\n"
+        f"class Located:\n{OWNER_BODY}\n\n"
+        "class Finding(Root):\n"
+        "    filename = 'f'\n"
+        "    durable = True\n\n"
+        f"{OWNER_BODY}"
+    )
+
+
+VARS_PROBE = "from pkg.located import Finding\nprint(Finding().label(), Finding.filename, Finding.durable)\n"
+
+
+def test_a_hook_asking_vars_of_the_class_for_a_kept_name_composes_the_owner(tmp_path: Path) -> None:
+    """`'filename' in vars(cls)` reads one name of the new class's own body, and
+    composing moves only `label` out of it: the hook answers the same."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _declared_file_family("filename")})
+    before = _run(tmp_path, VARS_PROBE)
+    _apply(tmp_path, _dispatch_composition((tmp_path / "pkg/located.py").as_posix()))
+    assert "class Finding(Located, Root):" in (tmp_path / "pkg/located.py").read_text()
+    assert _run(tmp_path, VARS_PROBE) == before
+
+
+def test_a_hook_asking_vars_of_the_class_for_a_moved_name_stops_the_composition(
+    tmp_path: Path,
+) -> None:
+    """`'label' in vars(cls)` is True before composing and False after: the
+    moved name leaves the class's own body."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _declared_file_family("label")})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"reads the class namespace"):
+        _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
+
+
 def test_a_metaclass_iterating_the_namespace_stops_the_composition(tmp_path: Path) -> None:
     """Iterating the namespace reads every name in it, the moved ones included."""
 
