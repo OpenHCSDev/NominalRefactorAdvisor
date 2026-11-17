@@ -2110,15 +2110,24 @@ class BaseFold:
     def frozen(self) -> str:
         return self.children[0].option("frozen")
 
+    @cached_property
+    def stays_plain(self) -> bool:
+        """The block carries no field and the base has no dataclass decorator, so
+        the base takes it as a plain class: a dataclass collects fields only from
+        dataclass bases, and a decorator here would generate methods every child
+        then inherits ahead of its other bases (#421's rule)."""
+
+        return not self.base.facts.dataclass_declaration.generates_construction and (
+            self.snapshot.class_overlap_verdicts.takes_no_field(
+                None, self.names, *(child.facts for child in self.children)
+            )
+        )
+
     def require_dataclass_family(self) -> None:
         base = self.base
         if frozenset(self.names) & base.target.bound_names:
             raise NeedsInput(f"`{base.qualname}` already binds a moved name", NeededInput.SOURCE_CHANGE)
-        if not base.facts.dataclass_declaration.generates_construction and (
-            self.snapshot.class_overlap_verdicts.takes_no_field(
-                None, self.names, *(child.facts for child in self.children)
-            )
-        ):
+        if self.stays_plain:
             return
         base.require_accepts_moved_fields(self.frozen)
         class_index = self.snapshot.class_overlap_verdicts.class_index
@@ -2216,7 +2225,7 @@ class BaseFold:
         documentation = KeptDocumentation(self.children, first.deleted_names)
         rationale = documentation.rationale(rationale)
         return (
-            *base.decorator_edits_for(self, indentation, rationale),
+            *(() if self.stays_plain else base.decorator_edits_for(self, indentation, rationale)),
             *body.geometry.physical_edits(
                 file_path=base.file_path,
                 replacements=(
