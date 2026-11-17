@@ -634,6 +634,17 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.MRO_ORDERING,),
     )
+    STRING_KEYED_FAMILY = _pattern(
+        stable_id=53,
+        display_name="String-Keyed Family",
+        required_relation=(
+            "Several functions select behaviour by comparing one key with "
+            "overlapping string literals, so the strings are a nominal family "
+            "kept by hand: its members are the literal groups no site tells "
+            "apart, as many as the confusability graph's chromatic number."
+        ),
+        witness_capabilities=(CapabilityTag.CLOSED_FAMILY_DISPATCH,),
+    )
 
     def __new__(
         cls,
