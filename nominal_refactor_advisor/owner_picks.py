@@ -19,6 +19,13 @@ another pick already decides them). A pick also covers every other verdict
 among the classes that would compose the same owner. An extract-mixin
 verdict with no valid pick and no covering pick is reported as missing,
 never guessed; a pick naming no current finding is reported as unmatched.
+
+A roster naming some of a family's members takes the same pick: `owner` is the
+family (the class the new base goes below), `name` and `judgement` are the new
+base's class name and docstring::
+
+    {"finding": "<id>", "owner": "VirtualBusPhase", "because": "...",
+     "name": "BusReaderPhase", "judgement": "The phases that read what the writer wrote."}
 """
 
 from __future__ import annotations
@@ -31,7 +38,11 @@ from pathlib import Path
 
 from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics, ExtractMixin
 from nominal_refactor_advisor.json_reports import SemanticRecord
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import (
+    DeclaredBasePick,
+    RefactorFinding,
+    RegistrationMetrics,
+)
 from nominal_refactor_advisor.owner_candidates import (
     OwnerPick,
     OwnerPickOutcome,
@@ -41,7 +52,8 @@ from nominal_refactor_advisor.owner_candidates import (
 
 @dataclass(frozen=True)
 class OwnerPickReport(SemanticRecord):
-    """Every extract-mixin finding's outcome, and the picks that matched nothing."""
+    """Every extract-mixin finding's outcome, each picked roster's, and the picks
+    that matched nothing."""
 
     picks_file: str
     picks_sha256: str
@@ -144,27 +156,80 @@ class OwnerPicks:
                     if owner.permitted
                 ),
             )
-        present = frozenset(finding.stable_id for finding in mixins)
+        rosters = [
+            finding
+            for finding in findings
+            if isinstance(finding.metrics, RegistrationMetrics)
+            and finding.stable_id in by_finding
+        ]
+        bases: dict[str, DeclaredBasePick] = {}
+        for finding in rosters:
+            pick = by_finding[finding.stable_id]
+            outcome, base = self.base_outcome(finding, pick)
+            outcomes[finding.stable_id] = outcome
+            if base is not None:
+                bases[finding.stable_id] = base
+        present = frozenset(finding.stable_id for finding in (*mixins, *rosters))
         return (
             [
-                finding
-                if finding.stable_id not in picks_by_finding
-                else replace(
+                replace(
                     finding,
                     metrics=replace(
                         finding.metrics, owner_pick=picks_by_finding[finding.stable_id]
                     ),
                 )
+                if finding.stable_id in picks_by_finding
+                else replace(
+                    finding,
+                    metrics=replace(finding.metrics, base_pick=bases[finding.stable_id]),
+                )
+                if finding.stable_id in bases
+                else finding
                 for finding in findings
             ],
             OwnerPickReport(
                 picks_file=self.path,
                 picks_sha256=self.digest,
-                outcomes=tuple(outcomes[finding.stable_id] for finding in mixins),
+                outcomes=tuple(
+                    outcomes[finding.stable_id] for finding in (*mixins, *rosters)
+                ),
                 unmatched=tuple(
                     pick.finding for pick in self.picks if pick.finding not in present
                 ),
             ),
+        )
+
+    @staticmethod
+    def base_outcome(
+        finding: RefactorFinding, pick: OwnerPick
+    ) -> tuple[OwnerPickOutcome, DeclaredBasePick | None]:
+        """A roster's pick names the family the new base goes below, so a pick
+        read against another finding's family is a disagreement, not a base."""
+
+        if pick.owner is None:
+            return OwnerPickOutcome(finding.stable_id, "declined", pick.because), None
+        authority = finding.authority_evidence
+        if authority is None or pick.owner != authority.symbol:
+            return (
+                OwnerPickOutcome(
+                    finding.stable_id,
+                    "rejected",
+                    f"`{pick.owner}` is not the family the roster names members of",
+                ),
+                None,
+            )
+        if not pick.name or not pick.judgement:
+            return (
+                OwnerPickOutcome(
+                    finding.stable_id,
+                    "rejected",
+                    "a new base needs its class name and one-line judgement",
+                ),
+                None,
+            )
+        return (
+            OwnerPickOutcome(finding.stable_id, "picked", f"base `{pick.name}`"),
+            DeclaredBasePick(pick.name, pick.judgement),
         )
 
     @property
