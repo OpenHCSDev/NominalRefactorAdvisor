@@ -2299,6 +2299,8 @@ class FindingRecipeProofObstacle(DataclassJsonReport):
 
     executable_declaration_type: type[object] = json_report_field(included=False)
     reason: str
+    needs: tuple[NeededInput, ...] = json_report_field(default=(), included=False)
+    """The input that would close this proof, when one can."""
 
     @json_report_property(field_name="executable_declaration")
     def executable_declaration_name(self) -> str:

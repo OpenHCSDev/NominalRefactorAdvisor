@@ -1,9 +1,11 @@
 from __future__ import annotations
 
-from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from dataclasses import replace
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -4742,7 +4744,7 @@ def test_class_family_collection_operation_rederives_current_source(
     assert replayed == operation
     with pytest.raises(
         CodemodOperationPreflightError,
-        match="exactly one complete literal collection",
+        match="out of declaration order",
     ):
         replayed.source_edits(changed_snapshot)
 
@@ -4841,7 +4843,7 @@ def test_class_family_collection_operation_requires_provable_runtime_order(
     if not is_executable:
         with pytest.raises(
             ValueError,
-            match="exactly one complete literal collection",
+            match="more than one module|out of declaration order",
         ):
             operation.source_edits(snapshot)
         return
@@ -4854,6 +4856,176 @@ def test_class_family_collection_operation_requires_provable_runtime_order(
         for edit in edits
         if hasattr(edit, "replacement_lines")
     )
+
+
+def _class_body_collection_operation(
+    snapshot: CodemodSourceSnapshot, authority_qualname: str, holder_qualname: str
+) -> DeriveClassFamilyCollectionOperation:
+    targets = {target.qualname: target for target in snapshot.source_index.ast_targets}
+    return DeriveClassFamilyCollectionOperation(
+        target=SourceRewriteTarget(target_id=targets[authority_qualname].target_id),
+        projection_target=SourceRewriteTarget(target_id=targets[holder_qualname].target_id),
+    )
+
+
+_PHASES = (
+    "class Phase:\n"
+    "    after: tuple[type['Phase'], ...] = ()\n\n"
+    "class Awareness(Phase):\n"
+    "    pass\n\n"
+    "class OneHolder(Awareness):\n"
+    "    pass\n\n"
+    "class DriftOverlap(Awareness):\n"
+    "    pass\n\n"
+    "class LostTools(Awareness):\n"
+    "    pass\n\n"
+)
+
+
+def _rewritten(snapshot: CodemodSourceSnapshot, operation, module_path: Path) -> str:
+    simulation = RefactorRecipe("derive").with_operation(operation).simulate(snapshot)
+    return simulation.simulation.rewritten_sources[module_path.as_posix()]
+
+
+def test_a_class_body_roster_of_every_member_is_derived_from_the_family(tmp_path: Path) -> None:
+    module_path = _write_module(
+        tmp_path, _PHASES + "class Holder:\n    INCIDENTS = (OneHolder, DriftOverlap, LostTools)\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    rewritten = _rewritten(
+        snapshot, _class_body_collection_operation(snapshot, "Awareness", "Holder"), module_path
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+
+    assert "    INCIDENTS = tuple(Awareness.__subclasses__())\n" in rewritten
+    assert namespace["Holder"].INCIDENTS == tuple(
+        namespace[name] for name in ("OneHolder", "DriftOverlap", "LostTools")
+    )
+
+
+def test_a_member_listing_every_other_member_derives_the_family_its_body_sees(
+    tmp_path: Path,
+) -> None:
+    """The fleet replay phase listed the seven other awareness phases by hand."""
+
+    module_path = _write_module(
+        tmp_path,
+        _PHASES + "class Replay(Awareness):\n    after = (OneHolder, DriftOverlap, LostTools)\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    rewritten = _rewritten(
+        snapshot, _class_body_collection_operation(snapshot, "Awareness", "Replay"), module_path
+    )
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, module_path.as_posix(), "exec"), namespace)
+
+    assert "    after = tuple(Awareness.__subclasses__())\n" in rewritten
+    assert namespace["Replay"].after == tuple(
+        namespace[name] for name in ("OneHolder", "DriftOverlap", "LostTools")
+    )
+
+
+def test_a_member_declared_below_the_holder_leaves_the_roster_as_written(tmp_path: Path) -> None:
+    module_path = _write_module(
+        tmp_path,
+        _PHASES
+        + "class Replay(Awareness):\n    after = (OneHolder, DriftOverlap, LostTools)\n\n"
+        + "class Later(Awareness):\n    pass\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_body_collection_operation(snapshot, "Awareness", "Replay")
+
+    with pytest.raises(NeedsInput, match="`Later` is declared below it") as refusal:
+        operation.source_edits(snapshot)
+    assert refusal.value.needs == (NeededInput.OWNER_PICK, NeededInput.SOURCE_CHANGE)
+
+
+def test_a_complete_tuple_of_member_instances_is_not_a_tuple_of_member_classes(
+    tmp_path: Path,
+) -> None:
+    """`(OneHolder(), DriftOverlap(), LostTools())` names every member, but holds
+    instances: deriving it as the family's classes would change the value."""
+
+    _write_module(
+        tmp_path,
+        _PHASES + "class Holder:\n    INCIDENTS = (OneHolder(), DriftOverlap(), LostTools())\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_body_collection_operation(snapshot, "Awareness", "Holder")
+
+    with pytest.raises(ValueError, match="builtin tuple, list, set or frozenset literal"):
+        operation.source_edits(snapshot)
+
+
+def test_a_roster_of_some_members_asks_for_the_base_that_names_them(tmp_path: Path) -> None:
+    """plan_phases.py:306 lists 3 of the 8 VirtualBusPhase members. Which 3 is a
+    choice no declaration states yet: an offer, closed by the base's name."""
+
+    _write_module(
+        tmp_path, _PHASES + "class Deletion(Awareness):\n    after = (OneHolder, LostTools)\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_body_collection_operation(snapshot, "Awareness", "Deletion")
+
+    with pytest.raises(NeedsInput, match="`after` names 2 of the 3 `Awareness` members") as refusal:
+        operation.source_edits(snapshot)
+    assert refusal.value.needs == (NeededInput.OWNER_PICK,)
+
+
+def test_a_roster_out_of_declaration_order_with_an_ordered_factory_stays(tmp_path: Path) -> None:
+    module_path = _write_module(
+        tmp_path, _PHASES + "class Holder:\n    INCIDENTS = (LostTools, OneHolder, DriftOverlap)\n"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_body_collection_operation(snapshot, "Awareness", "Holder")
+
+    with pytest.raises(ValueError, match="out of declaration order"):
+        operation.source_edits(snapshot)
+
+
+def test_a_roster_read_by_position_declares_roles_and_stays(tmp_path: Path) -> None:
+    """`row_tones[alternate]`: each position is a role the family does not hold."""
+
+    module_path = _write_module(
+        tmp_path,
+        "class Tone:\n    pass\n\n"
+        "class Plain(Tone):\n    pass\n\n"
+        "class Alternate(Tone):\n    pass\n\n"
+        "class Row:\n"
+        "    row_tones = (Plain, Alternate)\n\n"
+        "    def tone(self, alternate: int) -> type[Tone]:\n"
+        "        return self.row_tones[alternate]\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = _class_body_collection_operation(snapshot, "Tone", "Row")
+
+    with pytest.raises(ValueError, match="`row_tones` is read by position"):
+        operation.source_edits(snapshot)
+
+
+def test_repository_scan_finds_every_semantic_mirror_builder_without_its_importer() -> None:
+    """Builders are found among loaded classes, so one whose module nothing on the scan
+    path imports does not exist for a scan. This test process imports them all, which
+    hides that; a fresh interpreter on the scan path does not."""
+
+    script = "\n".join(
+        (
+            "import importlib, pkgutil",
+            "import nominal_refactor_advisor.analysis",
+            "import nominal_refactor_advisor.refactors as package",
+            "from nominal_refactor_advisor.refactors.semantic_mirror import SemanticMirrorRecipeBuilder as B",
+            "from nominal_refactor_advisor.semantic_match import loaded_concrete_nominal_descendants",
+            "scan = {t.__qualname__ for t in B.builder_types()}",
+            "for m in pkgutil.iter_modules(package.__path__, package.__name__ + '.'):",
+            "    importlib.import_module(m.name)",
+            "print(sorted({t.__qualname__ for t in loaded_concrete_nominal_descendants(B)} - scan))",
+        )
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, check=True
+    )
+    assert result.stdout.strip() == "[]"
 
 
 def test_class_family_collection_operation_rejects_shadowed_factory(
@@ -4873,7 +5045,7 @@ def test_class_family_collection_operation_rejects_shadowed_factory(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     operation = _class_family_collection_operation(snapshot, "Root", module_path)
 
-    with pytest.raises(ValueError, match="exactly one complete literal collection"):
+    with pytest.raises(ValueError, match="builtin tuple, list, set or frozenset literal"):
         operation.source_edits(snapshot)
 
 
@@ -4979,7 +5151,7 @@ def test_semantic_mirror_deep_class_collection_requires_complete_runtime_query(
 
     assert record.status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
     assert (
-        "exactly one complete literal collection"
+        "descendants below its direct members"
         in obstacles_by_declaration["ClassFamilyCollectionSemanticMirrorRecipeBuilder"]
     )
     assert plan.document.recipes == ()
