@@ -526,6 +526,22 @@ def test_a_block_with_a_name_declared_differently_offers_the_names_that_agree():
     assert named.detail.endswith("moves `branch`, `repository` and each class keeps `growth`")
 
 
+def test_a_part_of_one_name_is_not_offered():
+    """`growth` and `head` are declared differently and `Difference` has no
+    `branch`, so the only agreeing name is `repository`: one name two classes
+    share is no block, and nothing is offered below the refused whole."""
+
+    lone = BRANCHES.replace(
+        "    repository: str\n    branch: str\n    head: str\n", "    repository: str\n    head: str\n"
+    ).replace(
+        "    growth: int = field(compare=False)\n",
+        "    growth: int = field(compare=False)\n    head: str = field(compare=False)\n",
+    )
+    (whole,) = _verdicts(("pkg.branches", lone))
+    assert set(whole.shared_names) == {"repository", "growth", "head"}
+    assert not whole.repairs and whole.offered is None
+
+
 def test_a_permitted_move_offers_no_lower_rung():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     assert plain.permitted

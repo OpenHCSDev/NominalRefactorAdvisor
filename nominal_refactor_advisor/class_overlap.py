@@ -344,6 +344,10 @@ class MoveRequest(ReportingFloor):
 
 REPORTED = ReportingFloor()
 NO_FLOOR = ReportingFloor(weight=0.0, declarations=1)
+PART_DECLARATIONS = 2
+"""The fewest names a part of a block shares: across agent-comms censuses 17-19 every
+one-name part offered (`close`, `available`, `parts`, `detail`, `updates`, `display`,
+`line`) was two classes' coincidence, and the two-name part was a key."""
 EXTRACTION = MoveRequest(move=ExtractMixin)
 
 
@@ -1034,10 +1038,14 @@ class ClassOverlapVerdicts(DeclaredC3):
                 continue
             tried.add(part)
             # The whole block already passed the floor as one concept; the part
-            # needs only to be a repair, so it is judged with no floor of its own.
+            # needs no weight of its own, but one name alone is no shared block.
             below = self.ladder(
                 self.declaring(overlap, part).restricted(part),
-                replace(floor, weight=NO_FLOOR.weight, declarations=NO_FLOOR.declarations),
+                replace(
+                    floor,
+                    weight=NO_FLOOR.weight,
+                    declarations=min(floor.declarations, PART_DECLARATIONS),
+                ),
             )
             if below is None or not below.rungs[-1].repairs:
                 continue
