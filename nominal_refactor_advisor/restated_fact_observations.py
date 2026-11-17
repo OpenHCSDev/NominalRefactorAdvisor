@@ -35,7 +35,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.observation_families import ShapeFamily
-from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.observation_shapes import AssertedSubject, RestatingSite
 from nominal_refactor_advisor.probe_owner import ProbeOwner, ProbeOwnerResolver
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
@@ -436,7 +436,9 @@ class ForeignAbsenceSiteModule(RestatingSiteModule):
 
 
 class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
-    """`other.attr is None` and `is not None` on an object that is not the method's own."""
+    """`other.attr is None` and `is not None` on an object that is not the method's own.
+    A probe in an `assert`'s condition observes a state and selects no behaviour, as a type
+    test there does (`AssertedSubject`), so no state the type declares could replace it."""
 
     item_type = ForeignAbsenceSiteModule
 
@@ -456,6 +458,8 @@ class ForeignAbsenceSiteFamily(RestatingSiteFamily[ForeignAbsenceSiteModule]):
                 case _:
                     continue
             if cls.is_own_or_module(receiver, node_index, index, modules):
+                continue
+            if AssertedSubject.asserts((*index.ancestor_nodes(node_index), node)):
                 continue
             yield ForeignAbsenceSite(
                 file_path=parsed_module.file_path,

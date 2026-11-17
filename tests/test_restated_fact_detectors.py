@@ -261,6 +261,20 @@ def test_another_objects_attribute_compared_with_none_is_a_finding(tmp_path: Pat
     assert "`goal` is probed for absence 2 time(s)" in finding.summary
 
 
+def test_an_absence_probe_inside_an_assert_observes_and_is_not_a_finding(tmp_path: Path):
+    source = (
+        "def checked(goal):\n"
+        "    assert goal.paused_at is None\n"
+        "    assert goal.owner is not None and goal.ready, goal.paused_at is None\n"
+        "    if goal.paused_at is None:\n        return 1\n"
+        "    return 0\n"
+    )
+    (finding,) = _findings(tmp_path, ForeignAbsenceProbeDetector, {"m": source})
+    assert "`goal` is probed for absence 2 time(s)" in finding.summary
+    assert f"{tmp_path}/m.py:3 `goal.paused_at is None`" in finding.summary
+    assert f"{tmp_path}/m.py:4 `goal.paused_at is None`" in finding.summary
+
+
 def test_each_probe_names_its_line_and_the_declared_owner_or_why_not(tmp_path: Path):
     owner = (
         "from dataclasses import dataclass\n\n\n"
