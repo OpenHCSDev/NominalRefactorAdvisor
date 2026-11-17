@@ -27,6 +27,7 @@ from nominal_refactor_advisor.codemod import (
     SourceRewriteTarget,
 )
 from nominal_refactor_advisor.json_reports import json_report_object
+from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof
 
 SURFACE = (
     "from abc import ABCMeta\n"
@@ -600,6 +601,23 @@ def test_a_hook_asking_vars_of_the_class_for_a_moved_name_stops_the_composition(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     with pytest.raises(CodemodOperationPreflightError, match=r"reads the class namespace"):
         _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
+
+
+def test_a_module_end_is_read_whichever_way_the_class_spells_its_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A goal's snapshot keys sources by absolute path while an ancestor read
+    through another index names its module relative to the scan root: the
+    creation proof reads the module's end either way."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": f"class Located:\n{OWNER_BODY}"})
+    absolute = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    relative = CodemodSourceSnapshot.from_modules(parse_python_modules(Path("pkg")))
+    located = relative.class_overlap_verdicts.class_index.class_for("pkg.located.Located")
+    assert located is not None and located.file_path not in absolute.sources_by_file_path
+    proof = ClassCreationProof(absolute, located, (), "Located", frozenset(), frozenset(), None)
+    assert proof.module_end(located) == 4
 
 
 def test_a_metaclass_iterating_the_namespace_stops_the_composition(tmp_path: Path) -> None:
