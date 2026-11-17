@@ -422,6 +422,106 @@ def test_a_creation_hook_that_reads_the_bases_stops_the_composition_at_its_line(
     assert raised.value.needs == (NeededInput.PROOF,)
 
 
+def _dispatch_family(owner_body: str, composer_body: str, after_walk: str = "") -> str:
+    """A hook that walks the MRO for each name's first binding, as
+    `metaclass_registry.MroDispatch` does, and keeps the marked ones."""
+
+    return (
+        "from dataclasses import dataclass\n\n\n"
+        "def handles(*classes):\n"
+        "    def decorate(handler):\n"
+        "        handler.__handled_classes__ = classes\n"
+        "        return handler\n"
+        "    return decorate\n\n\n"
+        "class Dispatch:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        methods = {}\n"
+        "        for owner in cls.__mro__:\n"
+        "            for name, method in vars(owner).items():\n"
+        "                methods.setdefault(name, method)\n"
+        "        cls._handler_declarations = tuple(\n"
+        "            (name, classes)\n"
+        "            for name, method in methods.items()\n"
+        "            if (classes := getattr(method, '__handled_classes__', ()))\n"
+        "        )\n"
+        f"{after_walk}\n\n"
+        f"class Located:\n{owner_body}\n\n"
+        f"class Finding(Dispatch):\n{composer_body}"
+    )
+
+
+DISPATCH_PROBE = (
+    "from pkg.located import Finding, Located\n"
+    "print(Finding._handler_declarations, issubclass(Finding, Located))\n"
+)
+OWNER_BODY = "    def label(self):\n        return 'l'\n"
+
+
+def _dispatch_composition(path: str) -> ComposeExistingClassOperation:
+    return ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+    )
+
+
+def test_a_hook_walking_the_mro_for_marked_methods_composes_the_owner(tmp_path: Path) -> None:
+    """Each name keeps its winner and the marked ones keep their order, so the
+    hook builds the same handler table."""
+
+    composer = OWNER_BODY + "\n    @handles(int)\n    def on_int(self, value):\n        return value\n"
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _dispatch_family(OWNER_BODY, composer)})
+    before = _run(tmp_path, DISPATCH_PROBE).split()
+    _apply(tmp_path, _dispatch_composition((tmp_path / "pkg/located.py").as_posix()))
+    after = _run(tmp_path, DISPATCH_PROBE).split()
+    assert after[:-1] == before[:-1] and after[-1] == "True"
+    assert "class Finding(Located, Dispatch):" in (tmp_path / "pkg/located.py").read_text()
+
+
+@pytest.mark.parametrize(
+    ("owner", "composer", "after_walk", "refusal"),
+    (
+        # What the walk found, counted: the owner adds no name, but NRA reads
+        # only `getattr` of a constant attribute of each winner.
+        (OWNER_BODY, OWNER_BODY, "        cls.count = len(methods)\n", r"uses what the walk of the MRO found"),
+        # The moved handler is met after the composer's own handler once composed.
+        (
+            "    @handles(str)\n    def on_str(self, value):\n        return value\n",
+            "    @handles(str)\n    def on_str(self, value):\n        return value\n\n"
+            "    @handles(int)\n    def on_int(self, value):\n        return value\n",
+            "",
+            r"meets \['on_str', 'on_int'\] in that order, and \['on_int', 'on_str'\] once composed",
+        ),
+    ),
+)
+def test_a_hook_walking_the_mro_refuses_what_the_name_check_does_not_cover(
+    tmp_path: Path, owner: str, composer: str, after_walk: str, refusal: str
+) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": _dispatch_family(owner, composer, after_walk)})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=refusal):
+        _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
+
+
+def test_a_metaclass_iterating_the_namespace_stops_the_composition(tmp_path: Path) -> None:
+    """Iterating the namespace reads every name in it, the moved ones included."""
+
+    source = (
+        "class Meta(type):\n"
+        "    def __new__(mcs, name, bases, namespace):\n"
+        "        cls = super().__new__(mcs, name, bases, namespace)\n"
+        "        cls.names = [key for key in namespace]\n"
+        "        return cls\n\n\n"
+        "class Base(metaclass=Meta):\n    pass\n\n\n"
+        f"class Located:\n{OWNER_BODY}\n\n"
+        f"class Finding(Base):\n{OWNER_BODY}"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": source})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"located.py:4 `namespace` iterates the class namespace"):
+        _dispatch_composition((tmp_path / "pkg/located.py").as_posix()).source_edits(snapshot)
+
+
 def test_a_restating_class_composes_the_owner_and_runs_the_same(tmp_path: Path) -> None:
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/surface.py": SURFACE})
     before = _run(tmp_path, SURFACE_PROBE).splitlines()
