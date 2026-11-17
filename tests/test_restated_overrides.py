@@ -273,3 +273,20 @@ def test_a_namespace_read_the_type_checker_types_as_an_instance_sees_no_class(tm
     assert NeededInput.PROOF in evaluation.needs
     _write(tmp_path, {"pkg/read.py": source.split("\n\n\ndef held")[0] + "\n"})
     assert _evaluation(tmp_path, "Child").rejection_reason == ""
+
+
+def test_a_namespace_read_the_type_checker_types_as_another_family_sees_no_member(tmp_path: Path):
+    source = (
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n\n\n"
+        "class Capability:\n    pass\n\n\n"
+        "def owners() -> tuple[type[Capability], ...]:\n    return (Capability,)\n\n\n"
+        "def table():\n    return [dict(vars(owner)) for owner in owners()]\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/read.py": source})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""
+    _write(tmp_path, {"pkg/read.py": source.replace("type[Capability]", "type[Base]").replace("(Capability,)", "(Base,)")})
+    evaluation = _evaluation(tmp_path, "Child")
+    assert "`dict(vars(owner))`" in evaluation.rejection_reason
+    assert "whose values can be that class" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs

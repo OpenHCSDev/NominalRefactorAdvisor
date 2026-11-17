@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import ast
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
@@ -160,9 +160,10 @@ class ReceiverType(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def require_instances(self, read: str) -> None:
-        """Needs a proof unless every value of the receiver is an instance that is
-        not a class, so `vars()` of it or its `__dict__` holds no class member."""
+    def require_namespace_unseen(self, read: str, sees: Callable[[str], bool]) -> None:
+        """Needs a proof unless no value of the receiver is a class whose namespace
+        `sees` admits: every value is an instance that is not a class, or a class of
+        families (`type[C]`) none of which `sees`."""
 
         raise NotImplementedError
 
@@ -177,11 +178,21 @@ class InferredReceiverType(ReceiverType):
     instances: bool
     """Every value is an instance that is not a class: no `type[...]`, metaclass,
     `object`, protocol or unknown type is among what the checker inferred."""
+    families: tuple[str, ...]
+    """When every value is a class: the classes `C` of `type[C]` it is one of, each
+    value being `C` or a subclass; empty when any value is not known so."""
 
-    def require_instances(self, read: str) -> None:
-        if not self.instances:
+    def require_namespace_unseen(self, read: str, sees: Callable[[str], bool]) -> None:
+        if self.instances:
+            return
+        if not self.families:
             raise NeedsInput(
                 f"{read}; the type checker infers `{self.spelled}`, whose values can be classes",
+                NeededInput.PROOF,
+            )
+        if any(sees(family) for family in self.families):
+            raise NeedsInput(
+                f"{read}; the type checker infers `{self.spelled}`, whose values can be that class",
                 NeededInput.PROOF,
             )
 
@@ -204,7 +215,7 @@ class FailedReceiverType(ReceiverType):
 
     reason: str
 
-    def require_instances(self, read: str) -> None:
+    def require_namespace_unseen(self, read: str, sees: Callable[[str], bool]) -> None:
         raise NeedsInput(f"{read}; type checker: {self.reason}", NeededInput.PROOF)
 
     def owner(self, classes: ScannedClasses) -> ProbeOwner:
