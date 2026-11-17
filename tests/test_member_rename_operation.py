@@ -136,8 +136,14 @@ def test_an_overridden_method_is_renamed_across_its_family_and_its_typed_reads(t
         ({"shapes": SHAPES, "use": USE}, "describe", r"needs another name: 'Shape' .* already binds 'describe'"),
         ({"shapes": SHAPES, "use": USE + "\n\ndef dynamic(shape: Shape) -> float:\n    return getattr(shape, 'area')()\n"},
          "surface", r"needs .*pkg/use\.py:13 reaches 'area' by a string"),
+        ({"shapes": SHAPES, "use": USE + (
+            "\n\ndef rebound(squares: list[Square], rooms: list[Room]) -> float:\n"
+            "    for thing in squares:\n        pass\n"
+            "    for thing in rooms:\n        pass\n"
+            "    return thing.area()\n")},
+         "surface", r"needs .*pkg/use\.py:17 reads `thing`, which its scope binds more than once"),
     ),
-    ids=("untyped-receiver", "name-collision", "getattr-read"),
+    ids=("untyped-receiver", "name-collision", "getattr-read", "rebound-local"),
 )
 def test_a_rename_says_what_it_needs_instead_of_editing(
     tmp_path: Path, sources: dict[str, str], new_name: str, needed: str
