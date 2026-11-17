@@ -2431,8 +2431,9 @@ class MixinCreation:
     name: str
     docstring: str
     keyword_only: bool
-    """Created keyword-only because composing it reorders some composer's fields;
-    each such composer then becomes keyword-only as it composes the mixin."""
+    """Created keyword-only when composing it reorders some composer's fields or
+    some composer is keyword-only already; each other composer then becomes
+    keyword-only as it composes the mixin."""
 
     @classmethod
     def require(
@@ -2465,14 +2466,14 @@ class MixinCreation:
         mixin_fields = tuple(
             name for name in anchor.own_field_names if name in restated.names
         )
+        # A composer keeps its fields only if they stay in order and it matches the
+        # mixin's keyword-only-ness: one already keyword-only, made so by an earlier
+        # step, needs a keyword-only mixin just as a reordered one does.
         keyword_only = anchor.option("kw_only") != "True" and any(
-            before != after
+            before != after or composer.option("kw_only") == "True"
             for symbol in owner.composers
-            for before, after in (
-                composed_field_order(
-                    snapshot, mixin_fields, OverlapClass.for_symbol(snapshot, symbol)
-                ),
-            )
+            for composer in (OverlapClass.for_symbol(snapshot, symbol),)
+            for before, after in (composed_field_order(snapshot, mixin_fields, composer),)
         )
         return cls(snapshot, anchor, restated, name, docstring, keyword_only)
 
