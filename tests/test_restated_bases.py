@@ -56,7 +56,9 @@ PACKAGE = {
     "main.py": MAIN,
 }
 DROPPED = (
-    "from pkg.reads import ClaimGenerationRead, RecipientPositions\n\n\n"
+    # Removing a module's first import keeps the blank line after it: the import
+    # rewrite deletes the statement alone.
+    "\nfrom pkg.reads import ClaimGenerationRead, RecipientPositions\n\n\n"
     "class NativeOwnerRegistry(ClaimGenerationRead):\n    __slots__ = ()\n\n\n"
     "class ClaimRegistryRead[Owner](ClaimGenerationRead):\n    __slots__ = ()\n\n\n"
     "class OutcomeViewer(RecipientPositions):\n    def visible(self) -> int:\n        return 1\n"
