@@ -634,6 +634,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.MRO_ORDERING,),
     )
+    HIDDEN_IMPORT = _pattern(
+        stable_id=53,
+        display_name="Hidden Import",
+        required_relation=(
+            "A module imports a scanned module under `TYPE_CHECKING` or inside a "
+            "function, and the import closes no load-time cycle, so hiding it "
+            "keeps a second, invisible edge beside the import graph."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

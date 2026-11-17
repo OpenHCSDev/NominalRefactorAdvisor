@@ -156,6 +156,11 @@ class RestatedOverrideConcept(ClassFamilyAuthorityConcept):
     """Delete a member that restates the declaration its class would inherit."""
 
 
+class HiddenImportPromotionConcept(NominalBoundaryConcept):
+    """Move a guarded or function-local import that closes no load-time cycle to
+    its module's top."""
+
+
 class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
     """Route type tests on foreign classes through one declared family."""
 
