@@ -27944,7 +27944,8 @@ def test_carrier_replacement_refuses_a_record_a_stored_field_holds(tmp_path: Pat
         "@dataclass(frozen=True)\nclass Stats:\n    count: int\n    history: tuple[str, ...]\n\n\n"
         "@dataclass(frozen=True)\nclass Reply:\n    count: int\n    name: str\n\n\n"
         "@dataclass(frozen=True)\nclass Live:\n    count: int\n\n\n"
-        "@dataclass(frozen=True)\nclass Row(DurableTables):\n    reply: Reply\n"
+        "@dataclass(frozen=True)\nclass Kind:\n    label: Stats\n\n\n"
+        "@dataclass(frozen=True)\nclass Row(DurableTables):\n    reply: Reply\n    kind: type[Kind]\n"
         "    live: ClassVar[type[Live]] = Live\n\n\n"
         "def reply(stats: Stats) -> Reply:\n    return Reply(count=stats.count, name='x')\n",
     )
@@ -27953,7 +27954,7 @@ def test_carrier_replacement_refuses_a_record_a_stored_field_holds(tmp_path: Pat
     )
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     records = StoredRecords.of(snapshot, module_path.as_posix()).records
-    assert records == ("pkg.mod.Reply", "pkg.mod.Row")
+    assert records == ("pkg.mod.Reply", "pkg.mod.Row"), "a `type[Kind]` field keeps Kind's name, not its fields"
     operation = ReplaceFieldsWithCarrierOperation(
         target=SourceRewriteTarget(file_path=module_path.as_posix(), qualname="Reply"),
         carrier_field_declaration="stats: Stats",

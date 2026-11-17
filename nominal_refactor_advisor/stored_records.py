@@ -14,6 +14,7 @@ record's rows.
 from __future__ import annotations
 
 import ast
+import copy
 from collections.abc import Iterator
 from dataclasses import dataclass
 from functools import cached_property
@@ -48,7 +49,8 @@ class StoredRecords:
     def records(self) -> tuple[str, ...]:
         """Every scanned class whose values a stored row keeps: each class below a
         declared durable base, and each class a stored class's field can hold, its
-        own or inherited, through every field that class holds in turn."""
+        own or inherited, through every field that class holds in turn. A
+        `type[...]` field keeps a member's name, not its fields (`held_values`)."""
 
         index = self.snapshot.compact_class_index
         pending = [
@@ -67,7 +69,9 @@ class StoredRecords:
             for declaring in (symbol, *index.ancestor_symbols(symbol)):
                 if declaring in index.classes_by_symbol:
                     for _field, annotation in self.annotated_fields(declaring):
-                        pending.extend(self.named_classes(declaring, annotation))
+                        pending.extend(
+                            self.named_classes(declaring, self.held_values(annotation))
+                        )
         return tuple(sorted(stored))
 
     def fields_holding(self, symbols: frozenset[str]) -> tuple[str, ...]:
@@ -93,6 +97,28 @@ class StoredRecords:
                     not self.is_class_variable(annotation)
                 ):
                     yield field, annotation
+
+    @classmethod
+    def held_values(cls, annotation: ast.expr) -> ast.expr:
+        """The part of an annotation whose instances a row keeps: a `type[...]`
+        field keeps only the member's name, so its classes' fields are not stored."""
+
+        class WithoutClassObjects(ast.NodeTransformer):
+            def visit_Subscript(self, node: ast.Subscript) -> ast.AST:
+                if StoredRecords.chain(node.value) in (("type",), ("Type",), ("typing", "Type")):
+                    return ast.Constant(value=None)
+                return self.generic_visit(node)
+
+            def visit_Constant(self, node: ast.Constant) -> ast.AST:
+                if not isinstance(node.value, str):
+                    return node
+                try:
+                    parsed = ast.parse(node.value, mode="eval").body
+                except SyntaxError:
+                    return node
+                return self.visit(parsed)
+
+        return WithoutClassObjects().visit(copy.deepcopy(annotation))
 
     @classmethod
     def is_class_variable(cls, annotation: ast.expr) -> bool:
