@@ -1337,6 +1337,18 @@ class CompactIndexedClass(CompactClassHeader):
     body_declarations: tuple[ClassBodyDeclarationDigest, ...] = ()
 
     @property
+    def implicit_base_names(self) -> tuple[str, ...]:
+        """What creation appends to the bases the statement names: `class C[T]:`
+        ends its bases with `Generic`, unless it names `Protocol`, which is generic itself."""
+
+        protocol = f"{typing.Protocol.__module__}.{typing.Protocol.__qualname__}"
+        if not self.type_parameter_names or any(
+            reference.qualified_name == protocol for reference in self.base_references
+        ):
+            return ()
+        return (f"{typing.Generic.__module__}.{typing.Generic.__qualname__}",)
+
+    @property
     def has_class_creation_hook(self) -> bool:
         """Class creation can invoke hooks declared as methods or assigned values."""
 

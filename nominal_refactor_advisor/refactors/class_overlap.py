@@ -1352,15 +1352,18 @@ class ComposedAncestry:
         return indexed
 
     def bases(self, symbol: str) -> tuple[str, ...]:
-        """Its bases, each by the symbol it resolves to: a re-export is the class it names."""
+        """Its bases, each by the symbol it resolves to: a re-export is the class it
+        names. Creation's own last bases follow the named ones, before and after
+        composing alike."""
 
+        declared = self.declared(symbol)
         return tuple(
             qualified_name
             if NativeMroBase.for_qualified_name(qualified_name) or namespace_read_native(qualified_name)
             else self.declared(qualified_name).symbol
-            for reference in self.declared(symbol).base_references
+            for reference in declared.base_references
             for qualified_name in (".".join(reference.resolved_parts),)
-        ) or (NativeMroBase.OBJECT.value,)
+        ) + declared.implicit_base_names or (NativeMroBase.OBJECT.value,)
 
     def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Python's C3 order of `symbol`, over its declared bases or `bases`."""
@@ -1484,6 +1487,8 @@ class ComposedAncestry:
             raise NeedsInput(
                 f"Composing makes `{self.composer.qualname}` a `{symbol}`", NeededInput.PROOF
             )
+        if namespace_read_native(symbol) is not None:
+            return
         indexed = self.declared(symbol)
         if indexed.metaclass_names or "metaclass" in indexed.class_keyword_names:
             raise NeedsInput(

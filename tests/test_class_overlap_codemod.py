@@ -224,6 +224,120 @@ def test_an_owner_whose_base_the_class_already_has_is_composed(tmp_path: Path) -
     assert _run(tmp_path, BASED_PROBE) == before
 
 
+GENERIC_REGISTRY = (
+    "from abc import ABC, abstractmethod\n"
+    "from typing import Generic, TypeVar\n\n"
+    "K = TypeVar('K')\n\n\n"
+    "class Names(Generic[K]):\n"
+    "    __slots__ = ()\n\n"
+    "    def name_of(self, key: K) -> str:\n"
+    "        return str(key)\n\n\n"
+    "class Reads(ABC):\n"
+    "    __slots__ = ()\n\n"
+    "    @abstractmethod\n"
+    "    def generation(self) -> int: ...\n\n\n"
+    "class Registry[T](Names[T], ABC):\n"
+    "    __slots__ = ()\n\n"
+    "    @abstractmethod\n"
+    "    def generation(self) -> int: ...\n\n"
+    "    def size(self) -> int:\n"
+    "        return 1\n\n\n"
+    "class Live(Registry[str]):\n"
+    "    __slots__ = ()\n\n"
+    "    def generation(self) -> int:\n"
+    "        return 3\n"
+)
+GENERIC_REGISTRY_PROBE = (
+    "from pkg.registry import Live, Registry\n"
+    "live = Live()\n"
+    "print(live.generation(), live.size(), live.name_of(4), sorted(Registry.__abstractmethods__),\n"
+    "      [c.__name__ for c in Registry.__mro__ if c.__name__ != 'Reads'])\n"
+)
+
+
+def test_a_type_parameter_class_composes_an_owner_python_orders_before_generic(
+    tmp_path: Path,
+) -> None:
+    """`class Registry[T](Names[T], ABC)` gets `Generic` as its last base from
+    the compiler, so Python orders it `Names, ABC, Generic`; the owner first
+    keeps that order. Read without the implicit base, `Generic` came before
+    `ABC` and the composition looked like a reorder."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/registry.py": GENERIC_REGISTRY})
+    before = _run(tmp_path, GENERIC_REGISTRY_PROBE)
+    assert "['Registry', 'Names', 'ABC', 'Generic', 'object']" in before
+    path = (tmp_path / "pkg/registry.py").as_posix()
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(file_path=path, qualname="Registry"),
+            owner=SourceRewriteTarget(file_path=path, qualname="Reads"),
+        ),
+    )
+    source = (tmp_path / "pkg/registry.py").read_text()
+    assert "class Registry[T](Reads, Names[T], ABC):" in source
+    assert source.count("def generation") == 2
+    assert _run(tmp_path, GENERIC_REGISTRY_PROBE) == before
+
+
+GENERIC_OWNER = (
+    "from abc import ABC, abstractmethod\n"
+    "from typing import Generic, TypeVar\n\n"
+    "K = TypeVar('K')\n\n\n"
+    "class Plain:\n"
+    "    __slots__ = ()\n\n\n"
+    "class Keyed(Generic[K], ABC):\n"
+    "    __slots__ = ()\n\n"
+    "    @abstractmethod\n"
+    "    def generation(self) -> int: ...\n\n\n"
+    "class Registry[T](Plain, ABC):\n"
+    "    __slots__ = ()\n\n"
+    "    @abstractmethod\n"
+    "    def generation(self) -> int: ...\n"
+)
+
+
+def test_an_owner_ordering_generic_before_abc_has_no_c3_order_in_a_type_parameter_class(
+    tmp_path: Path,
+) -> None:
+    """`Keyed` orders `Generic` before `ABC`; `Registry`'s implicit last base
+    orders `ABC` before `Generic`. Python refuses that class, so the
+    composition refuses before writing it."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/registry.py": GENERIC_OWNER})
+    path = (tmp_path / "pkg/registry.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Registry"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Keyed"),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match="has no C3 order"):
+        operation.source_edits(snapshot)
+
+
+
+def test_a_class_gaining_generic_from_its_owner_is_judged_by_the_names_generic_binds(
+    tmp_path: Path,
+) -> None:
+    """A class with no type parameters gains `Generic` through `Keyed`; its
+    namespace is read, so the gain is refused by the first name it would win."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/registry.py": GENERIC_OWNER.replace("class Registry[T](", "class Registry("),
+        },
+    )
+    path = (tmp_path / "pkg/registry.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Registry"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Keyed"),
+    )
+    with pytest.raises(CodemodOperationPreflightError, match=r"resolve to `typing.Generic` instead of `nothing`"):
+        operation.source_edits(snapshot)
+
 def test_a_composition_that_changes_a_name_s_winner_is_refused(tmp_path: Path) -> None:
     """Composing `Labelled` brings its base `Base` ahead of `Mixin` in `Plain`'s
     C3 order, so `Plain.label` would stop being `Mixin`'s."""
