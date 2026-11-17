@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import re
 from dataclasses import dataclass
 
 from nominal_refactor_advisor.codemod_payload import (
@@ -32,6 +33,7 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.probe_owner import InferredReceiverType, ReceiverSpan
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
 
 
@@ -274,9 +276,35 @@ class CapabilityGuardToOverrideOperation(RepositorySourceReprovedOperation):
                 declared = cls.annotated(answered, guard, parents, source_path, annotation)
             case _:
                 declared = None
+        if declared is None and annotation is None:
+            declared = cls.inferred(snapshot, guard.subject, source_path)
         if declared is None:
             raise ValueError(cls.undeclared(function, guard.subject, annotation))
         return declared
+
+    @staticmethod
+    def inferred(snapshot: CodemodSourceSnapshot, subject: ast.expr, source_path: str) -> str | None:
+        """The class the type checker gives the unannotated subject where it is tested:
+        one class the scan declares, every value an instance and none of them None,
+        since `x.method()` runs on every value the test used to skip."""
+
+        span = ReceiverSpan.of(source_path, subject)
+        answer = snapshot.type_checker.receiver_types((span,)).get(span)
+        if not isinstance(answer, InferredReceiverType):
+            return None
+        spelled = ast.unparse(subject)
+        if re.search(r"\bNone\b", answer.spelled) or not answer.instances:
+            raise ValueError(
+                f"the type checker infers `{answer.spelled}` for `{spelled}`, whose values are not all "
+                "instances with methods: it needs the value decoded into the family where it enters"
+            )
+        match answer.classes:
+            case (symbol,) if symbol in snapshot.required_class_family_index.classes_by_symbol:
+                return symbol
+        raise ValueError(
+            f"the type checker infers `{answer.spelled}` for `{spelled}`, which is not one class the scan "
+            "declares: it needs the value decoded into the family where it enters"
+        )
 
     @staticmethod
     def undeclared(

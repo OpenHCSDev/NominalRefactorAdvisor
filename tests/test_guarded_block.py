@@ -215,3 +215,44 @@ def test_a_re_exported_annotation_names_its_declaring_class(
     assert operation.base.file_path == (tmp_path / "pkg/message.py").as_posix()
     _apply(tmp_path, operation)
     assert "    message.on_process(out=out)\n" in Path(path).read_text()
+
+
+@pytest.mark.parametrize(
+    ("loop", "outcome"),
+    (
+        ("def describe_all(shapes: list[Shape], out: list[str]) -> None:\n    for shape in shapes:\n", None),
+        (
+            "def describe_all(shapes: list[Shape | None], out: list[str]) -> None:\n    for shape in shapes:\n",
+            "whose values are not all instances",
+        ),
+        (
+            "def describe_all(shapes: list[Shape | int], out: list[str]) -> None:\n    for shape in shapes:\n",
+            "which is not one class the scan declares",
+        ),
+    ),
+)
+def test_a_local_subject_takes_the_type_checker_s_class(
+    tmp_path: Path, loop: str, outcome: str | None
+) -> None:
+    """A loop variable has no annotation; the type checker's type at the test is its
+    declared class, and a value the old test skipped that has no method refuses."""
+    source = SHAPES.split("def describe")[0] + loop + (
+        "        if isinstance(shape, Square):\n"
+        "            out.append(f'{shape.name} has {shape.corners()}')\n"
+    )
+    path = _package(tmp_path, source)
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    line = next(number for number, text in enumerate(source.splitlines(), 1) if "if isinstance" in text)
+    target = SourceRewriteTarget(file_path=path, qualname="describe_all")
+    if outcome is not None:
+        with pytest.raises(ValueError, match=outcome):
+            GuardedBlockToOverrideOperation.at_site(snapshot, target, line, "describe_corners")
+        return
+    operation = GuardedBlockToOverrideOperation.at_site(snapshot, target, line, "describe_corners")
+    assert operation.base.qualname == "Shape"
+    _apply(tmp_path, operation)
+    probe = "from pkg.shapes import Circle, Square, describe_all\nout = []\ndescribe_all([Square('a'), Circle('b')], out)\nprint(out)\n"
+    assert subprocess.run(
+        [sys.executable, "-c", probe], cwd=tmp_path, capture_output=True, text=True, check=True
+    ).stdout == "['a has 4']\n"
+    assert "        shape.describe_corners(out=out)\n" in Path(path).read_text()
