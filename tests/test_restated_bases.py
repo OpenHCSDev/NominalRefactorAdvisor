@@ -137,6 +137,27 @@ def test_a_creation_hook_reading_bases_needs_a_proof(tmp_path: Path):
     assert NeededInput.PROOF in evaluation.needs
 
 
+def test_a_creation_hook_making_the_class_a_dataclass_leaves_the_drop_proved(tmp_path: Path):
+    source = (
+        "from abc import ABC\nfrom dataclasses import dataclass, fields\n\n\n"
+        "class Base(ABC):\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        super().__init_subclass__(**kwargs)\n"
+        "        dataclass(cls, frozen=True, kw_only=True)\n\n\n"
+        "class Mid(Base):\n    pass\n\n\n"
+        "class Probe(Mid, Base):\n    seq: int = 0\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": source})
+    finding = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == "Probe")
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason == ""
+    _write(tmp_path, {"pkg/records.py": source.replace("dataclass(cls,", "fields(cls) and dataclass(cls,")})
+    finding = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == "Probe")
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert "`fields(cls)`" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+
+
 def test_a_membership_test_of_another_class_leaves_the_drop_proved(tmp_path: Path):
     reader = (
         "from pkg.reads import RecipientPositions\nfrom pkg.registries import OutcomeViewer\n\n\n"
