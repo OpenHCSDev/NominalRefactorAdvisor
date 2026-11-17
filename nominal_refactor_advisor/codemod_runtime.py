@@ -3542,10 +3542,13 @@ class CurrentSnapshotRecipeBatchEvaluation:
             simulations[0].required_document_simulation.simulation.rewritten_sources
             != simulations[1].required_document_simulation.simulation.rewritten_sources
         ):
+            # Each order proves and they write different source: one batch
+            # cannot hold both, and each is its own branch whose next state
+            # re-plans the other against the source it leaves.
             return FindingRecipeCandidatePairAssessment(
                 left_index,
                 right_index,
-                FindingRecipeCandidatePairDisposition.UNPROVED,
+                FindingRecipeCandidatePairDisposition.CONFLICTING,
                 "recipe composition depends on source order",
             )
         return FindingRecipeCandidatePairAssessment(
