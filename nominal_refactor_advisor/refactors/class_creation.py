@@ -72,7 +72,7 @@ REGISTRY_NAMES = frozenset(
 """The names a modelled metaclass reads from a class being created."""
 
 INTROSPECTION = frozenset(
-    ("__mro__", "__bases__", "__dict__", "__annotations__", "__annotate__", "mro")
+    ("__mro__", "__bases__", "__orig_bases__", "__dict__", "__annotations__", "__annotate__", "mro")
 )
 """Attributes that show a class's bases or own body, which the move changes."""
 
@@ -388,7 +388,33 @@ class ClassCreationProof:
                 NeededInput.PROOF,
             )
         for code, roles in self.creation_code():
-            CreationReads(self, code, roles).require()
+            self.reads(code, roles).require()
+
+    def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
+        """How one creation function's reads are judged: here, a new owner joins the bases."""
+
+        return CreationReads(self, code, roles)
+
+    @classmethod
+    def dropping(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        composer: CompactIndexedClass,
+        ancestry: tuple[CompactIndexedClass, ...],
+        dropped: tuple[str, ...],
+    ) -> ClassCreationProof:
+        """The proof that dropping restated bases leaves the class's creation as it
+        is: its order does not change, so only creation code reading `bases` sees it."""
+
+        return BaseDropCreationProof(
+            snapshot,
+            composer,
+            ancestry,
+            " + ".join(f"`{symbol.rpartition('.')[2]}`" for symbol in dropped),
+            frozenset(),
+            frozenset(),
+            MroWalk.unmoved(ancestry),
+        )
 
     @classmethod
     def constructing(
@@ -1314,6 +1340,27 @@ class CreationReads:
                 indexed = self.proof.class_index.class_for(qualified)
                 return self.proof.method(indexed, attr) if indexed is not None else None
         return None
+
+
+@dataclass(frozen=True)
+class BaseDropCreationProof(ClassCreationProof):
+    """Dropping restated bases leaves the class's creation unchanged."""
+
+    def reads(self, code: CreationCode, roles: dict[str, Role]) -> CreationReads:
+        return BaseDropReads(self, code, roles)
+
+
+@dataclass
+class BaseDropReads(CreationReads):
+    """One creation function's reads of a base list a drop shortens: truthiness and
+    passing it on stay the same; reading any one base could meet the dropped one."""
+
+    @property
+    def unproved(self) -> str:
+        return f"NRA needs a proof that dropping {self.proof.owner_name} leaves it unchanged"
+
+    def require_base(self, node: ast.Name, parent: ast.AST | None) -> None:
+        self.refuse(parent or node, "reads a base of the class, which may be a dropped one")
 
 
 @dataclass

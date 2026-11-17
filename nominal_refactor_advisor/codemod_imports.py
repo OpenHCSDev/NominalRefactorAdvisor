@@ -352,6 +352,31 @@ def _indented_source_for_statement(
     )
 
 
+def _import_deletion_span(
+    source: str, statement: ast.stmt, scope: ModuleImportScope
+) -> SourceLineSpan:
+    """A whole import statement; one that is a paragraph of its own also takes the
+    blank lines after it beyond those before it, so its neighbours keep the wider
+    separator they had (at the top of the file, every one after it)."""
+
+    start, end = statement.lineno, statement.end_lineno or statement.lineno
+    if scope.is_guarded:
+        return SourceLineSpan(start, end)
+    lines = source.splitlines()
+    preceding = 0
+    while start - 2 - preceding >= 0 and not lines[start - 2 - preceding].strip():
+        preceding += 1
+    following = 0
+    while end + following < len(lines) and not lines[end + following].strip():
+        following += 1
+    if not following or end + following >= len(lines):
+        return SourceLineSpan(start, end)
+    at_top = start - 1 - preceding == 0
+    if not (preceding or at_top):
+        return SourceLineSpan(start, end)
+    return SourceLineSpan(start, end + (following if at_top else min(preceding, following)))
+
+
 def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
     """The comment ending a one-line statement's line: it is about that statement, so a
     rewrite of the statement keeps it there. A statement spanning lines, or sharing its line
@@ -900,7 +925,7 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
                 replacements.append(
                     SourceSpanDeletion(
                         file_path=self.file_path,
-                        span=SourceLineSpan(statement.lineno, statement.end_lineno or statement.lineno),
+                        span=_import_deletion_span(source, statement, scope),
                         rationale=self.rationale
                         or f"Remove import bindings in {self.file_path!r}.",
                         contributors=self.contributors,

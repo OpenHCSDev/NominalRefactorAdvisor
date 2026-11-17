@@ -65,6 +65,7 @@ from nominal_refactor_advisor.class_index import (
     InstalledClassDeclarations,
     followed_reexports,
 )
+from nominal_refactor_advisor.declared_c3 import DeclaredC3
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
@@ -723,8 +724,9 @@ class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
 
 
 @dataclass(frozen=True)
-class ClassOverlapVerdicts:
-    """Every overlap worth a verdict in one scan, with its receipts."""
+class ClassOverlapVerdicts(DeclaredC3):
+    """Every overlap worth a verdict in one scan, with its receipts, over the
+    scan's classes and the installed ones they name, in their C3 orders."""
 
     projections: tuple[CompactModuleClassProjection, ...]
     class_index: CompactClassFamilyIndex

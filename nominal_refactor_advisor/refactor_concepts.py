@@ -148,6 +148,10 @@ class ClassBodyCompositionConcept(ClassFamilyAuthorityConcept):
     """Declare a restated class body once, in the class that owns it."""
 
 
+class RestatedBaseConcept(ClassFamilyAuthorityConcept):
+    """Drop a base another base of the same class already supplies."""
+
+
 class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
     """Route type tests on foreign classes through one declared family."""
 

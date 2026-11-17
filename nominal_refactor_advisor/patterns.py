@@ -614,6 +614,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    RESTATED_BASE = _pattern(
+        stable_id=51,
+        display_name="Restated Base",
+        required_relation=(
+            "A class lists a base that another of its bases already has in its "
+            "C3 order, and the class's order is the same without it, so the "
+            "base list restates an ancestry its other bases declare."
+        ),
+        witness_capabilities=(CapabilityTag.MRO_ORDERING,),
+    )
 
     def __new__(
         cls,
