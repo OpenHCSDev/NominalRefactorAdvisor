@@ -2128,3 +2128,38 @@ def test_a_refused_merge_folds_into_the_marker_under_a_family_metaclass(tmp_path
     source = _fold_picked_marker(tmp_path, FAMILY_MARKER, FAMILY_MARKER_PROBE)
     assert "class Open:\n    __slots__ = ()\n\n    @classmethod\n    def is_open(cls) -> bool:\n        return True\n" in source
     assert source.count("return True") == 1
+
+
+BRANCH_PROBE = (
+    "import dataclasses\n"
+    "from pkg.records import Difference, Growth\n"
+    "grown = Growth(problem='p', repository='r', branch='b', growth=1)\n"
+    "cut = Difference(repository='r', branch='b', head='h', growth=2)\n"
+    "for record in (grown, cut):\n"
+    "    print(sorted(dataclasses.asdict(record).items()))\n"
+    "print(grown.line(), grown == dataclasses.replace(grown, growth=5), cut == dataclasses.replace(cut, growth=5))\n"
+)
+
+
+def test_a_part_one_class_inherits_is_shared_by_the_ancestor_that_declares_it(
+    tmp_path: Path,
+) -> None:
+    """`growth` differs, so the finding is the agreeing part, `repository` and
+    `branch`, which `Growth` inherits from `Rule`: the new mixin is composed by
+    `Rule` and `Difference`, `Growth` inherits it, and each keeps its `growth`.
+    The fields are keyword-only and nothing reads their order, so the reorder
+    the mixin makes changes no value or comparison."""
+    from tests.test_class_overlap import BRANCHES
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": BRANCHES})
+    before = _run(tmp_path, BRANCH_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Named")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert [outcome.outcome for outcome in report.owner_picks.outcomes] == ["picked"]
+    assert '\nclass Named:\n    """A lettered record."""\n\n    repository: str\n    branch: str\n' in source
+    assert "class Rule(Named):\n    problem: str\n\n\n" in source
+    assert "class Growth(Rule):\n    growth: int = field(compare=False)\n" in source
+    assert "class Difference(Named):\n    head: str\n    growth: int\n" in source
+    assert _run(tmp_path, BRANCH_PROBE) == before

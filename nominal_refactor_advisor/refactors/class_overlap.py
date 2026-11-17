@@ -4192,12 +4192,12 @@ class ClassOverlapFindingRecipeSynthesizer(
             )
         if pick.judgement is None:
             raise NeedsInput("a new mixin needs the pick's judgement for its docstring", NeededInput.OWNER_PICK)
+        pair = frozenset(owner.composers[:2])
         verdict_match = next(
             (
-                v for v in verdicts.candidates_touching(
-                    frozenset(owner.composers[:2])
-                )
+                v for v in verdicts.candidates_touching(pair)
                 if v.move is ExtractMixin
+                and frozenset((v.owner.symbol, *v.restating_symbols)) == pair
                 and frozenset(owner.block) <= frozenset(v.shared_names)
             ),
             None,

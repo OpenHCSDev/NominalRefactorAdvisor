@@ -493,6 +493,39 @@ def test_a_block_no_owner_can_take_offers_the_part_one_can():
     assert [candidate for candidate in _verdicts(("pkg.readings", READINGS)) if candidate.offered is None] == [part]
 
 
+BRANCHES = (
+    "from dataclasses import dataclass, field\n\n\n"
+    "@dataclass(frozen=True, kw_only=True)\nclass Rule:\n"
+    "    problem: str\n    repository: str\n    branch: str\n\n\n"
+    "@dataclass(frozen=True, kw_only=True)\nclass Growth(Rule):\n"
+    "    growth: int = field(compare=False)\n\n"
+    "    def line(self) -> str:\n        return f'{self.branch} {self.growth}'\n\n\n"
+    "@dataclass(frozen=True, kw_only=True)\nclass Difference:\n"
+    "    repository: str\n    branch: str\n    head: str\n    growth: int\n"
+)
+
+
+def test_a_block_with_a_name_declared_differently_offers_the_names_that_agree():
+    """`growth` is compared in one class and not the other, so no owner holds
+    the whole block, whatever owners the extraction could pick. `repository`
+    and `branch` agree, and `Growth` inherits both from `Rule`: the part is
+    judged where it is declared, `Difference` beside `Rule`, and `Growth`
+    inherits the repair. Each class keeps its own `growth`."""
+
+    whole, part = _verdicts(("pkg.branches", BRANCHES))
+    assert {whole.owner.symbol, whole.restating.symbol} == {"pkg.branches.Difference", "pkg.branches.Growth"}
+    assert set(whole.shared_names) == {"repository", "branch", "growth"}
+    assert OverlapReceiptKind.DECLARATION_DIFFERS in {receipt.kind for receipt in whole.refusals}
+    assert not whole.repairs
+    assert whole.offered is part and part.offered is None and part.repairs
+    assert {part.owner.symbol, part.restating.symbol} == {"pkg.branches.Difference", "pkg.branches.Rule"}
+    assert set(part.shared_names) == {"repository", "branch"}
+    assert {owner.candidate_id for owner in part.owner_candidates if owner.permitted} == {"new_mixin:pkg.branches"}
+    (named,) = (receipt for receipt in part.receipts if receipt.kind is OverlapReceiptKind.STRONGER_MOVE_NEEDS)
+    assert "`growth` is declared differently in each class" in named.detail
+    assert named.detail.endswith("moves `branch`, `repository` and each class keeps `growth`")
+
+
 def test_a_permitted_move_offers_no_lower_rung():
     (plain,) = _verdicts(("pkg.surface", SURFACE))
     assert plain.permitted
@@ -509,13 +542,16 @@ def test_a_shared_field_declared_differently_refuses_the_move():
         "@dataclass(frozen=True)\nclass Wrapped:\n"
         "    path: str = codec_field(PathCodec())\n    line: int\n    column: int\n"
     )
-    (candidate,) = _verdicts(("pkg.fields", FIELD_WRAPPERS), ("pkg.records", records))
+    candidate, part = _verdicts(("pkg.fields", FIELD_WRAPPERS), ("pkg.records", records))
     assert {shared.name for shared in candidate.overlap.shared} == {"path", "line", "column"}
     (refusal,) = candidate.refusals
     assert refusal.kind is OverlapReceiptKind.DECLARATION_DIFFERS
-    assert not candidate.permitted
-    # The two answers differ, so no rung shares them: nothing is offered.
-    assert candidate.offered is None
+    assert not candidate.permitted and not candidate.repairs
+    # The two `path` answers differ, so no rung shares the block; the part
+    # that agrees is shared and each class keeps its own `path`.
+    assert candidate.offered is part and part.repairs
+    assert set(part.shared_names) == {"line", "column"}
+    assert {shared.name for shared in part.overlap.withheld} == {"path"}
 
 
 def test_a_classmethod_building_its_own_class_by_position_refuses_the_reorder():
