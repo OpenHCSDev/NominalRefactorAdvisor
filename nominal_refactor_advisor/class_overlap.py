@@ -623,10 +623,13 @@ class ClassOverlapCandidate(ScoredByReceipts):
 
     @property
     def repairs(self) -> bool:
-        """Whether this rung is a repair: a move with owners to choose from
-        repairs when one of them is permitted, possibly once built by keyword;
-        any other move when the verdict is."""
+        """Whether this rung is a repair. No owner moves a block one of whose
+        names the classes declare differently; otherwise a move with owners to
+        choose from repairs when one of them is permitted, possibly once built
+        by keyword, and any other move when the verdict is."""
 
+        if any(receipt.kind is OverlapReceiptKind.DECLARATION_DIFFERS for receipt in self.refusals):
+            return False
         if self.owner_candidates:
             return any(owner.permitted or owner.keyword_cure for owner in self.owner_candidates)
         return self.permitted
@@ -1009,17 +1012,19 @@ class ClassOverlapVerdicts(DeclaredC3):
         self, overlap: ClassBodyOverlap, floor: ReportingFloor = REPORTED
     ) -> ClassOverlapCandidate | None:
         """The ladder over the whole block; when none of its rungs is a repair,
-        that ladder ends with the one over the largest part of the block that is
-        (above the floor's weight):
-        first the names both classes declare themselves the same way, then those
-        that are not fields, which a plain mixin takes with no dataclass to agree
-        on. The rest stays declared in each class (paper1 Thm 4.8 on the part)."""
+        that ladder ends with the one over the largest part of the block that is:
+        first the names both classes declare the same way, where an owner can
+        hoist one a class inherits; then those each class declares itself; then
+        those of them that are not fields, which a plain mixin takes with no
+        dataclass to agree on. The rest stays declared in each class (paper1
+        Thm 4.8 on the part)."""
 
         ladder = self.ladder(overlap, floor)
         if ladder is None or ladder.rungs[-1].repairs:
             return ladder
         agreeing = overlap.agreeing_names
         parts = (
+            overlap.matching_names,
             agreeing,
             frozenset(shared.name for shared in overlap.shared if shared.name in agreeing and not shared.kind.is_field),
         )
@@ -1028,9 +1033,12 @@ class ClassOverlapVerdicts(DeclaredC3):
             if not part or part in tried:
                 continue
             tried.add(part)
-            # The whole block already read as one concept; the part still weighs
-            # at least the floor's weight, but needs no count of its own.
-            below = self.ladder(overlap.restricted(part), replace(floor, declarations=1))
+            # The whole block already passed the floor as one concept; the part
+            # needs only to be a repair, so it is judged with no floor of its own.
+            below = self.ladder(
+                self.declaring(overlap, part).restricted(part),
+                replace(floor, weight=NO_FLOOR.weight, declarations=NO_FLOOR.declarations),
+            )
             if below is None or not below.rungs[-1].repairs:
                 continue
             lowest = ladder.rungs[-1]
@@ -1054,6 +1062,23 @@ class ClassOverlapVerdicts(DeclaredC3):
             )
             return ladder.ending_with(replace(below, receipts=(*below.receipts, note)))
         return ladder
+
+    def declaring(self, overlap: ClassBodyOverlap, names: frozenset[str]) -> ClassBodyOverlap:
+        """The overlap of the two classes that declare `names` themselves: this
+        one, or, when one class inherits every one of them from one ancestor,
+        the other class beside that ancestor, whose repair its heir inherits."""
+
+        owners = frozenset(
+            (shared.first_owner.symbol, shared.second_owner.symbol)
+            for shared in overlap.shared
+            if shared.name in names
+        )
+        if len(owners) != 1:
+            return overlap
+        ((first, second),) = owners
+        if (first, second) == (overlap.first.symbol, overlap.second.symbol):
+            return overlap
+        return self.bodies.overlap(first, second)
 
     def ladder(
         self, overlap: ClassBodyOverlap, floor: ReportingFloor = REPORTED

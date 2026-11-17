@@ -340,15 +340,21 @@ class ClassBodyOverlap:
         )
 
     @property
+    def matching_names(self) -> frozenset[str]:
+        """The shared names both classes declare the same way, wherever each
+        declares it: one declaration serves both only when they agree."""
+
+        return frozenset(shared.name for shared in self.shared if not shared.declaration_differs)
+
+    @property
     def agreeing_names(self) -> frozenset[str]:
-        """The shared names each class declares itself, the same way: a move
-        deletes only a class's own copies, and one declaration serves both only
-        when they agree."""
+        """The matching names each class declares itself: a move deletes only a
+        class's own copies, unless its owner hoists the inherited one."""
 
         return frozenset(
             shared.name
             for shared in self.shared
-            if not shared.declaration_differs
+            if shared.name in self.matching_names
             and shared.first_owner.symbol == self.first.symbol
             and shared.second_owner.symbol == self.second.symbol
         )
