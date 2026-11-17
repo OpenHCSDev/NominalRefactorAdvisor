@@ -22,10 +22,11 @@ expression it could not prove.
 from __future__ import annotations
 
 import ast
+import types
 from collections.abc import Iterator
 from dataclasses import dataclass
-from enum import Enum, auto
-from typing import NoReturn
+from abc import ABC, abstractmethod
+from typing import ClassVar, NoReturn
 from importlib import import_module
 
 from metaclass_registry.core import AutoRegisterMeta
@@ -39,6 +40,7 @@ from nominal_refactor_advisor.class_index import (
     CompactIndexedClass,
     CompactUnannotatedCallable,
 )
+from nominal_refactor_advisor.class_mro import NativeMroBase
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
@@ -126,13 +128,104 @@ def installed_class_node(indexed: CompactIndexedClass) -> ast.ClassDef:
     return node
 
 
-class Role(Enum):
-    """What a name in creation code holds, as far as the move is concerned."""
+class Role(ABC):
+    """What a name in creation code holds, as far as the move is concerned.
 
-    NAMESPACE = auto()
-    BASES = auto()
-    BASE = auto()
-    NEW_CLASS = auto()
+    The role and the proof cross: a creation proof and a construction proof
+    read the same role differently, so each role answers through its own
+    method on the reads that meet it.
+    """
+
+    iteration: ClassVar[str]
+    """What iterating a value in this role reads, when the role yields nothing."""
+
+    @abstractmethod
+    def require(self, reads: CreationReads, node: ast.Name, parent: ast.AST | None) -> None:
+        """One read of a name holding this role is one the move leaves unchanged."""
+
+        raise NotImplementedError
+
+    def element(self, reads: CreationReads, loop: ast.For | ast.comprehension) -> Role | None:
+        """What iterating a value in this role yields, for the loop's target."""
+
+        return reads.iterated(loop, self)
+
+
+class NamespaceRole(Role):
+    """The namespace the class body filled, without the moved names once composed."""
+
+    iteration = "iterates the class namespace, moved names included"
+
+    def require(self, reads: CreationReads, node: ast.Name, parent: ast.AST | None) -> None:
+        reads.require_namespace(node, parent)
+
+
+class BasesRole(Role):
+    """The bases the class statement names; the move adds the owner."""
+
+    iteration = "iterates the class's bases"
+
+    def require(self, reads: CreationReads, node: ast.Name, parent: ast.AST | None) -> None:
+        reads.require_bases(node, parent)
+
+    def element(self, reads: CreationReads, loop: ast.For | ast.comprehension) -> Role | None:
+        return BASE
+
+
+class BaseRole(Role):
+    """One base of the class."""
+
+    iteration = "iterates a base of the class"
+
+    def require(self, reads: CreationReads, node: ast.Name, parent: ast.AST | None) -> None:
+        reads.require_base(node, parent)
+
+
+class NewClassRole(Role):
+    """The class being created, whose lookups can reach what the owner binds."""
+
+    iteration = "iterates the new class"
+
+    def require(self, reads: CreationReads, node: ast.Name, parent: ast.AST | None) -> None:
+        reads.require_new_class(node, parent)
+
+
+NAMESPACE = NamespaceRole()
+BASES = BasesRole()
+BASE = BaseRole()
+NEW_CLASS = NewClassRole()
+
+
+_IMPLICIT_VALUES = (
+    str, int, tuple, dict, frozenset, type(None), types.FunctionType,
+    types.GetSetDescriptorType, types.MemberDescriptorType, types.BuiltinFunctionType,
+    types.WrapperDescriptorType, types.MethodDescriptorType, types.ClassMethodDescriptorType,
+)
+"""The types of what class creation binds by itself (`__module__`, `__doc__`,
+`__dict__`, slot descriptors, a dataclass's generated methods) and of what a
+native base's namespace holds."""
+
+
+@dataclass(frozen=True)
+class MroWalk:
+    """What a walk of the new class's `__mro__` visits before and after the move.
+
+    `vars()` of each class lists the names its own body binds, in the order it
+    binds them; a walk keeping the first binding of each name finds every
+    name's lookup winner, in the order the walk first meets the name.
+    """
+
+    before: tuple[str, ...]
+    after: tuple[str, ...]
+    """The class symbols the walk visits, in C3 order."""
+    composer: str
+    deleted: frozenset[str]
+    """The names the composer's own body stops binding."""
+
+    @classmethod
+    def unmoved(cls, ancestry: tuple[CompactIndexedClass, ...]) -> MroWalk:
+        order = tuple(indexed.symbol for indexed in ancestry)
+        return cls(order, order, order[0] if order else "", frozenset())
 
 
 @dataclass(frozen=True)
@@ -155,6 +248,7 @@ class ClassCreationProof:
     owner_name: str
     moved: frozenset[str]
     abstract_moved: frozenset[str]
+    walk: MroWalk
 
     @classmethod
     def composing(
@@ -163,6 +257,7 @@ class ClassCreationProof:
         composer: CompactIndexedClass,
         ancestry: tuple[CompactIndexedClass, ...],
         owners: tuple[tuple[str, ast.ClassDef], ...],
+        walk: MroWalk,
     ) -> ClassCreationProof:
         """The proof for composing these owners: each owner's body leaves the
         composer, and its abstract members with it."""
@@ -182,6 +277,7 @@ class ClassCreationProof:
                 if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and any(ast.unparse(decorator).endswith("abstractmethod") for decorator in statement.decorator_list)
             ),
+            walk,
         )
 
     def require_unchanged(self) -> None:
@@ -210,7 +306,10 @@ class ClassCreationProof:
     ) -> ClassCreationProof:
         """The proof that creating `composer` keeps the parameters its declarations give a call."""
 
-        return cls(snapshot, composer, ancestry, composer.qualname, CONSTRUCTION_NAMES, frozenset())
+        return cls(
+            snapshot, composer, ancestry, composer.qualname, CONSTRUCTION_NAMES, frozenset(),
+            MroWalk.unmoved(ancestry),
+        )
 
     def require_construction_kept(self) -> None:
         """Calling the class binds the parameters its declared MRO gives it.
@@ -245,7 +344,7 @@ class ClassCreationProof:
         for indexed in self.ancestry:
             hook = self.method(indexed, "__init_subclass__")
             if hook is not None:
-                yield hook, {self.first_parameter(hook.node): Role.NEW_CLASS}
+                yield hook, {self.first_parameter(hook.node): NEW_CLASS}
         for metaclass in self.metaclasses():
             for code in self.metaclass_code(metaclass):
                 yield code, self.metaclass_roles(code.node)
@@ -253,6 +352,75 @@ class ClassCreationProof:
     @property
     def class_index(self):
         return self.snapshot.class_overlap_verdicts.class_index
+
+    def carriers(self, order: tuple[str, ...], composed: bool, attributes: frozenset[str]) -> tuple[str, ...]:
+        """The names a first-found walk of `order` meets whose winning value may
+        have one of `attributes`, in the order it meets them."""
+
+        found: dict[str, bool] = {}
+        for symbol in order:
+            if NativeMroBase.for_qualified_name(symbol) is not None:
+                continue
+            indexed = self.snapshot.class_overlap_verdicts.ancestor(symbol)
+            if indexed is None:
+                raise NeedsInput(
+                    f"`{symbol}` has no declaration NRA can read, and the walk of "
+                    f"`{self.composer.qualname}`'s MRO reads its names",
+                    NeededInput.PROOF,
+                )
+            for statement in self.class_node(indexed).body:
+                names = declared_names(statement)
+                if not names and not (
+                    isinstance(statement, (ast.Pass, ast.ClassDef))
+                    or (isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant))
+                ):
+                    raise NeedsInput(
+                        f"{indexed.file_path}:{statement.lineno} `{indexed.qualname}` binds names a "
+                        f"statement decides, which the walk of `{self.composer.qualname}`'s MRO reads: "
+                        "NRA needs a proof of the order it binds them",
+                        NeededInput.PROOF,
+                    )
+                if isinstance(statement, ast.ClassDef):
+                    names = frozenset((statement.name,))
+                if isinstance(statement, ast.AnnAssign) and statement.value is None:
+                    continue
+                for name in names:
+                    if composed and symbol == self.walk.composer and name in self.walk.deleted:
+                        continue
+                    found.setdefault(name, self.may_carry(statement, attributes))
+        return tuple(name for name, carries in found.items() if carries)
+
+    @staticmethod
+    def may_carry(statement: ast.stmt, attributes: frozenset[str]) -> bool:
+        """Whether the value one statement binds may have one of `attributes`:
+        a plain function has only a function's; a literal only its own type's."""
+
+        match statement:
+            case ast.FunctionDef(decorator_list=[]) | ast.AsyncFunctionDef(decorator_list=[]):
+                return any(hasattr(types.FunctionType, attribute) for attribute in attributes)
+            case ast.Assign(value=value) | ast.AnnAssign(value=value) if value is not None:
+                try:
+                    literal = ast.literal_eval(value)
+                except ValueError:
+                    return True
+                return any(hasattr(literal, attribute) for attribute in attributes)
+        return True
+
+    def require_walk_kept(self, attributes: frozenset[str], node: ast.AST, reads: CreationReads) -> None:
+        """A walk reading only `attributes` of each name's winner answers the same
+        when those winners keep their values and the names carrying them keep
+        their order. The name check of the composed ancestry keeps every value;
+        this keeps the order."""
+
+        if any(hasattr(kind, attribute) for kind in _IMPLICIT_VALUES for attribute in attributes):
+            reads.refuse(node, "reads an attribute what class creation binds by itself may have")
+        before = self.carriers(self.walk.before, False, attributes)
+        after = self.carriers(self.walk.after, True, attributes)
+        if before != after:
+            reads.refuse(
+                node,
+                f"meets {list(before)} in that order, and {list(after)} once composed,",
+            )
 
     def method(
         self, indexed: CompactIndexedClass, name: str
@@ -352,11 +520,11 @@ class ClassCreationProof:
 
         names = [argument.arg for argument in (*node.args.posonlyargs, *node.args.args)]
         if node.name in ("__new__", "__prepare__"):
-            return dict(zip(names[2:4], (Role.BASES, Role.NAMESPACE)))
+            return dict(zip(names[2:4], (BASES, NAMESPACE)))
         if node.name == "__init__":
-            return dict(zip((names[0], *names[2:4]), (Role.NEW_CLASS, Role.BASES, Role.NAMESPACE)))
-        by_name = {"cls": Role.NEW_CLASS, "new_class": Role.NEW_CLASS, "attrs": Role.NAMESPACE,
-                   "namespace": Role.NAMESPACE, "bases": Role.BASES}
+            return dict(zip((names[0], *names[2:4]), (NEW_CLASS, BASES, NAMESPACE)))
+        by_name = {"cls": NEW_CLASS, "new_class": NEW_CLASS, "attrs": NAMESPACE,
+                   "namespace": NAMESPACE, "bases": BASES}
         static = any(
             isinstance(decorator, ast.Name) and decorator.id == "staticmethod"
             for decorator in node.decorator_list
@@ -381,14 +549,21 @@ class CreationReads:
         }
         for node in ast.walk(self.code.node):
             match node:
-                case ast.For(target=ast.Name(id=target), iter=ast.Name(id=source)) | ast.comprehension(
-                    target=ast.Name(id=target), iter=ast.Name(id=source)
-                ) if self.roles.get(source) is Role.BASES:
-                    self.roles[target] = Role.BASE
+                case ast.For(iter=ast.Name(id=source)) | ast.comprehension(iter=ast.Name(id=source)) if (
+                    source in self.roles
+                ):
+                    element = self.roles[source].element(self, node)
+                    match node.target:
+                        case _ if element is None:
+                            pass
+                        case ast.Name(id=target):
+                            self.roles[target] = element
+                        case target:
+                            self.refuse(target, "unpacks what it iterates")
                 case ast.Assign(targets=[ast.Name(id=target)], value=value) | ast.AnnAssign(
                     target=ast.Name(id=target), value=value
                 ) if value is not None and self.is_super_call(value, "__new__"):
-                    self.roles[target] = Role.NEW_CLASS
+                    self.roles[target] = NEW_CLASS
         for node in ast.walk(self.code.node):
             if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in self.roles:
                 self.require_use(node, self.roles[node.id])
@@ -420,7 +595,12 @@ class CreationReads:
             return
         if isinstance(parent, (ast.For, ast.comprehension)) and parent.iter is node:
             return
-        getattr(self, f"require_{role.name.lower()}")(node, parent)
+        role.require(self, node, parent)
+
+    def iterated(self, loop: ast.For | ast.comprehension, role: Role) -> Role | None:
+        """Iterating a value whose role yields nothing reads all of it."""
+
+        self.refuse(loop.iter, role.iteration)
 
     def constant_key(self, node: ast.AST | None) -> bool:
         return (
@@ -442,7 +622,7 @@ class CreationReads:
                 if isinstance(call, ast.Call) and call.args and self.constant_key(call.args[0]):
                     return
         if isinstance(parent, ast.Call) and node in parent.args:
-            self.follow(parent, node, Role.NAMESPACE)
+            self.follow(parent, node, NAMESPACE)
             return
         self.refuse(parent or node, "reads the class namespace")
 
@@ -454,7 +634,7 @@ class CreationReads:
                 self.refuse(parent, "tests whether the class has bases")
             return
         if isinstance(parent, ast.Call) and node in parent.args:
-            self.follow(parent, node, Role.BASES)
+            self.follow(parent, node, BASES)
             return
         self.refuse(parent or node, "reads the class's bases")
 
@@ -466,19 +646,21 @@ class CreationReads:
         if isinstance(parent, ast.Call) and isinstance(parent.func, ast.Name) and parent.func.id == "type":
             handler = self.parents.get(parent)
             dispatch = self.parents.get(handler) if handler is not None else None
-        if isinstance(dispatch, ast.Call) and self.constant_plain_dispatch(dispatch):
+        if isinstance(dispatch, ast.Call) and self.constant_plain_dispatch(dispatch, node.id):
             return
         self.refuse(parent or node, "reads a base of the class")
 
-    def constant_plain_dispatch(self, call: ast.Call) -> bool:
+    def constant_plain_dispatch(self, call: ast.Call, base: str) -> bool:
+        """`X.handler_for(type(base))(base)` on the base `base` names."""
+
         match call:
             case ast.Call(
                 func=ast.Call(
                     func=ast.Attribute(value=ast.Name(id=table), attr="handler_for"),
-                    args=[ast.Call(func=ast.Name(id="type"), args=[ast.Name(id=base)])],
+                    args=[ast.Call(func=ast.Name(id="type"), args=[ast.Name(id=dispatched)])],
                 ),
                 args=[ast.Name(id=passed)],
-            ) if base == passed and self.roles.get(base) is Role.BASE:
+            ) if dispatched == passed == base:
                 owner = self.code.owner if table in ("cls", "self") else None
                 if owner is None:
                     return False
@@ -515,6 +697,8 @@ class CreationReads:
         match parent:
             case ast.Attribute(attr=attr, ctx=ast.Store()):
                 return
+            case ast.Attribute(attr="__mro__") if self.first_found_walk(parent):
+                return
             case ast.Attribute(attr=attr) if attr in INTROSPECTION:
                 self.refuse(parent, "introspects the new class")
             case ast.Attribute(attr=attr):
@@ -523,7 +707,7 @@ class CreationReads:
                     code = self.proof.class_index.declared_member(
                         self.proof.composer.symbol, attr
                     ).answer(NewClassCall(self, call))
-                    self.descend(code, {ClassCreationProof.first_parameter(code.node): Role.NEW_CLASS}, call, 1)
+                    self.descend(code, {ClassCreationProof.first_parameter(code.node): NEW_CLASS}, call, 1)
                 return
             case ast.Return() | ast.Assign() | ast.Compare() | ast.AnnAssign():
                 return
@@ -534,9 +718,121 @@ class CreationReads:
             ):
                 return
             case ast.Call() if node in parent.args:
-                self.follow(parent, node, Role.NEW_CLASS)
+                self.follow(parent, node, NEW_CLASS)
                 return
         self.refuse(parent or node, "uses the new class")
+
+    def first_found_walk(self, attribute: ast.Attribute) -> bool:
+        """`for o in cls.__mro__: for n, v in vars(o).items(): found.setdefault(n, v)`:
+        each name's lookup winner, in the order the walk meets it. Its other
+        reads must be `getattr` of constant attributes of those winners."""
+
+        walk = self.parents.get(attribute)
+        match walk:
+            case ast.For(
+                target=ast.Name(id=visited),
+                iter=walked,
+                body=[
+                    ast.For(
+                        target=ast.Tuple(elts=[ast.Name(id=name), ast.Name(id=value)]),
+                        iter=ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Call(func=ast.Name(id="vars"), args=[ast.Name(id=owner)]),
+                                attr="items",
+                            ),
+                            args=[],
+                        ),
+                        body=[
+                            ast.Expr(
+                                value=ast.Call(
+                                    func=ast.Attribute(value=ast.Name(id=found), attr="setdefault"),
+                                    args=[ast.Name(id=key), ast.Name(id=kept)],
+                                )
+                            )
+                        ],
+                        orelse=[],
+                    ) as inner
+                ],
+                orelse=[],
+            ) if walked is attribute and owner == visited and key == name and kept == value:
+                pass
+            case _:
+                return False
+        assert isinstance(walk, ast.For)
+        walked_nodes = frozenset(ast.walk(walk))
+        for node in ast.walk(self.code.node):
+            if (
+                isinstance(node, ast.Name)
+                and node.id in (visited, name, value)
+                and node not in walked_nodes
+                and not self.comprehension_binds(node)
+            ):
+                self.refuse(node, "reads what the walk of the MRO left behind")
+        attributes = self.found_reads(found, walk)
+        self.proof.require_walk_kept(attributes, walk, self)
+        del inner
+        return True
+
+    def comprehension_binds(self, node: ast.Name) -> bool:
+        """Whether a comprehension around `node` binds its name: its own scope's variable."""
+
+        current = self.parents.get(node)
+        while current is not None:
+            if isinstance(current, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)) and any(
+                isinstance(bound, ast.Name) and bound.id == node.id
+                for generator in current.generators
+                for bound in ast.walk(generator.target)
+            ):
+                return True
+            current = self.parents.get(current)
+        return False
+
+    def found_reads(self, found: str, walk: ast.For) -> frozenset[str]:
+        """The constant attributes read of the winners `found` maps names to:
+        it starts empty, the walk fills it, and only `found.items()` reads it,
+        each value only through `getattr(value, "<attribute>", default)`."""
+
+        walked_nodes = frozenset(ast.walk(walk))
+        attributes: set[str] = set()
+        for node in ast.walk(self.code.node):
+            if not (isinstance(node, ast.Name) and node.id == found) or node in walked_nodes:
+                continue
+            parent = self.parents.get(node)
+            if isinstance(node.ctx, ast.Store):
+                match parent:
+                    case ast.Assign(value=ast.Dict(keys=[])) | ast.AnnAssign(value=ast.Dict(keys=[])):
+                        continue
+                    case ast.Assign(value=ast.Call(func=ast.Name(id="dict"), args=[], keywords=[])):
+                        continue
+                self.refuse(parent or node, "fills what the walk of the MRO found")
+            call = self.parents.get(parent) if parent is not None else None
+            loop = self.parents.get(call) if call is not None else None
+            match parent, call, loop:
+                case (
+                    ast.Attribute(attr="items"),
+                    ast.Call(args=[], keywords=[]),
+                    ast.comprehension(target=ast.Tuple(elts=[ast.Name(), ast.Name(id=value)]))
+                    | ast.For(target=ast.Tuple(elts=[ast.Name(), ast.Name(id=value)])),
+                ) if loop.iter is call:
+                    scope = self.parents.get(loop) if isinstance(loop, ast.comprehension) else loop
+                    attributes |= self.value_reads(value, scope)
+                    continue
+            self.refuse(parent or node, "uses what the walk of the MRO found")
+        return frozenset(attributes)
+
+    def value_reads(self, value: str, scope: ast.AST | None) -> set[str]:
+        attributes: set[str] = set()
+        for node in ast.walk(scope) if scope is not None else ():
+            if not (isinstance(node, ast.Name) and node.id == value and isinstance(node.ctx, ast.Load)):
+                continue
+            match self.parents.get(node):
+                case ast.Call(func=ast.Name(id="getattr"), args=[subject, ast.Constant(value=str(attribute)), *_]) if (
+                    subject is node and attribute not in INTROSPECTION
+                ):
+                    attributes.add(attribute)
+                case other:
+                    self.refuse(other or node, "reads a lookup winner the MRO walk found")
+        return attributes
 
     def follow(self, call: ast.Call, node: ast.Name, role: Role) -> None:
         """A role passed to a function: modelled, or read the same way."""
@@ -608,6 +904,11 @@ class ConstructionReads(CreationReads):
 
     def require_base(self, node: ast.Name, parent: ast.AST | None) -> None:
         return
+
+    def iterated(self, loop: ast.For | ast.comprehension, role: Role) -> Role | None:
+        """Iterating reads, and reading stores no parameter."""
+
+        return None
 
     def require_new_class(self, node: ast.Name, parent: ast.AST | None) -> None:
         match parent:

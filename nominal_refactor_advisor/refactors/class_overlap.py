@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import ClassVar, Self
 
 from nominal_refactor_advisor.declared_root import DeclaredRoot
-from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, declared_names
+from nominal_refactor_advisor.refactors.class_creation import ClassCreationProof, MroWalk, declared_names
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
@@ -1150,6 +1150,7 @@ class ComposedAncestry:
             self.composer.facts,
             self.ancestry,
             tuple((owner.qualname, owner.node) for owner in self.owners),
+            MroWalk(self.before, self.after, self.composer.symbol, self.deleted),
         )
         abstract_owners = tuple(
             owner
@@ -1226,6 +1227,25 @@ class ComposedAncestry:
         return declared
 
     @cached_property
+    def before(self) -> tuple[str, ...]:
+        """The composer's C3 order as declared."""
+
+        return self.linearized(self.composer.symbol)
+
+    @cached_property
+    def kept_bases(self) -> tuple[str, ...]:
+        return tuple(
+            base for base in self.bases(self.composer.symbol) if base != NativeMroBase.OBJECT.value
+        )
+
+    @cached_property
+    def after(self) -> tuple[str, ...]:
+        """The composer's C3 order with its owners as its first bases."""
+
+        owner_symbols = tuple(owner.symbol for owner in self.owners)
+        return self.linearized(self.composer.symbol, (*owner_symbols, *self.kept_bases))
+
+    @cached_property
     def ancestry(self) -> tuple[CompactIndexedClass, ...]:
         """The composed class's closed ancestry."""
 
@@ -1236,14 +1256,12 @@ class ComposedAncestry:
             for indexed in require_static_c3(self.snapshot, start.facts)
         }
         owner_symbols = tuple(owner.symbol for owner in self.owners)
-        before = self.linearized(composer.symbol)
+        before = self.before
         for owner in self.owners:
             if owner.symbol in before:
                 raise ValueError(f"`{owner.qualname}` is already an ancestor")
-        kept_bases = tuple(
-            base for base in self.bases(composer.symbol) if base != NativeMroBase.OBJECT.value
-        )
-        after = self.linearized(composer.symbol, (*owner_symbols, *kept_bases))
+        kept_bases = self.kept_bases
+        after = self.after
         if tuple(symbol for symbol in after if symbol in before) != before:
             raise NeedsInput(
                 f"Composing reorders `{composer.qualname}`'s ancestors: "
