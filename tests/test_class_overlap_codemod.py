@@ -173,6 +173,27 @@ def test_a_requested_composition_is_judged_below_the_reporting_floor(tmp_path: P
     ]
 
 
+def test_composing_an_owner_drops_a_docstring_its_copy_does_not_carry(tmp_path: Path) -> None:
+    """`Finding` documents `line`; `Located`, the owner it composes, does not. The
+    owner keeps its own copy, so `Finding`'s docstring goes, and the step says so."""
+
+    documented = SMALL_OWNER.replace(
+        "    line: int\n    message: str\n", '    line: int\n    """Where the finding is."""\n    message: str\n'
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": documented})
+    path = (tmp_path / "pkg/located.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    result = RefactorRecipe(recipe_id="class-overlap").with_operation(operation).simulate(snapshot)
+
+    assert result.is_clean is True
+    assert "Where the finding is." not in result.simulation.rewritten_sources[path]
+    assert "Drops the docstring of `Finding.line`" in str(json_report_object(result))
+
+
 BASED_OWNER = (
     "from abc import ABC, abstractmethod\n\n\n"
     "class Snapshot(ABC):\n"
