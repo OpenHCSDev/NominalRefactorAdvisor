@@ -37,6 +37,7 @@ from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
+from nominal_refactor_advisor.probe_owner import ReceiverSpan
 from nominal_refactor_advisor.refactor_concepts import RestatedOverrideConcept
 from nominal_refactor_advisor.refactors.class_creation import (
     ClassCreationProof,
@@ -112,8 +113,9 @@ class NamespaceReads(ParsedModuleSetFact):
 
     reads: tuple[tuple[ParsedModule, ast.expr, ast.AST | None, ast.AST | None], ...]
     """Each module, the read, the node it is read in and the node around that.
-    A read of a parameter annotated as an instance (any annotation but `type`)
-    reads that instance's own `__dict__`, which holds no class member."""
+    A read of a parameter annotated as an instance (`instance_annotation`) reads
+    that instance's own `__dict__`, which holds no class member; any other read
+    is left for the type checker (`NamespaceReaders.require_unread`)."""
 
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> NamespaceReads:
@@ -162,13 +164,27 @@ class NamespaceReads(ParsedModuleSetFact):
 
     @staticmethod
     def instance_annotation(annotation: ast.expr) -> bool:
-        """An annotation naming a class, not `type[...]`: its values are instances."""
+        """An annotation naming a class, not `type[...]`: its values are instances.
+        `object` and `Any` admit classes too, so they prove nothing."""
 
         outer = annotation.value if isinstance(annotation, ast.Subscript) else annotation
         match outer:
-            case ast.Name(id="type" | "Type") | ast.Attribute(attr="type" | "Type") | ast.Constant():
+            case (
+                ast.Name(id="type" | "Type" | "object" | "Any")
+                | ast.Attribute(attr="type" | "Type" | "Any")
+                | ast.Constant()
+            ):
                 return False
         return True
+
+    @staticmethod
+    def receiver(read: ast.expr) -> tuple[ast.expr, ...]:
+        """The expression whose namespace `X.__dict__` or `vars(X)` reads."""
+
+        match read:
+            case ast.Attribute(value=receiver) | ast.Call(args=[receiver]):
+                return (receiver,)
+        return ()
 
     @staticmethod
     def found(tree: ast.AST) -> Iterator[ast.expr]:
@@ -242,19 +258,26 @@ class NamespaceReaders(ClassAttributeReaders):
     members a deletion takes from one class."""
 
     def require_unread(self, indexed: CompactIndexedClass, deleted: frozenset[str]) -> None:
-        for module, read, parent, around in self.snapshot.module_set.fact(NamespaceReads).reads:
-            if (
-                not self.reaches(module, read, indexed)
-                or self.asks_another_key(module, read, parent, around, deleted)
-                or self.resolves_annotations_only(module, read, deleted)
-            ):
-                continue
-            raise NeedsInput(
+        """Every namespace read the syntax does not settle is asked of the type
+        checker, in one batch: a receiver whose every value is an instance that is
+        not a class reads that instance's own `__dict__`."""
+
+        open_reads = {
+            ReceiverSpan.of(module.file_path, receiver): (module, read, parent)
+            for module, read, parent, around in self.snapshot.module_set.fact(NamespaceReads).reads
+            if self.reaches(module, read, indexed)
+            and not self.asks_another_key(module, read, parent, around, deleted)
+            and not self.resolves_annotations_only(module, read, deleted)
+            for receiver in NamespaceReads.receiver(read)
+        }
+        if not open_reads:
+            return
+        answers = self.snapshot.type_checker.receiver_types(open_reads)
+        for span, (module, read, parent) in open_reads.items():
+            answers[span].require_instances(
                 f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
                 f"namespace, and deleting {', '.join(f'`{name}`' for name in sorted(deleted))} from "
-                f"`{indexed.qualname}` could change what it sees (a parameter or local annotated "
-                "with its class shows it reads an instance)",
-                NeededInput.PROOF,
+                f"`{indexed.qualname}` could change what it sees"
             )
 
     def asks_another_key(
