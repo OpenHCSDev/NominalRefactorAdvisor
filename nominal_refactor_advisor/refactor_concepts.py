@@ -7,6 +7,7 @@ from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAutho
 from nominal_refactor_advisor.registry_identity import class_name_registry_key
 from nominal_refactor_advisor.semantic_match import loaded_nominal_descendants
 from nominal_refactor_advisor.stage_proof import (
+    ImportScopeStages,
     OperationCertifiedStages,
     RescannedStages,
     StageProof,
@@ -159,6 +160,8 @@ class RestatedOverrideConcept(ClassFamilyAuthorityConcept):
 class HiddenImportPromotionConcept(NominalBoundaryConcept):
     """Move a guarded or function-local import that closes no load-time cycle to
     its module's top."""
+
+    stage_proof = ImportScopeStages
 
 
 class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
