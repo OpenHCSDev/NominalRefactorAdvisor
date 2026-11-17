@@ -2421,13 +2421,14 @@ class BatchModuleMove(CodemodPayloadRecord):
         return module
 
     def destination_module(self, import_graph: SourceModuleImportGraph) -> str:
-        """The module the destination path names, beside the source's package: the
-        destination need not exist yet, so the import graph cannot name it."""
-        package = self.source_module(import_graph).rpartition(".")[0]
-        relative = PurePosixPath(self.destination_path).relative_to(
-            PurePosixPath(self.source_path).parent
-        )
-        return ".".join((*filter(None, (package,)), *relative.with_suffix("").parts))
+        """The module the destination path names under the source's import root,
+        in its package or any other: the destination need not exist yet, so the
+        import graph cannot name it."""
+        source = PurePosixPath(self.source_path)
+        name = self.source_module(import_graph)
+        root = source.parents[name.count(".") + (source.name == "__init__.py")]
+        parts = PurePosixPath(self.destination_path).relative_to(root).with_suffix("").parts
+        return ".".join(parts[:-1] if parts[-1] == "__init__" else parts)
 
     @staticmethod
     def modules(

@@ -12,7 +12,10 @@ an agent. The candidates are:
   whose own declarations together cover the block. When such a set exists, a
   new mixin would be a third copy of declarations that already have owners,
   so the new mixin is refused;
-- **new mixin**: a class NRA would create in one of the two classes' modules.
+- **new mixin**: a class NRA would create in one of the two classes' modules,
+  or, where declaring it there closes an import cycle, in a module every
+  composer already imports and that imports none of them, or else in a new
+  module of their lowest common package.
 
 **The score.** Each receipt has a fixed log-odds weight per unit, stated on its
 kind below, times its count. A candidate's log-odds is the sum of its
@@ -32,13 +35,13 @@ close. Closing a cycle is a guard.
 from __future__ import annotations
 
 import math
-import re
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from itertools import combinations
 from typing import ClassVar, TypeVar
 
+from nominal_refactor_advisor.audit.family import snake_case
 from nominal_refactor_advisor.class_index import CompactIndexedClass, DataclassFrozenness
 from nominal_refactor_advisor.json_reports import (
     SemanticRecord,
@@ -74,6 +77,7 @@ class OwnerReceiptKind(ReceiptKind):
     NEW_CLASS = "new_class", -0.5, False
     BRINGS_DECLARATIONS = "brings_declarations", -0.25, False
     CYCLE_CREATED = "cycle_created", 0.0, True, NeededInput.SOURCE_CHANGE
+    PLACED_BELOW = "placed_below", -0.25, False
     CONSTRUCTION_CHANGED = "construction_changed", 0.0, True, NeededInput.SOURCE_CHANGE
     FIELD_ORDER_CHANGED = "field_order_changed", 0.0, True, NeededInput.SOURCE_CHANGE
     KEYWORD_ONLY_COMPOSITION = "keyword_only_composition", -0.25, False
@@ -131,8 +135,7 @@ class OwnerCandidate(ScoredByReceipts, SemanticRecord, ABC):
         """The candidate's class is its kind; this is its one spelling, from the
         class name without the family's `Owner` suffix."""
 
-        name = type(self).__name__.removesuffix("Owner")
-        return re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
+        return snake_case(type(self).__name__.removesuffix("Owner"))
 
     @json_report_property()
     def candidate_id(self) -> str:
@@ -272,6 +275,11 @@ class HoldSourceOwner(CopySourceOwner):
 class NewMixinOwner(BlockOwnerCandidate):
     """A mixin NRA would create in `module_name`, composed by both classes."""
 
+    anchor: str
+    """The composer whose declarations the mixin copies. Its module is the
+    mixin's unless declaring it there closes an import cycle; then the mixin
+    moves to a module every composer imports."""
+
     @property
     def subject(self) -> tuple[str, ...]:
         return (self.module_name,)
@@ -288,6 +296,15 @@ class NewMixinOwner(BlockOwnerCandidate):
 
     def describe(self) -> str:
         return f"new mixin in `{self.module_name}`"
+
+
+@dataclass(frozen=True, kw_only=True)
+class NewModuleMixinOwner(NewMixinOwner):
+    """A mixin NRA would create in a new module of package `module_name`, named
+    for the mixin: no module every composer imports avoids an import cycle."""
+
+    def describe(self) -> str:
+        return f"new mixin in a new module of `{self.module_name}`"
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -435,23 +452,26 @@ class ModuleImportGraph:
     def from_aliases(
         cls, aliases_by_module: Mapping[str, Iterable[str]]
     ) -> ModuleImportGraph:
+        """Importing `a.b.c` runs `a/__init__` and `a/b/__init__` first, so each
+        scanned package on the way is imported too, as the codemod's own graph
+        counts it."""
+
         modules = frozenset(aliases_by_module)
 
-        def scanned_module(target: str) -> str | None:
+        def scanned_modules(target: str) -> Iterator[str]:
             parts = target.split(".")
-            for length in range(len(parts), 0, -1):
+            for length in range(1, len(parts) + 1):
                 candidate = ".".join(parts[:length])
                 if candidate in modules:
-                    return candidate
-            return None
+                    yield candidate
 
         return cls(
             {
                 module: frozenset(
                     imported
                     for target in targets
-                    if (imported := scanned_module(target)) is not None
-                    and imported != module
+                    for imported in scanned_modules(target)
+                    if imported != module
                 )
                 for module, targets in aliases_by_module.items()
             }
@@ -472,6 +492,53 @@ class ModuleImportGraph:
                         pending.append(imported)
             reachable = self._reachable[start] = frozenset(seen)
         return goal in reachable
+
+    def shared_lower_module(self, users: Iterable[str]) -> str | None:
+        """The module a declaration all of `users` import can live in without
+        closing a cycle: one each of them already imports, directly or not, that
+        imports none of them, in their lowest common package, and no package's
+        `__init__`, which is the package's interface rather than a home. Of
+        several, the highest, the one no other such module imports, first by
+        name; None when there is none."""
+
+        importers = frozenset(users)
+        package = common_package(importers)
+        within = package + "."
+        qualifying = tuple(
+            module
+            for module in sorted(self.imports)
+            if module not in importers
+            and module.startswith(within)
+            and not any(other.startswith(module + ".") for other in self.imports)
+            and all(self.reaches(importer, module) for importer in importers)
+            and not any(self.reaches(module, importer) for importer in importers)
+        )
+        return next(
+            (
+                module
+                for module in qualifying
+                if not any(
+                    other != module and self.reaches(other, module) for other in qualifying
+                )
+            ),
+            None,
+        )
+
+
+def common_package(modules: Iterable[str]) -> str:
+    """The deepest package that holds every one of `modules`; empty when they
+    share none."""
+
+    packages = [module.split(".")[:-1] for module in modules]
+    if not packages:
+        return ""
+    shared = packages[0]
+    for parts in packages[1:]:
+        length = 0
+        while length < min(len(shared), len(parts)) and shared[length] == parts[length]:
+            length += 1
+        shared = shared[:length]
+    return ".".join(shared)
 
 
 @dataclass(frozen=True)
@@ -725,6 +792,17 @@ class BlockOwnerQuestion:
 
     def _composers(self) -> tuple[str, ...]:
         return (self.first.symbol, self.second.symbol, *self._co_restaters())
+
+    def _composer_modules(self) -> tuple[str, ...]:
+        """Every composer's module, each of which imports the owner."""
+
+        return tuple(
+            dict.fromkeys(
+                indexed_class.module_name
+                for symbol in self._composers()
+                if (indexed_class := self.class_for(symbol)) is not None
+            )
+        )
 
     def _held(self, symbol: str) -> tuple[str, ...]:
         return tuple(name for name in self.block if symbol in self.holders_of(name))
@@ -982,16 +1060,22 @@ class BlockOwnerQuestion:
             if covering
             else ()
         )
-        for module_name in dict.fromkeys(
+        placed: set[str] = set()
+        for anchor_module in dict.fromkeys(
             indexed_class.module_name for indexed_class in self.pair
         ):
-            imports, cycles, import_receipts = self._import_receipts(module_name, ())
+            module_name, kind, imports, cycles, import_receipts = self._placement(
+                anchor_module
+            )
+            if module_name in placed:
+                continue
+            placed.add(module_name)
             restaters = self._co_restaters()
             anchor = next(
                 indexed_class
                 for symbol in self._composers()
                 if (indexed_class := self.class_for(symbol)) is not None
-                and indexed_class.module_name == module_name
+                and indexed_class.module_name == anchor_module
             )
             order_receipts = self._field_order_receipts(
                 anchor,
@@ -1006,8 +1090,13 @@ class BlockOwnerQuestion:
             receipts = (
                 Receipt(
                     OwnerReceiptKind.NEW_CLASS,
-                    f"a new class in `{module_name}` declares the "
-                    f"{len(self.block)}-declaration block",
+                    (
+                        f"a new class in a new module of `{module_name}`"
+                        if kind is NewModuleMixinOwner
+                        else f"a new class in `{module_name}`"
+                    )
+                    + f" declares the {len(self.block)}-declaration block, "
+                    f"copied from `{anchor.qualname}`",
                     (),
                 ),
                 *self._restater_receipts(restaters),
@@ -1029,6 +1118,7 @@ class BlockOwnerQuestion:
             for base, restater, hoisted in hoists:
                 yield HoistingMixinOwner(
                     module_name=module_name,
+                    anchor=anchor.symbol,
                     receipts=(
                         *receipts,
                         *self._declared_part(declared).refusals_of_new_mixin(module_name),
@@ -1061,8 +1151,9 @@ class BlockOwnerQuestion:
                     hoist_composers=self._hoist_composers(base, restater, hoisted),
                 )
             if not hoists:
-                yield NewMixinOwner(
+                yield kind(
                     module_name=module_name,
+                    anchor=anchor.symbol,
                     receipts=(*receipts, *inherited_share),
                     cost=cost,
                     composers=self._composers(),
@@ -1499,12 +1590,63 @@ class BlockOwnerQuestion:
             ),
         )
 
+    def _placement(
+        self, anchor_module: str
+    ) -> tuple[str, type[NewMixinOwner], int, int, tuple[Receipt, ...]]:
+        """Where a new mixin copied from the composer in `anchor_module` is
+        declared: that module, unless a composer importing it there closes a
+        cycle. Then a module every composer already imports and that imports
+        none of them; failing that, a new module of their lowest common package,
+        which only the composers import; failing that, `anchor_module`, refused,
+        with why no module qualifies. Returns the module, the candidate's kind,
+        the imports added, the cycles closed, and their receipts."""
+
+        imports, cycles, receipts = self._import_receipts(anchor_module, ())
+        if not cycles:
+            return anchor_module, NewMixinOwner, imports, cycles, receipts
+        composer_modules = self._composer_modules()
+        importers = ", ".join(f"`{module}`" for module in composer_modules)
+        closing = next(
+            receipt for receipt in receipts if receipt.kind is OwnerReceiptKind.CYCLE_CREATED
+        )
+        lower = self.imports.shared_lower_module(composer_modules)
+        if lower is not None:
+            imports, cycles, receipts = self._import_receipts(lower, ())
+            placed = Receipt(
+                OwnerReceiptKind.PLACED_BELOW,
+                f"not in `{anchor_module}`: {closing.detail}; `{lower}` is imported, "
+                f"directly or not, by {importers} and imports none of them",
+                (),
+            )
+            return lower, NewMixinOwner, imports, cycles, (placed, *receipts)
+        package = common_package(composer_modules)
+        if package:
+            placed = Receipt(
+                OwnerReceiptKind.PLACED_BELOW,
+                f"not in `{anchor_module}`: {closing.detail}; no module that {importers} "
+                f"all import avoids it, so a new module of `{package}`, which only "
+                "they import, declares it",
+                (),
+            )
+            added = Receipt(
+                OwnerReceiptKind.IMPORT_ADDED,
+                f"{importers} would import the new module of `{package}`",
+                (),
+                count=len(composer_modules),
+            )
+            return package, NewModuleMixinOwner, len(composer_modules), 0, (placed, added)
+        unplaced = Receipt(
+            OwnerReceiptKind.CYCLE_CREATED,
+            f"no module that {importers} all import avoids the cycle, and they share no "
+            "package to hold a new one",
+            (),
+        )
+        return anchor_module, NewMixinOwner, imports, cycles, (*receipts, unplaced)
+
     def _import_receipts(
         self, module_name: str, owners: Sequence[CompactIndexedClass]
     ) -> tuple[int, int, tuple[Receipt, ...]]:
-        importers = tuple(
-            dict.fromkeys(indexed_class.module_name for indexed_class in self.pair)
-        )
+        importers = self._composer_modules()
         needed = tuple(
             importer
             for importer in importers
@@ -1586,6 +1728,7 @@ __all__ = (
     "ModuleImportGraph",
     "HoldSourceOwner",
     "NewMixinOwner",
+    "NewModuleMixinOwner",
     "DeleteAndRedirectOwner",
     "OwnerCandidate",
     "OwnerCost",

@@ -63,22 +63,55 @@ def test_candidates_are_ranked_by_a_softmax_over_their_receipts() -> None:
     assert payload["log_odds"] == sum(receipt["weight"] for receipt in payload["receipts"])
 
 
-def test_a_new_mixin_that_closes_an_import_cycle_is_refused() -> None:
-    verdicts = _mixin_verdicts(
-        ("pkg.low", "class First:\n" + BLOCK + "    own_first: int\n"),
-        (
-            "pkg.high",
-            "from pkg.low import First\n\n\n"
-            "class Second:\n" + BLOCK + "    own_second: int\n",
-        ),
+LOW = "class First:\n" + BLOCK + "    own_first: int\n"
+HIGH = "class Second:\n" + BLOCK + "    own_second: int\n"
+
+
+def test_a_new_mixin_that_would_close_a_cycle_moves_to_a_module_both_import() -> None:
+    (verdict,) = _mixin_verdicts(
+        ("pkg.base", "UNIT = 1\n"),
+        ("pkg.low", "from pkg.base import UNIT\n\n\n" + LOW),
+        ("pkg.high", "from pkg.base import UNIT\nfrom pkg.low import First\n\n\n" + HIGH),
     )
-    (verdict,) = verdicts
     owners = {owner.candidate_id: owner for owner in verdict.owner_candidates}
 
-    low, high = owners["new_mixin:pkg.low"], owners["new_mixin:pkg.high"]
-    assert low.permitted and low.confidence == 1.0
+    assert set(owners) == {"new_mixin:pkg.low", "new_mixin:pkg.base"}
+    placed = owners["new_mixin:pkg.base"]
+    assert placed.permitted and placed.anchor == "pkg.high.Second"
+    assert placed.cost.cycles_created == 0
+    (moved,) = (r for r in placed.receipts if r.kind is OwnerReceiptKind.PLACED_BELOW)
+    assert moved.detail == (
+        "not in `pkg.high`: `pkg.high` already imports, directly or not, `pkg.low`: "
+        "the new import closes a cycle; `pkg.base` is imported, directly or not, by "
+        "`pkg.high`, `pkg.low` and imports none of them"
+    )
+
+
+def test_with_no_module_both_import_the_mixin_gets_a_new_module_of_their_package() -> None:
+    (verdict,) = _mixin_verdicts(
+        ("pkg.low", LOW), ("pkg.high", "from pkg.low import First\n\n\n" + HIGH)
+    )
+    owners = {owner.candidate_id: owner for owner in verdict.owner_candidates}
+
+    low, new = owners["new_mixin:pkg.low"], owners["new_module_mixin:pkg"]
+    assert low.permitted and new.permitted
+    assert low.confidence > new.confidence
+    assert "new_mixin:pkg.high" not in owners
+
+
+def test_a_new_mixin_no_module_can_hold_without_a_cycle_is_refused_saying_why() -> None:
+    (verdict,) = _mixin_verdicts(("low", LOW), ("high", "from low import First\n\n\n" + HIGH))
+    owners = {owner.candidate_id: owner for owner in verdict.owner_candidates}
+
+    high = owners["new_mixin:high"]
     assert not high.permitted and high.confidence == 0.0
-    assert {receipt.kind for receipt in high.refusals} == {OwnerReceiptKind.CYCLE_CREATED}
+    assert [receipt.detail for receipt in high.refusals] == [
+        "`high` already imports, directly or not, `low`: the new import closes a cycle",
+        (
+            "no module that `high`, `low` all import avoids the cycle, and they share "
+            "no package to hold a new one"
+        ),
+    ]
     assert high.cost.cycles_created == 1
 
 

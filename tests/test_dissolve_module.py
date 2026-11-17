@@ -533,6 +533,47 @@ def test_a_move_drops_the_destinations_guarded_import_of_the_moved_declaration(
     assert imported.returncode == 0, imported.stderr
 
 
+def test_a_class_relocates_into_a_module_of_a_sibling_package(tmp_path: Path) -> None:
+    """The destination's module is named from the source's import root, not from
+    the source's own directory, so a move out of `pkg.transport` into
+    `pkg.execution` is judged like one beside the source."""
+
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(tmp_path, "pkg/transport/__init__.py", "")
+    _write(tmp_path, "pkg/execution/__init__.py", "")
+    _write(tmp_path, "pkg/execution/reads.py", "LIMIT = 3\n")
+    _write(
+        tmp_path,
+        "pkg/transport/tools.py",
+        "from pkg.execution.reads import LIMIT\n\n\n"
+        "class Unsupplied:\n    limit = LIMIT\n\n\n"
+        "def unsupplied():\n    return Unsupplied()\n",
+    )
+    simulation = (
+        RefactorRecipe("unsupplied-down")
+        .with_operation(
+            RelocateSymbolsToModuleOperation(
+                target=SourceRewriteTarget(
+                    file_path=(tmp_path / "pkg/transport/tools.py").as_posix()
+                ),
+                symbol_qualnames=("Unsupplied",),
+                destination_path=(tmp_path / "pkg/execution/reads.py").as_posix(),
+            )
+        )
+        .simulate(_snapshot(tmp_path))
+    )
+    assert simulation.is_clean, simulation.preflight_report
+    simulation.apply()
+
+    assert "class Unsupplied" in (tmp_path / "pkg/execution/reads.py").read_text()
+    imported = _run(
+        tmp_path,
+        "from pkg.transport.tools import unsupplied; "
+        "assert type(unsupplied()).__module__ == 'pkg.execution.reads'",
+    )
+    assert imported.returncode == 0, imported.stderr
+
+
 def test_repeated_package_imports_are_one_binding_not_a_rebinding(tmp_path: Path) -> None:
     _write(tmp_path, "pkg/__init__.py", "")
     _write(tmp_path, "pkg/other.py", "")
