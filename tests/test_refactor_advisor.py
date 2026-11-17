@@ -2193,7 +2193,7 @@ def test_finding_recipe_planning_horizon_join_derives_from_mro() -> None:
         horizon.join((horizon.CURRENT_SNAPSHOT, IncomparablePlanningHorizon()))
 
 
-def test_finding_recipe_batch_rejects_order_dependent_composition(
+def test_finding_recipe_batch_branches_on_order_dependent_composition(
     tmp_path: Path,
 ) -> None:
     module_path = tmp_path / "pkg/mod.py"
@@ -2242,13 +2242,10 @@ def test_finding_recipe_batch_rejects_order_dependent_composition(
     records = batch_result.records
 
     assert {record.status for record in records} == {
-        FindingRecipeSynthesisStatus.UNPROVED_RECIPE_PLAN
+        FindingRecipeSynthesisStatus.CONFLICTING_TRAJECTORY_BRANCHES
     }
-    assert all("depends on source order" in record.reason for record in records)
-    assert not batch_result.trajectory_frontier.complete
-    assert {
-        obstacle.kind for obstacle in batch_result.trajectory_frontier.obstacles
-    } == {FindingRecipeTrajectoryObstacleKind.PAIR_COMPOSITION}
+    assert batch_result.trajectory_frontier.complete
+    assert len(batch_result.trajectory_frontier.branches) == 2
 
 
 def test_finding_recipe_batch_does_not_use_incomparable_costs_to_select_conflict(
