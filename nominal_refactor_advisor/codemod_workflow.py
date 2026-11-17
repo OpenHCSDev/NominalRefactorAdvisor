@@ -2279,13 +2279,14 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         tuple(active_scan.findings),
                     )
                     terminal_rejected = False
-                    if finding_class_delta.increased_changes:
+                    unjustified = self.migration_type.stage_proof.unjustified(
+                        finding_class_delta.increased_changes
+                    )
+                    if unjustified:
                         unjustified_debt_terminals.append(
                             CodemodRefactorUnjustifiedDebtTerminal(
                                 state=state,
-                                finding_class_changes=(
-                                    finding_class_delta.increased_changes
-                                ),
+                                finding_class_changes=unjustified,
                             )
                         )
                         terminal_rejected = True
