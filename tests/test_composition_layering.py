@@ -101,6 +101,45 @@ def test_a_store_declared_with_the_higher_service_moves_into_the_layer_reading_i
     assert _run(tmp_path) == expected
 
 
+def test_a_moved_store_stays_in_its_package_rather_than_a_module_merely_low_enough(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/root.py": ROOT,
+            "pkg/registry.py": REGISTRY,
+            "pkg/support/__init__.py": "",
+            "pkg/support/clock.py": "TICK = 1\n",
+            "pkg/threads.py": (
+                "from pkg.relations import RelationStore\nfrom pkg.support.clock import TICK\n\n\n"
+                "class Threads:\n"
+                "    def __init__(self, root, registry):\n"
+                "        self.root = root\n"
+                "        self.registry = registry\n\n"
+                "    def states(self):\n"
+                "        return RelationStore.at(self.root), TICK\n"
+            ),
+            "pkg/relations.py": (
+                "from pkg.support.clock import TICK\n\n\n"
+                "class RelationStore:\n"
+                "    @classmethod\n"
+                "    def at(cls, root):\n"
+                "        return f'store at {root}'\n\n\n"
+                "class Relations:\n"
+                "    def __init__(self, threads):\n"
+                "        self.threads = threads\n"
+                "        self.tick = TICK\n"
+            ),
+        },
+    )
+    expected = _run(tmp_path)
+    [finding] = _findings(tmp_path)
+    _apply(tmp_path, finding)
+    assert (tmp_path / "pkg/support/clock.py").read_text() == "TICK = 1\n"
+    assert "class RelationStore" in (tmp_path / "pkg/relation_store.py").read_text()
+    assert _findings(tmp_path) == []
+    assert _run(tmp_path) == expected
+
+
 def test_a_hidden_import_of_a_higher_layer_names_its_home(tmp_path: Path):
     _write(
         tmp_path,

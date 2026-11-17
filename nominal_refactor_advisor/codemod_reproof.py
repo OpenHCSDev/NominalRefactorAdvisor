@@ -97,7 +97,18 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         self,
         context: CodemodSelectorContext,
     ) -> tuple[NominalSourceEdit, ...]:
+        """Edits derived on the current source holding the files this operation
+        creates: a recipe's rewrite context already holds them, and a probe of
+        the operation alone gets them here."""
+
         snapshot = context.execution_snapshot()
+        uncreated = tuple(
+            creation
+            for creation in self.source_file_creations(context)
+            if creation.file_path not in snapshot.sources_by_file_path
+        )
+        if uncreated:
+            snapshot = snapshot.with_source_file_creations(uncreated)
         return snapshot.retained_operation_derivation(
             (self, SourceReprovedOperation.source_edits),
             lambda: self.required_reproof(lambda: self.source_edits_from_snapshot(snapshot)),

@@ -26,7 +26,7 @@ from nominal_refactor_advisor.codemod_payload import (
     codemod_payload_field,
 )
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
-from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, SourceFileCreation
+from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
@@ -42,6 +42,7 @@ from nominal_refactor_advisor.owner_candidates import ModuleImportGraph, common_
 from nominal_refactor_advisor.refactor_concepts import HiddenImportCutConcept, LayeringViolationConcept
 from nominal_refactor_advisor.refactors.class_overlap import (
     MovedClosure,
+    RelocationStep,
     annotation_modes,
     in_order_edits,
     in_order_states,
@@ -110,7 +111,7 @@ class HubCut(HubPlan):
 
 
 @dataclass(frozen=True, kw_only=True)
-class CutHiddenCycleOperation(RepositorySourceReprovedOperation):
+class CutHiddenCycleOperation(RelocationStep, RepositorySourceReprovedOperation):
     """Move `moved` from the target hub to `destination`, then import at the top
     every hidden import the moved state no longer needs to hide.
 
@@ -128,12 +129,6 @@ class CutHiddenCycleOperation(RepositorySourceReprovedOperation):
         self, snapshot: CodemodSourceSnapshot
     ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
         return relocation_to(snapshot, self.target, self.destination, self.moved)
-
-    def source_file_creations(self, context: CodemodSelectorContext) -> tuple[SourceFileCreation, ...]:
-        """A new destination module, and any package of it, created first: the
-        edits then move the declarations into it as into any existing module."""
-
-        return self.relocation(context.execution_snapshot()).source_file_creations(context)
 
     def source_edits_from_snapshot(self, snapshot: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
         relocation = self.relocation(snapshot)

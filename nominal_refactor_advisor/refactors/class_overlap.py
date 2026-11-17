@@ -2802,8 +2802,23 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
         )
 
 
+class RelocationStep:
+    """An operation one of whose steps relocates declarations: the files that
+    relocation creates, a new module and any package of it, are created first,
+    so every step sees them and the edits fill them as any existing module."""
+
+    def relocation(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation | None:
+        raise NotImplementedError
+
+    def source_file_creations(self, context: CodemodSelectorContext) -> tuple[SourceFileCreation, ...]:
+        relocation = self.relocation(context.execution_snapshot())
+        return () if relocation is None else relocation.source_file_creations(context)
+
+
 @dataclass(frozen=True, kw_only=True)
-class ComposeMovedOwnerOperation(RepositorySourceReprovedOperation):
+class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperation):
     """Move an existing owner to `home_module`, then make the target and each other
     composer compose it there: composing it where it is closes an import cycle.
 
@@ -2821,12 +2836,17 @@ class ComposeMovedOwnerOperation(RepositorySourceReprovedOperation):
         PayloadRecordArrayValueCodec(SourceRewriteTarget), default=()
     )
 
+    def relocation(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
+        return relocation_to(
+            snapshot, self.owner, self.home_module, MovedClosure.of(snapshot, self.owner).qualnames
+        )
+
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
-        move = relocation_to(
-            snapshot, self.owner, self.home_module, MovedClosure.of(snapshot, self.owner).qualnames
-        )
+        move = self.relocation(snapshot)
         try:
             RefactorRecipe(recipe_id="placement").with_operation(move).simulate(
                 snapshot
@@ -3418,8 +3438,17 @@ def in_order_states(
 def changed_source_edits(
     snapshot: CodemodSourceSnapshot, current: CodemodSourceSnapshot, rationale: str
 ) -> tuple[NominalSourceEdit, ...]:
-    """The line edits that take each file of `snapshot` to its source in `current`."""
+    """The line edits that take each file of `snapshot` to its source in `current`.
+    A file only `current` holds was created by a step without being declared,
+    and its source would be lost: that refuses."""
 
+    created = sorted(set(current.sources_by_file_path) - set(snapshot.sources_by_file_path))
+    if created:
+        raise NeedsInput(
+            "a step creates " + ", ".join(f"`{path}`" for path in created)
+            + " that the operation does not declare, so its source would be lost",
+            NeededInput.OPERATION,
+        )
     return tuple(
         edit
         for file_path, source in snapshot.sources_by_file_path.items()
@@ -3560,7 +3589,7 @@ class OwnerExtension:
 
 
 @dataclass(frozen=True, kw_only=True)
-class CreateMixinOperation(RepositorySourceReprovedOperation):
+class CreateMixinOperation(RelocationStep, RepositorySourceReprovedOperation):
     """Declare a block several classes restate once, in a new class before the
     anchor, and make each composer compose it, as one proved step.
 
@@ -3589,6 +3618,24 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
             None if self.home_module is None else home_subject(snapshot, self.home_module),
         )
 
+    def declared(self, creation: MixinCreation) -> SourceRewriteTarget:
+        """The mixin where the first step declares it, beside the anchor."""
+
+        qualname = ".".join((*creation.anchor.qualname.split(".")[:-1], self.mixin_name))
+        return SourceRewriteTarget(file_path=self.target.file_path, qualname=qualname)
+
+    def relocation(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation | None:
+        """A new mixin moves alone: whether the names it reads can be bound there
+        was settled when the candidate was placed. The first step alone, which
+        has no composers, declares it beside the anchor and moves nothing."""
+
+        if self.home_module is None or not self.composers:
+            return None
+        mixin = self.declared(self.creation(snapshot))
+        return relocation_to(snapshot, mixin, self.home_module, (mixin.qualname,))
+
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
@@ -3601,15 +3648,12 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
             # The first step alone: declared beside the anchor, proved by the
             # candidate for wherever it is going.
             return creation.source_edits(rationale)
-        qualname = ".".join((*creation.anchor.qualname.split(".")[:-1], self.mixin_name))
-        mixin = SourceRewriteTarget(file_path=self.target.file_path, qualname=qualname)
+        mixin = self.declared(creation)
+        move = self.relocation(snapshot)
         moves: tuple[RepositorySourceReprovedOperation, ...] = ()
-        if self.home_module is not None:
-            # A new mixin moves alone: whether the names it reads can be bound
-            # there was settled when the candidate was placed.
-            move = relocation_to(snapshot, mixin, self.home_module, (qualname,))
+        if move is not None:
             moves = (move,)
-            mixin = SourceRewriteTarget(file_path=move.destination_path, qualname=qualname)
+            mixin = SourceRewriteTarget(file_path=move.destination_path, qualname=mixin.qualname)
         return in_order_edits(
             snapshot,
             (
