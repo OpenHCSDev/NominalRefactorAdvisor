@@ -319,7 +319,7 @@ class HiddenImportCuts:
         self, hub: str, users: tuple[str, ...], readers: tuple[str, ...], closure: MovedClosure
     ) -> str:
         """A module below the hub and every importer of the moved names that
-        reaches no reader; else a new module of their package, named for the
+        reaches no reader; else a new module of the hub's package, named for the
         first moved declaration. Needs a source change, naming each declaration
         that reads back, when the moved code reads a module that reaches them.
 
@@ -357,7 +357,7 @@ class HiddenImportCuts:
                 + ", which the moved code reads",
                 NeededInput.SOURCE_CHANGE,
             )
-        package = common_package(users)
+        package = common_package((hub,))
         home = f"{package}.{snake_case(closure.qualnames[0])}"
         if not package or home in self.imports.imports:
             raise NeedsInput(

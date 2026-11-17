@@ -538,7 +538,9 @@ class ModuleImportGraph:
         closing a cycle: one each of them already imports, directly or not, that
         imports none of them, in their lowest common package, and no package's
         `__init__`, which is the package's interface rather than a home. A user in
-        `homes_among_users` may hold it too. Every module in `reads`, which the
+        `homes_among_users` may hold it too. A declaration moving out of `source`
+        stays beside it: its home is a user that may hold it or a module of
+        `source`'s package, never a module that is merely low enough. Every module in `reads`, which the
         moved code imports names from, must be importable there without a cycle,
         and neither the home nor any module in `reads` is or reaches a module in
         `above`, which will import it but need not yet.
@@ -561,6 +563,7 @@ class ModuleImportGraph:
             for module in sorted(self.imports)
             if (module not in importers or module in allowed)
             and module.startswith(within)
+            and (not source or module in allowed or common_package((module,)) == common_package((source,)))
             and not any(other.startswith(module + ".") for other in self.imports)
             and all(self.reaches(importer, module) for importer in importers if importer != module)
             and not any(self.reaches(module, importer) for importer in importers if importer != module)
