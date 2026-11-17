@@ -484,6 +484,11 @@ class ModuleImportGraph:
         return importer == imported or imported in self.imports.get(importer, ())
 
     def reaches(self, start: str, goal: str) -> bool:
+        return goal in self.reachable(start)
+
+    def reachable(self, start: str) -> frozenset[str]:
+        """Every module loading `start` loads, `start` included."""
+
         reachable = self._reachable.get(start)
         if reachable is None:
             seen = {start}
@@ -494,7 +499,7 @@ class ModuleImportGraph:
                         seen.add(imported)
                         pending.append(imported)
             reachable = self._reachable[start] = frozenset(seen)
-        return goal in reachable
+        return reachable
 
     def module_of(self, qualified_name: str) -> str | None:
         """The scanned module declaring `qualified_name`: its longest scanned prefix."""

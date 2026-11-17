@@ -272,9 +272,7 @@ class CompositionRootLayering(ParsedModuleSetFact):
         if not isinstance(node, ast.ClassDef):
             return None
         services = tuple(ServiceReading(bindings, module, node).services())
-        closures = {
-            service.name: frozenset(closure(imports, service.module)) for service in services
-        }
+        closures = {service.name: imports.reachable(service.module) for service in services}
         return CompositionRoot(module, qualname, services, closures)
 
     @staticmethod
@@ -338,19 +336,6 @@ class CompositionRootLayering(ParsedModuleSetFact):
 
         homes = [home for name in names if (home := self.home((module, name))) is not None]
         return frozenset.intersection(*(root.closures[layer] for root, layer in homes)) if homes else frozenset()
-
-
-def closure(imports: ModuleImportGraph, start: str) -> set[str]:
-    """Every module loading `start` loads, `start` included."""
-
-    seen = {start}
-    pending = [start]
-    while pending:
-        for imported in imports.imports.get(pending.pop(), ()):
-            if imported not in seen:
-                seen.add(imported)
-                pending.append(imported)
-    return seen
 
 
 def enclosing_symbol(hidden: LocalImport) -> str:
