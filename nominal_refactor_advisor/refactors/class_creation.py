@@ -513,6 +513,11 @@ class ClassCreationProof:
                 if keyword.arg == "metaclass":
                     yield self.qualified(indexed, keyword.value, node.lineno)
 
+    def module_end(self, indexed: CompactIndexedClass) -> int:
+        """The line after `indexed`'s module: where a name reads its final binding."""
+
+        return len(self.snapshot.parsed_module_for_source_path(indexed.file_path).source.splitlines()) + 1
+
     def qualified(self, indexed: CompactIndexedClass, reference: ast.expr, line: int) -> str:
         witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
             self.snapshot.parsed_module_for_source_path(indexed.file_path), reference, line=line
@@ -774,10 +779,30 @@ class CreationReads:
                 value is node and isinstance(key, ast.Constant) and key.value not in INTROSPECTION
             ):
                 return
+            case ast.Call(func=ast.Name() as func, args=[value], keywords=[]) if (
+                value is node and self.is_builtin(func, "builtins.vars")
+            ):
+                # `vars(cls)` is the new class's own namespace: a read of it
+                # is the namespace's read, which the moved names leave alone
+                # unless it asks for one of them or reads all of it.
+                self.require_namespace(parent, self.parents.get(parent))
+                return
             case ast.Call() if node in parent.args:
                 self.follow(parent, node, NEW_CLASS)
                 return
         self.refuse(parent or node, "uses the new class")
+
+    def is_builtin(self, func: ast.Name, qualified_name: str) -> bool:
+        """Whether `func` names this builtin where the function body runs: its
+        module's final binding of the name. Names resolve in scanned modules
+        only; in an installed module's code the call stays unread."""
+
+        owner = self.code.owner
+        return (
+            owner is not None
+            and self.proof.class_index.class_for(owner.symbol) is not None
+            and self.proof.qualified(owner, func, self.proof.module_end(owner)) == qualified_name
+        )
 
     def first_found_walk(self, attribute: ast.Attribute) -> bool:
         """`for o in cls.__mro__: for n, v in vars(o).items(): found.setdefault(n, v)`:
@@ -961,8 +986,7 @@ class CreationReads:
         match call.func:
             case ast.Attribute(value=receiver, attr=attr) if node in call.args and self.code.owner is not None:
                 owner = self.code.owner
-                end = len(self.proof.snapshot.sources_by_file_path[owner.file_path].splitlines()) + 1
-                container = self.builtin_container(receiver, owner, end)
+                container = self.builtin_container(receiver, owner, self.proof.module_end(owner))
                 if container is None or attr not in REFERENCE_STORES[container.kind]:
                     return False
                 if container.kind is not list:
@@ -1057,8 +1081,7 @@ class CreationReads:
                 if owner is None:
                     return None
                 # A function body looks a global up when it runs: the module's final binding.
-                end = len(self.proof.snapshot.sources_by_file_path[owner.file_path].splitlines()) + 1
-                qualified = self.proof.qualified(owner, func.value, end)
+                qualified = self.proof.qualified(owner, func.value, self.proof.module_end(owner))
                 if qualified in MODELLED_METACLASSES:
                     return True
                 indexed = self.proof.class_index.class_for(qualified)
