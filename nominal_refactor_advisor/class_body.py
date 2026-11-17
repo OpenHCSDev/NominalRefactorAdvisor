@@ -193,6 +193,9 @@ class ClassBodyOverlap:
     divergent: tuple[DivergentClassBodyDeclaration, ...]
     first_only: tuple[ClassBodyDeclaration, ...]
     second_only: tuple[ClassBodyDeclaration, ...]
+    withheld: tuple[SharedClassBodyDeclaration, ...] = ()
+    """Shared declarations a repair over part of the block leaves in both classes:
+    only `shared` moves, and neither body is contained in the other's."""
 
     @classmethod
     def of(
@@ -320,11 +323,35 @@ class ClassBodyOverlap:
     def first_is_contained(self) -> bool:
         """Every declaration of the first class is one the second makes identically."""
 
-        return bool(self.shared) and not self.divergent and not self.first_only
+        return bool(self.shared) and not self.divergent and not self.first_only and not self.withheld
 
     @property
     def second_is_contained(self) -> bool:
-        return bool(self.shared) and not self.divergent and not self.second_only
+        return bool(self.shared) and not self.divergent and not self.second_only and not self.withheld
+
+    def restricted(self, names: frozenset[str]) -> ClassBodyOverlap:
+        """This overlap over only the shared declarations `names` names; the rest
+        stay declared in each class."""
+
+        return replace(
+            self,
+            shared=tuple(shared for shared in self.shared if shared.name in names),
+            withheld=(*self.withheld, *(shared for shared in self.shared if shared.name not in names)),
+        )
+
+    @property
+    def agreeing_names(self) -> frozenset[str]:
+        """The shared names each class declares itself, the same way: a move
+        deletes only a class's own copies, and one declaration serves both only
+        when they agree."""
+
+        return frozenset(
+            shared.name
+            for shared in self.shared
+            if not shared.declaration_differs
+            and shared.first_owner.symbol == self.first.symbol
+            and shared.second_owner.symbol == self.second.symbol
+        )
 
 
 @dataclass(frozen=True)

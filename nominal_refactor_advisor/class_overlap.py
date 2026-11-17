@@ -619,7 +619,22 @@ class ClassOverlapCandidate(ScoredByReceipts):
     def rungs(self) -> tuple[ClassOverlapCandidate, ...]:
         """This verdict, then the repair it offers below its own move."""
 
-        return (self,) if self.offered is None else (self, self.offered)
+        return (self,) if self.offered is None else (self, *self.offered.rungs)
+
+    @property
+    def repairs(self) -> bool:
+        """Whether this rung is a repair: a move with owners to choose from
+        repairs when one of them is permitted, possibly once built by keyword;
+        any other move when the verdict is."""
+
+        if self.owner_candidates:
+            return any(owner.permitted or owner.keyword_cure for owner in self.owner_candidates)
+        return self.permitted
+
+    def ending_with(self, rung: ClassOverlapCandidate) -> ClassOverlapCandidate:
+        """This ladder with `rung` below its lowest rung."""
+
+        return replace(self, offered=rung if self.offered is None else self.offered.ending_with(rung))
 
     @property
     def confidence(self) -> float:
@@ -842,7 +857,7 @@ class ClassOverlapVerdicts(DeclaredC3):
         restaters = frozenset.intersection(*holders) - {anchor} if holders else frozenset()
         for other in sorted(restaters):
             if (verdict := self.verdict(self.bodies.overlap(anchor, other), EXTRACTION)) is not None:
-                yield verdict
+                yield from verdict.rungs
 
     def judged(
         self,
@@ -993,6 +1008,59 @@ class ClassOverlapVerdicts(DeclaredC3):
     def verdict(
         self, overlap: ClassBodyOverlap, floor: ReportingFloor = REPORTED
     ) -> ClassOverlapCandidate | None:
+        """The ladder over the whole block; when none of its rungs is a repair,
+        that ladder ends with the one over the largest part of the block that is
+        (above the floor's weight):
+        first the names both classes declare themselves the same way, then those
+        that are not fields, which a plain mixin takes with no dataclass to agree
+        on. The rest stays declared in each class (paper1 Thm 4.8 on the part)."""
+
+        ladder = self.ladder(overlap, floor)
+        if ladder is None or ladder.rungs[-1].repairs:
+            return ladder
+        agreeing = overlap.agreeing_names
+        parts = (
+            agreeing,
+            frozenset(shared.name for shared in overlap.shared if shared.name in agreeing and not shared.kind.is_field),
+        )
+        tried: set[frozenset[str]] = {frozenset(shared.name for shared in overlap.shared)}
+        for part in parts:
+            if not part or part in tried:
+                continue
+            tried.add(part)
+            # The whole block already read as one concept; the part still weighs
+            # at least the floor's weight, but needs no count of its own.
+            below = self.ladder(overlap.restricted(part), replace(floor, declarations=1))
+            if below is None or not below.rungs[-1].repairs:
+                continue
+            lowest = ladder.rungs[-1]
+            refusals = tuple(
+                {
+                    receipt.detail: receipt
+                    for receipt in (
+                        *lowest.refusals,
+                        *(receipt for owner in lowest.owner_candidates for receipt in owner.refusals),
+                    )
+                }.values()
+            )
+            withheld = sorted(frozenset(shared.name for shared in overlap.shared) - part)
+            note = Receipt(
+                OverlapReceiptKind.STRONGER_MOVE_NEEDS,
+                "the whole block would need: "
+                + "; ".join(receipt.detail for receipt in refusals)
+                + f", so the repair moves {', '.join(f'`{name}`' for name in sorted(part))} "
+                + f"and each class keeps {', '.join(f'`{name}`' for name in withheld)}",
+                tuple(location for receipt in refusals for location in receipt.evidence),
+            )
+            return ladder.ending_with(replace(below, receipts=(*below.receipts, note)))
+        return ladder
+
+    def ladder(
+        self, overlap: ClassBodyOverlap, floor: ReportingFloor = REPORTED
+    ) -> ClassOverlapCandidate | None:
+        """The verdict on this block, with the extraction below a move only its
+        own guards refuse."""
+
         first, second = self.resolved(overlap.first), self.resolved(overlap.second)
         if second.symbol in self.class_index.ancestor_symbols(
             first.symbol
