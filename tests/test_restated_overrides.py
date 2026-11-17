@@ -318,3 +318,24 @@ def test_a_namespace_read_asking_only_its_own_annotations_sees_no_unannotated_me
         evaluation = _evaluation(tmp_path, "Child")
         assert "vars(owner).get" in evaluation.rejection_reason, other
         assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_namespace_read_of_a_name_bound_twice_is_not_typed_by_its_first_binding(tmp_path: Path):
+    source = (
+        "class Base:\n    def value(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def value(self):\n        return 1\n\n\n"
+        "class Capability:\n    pass\n\n\n"
+        "def lineage() -> tuple[type[Capability], ...]:\n    return (Capability,)\n\n\n"
+        "def owners() -> tuple[type, ...]:\n    return (Base,)\n\n\n"
+        "def produce():\n"
+        "    production = {}\n"
+        "    for owner in lineage():\n"
+        "        production.setdefault(owner, set())\n"
+        "    for owner in owners():\n"
+        "        production.setdefault(owner, set(vars(owner)))\n"
+        "    return production\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/read.py": source})
+    evaluation = _evaluation(tmp_path, "Child")
+    assert "`owner` is bound more than once" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs

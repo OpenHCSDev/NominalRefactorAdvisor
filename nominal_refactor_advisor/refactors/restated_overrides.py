@@ -38,6 +38,8 @@ from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorCo
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
 from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.probe_owner import ReceiverSpan
 from nominal_refactor_advisor.refactor_concepts import RestatedOverrideConcept
@@ -395,17 +397,51 @@ class NamespaceReaders(ClassAttributeReaders):
         if not open_reads:
             return
         answers = self.snapshot.type_checker.receiver_types(open_reads)
+
+        def where(module: ParsedModule, read: ast.expr, parent: ast.AST | None) -> str:
+            return (
+                f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
+                f"namespace, and deleting {', '.join(f'`{name}`' for name in sorted(deleted))} from "
+                f"`{indexed.qualname}` could change what it sees"
+            )
+
         NeedsInput.every(
             *(
                 partial(
                     answers[span].require_namespace_unseen,
-                    f"{module.file_path}:{read.lineno} `{ast.unparse(parent or read)}` reads a class "
-                    f"namespace, and deleting {', '.join(f'`{name}`' for name in sorted(deleted))} from "
-                    f"`{indexed.qualname}` could change what it sees",
+                    where(module, read, parent),
                     partial(self.family_holds, indexed=indexed),
                 )
+                if self.typed_at_read(module, read)
+                else partial(self.require_bound_once, where(module, read, parent), read)
                 for span, (module, read, parent) in open_reads.items()
             )
+        )
+
+    @staticmethod
+    def typed_at_read(module: ParsedModule, read: ast.expr) -> bool:
+        """Whether the type checker's type of the receiver holds at the read: a
+        name only when its scope binds it once (`bound_once`), since a later
+        binding from an untyped value leaves the type of the first in place; any
+        other receiver is typed by its declarations."""
+
+        match NamespaceReads.receiver(read):
+            case (ast.Name() as name,):
+                parents = module.fact(ModuleNodeIndex).parents
+                ancestors: list[ast.AST] = []
+                node = parents.get(name)
+                while node is not None:
+                    ancestors.append(node)
+                    node = parents.get(node)
+                return LEXICAL_SCOPE_BINDING_AUTHORITY.bound_once(name, ancestors[::-1])
+        return True
+
+    @staticmethod
+    def require_bound_once(where: str, read: ast.expr) -> None:
+        raise NeedsInput(
+            f"{where}; `{ast.unparse(NamespaceReads.receiver(read)[0])}` is bound more than once "
+            "where it is read, so no one type holds every value it has",
+            NeededInput.PROOF,
         )
 
     def asks_another_key(
