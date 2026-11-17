@@ -84,15 +84,15 @@ def _carrier_snapshot(tmp_path: Path) -> CodemodSourceSnapshot:
     return CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
 
 
-def test_a_mixin_of_the_declared_rest_needs_enough_of_it_to_compose(
+def test_a_mixin_of_the_declared_rest_is_the_second_step_of_a_hoist(
     tmp_path: Path,
 ) -> None:
     """First inherits shared_a from Ancestor; both declare shared_b and shared_c.
-    The verdict tolerates the inherited declaration, but a mixin of the two
-    annotations both declare weighs too little for the composers to compose it,
-    so the move needs an operation. A third declared annotation is enough."""
+    The scan offers to hoist shared_a out of Ancestor and extract the rest; the
+    mixin of the two annotations both declare is that move's second step, and
+    the reporting floor does not refuse a step a move asks for."""
 
-    from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
+    from nominal_refactor_advisor.owner_candidates import HoistingMixinOwner
     from nominal_refactor_advisor.refactors.class_overlap import MixinCreation
 
     package = tmp_path / "pkg"
@@ -100,26 +100,22 @@ def test_a_mixin_of_the_declared_rest_needs_enough_of_it_to_compose(
     (package / "__init__.py").write_text("")
     (package / "classes.py").write_text(INHERITED_SHARED)
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
-    assert any("shared_a" in c.inherited_names for c in snapshot.class_overlap_verdicts.candidates)
+    (verdict,) = (
+        candidate
+        for candidate in snapshot.class_overlap_verdicts.candidates
+        if "shared_a" in candidate.inherited_names
+    )
+    (hoist,) = (
+        owner for owner in verdict.owner_candidates if isinstance(owner, HoistingMixinOwner)
+    )
+    assert hoist.hoisted == ("shared_a",)
     target = SourceRewriteTarget(
         file_path=(tmp_path / "pkg/classes.py").as_posix(), qualname="First"
     )
-    with pytest.raises(NeedsInput) as stopped:
-        MixinCreation.require(
-            snapshot, target, ("shared_b", "shared_c"), "SharedBC", "Shared integer fields."
-        )
-    assert stopped.value.needs == (NeededInput.OPERATION,)
-
-    (package / "classes.py").write_text(
-        INHERITED_SHARED.replace(
-            "    shared_c: int\n", "    shared_c: int\n    shared_d: int\n"
-        )
-    )
-    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
     creation = MixinCreation.require(
-        snapshot, target, ("shared_b", "shared_c", "shared_d"), "SharedBCD", "Shared integer fields."
+        snapshot, target, ("shared_b", "shared_c"), "SharedBC", "Shared integer fields."
     )
-    assert creation.source_edits("Extract shared_b, shared_c and shared_d into SharedBCD.")
+    assert creation.source_edits("Extract shared_b and shared_c into SharedBC.")
 
 
 def test_all_inherited_block_refuses_mixin(

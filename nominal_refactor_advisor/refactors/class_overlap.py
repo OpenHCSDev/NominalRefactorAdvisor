@@ -40,6 +40,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
+    ClassMemberAnswersABC,
     CompactIndexedClass,
     NATIVE_METACLASS_BASES,
     module_import_aliases,
@@ -487,25 +488,66 @@ class ClassReferenceSite:
         return f"{self.file_path}:{self.node.lineno}"
 
 
-@dataclass(frozen=True)
-class ClassValueReaders:
-    """Which calls a class handed on as a value reaches only as its identity.
+class DeclaringClass(ClassMemberAnswersABC[tuple[str, ...]]):
+    """The class whose `def` a member lookup reaches; none for anything else."""
 
-    A callee the repository declares an identity reader (`identity-readers`)
-    encodes or compares what it is given and never calls it. A scanned
-    top-level function is one too when the parameter the class binds is only
-    compared, tested as a type, or handed to an identity reader in turn.
+    def assigned(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return ()
+
+    def annotated_property(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return (owner.symbol,)
+
+    def annotated_method(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return (owner.symbol,)
+
+    def unannotated_callable(self, owner: CompactIndexedClass, declaration: object) -> tuple[str, ...]:
+        return (owner.symbol,)
+
+    def missing(self) -> tuple[str, ...]:
+        return ()
+
+    def ambiguous(self) -> tuple[str, ...]:
+        return ()
+
+    def open(self) -> tuple[str, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class KeywordBinders:
+    """Which calls a class handed on as a value reaches only to be built by field
+    name, or never built.
+
+    A callee the repository declares a keyword binder (`keyword-binders`) is one:
+    an encoder, a decoder, a query binding its filters. So is a scanned top-level
+    function whose parameter the class binds is only compared, tested as a type,
+    or handed to a keyword binder in turn. The class may travel inside a type
+    form (`tuple[X, ...]`), as a decoder's target does.
     """
 
     snapshot: CodemodSourceSnapshot
     DEPTH: ClassVar[int] = 4
 
-    def reads_identity(self, site: ClassReferenceSite) -> bool:
-        return isinstance(site.parent, ast.Call) and self.call_reads_identity(
-            self.snapshot.parsed_module_for_source_path(site.file_path), site.parent, site.node, 0
+    def binds_by_keyword(self, site: ClassReferenceSite) -> bool:
+        module = self.snapshot.parsed_module_for_source_path(site.file_path)
+        parents = {
+            child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
+        }
+        argument: ast.AST = site.node
+        parent = parents.get(argument)
+        while isinstance(parent, ast.Tuple) or (
+            isinstance(parent, ast.Subscript) and parent.slice is argument
+        ):
+            argument, parent = parent, parents.get(parent)
+        if isinstance(parent, ast.keyword):
+            argument, parent = parent.value, parents.get(parent)
+        return (
+            isinstance(parent, ast.Call)
+            and isinstance(argument, ast.expr)
+            and self.call_binds_by_keyword(module, parent, argument, 0)
         )
 
-    def call_reads_identity(
+    def call_binds_by_keyword(
         self, module: ParsedModule, call: ast.Call, argument: ast.expr, depth: int
     ) -> bool:
         if depth > self.DEPTH or argument is call.func:
@@ -516,7 +558,7 @@ class ClassValueReaders:
         )
         if witness is None:
             return False
-        if witness.qualified_name in DeclaredRoot.identity_readers_for(Path(module.file_path)):
+        if self.declared_binder(module, call.func, witness.qualified_name):
             return True
         callee_module, _, name = witness.qualified_name.rpartition(".")
         function = next(
@@ -546,10 +588,25 @@ class ClassValueReaders:
                     continue
                 case ast.Call(func=ast.Name(id="isinstance" | "issubclass")):
                     continue
-                case ast.Call() if self.call_reads_identity(reader, parent, node, depth + 1):
+                case ast.Call() if self.call_binds_by_keyword(reader, parent, node, depth + 1):
                     continue
             return False
         return True
+
+    def declared_binder(self, module: ParsedModule, func: ast.expr, qualified_name: str) -> bool:
+        """Whether the repository declares this callee a keyword binder: by its
+        own name, or, for a method looked up on a scanned class, by the name of
+        the class that declares the method."""
+
+        readers = DeclaredRoot.keyword_binders_for(Path(module.file_path))
+        if qualified_name in readers:
+            return True
+        class_name, _, attribute = qualified_name.rpartition(".")
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        if not isinstance(func, ast.Attribute) or class_index.class_for(class_name) is None:
+            return False
+        declaring = class_index.declared_member(class_name, attribute).answer(DeclaringClass())
+        return any(f"{symbol}.{attribute}" in readers for symbol in declaring)
 
     @staticmethod
     def parameter(
@@ -581,8 +638,8 @@ class ClassReferenceSites:
     symbols: frozenset[str]
 
     @cached_property
-    def readers(self) -> ClassValueReaders:
-        return ClassValueReaders(self.snapshot)
+    def binders(self) -> KeywordBinders:
+        return KeywordBinders(self.snapshot)
 
     @cached_property
     def sites(self) -> tuple[ClassReferenceSite, ...]:
@@ -696,7 +753,7 @@ class ClassReferenceSites:
                 or site.role.distinguishes_identity
                 or site.is_annotation
                 or site.is_base
-                or self.readers.reads_identity(site)
+                or self.binders.binds_by_keyword(site)
             ):
                 continue
             raise NeedsInput(

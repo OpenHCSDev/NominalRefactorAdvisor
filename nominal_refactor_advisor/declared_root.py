@@ -126,16 +126,16 @@ class DeclaredRoot:
         return cls.declared_names_for(path, "durable-bases")
 
     @classmethod
-    def identity_readers_for(cls, path: Path) -> frozenset[str]:
-        """The functions ``path``'s repository declares read a class handed to them
-        only as its identity (encode it, compare it), never call it, as qualified
-        names::
+    def keyword_binders_for(cls, path: Path) -> frozenset[str]:
+        """The functions ``path``'s repository declares build a class handed to
+        them only by field name, or never (an encoder, a decoder, a query that
+        binds its filters), as qualified names::
 
             [tool.nominal-refactor-advisor]
-            identity-readers = ["package.module:Codec.encode", ...]
+            keyword-binders = ["package.module:Codec.decode", ...]
         """
 
-        return cls.declared_names_for(path, "identity-readers")
+        return cls.declared_names_for(path, "keyword-binders")
 
     @classmethod
     def declared_names_for(cls, path: Path, key: str) -> frozenset[str]:
