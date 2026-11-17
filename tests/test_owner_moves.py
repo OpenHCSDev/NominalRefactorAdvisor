@@ -330,7 +330,7 @@ def _run_picked_mixin(root: Path) -> None:
 @pytest.mark.parametrize(
     ("files", "first_header", "second_header", "import_line"),
     (
-        ({"pkg/records.py": ABSTRACT_RECORDS}, "class First(Lettered, ABC):", "class Second(Lettered, ABC):", None),
+        ({"pkg/records.py": ABSTRACT_RECORDS}, "class First(Lettered):", "class Second(Lettered):", None),
         (
             {
                 "pkg/base.py": ABSTRACT_ROOTS,
@@ -1744,3 +1744,108 @@ def test_a_moved_owner_prefers_a_home_evaluating_annotations_as_its_module_does(
 
     assert "class Unsupplied:" in (tmp_path / "pkg/base.py").read_text()
     assert "class Unsupplied" not in (tmp_path / "pkg/annotated.py").read_text()
+
+
+ABSTRACT_READERS = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "class Base:\n"
+    "    def base_only(self) -> int:\n"
+    "        return 1\n\n\n"
+    "class Alone(ABC):\n"
+    "    @abstractmethod\n"
+    "    def gamma(self) -> str: ...\n\n"
+    "    @abstractmethod\n"
+    "    def alone_only(self) -> int: ...\n\n\n"
+    "class Leading(ABC, Base):\n"
+    "    @abstractmethod\n"
+    "    def gamma(self) -> str: ...\n\n\n"
+    "class Trailing(Base, ABC):\n"
+    "    @abstractmethod\n"
+    "    def gamma(self) -> str: ...\n"
+)
+ABSTRACT_READERS_PROBE = (
+    "from pkg.readers import Alone, Leading, Trailing\n"
+    "for c in (Alone, Leading, Trailing):\n"
+    "    print(c.__name__, type(c).__name__, sorted(c.__abstractmethods__),\n"
+    "          [k.__name__ for k in c.__mro__ if k.__name__ != 'Gammaed'])\n"
+)
+
+
+def test_a_composer_drops_a_direct_base_the_new_mixin_already_supplies(tmp_path: Path) -> None:
+    """`Gammaed(ABC)` supplies `ABC`. `Alone` and `Leading` list it where the mixin's
+    own order already places it, so it goes from their headers and their C3 order is
+    the same; `Trailing` lists it after `Base`, where dropping it would put `ABC`
+    before `Base`, so it stays. `Base` is not the mixin's, so it stays everywhere."""
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/readers.py": ABSTRACT_READERS})
+    before = _run(tmp_path, ABSTRACT_READERS_PROBE)
+
+    _apply(
+        tmp_path,
+        CreateMixinOperation(
+            target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/readers.py"), qualname="Alone"),
+            member_names=("gamma",),
+            mixin_name="Gammaed",
+            docstring="Reads gamma.",
+            composers=tuple(
+                SourceRewriteTarget(file_path=str(tmp_path / "pkg/readers.py"), qualname=name)
+                for name in ("Alone", "Leading", "Trailing")
+            ),
+        ),
+    )
+
+    source = (tmp_path / "pkg/readers.py").read_text()
+    assert "class Gammaed(ABC):" in source
+    assert "class Alone(Gammaed):" in source
+    assert "class Leading(Gammaed, Base):" in source
+    assert "class Trailing(Gammaed, Base, ABC):" in source
+    assert _run(tmp_path, ABSTRACT_READERS_PROBE) == before
+
+
+GENERIC_READERS = ABSTRACT_READERS.replace("class Leading(ABC, Base):", "class Holder[T]:\n    pass\n\n\nclass Leading[T](Holder[T], ABC):")
+LONE_READER = (
+    "from abc import ABC, abstractmethod\n\n\n"
+    "class Lone(ABC):\n"
+    "    @abstractmethod\n"
+    "    def gamma(self) -> str: ...\n\n"
+    "    @abstractmethod\n"
+    "    def lone_only(self) -> int: ...\n"
+)
+
+
+def test_a_generic_composer_keeps_abc_and_a_dropped_base_drops_its_import(tmp_path: Path) -> None:
+    """`Leading[T](Holder[T], ABC)` gets `Generic` last from creation; dropping `ABC`
+    would put it before `Holder`, so it stays. `Lone` lists only `ABC`, which goes,
+    and with it the module's only read of `ABC`."""
+    _write(
+        tmp_path,
+        {"pkg/__init__.py": "", "pkg/readers.py": GENERIC_READERS, "pkg/lone.py": LONE_READER},
+    )
+    probe = ABSTRACT_READERS_PROBE.replace(
+        "from pkg.readers import Alone, Leading, Trailing\n",
+        "from pkg.readers import Alone, Leading, Trailing\nfrom pkg.lone import Lone\n",
+    ).replace("(Alone, Leading, Trailing)", "(Alone, Leading, Trailing, Lone)")
+    before = _run(tmp_path, probe)
+
+    _apply(
+        tmp_path,
+        CreateMixinOperation(
+            target=SourceRewriteTarget(file_path=str(tmp_path / "pkg/readers.py"), qualname="Alone"),
+            member_names=("gamma",),
+            mixin_name="Gammaed",
+            docstring="Reads gamma.",
+            composers=(
+                *(
+                    SourceRewriteTarget(file_path=str(tmp_path / "pkg/readers.py"), qualname=name)
+                    for name in ("Alone", "Leading")
+                ),
+                SourceRewriteTarget(file_path=str(tmp_path / "pkg/lone.py"), qualname="Lone"),
+            ),
+        ),
+    )
+
+    readers = (tmp_path / "pkg/readers.py").read_text()
+    lone = (tmp_path / "pkg/lone.py").read_text()
+    assert "class Leading[T](Gammaed, Holder[T], ABC):" in readers
+    assert "class Lone(Gammaed):" in lone
+    assert "from abc import abstractmethod\n" in lone
+    assert _run(tmp_path, probe) == before
