@@ -103,6 +103,7 @@ from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
 from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
+from nominal_refactor_advisor.read_sources import EmbeddedSources, ModuleSource, ReadSource
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.owner_candidates import (
     ComposeExistingOwner,
@@ -489,7 +490,7 @@ class RestatedDeclarations:
 class ClassReferenceSite:
     """One read of a class in the repository and the syntax around it."""
 
-    file_path: str
+    source: ReadSource
     node: ast.expr
     parent: ast.AST | None
     role: ClassReferenceRole
@@ -499,8 +500,12 @@ class ClassReferenceSite:
     """The class the read resolves to."""
 
     @property
+    def file_path(self) -> str:
+        return self.source.file_path
+
+    @property
     def location(self) -> str:
-        return f"{self.file_path}:{self.node.lineno}"
+        return f"{self.file_path}:{self.source.line_of(self.node)}"
 
 
 class DeclaringClass(ClassMemberAnswersABC[tuple[str, ...]]):
@@ -544,7 +549,7 @@ class KeywordBinders:
     DEPTH: ClassVar[int] = 4
 
     def binds_by_keyword(self, site: ClassReferenceSite) -> bool:
-        module = self.snapshot.parsed_module_for_source_path(site.file_path)
+        module = site.source.parsed_module
         parents = {
             child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
         }
@@ -694,12 +699,14 @@ class ClassReferenceSites:
         return tuple(
             site
             for parsed_module in self.snapshot.parsed_modules
-            for site in self._module_sites(parsed_module, terminal_names)
+            for source in (ModuleSource(parsed_module), *parsed_module.fact(EmbeddedSources).sources)
+            for site in self._source_sites(source, terminal_names)
         )
 
-    def _module_sites(
-        self, parsed_module: ParsedModule, terminal_names: frozenset[str]
+    def _source_sites(
+        self, source: ReadSource, terminal_names: frozenset[str]
     ) -> Iterable[ClassReferenceSite]:
+        parsed_module = source.parsed_module
         aliases = module_import_aliases(parsed_module)
         identifiers = terminal_names | frozenset(
             alias
@@ -712,9 +719,7 @@ class ClassReferenceSites:
         syntax_index = parsed_module.syntax_index
         nodes = syntax_index.depth_first_nodes
         parents = syntax_index.parent_indices
-        resolver = self.snapshot.class_reference_resolver_for_source_path(
-            parsed_module.file_path
-        ).reference_resolution
+        resolver = self.snapshot.class_reference_resolver_for_module(source.parsed_module).reference_resolution
         for node_type in (ast.Name, ast.Attribute):
             for index in syntax_index.node_indices_by_type.get(node_type, ()):
                 node = nodes[index]
@@ -733,7 +738,7 @@ class ClassReferenceSites:
                     else None
                 )
                 yield ClassReferenceSite(
-                    file_path=parsed_module.file_path,
+                    source=source,
                     node=node,
                     parent=parent,
                     role=ClassReferenceRole.of_reference(
@@ -2185,13 +2190,17 @@ def _is_own_class(function: ast.expr) -> bool:
 class PositionalConstruction:
     """One call that builds a dataclass, or its receiver's class, by position."""
 
-    file_path: str
+    source: ReadSource
     call: ast.Call
     parameter_names: tuple[str, ...]
 
     @property
+    def file_path(self) -> str:
+        return self.source.file_path
+
+    @property
     def location(self) -> str:
-        return f"{self.file_path}:{self.call.lineno}"
+        return f"{self.file_path}:{self.source.line_of(self.call)}"
 
     def require_keywordable(self) -> None:
         call = self.call
@@ -2207,13 +2216,13 @@ class PositionalConstruction:
         if any(isinstance(argument, ast.GeneratorExp) for argument in call.args):
             raise NeedsInput(f"{self.location} passes a bare generator expression", NeededInput.OPERATION)
 
-    def replacements(
-        self, geometry: SourceTextGeometry
-    ) -> tuple[SourceTextSpanReplacement, ...]:
+    def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
         """`name=` before each positional argument's first token; a walrus the
-        call left bare is parenthesized."""
+        call left bare is parenthesized. Offsets are the holding file's."""
 
         call = self.call
+        geometry = SourceTextGeometry(self.source.parsed_module.source)
+        placed = self.source.file_offset
         func_end = geometry.required_node_offsets(call.func)[1]
         starts: list[int] = []
         depth = 0
@@ -2239,16 +2248,16 @@ class PositionalConstruction:
             bare_walrus = isinstance(argument, ast.NamedExpr) and argument_start == start
             replacements.append(
                 SourceTextSpanReplacement.from_offsets(
-                    start_offset=start,
-                    end_offset=start,
+                    start_offset=placed(start),
+                    end_offset=placed(start),
                     replacement_source=f"{name}=" + ("(" if bare_walrus else ""),
                 )
             )
             if bare_walrus:
                 replacements.append(
                     SourceTextSpanReplacement.from_offsets(
-                        start_offset=argument_end,
-                        end_offset=argument_end,
+                        start_offset=placed(argument_end),
+                        end_offset=placed(argument_end),
                         replacement_source=")",
                     )
                 )
@@ -2297,7 +2306,7 @@ class ConstructionKeywording:
     def constructions(self) -> tuple[PositionalConstruction, ...]:
         parameters = proved_construction_parameters(self.snapshot, self.target.symbol)
         direct = tuple(
-            PositionalConstruction(site.file_path, site.parent, parameters)
+            PositionalConstruction(site.source, site.parent, parameters)
             for site in ClassReferenceSites(self.snapshot, frozenset((self.target.symbol,))).sites
             if site.role is ClassReferenceRole.CONSTRUCTION
             and isinstance(site.parent, ast.Call)
@@ -2329,7 +2338,12 @@ class ConstructionKeywording:
                     f"`{self.target.qualname}`, and its receiver may be one", NeededInput.PROOF
                 )
         return tuple(
-            PositionalConstruction(self.target.file_path, call, parameters) for call in calls
+            PositionalConstruction(
+                ModuleSource(self.snapshot.parsed_module_for_source_path(self.target.file_path)),
+                call,
+                parameters,
+            )
+            for call in calls
         )
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -2345,7 +2359,7 @@ class ConstructionKeywording:
                 replacements=tuple(
                     replacement
                     for construction in constructions
-                    for replacement in construction.replacements(geometry)
+                    for replacement in construction.replacements()
                 ),
                 rationale=rationale,
             )

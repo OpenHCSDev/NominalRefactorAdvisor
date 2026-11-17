@@ -84,6 +84,7 @@ from nominal_refactor_advisor.class_method_facets import (
 from nominal_refactor_advisor.class_references import (
     ClassReferenceRole,
     CompactClassReference,
+    CompactScriptScope,
 )
 from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
@@ -179,6 +180,7 @@ from nominal_refactor_advisor.native_declarations import (
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
 from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
+from nominal_refactor_advisor.read_sources import EmbeddedSource, EmbeddedSources
 from nominal_refactor_advisor.product_flow import (
     SourceProductFlowProjection,
     source_product_flow_projection,
@@ -1845,6 +1847,7 @@ class CompactModuleClassProjection(
     named_projection_surfaces: tuple[CompactNamedProjectionSurface, ...] = ()
     class_methods: tuple[CompactClassMethod, ...] = ()
     class_references: tuple[CompactClassReference, ...] = ()
+    script_scopes: tuple[CompactScriptScope, ...] = ()
 
     def header_core(self) -> CompactModuleClassProjection:
         """Project only the class declarations required by the family index."""
@@ -4835,6 +4838,10 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 ),
                 class_methods=class_methods,
                 class_references=_compact_class_references(parsed_module),
+                script_scopes=tuple(
+                    _compact_script_scope(source)
+                    for source in parsed_module.fact(EmbeddedSources).sources
+                ),
             )
         ]
 
@@ -5090,6 +5097,17 @@ def _compact_class_references(
         for (consumer, parts, role), facts in sorted(
             references.items(), key=lambda item: (item[1][0], item[0][0], item[0][1])
         )
+    )
+
+
+def _compact_script_scope(source: EmbeddedSource) -> CompactScriptScope:
+    return CompactScriptScope(
+        source.parsed_module.module_name,
+        tuple(module_import_aliases(source.parsed_module).items()),
+        tuple(
+            reference._replace(line=source.holder_line(reference.line))
+            for reference in _compact_class_references(source.parsed_module)
+        ),
     )
 
 

@@ -93,6 +93,47 @@ def test_positional_constructions_become_keywords_and_run_the_same(tmp_path: Pat
     assert _run(tmp_path) == before
 
 
+SCRIPTS = (
+    "import subprocess, sys, textwrap\n\n"
+    "PROBE = (\n"
+    '    "from pkg.records import Point\\n"\n'
+    '    "print(Point(7, \\"8\\" and 8))\\n"\n'
+    ")\n"
+    "DEDENTED = textwrap.dedent(\"\"\"\n"
+    "    from pkg.records import Point as P\n"
+    "    print(P(9))\n"
+    "\"\"\")\n\n\n"
+    "def run():\n"
+    "    return [\n"
+    "        subprocess.run([sys.executable, '-c', code], check=True, capture_output=True, text=True).stdout\n"
+    "        for code in (PROBE, DEDENTED)\n"
+    "    ]\n"
+)
+
+
+def test_a_script_a_string_holds_is_keyworded_where_it_stands(tmp_path: Path) -> None:
+    """A child interpreter runs the string as its own module: its imports name
+    the class, and the rewrite lands on the literal's own characters."""
+
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": RECORDS, "pkg/scripts.py": SCRIPTS})
+    probe = "from pkg.scripts import run\nprint(run())\n"
+
+    def ran() -> str:
+        return subprocess.run(
+            [sys.executable, "-c", probe], cwd=tmp_path, check=True, capture_output=True, text=True
+        ).stdout
+
+    before = ran()
+    result = _simulate(tmp_path, "Point")
+    for path, source in result.simulation.rewritten_sources.items():
+        Path(path).write_text(source, encoding="utf-8")
+
+    scripts = (tmp_path / "pkg/scripts.py").read_text()
+    assert '"print(Point(x=7, y=\\"8\\" and 8))\\n"' in scripts
+    assert "    print(P(x=9))\n" in scripts
+    assert ran() == before
+
+
 @pytest.mark.parametrize(
     ("users", "refusal"),
     (

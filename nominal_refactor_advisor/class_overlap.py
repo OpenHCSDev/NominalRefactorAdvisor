@@ -41,7 +41,7 @@ import math
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 
@@ -241,9 +241,8 @@ class ClassUseIndex:
     every reference is resolved up front."""
 
     resolver: CompactClassReferenceResolver
-    references_by_terminal_name: Mapping[
-        str, tuple[tuple[CompactModuleClassProjection, CompactClassReference], ...]
-    ]
+    references_by_terminal_name: Mapping[str, tuple[tuple[str, str, CompactClassReference], ...]]
+    """Each reference with the file holding it and the module scope it resolves in."""
 
     @classmethod
     def from_projections(
@@ -251,11 +250,30 @@ class ClassUseIndex:
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> ClassUseIndex:
-        resolver = CompactClassReferenceResolver.from_index(projections, class_index)
-        filed: dict[str, dict[tuple[int, int], tuple[CompactModuleClassProjection, CompactClassReference]]] = defaultdict(dict)
-        for module_order, projection in enumerate(projections):
-            aliases = resolver.import_aliases_by_module_name.get(projection.module_name, {})
-            for reference_order, reference in enumerate(projection.class_references):
+        scoped = CompactClassReferenceResolver.from_index(projections, class_index)
+        resolver = replace(
+            scoped,
+            import_aliases_by_module_name={
+                **scoped.import_aliases_by_module_name,
+                **{
+                    script.module_name: dict(script.import_aliases)
+                    for projection in projections
+                    for script in projection.script_scopes
+                },
+            },
+        )
+        scopes = tuple(
+            (projection.file_path, scope_name, references)
+            for projection in projections
+            for scope_name, references in (
+                (projection.module_name, projection.class_references),
+                *((script.module_name, script.class_references) for script in projection.script_scopes),
+            )
+        )
+        filed: dict[str, dict[tuple[int, int], tuple[str, str, CompactClassReference]]] = defaultdict(dict)
+        for module_order, (file_path, module_name, references) in enumerate(scopes):
+            aliases = resolver.import_aliases_by_module_name.get(module_name, {})
+            for reference_order, reference in enumerate(references):
                 parts = reference.reference_parts
                 names = {*parts}
                 if parts[0] in aliases:
@@ -267,20 +285,20 @@ class ClassUseIndex:
                             ).rpartition(".")[2]
                         )
                 for name in names:
-                    filed[name][module_order, reference_order] = (projection, reference)
+                    filed[name][module_order, reference_order] = (file_path, module_name, reference)
         return cls(
             resolver,
             {name: tuple(found[key] for key in sorted(found)) for name, found in filed.items()},
         )
 
     def resolved(
-        self, projection: CompactModuleClassProjection, reference: CompactClassReference
+        self, module_name: str, reference: CompactClassReference
     ) -> tuple[str, ClassReferenceRole] | None:
         """The class the reference's longest resolving prefix names, and its role."""
 
         for length in range(len(reference.reference_parts), 0, -1):
             symbol = self.resolver.symbol_for(
-                module_name=projection.module_name,
+                module_name=module_name,
                 reference_parts=reference.reference_parts[:length],
                 allow_unique_unqualified=False,
             )
@@ -298,11 +316,11 @@ class ClassUseIndex:
         found = self.__dict__.setdefault("_uses", {})
         if symbol not in found:
             found[symbol] = tuple(
-                ClassUse(projection.file_path, reference, role)
-                for projection, reference in self.references_by_terminal_name.get(
+                ClassUse(file_path, reference, role)
+                for file_path, module_name, reference in self.references_by_terminal_name.get(
                     symbol.rpartition(".")[2], ()
                 )
-                for resolved in [self.resolved(projection, reference)]
+                for resolved in [self.resolved(module_name, reference)]
                 if resolved is not None and resolved[0] == symbol
                 for role in [resolved[1]]
             )

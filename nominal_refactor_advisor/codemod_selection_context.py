@@ -86,7 +86,7 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
     _direct_class_declaration_indexes_by_file_path: dict[
         str, ClassDirectDeclarationIndex
     ] = field(default_factory=dict, init=False, repr=False, compare=False)
-    _class_reference_resolvers_by_file_path: dict[str, ModuleClassReferenceResolver] = (
+    _class_reference_resolvers_by_parse: dict[tuple[str, str], ModuleClassReferenceResolver] = (
         field(default_factory=dict, init=False, repr=False, compare=False)
     )
     _parsed_modules_by_file_path: dict[str, ParsedModule] = field(
@@ -248,14 +248,23 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
     ) -> ModuleClassReferenceResolver:
         """Resolve class expressions against the current nominal class index."""
 
-        parsed_module = self.parsed_module_for_source_path(source_path)
-        cache = self._class_reference_resolvers_by_file_path
-        if parsed_module.file_path not in cache:
-            cache[parsed_module.file_path] = ModuleClassReferenceResolver(
+        return self.class_reference_resolver_for_module(self.parsed_module_for_source_path(source_path))
+
+    def class_reference_resolver_for_module(
+        self,
+        parsed_module: ParsedModule,
+    ) -> ModuleClassReferenceResolver:
+        """Resolve class expressions in one parse: a module, or a script one of
+        its string literals holds, which has a module name of its own."""
+
+        cache = self._class_reference_resolvers_by_parse
+        key = (parsed_module.file_path, parsed_module.module_name)
+        if key not in cache:
+            cache[key] = ModuleClassReferenceResolver(
                 parsed_module,
                 self.required_class_family_index,
             )
-        return cache[parsed_module.file_path]
+        return cache[key]
 
     def module_assignment_statement(
         self,

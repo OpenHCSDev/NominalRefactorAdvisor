@@ -505,6 +505,32 @@ def test_a_positional_construction_is_keyworded_first_then_the_pick_composes(
     assert _run(tmp_path, probe) == before
 
 
+
+def test_a_positional_construction_in_a_script_is_keyworded_first_too(
+    tmp_path: Path,
+) -> None:
+    """The only positional construction sits in Python a string holds and a child
+    interpreter runs: the scan counts it, so the goal binds it by keyword first."""
+    script = (
+        "import subprocess, sys\n\n"
+        "SCRIPT = (\n"
+        '    "from pkg.records import First\\n"\n'
+        '    "print(First(0, 1, \'x\').lead)\\n"\n'
+        ")\n\n\n"
+        "def run():\n"
+        "    return subprocess.run([sys.executable, '-c', SCRIPT], check=True, capture_output=True, text=True).stdout\n"
+    )
+    probe = "from pkg.scripts import run\nprint(run())\n"
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": REORDERED, "pkg/scripts.py": script})
+    before = _run(tmp_path, probe)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    assert report.stage_count == 2
+    assert "First(lead=0, alpha=1, beta=\'x\').lead" in (tmp_path / "pkg/scripts.py").read_text()
+    assert "class First(Lettered):\n" in (tmp_path / "pkg/records.py").read_text()
+    assert _run(tmp_path, probe) == before
+
 COPIED = (
     "from dataclasses import dataclass\n\n\n"
     "@dataclass(frozen=True)\n"

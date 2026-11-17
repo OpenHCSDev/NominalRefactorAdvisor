@@ -269,6 +269,18 @@ class RepositoryModuleBindingProof(
             else ()
         )
 
+    def parse_excludes_star_imports(self, module: ParsedModule, name: str) -> bool:
+        """Whether no star import in `module` may bind `name`. A parse the
+        repository does not list, a script a string literal holds, has only its
+        own imports: it excludes a name exactly when it star-imports nothing."""
+
+        if self.contains_module(module.module_name):
+            return self.star_imports_exclude(module.module_name, name)
+        return not any(
+            isinstance(statement, ast.ImportFrom) and any(alias.name == "*" for alias in statement.names)
+            for statement in ast.walk(module.module)
+        )
+
     def unshadowed_builtin_witness(
         self,
         module: ParsedModule,
@@ -278,7 +290,7 @@ class RepositoryModuleBindingProof(
         preceding_class_bound_names: frozenset[str],
     ) -> ModuleNominalBindingWitness | None:
         if not (
-            self.star_imports_exclude(module.module_name, name)
+            self.parse_excludes_star_imports(module, name)
             and ModuleNominalBindingAuthority(module)
             .snapshot_before(
                 line,
@@ -300,10 +312,7 @@ class RepositoryModuleBindingProof(
         line: int,
     ) -> ModuleNominalBindingWitness | None:
         root_name = nominal_reference_root_name(reference)
-        if root_name is None or not self.star_imports_exclude(
-            module.module_name,
-            root_name,
-        ):
+        if root_name is None or not self.parse_excludes_star_imports(module, root_name):
             return None
         qualified_name = ModuleNominalBindingAuthority(module).qualified_name_at(
             reference,

@@ -539,6 +539,25 @@ def test_a_keyword_binder_naming_no_function_refuses(tmp_path: Path) -> None:
         _fold(tmp_path).source_edits(snapshot)
 
 
+
+def test_the_fold_follows_a_class_a_script_hands_to_a_keyword_binder(
+    tmp_path: Path,
+) -> None:
+    """A script a string holds is no repository module: its own imports prove
+    what `encode` is, and it star-imports nothing that could rebind it."""
+
+    script = (
+        "SCRIPT = \'\'\'\n"
+        "from pkg.codec import encode\n"
+        "from pkg.conveyor import ConveyorProof\n"
+        "for name in ('a',):\n"
+        "    assert encode(ConveyorProof)\n"
+        "\'\'\'\n"
+    )
+    _write(tmp_path, _proof_files(**KEYWORD_BINDER, **{"pkg/scripts.py": script}))
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    assert _fold(tmp_path).source_edits(snapshot)
+
 def test_the_fold_refuses_a_class_handed_to_a_function_that_calls_it(
     tmp_path: Path,
 ) -> None:

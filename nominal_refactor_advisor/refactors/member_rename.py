@@ -59,6 +59,7 @@ from nominal_refactor_advisor.refactors.answered_method import (
     ReceiverBinding,
     TypedReceiver,
 )
+from nominal_refactor_advisor.read_sources import ModuleSource, ReadSource
 from nominal_refactor_advisor.refactors.class_overlap import ClassReferenceSites
 from nominal_refactor_advisor.stored_records import StoredRecords
 
@@ -307,15 +308,15 @@ class RenamedMember(AnsweredMethod):
                 )
 
     @cached_property
-    def field_keywords(self) -> tuple[tuple[str, ast.keyword], ...]:
+    def field_keywords(self) -> tuple[tuple[ReadSource, ast.keyword], ...]:
         """Each `field=` keyword a proved construction of a family class passes."""
 
-        found: list[tuple[str, ast.keyword]] = []
+        found: list[tuple[ReadSource, ast.keyword]] = []
         for site in ClassReferenceSites(self.snapshot, self.family).sites:
             if site.role.binds_fields:
                 match site.parent:
                     case ast.Call() as call:
-                        found.extend((site.file_path, keyword) for keyword in self.passed(call, site.location))
+                        found.extend((site.source, keyword) for keyword in self.passed(call, site.location))
                     case ast.MatchClass(kwd_attrs=names) if self.member_name in names:
                         raise NeedsInput(
                             f"{self.where} needs the class pattern at {site.location} rewritten by hand",
@@ -328,7 +329,7 @@ class RenamedMember(AnsweredMethod):
                     NeededInput.PROOF,
                 )
         receivers: list[TypedReceiver] = []
-        replaced: dict[ast.Call, str] = {}
+        replaced: dict[ast.Call, ReadSource] = {}
         for parsed in self.snapshot.parsed_modules:
             index = parsed.fact(ModuleNodeIndex)
             for call in index.calls:
@@ -337,9 +338,9 @@ class RenamedMember(AnsweredMethod):
                 if callee in self.FIELD_NAME_READERS | {"replace"} and call.args:
                     receivers.append(TypedReceiver(parsed, call.args[0], call, where, None))
                     if callee == "replace":
-                        replaced[call] = parsed.file_path
+                        replaced[call] = ModuleSource(parsed)
                 elif _constructs_own_class(call, parsed, index.parents, self):
-                    found.extend((parsed.file_path, keyword) for keyword in self.passed(call, where))
+                    found.extend((ModuleSource(parsed), keyword) for keyword in self.passed(call, where))
         try:
             reached = self.reaching(receivers)
         except ValueError as error:
@@ -437,8 +438,8 @@ class RenamedMember(AnsweredMethod):
         for file_path, body in self.renamed_bodies:
             for start in _declaration_offsets(geometry(file_path), body, self.member_name):
                 renamed(file_path, start, len(self.member_name))
-        for file_path, keyword in self.field_keywords if self.is_field else ():
-            renamed(file_path, geometry(file_path).required_node_offsets(keyword)[0], len(self.member_name))
+        for source, keyword in self.field_keywords if self.is_field else ():
+            renamed(source.file_path, source.node_offsets(keyword)[0], len(self.member_name))
         return {
             file_path: [
                 SourceTextSpanReplacement.from_offsets(start_offset=start, end_offset=end, replacement_source=self.new_name)
