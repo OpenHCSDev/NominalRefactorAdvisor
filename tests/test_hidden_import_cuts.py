@@ -23,6 +23,10 @@ from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.refactors.class_overlap import changed_source_edits, relocation_to
 from nominal_refactor_advisor.refactors.module_move import ImportedNameOwner
 from nominal_refactor_advisor.refactors.hidden_import_cuts import (
+    DraggedReadsBack,
+    HubFanReadsBack,
+    OneReaderReadsBack,
+    SoleReaderKept,
     CutHiddenCycleOperation,
     HiddenImportCuts,
     HubCut,
@@ -136,7 +140,11 @@ def test_a_reader_whose_cut_goes_down_alone_is_cut_without_the_one_that_reads_ba
     assert ([edge.reader for edge in cut.dissolved], cut.moved, cut.destination) == (["pkg.a"], ("Record",), "pkg.record")
     [(refusal, need)] = stays.needs
     assert refusal.hidden.module.module_name == "pkg.b"
-    assert str(need) == "`pkg.hub.Other` reads `b_value` from `pkg.b`, so it cannot sit below `pkg.b`"
+    assert isinstance(need, OneReaderReadsBack)
+    assert str(need) == (
+        "`Other` read back toward `pkg.b` alone: "
+        "`pkg.hub.Other` reads `b_value` from `pkg.b`, so it cannot sit below `pkg.b`"
+    )
     _apply_all(tmp_path, HiddenImportCycleDetector())
     assert _run(tmp_path) == expected
     [refused] = HiddenImportPlan.derive(_modules(tmp_path)).refused
@@ -259,6 +267,55 @@ def test_a_declaration_reading_back_only_from_its_sole_reader_moves_into_it(tmp_
     assert plan.refused == ()
 
 
+HIDDEN = "def {name}():\n    from pkg.hub import Record\n\n    return Record\n"
+
+
+@pytest.mark.parametrize(
+    ("hub", "shape", "message"),
+    [
+        (
+            "from pkg.a import a_value\nfrom pkg.b import b_value\n\n\nclass Record:\n    parts = (a_value, b_value)\n",
+            HubFanReadsBack,
+            "`Record` read back toward `pkg.a`, `pkg.b`: a hub fan, inverting it is a design input: ",
+        ),
+        (
+            "from pkg.a import a_value\nfrom pkg.b import b_value\n\n\nclass Base:\n    part = b_value\n\n\n"
+            "class Record(Base):\n    pass\n\n\ndef total():\n    return a_value\n",
+            DraggedReadsBack,
+            "`pkg.hub`'s `Record` read nothing back themselves; declarations they drag along do: "
+            "`pkg.hub.Base` reads `b_value` from `pkg.b`",
+        ),
+    ],
+    ids=["fan", "dragged"],
+)
+def test_a_read_back_names_its_shape(tmp_path: Path, hub: str, shape: type, message: str):
+    """Each read-back refusal is typed by its shape: a fan needs a layering
+    decision; a dragged declaration is the one to change."""
+
+    _write(
+        tmp_path,
+        {"pkg/hub.py": hub, "pkg/a.py": HIDDEN.format(name="a_value"), "pkg/b.py": HIDDEN.format(name="b_value")},
+    )
+    needs = [need for plan in HiddenImportCuts.of(_snapshot(tmp_path)).hubs() for _refusal, need in plan.needs]
+    assert needs and all(isinstance(need, shape) for need in needs)
+    assert all(str(need).startswith(message) for need in needs)
+
+
+def test_a_sole_reader_that_cannot_take_the_declaration_says_why(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/hub.py": "from pkg.a import a_value\n\n\nclass Record:\n    part = a_value\n\n\nDEFAULT = Record()\n",
+            "pkg/a.py": HIDDEN.format(name="a_value"),
+        },
+    )
+    [stays] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
+    [(_refusal, need)] = stays.needs
+    assert isinstance(need, SoleReaderKept)
+    assert str(need) == (
+        "`Record` read back only from `pkg.a`, which cannot take them: "
+        "`pkg.hub` keeps reading `Record`, so it would import `pkg.a`"
+    )
 @pytest.mark.parametrize(
     ("hub", "name", "owner"),
     [
