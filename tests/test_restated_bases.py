@@ -179,6 +179,22 @@ def test_a_read_of_a_named_class_sees_only_the_bases_in_its_order(tmp_path: Path
         assert NeededInput.PROOF in evaluation.needs
 
 
+def test_a_subclass_s_own_bases_never_hold_its_parent_s_drop(tmp_path: Path):
+    reader = (
+        "from typing import Generic, TypeVar\n\n"
+        "from pkg.registries import OutcomeViewer\n\n"
+        "T = TypeVar('T')\n\n\n"
+        "class Viewer(OutcomeViewer):\n    pass\n\n\n"
+        "class Typed(OutcomeViewer, Generic[T]):\n    pass\n\n\n"
+        "def own():\n"
+        "    return Viewer.__bases__, list(vars(Viewer)), Viewer.__dict__, Typed.__orig_bases__\n"
+    )
+    _write(tmp_path, {**PACKAGE, "pkg/reader.py": reader})
+    finding = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == "OutcomeViewer")
+    evaluation = RestatedBaseDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert evaluation.rejection_reason == ""
+
+
 FAMILIES = (
     "from abc import ABC, ABCMeta\n\n\n"
     "def handles(kind):\n    def mark(function):\n        function.handled = kind\n        return function\n\n    return mark\n\n\n"
