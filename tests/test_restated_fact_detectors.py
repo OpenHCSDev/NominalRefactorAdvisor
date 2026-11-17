@@ -800,6 +800,48 @@ IDENTITY_FAMILY = (
 )
 
 
+LOOKUP_FAMILIES = (
+    "from typing import Self\n\n\n"
+    "class Kind:\n"
+    "    def __init_subclass__(cls, *, declared_name=None):\n"
+    "        super().__init_subclass__()\n\n"
+    "    @classmethod\n"
+    "    def member_named(cls, name: str) -> type[Self]:\n        raise NotImplementedError\n\n\n"
+    "class Open(Kind, declared_name='open'):\n    pass\n\n\n"
+    "class Shut(Kind, declared_name='shut'):\n    pass\n\n\n"
+    "class Store:\n"
+    "    def __init_subclass__(cls, *, declared_name=None):\n"
+    "        super().__init_subclass__()\n\n\n"
+    "class Missing(Store, declared_name='missing'):\n    pass\n\n\n"
+    "class Present(Store, declared_name='present'):\n    pass\n"
+)
+
+
+def test_a_looked_up_spelling_restates_the_receivers_own_member(tmp_path: Path):
+    source = LOOKUP_FAMILIES + "\n\ndef use():\n    return Kind.member_named('open')\n"
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert "'open' (`Open`)" in finding.summary
+
+
+def test_a_spelling_another_family_declares_is_not_the_receivers_member(tmp_path: Path):
+    source = LOOKUP_FAMILIES + "\n\ndef use():\n    return Kind.member_named('missing')\n"
+    (finding,) = _findings(tmp_path, RestatedIdentityDetector, {"m": source})
+    assert "the `Kind` member spelled 'missing'" in finding.summary
+    assert "`Missing`" not in finding.summary
+
+
+def test_a_test_of_the_lookup_itself_is_no_site(tmp_path: Path):
+    source = LOOKUP_FAMILIES + (
+        "\n\nimport pytest\n\n\n"
+        "def test_decodes():\n"
+        "    assert Kind.member_named('open') is Open\n"
+        "    assert Kind.member_named('shut') is not Open\n"
+        "    with pytest.raises(ValueError):\n"
+        "        Kind.member_named('nope')\n"
+    )
+    assert _findings(tmp_path, RestatedIdentityDetector, {"m": source}) == []
+
+
 def test_a_quoted_class_name_and_a_passed_class_name_restate_the_class(tmp_path: Path):
     source = (
         "class TurnItem:\n    pass\n\n\n"
