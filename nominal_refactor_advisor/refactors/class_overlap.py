@@ -3548,39 +3548,51 @@ def home_subject(snapshot: CodemodSourceSnapshot, home_module: str) -> tuple[str
 
 
 @dataclass(frozen=True)
+class ClosureRead:
+    """One name a moved declaration reads, and the scanned module declaring it."""
+
+    declaration: str
+    name: str
+    module: str
+
+
+@dataclass(frozen=True)
 class MovedClosure:
-    """A module-level class with every declaration of its module it reads, which
-    move with it, and the scanned modules those declarations import names from:
-    the modules its new home must import without a cycle."""
+    """Module-level declarations with every declaration of their module they
+    read, which move with them, and each name those declarations read from
+    another scanned module: the modules their new home must import without a
+    cycle, and which declaration needs each."""
 
     qualnames: tuple[str, ...]
-    reads: frozenset[str]
+    read_names: tuple[ClosureRead, ...]
+
+    @property
+    def reads(self) -> frozenset[str]:
+        return frozenset(read.module for read in self.read_names)
 
     @classmethod
     def of(cls, snapshot: CodemodSourceSnapshot, declaration: SourceRewriteTarget) -> Self:
         if declaration.file_path is None or declaration.qualname is None:
             raise NeedsInput("a moved class needs its module and name", NeededInput.OPERATION)
-        selection = SourceTopLevelSymbolMoveSelection.dependency_closure(
-            declaration.file_path,
-            snapshot.module_nodes_by_file_path[declaration.file_path],
-            (declaration.qualname,),
-        )
-        moved = tuple(item.name for item in selection.declarations)
-        module_name = snapshot.parsed_module_for_source_path(declaration.file_path).module_name
-        module = snapshot.module_nodes_by_file_path[declaration.file_path]
+        return cls.of_roots(snapshot, declaration.file_path, (declaration.qualname,))
+
+    @classmethod
+    def of_roots(cls, snapshot: CodemodSourceSnapshot, file_path: str, roots: tuple[str, ...]) -> Self:
+        module = snapshot.module_nodes_by_file_path[file_path]
+        selection = SourceTopLevelSymbolMoveSelection.dependency_closure(file_path, module, roots)
+        moved = frozenset(item.name for item in selection.declarations)
+        module_name = snapshot.parsed_module_for_source_path(file_path).module_name
+        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
         # A name the module does not bind is a builtin: no module provides it.
-        names = (
-            DeclarationDependencyProjection.from_declarations(
-                tuple(item.node for item in selection.declarations)
-            ).names
-            & LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
-        ) - frozenset(moved)
         return cls(
-            moved,
-            frozenset(
-                module
-                for name in sorted(names)
-                if (module := ImportedNameOwner.declaring_module(snapshot, module_name, name)) is not None
+            tuple(item.name for item in selection.declarations),
+            tuple(
+                ClosureRead(item.name, name, owner)
+                for item in selection.declarations
+                for name in sorted(
+                    (DeclarationDependencyProjection.from_declarations((item.node,)).names & bound) - moved
+                )
+                if (owner := ImportedNameOwner.declaring_module(snapshot, module_name, name)) is not None
             ),
         )
 

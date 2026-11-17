@@ -655,6 +655,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    HIDDEN_IMPORT_CYCLE = _pattern(
+        stable_id=55,
+        display_name="Hidden Import Cycle",
+        required_relation=(
+            "Modules import a hub's declarations under `TYPE_CHECKING` or inside "
+            "functions because the hub already loads them: the declarations sit "
+            "above their readers in the load order."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

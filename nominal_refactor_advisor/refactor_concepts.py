@@ -197,6 +197,11 @@ class DeclarationReferenceConcept(NominalBoundaryConcept):
     """Write a spelled declaration as the reference it spells."""
 
 
+class HiddenImportCutConcept(NominalBoundaryConcept):
+    """Move the declarations a cycle-closing hidden import reads down below its
+    reader, so the import loads with no cycle."""
+
+
 class PackageMoveConcept(RefactorConcept):
     """Move each flat module into the package a destination table declares for it."""
 
