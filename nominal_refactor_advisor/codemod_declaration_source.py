@@ -22,7 +22,6 @@ from typing import (
 )
 
 from nominal_refactor_advisor.assignment_projection import NamedAssignmentSelection
-from nominal_refactor_advisor.ast_projection import CallKeyword
 from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
     FunctionDefinitionNode,
@@ -320,16 +319,20 @@ class ClassHeaderSpanSourceAuthority(ClassSourceAuthority):
     def end_line(self) -> int:
         return self.source_span.end_line
 
+    def item_source(self, node: ast.AST) -> str:
+        """A base or keyword as the header spells it, so a rewrite keeps its quotes
+        and spacing; an item spanning lines is re-flowed onto the new header."""
+
+        written = ast.get_source_segment(self.source, node)
+        return written if written is not None and "\n" not in written else ast.unparse(node)
+
     @property
     def keyword_items(self) -> tuple[str, ...]:
-        return tuple(
-            CallKeyword.decoded(keyword).source()
-            for keyword in self.node.keywords
-        )
+        return tuple(self.item_source(keyword) for keyword in self.node.keywords)
 
     @property
     def base_items(self) -> tuple[str, ...]:
-        return tuple(ast.unparse(base) for base in self.node.bases)
+        return tuple(self.item_source(base) for base in self.node.bases)
 
     @property
     def can_rewrite(self) -> bool:
