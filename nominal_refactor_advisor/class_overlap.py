@@ -324,26 +324,27 @@ class PairRepair(NamedTuple):
     co_restating: CompactIndexedClass | None
 
 
-@dataclass(frozen=True)
-class ExtractionRequest(ReportingFloor):
-    """A step that declares the block once on a new mixin both classes compose
-    asks about the pair as that move, whatever repair the overlap's shape
-    reports. A duplicate class, or a block a third class already declares, can
-    still be extracted; the step proves the extraction it makes, so the verdict
-    judges that and not the other repair."""
+@dataclass(frozen=True, kw_only=True)
+class MoveRequest(ReportingFloor):
+    """A step asks about the pair as the move it makes, whatever repair the
+    overlap's shape reports. A duplicate class, or a block a third class already
+    declares, can still be extracted, and a pair whose merge is refused can still
+    fold its block into the base the two alone share; the step proves the move it
+    makes, so the verdict judges that and not the other repair."""
 
+    move: type[ClassOverlapMove] = ExtractMixin
     weight: float = 0.0
     declarations: int = 1
 
     def judged_repair(
         self, reported: PairRepair, first: CompactIndexedClass, second: CompactIndexedClass
     ) -> PairRepair:
-        return PairRepair(ExtractMixin, first, second, None)
+        return PairRepair(self.move, first, second, None)
 
 
 REPORTED = ReportingFloor()
 NO_FLOOR = ReportingFloor(weight=0.0, declarations=1)
-EXTRACTION = ExtractionRequest()
+EXTRACTION = MoveRequest(move=ExtractMixin)
 
 
 
@@ -814,6 +815,13 @@ class ClassOverlapVerdicts(DeclaredC3):
         its own pair with every other receipt and guard."""
 
         return self.verdict(self.bodies.overlap(first, second), NO_FLOOR)
+
+    def requested_as(
+        self, first: str, second: str, move: type[ClassOverlapMove]
+    ) -> ClassOverlapCandidate | None:
+        """The verdict on one pair judged as `move`, the move a step makes."""
+
+        return self.verdict(self.bodies.overlap(first, second), MoveRequest(move=move))
 
     def requested_extractions_restating(
         self, anchor: str, names: Iterable[str]
