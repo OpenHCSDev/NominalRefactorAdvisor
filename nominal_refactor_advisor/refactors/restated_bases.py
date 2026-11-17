@@ -141,10 +141,53 @@ class BaseListReads(ParsedModuleSetFact):
 
 
 @dataclass(frozen=True)
-class BasesReaders:
-    """Every read of a class's `__bases__` or `__orig_bases__` in the repository."""
+class ClassAttributeReaders:
+    """Reads of one class attribute (`X.<attribute>`, or `vars(X)` for the
+    namespace) anywhere in the repository, each judged by the class it reads."""
 
     snapshot: CodemodSourceSnapshot
+
+    def reaches(self, module: ParsedModule, read: ast.expr, indexed: CompactIndexedClass) -> bool:
+        """Whether the read can see `indexed`'s own attribute: `X.__bases__`,
+        `X.__dict__` and `vars(X)` are `X`'s own, and `X.__orig_bases__` is `X`'s or
+        an ancestor's, so a read of a named class whose order does not hold
+        `indexed` never sees them."""
+
+        match read:
+            case ast.Attribute(value=receiver) | ast.Call(func=ast.Name(id="vars"), args=[receiver]):
+                pass
+            case _:
+                return True
+        named = self.named(module, receiver)
+        if named is None or self.snapshot.class_overlap_verdicts.class_index.class_for(named) is None:
+            return True
+        try:
+            return indexed.symbol in self.snapshot.class_overlap_verdicts.linearized(named)
+        except NeedsInput:
+            return True
+
+    def named(self, module: ParsedModule, node: ast.expr) -> str | None:
+        """The class or function a name or attribute chain spells in `module`: an
+        imported or builtin one, or a class the module itself declares."""
+
+        verdicts = self.snapshot.class_overlap_verdicts
+        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
+            module, node, line=node.lineno
+        )
+        if witness is None:
+            local = (
+                verdicts.class_index.class_for(f"{module.module_name}.{node.id}")
+                if isinstance(node, ast.Name)
+                else None
+            )
+            return None if local is None else local.symbol
+        indexed = verdicts.ancestor(witness.qualified_name)
+        return witness.qualified_name if indexed is None else indexed.symbol
+
+
+@dataclass(frozen=True)
+class BasesReaders(ClassAttributeReaders):
+    """Every read of a class's `__bases__` or `__orig_bases__` in the repository."""
 
     def require_unread(self, indexed: CompactIndexedClass, dropped: tuple[str, ...]) -> None:
         """Each read either tests a named class none of `dropped` is, or keeps only
@@ -162,21 +205,6 @@ class BasesReaders:
                     f"from `{indexed.qualname}` could change what it sees",
                     NeededInput.PROOF,
                 )
-
-    def reaches(self, module: ParsedModule, read: ast.expr, indexed: CompactIndexedClass) -> bool:
-        """Whether the read can see `indexed`'s own bases: `X.__bases__` is `X`'s own,
-        and `X.__orig_bases__` is `X`'s or an ancestor's, so a read of a named class
-        whose order does not hold `indexed` never sees them."""
-
-        if not isinstance(read, ast.Attribute):
-            return True
-        receiver = self.named(module, read.value)
-        if receiver is None or self.snapshot.class_overlap_verdicts.class_index.class_for(receiver) is None:
-            return True
-        try:
-            return indexed.symbol in self.snapshot.class_overlap_verdicts.linearized(receiver)
-        except NeedsInput:
-            return True
 
     def unaffected(
         self,
@@ -225,24 +253,6 @@ class BasesReaders:
                 ) if subject == element and self.named(module, origin) == "typing.get_origin":
                     return True
         return False
-
-    def named(self, module: ParsedModule, node: ast.expr) -> str | None:
-        """The class or function a name or attribute chain spells in `module`: an
-        imported or builtin one, or a class the module itself declares."""
-
-        verdicts = self.snapshot.class_overlap_verdicts
-        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
-            module, node, line=node.lineno
-        )
-        if witness is None:
-            local = (
-                verdicts.class_index.class_for(f"{module.module_name}.{node.id}")
-                if isinstance(node, ast.Name)
-                else None
-            )
-            return None if local is None else local.symbol
-        indexed = verdicts.ancestor(witness.qualified_name)
-        return witness.qualified_name if indexed is None else indexed.symbol
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -316,6 +326,7 @@ class RestatedBaseFindingRecipeSynthesizer(
 
 __all__ = (
     "BaseListReads",
+    "ClassAttributeReaders",
     "BasesReaders",
     "DropRestatedBasesOperation",
     "RestatedBaseDrop",

@@ -152,6 +152,10 @@ class RestatedBaseConcept(ClassFamilyAuthorityConcept):
     """Drop a base another base of the same class already supplies."""
 
 
+class RestatedOverrideConcept(ClassFamilyAuthorityConcept):
+    """Delete a member that restates the declaration its class would inherit."""
+
+
 class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
     """Route type tests on foreign classes through one declared family."""
 
