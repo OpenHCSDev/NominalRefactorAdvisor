@@ -575,12 +575,6 @@ class RestatedDeclarations:
                     f"`{restating.qualname}.{name}` differs from "
                     f"`{source.qualname}.{name}`", NeededInput.SOURCE_CHANGE
                 )
-            documented = restating.documentation(name)
-            if documented is not None and documented != source.documentation(name):
-                raise NeedsInput(
-                    f"`{restating.qualname}.{name}` is documented as `{source.qualname}.{name}` "
-                    "is not: the move would drop its docstring", NeededInput.SOURCE_CHANGE
-                )
         return cls(source, restating, names)
 
     @cached_property
@@ -605,6 +599,53 @@ class RestatedDeclarations:
             for written in (statement, self.restating.attribute_docstring(statement))
             if written is not None
         )
+
+    def member_sources(
+        self, snapshot: CodemodSourceSnapshot, indentation: str, documentation: KeptDocumentation
+    ) -> tuple[tuple[str, bool], ...]:
+        """Each moved statement as the restating class writes it, into `indentation`,
+        carrying the docstring `documentation` keeps and no other; each with whether
+        it is a function, which a blank line separates from what comes before."""
+
+        source = snapshot.sources_by_file_path[self.restating.file_path]
+        members: list[tuple[str, bool]] = []
+        for statement in self.statements:
+            keeps = documentation.kept(min(declared_names(statement))) is not None
+            written = StatementSource(source=source, node=statement).member_source(indentation)
+            function = isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                members.append((written if keeps else self.undocumented(source, statement, written), function))
+                continue
+            members.append((written, function))
+            literal = self.restating.attribute_docstring(statement)
+            if keeps and literal is not None:
+                members.append((StatementSource(source=source, node=literal).member_source(indentation), False))
+        return tuple(members)
+
+    def undocumented(
+        self, source: str, statement: ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef, written: str
+    ) -> str:
+        """`written`, the rendering of `statement` from its first decorator, without
+        its own docstring; `...` stands for a body that was only the docstring."""
+
+        docstring, *rest = statement.body
+        if not is_docstring_statement(docstring):
+            return written
+        lines = source.splitlines(keepends=True)
+        before = lines[docstring.lineno - 1].encode()[: docstring.col_offset].decode()
+        after = lines[cast(int, docstring.end_lineno) - 1].encode()[cast(int, docstring.end_col_offset) :].decode()
+        if before.strip() or after.strip():
+            raise NeedsInput(
+                f"`{self.restating.qualname}.{statement.name}`'s docstring shares a line with "
+                "other source: put it on lines of its own", NeededInput.SOURCE_CHANGE
+            )
+        first_line = min((decorator.lineno for decorator in statement.decorator_list), default=statement.lineno)
+        rendered = written.splitlines(keepends=True)
+        start, end = docstring.lineno - first_line, cast(int, docstring.end_lineno) - first_line + 1
+        while rest and end < len(rendered) and not rendered[end].strip():
+            end += 1
+        indentation = rendered[start][: len(rendered[start]) - len(rendered[start].lstrip())]
+        return "".join((*rendered[:start], *(() if rest else (f"{indentation}...\n",)), *rendered[end:]))
 
     def require_no_owner_bound_values(self, snapshot: CodemodSourceSnapshot) -> None:
         """A value built by a class with `__set_name__` learns the class it sits in.
@@ -651,6 +692,55 @@ class RestatedDeclarations:
                     raise NeedsInput(
                         f"`{symbol}` learns its owner class through `__set_name__`", NeededInput.PROOF
                     )
+
+
+@dataclass(frozen=True)
+class KeptDocumentation:
+    """The docstring each member keeps when one copy replaces several classes' copies.
+
+    Declarations are judged equal without their docstrings, so the copies a move
+    replaces can be documented differently. An existing owner keeps its own copy,
+    docstring and all. A copy written anew keeps a docstring only when every copy
+    carries it, worded the same: one only some copies carry, or worded otherwise,
+    describes one class's copy, and the shared declaration keeps only what every
+    copy agrees on. Each docstring the kept copy does not carry is dropped, and the
+    step's rationale names it, so whoever picked the owner sees what went.
+    """
+
+    copies: tuple[OverlapClass, ...]
+    """Every class whose copy is replaced; for a copy written anew, the copy written is one."""
+    names: tuple[str, ...]
+    owner: OverlapClass | None = None
+    """The existing owner whose own copy stays, or none when the copy is written anew."""
+
+    @classmethod
+    def composing(cls, restated: RestatedDeclarations) -> Self:
+        """The restating class composes the existing class it restates, which keeps its copy."""
+
+        return cls((restated.restating,), restated.deleted_names, restated.source)
+
+    def kept(self, name: str) -> str | None:
+        if self.owner is not None:
+            return self.owner.documentation(name)
+        text, *others = {copy.documentation(name) for copy in self.copies}
+        return None if others else text
+
+    @cached_property
+    def dropped(self) -> tuple[str, ...]:
+        return tuple(
+            f"{copy.qualname}.{name}"
+            for name in self.names
+            for copy in self.copies
+            if (text := copy.documentation(name)) is not None and text != self.kept(name)
+        )
+
+    def rationale(self, rationale: str) -> str:
+        return " ".join(
+            (
+                rationale,
+                *(f"Drops the docstring of `{qualname}`, which the kept copy does not carry." for qualname in self.dropped),
+            )
+        )
 
 
 @dataclass(frozen=True)
@@ -1653,6 +1743,7 @@ class ClassComposition:
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         restating = self.restating
+        rationale = KeptDocumentation.composing(self.restated).rationale(rationale)
         source = self.snapshot.sources_by_file_path[restating.file_path]
         header = ClassHeaderSpanSourceAuthority(restating.node, source)
         deletion = StatementDeletionSource(
@@ -1815,6 +1906,9 @@ class CoveringComposition:
             )
 
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
+        for restatements in self.restated:
+            for restatement in restatements:
+                rationale = KeptDocumentation.composing(restatement).rationale(rationale)
         edits: list[NominalSourceEdit] = []
         imported: set[tuple[str, str]] = set()
         for composer, restatements in zip(self.composers, self.restated, strict=True):
@@ -2044,27 +2138,18 @@ class BaseFold:
         base = self.base
         source = self.snapshot.sources_by_file_path[base.file_path]
         first = self.restated[0]
-        first_source = self.snapshot.sources_by_file_path[first.restating.file_path]
         body = ClassBodySourceAuthority(base.node, source)
         header_line = source.splitlines(keepends=True)[base.node.lineno - 1]
         indentation = header_line[: len(header_line) - len(header_line.lstrip())]
+        documentation = KeptDocumentation(self.children, first.deleted_names)
+        rationale = documentation.rationale(rationale)
         return (
             *base.decorator_edits_for(self, indentation, rationale),
             *body.geometry.physical_edits(
                 file_path=base.file_path,
                 replacements=(
                     body.declaration_block_replacement(
-                        tuple(
-                            (
-                                StatementSource(
-                                    source=first_source, node=statement
-                                ).member_source(body.indentation),
-                                isinstance(
-                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
-                                ),
-                            )
-                            for statement in first.written_statements
-                        )
+                        first.member_sources(self.snapshot, body.indentation, documentation)
                     ),
                 ),
                 rationale=rationale,
@@ -2931,6 +3016,15 @@ class ComposeMovedOwnerOperation(RepositorySourceReprovedOperation):
                 *NeedsInput.needs_of(error),
             ) from error
         moved = SourceRewriteTarget(file_path=move.destination_path, qualname=self.owner.qualname)
+        owner = OverlapClass.require(snapshot, self.owner)
+        names = tuple(declaration.name for declaration in owner.facts.body_declarations)
+        rationale = self.rationale_text(
+            f"Move `{self.owner.qualname}` to `{self.home_module}` and compose it there "
+            "instead of restating its body."
+        )
+        for composer in (self.target, *self.composers):
+            restated = RestatedDeclarations(owner, OverlapClass.require(snapshot, composer), names)
+            rationale = KeptDocumentation.composing(restated).rationale(rationale)
         return in_order_edits(
             snapshot,
             (
@@ -2941,10 +3035,7 @@ class ComposeMovedOwnerOperation(RepositorySourceReprovedOperation):
                 ),
             ),
             f"compose-moved-{self.owner.qualname}",
-            self.rationale_text(
-                f"Move `{self.owner.qualname}` to `{self.home_module}` and compose it there "
-                "instead of restating its body."
-            ),
+            rationale,
         )
 
     def current_source_authority_claims(
@@ -3162,9 +3253,8 @@ class MixinCreation:
     """The mixin's `dataclass` arguments besides `kw_only`, as `name=value`."""
     empty_slots: bool
     """Some composer is slotted, so the mixin declares `__slots__ = ()`."""
-    carried_documentation: tuple[tuple[str, str], ...] = ()
-    """Each member the anchor leaves undocumented and another composer documents,
-    with that docstring's source: the one copy kept carries it."""
+    documentation: KeptDocumentation
+    """The docstrings the mixin's one copy keeps, judged across every composer."""
     abstract_names: tuple[str, ...] = ()
     """The block's abstract methods: when there are any, the mixin is an `ABC`."""
 
@@ -3236,7 +3326,7 @@ class MixinCreation:
                 f"{name_}={value}" for name_, value in declared if value != DATACLASS_OPTION_DEFAULTS[name_]
             ),
             any(not composer.lays_out_instance_dict for composer in (anchor, *composers)),
-            cls.documentation_to_carry(snapshot, anchor, owner.composers, restated.deleted_names),
+            KeptDocumentation((anchor, *composers), restated.deleted_names),
             abstract_names,
         )
 
@@ -3299,43 +3389,6 @@ class MixinCreation:
 
         NeedsInput.every(one_line_docstring, class_name, unbound_name)
 
-    @staticmethod
-    def documentation_to_carry(
-        snapshot: CodemodSourceSnapshot,
-        anchor: OverlapClass,
-        composers: Iterable[str],
-        names: Iterable[str],
-    ) -> tuple[tuple[str, str], ...]:
-        """One docstring per member across every composer; refuses two."""
-
-        others = tuple(OverlapClass.for_symbol(snapshot, symbol) for symbol in composers)
-        carried: list[tuple[str, str]] = []
-        for name in names:
-            documented = {
-                text: composer
-                for composer in (anchor, *others)
-                if (text := composer.documentation(name)) is not None
-            }
-            if len(documented) > 1:
-                raise NeedsInput(
-                    f"`{name}` is documented differently by "
-                    + ", ".join(f"`{composer.qualname}`" for composer in documented.values())
-                    + ": one docstring must go", NeededInput.SOURCE_CHANGE
-                )
-            if documented and anchor.documentation(name) is None:
-                (composer,) = documented.values()
-                (statement,) = (
-                    statement for statement in composer.node.body if name in declared_names(statement)
-                )
-                literal = (
-                    statement.body[0]
-                    if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                    else composer.attribute_docstring(statement)
-                )
-                source = snapshot.sources_by_file_path[composer.file_path]
-                carried.append((name, ast.get_source_segment(source, cast(ast.Expr, literal)) or ""))
-        return tuple(carried)
-
     def decorator_source(self, source: str, decorator: ast.expr) -> str:
         function = decorator.func if isinstance(decorator, ast.Call) else decorator
         options = (*self.options, *(("kw_only=True",) if self.keyword_only else ()))
@@ -3361,25 +3414,11 @@ class MixinCreation:
             f"{indentation}@{self.decorator_source(source, decorator)}\n"
             for decorator in anchor.node.decorator_list
         )
-        carried = dict(self.carried_documentation)
         members: list[str] = []
-        for statement in self.restated.written_statements:
-            member = StatementSource(source=source, node=statement).member_source(
-                member_indentation
-            )
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)) and members:
+        for member, function in self.restated.member_sources(self.snapshot, member_indentation, self.documentation):
+            if function and members:
                 members.append("\n")
-            member = member if member.endswith("\n") else member + "\n"
-            literal = next((carried[name] for name in declared_names(statement) if name in carried), None)
-            if literal is not None and isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-                lines = member.splitlines(keepends=True)
-                header = statement.body[0].lineno - min(
-                    (decorator.lineno for decorator in statement.decorator_list), default=statement.lineno
-                )
-                member = "".join((*lines[:header], f"{member_indentation}    {literal}\n", *lines[header:]))
-            elif literal is not None:
-                member += f"{member_indentation}{literal}\n"
-            members.append(member)
+            members.append(member if member.endswith("\n") else member + "\n")
         return (
             SourceInsertion(
                 file_path=anchor.file_path,
@@ -3508,11 +3547,30 @@ def in_order_edits(
     """The edits of these steps run in order, each proved on the source the
     previous one left; any refusal refuses them all."""
 
-    current = snapshot
+    return changed_source_edits(snapshot, in_order_states(snapshot, steps, recipe_id)[-1], rationale)
+
+
+def in_order_states(
+    snapshot: CodemodSourceSnapshot,
+    steps: Sequence[RepositorySourceReprovedOperation],
+    recipe_id: str,
+) -> tuple[CodemodSourceSnapshot, ...]:
+    """The source before each step and after the last, each step proved on the
+    source the previous one left; any refusal refuses them all."""
+
+    states = [snapshot]
     for step in steps:
-        result = RefactorRecipe(recipe_id=recipe_id).with_operation(step).simulate(current)
+        result = RefactorRecipe(recipe_id=recipe_id).with_operation(step).simulate(states[-1])
         result.preflight_report.require_clean()
-        current = current.with_virtual_sources(result.simulation.rewritten_sources)
+        states.append(states[-1].with_virtual_sources(result.simulation.rewritten_sources))
+    return tuple(states)
+
+
+def changed_source_edits(
+    snapshot: CodemodSourceSnapshot, current: CodemodSourceSnapshot, rationale: str
+) -> tuple[NominalSourceEdit, ...]:
+    """The line edits that take each file of `snapshot` to its source in `current`."""
+
     return tuple(
         edit
         for file_path, source in snapshot.sources_by_file_path.items()
@@ -3633,24 +3691,15 @@ class OwnerExtension:
     def source_edits(self, rationale: str) -> tuple[NominalSourceEdit, ...]:
         owner = self.owner
         source = self.snapshot.sources_by_file_path[owner.file_path]
-        anchor_source = self.snapshot.sources_by_file_path[self.anchor.file_path]
         body = ClassBodySourceAuthority(owner.node, source)
+        # The anchor's is the only copy, so it keeps every docstring it carries.
+        documentation = KeptDocumentation((self.anchor,), self.restated.deleted_names)
         return (
             *body.geometry.physical_edits(
                 file_path=owner.file_path,
                 replacements=(
                     body.declaration_block_replacement(
-                        tuple(
-                            (
-                                StatementSource(
-                                    source=anchor_source, node=statement
-                                ).member_source(body.indentation),
-                                isinstance(
-                                    statement, (ast.FunctionDef, ast.AsyncFunctionDef)
-                                ),
-                            )
-                            for statement in self.restated.written_statements
-                        )
+                        self.restated.member_sources(self.snapshot, body.indentation, documentation)
                     ),
                 ),
                 rationale=rationale,
@@ -3698,6 +3747,7 @@ class CreateMixinOperation(RepositorySourceReprovedOperation):
             f"Declare {', '.join(self.member_names)} once on `{self.mixin_name}`."
         )
         creation = self.creation(snapshot)
+        rationale = creation.documentation.rationale(rationale)
         if not self.composers:
             # The first step alone: declared beside the anchor, proved by the
             # candidate for wherever it is going.
@@ -3777,19 +3827,20 @@ class CreateMixinsInOrderOperation(RepositorySourceReprovedOperation):
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
-        return in_order_edits(
-            snapshot,
-            self.steps,
-            "create-" + "-".join(step.mixin_name for step in self.steps),
-            self.rationale_text(
-                "Declare "
-                + "; ".join(
-                    f"{', '.join(step.member_names)} once on `{step.mixin_name}`"
-                    for step in self.steps
-                )
-                + "."
-            ),
+        states = in_order_states(
+            snapshot, self.steps, "create-" + "-".join(step.mixin_name for step in self.steps)
         )
+        rationale = self.rationale_text(
+            "Declare "
+            + "; ".join(
+                f"{', '.join(step.member_names)} once on `{step.mixin_name}`"
+                for step in self.steps
+            )
+            + "."
+        )
+        for step, state in zip(self.steps, states):
+            rationale = step.creation(state).documentation.rationale(rationale)
+        return changed_source_edits(snapshot, states[-1], rationale)
 
     def current_source_authority_claims(
         self, context: CodemodSelectorContext

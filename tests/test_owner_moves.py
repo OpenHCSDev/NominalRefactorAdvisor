@@ -875,34 +875,108 @@ DOCUMENTED = REORDERED.replace(
 )
 
 
-def test_the_one_copy_kept_carries_every_composers_documentation(tmp_path: Path) -> None:
-    """The anchor's copies are undocumented; the other composer documents a
-    method and a field. The mixin keeps both docstrings, and the field's
-    docstring goes with its field instead of staying behind."""
-    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": DOCUMENTED})
+def _documented(first: str | None, second: str | None, field: str | None = None) -> str:
+    """REORDERED with `gamma` documented by First and Second as given, and First's
+    `beta` field documented as `field`."""
+    def gamma(text: str | None) -> str:
+        doc = "" if text is None else f'        """{text}"""\n'
+        return f"    def gamma(self) -> str:\n{doc}        return"
+    first_field = "" if field is None else f'    """{field}"""\n'
+    first_class, second_class = REORDERED.split("class Second:")
+    first_class = first_class.replace("    def gamma(self) -> str:\n        return", gamma(first))
+    first_class = first_class.replace("    beta: str\n", f"    beta: str\n{first_field}")
+    second_class = second_class.replace("    def gamma(self) -> str:\n        return", gamma(second))
+    return f"{first_class}class Second:{second_class}"
+
+
+def _dropped(report: object) -> str:
+    return json.dumps(json_report_object(report))
+
+
+def test_a_docstring_only_the_anchor_carries_is_dropped(tmp_path: Path) -> None:
+    """First (the anchor) documents `gamma` and `beta`; Second documents neither. The
+    docstrings describe First's copies only, so the mixin's members carry none and the
+    step names each docstring it drops."""
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": _documented("First's.", None, "First's letter.")})
     before = _run(tmp_path, REORDERED_PROBE)
-
-    _goal_with_pick(tmp_path, "Lettered")
-
-    source = (tmp_path / "pkg/records.py").read_text()
-    assert '    beta: str\n    """The letter."""\n\n    def gamma(self) -> str:\n        """Letter then number."""\n' in source
-    assert source.count('"""The letter."""') == 1
-    assert "class Second(Lettered):\n    own_second: int = 0\n" in source
-    assert _run(tmp_path, REORDERED_PROBE) == before
-
-
-def test_two_docstrings_for_one_member_refuse(tmp_path: Path) -> None:
-    documented = DOCUMENTED.replace(
-        "class First:\n    lead: int\n    alpha: int\n    beta: str\n",
-        "class First:\n    lead: int\n    alpha: int\n    beta: str\n    \"\"\"A letter.\"\"\"\n",
-    )
-    assert documented != DOCUMENTED
-    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": documented})
 
     report = _goal_with_pick(tmp_path, "Lettered")
 
-    assert report.stage_count == 0
-    assert "class Lettered" not in (tmp_path / "pkg/records.py").read_text()
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "class Lettered" in source
+    assert "First's" not in source
+    assert "    beta: str\n\n    def gamma(self) -> str:\n        return f'{self.beta}{self.alpha}'\n" in source
+    assert "Drops the docstring of `First.gamma`" in _dropped(report)
+    assert "Drops the docstring of `First.beta`" in _dropped(report)
+    assert _run(tmp_path, REORDERED_PROBE) == before
+
+
+def test_a_docstring_only_another_composer_carries_is_dropped(tmp_path: Path) -> None:
+    """The anchor is undocumented and Second documents `gamma` and `beta`: dropped too."""
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": DOCUMENTED})
+    before = _run(tmp_path, REORDERED_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "The letter." not in source
+    assert "Letter then number." not in source
+    assert "class Second(Lettered):\n    own_second: int = 0\n" in source
+    assert "Drops the docstring of `Second.gamma`" in _dropped(report)
+    assert _run(tmp_path, REORDERED_PROBE) == before
+
+
+def test_a_docstring_every_composer_carries_is_kept_once(tmp_path: Path) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": _documented("Letter then number.", "Letter then number.")})
+    before = _run(tmp_path, REORDERED_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert '    def gamma(self) -> str:\n        """Letter then number."""\n        return' in source
+    assert source.count("Letter then number.") == 1
+    assert "Drops the docstring" not in _dropped(report)
+    assert _run(tmp_path, REORDERED_PROBE) == before
+
+
+def test_docstrings_worded_differently_are_dropped(tmp_path: Path) -> None:
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": _documented("First's.", "Second's.")})
+    before = _run(tmp_path, REORDERED_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "First's." not in source and "Second's." not in source
+    assert "    def gamma(self) -> str:\n        return f'{self.beta}{self.alpha}'\n" in source
+    assert _run(tmp_path, REORDERED_PROBE) == before
+
+
+PROPERTIED = REORDERED.replace(
+    "    def gamma(self) -> str:\n        return f'{self.beta}{self.alpha}'\n",
+    "    @property\n    def gamma(self) -> str:\n        \"\"\"DOC\"\"\"\n        return f'{self.beta}{self.alpha}'\n",
+)
+PROPERTIED_PROBE = (
+    "from pkg.records import First, Second\n"
+    "print(First(lead=0, alpha=1, beta='x').gamma, Second(alpha=3, beta='y', own_second=4).gamma)\n"
+)
+
+
+def test_a_property_keeps_only_the_docstring_every_composer_carries(tmp_path: Path) -> None:
+    first_class, second_class = PROPERTIED.split("class Second:")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": first_class.replace("DOC", "First's.") + "class Second:" + second_class.replace("DOC", "Second's.")})
+    before = _run(tmp_path, PROPERTIED_PROBE)
+
+    report = _goal_with_pick(tmp_path, "Lettered")
+
+    source = (tmp_path / "pkg/records.py").read_text()
+    assert report.stage_count == 1
+    assert "    @property\n    def gamma(self) -> str:\n        return f'{self.beta}{self.alpha}'\n" in source
+    assert _run(tmp_path, PROPERTIED_PROBE) == before
+
 
 COPIED = (
     "from dataclasses import dataclass\n\n\n"
