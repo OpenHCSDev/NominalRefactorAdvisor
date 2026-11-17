@@ -61,6 +61,7 @@ from nominal_refactor_advisor.refactors.class_family_collection import (
     ClassFamilyCollectionSemanticMirrorRecipeBuilder,
     DeriveClassFamilyCollectionOperation,
 )
+from nominal_refactor_advisor.refactors.subset_family_base import SubsetFamilyBaseRecipeBuilder
 from nominal_refactor_advisor.refactors.dataclass_constructor_projection import (
     DataclassConstructorProjectionMappingRecipeBuilder,
     DeriveDataclassConstructorProjectionOperation,
@@ -134,6 +135,7 @@ EXPECTED_EXECUTABLE_CONCEPTS = {
     ClassFamilyCollectionSemanticMirrorRecipeBuilder: (
         codemod.ClassFamilyAuthorityConcept
     ),
+    SubsetFamilyBaseRecipeBuilder: codemod.ClassFamilyAuthorityConcept,
     ExactLeafMethodAncestorPromotionFindingRecipeSynthesizer: (
         codemod.ClassFamilyAuthorityConcept
     ),
@@ -221,6 +223,7 @@ EXPECTED_REGISTRATION_DECLARATIONS = frozenset(
     {
         AutoregisterInstanceViewRecipeBuilder,
         ClassFamilyCollectionSemanticMirrorRecipeBuilder,
+        SubsetFamilyBaseRecipeBuilder,
     }
 )
 
