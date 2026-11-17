@@ -443,22 +443,25 @@ class AssertedSubject(SubjectReading):
 class NoBranchSubject(AssertedSubject):
     """A type test no branch hangs on, so it routes no arm to the tested classes:
     besides an `assert`, an `if` whose only statement raises checks the same
-    contract, and a comprehension's filter keeps or drops each element as the
-    class it is. A restated test supplies an arm, one implementation of the
-    tested classes, from outside them (paper1 Theorem 4.6); with no arm there is
+    contract, a comprehension's filter keeps or drops each element as the class
+    it is, and a predicate lambda handed straight to a call (a wait's condition,
+    `filter`'s test) is kept or waited on by a callee that knows no family, so it
+    routes no member's arm either. A restated test supplies an arm, one
+    implementation of the tested classes, from outside them (paper1 Theorem
+    4.6); with no arm there is
     no method for the family to own. The class is the key the test reads
     (Theorem 3.2), and a test of a family class admits every later member
     through its base list (Proposition 3.3).
 
-    A test whose answer is a returned, bound or passed bool is not one: it turns
-    the class into a flag some consumer branches on."""
+    A test whose answer is a returned or bound bool, or passed as a value, is not
+    one: it turns the class into a flag some consumer branches on."""
 
     @staticmethod
     def holds(ancestors: Sequence[ast.AST]) -> bool:
         """Whether the test is asserted, or, walking up from it through `and`, `or`
         and `not`, its first holder is the condition of an `if` whose body only
-        raises, or a comprehension's filter. `ancestors` run from the module down
-        to the test."""
+        raises, a comprehension's filter, or the body of a lambda that is itself a
+        call's argument. `ancestors` run from the module down to the test."""
 
         if AssertedSubject.asserts(ancestors):
             return True
@@ -471,7 +474,21 @@ class NoBranchSubject(AssertedSubject):
                     return test is held
                 case ast.comprehension(ifs=filters):
                     return any(condition is held for condition in filters)
+                case ast.Lambda(body=body) if body is held:
+                    return position > 0 and NoBranchSubject.passed(ancestors[: position + 1])
             return False
+        return False
+
+    @staticmethod
+    def passed(ancestors: Sequence[ast.AST]) -> bool:
+        """Whether the last node, a lambda, is a call's positional or keyword argument."""
+
+        lambda_node, holder = ancestors[-1], ancestors[-2]
+        match holder:
+            case ast.Call(args=arguments):
+                return any(argument is lambda_node for argument in arguments)
+            case ast.keyword(value=value) if value is lambda_node:
+                return len(ancestors) > 2 and isinstance(ancestors[-3], ast.Call)
         return False
 
 

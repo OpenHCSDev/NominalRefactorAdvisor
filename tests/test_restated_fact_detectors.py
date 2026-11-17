@@ -1112,6 +1112,31 @@ def test_a_test_no_branch_hangs_on_routes_no_arm_and_is_not_a_finding(tmp_path: 
     assert _lines(findings) == [11, 13, 15]
 
 
+def test_a_predicate_lambda_handed_to_a_call_routes_no_arm(tmp_path: Path):
+    # `until(lambda: ...)` waits on the predicate and `filter` keeps by it; neither
+    # callee knows the family. A lambda bound to a name is a flag and stays.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle\n"
+                "async def opened(ui, app):\n"
+                "    await ui.until(lambda: isinstance(app.screen, Circle), why='the circle')\n"
+                "    await ui.until(condition=lambda: not isinstance(app.screen, Circle))\n"
+                "def circles(shapes):\n"
+                "    return list(filter(lambda shape: isinstance(shape, Circle), shapes))\n"
+                "def flag():\n"
+                "    is_circle = lambda shape: isinstance(shape, Circle)\n"
+                "    return is_circle\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [8]
+
+
 def test_a_value_first_proved_a_class_is_decoded_by_its_subclass_test(tmp_path: Path):
     # `isinstance(target, type)` says the code did not know the target was a class:
     # the subclass test after it decodes a foreign value. Without that proof the
