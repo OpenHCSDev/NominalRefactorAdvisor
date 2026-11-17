@@ -1895,18 +1895,16 @@ class PendingDecoderMigration:
         return owners.snapshot.derived((cls, owners.root), lambda: cls(owners))
 
     @cached_property
-    def declared_snapshot(self) -> CodemodSourceSnapshot:
-        """Current source with the generated module in place."""
+    def consumers(self) -> tuple[RoutedConsumer | Unroutable, ...]:
+        """Every consumer probing a pending decoder's field, routed or needing more input.
 
-        return self.owners.snapshot.with_virtual_sources(
+        Each routing is proved on the current source with the generated module
+        in place. That state is needed only here, so the migration, which its
+        source state holds, does not keep it."""
+
+        snapshot = self.owners.snapshot.with_virtual_sources(
             {self.owners.generated_path(): self.owners.generated_source()}
         )
-
-    @cached_property
-    def consumers(self) -> tuple[RoutedConsumer | Unroutable, ...]:
-        """Every consumer probing a pending decoder's field, routed or needing more input."""
-
-        snapshot = self.declared_snapshot
         found: list[RoutedConsumer | Unroutable] = []
         for parsed in sorted(
             self.owners.snapshot.parsed_modules, key=lambda module: str(module.path)
@@ -1983,8 +1981,6 @@ class PendingDecoderMigration:
         if not self.routes:
             return "no routable consumer"
         return f"{Path(self.routes[0].file_path).name}:{self.routes[0].symbol}"
-
-
 
 
 @dataclass(frozen=True)
