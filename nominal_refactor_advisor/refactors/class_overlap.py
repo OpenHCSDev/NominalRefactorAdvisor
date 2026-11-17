@@ -10,6 +10,7 @@ from abc import (
 )
 from collections.abc import (
     Iterable,
+    Mapping,
     Sequence,
 )
 from dataclasses import (
@@ -50,6 +51,7 @@ from nominal_refactor_advisor.class_mro import (
     NativeMroBase,
 )
 from nominal_refactor_advisor.class_overlap import (
+    AnswersFor,
     ClassOverlapCandidate,
     ClassOverlapMetrics,
     ClassOverlapMove,
@@ -57,8 +59,13 @@ from nominal_refactor_advisor.class_overlap import (
     ComposeExisting,
     ExtractMixin,
     PromoteToSharedBase,
+    SubclassAnswers,
 )
-from nominal_refactor_advisor.class_references import ClassReferenceRole
+from nominal_refactor_advisor.class_references import (
+    ClassReferenceRole,
+    reads_as_type,
+    subclass_test_subject,
+)
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.codemod import RefactorRecipe
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
@@ -484,6 +491,8 @@ class ClassReferenceSite:
     is_base: bool
     symbol: str
     """The class the read resolves to."""
+    tested_subclass: str | None
+    """For an `issubclass` test, the scanned class it asks about."""
 
     @property
     def location(self) -> str:
@@ -719,52 +728,27 @@ class ClassReferenceSites:
                     if parent is not None and parents[parents[index]] >= 0
                     else None
                 )
+                as_type = reads_as_type(index, nodes, parents)
+                subject = subclass_test_subject(node, parent, grandparent)
                 yield ClassReferenceSite(
                     file_path=parsed_module.file_path,
                     node=node,
                     parent=parent,
                     role=ClassReferenceRole.of_reference(
-                        node, parent, grandparent, aliases
+                        node, parent, grandparent, aliases, as_type
                     ),
-                    is_annotation=self._in_annotation(index, nodes, parents),
+                    is_annotation=as_type,
                     is_base=isinstance(parent, ast.ClassDef) and node in parent.bases,
                     symbol=symbol,
+                    tested_subclass=None if subject is None else resolver.symbol_for_node(subject),
                 )
 
-    @staticmethod
-    def _in_annotation(index: int, nodes: tuple[ast.AST, ...], parents) -> bool:
-        """Whether the read sits in a type: an annotation, or the class of a
-        `type[...]` form, which calling builds a `type`, never the class; the
-        class comes back out of either only through a decoder."""
-
-        child = nodes[index]
-        position = parents[index]
-        while position >= 0:
-            parent = nodes[position]
-            if (
-                (isinstance(parent, (ast.arg, ast.AnnAssign)) and parent.annotation is child)
-                or (
-                    isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
-                    and parent.returns is child
-                )
-                or (
-                    isinstance(parent, ast.Subscript)
-                    and parent.slice is child
-                    and isinstance(parent.value, ast.Name)
-                    and parent.value.id == "type"
-                )
-            ):
-                return True
-            if isinstance(parent, ast.stmt):
-                return False
-            child, position = parent, parents[position]
-        return False
-
-    def require_no_identity_reads(self) -> None:
-        """No type test, class pattern or type key reads these classes."""
+    def require_no_identity_reads(self, answers: Mapping[str, SubclassAnswers]) -> None:
+        """No type test, class pattern or type key reads these classes with an
+        answer the move changes; `answers` says, per class, which it changes."""
 
         for site in self.sites:
-            if site.role.distinguishes_identity:
+            if site.role.distinguishes_identity and answers[site.symbol].changes(site.tested_subclass):
                 raise NeedsInput(
                     f"{site.location} reads `{ast.unparse(site.node)}` as a "
                     f"{site.role.value}: the move changes what it answers", NeededInput.SOURCE_CHANGE
@@ -1136,9 +1120,10 @@ class ClassComposition:
         composition.require_owner_is_a_root()
         composition.require_field_order()
         restated.require_no_owner_bound_values(snapshot)
-        ClassReferenceSites(
-            snapshot, frozenset((owner.symbol,))
-        ).require_no_identity_reads()
+        class_index = snapshot.class_overlap_verdicts.class_index
+        ClassReferenceSites(snapshot, frozenset((owner.symbol,))).require_no_identity_reads(
+            {owner.symbol: AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)}
+        )
         if owner.file_path == restating.file_path:
             composition.relocation.require_safe(snapshot)
         return composition
@@ -1324,9 +1309,17 @@ class CoveringComposition:
         for restatements in restated:
             for restatement in restatements:
                 restatement.require_no_owner_bound_values(snapshot)
+        class_index = snapshot.class_overlap_verdicts.class_index
         ClassReferenceSites(
             snapshot, frozenset(owner.symbol for owner in owners)
-        ).require_no_identity_reads()
+        ).require_no_identity_reads(
+            {
+                owner.symbol: AnswersFor.gaining(
+                    owner.symbol, (composer.symbol for composer in composers), class_index
+                )
+                for owner in owners
+            }
+        )
         return composition
 
     def require_roots(self) -> None:

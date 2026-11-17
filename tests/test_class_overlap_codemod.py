@@ -169,6 +169,28 @@ def test_a_requested_composition_is_judged_below_the_reporting_floor(tmp_path: P
     ]
 
 
+def test_the_composition_reads_a_subclass_test_by_the_class_it_asks_about(tmp_path: Path) -> None:
+    """Finding gaining Located as a base changes `issubclass(Finding, Located)`,
+    never `issubclass(Plain, Located)`: only the first stops the move."""
+
+    kept = "from pkg.located import Located, Plain\n\n\ndef kept():\n    return issubclass(Plain, Located)\n"
+    flipped = "from pkg.located import Finding, Located\n\n\ndef flipped():\n    return issubclass(Finding, Located)\n"
+    owner = SMALL_OWNER + "\n\nclass Plain:\n    pass\n"
+    path = (tmp_path / "pkg/located.py").as_posix()
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Finding"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Located"),
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/located.py": owner, "pkg/checks.py": kept})
+    _apply(tmp_path, operation)
+    assert _run(tmp_path, SMALL_PROBE + "from pkg.checks import kept\nprint(kept())\n").split()[-2:] == ["True", "False"]
+
+    _write(tmp_path, {"pkg/located.py": owner, "pkg/checks.py": flipped})
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    with pytest.raises(CodemodOperationPreflightError, match=r"`Located` is told apart by type in 1 place\(s\) \(type_test\)"):
+        operation.source_edits(snapshot)
+
+
 def _tagged_family(hook: str) -> str:
     return (
         "from dataclasses import dataclass\n\n\n"

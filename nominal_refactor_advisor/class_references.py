@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import builtins
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import NamedTuple
 
@@ -52,8 +52,14 @@ class ClassReferenceRole(StrEnum):
         parent: ast.AST | None,
         grandparent: ast.AST | None,
         import_aliases: Mapping[str, str],
+        as_type: bool,
     ) -> ClassReferenceRole:
-        """The role one read of a name plays, from the syntax around it."""
+        """The role one read of a name plays, from the syntax around it.
+
+        `as_type` says the read sits in a type form (`reads_as_type`). There a
+        subscript `G[C]` names `C` as a type parameter, as a bare `x: C` does: it
+        looks nothing up by `C`, so it is no type key.
+        """
 
         if isinstance(parent, ast.Call) and parent.func is node:
             return cls.CONSTRUCTION
@@ -89,6 +95,8 @@ class ClassReferenceRole(StrEnum):
         if isinstance(parent, ast.Dict) and any(key is node for key in parent.keys):
             return cls.TYPE_KEY
         if isinstance(parent, ast.Subscript) and parent.slice is node:
+            if as_type:
+                return cls.OTHER
             subscripted = ExpressionReference.decoded(parent.value).attribute_chain
             root = (
                 None
@@ -102,6 +110,50 @@ class ClassReferenceRole(StrEnum):
                 return cls.OTHER
             return cls.TYPE_KEY
         return cls.OTHER
+
+
+def reads_as_type(index: int, nodes: Sequence[ast.AST], parents: Sequence[int]) -> bool:
+    """Whether the node at `index` sits in a type: an annotation, or the class
+    of a `type[...]` form, which calling builds a `type`, never the class; the
+    class comes back out of either only through a decoder."""
+
+    child = nodes[index]
+    position = parents[index]
+    while position >= 0:
+        parent = nodes[position]
+        if (
+            (isinstance(parent, (ast.arg, ast.AnnAssign)) and parent.annotation is child)
+            or (
+                isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and parent.returns is child
+            )
+            or (
+                isinstance(parent, ast.Subscript)
+                and parent.slice is child
+                and isinstance(parent.value, ast.Name)
+                and parent.value.id == "type"
+            )
+        ):
+            return True
+        if isinstance(parent, ast.stmt):
+            return False
+        child, position = parent, parents[position]
+    return False
+
+
+def subclass_test_subject(
+    node: ast.expr, parent: ast.AST | None, grandparent: ast.AST | None
+) -> ast.expr | None:
+    """The class an `issubclass` call asks about, when `node` is what it is
+    tested against, alone or in a tuple; a class's ancestry decides the answer."""
+
+    call = grandparent if isinstance(parent, ast.Tuple) else parent
+    if not (_is_builtin_call(call, "issubclass") and len(call.args) == 2):
+        return None
+    tested = call.args[1]
+    if tested is node or (isinstance(tested, ast.Tuple) and tested is parent):
+        return call.args[0]
+    return None
 
 
 class CompactClassReference(NamedTuple):
@@ -123,6 +175,9 @@ class CompactClassReference(NamedTuple):
     copied_fields: tuple[str, ...] = ()
     """For a construction, the most keywords one call passes as `x.<same name>`
     from a single value `x`: fields copied off another object."""
+    tested_subclass: tuple[str, ...] = ()
+    """For an `issubclass` test, the module-level name chain of the class it
+    asks about, when it spells one."""
 
 
 _GENERIC_ALIAS_ROOTS = frozenset(
