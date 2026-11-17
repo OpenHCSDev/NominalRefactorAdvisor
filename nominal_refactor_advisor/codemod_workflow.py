@@ -2084,16 +2084,6 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 )
             )
         ) - detector_ids
-        # A goal detector that reads one module at a time answers the same on every
-        # module the move left alone, so it reruns only where the move wrote and
-        # its other findings carry over from the parent state, as carried ones do.
-        per_module = DetectorCacheGranularity.PER_MODULE.select_detector_types(detector_types)
-        whole_tree = tuple(
-            detector_type for detector_type in detector_types if detector_type not in per_module
-        )
-        per_module_ids = frozenset(
-            detector_type.effective_detector_id() for detector_type in per_module
-        )
         after = stage.required_after_snapshot
         module_set = after.module_set
         present = frozenset(module.file_path for module in module_set)
@@ -2101,7 +2091,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
         carried = [
             finding
             for finding in scan.findings
-            if finding.detector_id in carried_ids | per_module_ids
+            if finding.detector_id in carried_ids
             and not any(
                 evidence.file_path in stale or evidence.file_path not in present
                 for evidence in finding.evidence
@@ -2114,15 +2104,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     *analyze_detector_types(
                         module_set,
                         self.config,
-                        detector_types=whole_tree,
-                        analysis_workers=self.analysis_workers,
-                    ),
-                    *analyze_detector_types(
-                        ParsedModuleSet.of(
-                            module for module in module_set if module.file_path in stale
-                        ),
-                        self.config,
-                        detector_types=per_module,
+                        detector_types=detector_types,
                         analysis_workers=self.analysis_workers,
                     ),
                     *carried,
