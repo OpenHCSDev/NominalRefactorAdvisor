@@ -343,7 +343,12 @@ def test_a_covering_owner_that_brings_behaviour_is_offered_but_refused() -> None
             1,
         ),
     )
-    (verdict,) = _mixin_verdicts(owners_module, SPLIT_RESTATERS)
+    (verdict,) = (
+        candidate
+        for candidate in _mixin_verdicts(owners_module, SPLIT_RESTATERS)
+        if {candidate.owner.qualname, candidate.restating.qualname}
+        == {"AuthorityShape", "AxisFact"}
+    )
     kinds = {owner.kind: owner for owner in verdict.owner_candidates}
 
     assert OwnerReceiptKind.OWNER_NOT_CONTAINED in {

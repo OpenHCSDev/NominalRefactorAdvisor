@@ -14,6 +14,7 @@ from nominal_refactor_advisor.analysis import analyze_modules
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.class_overlap import (
     NO_FLOOR,
+    ClassOverlapCandidate,
     ClassOverlapMetrics,
     ComposeExisting,
     ExtractMixin,
@@ -931,36 +932,30 @@ def test_a_base_declaring_only_the_hoisted_names_is_hoisted_too(tmp_path: Path) 
 
 
 
-@pytest.mark.parametrize(
-    ("records", "gained"),
-    (
-        (ALONE, ["`Step.bound_to`", "`Step.request`"]),
-        (ALONE.replace("class Action(Step):", "class Action:"), []),
-    ),
-)
-def test_composing_an_owner_never_hands_a_class_its_ancestors_members(
-    tmp_path: Path, records: str, gained: list[str]
+def test_an_owner_that_would_hand_over_its_ancestors_members_is_extracted_instead(
+    tmp_path: Path,
 ) -> None:
     """`Task` restates all `Action` declares, but inheriting `Action` would also
-    give it `Step`'s field and method, which nothing requires `Task` to have:
-    unwanted supply, which the move must refuse. Without `Step` it is sound."""
+    give it `Step`'s field and method, which nothing requires `Task` to have. The
+    block needs a mixin of its own, so the verdict judges that extraction and asks
+    where it lives; without `Step`, composing `Action` is sound and stays."""
 
-    _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
-    verdicts = CodemodSourceSnapshot.from_modules(
-        parse_python_modules(tmp_path, use_parse_cache=False)
-    ).class_overlap_verdicts
-    verdict = verdicts.verdict(
-        verdicts.bodies.overlap("pkg.records.Action", "pkg.records.Task"), NO_FLOOR
-    )
-    assert verdict is not None and verdict.move is ComposeExisting
-    refusals = [
-        receipt.detail
-        for receipt in verdict.refusals
-        if receipt.kind is OverlapReceiptKind.UNWANTED_SUPPLY
-    ]
-    assert [name for detail in refusals for name in gained if name in detail] == gained
-    assert bool(refusals) == bool(gained) and verdict.permitted is not bool(gained)
+    def verdict_for(records: str) -> ClassOverlapCandidate:
+        _write(tmp_path, {"pkg/__init__.py": "", "pkg/records.py": records})
+        verdicts = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(tmp_path, use_parse_cache=False)
+        ).class_overlap_verdicts
+        verdict = verdicts.verdict(
+            verdicts.bodies.overlap("pkg.records.Action", "pkg.records.Task"), NO_FLOOR
+        )
+        assert verdict is not None
+        return verdict
 
+    extracted = verdict_for(ALONE)
+    assert extracted.move is ExtractMixin and extracted.owner_candidates
+    assert not [r for r in extracted.receipts if r.kind is OverlapReceiptKind.UNWANTED_SUPPLY]
+    composed = verdict_for(ALONE.replace("class Action(Step):", "class Action:"))
+    assert composed.move is ComposeExisting and composed.permitted
 
 
 def test_a_member_inherited_past_an_unordered_base_is_already_had(tmp_path: Path) -> None:

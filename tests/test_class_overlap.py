@@ -95,6 +95,13 @@ def test_two_protocol_records_with_the_same_fields_are_a_coincidence():
         OverlapReceiptKind.DIFFERENT_CONSTRUCTION,
         OverlapReceiptKind.IDENTITY_DECLARED,
     }
+    (construction,) = (
+        receipt.detail
+        for receipt in candidate.refusals
+        if receipt.kind is OverlapReceiptKind.DIFFERENT_CONSTRUCTION
+    )
+    assert "has `dataclasses.dataclass`" in construction
+    assert "has no dataclass decorator" in construction
     assert candidate.log_odds == sum(receipt.weight for receipt in candidate.receipts)
 
 
