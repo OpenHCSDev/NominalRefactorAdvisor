@@ -40,3 +40,14 @@ def test_comment_free_header_assessment_does_not_tokenise() -> None:
     span = ClassHeaderSourceSpan.from_source(ast.parse(source).body[0], source)
     assert span.is_reconstructible
     assert "outer_tokens" not in vars(span)
+
+
+def test_a_rewritten_header_keeps_each_item_as_written() -> None:
+    """Prepending a base copies the other bases and keywords from the source:
+    the quotes and spacing a class was written with survive the rewrite."""
+
+    source = 'class Record(Base[ "x" ], Other, affix="Record"):\n    pass\n'
+    node = ast.parse(source).body[0]
+    assert isinstance(node, ast.ClassDef)
+    lines = ClassHeaderSpanSourceAuthority(node, source).with_prepended_base("Mixin")
+    assert "".join(lines) == 'class Record(Mixin, Base[ "x" ], Other, affix="Record"):\n'
