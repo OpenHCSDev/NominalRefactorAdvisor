@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import difflib
 import inspect
 import keyword as keyword_module
@@ -696,8 +697,14 @@ class KeywordBinders:
 
     snapshot: CodemodSourceSnapshot
     DEPTH: ClassVar[int] = 4
+    SUPER: ClassVar[str] = f"{builtins.__name__}.{super.__name__}"
+    """`super(C, obj)` reads `C`'s MRO to look names up; it never calls `C`."""
 
-    def binds_by_keyword(self, site: ClassReferenceSite) -> bool:
+    @staticmethod
+    def receiving_call(site: ClassReferenceSite) -> tuple[ast.Call, ast.expr] | None:
+        """The call the class is handed to, with the argument that carries it:
+        directly, inside a type form (`tuple[X, ...]`), or by keyword."""
+
         module = site.source.parsed_module
         parents = {
             child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
@@ -710,11 +717,13 @@ class KeywordBinders:
             argument, parent = parent, parents.get(parent)
         if isinstance(parent, ast.keyword):
             argument, parent = parent.value, parents.get(parent)
-        return (
-            isinstance(parent, ast.Call)
-            and isinstance(argument, ast.expr)
-            and self.call_binds_by_keyword(module, parent, argument, 0)
-        )
+        if isinstance(parent, ast.Call) and isinstance(argument, ast.expr) and argument is not parent.func:
+            return parent, argument
+        return None
+
+    def binds_by_keyword(self, site: ClassReferenceSite) -> bool:
+        received = self.receiving_call(site)
+        return received is not None and self.call_binds_by_keyword(site.source.parsed_module, *received, 0)
 
     def call_binds_by_keyword(
         self, module: ParsedModule, call: ast.Call, argument: ast.expr, depth: int
@@ -727,6 +736,8 @@ class KeywordBinders:
         )
         if witness is None:
             return False
+        if witness.qualified_name == self.SUPER and call.args[:1] == [argument]:
+            return True
         if self.declared_binder(module, call.func, witness.qualified_name):
             return True
         callee_module, _, name = witness.qualified_name.rpartition(".")
@@ -756,6 +767,9 @@ class KeywordBinders:
                 case ast.arg() | ast.Compare():
                     continue
                 case ast.Call(func=ast.Name(id="isinstance" | "issubclass")):
+                    continue
+                # Built by name alone: no position for a reordered field to shift.
+                case ast.Call(func=func, args=[]) if func is node:
                     continue
                 case ast.Call() if self.call_binds_by_keyword(reader, parent, node, depth + 1):
                     continue
@@ -937,9 +951,11 @@ class ClassReferenceSites:
                 or not proved_construction_parameters(self.snapshot, site.symbol)
             ):
                 continue
+            received = self.binders.receiving_call(site)
             raise NeedsInput(
-                f"{site.location} passes `{ast.unparse(site.node)}` on as a value; "
-                "how its callers bind fields is unproved", NeededInput.PROOF
+                f"{site.location} passes `{ast.unparse(site.node)}` on as a value"
+                + ("" if received is None else f" to `{ast.unparse(received[0].func)}`")
+                + "; how its callers bind fields is unproved", NeededInput.PROOF
             )
 
 
