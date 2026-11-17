@@ -308,7 +308,7 @@ class CompositionRootLayering(ParsedModuleSetFact):
                         file_path=module.file_path,
                         lineno=statement.lineno,
                         reader=module.module_name,
-                        symbol="" if local is None else enclosing_symbol(local),
+                        symbol="" if local is None else local.symbol,
                         loaded=loaded,
                         declaration=declaration,
                         lower=placement[0],
@@ -339,16 +339,6 @@ class CompositionRootLayering(ParsedModuleSetFact):
 
         homes = [home for name in names if (home := self.home((module, name))) is not None]
         return frozenset.intersection(*(root.closures[layer] for root, layer in homes)) if homes else frozenset()
-
-
-def enclosing_symbol(hidden: LocalImport) -> str:
-    """The dotted class and function names enclosing the import."""
-
-    return ".".join(
-        node.name
-        for node in reversed(hidden.ancestors)
-        if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
-    )
 
 
 def import_reads(

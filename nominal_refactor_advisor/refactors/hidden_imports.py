@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.codemod_payload import StringArrayPayloadValueCodec, codemod_payload_field
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
@@ -29,14 +30,20 @@ class PromoteHiddenImportsOperation(RepositorySourceReprovedOperation):
     its function. The plan is derived again on the state the operation applies
     to, so a stage sees every promotion an earlier stage made."""
 
+    only: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec(), default=())
+    """The identities of the imports to move, when a change freed some of the
+    module's imports and leaves the rest as they were; empty moves every one."""
+
     def source_edits_from_snapshot(self, snapshot: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
         plan = snapshot.module_set.fact(HiddenImportPlan)
-        accepted = plan.accepted_in(self.target.file_path)
+        only = frozenset(self.only) or None
+        accepted = [hidden for hidden in plan.accepted_in(self.target.file_path) if only is None or hidden.identity in only]
         return plan.edits_for(
             self.target.file_path,
             self.rationale_text(
                 f"Import {len(accepted)} hidden import(s) at the module's top: none closes a load-time cycle."
             ),
+            only,
         )
 
 
