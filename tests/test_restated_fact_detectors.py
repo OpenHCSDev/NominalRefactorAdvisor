@@ -1273,6 +1273,93 @@ def test_a_union_with_a_foreign_member_is_decoded_by_the_test(tmp_path: Path):
     assert _lines(findings) == [16, 20, 24]
 
 
+def test_a_rebinding_after_the_test_does_not_reach_it(tmp_path: Path):
+    # textual `Content.from_markup(cls, markup: str | Content)` tests `markup`, then
+    # rebinds it: the test still reads the argument. A binding before the test, or
+    # later in a loop around it, does reach it.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle\n"
+                "def after(value: Circle | str):\n"
+                "    if isinstance(value, Circle):\n        return value\n"
+                "    value = value.strip()\n"
+                "    return value\n"
+                "def before(value: Circle | str):\n"
+                "    value = Circle()\n"
+                "    if isinstance(value, Circle):\n        return value\n"
+                "def looped(value: Circle | str):\n"
+                "    while True:\n"
+                "        if isinstance(value, Circle):\n            return value\n"
+                "        value = Circle()\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [9, 13]
+
+
+def test_an_element_of_a_foreign_union_iterable_is_decoded_by_the_test(tmp_path: Path):
+    # textual `OptionList.add_options(new_options: Iterable[OptionListContent])` with
+    # `OptionListContent: TypeAlias = "Option | VisualType | None"`: each element is
+    # foreign until tested. Elements of the scan's own classes still restate it.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from typing import Iterable\n"
+                "from typing_extensions import TypeAlias\n"
+                "from shapes import Circle, Shape\n"
+                "Content: TypeAlias = 'Circle | str | None'\n"
+                "def aliased(values: Iterable[Content]) -> int:\n"
+                "    for value in values:\n"
+                "        if isinstance(value, Circle):\n            return 1\n"
+                "    return 0\n"
+                "def starred(*values: Circle | bytes) -> int:\n"
+                "    for value in values:\n"
+                "        if isinstance(value, Circle):\n            return 1\n"
+                "    return 0\n"
+                "def own(values: list[Shape]) -> int:\n"
+                "    for value in values:\n"
+                "        if isinstance(value, Circle):\n            return 1\n"
+                "    return 0\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [17]
+
+
+def test_a_methods_operand_of_its_own_family_is_decoded_like_eq(tmp_path: Path):
+    # textual `Update.can_replace(self, message: Message)`: whether one message can
+    # replace another depends on both, so the test of the receiver's own class
+    # decodes the operand. A test of a sibling, or a plain function's test, restates.
+    findings = _findings(
+        tmp_path,
+        OwnTypeTestDetector,
+        {
+            "shapes": OWN_CLASSES,
+            "use": (
+                "from shapes import Circle, Shape, Square\n"
+                "class Ring(Circle):\n"
+                "    def replaces(self, other: Circle) -> bool:\n"
+                "        return isinstance(other, Ring)\n"
+                "    def sibling(self, other: Shape) -> bool:\n"
+                "        return isinstance(other, Square)\n"
+                "def plain(other: Shape) -> bool:\n"
+                "    return isinstance(other, Ring)\n"
+            ),
+        },
+    )
+
+    assert _lines(findings) == [6, 8]
+
+
 def test_a_comparison_methods_operand_is_the_decoder_annotated_or_not(tmp_path: Path):
     # The data model hands `__eq__` any object; `merge` receives what its
     # callers pass, so its test still restates the family.

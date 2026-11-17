@@ -670,13 +670,21 @@ class ScopeBindingCollector(ast.NodeVisitor):
     bound_names: set[str] = field(default_factory=set)
     global_names: set[str] = field(default_factory=set)
     nonlocal_names: set[str] = field(default_factory=set)
+    binding_nodes: dict[str, list[ast.AST]] = field(default_factory=dict)
+    """Each bound name's binding statements or targets, so a read can ask which of
+    them can run before it."""
+
+    def bind(self, names: Iterable[str], node: ast.AST) -> None:
+        for name in names:
+            self.bound_names.add(name)
+            self.binding_nodes.setdefault(name, []).append(node)
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, (ast.Store, ast.Del)):
-            self.bound_names.add(node.id)
+            self.bind((node.id,), node)
 
     def visit_FunctionDef(self, node: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
-        self.bound_names.add(node.name)
+        self.bind((node.name,), node)
         for decorator in node.decorator_list:
             self.visit(decorator)
         self.visit(node.args)
@@ -686,7 +694,7 @@ class ScopeBindingCollector(ast.NodeVisitor):
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
-        self.bound_names.add(node.name)
+        self.bind((node.name,), node)
         for expression in (*node.decorator_list, *node.bases, *node.keywords):
             self.visit(expression)
 
@@ -694,10 +702,10 @@ class ScopeBindingCollector(ast.NodeVisitor):
         self.visit(node.args)
 
     def visit_Import(self, node: ast.Import) -> None:
-        self.bound_names.update(ImportBoundNameProjection(node).names())
+        self.bind(ImportBoundNameProjection(node).names(), node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-        self.bound_names.update(ImportBoundNameProjection(node).names())
+        self.bind(ImportBoundNameProjection(node).names(), node)
 
     def visit_Global(self, node: ast.Global) -> None:
         self.global_names.update(node.names)
@@ -706,28 +714,24 @@ class ScopeBindingCollector(ast.NodeVisitor):
         self.nonlocal_names.update(node.names)
 
     def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
-        for capture_name in capture_names(node):
-            self.bound_names.add(capture_name)
+        self.bind(capture_names(node), node)
         self.generic_visit(node)
 
     def visit_MatchAs(self, node: ast.MatchAs) -> None:
-        for capture_name in capture_names(node):
-            self.bound_names.add(capture_name)
+        self.bind(capture_names(node), node)
         self.generic_visit(node)
 
     def visit_MatchStar(self, node: ast.MatchStar) -> None:
-        for capture_name in capture_names(node):
-            self.bound_names.add(capture_name)
+        self.bind(capture_names(node), node)
 
     def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
-        for capture_name in capture_names(node):
-            self.bound_names.add(capture_name)
+        self.bind(capture_names(node), node)
         self.generic_visit(node)
 
     def visit_ListComp(self, node: ast.ListComp) -> None:
-        _ComprehensionContainingScopeBindingCollector(self.bound_names).generic_visit(
-            node
-        )
+        _ComprehensionContainingScopeBindingCollector(
+            self.bound_names, binding_nodes=self.binding_nodes
+        ).generic_visit(node)
 
     visit_SetComp = visit_ListComp
     visit_DictComp = visit_ListComp
@@ -771,7 +775,7 @@ class _ComprehensionContainingScopeBindingCollector(ScopeBindingCollector):
         return
 
     def visit_NamedExpr(self, node: ast.NamedExpr) -> None:
-        self.bound_names.update(_store_names(node.target))
+        self.bind(_store_names(node.target), node)
         self.visit(node.value)
 
 
@@ -802,7 +806,7 @@ class LexicalScopeBindingAuthority:
     def bound_parameter(
         cls, read: ast.Name, ancestors: Sequence[ast.AST]
     ) -> ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda | None:
-        """The function whose parameter a read of a name reads, when nothing rebinds it.
+        """The function whose parameter a read of a name reads, when no rebinding reaches it.
 
         `ancestors` run from the module down to the read's parent. The read
         resolves in the nearest enclosing scope that binds the name: a
@@ -810,11 +814,14 @@ class LexicalScopeBindingAuthority:
         function whose body holds the read (a read in a function's defaults,
         decorators or annotations runs in the scope around it). The answer is
         that function only when the function declares
-        it a positional or keyword parameter and nothing rebinds it: no binding
-        in the function's own scope (assignment, augmented assignment, `del`, a
-        `for` or `with` target, a walrus, `except E as name`, a match capture,
-        an import, a nested `def` or `class`) and no nested scope declaring it
-        `nonlocal`. A read reaching any other binding answers None.
+        it a positional or keyword parameter and no rebinding reaches the read: no
+        binding in the function's own scope (assignment, augmented assignment,
+        `del`, a `for` or `with` target, a walrus, `except E as name`, a match
+        capture, an import, a nested `def` or `class`) that starts before the read
+        or sits in a loop that also holds the read, and no nested scope declaring
+        it `nonlocal`. A binding after the read, outside any loop around it, runs
+        only once the read has taken the argument. A read reaching any other
+        binding answers None.
         """
 
         name = read.id
@@ -832,7 +839,15 @@ class LexicalScopeBindingAuthority:
                     for statement in body:
                         collector.visit(statement)
                     if name in cls.argument_names(scope):
-                        rebound = name in collector.bound_names or any(
+                        loops = tuple(
+                            node
+                            for node in path[depth + 1 :]
+                            if isinstance(node, ast.For | ast.AsyncFor | ast.While)
+                        )
+                        rebound = any(
+                            cls.reaches(binding, read, loops)
+                            for binding in collector.binding_nodes.get(name, ())
+                        ) or any(
                             isinstance(node, ast.Nonlocal) and name in node.names
                             for statement in body
                             for node in ast.walk(statement)
@@ -858,6 +873,16 @@ class LexicalScopeBindingAuthority:
                     if name in cls.bound_names(body):
                         return None
         return None
+
+    @staticmethod
+    def reaches(binding: ast.AST, read: ast.Name, loops: Sequence[ast.AST]) -> bool:
+        """Whether a binding in a function's own scope can run before a read in it:
+        it starts first, or one of the `loops` holding the read also holds it (the
+        next pass reads what this one bound)."""
+
+        if (binding.lineno, binding.col_offset) < (read.lineno, read.col_offset):
+            return True
+        return any(node is binding for loop in loops for node in ast.walk(loop))
 
     @classmethod
     def bound_once(cls, read: ast.Name, ancestors: Sequence[ast.AST]) -> bool:
