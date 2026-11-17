@@ -101,6 +101,10 @@ class SearchMove(SemanticRecord, ABC):
         """What a report says about this move when it is not on the front."""
         raise NotImplementedError
 
+    def released(self) -> SearchMove:
+        """This move once no lookahead can play from its end state."""
+        return self
+
 
 @dataclass(frozen=True)
 class UnscoredMove(SearchMove):
@@ -132,7 +136,6 @@ class ScoredMove(SearchMove):
     """Tokens of the move's diff: what a reader writes or reviews to make it."""
     before: StateScore
     after: StateScore
-    end: CodemodWorkflowScan = json_report_field(included=False, compare=False, repr=False)
     following: tuple[ScoredMove, ...] = ()
     """The best moves found from this move's end state, when lookahead reached it."""
 
@@ -203,9 +206,7 @@ class ScoredMove(SearchMove):
     def looked_past(
         self, search: RefactorSearch, widened: frozenset[str], depth: int
     ) -> SearchMove:
-        if self.concept not in widened:
-            return self
-        return replace(self, following=search.turn(self.end, self.after, depth).front)
+        return self
 
     def off_front(self, front: tuple[ScoredMove, ...]) -> tuple[str, ...]:
         if self in front:
@@ -214,6 +215,37 @@ class ScoredMove(SearchMove):
             f"dominated {self.concept}: -{self.findings_removed} finding(s) "
             f"for {self.tokens} token(s), -{self.add_member_edits_removed} add-member "
             f"edit(s), +{self.derived_gained} derived",
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlayableMove(ScoredMove):
+    """A scored move that still holds its end state, so lookahead can play from it.
+
+    An end state is a whole scanned tree. Only the first `width` moves of a turn's
+    front are played past, so every other move releases its end as soon as it
+    falls out of that prefix, and a played move releases it once its
+    continuations are found."""
+
+    end: CodemodWorkflowScan = json_report_field(included=False, compare=False, repr=False)
+
+    def looked_past(
+        self, search: RefactorSearch, widened: frozenset[str], depth: int
+    ) -> SearchMove:
+        if self.concept not in widened:
+            return self.released()
+        return replace(
+            self.released(), following=search.turn(self.end, self.after, depth).front
+        )
+
+    def released(self) -> ScoredMove:
+        return ScoredMove(
+            concept=self.concept,
+            stages=self.stages,
+            tokens=self.tokens,
+            before=self.before,
+            after=self.after,
+            following=self.following,
         )
 
 
@@ -267,13 +299,10 @@ class RefactorSearch:
     def turn(self, scan: CodemodWorkflowScan, start: StateScore, depth: int) -> SearchTurn:
         """Every concept played from `scan`, whose score is `start`, looking `depth` moves ahead."""
 
-        turn = SearchTurn(
-            start,
-            tuple(
-                self.move(scan, start, concept)
-                for concept in RefactorConcept.declaration_types()
-            ),
-        )
+        moves: tuple[SearchMove, ...] = ()
+        for concept in RefactorConcept.declaration_types():
+            moves = self.playable((*moves, self.move(scan, start, concept)), start, depth)
+        turn = SearchTurn(start, moves)
         if depth <= 1:
             return turn
         widened = frozenset(move.concept for move in turn.front[: self.budget.width])
@@ -281,6 +310,22 @@ class RefactorSearch:
             turn,
             moves=tuple(move.looked_past(self, widened, depth - 1) for move in turn.moves),
         )
+
+    def playable(
+        self, moves: tuple[SearchMove, ...], start: StateScore, depth: int
+    ) -> tuple[SearchMove, ...]:
+        """`moves`, each releasing its end state unless lookahead can still play it.
+
+        A move outside the first `width` of the front never re-enters it: a later
+        move can only rank ahead of it or dominate it. So its end state, a whole
+        scanned tree, is freed now rather than held until the turn ends."""
+
+        kept = (
+            frozenset(move.concept for move in SearchTurn(start, moves).front[: self.budget.width])
+            if depth > 1
+            else frozenset()
+        )
+        return tuple(move if move.concept in kept else move.released() for move in moves)
 
     def move(
         self, scan: CodemodWorkflowScan, start: StateScore, concept: type[RefactorConcept]
@@ -309,7 +354,7 @@ class RefactorSearch:
         if not report.stop_reason.completed or not report.stages:
             return UnscoredMove(key, f"goal search stopped: {report.stop_reason.value}")
         end = report.trajectory_proof.proved_terminal.state.scan
-        return ScoredMove(
+        return PlayableMove(
             concept=key,
             stages=len(report.stages),
             tokens=edit_tokens(scan.sources_by_file_path, end.sources_by_file_path),

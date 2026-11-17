@@ -7,6 +7,7 @@ import hashlib
 import os
 import stat
 import tempfile
+import weakref
 from abc import (
     ABC,
     abstractmethod,
@@ -199,13 +200,16 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
         return DeferredTypeChecker(SourceTexts(self.parsed_modules))
 
-    _projected_states: dict[tuple[tuple[str, str], ...], CodemodSourceSnapshot] = (
-        field(default_factory=dict, init=False, repr=False, compare=False)
-    )
+    _projected_states: weakref.WeakValueDictionary[
+        tuple[tuple[str, str], ...], CodemodSourceSnapshot
+    ] = field(default_factory=weakref.WeakValueDictionary, init=False, repr=False, compare=False)
     """The states this one becomes under each source overlay. A projection is a
     function of this state and its overlay, so every phase that projects the
     same overlay (plan evaluation, preflight, edits) reads one state and
-    everything derived from it."""
+    everything derived from it, while any phase still holds it. The parent does
+    not keep a state alive: a goal search's base lives for the whole search,
+    and holding every branch it ever projected grew memory per explored state
+    until the host ran out (exit 137 on agent-comms)."""
 
     def text_file(self, path: Path) -> FileText:
         """A file outside the Python index as this state has it."""
@@ -463,9 +467,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         if not source_overlay:
             return self
         overlay = tuple(sorted(source_overlay.items()))
-        if overlay not in self._projected_states:
-            self._projected_states[overlay] = self._projected_state(source_overlay)
-        return self._projected_states[overlay]
+        projected = self._projected_states.get(overlay)
+        if projected is None:
+            projected = self._projected_state(source_overlay)
+            self._projected_states[overlay] = projected
+        return projected
 
     def _projected_state(
         self,
