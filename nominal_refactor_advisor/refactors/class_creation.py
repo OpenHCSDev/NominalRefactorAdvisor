@@ -92,6 +92,18 @@ SUPER_CREATION = frozenset(("__new__", "__init__", "__init_subclass__", "__prepa
 CREATION_METHODS = frozenset(("__new__", "__init__", "__prepare__"))
 DEPTH = 6
 
+REFERENCE_STORES: dict[type, frozenset[str]] = {
+    list: frozenset(("append", "insert")),
+    set: frozenset(("add",)),
+    dict: frozenset(("setdefault",)),
+}
+"""The builtin container methods that keep an argument by reference and run
+nothing of it but its type's `__hash__` and `__eq__`: storing a class there
+changes nothing a call to it binds. The builtins' surface does not say which
+methods call their arguments, so this table declares it."""
+
+BUILTIN_CONTAINERS = {f"builtins.{kind.__name__}": kind for kind in REFERENCE_STORES}
+
 
 def declared_names(statement: ast.stmt) -> frozenset[str]:
     """The class-scope names one declaration statement binds."""
@@ -236,6 +248,17 @@ class CreationCode:
     location: str
     owner: CompactIndexedClass | None
     """The scanned class declaring it, for resolving `cls.` and `mcs.` calls."""
+
+
+@dataclass(frozen=True)
+class BuiltinContainer:
+    """A value proved to be a builtin container, with the type arguments its
+    declaration names, read where `owner`'s module binds names at `line`."""
+
+    kind: type
+    arguments: tuple[ast.expr, ...]
+    owner: CompactIndexedClass
+    line: int
 
 
 @dataclass(frozen=True)
@@ -837,6 +860,8 @@ class CreationReads:
     def follow(self, call: ast.Call, node: ast.Name, role: Role) -> None:
         """A role passed to a function: modelled, or read the same way."""
 
+        if self.stored_by_reference(call, node):
+            return
         target = self.callee(call.func)
         if target is True:
             return
@@ -866,6 +891,98 @@ class CreationReads:
             if role is not None and index < len(names):
                 mapped[names[index]] = role
         type(self)(self.proof, code, mapped, self.depth + 1).require()
+
+    def stored_by_reference(self, call: ast.Call, node: ast.Name) -> bool:
+        """`container.add(value)` on a container proved a builtin one: the call keeps
+        a reference and, for a hashing container, hashes it by its metaclass."""
+
+        match call.func:
+            case ast.Attribute(value=receiver, attr=attr) if node in call.args and self.code.owner is not None:
+                owner = self.code.owner
+                end = len(self.proof.snapshot.sources_by_file_path[owner.file_path].splitlines()) + 1
+                container = self.builtin_container(receiver, owner, end)
+                if container is None or attr not in REFERENCE_STORES[container.kind]:
+                    return False
+                if container.kind is not list:
+                    self.require_plain_hash(call)
+                return True
+        return False
+
+    def require_plain_hash(self, call: ast.Call) -> None:
+        """Hashing the class runs its metaclass's `__hash__` and `__eq__`: only
+        `type`'s, or a modelled metaclass's, are known to read nothing."""
+
+        for symbol in self.proof.metaclasses():
+            for indexed in self.proof.metaclass_ancestry(symbol):
+                if self.proof.method(indexed, "__hash__") or self.proof.method(indexed, "__eq__"):
+                    self.refuse(call, f"hashes the class with `{indexed.qualname}`'s own `__hash__` or `__eq__`")
+
+    def builtin_container(
+        self, expr: ast.expr, owner: CompactIndexedClass, line: int
+    ) -> BuiltinContainer | None:
+        """The builtin container `expr` evaluates to, read where `owner`'s module
+        binds its names at `line`: an empty display or builtin call, a class
+        attribute declared with a builtin container type and value, or the value
+        `setdefault` returns from such a mapping. None when NRA cannot prove it."""
+
+        match expr:
+            case ast.Dict(keys=[]):
+                return BuiltinContainer(dict, (), owner, line)
+            case ast.List(elts=[]):
+                return BuiltinContainer(list, (), owner, line)
+            case ast.Call(func=ast.Name() as name, args=[], keywords=[]):
+                kind = BUILTIN_CONTAINERS.get(self.proof.qualified(owner, name, line))
+                return BuiltinContainer(kind, (), owner, line) if kind is not None else None
+            case ast.Attribute(value=ast.Name() as holder, attr=attr):
+                indexed = self.proof.class_index.class_for(self.proof.qualified(owner, holder, line))
+                return self.declared_container(indexed, attr) if indexed is not None else None
+            case ast.Call(func=ast.Attribute(value=receiver, attr="setdefault"), args=[_, default], keywords=[]):
+                mapping = self.builtin_container(receiver, owner, line)
+                if mapping is None or mapping.kind is not dict or len(mapping.arguments) != 2:
+                    return None
+                value = self.annotated_container(mapping.arguments[1], mapping.owner, mapping.line)
+                stored = self.builtin_container(default, owner, line)
+                if value is None or stored is None or stored.kind is not value.kind:
+                    return None
+                return value
+        return None
+
+    def declared_container(self, indexed: CompactIndexedClass, attr: str) -> BuiltinContainer | None:
+        """A class attribute whose declared type and declared value are the same
+        builtin container. The declared type is the proof of what later
+        bindings hold, as a type checker enforces it."""
+
+        for statement in self.proof.class_node(indexed).body:
+            match statement:
+                case ast.AnnAssign(target=ast.Name(id=name), annotation=annotation, value=value) if (
+                    name == attr and value is not None
+                ):
+                    declared = self.annotated_container(annotation, indexed, statement.lineno)
+                    stored = self.builtin_container(value, indexed, statement.lineno)
+                    if declared is None or stored is None or stored.kind is not declared.kind:
+                        return None
+                    return declared
+        return None
+
+    def annotated_container(
+        self, annotation: ast.expr, owner: CompactIndexedClass, line: int
+    ) -> BuiltinContainer | None:
+        """The builtin container an annotation names, `ClassVar` unwrapped."""
+
+        if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+            annotation = ast.parse(annotation.value, mode="eval").body
+        head, arguments = (
+            (annotation.value, annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice])
+            if isinstance(annotation, ast.Subscript)
+            else (annotation, [])
+        )
+        if not isinstance(head, (ast.Name, ast.Attribute)):
+            return None
+        qualified = self.proof.qualified(owner, head, line)
+        if qualified == "typing.ClassVar" and len(arguments) == 1:
+            return self.annotated_container(arguments[0], owner, line)
+        kind = BUILTIN_CONTAINERS.get(qualified)
+        return BuiltinContainer(kind, tuple(arguments), owner, line) if kind is not None else None
 
     def callee(self, func: ast.expr) -> CreationCode | bool | None:
         """The scanned function a call reaches, or True for a modelled one."""
