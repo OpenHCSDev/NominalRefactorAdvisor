@@ -40,8 +40,9 @@ import ast
 import math
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
+from typing import Self
 from enum import StrEnum
 from functools import cached_property
 
@@ -85,6 +86,59 @@ class ClassOverlapShape(StrEnum):
     MISSING_MIXIN = "missing_mixin"
 
 
+class SubclassAnswers(ABC):
+    """Which identity reads of a class a move changes the answer of.
+
+    A read whose answer decides by the class's identity alone (an `isinstance`
+    of a value, a class pattern, a type key) changes with every move that
+    changes the identity. An `issubclass(C, tested)` whose `C` is a scanned
+    class is decided by `C`'s ancestry, so it changes only if the move changes
+    whether `C` descends from the tested class (paper1 Prop 3.3, Thm 4.8).
+    """
+
+    @abstractmethod
+    def changes(self, tested_subclass: str | None) -> bool:
+        """Whether a read testing the class `tested_subclass` (none when the
+        read tests a value, or no scanned class) answers differently."""
+
+        raise NotImplementedError
+
+
+class EveryAnswer(SubclassAnswers):
+    """The move changes the class's identity itself: every read may answer otherwise."""
+
+    def changes(self, tested_subclass: str | None) -> bool:
+        return True
+
+
+@dataclass(frozen=True)
+class AnswersFor(SubclassAnswers):
+    """The move gives the tested class new descendants, `classes`: only a read
+    asking about one of them, or about a value, answers otherwise."""
+
+    classes: frozenset[str]
+
+    @classmethod
+    def gaining(
+        cls, tested: str, composers: Iterable[str], class_index: CompactClassFamilyIndex
+    ) -> Self:
+        """Each composer, and each descendant of one, that does not descend
+        from `tested` already becomes one when the composers inherit it."""
+
+        already = {tested, *class_index.descendant_symbols(tested)}
+        return cls(
+            frozenset(
+                symbol
+                for composer in composers
+                for symbol in (composer, *class_index.descendant_symbols(composer))
+                if symbol not in already
+            )
+        )
+
+    def changes(self, tested_subclass: str | None) -> bool:
+        return tested_subclass is None or tested_subclass in self.classes
+
+
 class ClassOverlapMove(Case):
     """The factoring an overlap calls for, and whose identities it changes.
 
@@ -115,6 +169,17 @@ class ClassOverlapMove(Case):
         """The classes whose type identity this move changes."""
 
         raise NotImplementedError
+
+    @classmethod
+    def changed_answers(
+        cls,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
+    ) -> SubclassAnswers:
+        """Which identity reads of a guarded class the move answers otherwise."""
+
+        return EveryAnswer()
 
 
 class DeleteAndRedirect(ClassOverlapMove):
@@ -147,6 +212,15 @@ class ComposeExisting(ClassOverlapMove):
         cls, owner: CompactIndexedClass, restating: CompactIndexedClass
     ) -> tuple[CompactIndexedClass, ...]:
         return (owner,)
+
+    @classmethod
+    def changed_answers(
+        cls,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
+    ) -> SubclassAnswers:
+        return AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)
 
 
 class PromoteToSharedBase(ClassOverlapMove):
@@ -217,6 +291,8 @@ class ClassUse:
     file_path: str
     reference: CompactClassReference
     role: ClassReferenceRole
+    tested_subclass: str | None
+    """For an `issubclass` test, the scanned class it asks about."""
 
     @property
     def consumer(self) -> str:
@@ -316,7 +392,18 @@ class ClassUseIndex:
         found = self.__dict__.setdefault("_uses", {})
         if symbol not in found:
             found[symbol] = tuple(
-                ClassUse(file_path, reference, role)
+                ClassUse(
+                    file_path,
+                    reference,
+                    role,
+                    self.resolver.symbol_for(
+                        module_name=module_name,
+                        reference_parts=reference.tested_subclass,
+                        allow_unique_unqualified=False,
+                    )
+                    if reference.tested_subclass
+                    else None,
+                )
                 for file_path, module_name, reference in self.references_by_terminal_name.get(
                     symbol.rpartition(".")[2], ()
                 )
@@ -1369,12 +1456,13 @@ class ClassOverlapVerdicts:
         """Uses that tell apart, by type, a class whose identity the move changes."""
 
         guarded = move.guarded_classes(owner, restating)
+        answers = move.changed_answers(owner, restating, self.class_index)
         receipts: list[Receipt] = []
         for indexed_class in guarded:
             identity_uses = tuple(
                 use
                 for use in self.uses.uses_of(indexed_class)
-                if use.role.distinguishes_identity
+                if use.role.distinguishes_identity and answers.changes(use.tested_subclass)
             )
             if identity_uses:
                 receipts.append(
