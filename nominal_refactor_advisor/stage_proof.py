@@ -1,9 +1,9 @@
 """How a goal run proves a concept's stages.
 
-A stage is proved by rerunning detectors over its projected sources. A concept
-declares which: whether a stage reruns the semantic-mirror detectors beside its
-own, and whether a state with no targets left is certified again by a scan of
-every detector over the whole tree.
+A stage is proved by rerunning the concept's own detectors over its projected
+sources. A concept declares which per-module findings a stage carries, and
+whether a state with no targets left is certified again by a scan of every
+detector over the whole tree.
 """
 
 from __future__ import annotations
@@ -34,14 +34,6 @@ class StageProof(ABC):
 
     @classmethod
     @abstractmethod
-    def reproof_detector_ids(
-        cls, own: frozenset[str], semantic_mirrors: frozenset[str]
-    ) -> frozenset[str]:
-        """The detectors a stage reruns over its projected sources."""
-        raise NotImplementedError
-
-    @classmethod
-    @abstractmethod
     def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
         """Per-module detectors whose findings a stage carries forward and
         recomputes only for the files it touched."""
@@ -62,15 +54,8 @@ class StageProof(ABC):
 
 
 class RescannedStages(StageProof):
-    """A stage reruns the semantic mirrors beside its own detectors, and a
-    terminal is rescanned by every detector: the stage's edits may change any
-    fact any detector reads."""
-
-    @classmethod
-    def reproof_detector_ids(
-        cls, own: frozenset[str], semantic_mirrors: frozenset[str]
-    ) -> frozenset[str]:
-        return own | semantic_mirrors
+    """A terminal is rescanned by every detector: the stages' edits may change
+    any fact any detector reads."""
 
     @classmethod
     def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
@@ -91,12 +76,6 @@ class OperationCertifiedStages(StageProof):
     tree. A rewritten file is re-proved once, when the trajectory settles: no
     stage plans from a per-module finding. Detectors that read across files are
     not rerun; the next full scan measures them."""
-
-    @classmethod
-    def reproof_detector_ids(
-        cls, own: frozenset[str], semantic_mirrors: frozenset[str]
-    ) -> frozenset[str]:
-        return own
 
     @classmethod
     def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:

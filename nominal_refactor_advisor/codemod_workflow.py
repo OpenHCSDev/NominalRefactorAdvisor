@@ -2061,16 +2061,14 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
 
         simulation = stage.simulation
 
-        detector_ids = self.migration_type.stage_proof.reproof_detector_ids(
-            frozenset(
-                (
-                    *(finding.detector_id for finding in target_findings),
-                    *FindingRecipeSynthesizer.detector_ids_for_concept(
-                        self.migration_type
-                    ),
-                )
-            ),
-            IssueDetector.semantic_mirror_detector_ids(),
+        # Acceptance reads only the concept's own findings (`target_findings`), so a
+        # stage reruns only the detectors that can produce them; every other
+        # detector is measured when the trajectory settles.
+        detector_ids = frozenset(
+            (
+                *(finding.detector_id for finding in target_findings),
+                *FindingRecipeSynthesizer.detector_ids_for_concept(self.migration_type),
+            )
         )
         registered = IssueDetector.registered_detector_types()
         detector_types = IssueDetector.registered_detector_types_with_ids(detector_ids)

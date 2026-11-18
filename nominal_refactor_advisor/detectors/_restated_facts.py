@@ -724,8 +724,7 @@ class ProbeOwnerQuery:
 
         if not self.spans:
             return ProbeOwnerContext(self.classes, {}, self.typing)
-        with TypeCheckerSession.session(sources) as session:
-            answers = session.receiver_types(self.spans)
+        answers = TypeCheckerSession.answers(sources, self.spans)
         return ProbeOwnerContext(
             self.classes,
             {span: answer.owner(self.classes) for span, answer in answers.items()},
