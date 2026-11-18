@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import re
 from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import cast
@@ -29,7 +30,7 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
-from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.observation_families import ShapeFamily, TypeArgumentResolver
 from nominal_refactor_advisor.probe_owner import (
     ProbeOwner,
     ProbeOwnerResolver,
@@ -729,6 +730,100 @@ def undefaulted_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list
     return undefaulted
 
 
+REACTIVE_DECLARERS = frozenset({"reactive", "var", "Reactive"})
+"""Textual's reactive descriptors: a class attribute assigned one of these is a reactive."""
+
+REACTIVE_CALLBACK = re.compile(r"_?(?:watch|validate)_(?P<reactive>\w+)")
+"""Textual calls `watch_x`/`validate_x` (or `_watch_x`/`_validate_x`) with reactive `x`'s value."""
+
+
+def reactive_names(owner: ast.ClassDef) -> frozenset[str]:
+    """The reactives the class body declares: `x = reactive(...)` or `x: T = var(...)`."""
+
+    names: set[str] = set()
+    for statement in owner.body:
+        match statement:
+            case ast.Assign(targets=[ast.Name(id=name)], value=ast.Call(func=callee)) | ast.AnnAssign(
+                target=ast.Name(id=name), value=ast.Call(func=callee)
+            ) if ExpressionReference.decoded(_called(callee)).terminal_name in REACTIVE_DECLARERS:
+                names.add(name)
+    return frozenset(names)
+
+
+def _called(callee: ast.expr) -> ast.expr:
+    """`reactive[int](...)` is a call of `reactive`."""
+
+    return callee.value if isinstance(callee, ast.Subscript) else callee
+
+
+def _optional_parameters(node: ast.FunctionDef | ast.AsyncFunctionDef) -> dict[str, ast.arg]:
+    """Every parameter annotated `X | None`, defaulted or not."""
+
+    return {
+        argument.arg: argument
+        for argument in (*node.args.posonlyargs, *node.args.args, *node.args.kwonlyargs)
+        if optional_annotation(argument.annotation)
+    }
+
+
+def _none_default(node: ast.FunctionDef | ast.AsyncFunctionDef, name: str) -> bool:
+    """Whether the parameter's default is `None`."""
+
+    positional = [*node.args.posonlyargs, *node.args.args]
+    defaulted = positional[len(positional) - len(node.args.defaults):]
+    defaults: dict[str, ast.expr] = {
+        argument.arg: default for argument, default in zip(defaulted, node.args.defaults)
+    }
+    defaults |= {
+        argument.arg: default
+        for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+        if default is not None
+    }
+    return name in defaults and spells_none(defaults[name])
+
+
+@dataclass(frozen=True)
+class OptionalParameterThread:
+    """One function's undefaulted `X | None` parameters, and how a call passes them.
+
+    A private function whose every call in the module passes, for one of them,
+    an optional parameter of its caller is a copy of that caller's absence: the
+    absence starts at the caller, so the copy is not reported and the caller's
+    `None` default is, once (IDEN-5: the same sentinel restated at every level it
+    is passed through)."""
+
+    definition: ScopedDefinition
+    optional: frozenset[str]
+
+    @classmethod
+    def of(cls, definition: ScopedDefinition) -> OptionalParameterThread:
+        return cls(definition, frozenset(
+            argument.arg
+            for argument in undefaulted_parameters(definition.node)
+            if optional_annotation(argument.annotation)
+        ))
+
+    @property
+    def private(self) -> bool:
+        name = self.definition.node.name
+        return name.startswith("_") and not name.endswith("__")
+
+    def passed(self, call: ast.Call, parameter: str, on_receiver: bool) -> ast.expr | None:
+        """What the call passes for the parameter, when the call spells it."""
+
+        for keyword in call.keywords:
+            if keyword.arg == parameter:
+                return keyword.value
+        node = self.definition.node
+        positional = [argument.arg for argument in (*node.args.posonlyargs, *node.args.args)]
+        if on_receiver:
+            positional = positional[1:]
+        if parameter not in positional or positional.index(parameter) >= len(call.args):
+            return None
+        argument = call.args[positional.index(parameter)]
+        return None if isinstance(argument, ast.Starred) else argument
+
+
 class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """An undefaulted `X | None` parameter that its own body compares with None.
 
@@ -736,57 +831,224 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     (`default if value is None else value`), or choosing the returned value of
     a function whose declared return is not optional, is where absence is
     decided, not asked again, so it is left out. So is a dunder method: the language's
-    protocol fixes its signature and the interpreter is its caller.
+    protocol fixes its signature and the interpreter is its caller. So is the
+    decoder the factoring builds: a `@boundary_decoder`, and a probe whose None
+    branch answers with a class (the site's second detail, which the detector
+    checks against the scan's families). So is a Textual callback (`watch_x`,
+    `validate_x`) of a reactive `x` its class declares: the framework calls it with
+    the reactive's value.
+
+    A parameter passed through from its callers' optional parameters is reported
+    once, at the caller parameter whose `None` default starts the absence (see
+    `OptionalParameterThread`).
     """
 
     item_type = RestatingSiteModule
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for definition in scoped_definitions(parsed_module):
-            name = definition.node.name
-            if name.startswith("__") and name.endswith("__"):
+        resolver = TypeArgumentResolver(parsed_module)
+        definitions = list(scoped_definitions(parsed_module))
+        threads = {id(definition.node): OptionalParameterThread.of(definition) for definition in definitions}
+        copies = cls.threaded_copies(definitions, threads)
+        decided = frozenset(id(definition.node) for definition in definitions if cls.decides(definition))
+        for definition in definitions:
+            if id(definition.node) in decided:
                 continue
-            optional = {
-                argument.arg
-                for argument in undefaulted_parameters(definition.node)
-                if optional_annotation(argument.annotation)
-            }
-            match definition.node.returns:
-                case ast.expr() as declared:
-                    settles = not optional_annotation(declared)
-                case _:
-                    settles = False
-            deciding = {
-                id(node.test)
-                for node in function_nodes(definition.node)
-                if isinstance(node, ast.IfExp)
-                and any(
-                    isinstance(arm, ast.Name) and arm.id in optional
-                    for arm in (node.body, node.orelse)
+            optional = threads[id(definition.node)].optional - copies.get(id(definition.node), frozenset())
+            yield from cls.probes(parsed_module, resolver, definition, optional)
+        yield from cls.origins(parsed_module, definitions, threads, copies, decided)
+
+    @staticmethod
+    def decides(definition: ScopedDefinition) -> bool:
+        """Whether the function is where absence is decided, by its own declaration: a
+        dunder, a `@boundary_decoder`, or a Textual callback of a reactive its class declares."""
+
+        name = definition.node.name
+        if name.startswith("__") and name.endswith("__"):
+            return True
+        if any(
+            ExpressionReference.decoded(decorator).terminal_name == "boundary_decoder"
+            for decorator in definition.node.decorator_list
+        ):
+            return True
+        callback = REACTIVE_CALLBACK.fullmatch(name)
+        return (
+            isinstance(definition.owner, ast.ClassDef)
+            and callback is not None
+            and callback["reactive"] in reactive_names(definition.owner)
+        )
+
+    @classmethod
+    def probes(
+        cls,
+        parsed_module: ParsedModule,
+        resolver: TypeArgumentResolver,
+        definition: ScopedDefinition,
+        optional: frozenset[str],
+    ) -> Iterator[RestatingSite]:
+        match definition.node.returns:
+            case ast.expr() as declared:
+                settles = not optional_annotation(declared)
+            case _:
+                settles = False
+        deciding = {
+            id(node.test)
+            for node in function_nodes(definition.node)
+            if isinstance(node, ast.IfExp)
+            and any(
+                isinstance(arm, ast.Name) and arm.id in optional
+                for arm in (node.body, node.orelse)
+            )
+        } | {
+            id(node.value.test)
+            for node in function_nodes(definition.node)
+            if settles
+            and isinstance(node, ast.Return)
+            and isinstance(node.value, ast.IfExp)
+        }
+        branches: dict[int, tuple[list[ast.AST], list[ast.AST]]] = {
+            id(node.test): (list(node.body), list(node.orelse))
+            for node in function_nodes(definition.node)
+            if isinstance(node, ast.If)
+        } | {
+            id(node.test): ([node.body], [node.orelse])
+            for node in function_nodes(definition.node)
+            if isinstance(node, ast.IfExp)
+        }
+        for node in function_nodes(definition.node):
+            match node:
+                case ast.Compare(
+                    left=ast.Name(id=name),
+                    ops=[ast.Is() | ast.IsNot() as operator],
+                    comparators=[ast.Constant(value=None)],
+                ) if name in optional and id(node) not in deciding:
+                    is_none = isinstance(operator, ast.Is)
+                    yield RestatingSite(
+                        parsed_module.file_path,
+                        node.lineno,
+                        definition.qualname,
+                        name,
+                        (
+                            "is None" if is_none else "is not None",
+                            cls.none_answer(resolver, definition, branches.get(id(node)), is_none),
+                        ),
+                    )
+
+    @staticmethod
+    def none_answer(
+        resolver: TypeArgumentResolver,
+        definition: ScopedDefinition,
+        branches: tuple[list[ast.AST], list[ast.AST]] | None,
+        is_none: bool,
+    ) -> str:
+        """The class the None branch answers with (`return C(...)`, `return C`), or ""."""
+
+        if branches is None:
+            return ""
+        match branches[0] if is_none else branches[1]:
+            case [ast.Return(value=ast.expr() as answer), *_] | [ast.expr() as answer]:
+                pass
+            case _:
+                return ""
+        named = answer.func if isinstance(answer, ast.Call) else answer
+        if not isinstance(named, ast.Name | ast.Attribute):
+            return ""
+        return resolver.qualified_class_at(named, (definition.node,)) or ""
+
+    @staticmethod
+    def calls(
+        definitions: list[ScopedDefinition], callee: ScopedDefinition
+    ) -> Iterator[tuple[ScopedDefinition, ast.Call, bool]]:
+        """Each call of `callee` in this module: by name for a module function,
+        through `self`/`cls` from its own class's methods for a method."""
+
+        for caller in definitions:
+            for node in function_nodes(caller.node):
+                if not isinstance(node, ast.Call):
+                    continue
+                match node.func:
+                    case ast.Name(id=name) if name == callee.node.name and isinstance(callee.owner, ast.Module):
+                        yield caller, node, False
+                    case ast.Attribute(value=ast.Name(id="self" | "cls"), attr=name) if (
+                        name == callee.node.name and caller.owner is callee.owner
+                    ):
+                        yield caller, node, True
+
+    @classmethod
+    def threaded_copies(
+        cls, definitions: list[ScopedDefinition], threads: dict[int, OptionalParameterThread]
+    ) -> dict[int, frozenset[str]]:
+        """For each private function, the optional parameters that every call in the
+        module passes an optional parameter of its caller."""
+
+        copies: dict[int, frozenset[str]] = {}
+        for definition in definitions:
+            thread = threads[id(definition.node)]
+            if not thread.private or not thread.optional:
+                continue
+            calls = list(cls.calls(definitions, definition))
+            if not calls:
+                continue
+            copies[id(definition.node)] = frozenset(
+                parameter
+                for parameter in thread.optional
+                if all(
+                    isinstance(passed := thread.passed(call, parameter, on_receiver), ast.Name)
+                    and passed.id in _optional_parameters(caller.node)
+                    for caller, call, on_receiver in calls
                 )
-            } | {
-                id(node.value.test)
+            )
+        return copies
+
+    @classmethod
+    def origins(
+        cls,
+        parsed_module: ParsedModule,
+        definitions: list[ScopedDefinition],
+        threads: dict[int, OptionalParameterThread],
+        copies: dict[int, frozenset[str]],
+        decided: frozenset[int],
+    ) -> Iterator[RestatingSite]:
+        """One site per caller parameter whose `None` reaches a threaded copy that
+        probes it: the outermost declaration in the module that owns the absence, its
+        `None` default or the optional it is passed itself, unless that caller decides
+        absence (`decides`). A copy that only
+        passes the value on, or reads it some other way (`row_type or cls`), asks
+        nothing of the absence."""
+
+        seen: set[tuple[int, str]] = set()
+        for definition in definitions:
+            probed = {
+                node.left.id
                 for node in function_nodes(definition.node)
-                if settles
-                and isinstance(node, ast.Return)
-                and isinstance(node.value, ast.IfExp)
+                if isinstance(node, ast.Compare)
+                and isinstance(node.left, ast.Name)
+                and isinstance(node.ops[0], ast.Is | ast.IsNot)
+                and spells_none(node.comparators[0])
             }
-            for node in function_nodes(definition.node):
-                match node:
-                    case ast.Compare(
-                        left=ast.Name(id=name),
-                        ops=[ast.Is() | ast.IsNot() as operator],
-                        comparators=[ast.Constant(value=None)],
-                    ) if name in optional and id(node) not in deciding:
-                        yield RestatingSite(
-                            parsed_module.file_path,
-                            node.lineno,
-                            definition.qualname,
-                            name,
-                            (
-                                "is None"
-                                if isinstance(operator, ast.Is)
-                                else "is not None",
-                            ),
-                        )
+            for parameter in sorted(copies.get(id(definition.node), frozenset()) & probed):
+                pending = [(definition, parameter)]
+                while pending:
+                    callee, name = pending.pop()
+                    thread = threads[id(callee.node)]
+                    for caller, call, on_receiver in cls.calls(definitions, callee):
+                        passed = thread.passed(call, name, on_receiver)
+                        if not isinstance(passed, ast.Name) or (id(caller.node), passed.id) in seen:
+                            continue
+                        seen.add((id(caller.node), passed.id))
+                        if passed.id in copies.get(id(caller.node), frozenset()):
+                            pending.append((caller, passed.id))
+                        elif id(caller.node) not in decided:
+                            yield RestatingSite(
+                                parsed_module.file_path,
+                                _optional_parameters(caller.node)[passed.id].lineno,
+                                caller.qualname,
+                                passed.id,
+                                (
+                                    f"defaults to None, threaded to `{definition.node.name}`"
+                                    if _none_default(caller.node, passed.id)
+                                    else f"is passed on as `X | None` to `{definition.node.name}`",
+                                    "",
+                                ),
+                            )

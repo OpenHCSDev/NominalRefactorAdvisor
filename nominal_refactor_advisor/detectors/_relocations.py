@@ -48,6 +48,7 @@ from nominal_refactor_advisor.detectors._restated_facts import (
     RestatedFact,
     SingleFamilyRestatedFactDetector,
     _listed,
+    family_class_symbols,
 )
 
 
@@ -475,10 +476,12 @@ class ZeroOneTupleDetector(SingleFamilyRestatedFactDetector):
         return f"`{sites[0].symbol}` encodes absence as a 0/1 tuple: it returns `()` on one path and `(x,)` on another."
 
 
-class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
-    """An undefaulted `X | None` parameter compared with None in its own body."""
+class ThreadedAbsenceDetector(JoinedRestatedFactDetector[frozenset[str], RestatingSite]):
+    """An undefaulted `X | None` parameter compared with None in its own body, or
+    the `None` default its private callees are passed."""
 
-    module_projection_family = ThreadedAbsenceSiteFamily
+    module_projection_families = (ThreadedAbsenceSiteFamily, CompactModuleClassProjectionFamily)
+    compact_shared_group_context_builder = staticmethod(family_class_symbols)
     restated = RestatedFact(
         fact="The caller already knows whether the value is there, yet passes it as `X | None` and the callee asks again, so absence is restated at every function the value is threaded through.",
         owner="The owner is the value's type: a holding family (a held member and an absent member) that the caller builds once.",
@@ -493,7 +496,12 @@ class ThreadedAbsenceDetector(SingleFamilyRestatedFactDetector):
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def restates(self, site: RestatingSite, context: frozenset[str]) -> bool:
+        """A probe whose None branch answers with a family class is that family's decoder."""
+
+        return site.detail[1] not in context
+
+    def describe(self, sites: Sequence[RestatingSite], context: frozenset[str]) -> str:
         probes = _listed(f"line {site.lineno} `{site.group} {site.detail[0]}`" for site in sites)
         return (
             f"{sites[0].symbol} takes `{sites[0].group}` as `X | None` and probes it "

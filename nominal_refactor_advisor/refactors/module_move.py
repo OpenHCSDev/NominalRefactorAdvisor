@@ -3748,12 +3748,18 @@ class ImportedNameOwner:
         module_name: str | None,
         name: str,
     ) -> str | None:
-        """The indexed module declaring `name`, through modules that only rebind it."""
+        """The indexed module declaring `name`, through modules that only rebind it.
+
+        `from m import Y as name` rebinds `m`'s `Y`. `import m` and `import m as
+        name` bind the module object, which is `m` itself (its top package for
+        a dotted unaliased import), not a declaration of the module binding it.
+        A `from pkg import name` that `pkg` does not bind reads the submodule
+        `pkg.name`."""
 
         import_graph = context.module_import_graph
-        seen: set[str] = set()
-        while module_name is not None and module_name not in seen:
-            seen.add(module_name)
+        seen: set[tuple[str, str]] = set()
+        while module_name is not None and (module_name, name) not in seen:
+            seen.add((module_name, name))
             source_file = import_graph.unique_source_file_for_module_name(module_name)
             if source_file is None:
                 return None
@@ -3764,22 +3770,29 @@ class ImportedNameOwner:
             )
             if name in table.top_level_names:
                 return source_file.file_path
-            rebinding = next(
+            binding = next(
                 (
-                    node
+                    (node, alias)
                     for scope in ModuleImportScope
                     for node in scope.import_statements(table.module)
-                    if isinstance(node, ast.ImportFrom)
-                    and any(alias.name == name and alias.asname in (None, name) for alias in node.names)
+                    for alias in node.names
+                    if ImportBoundNameProjection(node).alias_bound_name(alias) == name
                 ),
                 None,
             )
-            if rebinding is None:
-                return source_file.file_path
+            if binding is None:
+                submodule = import_graph.unique_source_file_for_module_name(f"{module_name}.{name}")
+                return (submodule or source_file).file_path
+            node, alias = binding
+            if isinstance(node, ast.Import):
+                bound = alias.name if alias.asname else alias.name.split(".")[0]
+                module = import_graph.unique_source_file_for_module_name(bound)
+                return None if module is None else module.file_path
             module_name = source_file.module_path_identity.resolve_import_from_module(
-                imported_module=rebinding.module,
-                level=rebinding.level,
+                imported_module=node.module,
+                level=node.level,
             )
+            name = alias.name
         return None
 
 
