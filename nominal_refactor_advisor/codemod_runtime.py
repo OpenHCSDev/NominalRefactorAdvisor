@@ -17,6 +17,8 @@ from collections import (
     defaultdict,
 )
 from collections.abc import (
+    Callable,
+    Hashable,
     Iterable,
     Mapping,
 )
@@ -210,6 +212,21 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     not keep a state alive: a goal search's base lives for the whole search,
     and holding every branch it ever projected grew memory per explored state
     until the host ran out (exit 137 on agent-comms)."""
+
+    _derived: dict[Hashable, object] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    """Values a later layer derives from this state, held by the state, so they
+    live exactly as long as it does."""
+
+    def derived[Value](self, key: Hashable, build: Callable[[], Value]) -> Value:
+        """This state's value under `key`, built once. A layer this module cannot
+        name keeps its per-state facts here, not in a module-level cache, which
+        would keep the last state it read alive after the search released it."""
+
+        if key not in self._derived:
+            self._derived[key] = build()
+        return cast(Value, self._derived[key])
 
     def text_file(self, path: Path) -> FileText:
         """A file outside the Python index as this state has it."""
