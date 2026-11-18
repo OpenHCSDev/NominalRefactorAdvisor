@@ -49,7 +49,6 @@ from nominal_refactor_advisor.class_body import ProvedClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
     PER_CLASS_NAMES,
     CompactIndexedClass,
-    NATIVE_METACLASS_BASES,
     module_import_aliases,
     native_identity,
 )
@@ -120,7 +119,6 @@ from nominal_refactor_advisor.lexical_bindings import (
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
-from nominal_refactor_advisor.native_class_mro import NativeClassMroDeclaration
 from nominal_refactor_advisor.native_declarations import DataclassRuntimeDeclaration
 from nominal_refactor_advisor.read_sources import EmbeddedSources, ModuleSource, ReadSource
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
@@ -1093,8 +1091,9 @@ def require_static_c3(
     Every base resolves to a native root (`NativeMroBase`, or one whose
     namespace NRA reads, `NAMESPACE_READ_NATIVES`), a scanned class, or a class an
     installed module declares in `.py` source (`ClassOverlapVerdicts.ancestor`),
-    and no metaclass overrides `mro`. Class keywords and `__init_subclass__`
-    leave the order to type's C3; what they read as a class is created is
+    and creating the class keeps that order (`ClassCreationOrderProof`, the proof
+    the MRO authority reads). Class keywords and `__init_subclass__` leave the
+    order to type's C3; what they read as a class is created is
     `ClassCreationProof`'s. Returns the closed ancestry.
     """
 
@@ -1119,75 +1118,9 @@ def require_static_c3(
                     "nor an installed `.py` source declares", NeededInput.PROOF
                 )
             pending.append(base)
-        if "metaclass" in current.class_keyword_names:
-            if verdicts.class_index.class_for(current.symbol) is None:
-                raise NeedsInput(
-                    f"Installed `{current.symbol}` declares a metaclass: NRA needs a proof "
-                    "that it orders bases with type's own `mro`", NeededInput.PROOF
-                )
-            MetaclassMroProof(snapshot, current).require_type_mro()
-    return tuple(reached.values())
-
-
-@dataclass(frozen=True)
-class MetaclassMroProof:
-    """A class's metaclass orders bases with type's own `mro`."""
-
-    snapshot: CodemodSourceSnapshot
-    indexed_class: CompactIndexedClass
-
-    def require_type_mro(self) -> None:
-        target = OverlapClass.for_symbol(self.snapshot, self.indexed_class.symbol)
-        keywords = tuple(
-            keyword for keyword in target.node.keywords if keyword.arg == "metaclass"
-        )
-        if len(keywords) != 1:
-            raise NeedsInput(f"`{target.qualname}` has no single metaclass keyword", NeededInput.PROOF)
-        witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
-            self.snapshot.parsed_module_for_source_path(target.file_path),
-            keywords[0].value,
-            line=target.node.lineno,
-        )
-        if witness is None:
-            raise NeedsInput(f"`{target.qualname}` has an unbound metaclass", NeededInput.PROOF)
-        class_index = self.snapshot.class_overlap_verdicts.class_index
-        if class_index.class_for(witness.qualified_name) is not None:
-            self._require_indexed(witness.qualified_name)
-        else:
-            self._require_native(witness.qualified_name)
-
-    def _require_indexed(self, symbol: str) -> None:
-        class_index = self.snapshot.class_overlap_verdicts.class_index
-        pending, seen = [symbol], set()
-        while pending:
-            current = pending.pop()
-            if current in seen or current in NATIVE_METACLASS_BASES:
-                continue
-            seen.add(current)
-            metaclass = class_index.class_for(current)
-            if metaclass is None:
-                self._require_native(current)
-                continue
-            if not metaclass.base_references_are_complete:
-                raise NeedsInput(f"Metaclass `{current}` has an unproved ancestry", NeededInput.PROOF)
-            if any(declaration.name == "mro" for declaration in metaclass.body_declarations):
-                raise NeedsInput(f"Metaclass `{current}` overrides `mro`", NeededInput.PROOF)
-            pending.extend(
-                ".".join(reference.resolved_parts)
-                for reference in metaclass.base_references
-            )
-
-    @staticmethod
-    def _require_native(qualified_name: str) -> None:
-        module_name, _, attribute = qualified_name.rpartition(".")
-        try:
-            metaclass = getattr(import_module(module_name), attribute)
-        except (ImportError, AttributeError) as error:
-            raise NeedsInput(f"Metaclass `{qualified_name}` is not importable", NeededInput.PROOF) from error
-        if not isinstance(metaclass, type) or not issubclass(metaclass, type):
-            raise NeedsInput(f"`{qualified_name}` is not a metaclass", NeededInput.PROOF)
-        if NativeClassMroDeclaration(metaclass).member_owner("mro") is not type:
-            raise NeedsInput(f"Metaclass `{qualified_name}` overrides `mro`", NeededInput.PROOF)
+    ancestry = tuple(reached.values())
+    verdicts.creation.require_order(ancestry)
+    return ancestry
 
 
 def require_verdict(

@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from functools import cached_property
 
-from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.class_index import ClassCreationOrderProof, CompactIndexedClass
 from nominal_refactor_advisor.class_mro import (
     DeclarationMroType,
     NativeMroBase,
@@ -27,11 +27,20 @@ makes a class a protocol only when it is a direct base, whatever the order holds
 
 
 class DeclaredC3(ABC):
-    """The C3 order of every class `ancestor` can read: scanned, installed or native."""
+    """The C3 order of every class `ancestor` can read: scanned, installed or native,
+    once `creation` proves that creating the class keeps that order."""
 
     @abstractmethod
     def ancestor(self, qualified_name: str) -> CompactIndexedClass | None:
         """The class a base names, or None when nothing NRA reads declares it."""
+
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def creation(self) -> ClassCreationOrderProof:
+        """What creating a class does to its order: the one proof the class
+        index's MRO authority reads too."""
 
         raise NotImplementedError
 
@@ -100,9 +109,23 @@ class DeclaredC3(ABC):
         return entry.__name__ if native is None else native.value
 
     def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
-        """Python's C3 order of `symbol`, over its declared bases or `bases`."""
+        """Python's C3 order of `symbol`, over its declared bases or `bases`; refuses
+        when creating a class with that ancestry is not proved to keep it."""
 
         entry = self.inert(symbol) if bases is None else self.composed(symbol, bases)
+        try:
+            self.creation.require_order(
+                tuple(
+                    ancestor.declaration
+                    for ancestor in entry.__mro__
+                    if isinstance(ancestor, DeclarationMroType)
+                )
+            )
+        except NeedsInput as unproved:
+            raise NeedsInput(
+                f"`{symbol.rpartition('.')[2]}` has no proved created order: {unproved}",
+                *unproved.needs,
+            ) from unproved
         return tuple(self.entry_symbol(ancestor) for ancestor in entry.__mro__)
 
     def restated_bases(

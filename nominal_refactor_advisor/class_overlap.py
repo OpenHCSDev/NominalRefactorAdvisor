@@ -58,6 +58,7 @@ from nominal_refactor_advisor.class_body import (
 from nominal_refactor_advisor.field_order_reads import FieldOrderReads
 from nominal_refactor_advisor.class_index import (
     ClassBodyDeclarationKind,
+    ClassCreationOrderProof,
     CompactClassFamilyIndex,
     CompactClassReferenceResolver,
     CompactIndexedClass,
@@ -774,6 +775,10 @@ class ClassOverlapVerdicts(DeclaredC3):
         """What the scanned modules export, for reading a class outside them."""
 
         return CompactRepositoryPublicExposureIndex(self.projections)
+
+    @property
+    def creation(self) -> ClassCreationOrderProof:
+        return self.class_index.creation
 
     def ancestor(self, qualified_name: str) -> CompactIndexedClass | None:
         """The class a base names: the scan's, or else one an installed module

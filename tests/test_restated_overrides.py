@@ -339,3 +339,26 @@ def test_a_namespace_read_of_a_name_bound_twice_is_not_typed_by_its_first_bindin
     evaluation = _evaluation(tmp_path, "Child")
     assert "`owner` is bound more than once" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+
+
+def _rebasing(new_bases: str) -> str:
+    return (
+        "from abc import ABC, ABCMeta\n\n\n"
+        "class Rebasing(ABCMeta):\n"
+        "    def __new__(mcs, name, bases, namespace, **kwargs):\n"
+        f"        return super().__new__(mcs, name, {new_bases}, namespace, **kwargs)\n\n\n"
+        "class Root(ABC, metaclass=Rebasing):\n"
+        "    def line(self) -> str:\n        return 'root'\n\n\n"
+        "class Member(Root):\n"
+        "    def line(self) -> str:\n        return 'root'\n"
+    )
+
+
+def test_a_metaclass_that_rewrites_its_bases_refuses_the_deletion(tmp_path: Path):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/ends.py": _rebasing("bases[:1]")})
+    assert _findings(tmp_path) == []
+
+
+def test_a_metaclass_handing_its_bases_on_keeps_the_deletion(tmp_path: Path):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/ends.py": _rebasing("bases")})
+    assert [finding.primary_evidence.symbol for finding in _findings(tmp_path)] == ["Member"]
