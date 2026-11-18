@@ -87,9 +87,13 @@ class ReadsBack(NeedsInput):
     shape = ""
 
     def __init__(self, hub: str, closure: MovedClosure, below: tuple[str, ...], pins: str) -> None:
-        super().__init__(
-            f"{self.shape.format(hub=hub, roots=', '.join(f'`{root}`' for root in closure.roots), below=', '.join(f'`{m}`' for m in below))}: {pins}",
-            NeededInput.SOURCE_CHANGE,
+        super().__init__(f"{self.head(hub, closure, below)}: {pins}", NeededInput.SOURCE_CHANGE)
+
+    def head(self, hub: str, closure: MovedClosure, below: tuple[str, ...]) -> str:
+        return self.shape.format(
+            hub=hub,
+            roots=", ".join(f"`{root}`" for root in closure.roots),
+            below=", ".join(f"`{module}`" for module in below),
         )
 
 
@@ -111,6 +115,25 @@ class OneReaderReadsBack(ReadsBack):
     modules between them are the cycle to cut, one inversion."""
 
     shape = "{roots} read back toward {below} alone"
+
+
+class CentralClassReadsBack(ReadsBack):
+    """The moved code reads back through more than `limit` modules: the class is
+    central, so no move or contract below its readers holds what it reads, and
+    its readers' layering is the input."""
+
+    limit = 10
+
+    def __init__(self, hub: str, closure: MovedClosure, through: tuple[str, ...], pins: str) -> None:
+        self.through = through
+        super().__init__(hub, closure, through, pins)
+
+    def head(self, hub: str, closure: MovedClosure, below: tuple[str, ...]) -> str:
+        roots = ", ".join(f"`{root}`" for root in closure.roots)
+        return (
+            f"{roots} read back through {len(self.through)} modules, more than {self.limit}: "
+            "a central class, its readers' layering is the input"
+        )
 
 
 class HubFanReadsBack(ReadsBack):
@@ -403,6 +426,8 @@ class HiddenImportCuts:
             below = tuple(sorted({module for back in backs.values() for module in back}))
             if not {read.declaration for read in backs} & set(closure.roots):
                 raise DraggedReadsBack(hub, closure, below, pins)
+            if len(pinned) > CentralClassReadsBack.limit:
+                raise CentralClassReadsBack(hub, closure, tuple(sorted(pinned)), pins)
             if len(below) == 1:
                 raise OneReaderReadsBack(hub, closure, below, pins)
             raise HubFanReadsBack(hub, closure, below, pins)
