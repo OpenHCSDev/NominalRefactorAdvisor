@@ -14,7 +14,7 @@ import importlib.util
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
@@ -152,7 +152,33 @@ class TypeCheckerSession(ABC):
 
     @staticmethod
     def started(sources: TypeCheckerSources) -> TypeCheckerSession:
-        """Build these sources once with exported types, or name why that failed."""
+        """Build these sources once with exported types, or name why that failed:
+        a session for receivers asked about later, so it keeps every file's types."""
+
+        return TypeCheckerSession._built(sources, lambda built: built)
+
+    @staticmethod
+    def answers(
+        sources: TypeCheckerSources, spans: Iterable[ReceiverSpan]
+    ) -> Mapping[ReceiverSpan, ReceiverType]:
+        """Build these sources once and answer `spans`. Only the files that hold one
+        are read for types: reading every expression of every built file cost as
+        much as a third of the build for a question about a handful of receivers."""
+
+        asked = tuple(spans)
+        held = frozenset(span.file_path for span in asked)
+        session = TypeCheckerSession._built(sources, lambda built: built & held)
+        try:
+            return session.receiver_types(asked)
+        finally:
+            session.stop()
+
+    @staticmethod
+    def _built(
+        sources: TypeCheckerSources,
+        typed_files: Callable[[frozenset[str]], frozenset[str]],
+    ) -> TypeCheckerSession:
+        """One build of `sources`, its types read for `typed_files` of the built files."""
 
         if importlib.util.find_spec("mypy") is None:
             return UnavailableTypeChecker(f"mypy is not installed ({TYPES_EXTRA})")
@@ -170,7 +196,10 @@ class TypeCheckerSession(ABC):
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]
             )
         session = BuiltTypeChecker.of(
-            result, options, frozenset(path for path, _source in unique), shared
+            result,
+            options,
+            typed_files(frozenset(path for path, _source in unique)),
+            shared,
         )
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
