@@ -13,7 +13,7 @@ import importlib
 import importlib.util
 import sys
 from abc import ABC, abstractmethod
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -158,32 +158,13 @@ class TypeCheckerSession(ABC):
             return UnavailableTypeChecker(f"mypy is not installed ({TYPES_EXTRA})")
         build = importlib.import_module("mypy.build")
         errors = importlib.import_module("mypy.errors")
-        options = importlib.import_module("mypy.options").Options()
+        options = TypeCheckerSession.options()
         options.export_types = True
         options.preserve_asts = True
-        options.incremental = False
-        options.strict_equality = True
-        # Unannotated functions are most of the receivers a scan asks about.
-        options.check_untyped_defs = True
-        # Every scanned file is a source; imports outside the scan stay unanalyzed.
-        options.follow_imports = "skip"
-        options.ignore_missing_imports = True
-        options.python_version = sys.version_info[:2]
-        sources_by_module: defaultdict[str, list[tuple[str, BuildSource]]] = defaultdict(list)
-        for path, source in sources.pathed(options):
-            sources_by_module[source.module].append((path, source))
-        # mypy refuses the whole build when two files claim one module name.
-        shared = {
-            path: f"module `{module}` is shared by {len(found)} scanned files"
-            for module, found in sources_by_module.items()
-            if len(found) > 1
-            for path, _source in found
-        }
-        unique = [only for only, *rest in sources_by_module.values() if not rest]
-        built = [source for _path, source in unique]
+        unique, shared = TypeCheckerSession.unique_sources(sources, options)
         started = perf_counter()
         try:
-            result = build.build(built, options)
+            result = build.build([source for _path, source in unique], options)
         except errors.CompileError as error:
             return UnavailableTypeChecker(
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]
@@ -195,6 +176,39 @@ class TypeCheckerSession(ABC):
             TypeCheckerTiming(build_seconds=perf_counter() - started)
         )
         return session
+
+    @staticmethod
+    def options() -> Options:
+        """The build every scan's type check shares."""
+
+        options = importlib.import_module("mypy.options").Options()
+        options.incremental = False
+        options.strict_equality = True
+        # Unannotated functions are most of the receivers a scan asks about.
+        options.check_untyped_defs = True
+        # Every scanned file is a source; imports outside the scan stay unanalyzed.
+        options.follow_imports = "skip"
+        options.ignore_missing_imports = True
+        options.python_version = sys.version_info[:2]
+        return options
+
+    @staticmethod
+    def unique_sources(
+        sources: TypeCheckerSources, options: Options
+    ) -> tuple[list[tuple[str, BuildSource]], dict[str, str]]:
+        """The sources mypy can build together, and why each other one is left out:
+        mypy refuses the whole build when two files claim one module name."""
+
+        sources_by_module: defaultdict[str, list[tuple[str, BuildSource]]] = defaultdict(list)
+        for path, source in sources.pathed(options):
+            sources_by_module[source.module].append((path, source))
+        shared = {
+            path: f"module `{module}` is shared by {len(found)} scanned files"
+            for module, found in sources_by_module.items()
+            if len(found) > 1
+            for path, _source in found
+        }
+        return [only for only, *rest in sources_by_module.values() if not rest], shared
 
     @staticmethod
     @contextmanager
@@ -392,3 +406,43 @@ __all__ = (
     "TypeCheckerTimingLedger",
     "UnavailableTypeChecker",
 )
+
+
+@dataclass(frozen=True)
+class TypeErrors:
+    """The errors one whole-tree build reports, by file and message: a change is
+    proved type-safe when the build of its result reports none the build of its
+    source does not. Lines are left out, since an edit moves the lines below it."""
+
+    by_file: Mapping[str, tuple[str, ...]]
+
+    @classmethod
+    def of(cls, sources: TypeCheckerSources) -> TypeErrors:
+        if importlib.util.find_spec("mypy") is None:
+            raise RuntimeError(f"mypy is not installed ({TYPES_EXTRA})")
+        build = importlib.import_module("mypy.build")
+        options = TypeCheckerSession.options()
+        unique, _shared = TypeCheckerSession.unique_sources(sources, options)
+        result = build.build([source for _path, source in unique], options)
+        found: defaultdict[str, list[str]] = defaultdict(list)
+        for line in result.errors:
+            path, sep, rest = line.partition(":")
+            _line, _sep, rest = rest.partition(":")
+            kind, _sep, message = rest.strip().partition(": ")
+            if sep and kind == "error":
+                found[path].append(f"{_line}: {message}")
+        return cls({path: tuple(messages) for path, messages in found.items()})
+
+    def new_since(self, before: TypeErrors) -> tuple[str, ...]:
+        """Each error this build reports that `before` does not, as `path:line: message`."""
+
+        new: list[str] = []
+        for path, messages in self.by_file.items():
+            earlier = Counter(message.partition(": ")[2] for message in before.by_file.get(path, ()))
+            for message in messages:
+                text = message.partition(": ")[2]
+                if earlier[text]:
+                    earlier[text] -= 1
+                else:
+                    new.append(f"{path}:{message}")
+        return tuple(new)

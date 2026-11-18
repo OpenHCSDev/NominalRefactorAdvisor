@@ -37,7 +37,7 @@ from typing import (
     cast,
 )
 
-from nominal_refactor_advisor.type_checker_session import DeferredTypeChecker, SourceTexts
+from nominal_refactor_advisor.type_checker_session import DeferredTypeChecker, SourceTexts, TypeErrors
 from nominal_refactor_advisor.implementation_identity import AnswerFreeDeclaration
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -201,6 +201,13 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         receiver an operation proved against this state asks about."""
 
         return DeferredTypeChecker(SourceTexts(self.parsed_modules))
+
+    @cached_property
+    def type_errors(self) -> TypeErrors:
+        """This state's whole-tree type errors: a change is type-safe when its
+        result's build reports none this one does not."""
+
+        return TypeErrors.of(SourceTexts(self.parsed_modules))
 
     _projected_states: weakref.WeakValueDictionary[
         tuple[tuple[str, str], ...], CodemodSourceSnapshot
