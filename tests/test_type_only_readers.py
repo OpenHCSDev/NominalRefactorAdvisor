@@ -15,7 +15,7 @@ from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceS
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportCycleDetector
 from nominal_refactor_advisor.hidden_imports import HiddenImportPlan
-from nominal_refactor_advisor.refactors.hidden_import_cuts import HiddenImportCuts, HubRetype
+from nominal_refactor_advisor.refactors.hidden_import_cuts import HiddenImportCuts, HubRetype, HubStays
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 BASE = "class Service:\n    def ping(self) -> int:\n        return 1\n"
@@ -91,3 +91,41 @@ def test_a_retype_whose_value_reaches_a_member_only_the_class_declares_is_refuse
     reason = evaluation.rejection_reason
     assert reason.startswith("retyping `Hub` to `Service` in `reader.py` breaks 1 consumer(s): ")
     assert "pkg/hub.py:" in reason and '"Service" has no attribute "only"' in reason
+
+
+def _stays(root: Path) -> list[str]:
+    return [
+        str(need)
+        for plan in HiddenImportCuts.of(_snapshot(root)).hubs()
+        if isinstance(plan, HubStays)
+        for _refusal, need in plan.needs
+    ]
+
+
+def test_a_guarded_import_the_module_reads_nowhere_is_a_re_export_for_type_checkers(tmp_path: Path):
+    reader = (
+        '"""Serves `Hub` to type checkers."""\n\nfrom __future__ import annotations\n\n'
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from pkg.hub import Hub\n\n"
+        '__all__ = ["Hub", "run"]\n\n\ndef run(hub) -> int:\n    return hub.ping()\n'
+    )
+    _write(tmp_path, HUB.replace("class Hub(Service):", "class Hub:"), reader)
+    [need] = [need for need in _stays(tmp_path) if "pkg.reader" in need]
+    assert need == (
+        "`pkg.reader` guards `Hub` but reads it nowhere: "
+        "a re-export for type checkers, whose place is the module's owner's to decide"
+    )
+
+
+def test_a_guarded_type_alias_has_no_base_to_name(tmp_path: Path):
+    hub = HUB.replace("return 2", "return run(self)").replace(
+        "\n\ndef main()", "\n\nHandle = Hub | int\n\n\ndef main()"
+    )
+    reader = READER.replace("import Hub", "import Handle").replace("hub: Hub", "hub: Handle").replace(
+        "hub: 'Hub'", "hub: 'Handle'"
+    ).replace("return hub.ping()", "return 1")
+    _write(tmp_path, hub, reader)
+    [need] = [need for need in _stays(tmp_path) if "pkg.reader" in need]
+    assert need == (
+        "`pkg.reader` reads `Handle` only as a type, but `pkg.hub.Handle` is a type alias, not a class: "
+        "it has no base to name; the alias sitting below it is the input"
+    )

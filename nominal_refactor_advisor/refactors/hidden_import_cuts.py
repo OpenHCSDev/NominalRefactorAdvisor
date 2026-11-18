@@ -39,9 +39,9 @@ from nominal_refactor_advisor.hidden_imports import ClosesCycle, HiddenImportPla
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactors.type_only_readers import (
-    NoLowerBase,
     RetypeTypeOnlyReadsOperation,
     TypeOnlyRead,
+    TypeOnlyReadRefused,
 )
 from nominal_refactor_advisor.owner_candidates import ModuleImportGraph, common_package
 from nominal_refactor_advisor.refactor_concepts import HiddenImportCutConcept, LayeringViolationConcept
@@ -302,7 +302,7 @@ class HiddenImportCuts:
             for refusal, need in plan.needs:
                 try:
                     found = TypeOnlyRead.of(self.snapshot, self.imports, refusal)
-                except NoLowerBase as missing:
+                except TypeOnlyReadRefused as missing:
                     left.append((refusal, missing))
                     continue
                 if found is None:

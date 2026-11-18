@@ -33,10 +33,15 @@ from nominal_refactor_advisor.lexical_bindings import ImportFromModuleName
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.owner_candidates import ModuleImportGraph
 from nominal_refactor_advisor.refactors.class_overlap import changed_source_edits, in_order_states
-from nominal_refactor_advisor.refactors.module_move import PromoteGuardedImportOperation
+from nominal_refactor_advisor.refactors.module_move import ImportedNameOwner, PromoteGuardedImportOperation
 
 
-class NoLowerBase(NeedsInput):
+class TypeOnlyReadRefused(NeedsInput):
+    """A guarded import every one of whose names the module reads at most as a
+    type, which no base below it can serve: each subclass names why."""
+
+
+class NoLowerBase(TypeOnlyReadRefused):
     """The module reads the class only as a type, but no base of it sits below
     the module: a contract declared below, which the class inherits, is the input."""
 
@@ -44,6 +49,30 @@ class NoLowerBase(NeedsInput):
         super().__init__(
             f"`{reader}` reads `{name}` only as a type, but no base of `{name}` sits below it: "
             "a contract base declared below it, which the class inherits, is the input",
+            NeededInput.OPERATION,
+        )
+
+
+class TypeCheckerReExport(TypeOnlyReadRefused):
+    """Nothing in the module reads the name, not even an annotation: the import
+    is there for type checkers reading the module's namespace, not for the module."""
+
+    def __init__(self, reader: str, names: tuple[str, ...]) -> None:
+        super().__init__(
+            f"`{reader}` guards {', '.join(f'`{name}`' for name in names)} but reads it nowhere: "
+            "a re-export for type checkers, whose place is the module's owner's to decide",
+            NeededInput.SOURCE_CHANGE,
+        )
+
+
+class AliasNotClass(TypeOnlyReadRefused):
+    """The name is a type alias, which has no bases: the alias itself, or what
+    it spells, sitting below the module is the input."""
+
+    def __init__(self, reader: str, owner: str, name: str) -> None:
+        super().__init__(
+            f"`{reader}` reads `{name}` only as a type, but `{owner}.{name}` is a type alias, not a class: "
+            "it has no base to name; the alias sitting below it is the input",
             NeededInput.OPERATION,
         )
 
@@ -89,15 +118,40 @@ class TypeOnlyRead:
         )
         if hub is None:
             return None
+        reader = hidden.module.module_name
+        names = tuple(alias.name for alias in statement.names)
+        if any(AnnotationReferences.of(module, name) is None for name in names):
+            return None
+        unread = tuple(name for name in names if AnnotationReferences.unread(module, name))
+        if unread:
+            raise TypeCheckerReExport(reader, unread)
         reads = []
-        for alias in statement.names:
-            if AnnotationReferences.of(module, alias.name) is None:
-                return None
-            base = cls.lower_base(snapshot, imports, hub, alias.name, hidden.module.module_name)
+        for name in names:
+            owner = ImportedNameOwner.declaring_module(snapshot, hub, name) or hub
+            if cls.alias(snapshot, owner, name):
+                raise AliasNotClass(reader, owner, name)
+            base = cls.lower_base(snapshot, imports, owner, name, reader)
             if base is None:
-                raise NoLowerBase(hidden.module.module_name, alias.name)
-            reads.append(cls(hidden.module.module_name, hidden.module.file_path, hub, alias.name, *base))
+                raise NoLowerBase(reader, name)
+            reads.append(cls(reader, hidden.module.file_path, hub, name, *base))
         return tuple(reads)
+
+    @staticmethod
+    def alias(snapshot: CodemodSourceSnapshot, owner: str, name: str) -> bool:
+        """Whether `owner` binds `name` at module level by assignment, not a class."""
+
+        source = snapshot.module_import_graph.unique_source_file_for_module_name(owner)
+        if source is None or snapshot.compact_class_index.class_for(f"{owner}.{name}") is not None:
+            return False
+        for node in snapshot.module_nodes_by_file_path[source.file_path].body:
+            match node:
+                case ast.Assign(targets=targets) if any(
+                    isinstance(target, ast.Name) and target.id == name for target in targets
+                ):
+                    return True
+                case ast.AnnAssign(target=ast.Name(id=bound)) | ast.TypeAlias(name=ast.Name(id=bound)) if bound == name:
+                    return True
+        return False
 
     @staticmethod
     def lower_base(
@@ -150,6 +204,38 @@ class AnnotationReferences:
             ):
                 strings.append(node)
         return cls(tuple(names), tuple(strings))
+
+    @staticmethod
+    def unread(module: ast.Module, name: str) -> bool:
+        """Whether the module reads `name` nowhere: no `Name` spells it and no
+        string does, save docstrings and `__all__`'s entries."""
+
+        skipped = {
+            id(node.value)
+            for node in ast.walk(module)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        } | {
+            id(entry)
+            for node in module.body
+            if isinstance(node, ast.Assign | ast.AugAssign | ast.AnnAssign)
+            and any(
+                isinstance(target, ast.Name) and target.id == "__all__"
+                for target in (node.targets if isinstance(node, ast.Assign) else (node.target,))
+            )
+            and node.value is not None
+            for entry in ast.walk(node.value)
+        }
+        for node in ast.walk(module):
+            if isinstance(node, ast.Name) and node.id == name:
+                return False
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and id(node) not in skipped
+                and re.search(rf"\b{re.escape(name)}\b", node.value)
+            ):
+                return False
+        return True
 
     @staticmethod
     def roots(module: ast.Module) -> Iterator[ast.expr]:
