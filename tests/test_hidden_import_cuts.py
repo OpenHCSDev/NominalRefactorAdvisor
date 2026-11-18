@@ -23,6 +23,7 @@ from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.refactors.class_overlap import changed_source_edits, relocation_to
 from nominal_refactor_advisor.refactors.module_move import ImportedNameOwner
 from nominal_refactor_advisor.refactors.hidden_import_cuts import (
+    CentralClassReadsBack,
     DraggedReadsBack,
     HubFanReadsBack,
     OneReaderReadsBack,
@@ -363,3 +364,27 @@ def test_a_moved_declaration_reading_a_module_the_hub_imports_does_not_read_back
     _apply_all(tmp_path, HiddenImportCycleDetector())
     assert _run(tmp_path) == expected
     assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
+
+
+def test_a_class_reading_back_through_more_than_the_limit_is_central(tmp_path: Path):
+    """Past `CentralClassReadsBack.limit` modules read back through, the refusal
+    names the class central instead of a fan: its readers' layering is the input."""
+
+    count = CentralClassReadsBack.limit + 1
+    names = [f"r{index}" for index in range(count)]
+    hub = "".join(f"from pkg.{name} import {name}_value\n" for name in names) + (
+        "\n\nclass Record:\n    parts = (" + ", ".join(f"{name}_value" for name in names) + ",)\n"
+    )
+    _write(
+        tmp_path,
+        {"pkg/hub.py": hub, **{f"pkg/{name}.py": HIDDEN.format(name=f"{name}_value") for name in names}},
+    )
+    needs = [need for plan in HiddenImportCuts.of(_snapshot(tmp_path)).hubs() for _refusal, need in plan.needs]
+    assert needs and all(isinstance(need, CentralClassReadsBack) for need in needs)
+    assert all(
+        str(need).startswith(
+            f"`Record` read back through {count} modules, more than {CentralClassReadsBack.limit}: "
+            "a central class, its readers' layering is the input: "
+        )
+        for need in needs
+    )
