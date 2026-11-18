@@ -4,7 +4,7 @@ Each finding names the restating sites, the fact they restate, the owner that
 should hold it, and the factoring that moves it there. A restated fact is slop
 because the copy can disagree with its owner; the finding is not a guess, only
 the factoring's equivalence with the old behaviour needs proof, and that proof
-is the recipe's job. Seven detectors share this base and differ in what they
+is the recipe's job. The detectors here share this base and differ in what they
 match and which fact they name.
 """
 
@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
@@ -21,6 +21,7 @@ from nominal_refactor_advisor.refactors.target_deletion import (
 )
 from nominal_refactor_advisor.codemod import RefactorRecipeOperation
 from nominal_refactor_advisor.class_index import (
+    ClassMemberAnswersABC,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
@@ -79,12 +80,14 @@ from nominal_refactor_advisor.restated_fact_observations import (
     LegacyMarkerSiteFamily,
     ModuleReferenceFacts,
     ModuleReferenceFamily,
+    NamedAttributeSite,
     NamedAttributeSiteFamily,
     ReferenceIndex,
     RestatingSiteFamily,
     RestatingSiteModule,
     StringDispatchSiteFamily,
     UnreachedModules,
+    is_dunder,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
@@ -376,10 +379,140 @@ class StringKindDispatchDetector(
         }
 
 
-class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
-    """getattr, hasattr, setattr or delattr by a literal name, and getattr with a default."""
+class _UnboundMember(ClassMemberAnswersABC[bool]):
+    """Whether a lookup proves that no class of a closed MRO binds the member."""
 
-    module_projection_family = NamedAttributeSiteFamily
+    def assigned(self, owner, declaration) -> bool:
+        return False
+
+    def annotated_property(self, owner, declaration) -> bool:
+        return False
+
+    def annotated_method(self, owner, declaration) -> bool:
+        return False
+
+    def unannotated_callable(self, owner, declaration) -> bool:
+        return False
+
+    def missing(self) -> bool:
+        return True
+
+    def ambiguous(self) -> bool:
+        return False
+
+    def open(self) -> bool:
+        return False
+
+
+@dataclass(frozen=True)
+class AttributeReach:
+    """The classes a probed receiver can be, and whether any of them can hold a name.
+
+    The receiver's classes come from its declarations alone
+    (`DeclaredReceiverTyping`): every scanned class it is declared as, and every
+    scanned subclass of those. An instance of one of them can hold a name when
+    its MRO (`member_in_mro`) binds the name or a lookup hook, when the MRO is
+    open, or when a class along it stores the name on its own object; a store
+    on any other receiver may reach any object, so it holds the name for all.
+    """
+
+    index: CompactClassFamilyIndex
+    typing: DeclaredReceiverTyping
+    stored_by_class: Mapping[str, frozenset[str]]
+    unbounded_classes: frozenset[str]
+    stored_elsewhere: frozenset[str]
+
+    LOOKUP_HOOKS: ClassVar[tuple[str, ...]] = ("__getattr__", "__getattribute__")
+    UNBOUND: ClassVar[_UnboundMember] = _UnboundMember()
+
+    @classmethod
+    def of(cls, projections_by_family: CompactProjectionGroups) -> AttributeReach:
+        projections = CompactModuleClassProjectionFamily.modules_in(projections_by_family)
+        index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
+        stores = tuple(
+            module.stores
+            for module in NamedAttributeSiteFamily.modules_in(projections_by_family)
+        )
+        return cls(
+            index,
+            DeclaredReceiverTyping.from_projections(projections, index),
+            {
+                symbol: frozenset(names)
+                for module_stores in stores
+                for symbol, names in module_stores.by_class
+            },
+            frozenset(
+                symbol for module_stores in stores for symbol in module_stores.unbounded_classes
+            ),
+            frozenset(name for module_stores in stores for name in module_stores.elsewhere),
+        )
+
+    def reaching(self, site: NamedAttributeSite) -> tuple[str, ...]:
+        """Every scanned class the receiver can be an instance of, or none when a
+        declared class is outside the scan or the receiver is not declared an instance."""
+
+        symbols = site.owner.path.declared(self.typing).instance_symbols()
+        if not symbols or any(symbol not in self.index.classes_by_symbol for symbol in symbols):
+            return ()
+        return tuple(
+            sorted(
+                {
+                    reached
+                    for symbol in symbols
+                    for reached in (symbol, *self.index.descendant_symbols(symbol))
+                }
+            )
+        )
+
+    def holds(self, symbol: str, name: str) -> bool:
+        """Whether an instance of `symbol` can have attribute `name`."""
+
+        if not all(
+            self.index.member_in_mro(symbol, member).answer(self.UNBOUND)
+            for member in (name, *self.LOOKUP_HOOKS)
+        ):
+            return True
+        mro = self.index.mro_authority.resolve(symbol).mro_type
+        if mro is None:
+            return True
+        return any(
+            declaration.symbol in self.unbounded_classes
+            or name in self.stored_by_class.get(declaration.symbol, frozenset())
+            for declaration in mro.declarations
+        )
+
+    def absent_from(self, site: NamedAttributeSite) -> tuple[str, ...]:
+        """The classes the receiver can be when none of them can hold the probed
+        name, so the probe's answer is fixed; empty otherwise. A dunder is a
+        protocol any object may answer, never a member of the family alone."""
+
+        name = site.probed_name
+        if not site.looks_up or is_dunder(name) or name in self.stored_elsewhere:
+            return ()
+        reached = self.reaching(site)
+        if not reached or any(self.holds(symbol, name) for symbol in reached):
+            return ()
+        return reached
+
+
+def _attribute_reach(projections_by_family: CompactProjectionGroups) -> AttributeReach:
+    return AttributeReach.of(projections_by_family)
+
+
+class NamedAttributeDetector(
+    JoinedRestatedFactDetector[AttributeReach, NamedAttributeSite]
+):
+    """getattr, hasattr, setattr or delattr by a literal name, and getattr with a default.
+
+    A probe no class of its receiver can answer is the
+    `AbsentAttributeProbeDetector`'s; every other probe is this detector's.
+    """
+
+    module_projection_families = (
+        NamedAttributeSiteFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(_attribute_reach)
     restated = RestatedFact(
         fact="Each call names an attribute the receiver's type should declare, a second copy of that type's attribute list.",
         owner="The owner is the type that declares the attribute, or an adapter family or capability base when the receiver is another module's object.",
@@ -394,11 +527,50 @@ class NamedAttributeDetector(SingleFamilyRestatedFactDetector):
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
 
-    def describe(self, sites: Sequence[RestatingSite], context: None) -> str:
+    def restates(self, site: NamedAttributeSite, context: AttributeReach) -> bool:
+        return not context.absent_from(site)
+
+    def describe(self, sites: Sequence[NamedAttributeSite], context: AttributeReach) -> str:
         spelled = [f"{site.detail[0]}(.., {site.detail[1]!r})" for site in sites]
         return (
             f"`{sites[0].group}` is reached by attribute name {len(sites)} time(s) in "
             f"{sites[0].symbol}: {_listed(spelled)}."
+        )
+
+
+class AbsentAttributeProbeDetector(
+    JoinedRestatedFactDetector[AttributeReach, NamedAttributeSite]
+):
+    """getattr or hasattr by a literal name that no class the receiver can be binds or stores."""
+
+    module_projection_families = (
+        NamedAttributeSiteFamily,
+        CompactModuleClassProjectionFamily,
+    )
+    compact_shared_group_context_builder = staticmethod(_attribute_reach)
+    restated = RestatedFact(
+        fact="The probe asks for an attribute that no class the receiver is declared as, nor any of their subclasses, binds or stores, so its answer is fixed and the branch it guards never runs.",
+        owner="The owner is the receiver's declared class family, which has no such member.",
+        factoring="Delete the probe and the branch that waits for the missing attribute, or read the member the family does declare under its real name.",
+    )
+    finding_spec = restated.spec(
+        PatternId.ABSENT_ATTRIBUTE_PROBE,
+        "Attribute probe that never succeeds",
+        "the probe removed, or the member the receiver's family declares read by its own name",
+        "getattr or hasattr with a string-literal name on a receiver whose declared classes, all scanned, neither bind nor store that name",
+        (),
+        (ObservationTag.ATTRIBUTE_PROBE,),
+    )
+
+    def restates(self, site: NamedAttributeSite, context: AttributeReach) -> bool:
+        return bool(context.absent_from(site))
+
+    def describe(self, sites: Sequence[NamedAttributeSite], context: AttributeReach) -> str:
+        probes = [f"{site.detail[0]}(.., {site.detail[1]!r}) at line {site.lineno}" for site in sites]
+        classes = sorted({symbol for site in sites for symbol in context.absent_from(site)})
+        return (
+            f"`{sites[0].group}` in {sites[0].symbol} is probed for {_listed(probes)}; "
+            f"no class it can be binds or stores the name: {_listed(f'`{symbol}`' for symbol in classes)}."
         )
 
 
@@ -820,6 +992,8 @@ class DeadModuleDetector(
 
 
 __all__ = (
+    "AbsentAttributeProbeDetector",
+    "AttributeReach",
     "DeadModuleDetector",
     "ExactKeySetDetector",
     "ForeignAbsenceProbeDetector",

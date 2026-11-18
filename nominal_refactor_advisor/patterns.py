@@ -675,6 +675,16 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    ABSENT_ATTRIBUTE_PROBE = _pattern(
+        stable_id=57,
+        display_name="Attribute Probe That Never Succeeds",
+        required_relation=(
+            "A getattr or hasattr names, by a string literal, an attribute that no "
+            "class the receiver is declared as, nor any subclass of those, binds or "
+            "stores, so the probe's answer is fixed and the branch it guards is dead."
+        ),
+        witness_capabilities=(CapabilityTag.PROVENANCE,),
+    )
 
     def __new__(
         cls,

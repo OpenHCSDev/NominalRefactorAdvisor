@@ -45,6 +45,7 @@ Two further groups cut across the rungs: **boundaries** (raw data handled everyw
 | `raw_shape` unmodeled | BOUND-1 | BOUND-3 nearby; IDEN-5 if keys join two stores |
 | `exact_key_set` | BOUND-3 | |
 | `named_attribute`, `getattr_default` | BOUND-7 | TIME-3 when the default tolerates old shapes |
+| `absent_attribute_probe` | BOUND-7 | the probe never succeeds, so the branch it guards is dead; often the member exists under another name (a bug), or the class it waited for was never written |
 | `god_class`, `god_function` | IMPL-8, AGENT-4 | read for IDEN-1 and IMPL-12 inside it |
 | `long_condition`, census `boolean_chain_terms` | syntactic **ownership leads**: IDEN-1 (same-value comparisons), IDEN-3 (absence tests on another object), IMPL-10 (own attributes), BOUND-1 (type tests), IMPL-1 (literal comparisons), IMPL-14 (other expressions) | inspect each lead before choosing a target. Predicate calls remain OPEN: they may already query the correct owner. A chain alone does not prove a missing structure |
 | `literal_roster` | MEMB-1, MEMB-2, MEMB-3 | |

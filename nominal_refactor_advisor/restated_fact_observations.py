@@ -19,24 +19,33 @@ from dataclasses import dataclass
 from enum import StrEnum
 from fnmatch import fnmatch
 from pathlib import Path
-from typing import TypeVar
+from typing import ClassVar, TypeVar
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias,
     ImportBoundNameProjection,
 )
-from nominal_refactor_advisor.ast_projection import CallKeywords, StatementValues
+from nominal_refactor_advisor.ast_projection import (
+    CallKeywords,
+    ExpressionReference,
+    StatementValues,
+)
 from nominal_refactor_advisor.ast_tools import (
     AttributeAccessCall,
     BuiltinCall,
     BuiltinCallName,
     ParsedModule,
 )
+from nominal_refactor_advisor.class_symbols import iter_class_definitions
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.observation_shapes import AssertedSubject, RestatingSite
-from nominal_refactor_advisor.probe_owner import ProbeOwner, ProbeOwnerResolver
+from nominal_refactor_advisor.probe_owner import (
+    DeclaredPathProbeOwner,
+    ProbeOwner,
+    ProbeOwnerResolver,
+)
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
 # A subject needs this many distinct string arms before it is a family spelled out.
@@ -214,7 +223,110 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     )
 
 
-class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
+def is_dunder(name: str) -> bool:
+    return len(name) > 4 and name.startswith("__") and name.endswith("__")
+
+
+@dataclass(frozen=True)
+class NamedAttributeSite(RestatingSite):
+    """A call reaching an attribute by a literal name, with its receiver's declared path."""
+
+    owner: DeclaredPathProbeOwner
+    looks_up: bool
+
+    @property
+    def probed_name(self) -> str:
+        return self.detail[1]
+
+
+@dataclass(frozen=True)
+class AttributeStores:
+    """The attribute names one module stores, by where it stores them.
+
+    A method stores on its own object (`self.name = ...`, `setattr(self, "name",
+    ...)`): those names belong to its class. A class whose methods store on
+    their object by a computed name, or through `__dict__` or `vars`, can hold
+    any name. Every other store, on any other receiver, could reach any object.
+    """
+
+    by_class: tuple[tuple[str, tuple[str, ...]], ...] = ()
+    unbounded_classes: tuple[str, ...] = ()
+    elsewhere: tuple[str, ...] = ()
+
+    NAMESPACES: ClassVar[frozenset[str]] = frozenset(("__dict__",))
+    NAMESPACE_CALLS: ClassVar[frozenset[str]] = frozenset(("vars",))
+    SETTERS: ClassVar[frozenset[str]] = frozenset(("setattr", "__setattr__", "delattr", "__delattr__"))
+
+    @classmethod
+    def of(cls, parsed_module: ParsedModule) -> AttributeStores:
+        by_class: list[tuple[str, tuple[str, ...]]] = []
+        unbounded: list[str] = []
+        attributed: set[int] = set()
+        for qualname, class_node in iter_class_definitions(list(parsed_module.module.body)):
+            symbol = f"{parsed_module.module_name}.{qualname}"
+            names: set[str] = set()
+            for method in class_node.body:
+                if not isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef):
+                    continue
+                arguments = [*method.args.posonlyargs, *method.args.args]
+                if not arguments:
+                    continue
+                own = arguments[0].arg
+                for node in ast.walk(method):
+                    stored = cls.stored_name(node, own)
+                    if stored is None:
+                        continue
+                    attributed.add(id(node))
+                    if stored == "":
+                        unbounded.append(symbol)
+                    else:
+                        names.add(stored)
+            by_class.append((symbol, tuple(sorted(names))))
+        elsewhere = {
+            stored
+            for node in ast.walk(parsed_module.module)
+            if id(node) not in attributed
+            if (stored := cls.stored_name(node, None))
+        }
+        return cls(tuple(by_class), tuple(sorted(set(unbounded))), tuple(sorted(elsewhere)))
+
+    @classmethod
+    def stored_name(cls, node: ast.AST, own: str | None) -> str | None:
+        """The name `node` stores on `own` (any receiver when None); "" for a name
+        computed at run time or a namespace write; None when it stores nothing there."""
+
+        match node:
+            case ast.Attribute(value=receiver, attr=name, ctx=ast.Store() | ast.Del()):
+                if cls.is_own(receiver, own):
+                    return "" if name in cls.NAMESPACES else name
+            case ast.Attribute(value=receiver, attr=name) if name in cls.NAMESPACES and own is not None:
+                if cls.is_own(receiver, own):
+                    return ""
+            case ast.Call(func=callee, args=[receiver, *rest]) if ExpressionReference.decoded(callee).terminal_name in cls.NAMESPACE_CALLS:
+                if own is not None and not rest and cls.is_own(receiver, own):
+                    return ""
+            case ast.Call(func=callee, args=[receiver, name, *_]) if ExpressionReference.decoded(callee).terminal_name in cls.SETTERS:
+                if cls.is_own(receiver, own):
+                    match name:
+                        case ast.Constant(value=str() as literal):
+                            return literal
+                    return "" if own is not None else None
+        return None
+
+    @staticmethod
+    def is_own(receiver: ast.expr, own: str | None) -> bool:
+        return own is None or (isinstance(receiver, ast.Name) and receiver.id == own)
+
+
+@dataclass(frozen=True)
+class NamedAttributeSiteModule(RestatingSiteModule):
+    """One module's probes by literal name and the attribute names it stores."""
+
+    sites: tuple[NamedAttributeSite, ...]
+    stores: AttributeStores
+
+
+class NamedAttributeSiteFamily(RestatingSiteFamily[NamedAttributeSiteModule]):
     """getattr/hasattr/setattr/delattr by a literal name, or by a module constant holding one.
 
     A name computed at run time (read from `_fields`, a loop variable) restates
@@ -222,15 +334,27 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     module-level string constant, spells one attribute of the receiver's type.
     An imported module is not a type of ours: `hasattr(os, "pidfd_open")` asks
     what this platform build provides, which no declaration of ours can hold.
+    Each site carries its receiver's declared path, for the scan to type.
     """
 
-    item_type = RestatingSiteModule
+    item_type = NamedAttributeSiteModule
 
     @classmethod
-    def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+    def collect(cls, parsed_module: ParsedModule) -> list[NamedAttributeSiteModule]:
+        return [
+            NamedAttributeSiteModule(
+                module_name=parsed_module.module_name,
+                sites=tuple(cls.sites(parsed_module)),
+                stores=AttributeStores.of(parsed_module),
+            )
+        ]
+
+    @classmethod
+    def sites(cls, parsed_module: ParsedModule) -> Iterator[NamedAttributeSite]:
         index = parsed_module.syntax_index
         constants = cls.string_constants(parsed_module)
         modules = imported_module_names(parsed_module)
+        resolver = ProbeOwnerResolver.of(parsed_module)
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             access = BuiltinCall.decoded(call)
             if not isinstance(access, AttributeAccessCall) or not isinstance(
@@ -243,12 +367,14 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             spelled = cls.attribute_name(access.name_argument, constants)
             if spelled is None:
                 continue
-            yield cls.site(
-                parsed_module,
-                call,
-                index.lexical_symbol(node_index),
-                ast.unparse(receiver),
-                (access.description, spelled),
+            yield NamedAttributeSite(
+                file_path=parsed_module.file_path,
+                lineno=call.lineno,
+                symbol=index.lexical_symbol(node_index),
+                group=ast.unparse(receiver),
+                detail=(access.description, spelled),
+                owner=resolver.owner(receiver),
+                looks_up=access.looks_up,
             )
 
     @staticmethod

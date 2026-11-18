@@ -12,7 +12,7 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeEvaluator,
 )
 from nominal_refactor_advisor.refactors.module_move import DissolveModuleOperation
-from nominal_refactor_advisor.detectors._restated_facts import (DeadModuleDetector, ExactKeySetDetector, ForeignAbsenceProbeDetector, ForwardingFacadeDetector, LegacyPathMarkerDetector, NamedAttributeDetector, OwnTypeTestDetector, StringKindDispatchDetector)
+from nominal_refactor_advisor.detectors._restated_facts import (AbsentAttributeProbeDetector, DeadModuleDetector, ExactKeySetDetector, ForeignAbsenceProbeDetector, ForwardingFacadeDetector, LegacyPathMarkerDetector, NamedAttributeDetector, OwnTypeTestDetector, StringKindDispatchDetector)
 from nominal_refactor_advisor.detectors._restated_identity import RestatedIdentityDetector
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
@@ -21,6 +21,7 @@ from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToP
 DETECTORS = (
     StringKindDispatchDetector,
     NamedAttributeDetector,
+    AbsentAttributeProbeDetector,
     ExactKeySetDetector,
     ForeignAbsenceProbeDetector,
     LegacyPathMarkerDetector,
@@ -189,6 +190,218 @@ def test_a_probe_of_an_imported_module_is_platform_detection_not_a_type_fact(
 def test_a_shadowed_getattr_is_a_method_not_the_builtin(tmp_path: Path):
     source = "def f(registry):\n    return registry.getattr('size', 0)\n"
     assert _findings(tmp_path, NamedAttributeDetector, {"m": source}) == []
+
+
+# ---- attribute probes that never succeed
+
+TURN_OWNERS = (
+    "from abc import ABC\n\n\nclass TurnOwner(ABC):\n    activity = ''\n\n\n"
+    "class NoTurn(TurnOwner):\n    pass\n\n\n"
+    "class AgentTurn(TurnOwner):\n    def __init__(self, activity):\n        self.activity = activity\n\n\n"
+)
+
+
+def test_a_probe_for_a_member_no_class_of_the_family_has_never_succeeds(tmp_path: Path):
+    source = TURN_OWNERS + (
+        "def label(owner: TurnOwner) -> str:\n"
+        "    return owner.describe() if hasattr(owner, 'describe') else 'Thinking'\n"
+    )
+    (finding,) = _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source})
+    assert finding.pattern_id is PatternId.ABSENT_ATTRIBUTE_PROBE
+    assert _lines([finding]) == [18]
+    assert "`m.AgentTurn`, `m.NoTurn`, `m.TurnOwner`" in finding.summary
+    assert _findings(tmp_path, NamedAttributeDetector, {"m": source}) == []
+
+
+def test_a_name_another_class_stores_on_itself_is_still_absent_from_this_family(
+    tmp_path: Path,
+):
+    source = (
+        "class Link:\n    underlined = True\n\n\nclass OpenTarget(Link):\n    target = ''\n\n\n"
+        "class Action:\n    def __init__(self, url):\n        self.url = url\n\n\n"
+        "def open_link(link: Link):\n"
+        "    return getattr(link, 'url', None) or getattr(link, 'href', None)\n"
+    )
+    (finding,) = _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source})
+    assert "'url'" in finding.summary and "'href'" in finding.summary
+
+
+def test_a_declared_attribute_probed_for_a_method_it_lacks_never_succeeds(tmp_path: Path):
+    source = (
+        "class History:\n    def page(self):\n        return 0\n\n\n"
+        "class View:\n    history: History\n\n"
+        "    async def wait_content_ready(self):\n"
+        "        if hasattr(self.history, 'wait_content_ready'):\n"
+        "            await self.history.wait_content_ready()\n\n"
+        "    async def retire(self):\n        retire = getattr(self.history, 'retire', None)\n"
+        "        if retire is not None:\n            await retire()\n"
+    )
+    findings = _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source})
+    assert _lines(findings) == [10, 14]
+
+
+def test_an_identity_probed_for_a_name_it_spells_another_way_never_succeeds(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\nclass SessionIdentity(ABC):\n"
+        "    @abstractmethod\n    def thread_name(self) -> str: ...\n\n\n"
+        "class NoThreadIdentity(SessionIdentity):\n    def thread_name(self) -> str:\n        return ''\n\n\n"
+        "def label(identity: SessionIdentity) -> str:\n"
+        "    return str(identity.name) if hasattr(identity, 'name') else ''\n"
+    )
+    (finding,) = _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source})
+    assert _lines([finding]) == [15]
+
+
+@pytest.mark.parametrize(
+    "addition",
+    [
+        "class ActivityTurn(TurnOwner):\n    def describe(self):\n        return self.activity\n",
+        "class ActivityTurn(TurnOwner):\n    def start(self):\n        self.describe = lambda: 'busy'\n",
+        "def patch(owner):\n    owner.describe = lambda: 'busy'\n",
+        "class ActivityTurn(TurnOwner):\n    def __getattr__(self, name):\n        return name\n",
+        "class ActivityTurn(TurnOwner):\n    def fill(self, name, value):\n        setattr(self, name, value)\n",
+    ],
+    ids=["subclass_defines_it", "subclass_stores_it", "stored_elsewhere", "lookup_hook", "computed_store"],
+)
+def test_a_probe_some_class_of_the_family_can_answer_stays_a_named_attribute(
+    tmp_path: Path, addition: str
+):
+    source = TURN_OWNERS + addition + (
+        "\n\ndef label(owner: TurnOwner) -> str:\n"
+        "    return owner.describe() if hasattr(owner, 'describe') else 'Thinking'\n"
+    )
+    assert _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source}) == []
+    assert len(_findings(tmp_path, NamedAttributeDetector, {"m": source})) == 1
+
+
+@pytest.mark.parametrize(
+    "receiver",
+    ["row: object", "row", "row: 'Unknown'"],
+    ids=["object", "unannotated", "unresolved"],
+)
+def test_a_receiver_no_declaration_types_as_scanned_classes_is_never_absent(
+    tmp_path: Path, receiver: str
+):
+    source = TURN_OWNERS + f"def summary({receiver}) -> str:\n    return getattr(row, 'summary', '')\n"
+    assert _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source}) == []
+    assert len(_findings(tmp_path, NamedAttributeDetector, {"m": source})) == 1
+
+
+def test_a_family_behind_a_base_outside_the_scan_is_never_absent(tmp_path: Path):
+    source = (
+        "from elsewhere import Family\n\n\nclass Owner(Family):\n    busy = False\n\n\n"
+        "def label(owner: Owner):\n    return hasattr(owner, 'describe')\n"
+    )
+    assert _findings(tmp_path, AbsentAttributeProbeDetector, {"m": source}) == []
+
+
+# The bench shapes: toad's turn owners and line links are `DeclaredFamily`
+# members, whose `FamilyMeta` creation the class index proves keeps their order.
+DECLARED_FAMILY = (
+    "from abc import ABC, ABCMeta\n"
+    "from typing import ClassVar, cast\n\n"
+    "from metaclass_registry import AutoRegisterMeta, RegistryConfig\n\n\n"
+    "class FamilyMeta(AutoRegisterMeta, ABCMeta):\n"
+    "    def __new__(mcs, name, bases, namespace, *, affix=None, discovery_package=None, **class_options):\n"
+    "        roots = {base.family_root for base in bases if hasattr(base, 'family_root')}\n"
+    "        root = next(iter(roots), None)\n"
+    "        is_root = affix is not None or not roots\n"
+    "        if is_root:\n"
+    "            namespace['_family_affix'] = affix if affix is not None else namespace.get('_family_affix', '')\n"
+    "            registry = namespace['__registry__'] = {}\n"
+    "            namespace['declared_name'] = None\n"
+    "            config = namespace['__registry_config__'] = RegistryConfig(\n"
+    "                registry_dict=registry, key_attribute='declared_name', skip_if_no_key=True\n"
+    "            )\n"
+    "        else:\n"
+    "            config = root.__registry_config__\n"
+    "            namespace['declared_name'] = class_options.pop('declared_name', namespace.get('declared_name', name))\n"
+    "        cls = super().__new__(mcs, name, bases, namespace, registry_config=config, **class_options)\n"
+    "        if is_root:\n"
+    "            cls.family_root = cls\n"
+    "        else:\n"
+    "            for family_root in roots:\n"
+    "                cls.family_root = family_root\n"
+    "        return cast(FamilyMeta, cls)\n\n\n"
+    "class FamilyMember(ABC):\n"
+    "    declared_name: ClassVar[str]\n"
+    "    family_root: ClassVar[type]\n\n\n"
+    "class DeclaredFamily(FamilyMember, metaclass=FamilyMeta):\n"
+    "    _family_affix: ClassVar[str]\n\n"
+    "    def __init_subclass__(cls, *, affix=None, declared_name=None, discovery_package=None):\n"
+    "        super().__init_subclass__()\n"
+)
+CONVERSATION_TURN = (
+    "from abc import abstractmethod\nfrom dataclasses import dataclass\n\n"
+    "from family import DeclaredFamily\n\n\n"
+    "class TurnOwner(DeclaredFamily, affix='Turn'):\n"
+    "    activity = ''\n\n"
+    "    @property\n    def busy(self) -> bool:\n        return bool(self.activity)\n\n"
+    "    @property\n    @abstractmethod\n    def session_state(self) -> str | None: ...\n\n"
+    "    def with_activity(self, activity: str) -> 'TurnOwner':\n"
+    "        return ActivityTurn(activity) if activity else self\n\n\n"
+    "@dataclass(frozen=True)\nclass NoTurn(TurnOwner):\n    session_state = None\n\n\n"
+    "@dataclass(frozen=True)\nclass ClientTurn(TurnOwner):\n    session_state = 'idle'\n\n\n"
+    "@dataclass(frozen=True)\nclass ActivityTurn(TurnOwner):\n    activity: str\n    session_state = 'busy'\n"
+)
+COMPOSER_SURROUND = (
+    "from conversation_turn import TurnOwner\n\n\n"
+    "class ComposerSurround:\n"
+    "    def _turn_changed(self, owner: TurnOwner) -> None:\n"
+    "        if owner.busy:\n"
+    "            label = owner.describe() if hasattr(owner, 'describe') else 'Thinking'\n"
+    "            self.label = label\n"
+)
+
+
+def test_the_turn_owner_probe_for_describe_never_succeeds(tmp_path: Path):
+    sources = {"family": DECLARED_FAMILY, "conversation_turn": CONVERSATION_TURN, "composer_surround": COMPOSER_SURROUND}
+    (finding,) = _findings(tmp_path, AbsentAttributeProbeDetector, sources)
+    assert finding.primary_evidence.file_path.endswith("composer_surround.py")
+    assert _lines([finding]) == [7]
+    assert "'describe'" in finding.summary
+    assert "`conversation_turn.TurnOwner`" in finding.summary
+    # The probe is this detector's alone; the family's own `hasattr(base, ...)` stays named_attribute's.
+    assert [
+        f for f in _findings(tmp_path, NamedAttributeDetector, sources)
+        if f.primary_evidence.file_path.endswith("composer_surround.py")
+    ] == []
+
+
+LINE_BLOCKS = (
+    "from typing import ClassVar\n\nfrom family import DeclaredFamily\n\n\n"
+    "class LineLink(DeclaredFamily, affix='Link'):\n"
+    "    underlined: ClassVar[bool] = True\n"
+    "    href_scheme: ClassVar[str] = 'toad-link:'\n\n\n"
+    "class NoLink(LineLink):\n    underlined = False\n\n\n"
+    "class OpenTarget(LineLink):\n    target = ''\n"
+)
+PROJECT_LINK = (
+    "from abc import abstractmethod\n\nfrom line_blocks import LineLink\n\n\n"
+    "class ProjectLink(LineLink):\n"
+    "    @property\n    @abstractmethod\n    def href(self) -> str: ...\n\n\n"
+    "class ExternalProjectLink(ProjectLink):\n"
+    "    def __init__(self, href: str) -> None:\n        self._href = href\n\n"
+    "    @property\n    def href(self) -> str:\n        return self._href\n"
+)
+WINDOW = (
+    "from line_blocks import LineLink\n\n\n"
+    "class Window:\n"
+    "    def open_line_link(self, link: LineLink) -> None:\n"
+    "        url = getattr(link, 'url', None) or getattr(link, 'href', None)\n"
+    "        if url:\n            self.opened = str(url)\n"
+)
+
+
+def test_a_link_probe_for_href_a_subclass_declares_is_no_absent_probe(tmp_path: Path):
+    sources = {"family": DECLARED_FAMILY, "line_blocks": LINE_BLOCKS, "project_link": PROJECT_LINK, "window": WINDOW}
+    (finding,) = _findings(tmp_path, AbsentAttributeProbeDetector, sources)
+    assert "'url'" in finding.summary and "'href'" not in finding.summary
+    (named,) = [
+        f for f in _findings(tmp_path, NamedAttributeDetector, sources)
+        if f.primary_evidence.file_path.endswith("window.py")
+    ]
+    assert "'href'" in named.summary and "'url'" not in named.summary
 
 
 # ---- exact key sets
