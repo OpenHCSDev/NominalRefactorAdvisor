@@ -192,6 +192,125 @@ def test_a_shadowed_getattr_is_a_method_not_the_builtin(tmp_path: Path):
     assert _findings(tmp_path, NamedAttributeDetector, {"m": source}) == []
 
 
+# Each source is one probe no declaration of the scan's can hold, shaped as the
+# bench site it was found at; each is a finding before its exemption existed.
+EXEMPT_PROBES = {
+    "callable_runtime_name": (
+        "def name_of(operation):\n"
+        "    return getattr(operation, '__qualname__', type(operation).__qualname__)\n"
+    ),
+    "inspected_partial": (
+        "import inspect\n\n\nclass Worker:\n    def __init__(self, work):\n        self._work = work\n\n"
+        "    def run(self):\n"
+        "        if inspect.iscoroutinefunction(self._work) or hasattr(self._work, 'func')"
+        " and inspect.iscoroutinefunction(self._work.func):\n            return 1\n        return 0\n"
+    ),
+    "ctypes_object": (
+        "import ctypes\n\n\ndef open_pidfd(pid):\n    libc = ctypes.CDLL(None, use_errno=True)\n"
+        "    function = getattr(libc, 'pidfd_open', None)\n    return function\n"
+    ),
+    "builtin_iterator": (
+        "def compose(result):\n    iterator = None\n    iterator = iter(result)\n"
+        "    return hasattr(iterator, 'throw')\n"
+    ),
+    "dunder_protocol": (
+        "def render(error):\n    if hasattr(error, '__rich__'):\n        return error.__rich__()\n    return str(error)\n"
+    ),
+    "imported_module": (
+        "from importlib import import_module\n\n\ndef tools(chosen):\n"
+        "    loaded = (import_module(module) for module in chosen)\n"
+        "    return {module.__name__: module for module in loaded if hasattr(module, 'main')}\n"
+    ),
+    "repr_before_init": (
+        "class Node:\n    def __init__(self, name):\n        self._name = name\n\n"
+        "    def __rich_repr__(self):\n        if hasattr(self, '_name'):\n            yield 'name', self._name\n"
+    ),
+    "forgotten_super_init": (
+        "class Message:\n    def __init__(self):\n        self._prevent = set()\n\n\n"
+        "def post(message: Message):\n    if not hasattr(message, '_prevent'):\n"
+        "        raise RuntimeError('did you forget to call super().__init__()?')\n    return True\n"
+    ),
+    "misuse_warning": (
+        "class Widget:\n    def check(self, log):\n        if hasattr(self, 'CSS'):\n"
+        "            from os import path\n            if not self.screen:\n"
+        "                log.warning('CSS is ignored on a widget')\n"
+    ),
+    "lambda_assignment": (
+        "class Details:\n    delivery = None\n\n\n"
+        "def watch(details: Details, subscribe):\n"
+        "    subscribe(lambda state: setattr(details, 'delivery', state))\n"
+    ),
+    "isinstance_fallback": (
+        "class Visual:\n    pass\n\n\n"
+        "def is_visual(obj: object) -> bool:\n    return isinstance(obj, Visual) or hasattr(obj, 'textualize')\n"
+    ),
+    "isinstance_early_return": (
+        "class Visual:\n    pass\n\n\n"
+        "def visualize(obj):\n    if isinstance(obj, Visual):\n        return obj\n"
+        "    return getattr(obj, 'visualize', None)\n"
+    ),
+    "isinstance_else": (
+        "def deliver(path_or_file):\n    if isinstance(path_or_file, str):\n        name = path_or_file\n"
+        "    else:\n        name = getattr(path_or_file, 'name', None)\n    return name\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(EXEMPT_PROBES))
+def test_a_probe_no_declaration_of_ours_can_hold_is_not_a_finding(tmp_path: Path, name: str):
+    assert _findings(tmp_path, NamedAttributeDetector, {"m": EXEMPT_PROBES[name]}) == []
+    assert _findings(tmp_path, AbsentAttributeProbeDetector, {"m": EXEMPT_PROBES[name]}) == []
+
+
+# Each source is the near miss of one exemption: the probe still restates a type's attributes.
+RESTATING_PROBES = {
+    "partial_name_uninspected": "def f(work):\n    return hasattr(work, 'func')\n",
+    "receiver_is_a_parameter": "def f(libc):\n    return getattr(libc, 'pidfd_open', None)\n",
+    "receiver_rebound_from_a_parameter": (
+        "import ctypes\n\n\ndef f(other):\n    libc = ctypes.CDLL(None)\n    libc = other\n"
+        "    return getattr(libc, 'pidfd_open', None)\n"
+    ),
+    "not_a_module_loader": (
+        "def tools(chosen):\n    loaded = (load(module) for module in chosen)\n"
+        "    return [module for module in loaded if hasattr(module, 'main')]\n"
+    ),
+    "repr_of_another_object": (
+        "class Node:\n    def __repr__(self):\n        return str(hasattr(self.parent, 'name'))\n"
+    ),
+    "branch_that_works": (
+        "def f(view):\n    if hasattr(view, 'composer'):\n        view.composer.focus()\n"
+    ),
+    "setattr_outside_a_lambda": "def f(details, state):\n    setattr(details, 'delivery', state)\n",
+    "probe_after_isinstance_said_yes": (
+        "class Animatable:\n    def blend(self):\n        return self\n\n\n"
+        "def duration(value):\n    if not isinstance(value, Animatable):\n        raise TypeError(value)\n"
+        "    if hasattr(value, 'get_distance_to'):\n        return 1\n    return 0\n"
+    ),
+    "isinstance_of_another_value": (
+        "class Visual:\n    pass\n\n\n"
+        "def f(obj, other):\n    return isinstance(other, Visual) or hasattr(obj, 'textualize')\n"
+    ),
+}
+
+
+@pytest.mark.parametrize("name", sorted(RESTATING_PROBES))
+def test_the_near_miss_of_each_exemption_stays_a_finding(tmp_path: Path, name: str):
+    (finding,) = _findings(tmp_path, NamedAttributeDetector, {"m": RESTATING_PROBES[name]})
+    assert finding.pattern_id is PatternId.ATTRIBUTE_ACCESS_BY_NAME
+
+
+def test_a_marker_our_own_decorator_sets_on_a_function_stays_a_finding(tmp_path: Path):
+    source = (
+        "def declares(policy):\n    def mark(function):\n        function._height_dependency = policy\n"
+        "        return function\n    return mark\n\n\n"
+        "class Layout:\n    def arrange(self):\n        return 0\n\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        cls._dependency = getattr(cls.arrange, '_height_dependency', None)\n"
+    )
+    (finding,) = _findings(tmp_path, NamedAttributeDetector, {"m": source})
+    assert _lines([finding]) == [13]
+
+
 # ---- attribute probes that never succeed
 
 TURN_OWNERS = (

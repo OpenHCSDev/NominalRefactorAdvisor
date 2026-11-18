@@ -483,11 +483,17 @@ class AttributeReach:
 
     def absent_from(self, site: NamedAttributeSite) -> tuple[str, ...]:
         """The classes the receiver can be when none of them can hold the probed
-        name, so the probe's answer is fixed; empty otherwise. A dunder is a
-        protocol any object may answer, never a member of the family alone."""
+        name, so the probe's answer is fixed; empty otherwise. An exempt probe is
+        never absent: a guard against an unfinished `__init__` or a misused
+        subclass asks about objects the scan does not hold."""
 
         name = site.probed_name
-        if not site.looks_up or is_dunder(name) or name in self.stored_elsewhere:
+        if (
+            site.exemption is not None
+            or not site.looks_up
+            or is_dunder(name)
+            or name in self.stored_elsewhere
+        ):
             return ()
         reached = self.reaching(site)
         if not reached or any(self.holds(symbol, name) for symbol in reached):
@@ -504,7 +510,8 @@ class NamedAttributeDetector(
 ):
     """getattr, hasattr, setattr or delattr by a literal name, and getattr with a default.
 
-    A probe no class of its receiver can answer is the
+    A probe an `AttributeProbeExemption` recognises restates no declaration of
+    the scan's, and a probe no class of its receiver can answer is the
     `AbsentAttributeProbeDetector`'s; every other probe is this detector's.
     """
 
@@ -528,7 +535,7 @@ class NamedAttributeDetector(
     )
 
     def restates(self, site: NamedAttributeSite, context: AttributeReach) -> bool:
-        return not context.absent_from(site)
+        return site.exemption is None and not context.absent_from(site)
 
     def describe(self, sites: Sequence[NamedAttributeSite], context: AttributeReach) -> str:
         spelled = [f"{site.detail[0]}(.., {site.detail[1]!r})" for site in sites]

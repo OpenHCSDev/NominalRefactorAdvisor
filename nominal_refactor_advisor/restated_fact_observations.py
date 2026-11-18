@@ -11,12 +11,14 @@ import ast
 import configparser
 import os
 import re
+import sys
 import tomllib
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cached_property
 from fnmatch import fnmatch
 from pathlib import Path
 from typing import ClassVar, TypeVar
@@ -35,6 +37,7 @@ from nominal_refactor_advisor.ast_tools import (
     AttributeAccessCall,
     BuiltinCall,
     BuiltinCallName,
+    ModuleSyntaxIndex,
     ParsedModule,
 )
 from nominal_refactor_advisor.class_symbols import iter_class_definitions
@@ -223,16 +226,393 @@ def imported_module_names(parsed_module: ParsedModule) -> frozenset[str]:
     )
 
 
+@dataclass(frozen=True)
+class AttributeProbeSyntax:
+    """One call that reaches an attribute by a literal name, with the syntax around it."""
+
+    access: AttributeAccessCall
+    name: str
+    node_index: int
+    index: ModuleSyntaxIndex
+    module: ast.Module
+    imported_modules: Mapping[str, str]
+    """Each name `import` binds in the module, and the module it binds."""
+
+    @property
+    def receiver(self) -> ast.expr:
+        return self.access.object_argument
+
+    @cached_property
+    def ancestors(self) -> tuple[ast.AST, ...]:
+        return self.index.ancestor_nodes(self.node_index)
+
+    @cached_property
+    def function(self) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+        """The function the call runs in, or None at module or class level."""
+
+        position = self.index.scopes[self.index.scope_ids[self.node_index]].executable_function_index
+        if position < 0:
+            return None
+        return self.index.depth_first_nodes[position]
+
+    @property
+    def scope(self) -> ast.AST:
+        """What the call's names are bound in: its function, else its module."""
+
+        return self.function or self.module
+
+    @cached_property
+    def receiver_spelled(self) -> str:
+        return ast.unparse(self.receiver)
+
+    def receiver_bindings(self) -> tuple[ast.expr, ...] | None:
+        """The values the receiver name is assigned in its scope, when plain
+        assignments are its only bindings; None for any other receiver."""
+
+        return _assigned_values(self.receiver, self.scope)
+
+    def receiver_iterated_from(self) -> tuple[ast.expr, ...]:
+        """What a comprehension around the call iterates when its target is the receiver name."""
+
+        if not isinstance(self.receiver, ast.Name):
+            return ()
+        return tuple(
+            generator.iter
+            for ancestor in self.ancestors
+            if isinstance(ancestor, ast.ListComp | ast.SetComp | ast.DictComp | ast.GeneratorExp)
+            for generator in ancestor.generators
+            if isinstance(generator.target, ast.Name) and generator.target.id == self.receiver.id
+        )
+
+    def receiver_is_argument_of(self, callees: frozenset[str]) -> bool:
+        """Whether the call's scope passes the receiver, first, to a callee of these names."""
+
+        return any(
+            isinstance(node, ast.Call)
+            and node.args
+            and ast.unparse(node.args[0]) == self.receiver_spelled
+            and ExpressionReference.decoded(node.func).terminal_name in callees
+            for node in ast.walk(self.scope)
+        )
+
+
+def _assigned_values(receiver: ast.expr, scope: ast.AST) -> tuple[ast.expr, ...] | None:
+    """The values `scope` assigns the name `receiver`, when `name = value` is the
+    only way the scope binds it: None for a parameter, a loop or `with` target,
+    a walrus, an augmented assignment or any receiver that is not a name."""
+
+    if not isinstance(receiver, ast.Name):
+        return None
+    name = receiver.id
+    values: list[ast.expr] = []
+    plain_targets: set[int] = set()
+    for node in ast.walk(scope):
+        match node:
+            case ast.Assign(targets=targets, value=value):
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id == name:
+                        values.append(value)
+                        plain_targets.add(id(target))
+            case ast.AnnAssign(target=ast.Name(id=bound) as target, value=value) if bound == name:
+                plain_targets.add(id(target))
+                if value is not None:
+                    values.append(value)
+            case ast.arg(arg=bound) if bound == name:
+                return None
+    for node in ast.walk(scope):
+        if (
+            isinstance(node, ast.Name)
+            and node.id == name
+            and not isinstance(node.ctx, ast.Load)
+            and id(node) not in plain_targets
+        ):
+            return None
+    return tuple(values)
+
+
+class AttributeProbeExemption(ABC):
+    """A probe by literal name that restates no declaration of the scan's.
+
+    Each member recognises one shape and says why that shape holds no type
+    fact; the members are tried in declaration order and the first that
+    recognises a probe exempts it.
+    """
+
+    reason: ClassVar[str]
+
+    @classmethod
+    @abstractmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    def first_for(cls, probe: AttributeProbeSyntax) -> str | None:
+        """The reason of the first exemption that recognises the probe, or None."""
+
+        return next(
+            (exemption.reason for exemption in EXEMPTIONS if exemption.exempts(probe)),
+            None,
+        )
+
+
+class CallableMetadataProbe(AttributeProbeExemption):
+    """`__qualname__` and `__name__` are what the runtime gives every function and
+    class; `func`, `args` and `keywords` are `functools.partial`'s, read from a
+    callable the same function inspects. No declaration of ours holds either."""
+
+    reason = "stdlib attribute of a callable"
+    RUNTIME_NAMES: ClassVar[frozenset[str]] = frozenset(("__qualname__", "__name__"))
+    PARTIAL_NAMES: ClassVar[frozenset[str]] = frozenset(("func", "args", "keywords"))
+    INSPECTIONS: ClassVar[frozenset[str]] = frozenset(
+        (
+            "callable",
+            "iscoroutinefunction",
+            "isfunction",
+            "ismethod",
+            "isgeneratorfunction",
+            "isasyncgenfunction",
+            "signature",
+        )
+    )
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        if probe.name in cls.RUNTIME_NAMES:
+            return True
+        return probe.name in cls.PARTIAL_NAMES and probe.receiver_is_argument_of(cls.INSPECTIONS)
+
+
+class StdlibObjectProbe(AttributeProbeExemption):
+    """The receiver is a local the function binds only from a standard-library call
+    (`ctypes.CDLL(...)`, `iter(...)`, `open(...)`): an object no declaration of the
+    scan's types, so its probe belongs where it already is, at that boundary."""
+
+    reason = "standard-library object"
+    BUILTIN_CONSTRUCTORS: ClassVar[frozenset[str]] = frozenset(("iter", "open", "memoryview"))
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        bindings = probe.receiver_bindings()
+        if not bindings:
+            return False
+        values = [value for value in bindings if not cls.is_none(value)]
+        return bool(values) and all(cls.is_stdlib_call(value, probe) for value in values)
+
+    @staticmethod
+    def is_none(value: ast.expr) -> bool:
+        return isinstance(value, ast.Constant) and value.value is None
+
+    @classmethod
+    def is_stdlib_call(cls, value: ast.expr, probe: AttributeProbeSyntax) -> bool:
+        if not isinstance(value, ast.Call):
+            return False
+        callee = value.func
+        if isinstance(callee, ast.Name):
+            return callee.id in cls.BUILTIN_CONSTRUCTORS
+        while isinstance(callee, ast.Attribute):
+            callee = callee.value
+        if not isinstance(callee, ast.Name) or callee.id not in probe.imported_modules:
+            return False
+        module = probe.imported_modules[callee.id]
+        return module.partition(".")[0] in sys.stdlib_module_names
+
+
+class DunderProtocolProbe(AttributeProbeExemption):
+    """A `__name__` the data model or a published protocol defines (`__rich__`,
+    `__rich_measure__`): any object may answer it, so it is a protocol of every
+    object, not an attribute list of one of the scan's types."""
+
+    reason = "dunder protocol"
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        return is_dunder(probe.name)
+
+
+class ModuleObjectProbe(AttributeProbeExemption):
+    """The receiver is a module `import_module` loaded: what a module defines is
+    its own namespace, which no class declaration holds."""
+
+    reason = "module object"
+    LOADER = "import_module"
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        bound = probe.receiver_bindings()
+        iterated = probe.receiver_iterated_from()
+        sources = (*iterated, *(bound or ())) if iterated else bound
+        return bool(sources) and all(
+            cls.loads_modules(source, probe.scope, frozenset()) for source in sources
+        )
+
+    @classmethod
+    def loads_modules(cls, value: ast.expr, scope: ast.AST, seen: frozenset[str]) -> bool:
+        """A call of `import_module`, a comprehension of them, or a name the scope
+        binds only to those."""
+
+        match value:
+            case ast.Call(func=callee):
+                return ExpressionReference.decoded(callee).terminal_name == cls.LOADER
+            case ast.ListComp(elt=element) | ast.SetComp(elt=element) | ast.GeneratorExp(elt=element):
+                return cls.loads_modules(element, scope, seen)
+            case ast.Name(id=name) if name not in seen:
+                values = _assigned_values(value, scope)
+                return bool(values) and all(
+                    cls.loads_modules(bound, scope, seen | {name}) for bound in values
+                )
+        return False
+
+
+class InitializationGuardProbe(AttributeProbeExemption):
+    """The probe guards against an object whose `__init__` has not run: inside a
+    `__repr__` on the method's own object, or as the test of a branch that only
+    raises or warns (a forgotten `super().__init__()`, `CSS` set on a widget).
+    The attribute is declared; the probe checks the declaration was carried out."""
+
+    reason = "initialization or misuse guard"
+    REPRESENTATIONS: ClassVar[frozenset[str]] = frozenset(("__repr__", "__rich_repr__", "__str__"))
+    REPORTS: ClassVar[frozenset[str]] = frozenset(
+        ("warn", "warning", "error", "exception", "critical")
+    )
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        return cls.in_own_representation(probe) or cls.tests_a_report(probe)
+
+    @classmethod
+    def in_own_representation(cls, probe: AttributeProbeSyntax) -> bool:
+        function = probe.function
+        if function is None or function.name not in cls.REPRESENTATIONS:
+            return False
+        arguments = [*function.args.posonlyargs, *function.args.args]
+        return (
+            bool(arguments)
+            and isinstance(probe.receiver, ast.Name)
+            and probe.receiver.id == arguments[0].arg
+        )
+
+    @classmethod
+    def tests_a_report(cls, probe: AttributeProbeSyntax) -> bool:
+        tested = probe.access.node
+        ancestors = probe.ancestors
+        if ancestors and isinstance(ancestors[-1], ast.UnaryOp) and isinstance(ancestors[-1].op, ast.Not):
+            tested, ancestors = ancestors[-1], ancestors[:-1]
+        return (
+            bool(ancestors)
+            and isinstance(ancestors[-1], ast.If)
+            and ancestors[-1].test is tested
+            and cls.only_reports(ancestors[-1].body)
+        )
+
+    @classmethod
+    def only_reports(cls, statements: list[ast.stmt]) -> bool:
+        return bool(statements) and all(cls.reports(statement) for statement in statements)
+
+    @classmethod
+    def reports(cls, statement: ast.stmt) -> bool:
+        match statement:
+            case ast.Raise() | ast.Pass() | ast.Import() | ast.ImportFrom():
+                return True
+            case ast.Expr(value=ast.Call(func=callee)):
+                return ExpressionReference.decoded(callee).terminal_name in cls.REPORTS
+            case ast.If(body=body, orelse=orelse):
+                return cls.only_reports(body) and (not orelse or cls.only_reports(orelse))
+        return False
+
+
+class LambdaAssignmentProbe(AttributeProbeExemption):
+    """`lambda value: setattr(target, "name", value)`: a lambda cannot hold an
+    assignment statement, so `setattr` is how it spells `target.name = value`."""
+
+    reason = "assignment inside a lambda"
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        ancestors = probe.ancestors
+        return (
+            probe.access.assigns
+            and bool(ancestors)
+            and isinstance(ancestors[-1], ast.Lambda)
+            and ancestors[-1].body is probe.access.node
+        )
+
+
+class NominalFallbackProbe(AttributeProbeExemption):
+    """The probe runs only where an `isinstance` test of the same receiver said
+    no: it is the open protocol a nominal decoder falls back to for every other
+    object. That is a later operand of an `or` after the test (`isinstance(obj,
+    Visual) or hasattr(obj, "textualize")`), the `else` of an `if` on the test,
+    or a statement after `if isinstance(obj, C): return ...`. A probe after a
+    test that said yes asks for a member the tested type does not declare, and
+    stays a finding."""
+
+    reason = "fallback of an isinstance decoder"
+    TEST = "isinstance"
+    EXITS: ClassVar[tuple[type[ast.stmt], ...]] = (ast.Return, ast.Raise, ast.Continue, ast.Break)
+
+    @classmethod
+    def exempts(cls, probe: AttributeProbeSyntax) -> bool:
+        chain = (*probe.ancestors, probe.access.node)
+        return any(
+            cls.reached_when_refused(parent, child, probe)
+            for parent, child in zip(chain, chain[1:])
+        )
+
+    @classmethod
+    def tests_receiver(cls, expression: ast.AST, probe: AttributeProbeSyntax) -> bool:
+        return (
+            isinstance(expression, ast.Call)
+            and ExpressionReference.decoded(expression.func).terminal_name == cls.TEST
+            and bool(expression.args)
+            and ast.unparse(expression.args[0]) == probe.receiver_spelled
+        )
+
+    @classmethod
+    def reached_when_refused(cls, parent: ast.AST, child: ast.AST, probe: AttributeProbeSyntax) -> bool:
+        match parent:
+            case ast.BoolOp(op=ast.Or(), values=values):
+                return any(cls.tests_receiver(value, probe) for value in values[: values.index(child)])
+            case ast.If(test=test, orelse=orelse) if child in orelse:
+                return cls.tests_receiver(test, probe)
+        for field in ("body", "orelse", "finalbody"):
+            statements = getattr(parent, field, None)
+            if isinstance(statements, list) and child in statements:
+                return any(
+                    isinstance(earlier, ast.If)
+                    and cls.tests_receiver(earlier.test, probe)
+                    and bool(earlier.body)
+                    and isinstance(earlier.body[-1], cls.EXITS)
+                    for earlier in statements[: statements.index(child)]
+                )
+        return False
+
+
+EXEMPTIONS: tuple[type[AttributeProbeExemption], ...] = (
+    CallableMetadataProbe,
+    StdlibObjectProbe,
+    DunderProtocolProbe,
+    ModuleObjectProbe,
+    InitializationGuardProbe,
+    LambdaAssignmentProbe,
+    NominalFallbackProbe,
+)
+
+
 def is_dunder(name: str) -> bool:
     return len(name) > 4 and name.startswith("__") and name.endswith("__")
 
 
 @dataclass(frozen=True)
 class NamedAttributeSite(RestatingSite):
-    """A call reaching an attribute by a literal name, with its receiver's declared path."""
+    """A call reaching an attribute by a literal name, with its receiver's declared path.
+
+    `exemption` is the reason no declaration of the scan's can hold the probe,
+    or None when one can.
+    """
 
     owner: DeclaredPathProbeOwner
     looks_up: bool
+    exemption: str | None
 
     @property
     def probed_name(self) -> str:
@@ -334,7 +714,8 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[NamedAttributeSiteModule]):
     module-level string constant, spells one attribute of the receiver's type.
     An imported module is not a type of ours: `hasattr(os, "pidfd_open")` asks
     what this platform build provides, which no declaration of ours can hold.
-    Each site carries its receiver's declared path, for the scan to type.
+    Each site carries its receiver's declared path, for the scan to type, and
+    the first `AttributeProbeExemption` that recognises it.
     """
 
     item_type = NamedAttributeSiteModule
@@ -353,7 +734,7 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[NamedAttributeSiteModule]):
     def sites(cls, parsed_module: ParsedModule) -> Iterator[NamedAttributeSite]:
         index = parsed_module.syntax_index
         constants = cls.string_constants(parsed_module)
-        modules = imported_module_names(parsed_module)
+        imported = cls.imported_modules(parsed_module)
         resolver = ProbeOwnerResolver.of(parsed_module)
         for node_index, call in index.indexed_nodes_of_type(ast.Call):
             access = BuiltinCall.decoded(call)
@@ -362,11 +743,14 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[NamedAttributeSiteModule]):
             ):
                 continue
             receiver = access.object_argument
-            if isinstance(receiver, ast.Name) and receiver.id in modules:
+            if isinstance(receiver, ast.Name) and receiver.id in imported:
                 continue
             spelled = cls.attribute_name(access.name_argument, constants)
             if spelled is None:
                 continue
+            probe = AttributeProbeSyntax(
+                access, spelled, node_index, index, parsed_module.module, imported
+            )
             yield NamedAttributeSite(
                 file_path=parsed_module.file_path,
                 lineno=call.lineno,
@@ -375,7 +759,20 @@ class NamedAttributeSiteFamily(RestatingSiteFamily[NamedAttributeSiteModule]):
                 detail=(access.description, spelled),
                 owner=resolver.owner(receiver),
                 looks_up=access.looks_up,
+                exemption=AttributeProbeExemption.first_for(probe),
             )
+
+    @staticmethod
+    def imported_modules(parsed_module: ParsedModule) -> dict[str, str]:
+        """Each name `import x` / `import x as y` binds, and the module it binds."""
+
+        return {
+            alias.asname or alias.name.partition(".")[0]: (
+                alias.name if alias.asname else alias.name.partition(".")[0]
+            )
+            for _node_index, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Import)
+            for alias in node.names
+        }
 
     @staticmethod
     def string_constants(parsed_module: ParsedModule) -> dict[str, str]:
