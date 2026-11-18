@@ -38,6 +38,11 @@ from nominal_refactor_advisor.composition_layering import CompositionRootLayerin
 from nominal_refactor_advisor.hidden_imports import ClosesCycle, HiddenImportPlan
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
+from nominal_refactor_advisor.refactors.type_only_readers import (
+    NoLowerBase,
+    RetypeTypeOnlyReadsOperation,
+    TypeOnlyRead,
+)
 from nominal_refactor_advisor.owner_candidates import ModuleImportGraph, common_package
 from nominal_refactor_advisor.refactor_concepts import HiddenImportCutConcept, LayeringViolationConcept
 from nominal_refactor_advisor.refactors.class_overlap import (
@@ -224,6 +229,18 @@ class HubStays(HubPlan):
 
 
 @dataclass(frozen=True)
+class HubRetype(HubPlan):
+    """Readers that import the hub's classes only to annotate with them, each
+    retyped to a base of the class below it: one batch, so a reader and the
+    callee it hands the value to change together."""
+
+    reads: tuple[TypeOnlyRead, ...]
+
+    def operation(self) -> RetypeTypeOnlyReadsOperation:
+        return RetypeTypeOnlyReadsOperation.of(self.reads)
+
+
+@dataclass(frozen=True)
 class HiddenImportCuts:
     """Each hub of one state's cycle-refused hidden imports, planned against the
     load-time graph with every accepted promotion in place."""
@@ -252,19 +269,52 @@ class HiddenImportCuts:
         """Every hub's plans, cuts first by edges dissolved per declaration moved."""
 
         plans = tuple(
-            plan for hub, refusals in sorted(self.edges_by_hub.items()) for plan in self.hub(hub, refusals)
+            plan
+            for hub, refusals in sorted(self.edges_by_hub.items())
+            for plan in self.retyped(self.hub(hub, refusals))
         )
         return tuple(
             sorted(
                 plans,
                 key=lambda plan: (
                     not isinstance(plan, HubCut),
+                    not isinstance(plan, HubRetype),
                     -plan.yield_per_declaration if isinstance(plan, HubCut) else 0,
                     -len(plan.dissolved),
                     plan.hub,
                 ),
             )
         )
+
+    def retyped(self, plans: tuple[HubPlan, ...]) -> tuple[HubPlan, ...]:
+        """Each edge no cut dissolves whose reader imports the hub's classes only
+        to annotate with them, retyped to a base below the reader instead,
+        whatever kept the cut from it; a reader with no such base needs one."""
+
+        reads: list[TypeOnlyRead] = []
+        dissolved: list[HubEdge] = []
+        out: list[HubPlan] = []
+        for plan in plans:
+            if isinstance(plan, HubCut | HubRetype):
+                out.append(plan)
+                continue
+            left: list[tuple[ClosesCycle, NeedsInput]] = []
+            for refusal, need in plan.needs:
+                try:
+                    found = TypeOnlyRead.of(self.snapshot, self.imports, refusal)
+                except NoLowerBase as missing:
+                    left.append((refusal, missing))
+                    continue
+                if found is None:
+                    left.append((refusal, need))
+                    continue
+                reads.extend(found)
+                dissolved.append(HubEdge(refusal, tuple(read.name for read in found)))
+            if left:
+                out.append(HubStays(plan.hub, (), tuple(left)))
+        if reads:
+            out.append(HubRetype(plans[0].hub, tuple(dissolved), (), tuple(reads)))
+        return tuple(out)
 
     def hub(self, hub: str, refusals: list[ClosesCycle]) -> tuple[HubPlan, ...]:
         """One cut of everything the hub's readers take, when it frees them all;
@@ -532,8 +582,23 @@ class HiddenImportCutFindingRecipeSynthesizer(
         refusals = cuts.edges_by_hub.get(evidence.symbol)
         if not refusals:
             return self.rejected_evaluation(f"`{evidence.symbol}` keeps no cycle a hidden import closes")
-        plans = cuts.hub(evidence.symbol, refusals)
-        plan = next((plan for plan in plans if isinstance(plan, HubCut)), plans[-1])
+        plans = cuts.retyped(cuts.hub(evidence.symbol, refusals))
+        plan = next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1])
+        if isinstance(plan, HubRetype):
+            operation = plan.operation()
+            try:
+                operation.source_edits(context)
+            except ValueError as error:
+                return self.stopped_evaluation(error)
+            return self.executable_evaluation(
+                RefactorRecipe(
+                    recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
+                    reason=(
+                        f"Annotating with a base below each reader lets {len(plan.dissolved)} guarded "
+                        f"import(s) load with no cycle: {operation.described}."
+                    ),
+                ).with_operation(operation)
+            )
         if not isinstance(plan, HubCut):
             need = NeedsInput(
                 "; ".join(f"{refusal.hidden.location}: {need}" for refusal, need in plan.needs),
