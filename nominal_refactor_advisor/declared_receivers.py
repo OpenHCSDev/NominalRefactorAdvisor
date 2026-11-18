@@ -156,6 +156,11 @@ class DeclaredType(ABC):
         """`type[T]` for this T: the class object, when T is one scanned class."""
         return UndeclaredType(f"`type[...]` of {self.spelled()} is no scanned class object")
 
+    def instance_symbols(self) -> tuple[str, ...]:
+        """The classes every value of this type is an instance of, none unless it is
+        known to be an instance (a class object is not one of its own instances)."""
+        return ()
+
     def why_no_class(self) -> str:
         """Why a value of this type is no instance of a scanned class."""
         return f"the receiver is declared as {self.spelled()}, no scanned class instance"
@@ -251,6 +256,9 @@ class DeclaredInstance(DeclaredScannedClasses):
 
     def with_symbols(self, symbols: tuple[str, ...]) -> DeclaredType:
         return DeclaredInstance(symbols)
+
+    def instance_symbols(self) -> tuple[str, ...]:
+        return self.symbols
 
     def class_object(self) -> DeclaredType:
         return DeclaredClassObject(self.symbols)

@@ -1633,7 +1633,13 @@ class NonBuiltinCall(BuiltinCall):
 
 @dataclass(frozen=True)
 class AttributeAccessCall(BuiltinCall):
-    """A call that reaches an object's attribute through a runtime name."""
+    """A call that reaches an object's attribute through a runtime name.
+
+    `looks_up` is whether it only reads or probes the attribute; `assigns`
+    whether it binds the attribute to a value."""
+
+    looks_up: ClassVar[bool]
+    assigns: ClassVar[bool] = False
 
     @property
     def object_argument(self) -> ast.expr:
@@ -1651,6 +1657,8 @@ class AttributeAccessCall(BuiltinCall):
 @dataclass(frozen=True)
 class AttributeLookup(AttributeAccessCall):
     """Reads or probes the attribute without changing the object."""
+
+    looks_up = True
 
 
 @dataclass(frozen=True)
@@ -1678,10 +1686,13 @@ class Hasattr(AttributeLookup):
 class AttributeMutation(AttributeAccessCall):
     """Writes or deletes the attribute."""
 
+    looks_up = False
+
 
 @dataclass(frozen=True)
 class Setattr(AttributeMutation):
     signature = (BuiltinCallName.SETATTR, 3)
+    assigns = True
 
 
 @dataclass(frozen=True)
