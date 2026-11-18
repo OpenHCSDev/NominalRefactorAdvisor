@@ -269,7 +269,7 @@ class ProvedCreationBases(RuntimeProofBases):
     Python builds the order from the bases a metaclass's `__new__` hands to
     `type.__new__`, so creation code that passes them on unchanged, defines no
     `mro` and assigns no `__bases__` leaves the order C3 gives the declared
-    bases. `keeps_order` is that proof's answer (`class_creation.CreationOrder`).
+    bases. `keeps_order` is that proof's answer (`class_index.ClassCreationOrderProof`).
     """
 
     keeps_order: Callable[[CompactIndexedClass, tuple[CompactIndexedClass, ...]], bool]

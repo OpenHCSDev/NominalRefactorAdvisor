@@ -26,7 +26,7 @@ from nominal_refactor_advisor.refactors.carrier_fields import (
     ReplaceFieldsWithCarrierOperation,
 )
 from nominal_refactor_advisor.class_mro import ClassMroAuthority
-from nominal_refactor_advisor.refactors.class_creation import CreationOrder, declared_names
+from nominal_refactor_advisor.refactors.class_creation import declared_names
 from nominal_refactor_advisor.refactors.class_member_authority import ClassMemberMoveProofContext
 from nominal_refactor_advisor.refactors.class_overlap import (
     CreateMixinOperation,
@@ -2090,7 +2090,7 @@ FAMILY_MARKER_PROBE = SHARED_MARKER_PROBE.replace("State, blocked", "State, bloc
 def _family_order(root: Path, source: str, symbol: str) -> tuple[str, ...] | None:
     _write(root, {"pkg/__init__.py": "", "pkg/todos.py": source})
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(root, use_parse_cache=False))
-    mro_type = CreationOrder(snapshot).authority().resolve(symbol).mro_type
+    mro_type = snapshot.class_overlap_verdicts.class_index.mro_authority.resolve(symbol).mro_type
     return None if mro_type is None else tuple(item.symbol for item in mro_type.declarations)
 
 

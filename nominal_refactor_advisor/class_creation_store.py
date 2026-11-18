@@ -31,6 +31,31 @@ from typing import ClassVar, TypeAlias
 
 FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
+MODELLED_METACLASSES = frozenset(
+    ("builtins.type", "abc.ABCMeta", "metaclass_registry.core.AutoRegisterMeta")
+)
+"""Metaclasses whose class creation NRA knows without reading it: they keep the
+bases they are handed and bind only registry names (`MODELLED_BINDINGS`)."""
+
+REGISTRY_NAMES = frozenset(
+    (
+        "__abstractmethods__",
+        "__key_extractor__",
+        "__registry__",
+        "__registry_config__",
+        "__registry_dict__",
+        "__registry_family__",
+        "__registry_key__",
+        "__registry_name__",
+        "__replaces_registered__",
+        "__secondary_registries__",
+        "__skip_if_no_key__",
+    )
+)
+"""The names a modelled metaclass reads from a class being created."""
+
+AUTO_REGISTER_META = "metaclass_registry.core.AutoRegisterMeta"
+
 
 def _functions(statements: list[ast.stmt]) -> dict[str, FunctionNode]:
     return {
@@ -96,6 +121,39 @@ class CreatedClassStore:
 
         hook = self.methods.get("__init_subclass__")
         return hook is not None and self._stores(hook, self._receiver(hook), 0)
+
+    def keeps_bases(self) -> bool:
+        """As a metaclass: creation keeps the order C3 gives the declared bases.
+        It defines no `mro`, and its `__new__`, if any, hands its own `bases` on
+        to `super().__new__` and returns what that built."""
+
+        new = self.methods.get("__new__")
+        return "mro" not in self.methods and (new is None or passes_bases_on(new))
+
+    def metaclass_bindings(self) -> CreationBindings:
+        """As a metaclass: what its `__new__` binds on the class it builds or in
+        the namespace it is handed, and what its `__init__` binds on its class."""
+
+        found = NO_BINDINGS
+        new = self.methods.get("__new__")
+        if new is not None:
+            parameters = _parameters(new)
+            found |= _bindings(
+                new,
+                self._aliases(new, self._created_by_new(new)),
+                frozenset(parameters[3:4]),
+            )
+        init = self.methods.get("__init__")
+        if init is not None:
+            parameters = _parameters(init)
+            found |= _bindings(init, self._receiver(init), frozenset(parameters[3:4]))
+        return found
+
+    def subclass_hook_bindings(self) -> CreationBindings:
+        """As a base: what its `__init_subclass__` binds on the subclass."""
+
+        hook = self.methods.get("__init_subclass__")
+        return NO_BINDINGS if hook is None else _bindings(hook, self._receiver(hook), frozenset())
 
     @staticmethod
     def _receiver(function: FunctionNode) -> frozenset[str]:
@@ -259,4 +317,154 @@ class CreatedClassStore:
                 yield keyword.arg
 
 
-__all__ = ("CreatedClassStore",)
+
+@dataclass(frozen=True)
+class CreationBindings:
+    """The names creation code binds on the class it creates.
+
+    A store whose name is computed (`setattr(cls, name, value)`, a non-literal
+    namespace key) or the class handed to code NRA does not read could bind
+    any name: `computed`. `key_attributes` are the literal `key_attribute=`
+    names a registry configuration names, which the modelled
+    `AutoRegisterMeta` binds on each registered class.
+    """
+
+    names: frozenset[str] = frozenset()
+    computed: bool = False
+    key_attributes: frozenset[str] = frozenset()
+
+    def __or__(self, other: CreationBindings) -> CreationBindings:
+        return CreationBindings(
+            self.names | other.names,
+            self.computed or other.computed,
+            self.key_attributes | other.key_attributes,
+        )
+
+    def may_bind(self, name: str) -> bool:
+        return self.computed or name in self.names or name in self.key_attributes
+
+
+NO_BINDINGS = CreationBindings()
+
+MODELLED_BINDINGS = CreationBindings(
+    REGISTRY_NAMES | {"__registry_key_derived__", "__registry_declaration__"}
+)
+"""What the modelled metaclasses bind besides the configured key attribute."""
+
+READ_ONLY_CALLS = frozenset(("cast", "isinstance", "issubclass", "getattr", "hasattr", "type", "id", "repr", "vars"))
+"""Calls that read the class handed to them and bind nothing on it."""
+
+
+def _is_super_call(node: ast.AST | None, method: str) -> bool:
+    match node:
+        case ast.Call(func=ast.Attribute(value=ast.Call(func=ast.Name(id="super")), attr=attr)):
+            return attr == method
+    return False
+
+
+def passes_bases_on(node: FunctionNode) -> bool:
+    """`__new__(mcs, name, bases, namespace, ...)` never rebinds `bases`, hands
+    it on as the third argument of every `super().__new__` it calls, and
+    returns what that call built."""
+
+    names = _parameters(node)
+    if len(names) < 3:
+        return False
+    bases = names[2]
+    built: set[str] = set()
+    calls = 0
+    for child in ast.walk(node):
+        match child:
+            case ast.Name(id=name, ctx=ast.Store() | ast.Del()) if name == bases:
+                return False
+            case ast.Call() if _is_super_call(child, "__new__"):
+                calls += 1
+                if len(child.args) < 3 or not (
+                    isinstance(child.args[2], ast.Name) and child.args[2].id == bases
+                ) or any(isinstance(argument, ast.Starred) for argument in child.args[:3]):
+                    return False
+            case ast.Assign(targets=[ast.Name(id=target)], value=value) | ast.AnnAssign(
+                target=ast.Name(id=target), value=value
+            ) if value is not None and _is_super_call(value, "__new__"):
+                built.add(target)
+    if not calls:
+        return False
+    for child in ast.walk(node):
+        if isinstance(child, ast.Return):
+            value = child.value
+            if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "cast":
+                value = value.args[-1] if value.args else None
+            if not (
+                (isinstance(value, ast.Name) and value.id in built)
+                or (value is not None and _is_super_call(value, "__new__"))
+            ):
+                return False
+    return True
+
+
+def _literal(node: ast.AST | None) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _bindings(
+    function: FunctionNode, classes: frozenset[str], namespaces: frozenset[str]
+) -> CreationBindings:
+    """What `function` binds on the class named by `classes` or into the
+    namespace named by `namespaces`."""
+
+    names: set[str] = set()
+    keys: set[str] = set()
+    computed = False
+    for node in ast.walk(function):
+        match node:
+            case ast.Attribute(value=ast.Name(id=owner), attr=attr, ctx=ast.Store() | ast.Del()) if owner in classes:
+                names.add(attr)
+            case ast.Subscript(value=ast.Name(id=owner), slice=key, ctx=ast.Store() | ast.Del()) if owner in namespaces:
+                literal = _literal(key)
+                if literal is None:
+                    computed = True
+                else:
+                    names.add(literal)
+            case ast.Call(func=func, args=args, keywords=keywords):
+                for keyword in keywords:
+                    if keyword.arg == "key_attribute" and (literal := _literal(keyword.value)) is not None:
+                        keys.add(literal)
+                match func:
+                    case ast.Name(id="setattr" | "delattr") if args and isinstance(args[0], ast.Name) and args[0].id in classes:
+                        literal = _literal(args[1]) if len(args) > 1 else None
+                        if literal is None:
+                            computed = True
+                        else:
+                            names.add(literal)
+                        continue
+                    case ast.Attribute(value=ast.Name(id=owner), attr=attr) if owner in namespaces:
+                        if attr in ("setdefault", "__setitem__") and args and (literal := _literal(args[0])) is not None:
+                            names.add(literal)
+                        elif attr not in ("get", "__getitem__", "__contains__", "keys", "values", "items", "copy"):
+                            computed = True
+                        continue
+                    case ast.Attribute(value=ast.Name(id=owner)) if owner in classes:
+                        computed = True
+                        continue
+                if _is_super_call(node, "__new__") or _is_super_call(node, "__init__") or _is_super_call(node, "__init_subclass__"):
+                    continue
+                if isinstance(func, ast.Name) and func.id in READ_ONLY_CALLS:
+                    continue
+                if any(
+                    isinstance(value, ast.Name) and value.id in classes | namespaces
+                    for value in (*args, *(keyword.value for keyword in keywords))
+                ):
+                    computed = True
+    return CreationBindings(frozenset(names), computed, frozenset(keys))
+
+
+__all__ = (
+    "AUTO_REGISTER_META",
+    "MODELLED_BINDINGS",
+    "MODELLED_METACLASSES",
+    "NO_BINDINGS",
+    "REGISTRY_NAMES",
+    "CreatedClassStore",
+    "CreationBindings",
+    "passes_bases_on",
+)
