@@ -18,7 +18,17 @@ from nominal_refactor_advisor.hidden_imports import HiddenImportPlan
 from nominal_refactor_advisor.refactors.hidden_import_cuts import HiddenImportCuts, HubRetype, HubStays
 from nominal_refactor_advisor.scan_cache import ScanCache
 
-BASE = "class Service:\n    def ping(self) -> int:\n        return 1\n"
+BASE = (
+    "from abc import ABC, abstractmethod\n\n\nclass Service(ABC):\n"
+    "    @abstractmethod\n    def ping(self) -> int: ...\n"
+)
+ROWS = 'class StoreRows:\n    """A marker rows inherit."""\n\n    __slots__ = ()\n'
+REGISTRY = (
+    "class Service:\n    members: dict[str, type] = {}\n\n"
+    "    def __init_subclass__(cls, **kwargs: object) -> None:\n"
+    "        super().__init_subclass__()\n        Service.members[cls.__name__] = cls\n\n"
+    "    def ping(self) -> int:\n        return 1\n"
+)
 READER = (
     "from __future__ import annotations\n\nfrom typing import TYPE_CHECKING\n\n"
     "if TYPE_CHECKING:\n    from pkg.hub import Hub\n\n\n"
@@ -27,10 +37,11 @@ READER = (
 )
 
 
-def _write(root: Path, hub: str, reader: str = READER) -> None:
+def _write(root: Path, hub: str, reader: str = READER, base: str = BASE) -> None:
     files = {
         "pkg/__init__.py": "",
-        "pkg/service.py": BASE,
+        "pkg/service.py": base,
+        "pkg/rows.py": ROWS,
         "pkg/hub.py": hub,
         "pkg/reader.py": reader,
         "main.py": "from pkg.hub import main\n\nprint(main())\n",
@@ -58,7 +69,7 @@ def _evaluation(root: Path):
 
 HUB = (
     "from pkg.reader import run\nfrom pkg.service import Service\n\n\n"
-    "class Hub(Service):\n    def only(self) -> int:\n        return 2\n\n\n"
+    "class Hub(Service):\n    def ping(self) -> int:\n        return 1\n\n    def only(self) -> int:\n        return 2\n\n\n"
     "def main() -> int:\n    return run(Hub())\n"
 )
 
@@ -129,3 +140,39 @@ def test_a_guarded_type_alias_has_no_base_to_name(tmp_path: Path):
         "`pkg.reader` reads `Handle` only as a type, but `pkg.hub.Handle` is a type alias, not a class: "
         "it has no base to name; the alias sitting below it is the input"
     )
+
+
+def _retyped_to(root: Path) -> list[tuple[str, str, str]]:
+    return [
+        (read.name, read.base_module, read.base_name)
+        for plan in HiddenImportCuts.of(_snapshot(root)).hubs()
+        if isinstance(plan, HubRetype)
+        for read in plan.reads
+    ]
+
+
+def test_a_base_that_only_supplies_code_is_never_named_for_the_class(tmp_path: Path):
+    hub = HUB.replace("from pkg.service import Service", "from pkg.rows import StoreRows").replace(
+        "class Hub(Service):", "class Hub(StoreRows):"
+    )
+    _write(tmp_path, hub)
+    assert _retyped_to(tmp_path) == []
+    [need] = [need for need in _stays(tmp_path) if "pkg.reader" in need]
+    assert need == (
+        "`pkg.reader` reads `Hub` only as a type, but its bases below it, `pkg.rows.StoreRows`, "
+        "supply code and declare no contract (no abstract member, no registry family): "
+        "a contract base declared below it, which the class inherits, is the input"
+    )
+
+
+def test_a_mixin_nearer_than_the_contract_base_is_passed_over_for_it(tmp_path: Path):
+    hub = HUB.replace(
+        "from pkg.service import Service", "from pkg.rows import StoreRows\nfrom pkg.service import Service"
+    ).replace("class Hub(Service):", "class Hub(StoreRows, Service):")
+    _write(tmp_path, hub)
+    assert _retyped_to(tmp_path) == [("Hub", "pkg.service", "Service")]
+
+
+def test_a_registry_family_class_is_a_contract_base(tmp_path: Path):
+    _write(tmp_path, HUB, base=REGISTRY)
+    assert _retyped_to(tmp_path) == [("Hub", "pkg.service", "Service")]

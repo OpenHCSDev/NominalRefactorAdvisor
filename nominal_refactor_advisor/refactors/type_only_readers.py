@@ -12,10 +12,12 @@ from __future__ import annotations
 
 import ast
 import re
+import typing
 from collections.abc import Iterator
 from dataclasses import dataclass
 
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
+from nominal_refactor_advisor.class_index import CompactIndexedClass
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_payload import (
@@ -48,6 +50,21 @@ class NoLowerBase(TypeOnlyReadRefused):
     def __init__(self, reader: str, name: str) -> None:
         super().__init__(
             f"`{reader}` reads `{name}` only as a type, but no base of `{name}` sits below it: "
+            "a contract base declared below it, which the class inherits, is the input",
+            NeededInput.OPERATION,
+        )
+
+
+class BaseIsImplementationMixin(TypeOnlyReadRefused):
+    """The bases below the module supply code but declare no contract: naming
+    one would say the value is a mixin, erasing which type it is, and a type
+    check cannot see that loss when the module reads no member."""
+
+    def __init__(self, reader: str, name: str, bases: tuple[str, ...]) -> None:
+        super().__init__(
+            f"`{reader}` reads `{name}` only as a type, but its bases below it, "
+            + ", ".join(f"`{base}`" for base in bases)
+            + ", supply code and declare no contract (no abstract member, no registry family): "
             "a contract base declared below it, which the class inherits, is the input",
             NeededInput.OPERATION,
         )
@@ -131,8 +148,6 @@ class TypeOnlyRead:
             if cls.alias(snapshot, owner, name):
                 raise AliasNotClass(reader, owner, name)
             base = cls.lower_base(snapshot, imports, owner, name, reader)
-            if base is None:
-                raise NoLowerBase(reader, name)
             reads.append(cls(reader, hidden.module.file_path, hub, name, *base))
         return tuple(reads)
 
@@ -156,14 +171,22 @@ class TypeOnlyRead:
     @staticmethod
     def lower_base(
         snapshot: CodemodSourceSnapshot, imports: ModuleImportGraph, hub: str, name: str, reader: str
-    ) -> tuple[str, str] | None:
-        """The nearest base along the class's MRO declared in another scanned
-        module that the reader can import at runtime without a cycle."""
+    ) -> tuple[str, str]:
+        """The nearest contract base along the class's MRO declared in another
+        scanned module that the reader can import at runtime without a cycle.
 
-        authority = snapshot.compact_class_index.mro_authority
+        An annotation says which type a value is; a base that only supplies code
+        cannot say it, so only a contract base is named: one declaring an
+        abstract member, or a registry family's class (its root or a member).
+        Raises `NoLowerBase` when no base sits below the reader, and
+        `BaseIsImplementationMixin` when only mixins do."""
+
+        index = snapshot.compact_class_index
+        authority = index.mro_authority
         symbol = f"{hub}.{name}"
         mro = authority.resolve(symbol).mro_type
         declarations = mro.declarations if mro is not None else authority.lookup_prefix(symbol)
+        mixins: list[str] = []
         for declaration in declarations:
             if declaration.symbol == symbol or "." in declaration.qualname:
                 continue
@@ -172,8 +195,27 @@ class TypeOnlyRead:
                 continue
             if imports.reaches(module, reader):
                 continue
+            if not ContractBase.declares(index.class_for(declaration.symbol) or declaration):
+                mixins.append(declaration.symbol)
+                continue
             return module, declaration.qualname
-        return None
+        if mixins:
+            raise BaseIsImplementationMixin(reader, name, tuple(mixins))
+        raise NoLowerBase(reader, name)
+
+
+class ContractBase:
+    """Whether a class declares what its subclasses are, not only code they reuse:
+    an abstract member it declares, or membership in a registry family. A
+    `Protocol` is structural, so it names no nominal identity."""
+
+    PROTOCOL = f"{typing.Protocol.__module__}.{typing.Protocol.__qualname__}"
+
+    @classmethod
+    def declares(cls, declaration: CompactIndexedClass) -> bool:
+        if any(reference.qualified_name == cls.PROTOCOL for reference in declaration.base_references):
+            return False
+        return bool(declaration.abstract_method_names) or declaration.is_registration_authority
 
 
 @dataclass(frozen=True)
