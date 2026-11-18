@@ -32,7 +32,7 @@ from importlib import import_module
 
 from metaclass_registry.core import AutoRegisterMeta
 
-from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModuleSet, ParsedModuleSetFact
+from nominal_refactor_advisor.ast_tools import AstParentIndex
 from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedMethod,
@@ -42,35 +42,15 @@ from nominal_refactor_advisor.class_index import (
     CompactIndexedClass,
     CompactUnannotatedCallable,
 )
-from nominal_refactor_advisor.class_mro import ClassMroAuthority, ProvedCreationBases, native_root_type
+from nominal_refactor_advisor.class_creation_store import MODELLED_METACLASSES, REGISTRY_NAMES
+from nominal_refactor_advisor.class_mro import native_root_type
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
-MODELLED_METACLASSES = frozenset(
-    ("builtins.type", "abc.ABCMeta", "metaclass_registry.core.AutoRegisterMeta")
-)
-"""Metaclasses whose class-creation reads NRA knows: they read registry names and
-abstract methods, never a declaration's other names or a plain base."""
 
-REGISTRY_NAMES = frozenset(
-    (
-        "__abstractmethods__",
-        "__key_extractor__",
-        "__registry__",
-        "__registry_config__",
-        "__registry_dict__",
-        "__registry_family__",
-        "__registry_key__",
-        "__registry_name__",
-        "__replaces_registered__",
-        "__secondary_registries__",
-        "__skip_if_no_key__",
-    )
-)
-"""The names a modelled metaclass reads from a class being created."""
 
 INTROSPECTION = frozenset(
     ("__mro__", "__bases__", "__orig_bases__", "__dict__", "__annotations__", "__annotate__", "mro")
@@ -1550,106 +1530,3 @@ class NewClassCall(ClassMemberAnswersABC[CreationCode]):
 
 
 
-@dataclass(frozen=True)
-class BasesStores(ParsedModuleSetFact):
-    """Every store of a class's `__bases__` in one state's modules: one replaces
-    the order Python built, wherever it runs."""
-
-    stores: tuple[str, ...]
-
-    @classmethod
-    def derive(cls, modules: ParsedModuleSet) -> BasesStores:
-        found = []
-        for module in modules:
-            for node in ast.walk(module.module):
-                match node:
-                    case ast.Attribute(attr="__bases__", ctx=ast.Store() | ast.Del()):
-                        found.append(f"{module.file_path}:{node.lineno}")
-                    case ast.Call(func=ast.Name(id="setattr"), args=[_, ast.Constant(value="__bases__"), *_]):
-                        found.append(f"{module.file_path}:{node.lineno}")
-        return cls(tuple(found))
-
-
-@dataclass(frozen=True)
-class CreationOrder:
-    """Whether creating a class keeps the order C3 gives its declared bases.
-
-    The order is `type.__new__`'s, built from the bases a metaclass's `__new__`
-    hands it, so it holds when every scanned metaclass `__new__` along the
-    class's metaclasses passes its own `bases` parameter on unchanged and
-    returns the class it built, no metaclass defines `mro`, and nothing stores
-    `__bases__`. `__init_subclass__`, class keywords and `__set_name__` run
-    after the order exists. A metaclass NRA cannot read leaves it unproved.
-    This owns the answer because it reads creation code; the MRO authority
-    takes it (`ProvedCreationBases`), so every proof asking for an order reads
-    the same one.
-    """
-
-    snapshot: CodemodSourceSnapshot
-
-    def authority(self) -> ClassMroAuthority:
-        return ClassMroAuthority(
-            self.snapshot.class_overlap_verdicts.class_index.classes_by_symbol,
-            ProvedCreationBases(self.keeps_order),
-        )
-
-    def keeps_order(
-        self, declaration: CompactIndexedClass, ancestry: tuple[CompactIndexedClass, ...]
-    ) -> bool:
-        if self.snapshot.module_set.fact(BasesStores).stores:
-            return False
-        proof = ClassCreationProof(
-            self.snapshot, declaration, ancestry, declaration.qualname,
-            frozenset(), frozenset(), MroWalk.unmoved(ancestry),
-        )
-        try:
-            for metaclass in proof.metaclasses():
-                for indexed in proof.metaclass_ancestry(metaclass):
-                    if proof.method(indexed, "mro") is not None:
-                        return False
-                    new = proof.method(indexed, "__new__")
-                    if new is not None and not self.passes_bases_on(new.node):
-                        return False
-        except NeedsInput:
-            return False
-        return True
-
-    @staticmethod
-    def passes_bases_on(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-        """`__new__(mcs, name, bases, namespace, ...)` never rebinds `bases`, hands
-        it on as the third argument of every `super().__new__` it calls, and
-        returns what that call built."""
-
-        names = [argument.arg for argument in (*node.args.posonlyargs, *node.args.args)]
-        if len(names) < 3:
-            return False
-        bases = names[2]
-        built: set[str] = set()
-        calls = 0
-        for child in ast.walk(node):
-            match child:
-                case ast.Name(id=name, ctx=ast.Store() | ast.Del()) if name == bases:
-                    return False
-                case ast.Call() if CreationReads.is_super_call(child, "__new__"):
-                    calls += 1
-                    if len(child.args) < 3 or not (
-                        isinstance(child.args[2], ast.Name) and child.args[2].id == bases
-                    ) or any(isinstance(argument, ast.Starred) for argument in child.args[:3]):
-                        return False
-                case ast.Assign(targets=[ast.Name(id=target)], value=value) | ast.AnnAssign(
-                    target=ast.Name(id=target), value=value
-                ) if value is not None and CreationReads.is_super_call(value, "__new__"):
-                    built.add(target)
-        if not calls:
-            return False
-        for child in ast.walk(node):
-            if isinstance(child, ast.Return):
-                value = child.value
-                if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) and value.func.id == "cast":
-                    value = value.args[-1] if value.args else None
-                if not (
-                    (isinstance(value, ast.Name) and value.id in built)
-                    or (value is not None and CreationReads.is_super_call(value, "__new__"))
-                ):
-                    return False
-        return True

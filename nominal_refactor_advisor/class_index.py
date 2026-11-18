@@ -128,6 +128,7 @@ from nominal_refactor_advisor.class_mro import (
     NativeMroBase,
     DeclarationMroType,
     DeclaredBases,
+    ProvedCreationBases,
 )
 from nominal_refactor_advisor.overlap_receipts import OverlapReceiptKind
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
@@ -189,7 +190,14 @@ from nominal_refactor_advisor.product_flow import (
     SourceProductFlowProjection,
     source_product_flow_projection,
 )
-from nominal_refactor_advisor.class_creation_store import CreatedClassStore
+from nominal_refactor_advisor.class_creation_store import (
+    AUTO_REGISTER_META,
+    MODELLED_BINDINGS,
+    MODELLED_METACLASSES,
+    NO_BINDINGS,
+    CreatedClassStore,
+    CreationBindings,
+)
 from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 from nominal_refactor_advisor.semantic_algebra import DirectedGraph
@@ -214,6 +222,15 @@ class ClassRegistryFacts(NamedTuple):
     base_references: tuple[CompactNominalReference, ...] = ()
     stores_created_class: bool = False
     stores_subclass: bool = False
+    keeps_bases: bool = True
+    """Used as a metaclass, creation keeps the order C3 gives the declared bases
+    (`CreatedClassStore.keeps_bases`)."""
+    metaclass_bindings: CreationBindings = NO_BINDINGS
+    """Used as a metaclass, what its creation binds on each class it creates."""
+    subclass_hook_bindings: CreationBindings = NO_BINDINGS
+    """Used as a base, what its `__init_subclass__` binds on each subclass."""
+    module_stores_bases: bool = False
+    """Its module stores some class's `__bases__` (`ModuleBasesStores`)."""
     walk_root: FamilyWalkRoot = NoWalkRoot()
     """Where the family the class declares looks for its members (`FamilyWalkRoot`)."""
 
@@ -240,6 +257,10 @@ class ClassRegistryFacts(NamedTuple):
             base_references=_compact_base_references(node, module_binding_snapshot),
             stores_created_class=creation.stores_created_class(),
             stores_subclass=creation.stores_subclass(),
+            keeps_bases=creation.keeps_bases(),
+            metaclass_bindings=creation.metaclass_bindings(),
+            subclass_hook_bindings=creation.subclass_hook_bindings(),
+            module_stores_bases=bool(parsed_module.fact(ModuleBasesStores).lines),
             walk_root=registry_config_walk_root(parsed_module, node),
         )
 
@@ -2672,8 +2693,23 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     """Repository inheritance graph reconstructed from compact declarations."""
 
     @cached_property
+    def creation(self) -> ClassCreationOrderProof:
+        """What creating each class does to its order and its names."""
+
+        return ClassCreationOrderProof(
+            RegisteringMetaclassAuthority(
+                self.classes_by_symbol, CompactRepositoryPublicExposureIndex(())
+            ),
+            # A module declaring no class is not read: its `__bases__` store goes unseen.
+            any(declaration.registry_facts.module_stores_bases for declaration in self.classes_by_symbol.values()),
+        )
+
+    @cached_property
     def mro_authority(self) -> ClassMroAuthority:
-        return ClassMroAuthority(self.classes_by_symbol)
+        """The order Python builds, also for a class whose creation runs code the
+        creation proof reads; every detector and refactor reads this one."""
+
+        return ClassMroAuthority(self.classes_by_symbol, ProvedCreationBases(self.creation.keeps_order))
 
     @cached_property
     def declared_mro_authority(self) -> ClassMroAuthority:
@@ -2740,11 +2776,18 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
                 case (), (declaration,):
                     return CallableClassMember(current, declaration)
             return AmbiguousClassMember()
-        if not self._binds_member(owner, member_name) and self._reaches_opaque_base(
-            owner_symbol, authority, member_name
+        if not self._binds_member(owner, member_name) and (
+            self._reaches_opaque_base(owner_symbol, authority, member_name)
+            or self._creation_may_bind(owner_symbol, authority, member_name)
         ):
             return OpenClassMember()
         return MissingClassMember()
+
+    def _creation_may_bind(self, owner_symbol: str, authority: ClassMroAuthority, member_name: str) -> bool:
+        """Whether creating the class may bind `member_name` though no body does."""
+
+        mro = authority.resolve(owner_symbol).mro_type
+        return mro is not None and self.creation.bindings(mro.declarations).may_bind(member_name)
 
     @staticmethod
     def _reaches_opaque_base(owner_symbol: str, authority: ClassMroAuthority, member_name: str) -> bool:
@@ -4326,6 +4369,25 @@ def _module_nominal_binding_snapshots(
             statement = next(statements, None)
         snapshots[None] = snapshot()
     return snapshots
+
+
+@dataclass(frozen=True)
+class ModuleBasesStores(ParsedModuleFact):
+    """Lines of one module storing a class's `__bases__`, by assignment, `del`
+    or `setattr`: any of them can reorder any class's MRO."""
+
+    lines: tuple[int, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        found = []
+        for node in ast.walk(parsed_module.module):
+            match node:
+                case ast.Attribute(attr="__bases__", ctx=ast.Store() | ast.Del()):
+                    found.append(node.lineno)
+                case ast.Call(func=ast.Name(id="setattr" | "delattr"), args=[_, ast.Constant(value="__bases__"), *_]):
+                    found.append(node.lineno)
+        return cls(tuple(found))
 
 
 @dataclass(frozen=True)
@@ -6672,6 +6734,102 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
             symbol: declaration.with_registering_metaclass(self)
             for symbol, declaration in self.scanned.items()
         }
+
+
+@dataclass
+class ClassCreationOrderProof:
+    """What running a class's creation code does, read from its declarations.
+
+    Python builds the order from the bases a metaclass's `__new__` hands
+    `type.__new__`, so creation keeps the order C3 gives the declared bases
+    when every metaclass along the class's ancestry, and every ancestor of
+    one, keeps its bases (`CreatedClassStore.keeps_bases`), and nothing in the
+    scan stores a `__bases__`. A metaclass is resolved like a base: scanned,
+    or read from installed source, never run; a modelled one
+    (`MODELLED_METACLASSES`) ends its branch, and one NRA cannot read leaves
+    the order unproved. Class keywords, `__init_subclass__` and `__set_name__`
+    run after the order exists.
+
+    The names creation binds are a separate answer (`bindings`): a member
+    lookup that finds no body binding the name stays open when creation may
+    bind it.
+    """
+
+    metaclasses: RegisteringMetaclassAuthority[CompactIndexedClass]
+    stores_bases: bool
+    MAX_METACLASS_ANCESTORS: ClassVar[int] = 64
+
+    def keeps_order(
+        self, declaration: CompactIndexedClass, ancestry: tuple[CompactIndexedClass, ...]
+    ) -> bool:
+        return not self.stores_bases and self._walk(ancestry) is not None
+
+    def bindings(self, ancestry: tuple[CompactIndexedClass, ...]) -> CreationBindings:
+        """Every name creating a class with this ancestry may bind on it."""
+
+        walked = self._walk(ancestry)
+        if walked is None:
+            return CreationBindings(computed=True)
+        hooks = NO_BINDINGS
+        for indexed in ancestry:
+            hooks |= indexed.registry_facts.subclass_hook_bindings
+            if any(
+                member.expression is not None and member.name in CLASS_METHOD_OWNERSHIP_HOOK_NAMES
+                for member in indexed.direct_member_declarations
+            ):
+                # A hook bound by assignment runs code NRA does not read.
+                hooks |= CreationBindings(computed=True)
+        return walked | hooks
+
+    def _walk(self, ancestry: tuple[CompactIndexedClass, ...]) -> CreationBindings | None:
+        """The metaclass creation code along `ancestry`, or None when some
+        metaclass may change the order or cannot be read."""
+
+        pending = [
+            (reference, indexed.module_name)
+            for indexed in ancestry
+            for reference in indexed.registry_facts.metaclass_references
+        ]
+        found_bindings = NO_BINDINGS
+        modelled = False
+        seen: set[str] = set()
+        for _step in range(self.MAX_METACLASS_ANCESTORS):
+            if not pending:
+                break
+            reference, module_name = pending.pop()
+            qualified = reference.settled_qualified_name(self.metaclasses, module_name)
+            if qualified in MODELLED_METACLASSES:
+                modelled |= qualified == AUTO_REGISTER_META
+                continue
+            metaclass = self.metaclasses.declaration_for(reference, module_name)
+            if metaclass is None:
+                return None
+            if metaclass.symbol in seen:
+                continue
+            seen.add(metaclass.symbol)
+            if metaclass.symbol in MODELLED_METACLASSES:
+                modelled |= metaclass.symbol == AUTO_REGISTER_META
+                continue
+            if not metaclass.registry_facts.keeps_bases:
+                return None
+            found_bindings |= metaclass.registry_facts.metaclass_bindings
+            pending.extend(
+                (base, metaclass.module_name) for base in metaclass.registry_facts.base_references
+            )
+        else:
+            if pending:
+                return None
+        if modelled:
+            found_bindings |= MODELLED_BINDINGS
+            keys = found_bindings.key_attributes | frozenset(
+                key
+                for indexed in ancestry
+                if (key := indexed.autoregister_registry_key_attr_name) is not None
+            )
+            if not keys:
+                found_bindings |= CreationBindings(computed=True)
+            found_bindings |= CreationBindings(key_attributes=keys)
+        return found_bindings
 
 
 @dataclass(frozen=True)
