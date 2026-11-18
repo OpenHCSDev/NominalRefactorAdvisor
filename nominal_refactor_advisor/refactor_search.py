@@ -10,12 +10,25 @@ its Pareto front. Lookahead plays again from the best front moves' end states,
 and a move's line follows its best continuation, so a move that pays little now
 but opens a large next move can win over a greedy one.
 
+Each concept's goal search runs in a worker process forked from the state it
+starts from. It builds whole projected states and their indexes, and that
+memory, once freed, stays with the allocator: one process that ran every
+concept kept the peak of each and reached 8.4 GB on agent-comms by the ninth,
+while its live objects stayed near 1 GB. The worker hands back only its move,
+with the end state as the sources it wrote and the findings proved on them, and
+its exit returns the rest to the system.
+
 The run-time introspection term is not re-recorded per state; a search state
 never ran. Inherited pairs are scored on each state's own source text.
 """
 
 from __future__ import annotations
 
+import gc
+import os
+import pickle
+import sys
+import traceback
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
@@ -25,10 +38,13 @@ from pathlib import Path
 from nominal_refactor_advisor.amortization import IntrospectionSource, NoTrace
 from nominal_refactor_advisor.refactors.finding_recipes import FindingRecipeSynthesizer
 from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardSuite
+from nominal_refactor_advisor.codemod_source_edits import FileText
 from nominal_refactor_advisor.codemod_workflow import (
     CodemodRefactorGoalRunner,
     CodemodRefactorTrajectoryBudget,
     CodemodWorkflowScan,
+    FindingCoverage,
+    ProvedWorkflowScan,
 )
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.json_reports import (
@@ -40,6 +56,7 @@ from nominal_refactor_advisor.member_census import (
     CensusCorpus,
     MemberAwarenessCensusBuilder,
 )
+from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 
 
@@ -91,19 +108,20 @@ class SearchMove(SemanticRecord, ABC):
 
     @abstractmethod
     def looked_past(
-        self, search: RefactorSearch, widened: frozenset[str], depth: int
+        self,
+        search: RefactorSearch,
+        scan: CodemodWorkflowScan,
+        widened: frozenset[str],
+        depth: int,
     ) -> SearchMove:
-        """This move with the best continuations from its end state, when it is widened."""
+        """This move, played from `scan`, with the best continuations from its
+        end state when it is widened."""
         raise NotImplementedError
 
     @abstractmethod
     def off_front(self, front: tuple[ScoredMove, ...]) -> tuple[str, ...]:
         """What a report says about this move when it is not on the front."""
         raise NotImplementedError
-
-    def released(self) -> SearchMove:
-        """This move once no lookahead can play from its end state."""
-        return self
 
 
 @dataclass(frozen=True)
@@ -119,7 +137,11 @@ class UnscoredMove(SearchMove):
         return ()
 
     def looked_past(
-        self, search: RefactorSearch, widened: frozenset[str], depth: int
+        self,
+        search: RefactorSearch,
+        scan: CodemodWorkflowScan,
+        widened: frozenset[str],
+        depth: int,
     ) -> SearchMove:
         return self
 
@@ -204,7 +226,11 @@ class ScoredMove(SearchMove):
         return () if any(move.dominates(self) for move in moves) else (self,)
 
     def looked_past(
-        self, search: RefactorSearch, widened: frozenset[str], depth: int
+        self,
+        search: RefactorSearch,
+        scan: CodemodWorkflowScan,
+        widened: frozenset[str],
+        depth: int,
     ) -> SearchMove:
         return self
 
@@ -218,34 +244,65 @@ class ScoredMove(SearchMove):
         )
 
 
-@dataclass(frozen=True, kw_only=True)
-class PlayableMove(ScoredMove):
-    """A scored move that still holds its end state, so lookahead can play from it.
+@dataclass(frozen=True)
+class EndState:
+    """A move's end state as it crosses back from the concept's worker: the
+    Python sources the move wrote or created, the other files it rewrote, and
+    the findings proved on them. The search rebuilds the scanned state from the
+    one the move started from, so only what the move changed is carried."""
 
-    An end state is a whole scanned tree. Only the first `width` moves of a turn's
-    front are played past, so every other move releases its end as soon as it
-    falls out of that prefix, and a played move releases it once its
-    continuations are found."""
+    sources: Mapping[str, str]
+    text_files: Mapping[str, FileText]
+    findings: tuple[RefactorFinding, ...]
+    coverage: FindingCoverage
 
-    end: CodemodWorkflowScan = json_report_field(included=False, compare=False, repr=False)
-
-    def looked_past(
-        self, search: RefactorSearch, widened: frozenset[str], depth: int
-    ) -> SearchMove:
-        if self.concept not in widened:
-            return self.released()
-        return replace(
-            self.released(), following=search.turn(self.end, self.after, depth).front
+    @classmethod
+    def of(cls, start: CodemodWorkflowScan, end: CodemodWorkflowScan) -> EndState:
+        before = start.sources_by_file_path
+        after = end.sources_by_file_path
+        if removed := sorted(before.keys() - after.keys()):
+            raise ValueError(f"an end state removes source files: {', '.join(removed)}")
+        return cls(
+            sources={path: text for path, text in after.items() if before.get(path) != text},
+            text_files=dict(end.text_files),
+            findings=tuple(end.findings),
+            coverage=end.coverage,
         )
 
-    def released(self) -> ScoredMove:
-        return ScoredMove(
+    def scan_from(self, start: CodemodWorkflowScan) -> CodemodWorkflowScan:
+        return ProvedWorkflowScan(
+            findings=list(self.findings),
+            coverage=self.coverage,
+            proved=start.source_snapshot.with_virtual_sources(self.sources).with_text_files(
+                self.text_files
+            ),
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class PlayableMove(ScoredMove):
+    """A scored move that still carries its end state, so lookahead can play from it."""
+
+    end: EndState = json_report_field(included=False, compare=False, repr=False)
+
+    def looked_past(
+        self,
+        search: RefactorSearch,
+        scan: CodemodWorkflowScan,
+        widened: frozenset[str],
+        depth: int,
+    ) -> SearchMove:
+        played = ScoredMove(
             concept=self.concept,
             stages=self.stages,
             tokens=self.tokens,
             before=self.before,
             after=self.after,
-            following=self.following,
+        )
+        if self.concept not in widened:
+            return played
+        return replace(
+            played, following=search.turn(self.end.scan_from(scan), self.after, depth).front
         )
 
 
@@ -299,33 +356,65 @@ class RefactorSearch:
     def turn(self, scan: CodemodWorkflowScan, start: StateScore, depth: int) -> SearchTurn:
         """Every concept played from `scan`, whose score is `start`, looking `depth` moves ahead."""
 
-        moves: tuple[SearchMove, ...] = ()
-        for concept in RefactorConcept.declaration_types():
-            moves = self.playable((*moves, self.move(scan, start, concept)), start, depth)
+        # The workers share this process's pages until they write to them; a
+        # frozen generation keeps the collector from writing to every object
+        # this state holds.
+        gc.collect()
+        gc.freeze()
+        try:
+            moves = tuple(
+                self.played(scan, start, concept)
+                for concept in RefactorConcept.declaration_types()
+            )
+        finally:
+            gc.unfreeze()
         turn = SearchTurn(start, moves)
         if depth <= 1:
             return turn
         widened = frozenset(move.concept for move in turn.front[: self.budget.width])
         return replace(
             turn,
-            moves=tuple(move.looked_past(self, widened, depth - 1) for move in turn.moves),
+            moves=tuple(
+                move.looked_past(self, scan, widened, depth - 1) for move in turn.moves
+            ),
         )
 
-    def playable(
-        self, moves: tuple[SearchMove, ...], start: StateScore, depth: int
-    ) -> tuple[SearchMove, ...]:
-        """`moves`, each releasing its end state unless lookahead can still play it.
+    def played(
+        self, scan: CodemodWorkflowScan, start: StateScore, concept: type[RefactorConcept]
+    ) -> SearchMove:
+        """`move`, run in a worker process forked for it, which hands back the
+        move and exits."""
 
-        A move outside the first `width` of the front never re-enters it: a later
-        move can only rank ahead of it or dominate it. So its end state, a whole
-        scanned tree, is freed now rather than held until the turn ends."""
-
-        kept = (
-            frozenset(move.concept for move in SearchTurn(start, moves).front[: self.budget.width])
-            if depth > 1
-            else frozenset()
-        )
-        return tuple(move if move.concept in kept else move.released() for move in moves)
+        reader, writer = os.pipe()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pid = os.fork()
+        if pid == 0:
+            os.close(reader)
+            try:
+                try:
+                    result = pickle.dumps((True, self.move(scan, start, concept)))
+                except BaseException:  # noqa: BLE001 - the search raises it from the parent
+                    result = pickle.dumps((False, traceback.format_exc()))
+                with os.fdopen(writer, "wb") as out:
+                    out.write(result)
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os._exit(0)
+        os.close(writer)
+        with os.fdopen(reader, "rb") as source:
+            result = source.read()
+        _, status = os.waitpid(pid, 0)
+        key = concept.concept_key()
+        if not result:
+            raise RuntimeError(
+                f"the worker playing {key} exited without a move (wait status {status})"
+            )
+        completed, value = pickle.loads(result)
+        if not completed:
+            raise RuntimeError(f"the worker playing {key} failed:\n{value}")
+        return value
 
     def move(
         self, scan: CodemodWorkflowScan, start: StateScore, concept: type[RefactorConcept]
@@ -360,7 +449,7 @@ class RefactorSearch:
             tokens=edit_tokens(scan.sources_by_file_path, end.sources_by_file_path),
             before=start,
             after=self.score(end),
-            end=end,
+            end=EndState.of(scan, end),
         )
 
 
