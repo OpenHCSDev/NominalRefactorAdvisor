@@ -38,7 +38,7 @@ from nominal_refactor_advisor.parameter_conveyor import (
 )
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.product_flow import CompactItemTarget
-from nominal_refactor_advisor.refactor_search import RefactorSearch, SearchBudget
+from nominal_refactor_advisor.refactor_search import PlayableMove, RefactorSearch, SearchBudget
 from nominal_refactor_advisor.product_flow_authority import (
     CompactProductRuntimeViolation,
 )
@@ -108,6 +108,40 @@ def test_refactor_search_scores_the_conveyor_collapse_and_looks_past_it(
     assert carrier.before == turn.start
     assert carrier.line_findings_removed >= carrier.findings_removed
     assert len(json_report_object(turn)["moves"]) == len(turn.moves)
+
+
+def test_a_move_played_in_its_worker_is_the_move_played_in_process(
+    tmp_path: Path,
+) -> None:
+    """The search plays each concept in a forked worker; what crosses back is
+    the move and its end state, which must be the ones the goal search found."""
+
+    _write_source(tmp_path, "pkg/complete.py", _base_source())
+    search = RefactorSearch((tmp_path,), DetectorConfig(), SearchBudget(depth=2, width=1))
+    scan = CodemodWorkflowScan.parsed(
+        (tmp_path,),
+        DetectorConfig(),
+        cache_dir=None,
+        use_parse_cache=False,
+    )
+    start = search.score(scan)
+
+    in_process = search.move(scan, start, SemanticCarrierConcept)
+    in_worker = search.played(scan, start, SemanticCarrierConcept)
+
+    assert isinstance(in_process, PlayableMove)
+    assert isinstance(in_worker, PlayableMove)
+    assert in_worker == in_process
+    assert in_worker.end == in_process.end
+    assert in_worker.end.sources
+    rebuilt = in_worker.end.scan_from(scan)
+    assert rebuilt.sources_by_file_path == {
+        **scan.sources_by_file_path,
+        **in_process.end.sources,
+    }
+    assert [f.stable_id for f in rebuilt.findings] == [
+        f.stable_id for f in in_process.end.findings
+    ]
 
 
 def test_rejected_conveyor_boolean_preserves_on_demand_diagnostics() -> None:
