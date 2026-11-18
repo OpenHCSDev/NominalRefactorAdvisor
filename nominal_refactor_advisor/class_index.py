@@ -6762,13 +6762,29 @@ class ClassCreationOrderProof:
     def keeps_order(
         self, declaration: CompactIndexedClass, ancestry: tuple[CompactIndexedClass, ...]
     ) -> bool:
-        return not self.stores_bases and self._walk(ancestry) is not None
+        try:
+            self.require_order(ancestry)
+        except NeedsInput:
+            return False
+        return True
+
+    def require_order(self, ancestry: tuple[CompactIndexedClass, ...]) -> None:
+        """Refuses, naming why, unless creating a class with this ancestry keeps
+        the order C3 gives its declared bases."""
+
+        if self.stores_bases:
+            raise NeedsInput(
+                "the scan stores a `__bases__`, so no declared order is proved to be the created one",
+                NeededInput.PROOF,
+            )
+        self._walk(ancestry)
 
     def bindings(self, ancestry: tuple[CompactIndexedClass, ...]) -> CreationBindings:
         """Every name creating a class with this ancestry may bind on it."""
 
-        walked = self._walk(ancestry)
-        if walked is None:
+        try:
+            walked = self._walk(ancestry)
+        except NeedsInput:
             return CreationBindings(computed=True)
         hooks = NO_BINDINGS
         for indexed in ancestry:
@@ -6781,9 +6797,9 @@ class ClassCreationOrderProof:
                 hooks |= CreationBindings(computed=True)
         return walked | hooks
 
-    def _walk(self, ancestry: tuple[CompactIndexedClass, ...]) -> CreationBindings | None:
-        """The metaclass creation code along `ancestry`, or None when some
-        metaclass may change the order or cannot be read."""
+    def _walk(self, ancestry: tuple[CompactIndexedClass, ...]) -> CreationBindings:
+        """What the metaclass creation code along `ancestry` binds; refuses,
+        naming the metaclass, when one may change the order or cannot be read."""
 
         pending = [
             (reference, indexed.module_name)
@@ -6803,7 +6819,11 @@ class ClassCreationOrderProof:
                 continue
             metaclass = self.metaclasses.declaration_for(reference, module_name)
             if metaclass is None:
-                return None
+                raise NeedsInput(
+                    f"metaclass `{qualified or '.'.join(reference.source_parts)}` has no source "
+                    "the scan or an installed module holds",
+                    NeededInput.PROOF,
+                )
             if metaclass.symbol in seen:
                 continue
             seen.add(metaclass.symbol)
@@ -6811,14 +6831,21 @@ class ClassCreationOrderProof:
                 modelled |= metaclass.symbol == AUTO_REGISTER_META
                 continue
             if not metaclass.registry_facts.keeps_bases:
-                return None
+                raise NeedsInput(
+                    f"metaclass `{metaclass.symbol}` may change the bases it hands "
+                    "`type.__new__`, or defines `mro`",
+                    NeededInput.PROOF,
+                )
             found_bindings |= metaclass.registry_facts.metaclass_bindings
             pending.extend(
                 (base, metaclass.module_name) for base in metaclass.registry_facts.base_references
             )
         else:
             if pending:
-                return None
+                raise NeedsInput(
+                    f"the metaclass ancestry is deeper than {self.MAX_METACLASS_ANCESTORS} classes",
+                    NeededInput.PROOF,
+                )
         if modelled:
             found_bindings |= MODELLED_BINDINGS
             keys = found_bindings.key_attributes | frozenset(

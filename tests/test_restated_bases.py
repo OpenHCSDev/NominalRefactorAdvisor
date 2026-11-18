@@ -15,7 +15,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._restated_bases import RestatedBaseDetector
-from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.scan_cache import ScanCache
 
@@ -254,3 +254,33 @@ def test_a_native_base_dropped_from_a_metaclass_dispatch_adds_nothing(tmp_path: 
         "class Member(Root, ABC):", "class Member(Root):"
     )
     assert _run(tmp_path) == expected
+
+
+def _rebasing(new_bases: str) -> str:
+    return (
+        "from abc import ABC, ABCMeta\n\n\n"
+        "class Rebasing(ABCMeta):\n"
+        "    def __new__(mcs, name, bases, namespace, **kwargs):\n"
+        f"        return super().__new__(mcs, name, {new_bases}, namespace, **kwargs)\n\n\n"
+        "class Root(ABC, metaclass=Rebasing):\n    pass\n\n\n"
+        "class Member(Root, ABC):\n    pass\n"
+    )
+
+
+def test_a_metaclass_that_rewrites_its_bases_refuses_the_order(tmp_path: Path):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": _rebasing("bases[:1]")})
+    assert _findings(tmp_path) == []
+    verdicts = _snapshot(tmp_path).class_overlap_verdicts
+    try:
+        verdicts.linearized("pkg.families.Member")
+    except NeedsInput as refused:
+        assert "metaclass `pkg.families.Rebasing` may change the bases" in str(refused)
+        assert NeededInput.PROOF in refused.needs
+    else:
+        raise AssertionError("an order creation may rewrite was linearized")
+
+
+def test_a_metaclass_handing_its_bases_on_keeps_the_order(tmp_path: Path):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/families.py": _rebasing("bases")})
+    (finding,) = _findings(tmp_path)
+    assert finding.primary_evidence.symbol == "Member"
