@@ -12,7 +12,10 @@ import pytest
 
 from nominal_refactor_advisor import cli
 from nominal_refactor_advisor.codemod import (
+    ArchitectureGuardRule,
+    ForbiddenCallArchitectureGuardConstraint,
     CodemodPlanSequence,
+    CodemodSourceSnapshot,
     InsertClassMemberOperation,
     PatchTargetOperation,
     SourceRewriteTarget,
@@ -144,6 +147,49 @@ def test_architecture_guard_retains_scan_deadline_at_each_plan_level(
     )
     assert invocation.codemod_plan_sequence.has_architecture_guards
     assert invocation.scan_deadline_request == cli.CliScanDeadlineRequest(1.25, True)
+
+
+def test_guard_evaluation_reuses_the_snapshot_source_index(monkeypatch):
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {"/repo/mod.py": "def run(): return legacy()\n"}
+    )
+    rule = ArchitectureGuardRule(
+        "no-legacy-call",
+        constraints=(ForbiddenCallArchitectureGuardConstraint(("legacy",)),),
+    )
+    evaluator = cli.ArchitectureGuardSourceEvaluator(
+        snapshot.parsed_modules,
+        (rule,),
+    )
+
+    def duplicate_index(*_args, **_kwargs):
+        raise AssertionError("guard evaluation rebuilt the source index")
+
+    monkeypatch.setattr(
+        cli.ArchitectureGuardSourceEvaluator,
+        "modules_with_sources",
+        duplicate_index,
+    )
+
+    report = evaluator.report_for_snapshot(snapshot)
+
+    assert report is not None
+    assert report.violation_count == 1
+
+
+def test_authored_plan_without_projected_findings_needs_parsing_not_finding_analysis():
+    request = cli.CodemodPlanExecutionRequest(
+        CodemodPlanSequence(),
+        cli.CodemodExecutionMode.PREFLIGHT,
+    )
+    projected = cli.CodemodPlanExecutionRequest(
+        CodemodPlanSequence(),
+        cli.CodemodExecutionMode.PREFLIGHT,
+        finding_projection=object(),
+    )
+
+    assert request.requires_finding_analysis is False
+    assert projected.requires_finding_analysis is True
 
 
 @pytest.mark.parametrize(
