@@ -1086,6 +1086,24 @@ class TextFileChange(ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TextFileDeletion(TextFileChange):
+    """Delete one exact file outside the Python source index."""
+
+    source: str
+
+    @classmethod
+    def folded(cls, changes: tuple[TextFileDeletion, ...]) -> tuple[TextFileRewrite, ...]:
+        file_path = changes[0].file_path
+        sources = {change.source for change in changes}
+        if len(sources) != 1:
+            raise PhysicalSourceEditConflictError(
+                f"Text deletions of {file_path!r} read different contents")
+        source, = sources
+        return (TextFileRewrite(file_path=file_path, before=PresentFileText(source),
+                                after=AbsentFileText()),)
+
+
+@dataclass(frozen=True, kw_only=True)
 class TextFileCreation(TextFileChange):
     """Create one exact file outside the Python source index."""
 
