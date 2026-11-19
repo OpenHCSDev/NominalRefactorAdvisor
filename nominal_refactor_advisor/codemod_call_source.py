@@ -25,23 +25,17 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
-class DeclaredCallRewriteABC(ABC):
-    """Share call identity recovery and source protection across authored edits."""
+class DeclaredCallAuthority:
+    """Declaration-resolved calls from one selected consumer to one provider."""
 
     snapshot: CodemodSourceSnapshot
     caller: AstTargetDigest
     callee: AstTargetDigest
-    replacement_source: str
-    selection_count: SelectionCountExpectation
 
-    @cached_property
-    def geometry(self) -> SourceTextGeometry:
-        return SourceTextGeometry(
-            self.snapshot.sources_by_file_path[self.caller.file_path]
-        )
-
-    @cached_property
-    def selected_calls(self) -> tuple[CompactResolvedFunctionCall, ...]:
+    def calls(
+        self,
+        selection_count: SelectionCountExpectation,
+    ) -> tuple[CompactResolvedFunctionCall, ...]:
         source_index = self.snapshot.source_index
         caller_symbol = source_index.symbol_for_target(self.caller)
         callee_symbol = source_index.symbol_for_target(self.callee)
@@ -72,8 +66,26 @@ class DeclaredCallRewriteABC(ABC):
             raise ValueError(
                 f"No resolved calls to {callee_symbol!r} in {caller_symbol!r}"
             )
-        self.selection_count.require_actual_count(len(selected))
+        selection_count.require_actual_count(len(selected))
         return selected
+
+
+@dataclass(frozen=True)
+class DeclaredCallRewriteABC(DeclaredCallAuthority, ABC):
+    """Share call identity recovery and source protection across authored edits."""
+
+    replacement_source: str
+    selection_count: SelectionCountExpectation
+
+    @cached_property
+    def selected_calls(self) -> tuple[CompactResolvedFunctionCall, ...]:
+        return self.calls(self.selection_count)
+
+    @cached_property
+    def geometry(self) -> SourceTextGeometry:
+        return SourceTextGeometry(
+            self.snapshot.sources_by_file_path[self.caller.file_path]
+        )
 
     @abstractmethod
     def replacement_span(self, node: ast.Call) -> SourceTextSpan:

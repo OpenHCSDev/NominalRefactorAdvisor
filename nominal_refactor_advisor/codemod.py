@@ -19,6 +19,16 @@ from typing import (
 from nominal_refactor_advisor.refactors.mapping_observation import (
     RequireDictionaryCopyMappingOperation as RequireDictionaryCopyMappingOperation,
 )
+from nominal_refactor_advisor.refactors.maintenance_requirements import (
+    ForbidInheritanceOperation as ForbidInheritanceOperation,
+    RequireAbsentDeclarationOperation as RequireAbsentDeclarationOperation,
+    RequireCallOutsideIterationOperation as RequireCallOutsideIterationOperation,
+    RequireDeclaredCallOperation as RequireDeclaredCallOperation,
+    RequireInheritanceOperation as RequireInheritanceOperation,
+)
+from nominal_refactor_advisor.refactors.target_deletion import (
+    DeleteTargetOperation as DeleteTargetOperation,
+)
 from nominal_refactor_advisor.refactors.declaration_operations import (
     DeclarationDecoratorsPayload as DeclarationDecoratorsPayload,
     DeclarationMutationOperationABC as DeclarationMutationOperationABC,
