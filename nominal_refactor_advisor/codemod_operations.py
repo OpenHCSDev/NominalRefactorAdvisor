@@ -45,6 +45,7 @@ from nominal_refactor_advisor.source_index import (
 
 
 if TYPE_CHECKING:
+    from nominal_refactor_advisor.codemod_maintenance_contracts import MaintenanceContract
     from nominal_refactor_advisor.codemod_runtime import CodemodPlanDocumentSimulation
 
 
@@ -163,6 +164,15 @@ class RefactorRecipeOperation(
         context: CodemodSelectorContext,
     ) -> tuple[AuthorityClaim, ...]:
         """Derive authority claims established by this operation."""
+
+        del context
+        return ()
+
+    def declared_maintenance_contracts(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[MaintenanceContract, ...]:
+        """Derive positive maintenance relations established by this operation."""
 
         del context
         return ()
