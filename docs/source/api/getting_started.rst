@@ -646,62 +646,6 @@ including ``from __future__ import annotations`` when required.  An explicitly
 supplied destination source remains authoritative; NRA fails preflight if it
 would change annotation semantics.
 
-Carrying Positive Maintenance Contracts
----------------------------------------
-
-``authority_claims`` prove that a named owner exists. Architecture guards prove
-that selected bad syntax is absent. A positive maintenance contract separately
-states which admitted fact the owner must supply to which consumer, and which
-competing declaration must be gone.
-
-Attach terminal contracts to the plan root through ``maintenance_contracts``.
-Operations may separately derive transition-local recipe contracts from their
-current-source proof:
-
-.. code-block:: json
-
-   {
-     "maintenance_contracts": [{
-       "contract_id": "render-owner",
-       "requirements": [{
-         "requirement": "required_declared_call",
-         "fact_id": "render-result",
-         "consumer": {
-           "file_path": "view.py",
-           "target_qualname": "Consumer.render"
-         },
-         "provider": {
-           "file_path": "model.py",
-           "target_qualname": "RenderAuthority.run"
-         }
-       }, {
-         "requirement": "no_competing_declaration",
-         "fact_id": "render-result",
-         "competitor": {
-           "file_path": "legacy.py",
-           "target_qualname": "LegacyRenderer"
-         }
-       }]
-     }],
-     "recipes": [{
-       "recipe_id": "route-render-through-owner",
-       "operations": []
-     }]
-   }
-
-``required_declared_call`` uses NRA's declaration-resolved product-flow
-authority; a same-named or unresolved call does not satisfy it.
-``no_competing_declaration`` checks the final projected source state. Contracts
-are terminal across a composed sequence, so an intermediate stage may still
-violate one while a later stage completes the migration.
-
-``explicit_open`` records an admitted dynamic or behavioral edge that source
-proof cannot establish. It remains visible in simulation and blocks apply.
-Replace it with a supported proof or source-bound behavior invariant; never
-weaken it into a clean boolean. ``is_clean`` now requires clean operation
-preflights, clean architecture guards, and no open or violated maintenance
-requirements.
-
 To prove a goal across reachable source states, run:
 
 .. code-block:: bash

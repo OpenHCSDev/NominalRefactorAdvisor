@@ -1387,9 +1387,6 @@ navigation locations rather than complete declaration boundaries.
 .. automodule:: nominal_refactor_advisor.codemod_runtime
    :members: CodemodSourceSnapshot, RefactorRecipe, CodemodPlanRoot, CodemodPlanDocument, CodemodPlanSequence, CodemodPlanDocumentSimulation, CodemodPlanSequenceSimulation, CodemodSimulationReport, FindingRecipeProofObstacle, FindingRecipeSynthesisRecord, FindingRecipeFrontierBudget, FindingRecipeTrajectoryFrontier, format_codemod_unified_diff, apply_codemod_simulation, simulate_planned_rewrites, codemod_plan_from_findings
 
-.. automodule:: nominal_refactor_advisor.codemod_maintenance_contracts
-   :members: MaintenanceContract, MaintenanceContractSuite, MaintenanceRequirement, RequiredDeclaredCall, NoCompetingDeclaration, ExplicitOpenRequirement, MaintenanceContractReport, MaintenanceRequirementResult, MaintenanceContractStatus, MaintenanceProved, MaintenanceOpen, MaintenanceViolated
-
 ``CodemodPlanSequenceContinuationReport`` retains the projected ``source_index``
 as typed provenance. Its default JSON projection includes continuation plans
 and finding evidence without serialising that index. In the CLI,

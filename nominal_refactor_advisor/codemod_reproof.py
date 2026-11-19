@@ -19,7 +19,6 @@ from nominal_refactor_advisor.captured_reference import (
 )
 
 from nominal_refactor_advisor.codemod_architecture_guards import ArchitectureGuardRule
-from nominal_refactor_advisor.codemod_maintenance_contracts import MaintenanceContract
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
@@ -143,22 +142,6 @@ class SourceReprovedOperation(RefactorRecipeOperation, ABC):
         """Derive authority claims only from the current source snapshot."""
 
         return super().declared_authority_claims(context)
-
-    def declared_maintenance_contracts(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[MaintenanceContract, ...]:
-        return self.required_reproof(
-            lambda: self.current_source_maintenance_contracts(context)
-        )
-
-    def current_source_maintenance_contracts(
-        self,
-        context: CodemodSelectorContext,
-    ) -> tuple[MaintenanceContract, ...]:
-        """Derive positive maintenance relations only from the current source snapshot."""
-
-        return super().declared_maintenance_contracts(context)
 
     def declared_architecture_guard_rules(
         self,
