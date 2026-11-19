@@ -10,9 +10,29 @@ from nominal_refactor_advisor.codemod_payload import (RequiredStringPayloadValue
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_source_edits import (NominalSourceEdit,
                                                            SourceFileDeletion,
+                                                           SourceLineSpan,
+                                                           SourceSpanReplacement,
+                                                           SourceTargetEditor,
                                                            SourceTextSpanReplacement,
                                                            TextFileEdit)
 from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
+
+
+@dataclass(frozen=True, kw_only=True)
+class ReplaceModuleSourceOperation(RefactorRecipeOperation):
+    """Replace one complete indexed Python module with exact declared source."""
+
+    source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        path = self.required_source_path(context, self.operation_key())
+        current = context.sources_by_file_path[path]
+        return (SourceSpanReplacement(
+            file_path=path,
+            span=SourceLineSpan(1, max(1, len(current.splitlines()))),
+            replacement_lines=SourceTargetEditor.source_lines(self.source),
+            rationale=self.rationale or f"Replace complete module {path!r}.",
+        ),)
 
 
 @dataclass(frozen=True, kw_only=True)
