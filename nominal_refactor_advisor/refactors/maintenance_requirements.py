@@ -17,7 +17,7 @@ from nominal_refactor_advisor.codemod_preflight import (
     CodemodOperationPreflightError,
     CodemodOperationPreflightReport,
 )
-from nominal_refactor_advisor.codemod_reproof import SourceReprovedOperation
+from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
@@ -69,7 +69,7 @@ class IterationCallRequirementResolution(DataclassJsonReport):
 
 
 @dataclass(frozen=True, kw_only=True)
-class MaintenanceRequirementOperation(SourceReprovedOperation, ABC):
+class MaintenanceRequirementOperation(RepositorySourceReprovedOperation, ABC):
     """A no-edit operation whose source proof enters the normal preflight report."""
 
     def source_edits_from_snapshot(

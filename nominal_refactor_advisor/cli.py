@@ -2879,7 +2879,13 @@ class ArchitectureGuardSourceEvaluator:
         self,
         snapshot: CodemodSourceSnapshot,
     ) -> ArchitectureGuardReport | None:
-        return self.report_for_sources(dict(snapshot.sources_by_file_path))
+        if not self.rules:
+            return None
+        return evaluate_architecture_guards(
+            snapshot.source_index,
+            snapshot.sources_by_file_path,
+            self.rules,
+        )
 
     def modules_with_sources(
         self,
@@ -3353,6 +3359,12 @@ class CodemodPlanExecutionRequest:
         sequence: CodemodPlanSequence,
     ) -> CodemodPlanExecutionRequest:
         return replace(self, sequence=sequence)
+
+    @property
+    def requires_finding_analysis(self) -> bool:
+        """Whether a caller requested the plan's finding projection."""
+
+        return self.finding_projection is not None
 
     def json_report_requested(self, json_flag: bool) -> bool:
         return (
@@ -4573,7 +4585,7 @@ def _scan_main(
     scan_analysis_required = (
         selected_command_type.requires_analysis()
         if selected_command_type is not None
-        else not codemod_execution_request.exact_recipe_execution
+        else codemod_execution_request.requires_finding_analysis
     )
     analysis_demand: ScanAnalysisDemand = REPORT_ANALYSIS_DEMAND
     if not scan_analysis_required:
