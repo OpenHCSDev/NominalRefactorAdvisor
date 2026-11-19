@@ -1104,13 +1104,13 @@ class TextFileDeletion(TextFileChange):
 
 
 @dataclass(frozen=True, kw_only=True)
-class TextFileCreation(TextFileChange):
-    """Create one exact file outside the Python source index."""
+class AbsentTextFileCreation(TextFileChange):
+    """Create one exact absent file outside the Python source index."""
 
     source: str
 
     @classmethod
-    def folded(cls, changes: tuple[TextFileCreation, ...]) -> tuple[TextFileRewrite, ...]:
+    def folded(cls, changes: tuple[AbsentTextFileCreation, ...]) -> tuple[TextFileRewrite, ...]:
         file_path = changes[0].file_path
         sources = {change.source for change in changes}
         if len(sources) != 1:

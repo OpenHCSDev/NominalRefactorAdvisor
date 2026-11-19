@@ -8,12 +8,12 @@ from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_payload import (RequiredStringPayloadValueCodec,
                                                       codemod_payload_field)
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
-from nominal_refactor_advisor.codemod_source_edits import (NominalSourceEdit,
+from nominal_refactor_advisor.codemod_source_edits import (AbsentTextFileCreation,
+                                                           NominalSourceEdit,
                                                            SourceLineSpan,
                                                            SourceSpanReplacement,
                                                            SourceTargetEditor,
                                                            SourceTextSpanReplacement,
-                                                           TextFileCreation,
                                                            TextFileDeletion,
                                                            TextFileEdit)
 from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
@@ -29,11 +29,11 @@ class CreateTextFileOperation(RefactorRecipeOperation):
         del context
         return ()
 
-    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileCreation, ...]:
+    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[AbsentTextFileCreation, ...]:
         del context
         if self.target.file_path is None:
             raise ValueError("create_text_file requires file_path")
-        return (TextFileCreation(operation_type=type(self), file_path=self.target.file_path,
+        return (AbsentTextFileCreation(operation_type=type(self), file_path=self.target.file_path,
                                  source=self.source, rationale=self.rationale),)
 
 
