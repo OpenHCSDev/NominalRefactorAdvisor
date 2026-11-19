@@ -24,24 +24,30 @@ if TYPE_CHECKING:
     from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 
 
+class DeclaredCallSelectionError(ValueError):
+    """A selected consumer/provider call relation is not source-proved."""
+
+
+class UnresolvedDeclaredCall(DeclaredCallSelectionError):
+    """A possible provider call remains unresolved."""
+
+
+class MissingDeclaredCall(DeclaredCallSelectionError):
+    """No resolved provider call exists in the selected consumer."""
+
+
 @dataclass(frozen=True)
-class DeclaredCallRewriteABC(ABC):
-    """Share call identity recovery and source protection across authored edits."""
+class DeclaredCallAuthority:
+    """Declaration-resolved calls from one selected consumer to one provider."""
 
     snapshot: CodemodSourceSnapshot
     caller: AstTargetDigest
     callee: AstTargetDigest
-    replacement_source: str
-    selection_count: SelectionCountExpectation
 
-    @cached_property
-    def geometry(self) -> SourceTextGeometry:
-        return SourceTextGeometry(
-            self.snapshot.sources_by_file_path[self.caller.file_path]
-        )
-
-    @cached_property
-    def selected_calls(self) -> tuple[CompactResolvedFunctionCall, ...]:
+    def calls(
+        self,
+        selection_count: SelectionCountExpectation,
+    ) -> tuple[CompactResolvedFunctionCall, ...]:
         source_index = self.snapshot.source_index
         caller_symbol = source_index.symbol_for_target(self.caller)
         callee_symbol = source_index.symbol_for_target(self.callee)
@@ -49,7 +55,7 @@ class DeclaredCallRewriteABC(ABC):
         repository = self.snapshot.product_flow_repository
         context = repository.flow_context_for_symbol(caller_symbol)
         if context is None:
-            raise ValueError(
+            raise UnresolvedDeclaredCall(
                 f"Call scope has no unique flow authority: {caller_symbol!r}"
             )
         calls = tuple(
@@ -67,13 +73,33 @@ class DeclaredCallRewriteABC(ABC):
             and resolution.target_resolution.candidate_symbols_within(callee_symbols)
             for resolution in calls
         ):
-            raise ValueError(f"Call authority is unresolved for {callee_symbol!r}")
+            raise UnresolvedDeclaredCall(
+                f"Call authority is unresolved for {callee_symbol!r}"
+            )
         if not selected:
-            raise ValueError(
+            raise MissingDeclaredCall(
                 f"No resolved calls to {callee_symbol!r} in {caller_symbol!r}"
             )
-        self.selection_count.require_actual_count(len(selected))
+        selection_count.require_actual_count(len(selected))
         return selected
+
+
+@dataclass(frozen=True)
+class DeclaredCallRewriteABC(DeclaredCallAuthority, ABC):
+    """Share call identity recovery and source protection across authored edits."""
+
+    replacement_source: str
+    selection_count: SelectionCountExpectation
+
+    @cached_property
+    def selected_calls(self) -> tuple[CompactResolvedFunctionCall, ...]:
+        return self.calls(self.selection_count)
+
+    @cached_property
+    def geometry(self) -> SourceTextGeometry:
+        return SourceTextGeometry(
+            self.snapshot.sources_by_file_path[self.caller.file_path]
+        )
 
     @abstractmethod
     def replacement_span(self, node: ast.Call) -> SourceTextSpan:

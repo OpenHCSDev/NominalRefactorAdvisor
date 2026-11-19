@@ -70,6 +70,15 @@ from nominal_refactor_advisor.codemod_authority_claims import (
     SourceCreationConflictPreflightDetail,
 )
 from nominal_refactor_advisor.codemod_import_graph import SourceModuleImportGraph
+from nominal_refactor_advisor.codemod_maintenance_contracts import (
+    MaintenanceContract,
+    MaintenanceContractReport,
+    MaintenanceContractSuite,
+    MaintenanceEvaluationPhase,
+    MaintenanceContractSuitePayloadValueCodec,
+    MaintenanceTerminalContext,
+    MaintenanceTransitionContext,
+)
 from nominal_refactor_advisor.codemod_operations import RefactorRecipeOperation
 from nominal_refactor_advisor.codemod_payload import (
     EmptyDefaultStringPayloadValueCodec,
@@ -922,6 +931,11 @@ class RefactorRecipe(SourceRewriteReferences):
         PayloadRecordArrayValueCodec(AuthorityClaim),
         default=(),
     )
+    maintenance_contracts: MaintenanceContractSuite = codemod_payload_field(
+        MaintenanceContractSuitePayloadValueCodec(),
+        field_name="maintenance_contracts",
+        default_factory=MaintenanceContractSuite,
+    )
 
     def has_effective_rewrites(
         self,
@@ -945,6 +959,15 @@ class RefactorRecipe(SourceRewriteReferences):
 
     def with_authority_claim(self, claim: AuthorityClaim) -> RefactorRecipe:
         return replace(self, authority_claims=(*self.authority_claims, claim))
+
+    def with_maintenance_contract(
+        self,
+        contract: MaintenanceContract,
+    ) -> RefactorRecipe:
+        return replace(
+            self,
+            maintenance_contracts=self.maintenance_contracts.with_contract(contract),
+        )
 
     def active_guard_suite(
         self,
@@ -1060,6 +1083,11 @@ class RefactorRecipe(SourceRewriteReferences):
             declared_claims = (
                 self.declared_authority_claims(context) if context is not None else ()
             )
+            declared_contracts = (
+                MaintenanceContractSuite(self.declared_maintenance_contracts(context))
+                if context is not None
+                else MaintenanceContractSuite()
+            )
         except CodemodOperationPreflightError as error:
             return CodemodOperationPreflightReport(
                 operation=AuthorityClaimPayload.field_name,
@@ -1071,7 +1099,12 @@ class RefactorRecipe(SourceRewriteReferences):
                 ),
                 needs=error.needs,
             )
-        claims = tuple(dict.fromkeys((*self.authority_claims, *declared_claims)))
+        claims = tuple(dict.fromkeys((
+            *self.authority_claims,
+            *self.maintenance_contracts.authority_claims,
+            *declared_contracts.authority_claims,
+            *declared_claims,
+        )))
         if not claims:
             return None
         if context is None:
@@ -1127,6 +1160,27 @@ class RefactorRecipe(SourceRewriteReferences):
             for claim in operation.declared_authority_claims(context)
         )
 
+    def declared_maintenance_contracts(
+        self,
+        context: CodemodSelectorContext,
+    ) -> tuple[MaintenanceContract, ...]:
+        return tuple(
+            contract
+            for operation in self.operations
+            for contract in operation.declared_maintenance_contracts(context)
+        )
+
+    def with_declared_maintenance_contracts(
+        self,
+        context: CodemodSelectorContext,
+    ) -> RefactorRecipe:
+        return replace(
+            self,
+            maintenance_contracts=self.maintenance_contracts.merge(
+                MaintenanceContractSuite(self.declared_maintenance_contracts(context))
+            ),
+        )
+
     def declared_architecture_guard_rules(
         self,
         context: CodemodSelectorContext,
@@ -1155,7 +1209,17 @@ class RefactorRecipe(SourceRewriteReferences):
         declared_claims = (
             self.declared_authority_claims(context) if context is not None else ()
         )
-        return tuple(dict.fromkeys((*self.authority_claims, *declared_claims)))
+        declared_contracts = (
+            MaintenanceContractSuite(self.declared_maintenance_contracts(context))
+            if context is not None
+            else MaintenanceContractSuite()
+        )
+        return tuple(dict.fromkeys((
+            *self.authority_claims,
+            *self.maintenance_contracts.authority_claims,
+            *declared_contracts.authority_claims,
+            *declared_claims,
+        )))
 
     def simulate(
         self,
@@ -1176,11 +1240,19 @@ class RefactorRecipe(SourceRewriteReferences):
             preflight_report=document_simulation.preflight_report,
             simulation=document_simulation.simulation,
             architecture_guard_report=document_simulation.architecture_guard_report,
+            maintenance_contract_report=document_simulation.maintenance_contract_report,
         )
 
 
+@dataclass(frozen=True, kw_only=True)
 class CodemodPlanRoot(JsonReport, ABC):
     """Declared sum boundary for one plan document or staged plan sequence."""
+
+    maintenance_contracts: MaintenanceContractSuite = codemod_payload_field(
+        MaintenanceContractSuitePayloadValueCodec(),
+        field_name="maintenance_contracts",
+        default_factory=MaintenanceContractSuite,
+    )
 
     @classmethod
     def from_json_value(cls, value: JsonValue) -> CodemodPlanRoot:
@@ -1237,6 +1309,9 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             guard_suite=ArchitectureGuardSuite().merge(
                 *(document.guard_suite for document in document_tuple)
             ),
+            maintenance_contracts=MaintenanceContractSuite().merge(
+                *(document.maintenance_contracts for document in document_tuple)
+            ),
         )
 
     @property
@@ -1253,6 +1328,24 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
     @property
     def combined_guard_suite(self) -> ArchitectureGuardSuite:
         return self.guard_suite.merge(*(recipe.guard_suite for recipe in self.recipes))
+
+    @property
+    def combined_maintenance_contracts(self) -> MaintenanceContractSuite:
+        return self.maintenance_contracts.merge(
+            *(recipe.maintenance_contracts for recipe in self.recipes)
+        )
+
+    def with_declared_maintenance_contracts(
+        self,
+        context: CodemodSelectorContext,
+    ) -> CodemodPlanDocument:
+        return replace(
+            self,
+            recipes=tuple(
+                recipe.with_declared_maintenance_contracts(context)
+                for recipe in self.recipes
+            ),
+        )
 
     def with_declared_architecture_guards(
         self,
@@ -1375,7 +1468,10 @@ class CodemodPlanDocumentPreflight:
         edit_batch = None
         if report.is_clean:
             try:
-                document = document.with_declared_architecture_guards(rewrite_snapshot)
+                document = (
+                    document.with_declared_maintenance_contracts(rewrite_snapshot)
+                    .with_declared_architecture_guards(rewrite_snapshot)
+                )
                 candidate = rewrite_snapshot.edit_batch_for_recipes(document.recipes)
                 # Lower now: compilation failures still belong to preflight.
                 candidate.planned_rewrites
@@ -1428,7 +1524,18 @@ class CodemodPlanDocumentPreflight:
             preflight_report=self.report,
             simulation=simulation,
             architecture_guard_report=architecture_guard_report,
+            maintenance_contract_report=MaintenanceContractReport(),
             after_snapshot_projection=after_snapshot_projection,
+        )
+        contract_suite = self.document.combined_maintenance_contracts
+        candidate = replace(
+            candidate,
+            maintenance_contract_report=MaintenanceContractReport.compose((
+                contract_suite.transition_report(MaintenanceTransitionContext(candidate)),
+                contract_suite.terminal_report(
+                    MaintenanceTerminalContext(candidate.required_after_snapshot)
+                ),
+            )),
         )
         reports: list[CodemodOperationPreflightReport] = []
         for recipe in self.document.recipes:
@@ -1482,7 +1589,10 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
                 document
                 for sequence in sequence_tuple
                 for document in sequence.as_sequence().documents
-            )
+            ),
+            maintenance_contracts=MaintenanceContractSuite().merge(
+                *(sequence.maintenance_contracts for sequence in sequence_tuple)
+            ),
         )
 
     @classmethod
@@ -1499,6 +1609,12 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
         )
 
     @property
+    def maintenance_contract_suite(self) -> MaintenanceContractSuite:
+        return self.maintenance_contracts.merge(
+            *(document.combined_maintenance_contracts for document in self.documents)
+        )
+
+    @property
     def has_recipes(self) -> bool:
         return any(document.has_recipes for document in self.documents)
 
@@ -1507,8 +1623,16 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
         return not self.guard_suite.is_empty
 
     @property
+    def has_maintenance_contracts(self) -> bool:
+        return not self.maintenance_contract_suite.is_empty
+
+    @property
     def requires_source_snapshot(self) -> bool:
-        return self.has_recipes or self.has_architecture_guards
+        return (
+            self.has_recipes
+            or self.has_architecture_guards
+            or self.has_maintenance_contracts
+        )
 
     @property
     def has_multiple_stages(self) -> bool:
@@ -1520,7 +1644,10 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
                 claim
                 for document in self.documents
                 for recipe in document.recipes
-                for claim in recipe.authority_claims
+                for claim in (
+                    *recipe.authority_claims,
+                    *recipe.maintenance_contracts.authority_claims,
+                )
             )
         )
 
@@ -1557,6 +1684,7 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
     def requires_complete_source_snapshot(self) -> bool:
         return (
             self.has_architecture_guards
+            or self.has_maintenance_contracts
             or not self.source_dependency_scope.permits_fast_snapshot
             or any(
                 target.file_path is None for target in self.referenced_source_targets()
@@ -1623,6 +1751,15 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
                 stage.document_simulation.document for stage in stage_reports
             ),
         )
+        transition_report = MaintenanceContractReport(tuple(
+            result
+            for stage in stage_reports
+            for result in stage.document_simulation.maintenance_contract_report.results
+            if result.phase is MaintenanceEvaluationPhase.TRANSITION
+        ))
+        terminal_report = materialized_sequence.maintenance_contract_suite.terminal_report(
+            MaintenanceTerminalContext(active_snapshot)
+        )
         return CodemodPlanSequenceSimulation(
             sequence=materialized_sequence,
             preflight_report=CodemodPlanPreflightReport(tuple(
@@ -1639,6 +1776,10 @@ class CodemodPlanSequence(SourceRewriteReferences, CodemodPlanRoot):
                 active_snapshot.source_index,
                 active_snapshot.sources_by_file_path,
             ),
+            maintenance_contract_report=MaintenanceContractReport.compose((
+                transition_report,
+                terminal_report,
+            )),
         )
 
 
@@ -1957,6 +2098,10 @@ class SourceRewriteSimulationResult(DataclassJsonReport):
     architecture_guard_report: ArchitectureGuardReport
 
     preflight_report: CodemodPlanPreflightReport
+    maintenance_contract_report: MaintenanceContractReport = field(
+        default_factory=MaintenanceContractReport,
+        kw_only=True,
+    )
 
     @property
     def guard_subject(self) -> str:
@@ -1964,7 +2109,11 @@ class SourceRewriteSimulationResult(DataclassJsonReport):
 
     @json_report_property()
     def is_clean(self) -> bool:
-        return self.preflight_report.is_clean and self.architecture_guard_report.is_clean
+        return (
+            self.preflight_report.is_clean
+            and self.architecture_guard_report.is_clean
+            and self.maintenance_contract_report.is_clean
+        )
 
     def unified_diff(
         self,
@@ -1985,8 +2134,11 @@ class SourceRewriteSimulationResult(DataclassJsonReport):
         if require_clean and not self.is_clean:
             raise ValueError(
                 f"{self.guard_subject} still violates "
-                f"{self.architecture_guard_report.violation_count} "
-                "architecture guard(s)"
+                f"{self.architecture_guard_report.violation_count} architecture guard(s), "
+                f"{self.maintenance_contract_report.open_count} open maintenance "
+                "requirement(s), and "
+                f"{self.maintenance_contract_report.violation_count} violated maintenance "
+                "requirement(s)"
             )
         return apply_codemod_simulation(self.simulation)
 
