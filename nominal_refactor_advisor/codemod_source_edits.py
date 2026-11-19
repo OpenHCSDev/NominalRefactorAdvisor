@@ -1086,6 +1086,24 @@ class TextFileChange(ABC):
 
 
 @dataclass(frozen=True, kw_only=True)
+class TextFileCreation(TextFileChange):
+    """Create one exact file outside the Python source index."""
+
+    source: str
+
+    @classmethod
+    def folded(cls, changes: tuple[TextFileCreation, ...]) -> tuple[TextFileRewrite, ...]:
+        file_path = changes[0].file_path
+        sources = {change.source for change in changes}
+        if len(sources) != 1:
+            raise PhysicalSourceEditConflictError(
+                f"Text creations of {file_path!r} declare different contents")
+        source, = sources
+        return (TextFileRewrite(file_path=file_path, before=AbsentFileText(),
+                                after=PresentFileText(source)),)
+
+
+@dataclass(frozen=True, kw_only=True)
 class TextFileEdit(TextFileChange):
     """Span replacements in a file outside the Python source index that a move
     must keep true, such as a project manifest naming a module. `source` is the

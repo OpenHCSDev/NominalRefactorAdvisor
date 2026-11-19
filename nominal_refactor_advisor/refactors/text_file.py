@@ -14,8 +14,27 @@ from nominal_refactor_advisor.codemod_source_edits import (NominalSourceEdit,
                                                            SourceSpanReplacement,
                                                            SourceTargetEditor,
                                                            SourceTextSpanReplacement,
+                                                           TextFileCreation,
                                                            TextFileEdit)
 from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
+
+
+@dataclass(frozen=True, kw_only=True)
+class CreateTextFileOperation(RefactorRecipeOperation):
+    """Create one declared file outside the Python source index."""
+
+    source: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def source_edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        del context
+        return ()
+
+    def text_file_changes(self, context: CodemodSelectorContext) -> tuple[TextFileCreation, ...]:
+        del context
+        if self.target.file_path is None:
+            raise ValueError("create_text_file requires file_path")
+        return (TextFileCreation(operation_type=type(self), file_path=self.target.file_path,
+                                 source=self.source, rationale=self.rationale),)
 
 
 @dataclass(frozen=True, kw_only=True)
