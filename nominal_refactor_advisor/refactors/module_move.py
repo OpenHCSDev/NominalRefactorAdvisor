@@ -3369,7 +3369,13 @@ class RelocateModuleToNewModuleOperation(NewModuleCreationOperationABC, Retained
     """Move an entire ordered module body, including executable statements before
     its first declaration or a script with no declarations at all."""
 
+    destination_source: str | None = codemod_payload_field(
+        OptionalStringPayloadValueCodec(), default=None
+    )
+
     def initial_destination_source(self, context: CodemodSelectorContext) -> str:
+        if self.destination_source is not None:
+            return self.destination_source
         source_path = self.required_source_path(context, self.operation_key())
         return context.sources_by_file_path[source_path]
 

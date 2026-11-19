@@ -9,9 +9,26 @@ from nominal_refactor_advisor.codemod_payload import (RequiredStringPayloadValue
                                                       codemod_payload_field)
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_source_edits import (NominalSourceEdit,
+                                                           SourceFileDeletion,
                                                            SourceTextSpanReplacement,
                                                            TextFileEdit)
 from nominal_refactor_advisor.codemod_semantics import CodemodSourceDependencyScope
+
+
+@dataclass(frozen=True, kw_only=True)
+class DeleteTextFileOperation(RefactorRecipeOperation):
+    """Delete one exact non-Python owner as part of the same plan."""
+
+    def source_edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        del context
+        return ()
+
+    def source_file_deletions(self, context: CodemodSelectorContext) -> tuple[SourceFileDeletion, ...]:
+        del context
+        if self.target.file_path is None:
+            raise ValueError("delete_text_file requires file_path")
+        return (SourceFileDeletion(operation_type=type(self), file_path=self.target.file_path,
+                                   rationale=self.rationale),)
 
 
 @dataclass(frozen=True, kw_only=True)
