@@ -23,6 +23,7 @@ from time import perf_counter
 from typing import TYPE_CHECKING, ClassVar
 
 from nominal_refactor_advisor.json_reports import DataclassJsonReport
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.probe_owner import (
     FailedReceiverType,
     InferredReceiverType,
@@ -125,10 +126,13 @@ class SourceTexts(TypeCheckerSources):
 
     def build_sources(self, options: Options) -> list[BuildSource]:
         build_source = importlib.import_module("mypy.modulefinder").BuildSource
-        return [
-            build_source(module.file_path, module.module_name, text=module.source)
-            for module in self.modules
-        ]
+        return [build_source(path, name, text=text) for path, name, text in self.state]
+
+    @property
+    def state(self) -> tuple[tuple[str, str, str], ...]:
+        """Everything a build of these modules reads: each one's file, name and text."""
+
+        return tuple((module.file_path, module.module_name, module.source) for module in self.modules)
 
 
 class TypeCheckerSession(ABC):
@@ -437,6 +441,13 @@ __all__ = (
 )
 
 
+@ScanCache.cached
+def _type_errors_by_state() -> dict[tuple[tuple[str, str, str], ...], TypeErrors]:
+    """The scan's whole-tree type errors, by the source state they were built from."""
+
+    return {}
+
+
 @dataclass(frozen=True)
 class TypeErrors:
     """The errors one whole-tree build reports, by file and message: a change is
@@ -446,7 +457,22 @@ class TypeErrors:
     by_file: Mapping[str, tuple[str, ...]]
 
     @classmethod
-    def of(cls, sources: TypeCheckerSources) -> TypeErrors:
+    def of(cls, sources: SourceTexts) -> TypeErrors:
+        """The errors of these sources' build, built once per source state in a scan.
+
+        A goal search proves one recipe against one state several times (its evaluation,
+        its simulation, its frontier), and each proof rebuilt the state it projected:
+        one concept's plan on Toad ran ten whole-tree builds, about 8 s each.
+        """
+
+        built = _type_errors_by_state()
+        state = sources.state
+        if state not in built:
+            built[state] = cls._built(sources)
+        return built[state]
+
+    @classmethod
+    def _built(cls, sources: TypeCheckerSources) -> TypeErrors:
         if importlib.util.find_spec("mypy") is None:
             raise RuntimeError(f"mypy is not installed ({TYPES_EXTRA})")
         build = importlib.import_module("mypy.build")

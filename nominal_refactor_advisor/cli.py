@@ -2657,6 +2657,7 @@ class RefactorSearchCliCommand(SingleRootReportCliCommand):
             use_parse_cache=self.args.use_parse_cache,
             budget=SearchBudgetArguments.budget(self.args),
             introspection=IntrospectionSource.from_argument(self.args.introspection_trace),
+            analysis_workers=self.args.analysis_workers,
         )
 
     @property
