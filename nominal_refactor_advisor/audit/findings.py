@@ -548,6 +548,13 @@ class PerLineFinding(Finding):
                     yield cls(f"{module.file_path}:{number}", text.strip()[:100])
 
 
+# Intermediate: PerNodeFinding declares @abstractmethod from_node to stay abstract; this does
+# the equivalent for the per-line rung without rewriting every concrete member's pattern-as-ClassVar
+# into a classmethod. Each concrete subclass declares `pattern = re.compile(...)` which ABCMeta sees
+# as a non-abstract override, so its __abstractmethods__ is empty and it registers as a member.
+PerLineFinding.__abstractmethods__ = frozenset({"pattern"})
+
+
 @dataclass(frozen=True)
 class LegacyMarker(PerLineFinding):
     title = "LEGACY MARKERS"
