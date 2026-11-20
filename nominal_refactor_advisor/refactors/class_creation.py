@@ -32,7 +32,7 @@ from importlib import import_module
 
 from metaclass_registry.core import AutoRegisterMeta
 
-from nominal_refactor_advisor.ast_tools import AstParentIndex
+from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
 from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactAnnotatedMethod,
@@ -718,6 +718,22 @@ class ClassCreationProof:
             SourceRewriteTarget(file_path=indexed.file_path, qualname=indexed.qualname),
         ).node
 
+    def module(self, indexed: CompactIndexedClass) -> ParsedModule:
+        """Its module: the scan's, or else the installed module's source, read and
+        never run. A class along the ancestry that an installed package declares
+        (Textual's `DOMNode`, a metaclass a library ships) has creation code and
+        names to resolve as a scanned one has; the snapshot holds only the scan."""
+
+        if self.class_index.class_for(indexed.symbol) is not None:
+            return self.snapshot.parsed_module_for_source_path(indexed.file_path)
+        parsed = InstalledModule.parsed(indexed.module_name)
+        if parsed is None:
+            raise NeedsInput(
+                f"{indexed.file_path}:{indexed.line} `{indexed.qualname}`'s module has no source NRA can read",
+                NeededInput.PROOF,
+            )
+        return parsed
+
     @staticmethod
     def first_parameter(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
         arguments = (*node.args.posonlyargs, *node.args.args)
@@ -735,7 +751,7 @@ class ClassCreationProof:
     def module_end(self, indexed: CompactIndexedClass) -> int:
         """The line after `indexed`'s module: where a name reads its final binding."""
 
-        return len(self.snapshot.parsed_module_for_source_path(indexed.file_path).source.splitlines()) + 1
+        return len(self.module(indexed).source.splitlines()) + 1
 
     def qualified(self, indexed: CompactIndexedClass, reference: ast.expr, line: int) -> str:
         qualified = self.resolved(indexed, reference, line)
@@ -757,7 +773,7 @@ class ClassCreationProof:
         unbound there or one of `class_bound`, which a class body binds first."""
 
         witness = self.snapshot.module_binding_proof.reference_or_builtin_witness_at(
-            self.snapshot.parsed_module_for_source_path(indexed.file_path),
+            self.module(indexed),
             reference,
             line=line,
             preceding_class_bound_names=class_bound,
@@ -772,20 +788,22 @@ class ClassCreationProof:
         module_name, _, attribute = qualified_name.rpartition(".")
         try:
             value = getattr(import_module(module_name or "builtins"), attribute)
+            return f"{value.__module__}.{value.__qualname__}"
         except (ImportError, AttributeError):
+            # Not importable, or a plain value (`typing.TYPE_CHECKING`): the name as spelled.
             return qualified_name
-        return f"{value.__module__}.{value.__qualname__}"
 
     def metaclass_code(self, symbol: str) -> Iterator[CreationCode]:
-        """Scanned creation methods along a metaclass's ancestry."""
+        """The creation methods along a metaclass's ancestry."""
 
         hooks = CREATION_METHODS | self.modelled_hooks()
         for indexed in self.metaclass_ancestry(symbol):
             yield from self.methods(indexed, hooks)
 
     def metaclass_ancestry(self, symbol: str) -> Iterator[CompactIndexedClass]:
-        """The scanned classes along a metaclass's ancestry; a modelled metaclass
-        ends its branch, and one outside the scan refuses."""
+        """The classes along a metaclass's ancestry, the scan's or an installed
+        module's source; a modelled metaclass ends its branch, and one NRA cannot
+        read refuses."""
 
         pending, seen = [symbol], set()
         while pending:
@@ -793,11 +811,11 @@ class ClassCreationProof:
             if current in seen or current in MODELLED_METACLASSES:
                 continue
             seen.add(current)
-            indexed = self.class_index.class_for(current)
+            indexed = self.snapshot.class_overlap_verdicts.ancestor(current)
             if indexed is None:
                 raise NeedsInput(
-                    f"`{self.composer.qualname}`'s metaclass `{current}` is outside the scan and "
-                    "NRA's creation models: NRA needs a proof of what it reads",
+                    f"`{self.composer.qualname}`'s metaclass `{current}` has no source NRA can read "
+                    "and is none of its creation models: NRA needs a proof of what it reads",
                     NeededInput.PROOF,
                 )
             yield indexed
@@ -1050,14 +1068,13 @@ class CreationReads:
 
     def is_builtin(self, func: ast.Name, qualified_name: str) -> bool:
         """Whether `func` names this builtin where the function body runs: its
-        module's final binding of the name. Names resolve in scanned modules
-        only; in an installed module's code the call stays unread."""
+        module's final binding of the name, in a scanned module or an installed
+        one's source."""
 
         owner = self.code.owner
         return (
             owner is not None
-            and self.proof.class_index.class_for(owner.symbol) is not None
-            and self.proof.qualified(owner, func, self.proof.module_end(owner)) == qualified_name
+            and self.proof.resolved(owner, func, self.proof.module_end(owner)) == qualified_name
         )
 
     def first_found_walk(self, attribute: ast.Attribute) -> bool:
@@ -1327,7 +1344,8 @@ class CreationReads:
         return BuiltinContainer(kind, tuple(arguments), owner, line) if kind is not None else None
 
     def callee(self, func: ast.expr) -> CreationCode | bool | None:
-        """The scanned function a call reaches, or True for a modelled one."""
+        """The function a call reaches, in the scan or an installed module's source,
+        or True for a modelled one."""
 
         match func:
             case ast.Attribute(value=ast.Name(id=receiver), attr=attr):
@@ -1337,10 +1355,13 @@ class CreationReads:
                 if owner is None:
                     return None
                 # A function body looks a global up when it runs: the module's final binding.
-                qualified = self.proof.qualified(owner, func.value, self.proof.module_end(owner))
+                # A receiver the module does not bind is the function's own local.
+                qualified = self.proof.resolved(owner, func.value, self.proof.module_end(owner))
+                if qualified is None:
+                    return None
                 if qualified in MODELLED_METACLASSES:
                     return True
-                indexed = self.proof.class_index.class_for(qualified)
+                indexed = self.proof.snapshot.class_overlap_verdicts.ancestor(qualified)
                 return self.proof.method(indexed, attr) if indexed is not None else None
         return None
 
@@ -1426,7 +1447,7 @@ class BaseDropReads(CreationReads):
         owner = self.code.owner
         if owner is None:
             return name
-        module = self.proof.snapshot.parsed_module_for_source_path(owner.file_path)
+        module = self.proof.module(owner)
         witness = self.proof.snapshot.module_binding_proof.reference_or_builtin_witness_at(
             module, ast.parse(name, mode="eval").body, line=handler.lineno
         )
