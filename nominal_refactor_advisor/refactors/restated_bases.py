@@ -14,6 +14,7 @@ from __future__ import annotations
 import ast
 from collections.abc import Iterator
 from dataclasses import dataclass
+from functools import cache
 
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -33,6 +34,7 @@ from nominal_refactor_advisor.codemod_runtime import (
 )
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
+from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactor_concepts import RestatedBaseConcept
@@ -43,6 +45,7 @@ from nominal_refactor_advisor.refactors.class_overlap import (
     require_static_c3,
     source_rewrite_target,
 )
+from nominal_refactor_advisor.source_identity import source_path_is_package_init
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
@@ -81,8 +84,9 @@ class RestatedBaseDrop:
         header = ClassHeaderSpanSourceAuthority(node, snapshot.sources_by_file_path[overlap.file_path])
         if not header.can_rewrite:
             raise NeedsInput(f"`{overlap.qualname}` has an unrewritable header", NeededInput.OPERATION)
-        ClassCreationProof.dropping(snapshot, overlap.facts, ancestry, dropped_symbols).require_unchanged()
-        BasesReaders(snapshot).require_unread(overlap.facts, dropped_symbols)
+        creation = ClassCreationProof.dropping(snapshot, overlap.facts, ancestry, dropped_symbols)
+        creation.require_unchanged()
+        BasesReaders(snapshot).require_unread(overlap.facts, dropped_symbols, creation.installed_packages())
         return cls(overlap, tuple((referenced[index][0], supplier) for index, supplier in restated))
 
     def header_edits(self, snapshot: CodemodSourceSnapshot, rationale: str) -> tuple[NominalSourceEdit, ...]:
@@ -138,6 +142,45 @@ class BaseListReads(ParsedModuleSetFact):
                     yield node
                 case ast.Subscript(slice=ast.Constant(value=str() as key)) if key in BASES_ATTRIBUTES:
                     yield node
+
+
+class InstalledPackageBaseReads:
+    """Every read of a class's `__bases__` or `__orig_bases__` in one installed
+    package's source, read and never run: found once for a run."""
+
+    @staticmethod
+    @cache
+    def of(package: str) -> tuple[tuple[ParsedModule, ast.expr, ast.AST | None], ...]:
+        located = InstalledModule.source_path(package)
+        if located is None:
+            raise NeedsInput(
+                f"`{package}` declares a class of the ancestry and has no source NRA can read: "
+                "NRA needs a proof that it reads no class's bases",
+                NeededInput.PROOF,
+            )
+        root = located.parent
+        files = sorted(root.rglob("*.py")) if source_path_is_package_init(located) else [located]
+        found: list[tuple[ParsedModule, ast.expr, ast.AST | None]] = []
+        for path in files:
+            if not any(attribute in path.read_text() for attribute in BASES_ATTRIBUTES):
+                continue
+            relative = path.relative_to(root).with_suffix("").parts
+            parts = relative[:-1] if relative[-1] == "__init__" else relative
+            module_name = ".".join((package, *parts)) if source_path_is_package_init(located) else package
+            parsed = InstalledModule.parsed(module_name)
+            if parsed is None:
+                raise NeedsInput(
+                    f"{path} names a class's bases and NRA cannot read it as `{module_name}`",
+                    NeededInput.PROOF,
+                )
+            reads = tuple(BaseListReads.found(parsed.module))
+            if not reads:
+                continue
+            parents = {
+                child: parent for parent in ast.walk(parsed.module) for child in ast.iter_child_nodes(parent)
+            }
+            found.extend((parsed, read, parents.get(read)) for read in reads)
+        return tuple(found)
 
 
 @dataclass(frozen=True)
@@ -249,7 +292,7 @@ class ClassAttributeReaders:
         )
         if witness is None:
             local = (
-                verdicts.class_index.class_for(f"{module.module_name}.{node.id}")
+                verdicts.ancestor(f"{module.module_name}.{node.id}")
                 if isinstance(node, ast.Name)
                 else None
             )
@@ -262,13 +305,25 @@ class ClassAttributeReaders:
 class BasesReaders(ClassAttributeReaders):
     """Every read of a class's `__bases__` or `__orig_bases__` in the repository."""
 
-    def require_unread(self, indexed: CompactIndexedClass, dropped: tuple[str, ...]) -> None:
+    def require_unread(
+        self, indexed: CompactIndexedClass, dropped: tuple[str, ...], installed: frozenset[str] = frozenset()
+    ) -> None:
         """Each read either tests a named class none of `dropped` is, or keeps only
-        bases that subclass a named class none of `dropped` subclasses."""
+        bases that subclass a named class none of `dropped` subclasses.
+
+        The reads are the repository's and those of each `installed` package: the
+        packages that declare a class or metaclass of the dropped class's ancestry.
+        Their code runs as the class is created and holds it afterwards (a registry,
+        a descendants walk), so a read of a class's bases anywhere in them may be a
+        read of this class's."""
 
         verdicts = self.snapshot.class_overlap_verdicts
         orders = {symbol: verdicts.linearized(symbol) for symbol in dropped}
-        for module, read, parent in self.snapshot.module_set.fact(BaseListReads).reads:
+        reads = (
+            *self.snapshot.module_set.fact(BaseListReads).reads,
+            *(read for package in sorted(installed) for read in InstalledPackageBaseReads.of(package)),
+        )
+        for module, read, parent in reads:
             if not self.reaches(module, read, indexed):
                 continue
             if not self.unaffected(module, read, parent, orders):
@@ -402,6 +457,7 @@ __all__ = (
     "ClassAttributeReaders",
     "BasesReaders",
     "DropRestatedBasesOperation",
+    "InstalledPackageBaseReads",
     "RestatedBaseDrop",
     "RestatedBaseFindingRecipeSynthesizer",
 )
