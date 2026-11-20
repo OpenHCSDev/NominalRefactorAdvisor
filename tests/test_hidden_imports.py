@@ -157,6 +157,31 @@ def test_an_import_whose_name_the_module_binds_otherwise_stays(tmp_path: Path):
     assert _findings(tmp_path) == []
 
 
+def test_an_import_of_a_name_its_module_does_not_have_stays_hidden(tmp_path: Path):
+    """A guarded import never runs, so it can name a class that moved away; at the module's
+    top it would run at load time and the module would stop importing."""
+    _write(
+        tmp_path,
+        {
+            "pkg/moved.py": "class Moved:\n    pass\n",
+            "pkg/old_home.py": "OTHER = 1\n",
+            "pkg/a.py": (
+                "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from pkg.old_home import Moved\n"
+                "    from pkg.moved import Moved as Here\n\n\ndef read(value: 'Moved') -> None:\n    return None\n"
+            ),
+            "main.py": "import pkg.a\nprint('ok')\n",
+        },
+    )
+    plan = _plan(tmp_path)
+    stale = [refusal for refusal in plan.refused if "does not bind" in str(refusal.need)]
+    assert [str(refusal.need).partition(": ")[2] for refusal in stale] == [
+        "`pkg.old_home` does not bind `Moved`: the import names something its module does not have"
+    ]
+    assert stale[0].need.needs == (NeededInput.SOURCE_CHANGE,)
+    assert not any("old_home" in hidden.identity for hidden in plan.accepted)
+    assert _run(tmp_path) == "ok\n"
+
+
 def test_an_import_after_its_function_changes_sys_path_names_the_path_setup_it_needs(tmp_path: Path):
     """A hook that puts a checkout on `sys.path` and then imports from it: at the
     module's top the import would run before the path is set. Another function's
