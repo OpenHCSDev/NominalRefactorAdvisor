@@ -167,3 +167,17 @@ def test_free_memory_for_one_worker_plays_the_concepts_one_after_another(monkeyp
 
     assert [move.concept for move in moves] == ["First", "Second"]
     assert time.monotonic() - started >= 1.2
+
+
+def test_more_plays_than_workers_each_answer_once() -> None:
+    """A finished play's pipe number goes to the next play started; the workers still
+    running were forked holding the finished one."""
+
+    class Quick(StandInConcept):
+        seconds = 0.05
+
+    concepts = tuple(type(f"Quick{number}", (Quick,), {}) for number in range(9))
+
+    moves = timed_search(3).played(None, None, concepts)
+
+    assert [move.concept for move in moves] == [concept.__name__ for concept in concepts]
