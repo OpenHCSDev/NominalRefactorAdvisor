@@ -17,7 +17,7 @@ import ast
 import builtins
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -98,6 +98,11 @@ class RuntimeBindings:
 
     def with_promoted(self, bindings: tuple[ImportedBinding, ...]) -> RuntimeBindings:
         return RuntimeBindings(self.imported | frozenset(bindings), self.other)
+
+    def binds(self, name: str) -> bool:
+        """Whether the loaded module has `name` for another module to import."""
+
+        return name in self.other or any(held.bound == name for held in self.imported)
 
     def already_bound(self, binding: ImportedBinding) -> bool:
         """Whether the module already binds this name to exactly this; needs a
@@ -423,6 +428,47 @@ class UnpromotableImport(HiddenImportRefusal):
         return NeedsInput(f"{self.hidden.location}: {self.reason}", *self.reason.needs)
 
 
+
+@dataclass(eq=False)
+class ScannedExports:
+    """What each scanned module has for another to import: the names its loaded scope
+    binds, and its submodules.
+
+    A guarded import never runs, and a local one only when its function does, so either
+    can name a member its module no longer has (a class that moved away) for as long as
+    nothing runs it. At the module's top it runs at load time and the module stops
+    importing (Toad, 2026-11-20: `from toad.forms.presentation import EntryPlacement`,
+    which `toad.entry_placement` defines; the promotion had reported its goal achieved).
+    """
+
+    modules: Mapping[str, ParsedModule]
+    scopes: dict[str, RuntimeBindings] = field(default_factory=dict)
+
+    @classmethod
+    def of(cls, modules: ParsedModuleSet) -> ScannedExports:
+        return cls({module.module_name: module for module in modules})
+
+    def has(self, module_name: str, member: str) -> bool:
+        """Whether `module_name` has `member`; a module outside the scan is not judged."""
+
+        module = self.modules.get(module_name)
+        if module is None or f"{module_name}.{member}" in self.modules:
+            return True
+        if module_name not in self.scopes:
+            self.scopes[module_name] = RuntimeBindings.of(module)
+        return self.scopes[module_name].binds(member)
+
+    def require_bound(self, bindings: tuple[ImportedBinding, ...]) -> None:
+        missing = [binding for binding in bindings
+                   if binding.member is not None and not self.has(binding.module, binding.member)]
+        if missing:
+            raise NeedsInput(
+                "; ".join(f"`{binding.module}` does not bind `{binding.member}`" for binding in missing)
+                + ": the import names something its module does not have",
+                NeededInput.SOURCE_CHANGE,
+            )
+
+
 @dataclass(frozen=True)
 class HiddenImportPlan(ParsedModuleSetFact):
     """Every hidden import of one module set, accepted or refused. Modules go in
@@ -442,6 +488,7 @@ class HiddenImportPlan(ParsedModuleSetFact):
         accepted: list[HiddenImport] = []
         refused: list[HiddenImportRefusal] = []
         scopes: dict[str, RuntimeBindings] = {}
+        exports = ScannedExports.of(modules)
         for module in sorted(modules, key=lambda parsed: parsed.file_path):
             found = HiddenImport.collected(module, graph)
             if not found:
@@ -449,6 +496,7 @@ class HiddenImportPlan(ParsedModuleSetFact):
             scope = scopes[module.file_path] = RuntimeBindings.of(module)
             for hidden in found:
                 try:
+                    exports.require_bound(hidden.bindings)
                     hidden.require_promotable(scope)
                 except NeedsInput as need:
                     refused.append(UnpromotableImport(hidden, need))
