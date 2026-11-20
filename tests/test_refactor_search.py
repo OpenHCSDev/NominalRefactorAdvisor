@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import os
+import time
+
+import pytest
+
+from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.refactor_search import (
+    RefactorSearch,
     ScoredMove,
+    SearchBudget,
     SearchTurn,
     StateScore,
     UnscoredMove,
@@ -65,3 +73,97 @@ def test_edit_tokens_count_the_removed_and_written_lines_of_every_file() -> None
     removed_and_written = len("old line\n") + len("new line!\n") + len("abcd\n") + len("xyz\n")
     assert edit_tokens(before, after) == -(-removed_and_written // 4)
     assert edit_tokens(before, before) == 0
+
+
+class StandInConcept:
+    """What a search asks of a concept in these tests: its key, and how its play behaves."""
+
+    seconds = 0.0
+    plays = True
+    fails = False
+
+    @classmethod
+    def concept_key(cls) -> str:
+        return cls.__name__
+
+
+class First(StandInConcept):
+    seconds = 0.6
+
+
+class Second(StandInConcept):
+    seconds = 0.6
+
+
+class Third(StandInConcept):
+    seconds = 0.6
+
+
+class Untargeted(StandInConcept):
+    plays = False
+
+
+class Failing(StandInConcept):
+    fails = True
+
+
+class Lingering(StandInConcept):
+    seconds = 30.0
+
+
+class TimedSearch(RefactorSearch):
+    """A search whose plays take the time their concept says, in the worker that ran them."""
+
+    def unplayed(self, scan, concept):
+        return None if concept.plays else UnscoredMove(concept.concept_key(), "no targets")
+
+    def move(self, scan, start, concept):
+        if not concept.plays:
+            raise AssertionError("a concept with nothing to play reached a worker")
+        time.sleep(concept.seconds)
+        if concept.fails:
+            raise ValueError("the play broke")
+        return UnscoredMove(concept.concept_key(), f"worker {os.getpid()}")
+
+
+def timed_search(workers: int) -> TimedSearch:
+    return TimedSearch((), None, SearchBudget(workers=workers))
+
+
+def test_a_turns_plays_run_at_the_same_time_and_come_back_in_the_concepts_order() -> None:
+    started = time.monotonic()
+    moves = timed_search(3).played(None, None, (First, Untargeted, Second, Third))
+    elapsed = time.monotonic() - started
+
+    assert [move.concept for move in moves] == ["First", "Untargeted", "Second", "Third"]
+    assert moves[1].reason == "no targets"
+    workers = {move.reason for move in moves if move.concept != "Untargeted"}
+    assert len(workers) == 3 and f"worker {os.getpid()}" not in workers
+    # Three plays of 0.6 s each: one after another they take 1.8 s.
+    assert elapsed < 1.5
+
+
+def test_one_worker_plays_the_concepts_one_after_another() -> None:
+    started = time.monotonic()
+    moves = timed_search(1).played(None, None, (First, Second))
+
+    assert [move.concept for move in moves] == ["First", "Second"]
+    assert time.monotonic() - started >= 1.2
+
+
+def test_a_failed_play_is_raised_with_its_traceback_and_leaves_no_worker_running() -> None:
+    with pytest.raises(RuntimeError, match="the worker playing Failing failed") as raised:
+        timed_search(2).played(None, None, (Lingering, Failing))
+
+    assert "the play broke" in str(raised.value)
+    with pytest.raises(ChildProcessError):
+        os.waitpid(-1, os.WNOHANG)
+
+
+def test_free_memory_for_one_worker_plays_the_concepts_one_after_another(monkeypatch) -> None:
+    monkeypatch.setattr(DetectorAnalysisWorkerPlan, "memory_worker_ceiling", 1)
+    started = time.monotonic()
+    moves = TimedSearch((), None, SearchBudget()).played(None, None, (First, Second))
+
+    assert [move.concept for move in moves] == ["First", "Second"]
+    assert time.monotonic() - started >= 1.2

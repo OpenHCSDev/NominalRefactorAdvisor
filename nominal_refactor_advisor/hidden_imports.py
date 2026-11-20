@@ -84,7 +84,7 @@ class RuntimeBindings:
         others, sole = LEXICAL_SCOPE_BINDING_AUTHORITY.import_only_bindings(runtime)
         direct = {name: statement for name, statement in sole.items() if statement in body}
         declared_global = frozenset(
-            name for node in ast.walk(module.module) if isinstance(node, ast.Global) for name in node.names
+            name for node in module.syntax_index.instances_of(ast.Global) for name in node.names
         )
         return cls(
             frozenset(
@@ -177,7 +177,11 @@ class HiddenImport(ABC):
         def targets(statement: ImportStatement) -> frozenset[str]:
             return graph.statement_edges(source_file, statement) - {module.module_name}
 
-        parents = module.syntax_index.parent_index
+        # The module's own traversal answers which nodes are imports: walking the tree
+        # again here cost every module of every projected state its whole syntax tree
+        # (Toad, 520 modules: 63 plans of one concept's search, 2026-11-20).
+        syntax = module.syntax_index
+        parents = syntax.parent_index
         guarded = (
             GuardedImport(module, statement, targets(statement), guard)
             for guard in TypeCheckingGuardProjection.from_module(module.module).guards
@@ -186,9 +190,8 @@ class HiddenImport(ABC):
         )
         local = (
             LocalImport(module, node, targets(node), function)
-            for node in ast.walk(module.module)
-            if isinstance(node, ast.Import | ast.ImportFrom)
-            and (function := parents.enclosing_function(node)) is not None
+            for node in syntax.instances_of(ImportStatement)
+            if (function := parents.enclosing_function(node)) is not None
         )
         return (
             *sorted((hidden for hidden in guarded if hidden.targets), key=lambda hidden: hidden.statement.lineno),
