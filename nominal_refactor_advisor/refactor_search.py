@@ -428,7 +428,10 @@ class RefactorSearch:
                         answered.register(play.reader, selectors.EVENT_READ)
                     for key, _ in answered.select():
                         play = running[key.fd]
-                        if play.finished_reading():
+                        if play.read_to_end():
+                            # Unregistered while still open: the other workers were forked
+                            # holding this pipe too, so closing it first left it registered,
+                            # and it answered again under the next play that got its number.
                             answered.unregister(key.fd)
                             del running[key.fd]
                             moves[play.concept] = play.move()
@@ -520,19 +523,17 @@ class ForkedPlay:
         os.close(writer)
         return cls(concept, pid, reader)
 
-    def finished_reading(self) -> bool:
+    def read_to_end(self) -> bool:
         """Take what the worker has written so far; True once it has closed its end."""
 
         chunk = os.read(self.reader, 1 << 20)
         self.answer += chunk
-        if chunk:
-            return False
-        os.close(self.reader)
-        return True
+        return not chunk
 
     def move(self) -> SearchMove:
         """The worker's move, once it has closed its end; its failure is raised here."""
 
+        os.close(self.reader)
         _, status = os.waitpid(self.pid, 0)
         key = self.concept.concept_key()
         if not self.answer:
