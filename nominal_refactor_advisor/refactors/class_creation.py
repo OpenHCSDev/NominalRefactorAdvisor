@@ -25,7 +25,7 @@ import ast
 import inspect
 import types
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from abc import ABC, abstractmethod
 from typing import ClassVar, NoReturn
@@ -52,6 +52,10 @@ from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 
 
+
+HEADER_BASES = "__orig_bases__"
+"""The one name under which a class's own namespace holds its header's bases:
+creation sets it when a base is subscripted."""
 
 ORDER_READERS = frozenset(("dataclasses.dataclass", "builtins.dir"))
 """Functions of a class that read the classes of its order and their own bodies,
@@ -887,6 +891,8 @@ class CreationReads:
     code: CreationCode
     roles: dict[str, Role]
     depth: int = 0
+    texts: dict[str, str] = field(default_factory=dict)
+    """The parameters every followed call hands one constant text."""
 
     def require(self) -> None:
         if self.depth > DEPTH:
@@ -1300,7 +1306,25 @@ class CreationReads:
             )
             if role is not None and index < len(names):
                 mapped[names[index]] = role
-        type(self)(self.proof, code, mapped, self.depth + 1).require()
+        handed = [(names[index], argument) for index, argument in enumerate(call.args) if index < len(names)]
+        handed.extend((keyword.arg, keyword.value) for keyword in call.keywords if keyword.arg in names)
+        texts = {
+            name: text for name, argument in handed if (text := self.text(argument)) is not None
+        }
+        type(self)(self.proof, code, mapped, self.depth + 1, texts).require()
+
+    def text(self, node: ast.AST | None) -> str | None:
+        """The one text `node` holds: a constant, or a parameter the call that reached
+        this function handed a constant and the function never rebinds."""
+
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name) and node.id in self.texts and not any(
+            isinstance(other, ast.Name) and other.id == node.id and isinstance(other.ctx, (ast.Store, ast.Del))
+            for other in ast.walk(self.code.node)
+        ):
+            return self.texts[node.id]
+        return None
 
     def stored_by_reference(self, call: ast.Call, node: ast.Name) -> bool:
         """`container.add(value)` on a container proved a builtin one: the call keeps
@@ -1497,7 +1521,9 @@ class BaseDropReads(CreationReads):
                 return
             case ast.Attribute(attr="__annotations__" | "__annotate__", ctx=ast.Load()):
                 return
-            case ast.Attribute(attr="__dict__", ctx=ast.Load()) if not self.proof.header_is_subscripted:
+            case ast.Attribute(attr="__dict__", ctx=ast.Load()) if (
+                not self.proof.header_is_subscripted or self.asks_no_header_bases(parent)
+            ):
                 return
             case ast.Yield() | ast.Tuple(ctx=ast.Load()) if isinstance(
                 parent if isinstance(parent, ast.Yield) else self.parents.get(parent), ast.Yield | ast.Return
@@ -1515,13 +1541,15 @@ class BaseDropReads(CreationReads):
             ) and self.only_stores(call):
                 return
             case ast.Call(func=ast.Name(id="getattr" | "hasattr"), args=[value, ast.Name(id=key), *_]) if (
-                value is node and not self.proof.header_is_subscripted and self.namespace_key(key)
+                value is node and self.namespace_key(key)
             ):
                 return
             case ast.Call() if node in parent.args and self.only_stores(parent):
                 return
             case ast.Call(func=ast.Name() as func, args=[value], keywords=[]) if (
-                value is node and not self.proof.header_is_subscripted and self.is_builtin(func, "builtins.vars")
+                value is node
+                and self.is_builtin(func, "builtins.vars")
+                and (not self.proof.header_is_subscripted or self.asks_no_header_bases(parent))
             ):
                 return
         super().require_new_class(node, parent)
@@ -1587,7 +1615,9 @@ class BaseDropReads(CreationReads):
                 pass
             case _:
                 return False
-        return self.roles.get(owner) is NEW_CLASS
+        if self.roles.get(owner) is not NEW_CLASS:
+            return False
+        return not self.proof.header_is_subscripted or self.skips_header_bases(loop, "items" if items else "keys")
 
     def local_container(self, name: str) -> ast.expr | None:
         """The value the creation function binds its own local `name` to, when it
@@ -1668,14 +1698,203 @@ class BaseDropReads(CreationReads):
         """The namespace the class body filled is the same body's: creation adds the
         header's bases to it, as `__orig_bases__`, only when a base is subscripted."""
 
-        if not self.proof.header_is_subscripted:
+        if not self.proof.header_is_subscripted or self.asks_no_header_bases(node):
             return
         super().require_namespace(node, parent)
 
     def iterated(self, loop: ast.For | ast.comprehension, role: Role) -> Role | None:
-        if role is NAMESPACE and not self.proof.header_is_subscripted:
+        if role is NAMESPACE and (
+            not self.proof.header_is_subscripted or self.skips_header_bases(loop, "keys")
+        ):
             return None
         return super().iterated(loop, role)
+
+    def asks_no_header_bases(self, namespace: ast.AST) -> bool:
+        """Whether this read of a class namespace is the same whatever its
+        `__orig_bases__` holds. The header subscripts a base before the drop and
+        after it, so the key is there either way and asking whether a key is among
+        the names answers the same; a read of a value asks for another key or only
+        whether the value is an instance of a class no tuple is; a walk of the
+        entries passes that one by (`skips_header_bases`)."""
+
+        parent = self.parents.get(namespace)
+        match parent:
+            case ast.Subscript(value=value, slice=key) if value is namespace:
+                return self.other_key(key) or self.only_tested(parent)
+            case ast.Compare(ops=[ast.In() | ast.NotIn()], comparators=[value]) if value is namespace:
+                return True
+            case ast.Attribute(attr="get"):
+                call = self.parents.get(parent)
+                return isinstance(call, ast.Call) and call.func is parent and bool(call.args) and self.other_key(
+                    call.args[0]
+                )
+            case ast.Attribute(attr="items" | "values" | "keys" as view):
+                call = self.parents.get(parent)
+                loop = self.parents.get(call) if call is not None else None
+                return (
+                    isinstance(call, ast.Call)
+                    and call.func is parent
+                    and not call.args
+                    and not call.keywords
+                    and isinstance(loop, (ast.For, ast.comprehension))
+                    and loop.iter is call
+                    and (self.skips_header_bases(loop, view) or self.finds_no_header_bases(loop))
+                )
+            case ast.For() | ast.comprehension() if parent.iter is namespace:
+                return self.skips_header_bases(parent, "keys")
+        return False
+
+    def finds_no_header_bases(self, inner: ast.For | ast.comprehension) -> bool:
+        """Whether the walk is the first-found walk of the order (`first_found_walk`),
+        whose winners are read only through `getattr(winner, "<name>", default)`, and
+        no tuple has any of those names: the winner for `__orig_bases__` answers each
+        read with its default, whatever the tuple holds."""
+
+        outer = self.parents.get(inner)
+        if not isinstance(inner, ast.For) or not isinstance(outer, ast.For) or outer.body != [inner]:
+            return False
+        walked = outer.iter
+        if not (isinstance(walked, ast.Attribute) and walked.attr == "__mro__") or not self.first_found_walk(walked):
+            return False
+        match inner.body:
+            case [ast.Expr(value=ast.Call(func=ast.Attribute(value=ast.Name(id=found), attr="setdefault")))]:
+                return all(not hasattr((), attribute) for attribute in self.found_reads(found, outer))
+        return False
+
+    def only_tested(self, read: ast.AST) -> bool:
+        """Whether the value read is used for one thing: `isinstance(<read>, C)` for a
+        class NRA reads that names no metaclass, which is false of every tuple."""
+
+        match self.parents.get(read):
+            case ast.Call(func=ast.Name(id="isinstance"), args=[tested, kind], keywords=[]) if tested is read:
+                return self.plain_class(kind)
+        return False
+
+    def other_key(self, key: ast.AST | None) -> bool:
+        """The key is never `__orig_bases__`: a constant, a parameter handed one, the
+        variable of a loop over a display of constants, or a local bound once to a
+        text with a constant start or end `__orig_bases__` has not."""
+
+        text = self.text(key)
+        if text is not None:
+            return text != HEADER_BASES
+        if not isinstance(key, ast.Name):
+            return False
+        stores = [
+            node for node in ast.walk(self.code.node)
+            if isinstance(node, ast.Name) and node.id == key.id and isinstance(node.ctx, ast.Store)
+        ]
+        if len(stores) != 1:
+            return False
+        match self.parents.get(stores[0]):
+            case ast.Assign(targets=[target], value=ast.JoinedStr(values=[first, *_] as parts)) if (
+                target is stores[0]
+            ):
+                last = parts[-1]
+                prefix = first.value if isinstance(first, ast.Constant) and isinstance(first.value, str) else ""
+                suffix = last.value if isinstance(last, ast.Constant) and isinstance(last.value, str) else ""
+                return bool(prefix or suffix) and not (
+                    HEADER_BASES.startswith(prefix) and HEADER_BASES.endswith(suffix)
+                )
+            case ast.For(target=target, iter=ast.Tuple(elts=texts) | ast.List(elts=texts) | ast.Set(elts=texts)) | (
+                ast.comprehension(target=target, iter=ast.Tuple(elts=texts) | ast.List(elts=texts) | ast.Set(elts=texts))
+            ) if target is stores[0]:
+                return all(
+                    isinstance(item, ast.Constant) and isinstance(item.value, str) and item.value != HEADER_BASES
+                    for item in texts
+                )
+        return False
+
+    def skips_header_bases(self, loop: ast.For | ast.comprehension, view: str) -> bool:
+        """Whether a walk of a namespace's entries does nothing with the entry
+        `__orig_bases__`, whose value is a tuple before the drop and after it.
+
+        Everything the walk does with an entry stands behind one test, the
+        comprehension's first condition or the `if` that is the loop's whole body, and
+        the test's first term is false for that entry: `isinstance(value, C)` for a
+        class NRA reads that names no metaclass, `getattr(value, "<name>", <false>)`
+        for a name a tuple has not, `callable(value)`, or `name.startswith("<text>")`
+        for a text `__orig_bases__` does not start with."""
+
+        match view, loop.target:
+            case "items", ast.Tuple(elts=[ast.Name(id=key), ast.Name(id=value)]):
+                pass
+            case "values", ast.Name(id=value):
+                key = None
+            case "keys", ast.Name(id=key):
+                value = None
+            case _:
+                return False
+        if isinstance(loop, ast.comprehension):
+            guard = loop.ifs[0] if loop.ifs else None
+        else:
+            match loop.body:
+                case [ast.If(test=guard, orelse=[])] if not loop.orelse:
+                    pass
+                case _:
+                    return False
+            inside = frozenset(ast.walk(loop))
+            if any(
+                isinstance(node, ast.Name) and node.id in (key, value) and node not in inside
+                for node in ast.walk(self.code.node)
+            ):
+                return False
+        if guard is None:
+            return False
+        first = guard.values[0] if isinstance(guard, ast.BoolOp) and isinstance(guard.op, ast.And) else guard
+        owner = self.code.owner
+        match first:
+            case ast.Call(func=ast.Name(id="isinstance"), args=[ast.Name(id=tested), kind], keywords=[]) if (
+                tested == value
+            ):
+                return self.plain_class(kind)
+            case ast.Call(
+                func=ast.Name(id="getattr"),
+                args=[ast.Name(id=tested), ast.Constant(value=str() as attribute), ast.Constant(value=absent)],
+                keywords=[],
+            ) if tested == value:
+                return not absent and not hasattr((), attribute)
+            case ast.Call(func=ast.Name(id="callable"), args=[ast.Name(id=tested)], keywords=[]) if tested == value:
+                return True
+            case ast.Call(
+                func=ast.Attribute(value=ast.Name(id=tested), attr="startswith"), args=[prefix], keywords=[]
+            ) if tested == key and owner is not None:
+                text = self.text(prefix)
+                if text is None and isinstance(prefix, ast.Name):
+                    bound = self.local_container(prefix.id)
+                    text = bound.value if isinstance(bound, ast.Constant) and isinstance(bound.value, str) else None
+                return text is not None and not HEADER_BASES.startswith(text)
+        return False
+
+    def plain_class(self, kind: ast.expr) -> bool:
+        """Whether `kind` names a class NRA reads whose order names no metaclass:
+        `isinstance` then asks its real order, which no tuple is in."""
+
+        owner = self.code.owner
+        if owner is None:
+            return False
+        qualified = self.proof.resolved(owner, kind, self.proof.module_end(owner))
+        verdicts = self.proof.snapshot.class_overlap_verdicts
+        found = None if qualified is None else verdicts.ancestor(qualified)
+        if found is None:
+            return False
+        pending, seen = [found], set()
+        while pending:
+            current = pending.pop()
+            if current.symbol in seen:
+                continue
+            seen.add(current.symbol)
+            if any(keyword.arg == "metaclass" for keyword in self.proof.class_node(current).keywords):
+                return False
+            for reference in current.base_references:
+                qualified_name = ".".join(reference.resolved_parts)
+                if native_root_type(qualified_name) is not None:
+                    continue
+                base = verdicts.ancestor(qualified_name)
+                if base is None:
+                    return False
+                pending.append(base)
+        return True
 
     def walked_by(self, order: ast.Attribute) -> ast.For | ast.comprehension | None:
         """The loop that walks `<new class>.__mro__` one class at a time: straight,
