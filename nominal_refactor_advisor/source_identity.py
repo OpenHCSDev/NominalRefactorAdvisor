@@ -12,6 +12,9 @@ from pathlib import Path, PurePath
 
 PACKAGE_INIT_FILE_NAME = "__init__.py"
 """The file a package directory's own module is read from."""
+STUB_SUFFIX = ".pyi"
+PACKAGE_STUB_FILE_NAME = f"__init__{STUB_SUFFIX}"
+"""The stub that states a package's own module beside its `__init__.py`."""
 
 
 def python_source_cache_signature(source: str) -> str:
@@ -47,7 +50,7 @@ def source_path_is_package_init(path: str | PathLike[str]) -> bool:
     """Whether the source at ``path`` is a package's own module: the one place
     a path's file name decides it."""
 
-    return PurePath(source_path_text(path)).name == PACKAGE_INIT_FILE_NAME
+    return PurePath(source_path_text(path)).name in (PACKAGE_INIT_FILE_NAME, PACKAGE_STUB_FILE_NAME)
 
 
 def source_path_text(path: str | PathLike[str]) -> str:

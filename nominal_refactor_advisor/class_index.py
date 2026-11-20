@@ -6522,6 +6522,18 @@ class InstalledClassDeclarations:
         (projection,) = found
         return projection
 
+    @staticmethod
+    @cache
+    def stub(module_name: str) -> CompactModuleClassProjection | None:
+        """What the stub beside the module's `.py` states, for a name the `.py`
+        binds only at run time."""
+
+        found = InstalledModule.family_items(module_name, CompactModuleClassProjectionFamily, stub=True)
+        if found is None:
+            return None
+        (projection,) = found
+        return projection
+
     @classmethod
     def declaration(
         cls,
@@ -6550,6 +6562,10 @@ class InstalledClassDeclarations:
                 if declared.symbol == qualified_name:
                     return declared
             target = dict(projection.import_aliases).get(name)
+            if target is None and module_name not in modules.unambiguous_declarations_by_handle:
+                # The `.py` computes the name when it is read (`__getattr__`); its stub states it.
+                stated = cls.stub(module_name)
+                target = None if stated is None else dict(stated.import_aliases).get(name)
             if target is None or target == qualified_name:
                 return None
             qualified_name = target
