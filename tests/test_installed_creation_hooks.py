@@ -1,5 +1,6 @@
-"""A restated base dropped under a class whose installed ancestors run creation code:
-a metaclass and a hook that walk the order and every namespace, as Textual's do.
+"""A restated base dropped, and a restated member deleted, under a class whose installed
+ancestors run creation code (a metaclass and a hook that walk the order and every
+namespace, as Textual's do) and beside the repository's own readers of bases and namespaces.
 
 Each case writes an installed toolkit and a scanned application, runs the application,
 applies the recipe the finding offers, runs it again and re-reads the source.
@@ -191,6 +192,71 @@ def test_a_subscripted_header_keeps_its_bases_in_the_namespace_the_hooks_walk(ro
     # `__orig_bases__` is in `Slot`'s own namespace and the drop shortens it; the hook
     # walks that namespace's items.
     assert "introspects the new class" in evaluation.rejection_reason or "reads the class namespace" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+
+
+def test_a_loop_over_a_family_s_subclasses_reads_only_that_family_s_bases(roots):
+    site, scan = roots
+    reader = (
+        "class Block:\n"
+        "    @classmethod\n"
+        "    def blocks_for(cls, native):\n"
+        "        found = {}\n"
+        "        for declaration in cls.__subclasses__():\n"
+        "            for base in declaration.__bases__:\n"
+        "                if base in native:\n"
+        "                    found[base] = declaration\n"
+        "        return found\n"
+    )
+    _write(scan, {"app/blocks.py": reader})
+    evaluation, _snapshot = _evaluation(RestatedBaseDetector(), scan, "Slot")
+    # `declaration` is a subclass of `Block`, which `Slot` is not.
+    assert evaluation.rejection_reason == ""
+    _write(scan, {"app/blocks.py": reader.replace("class Block:", "from toolkit.node import Node\n\n\nclass Block(Node):").replace(
+        "cls.__subclasses__()", "Node.__subclasses__()")})
+    evaluation, _snapshot = _evaluation(RestatedBaseDetector(), scan, "Slot")
+    assert "app/blocks.py" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+
+
+OVERRIDES = (
+    "from functools import partialmethod\n\n\n"
+    "class Actions:\n"
+    "    def label(self):\n        return 'panel'\n\n\n"
+    "class Panel(Actions):\n    def label(self):\n        return 'panel'\n\n\n"
+    "def written(cls, declared):\n"
+    "    name = f'action_{declared}'\n"
+    "    return tuple(\n"
+    "        base.__name__ for base in cls.__mro__\n"
+    "        if name in base.__dict__ and not isinstance(base.__dict__[name], partialmethod)\n"
+    "    )\n\n\n"
+    "def widths(member):\n"
+    "    return 'width' in {name for ancestor in member.__mro__ for name in vars(ancestor)}\n"
+)
+OVERRIDES_MAIN = "from app.actions import Panel, widths, written\n\nprint(Panel().label(), written(Panel, 'open'), widths(Panel))\n"
+
+
+def test_a_namespace_read_by_a_prefixed_text_or_for_one_constant_leaves_a_deletion_proved(roots):
+    site, scan = roots
+    _write(scan, {"app/actions.py": OVERRIDES, "main.py": OVERRIDES_MAIN})
+    expected = _run(site, scan)
+    evaluation, snapshot = _evaluation(RestatedOverrideDetector(), scan, "Panel")
+    # `name` is always `action_<declared>`, and the collected names are asked only for `width`.
+    assert evaluation.rejection_reason == ""
+    _apply(evaluation, snapshot)
+    assert "class Panel(Actions):\n    pass\n" in (scan / "app/actions.py").read_text()
+    assert _run(site, scan) == expected
+
+
+@pytest.mark.parametrize(
+    ("member", "reader"),
+    [("action_open", "name in base.__dict__"), ("width", "for name in vars(ancestor)")],
+)
+def test_a_deleted_name_the_read_can_ask_for_keeps_the_deletion_unproved(roots, member: str, reader: str):
+    site, scan = roots
+    _write(scan, {"app/actions.py": OVERRIDES.replace("def label(self):\n        return 'panel'", f"def {member}(self):\n        return 'panel'")})
+    evaluation, _snapshot = _evaluation(RestatedOverrideDetector(), scan, "Panel")
+    assert reader in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
 
 

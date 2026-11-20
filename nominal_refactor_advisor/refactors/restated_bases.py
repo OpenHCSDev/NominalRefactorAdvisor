@@ -202,7 +202,7 @@ class ClassAttributeReaders:
             case _:
                 return True
         verdicts = self.snapshot.class_overlap_verdicts
-        family = self.annotated_family(module, read, receiver)
+        family = self.annotated_family(module, read, receiver) or self.subclass_family(module, read, receiver)
         if family is not None:
             return self.family_holds(family, indexed)
         named = self.named(module, receiver)
@@ -281,6 +281,62 @@ class ClassAttributeReaders:
                 case _:
                     return None
         return families.pop() if len(families) == 1 else None
+
+    def subclass_family(self, module: ParsedModule, read: ast.expr, receiver: ast.expr) -> str | None:
+        """The scanned class `C` when the receiver is the one variable of a loop over
+        `X.__subclasses__()` and `X` is `C`: a class the module names, or the `cls` of
+        a classmethod `C` declares. `X.__subclasses__()` lists subclasses of `X`, and
+        `cls` is `C` or a subclass, so the read sees only subclasses of `C`."""
+
+        if not isinstance(receiver, ast.Name):
+            return None
+        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        scope: ast.AST | None = read
+        while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            scope = parents.get(scope)
+        if scope is None:
+            return None
+        stores = [
+            node for node in ast.walk(scope)
+            if isinstance(node, ast.Name) and node.id == receiver.id and isinstance(node.ctx, ast.Store)
+        ]
+        arguments = scope.args
+        if len(stores) != 1 or any(
+            argument.arg == receiver.id
+            for argument in (*arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs)
+        ):
+            return None
+        match parents.get(stores[0]):
+            case ast.For(target=target, iter=walked) | ast.comprehension(target=target, iter=walked) if (
+                target is stores[0]
+            ):
+                pass
+            case _:
+                return None
+        match walked:
+            case ast.Call(func=ast.Attribute(value=listed, attr="__subclasses__"), args=[], keywords=[]):
+                pass
+            case _:
+                return None
+        owner = parents.get(scope)
+        positional = (*arguments.posonlyargs, *arguments.args)
+        if (
+            isinstance(listed, ast.Name)
+            and isinstance(owner, ast.ClassDef)
+            and positional
+            and positional[0].arg == listed.id
+            and any(isinstance(decorator, ast.Name) and decorator.id == "classmethod" for decorator in scope.decorator_list)
+            and sum(
+                1 for node in ast.walk(scope)
+                if isinstance(node, ast.Name) and node.id == listed.id and isinstance(node.ctx, ast.Store)
+            ) == 0
+        ):
+            family = f"{module.module_name}.{owner.name}" if isinstance(parents.get(owner), ast.Module) else None
+        else:
+            family = self.named(module, listed)
+        if family is None or self.snapshot.class_overlap_verdicts.class_index.class_for(family) is None:
+            return None
+        return family
 
     def named(self, module: ParsedModule, node: ast.expr) -> str | None:
         """The class or function a name or attribute chain spells in `module`: an
