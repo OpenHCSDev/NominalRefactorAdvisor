@@ -26,8 +26,8 @@ from pathlib import Path
 from typing import Generic, TypeVar
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.source_identity import STUB_SUFFIX
 
-STUB_SUFFIX = ".pyi"
 PACKAGE_STUB = "__init__"
 STUB_PROVIDER = "mypy"
 STDLIB_STUBS = Path("typeshed") / "stdlib"

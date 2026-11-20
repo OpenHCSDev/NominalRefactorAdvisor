@@ -20,6 +20,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.source_identity import (
     PACKAGE_INIT_FILE_NAME,
+    STUB_SUFFIX,
     source_path_is_package_init,
 )
 
@@ -31,7 +32,15 @@ class InstalledModule:
     """A module outside the scan, read from its installed source and never run.
 
     The analysing interpreter's import path locates it (`PathFinder`, which
-    executes no package); only a `.py` source is read. Its collected families
+    executes no package). A `.py` source is read; a module with none, an
+    extension module, is read from the `.pyi` stub installed beside it, which
+    states its classes, their bases and their members as its author declares
+    them (PySide6's `QtWidgets.abi3.so` beside `QtWidgets.pyi`). A stub holds no
+    bodies and no creation code: it says what a class is, never what creating
+    it runs. A module that has both is read from its `.py`; the stub beside it is
+    read only for what the `.py` leaves to run time (`stub=True`: Textual's
+    `widgets/__init__.py` binds its widgets in `__getattr__` and states them in
+    `widgets/__init__.pyi`). Its collected families
     are kept in the running scan's family cache, keyed like a scanned module's
     by path, source signature and family schema, so a warm scan reads them
     instead of parsing the installed source again.
@@ -54,7 +63,9 @@ class InstalledModule:
 
     @staticmethod
     def source_path(module_name: str) -> Path | None:
-        """The `.py` file a module name selects: the top package through `PathFinder`, each submodule under its package's directories."""
+        """The file a module name selects: the top package through `PathFinder`, each
+        submodule under its package's directories. A `.py` file, or the `.pyi` stub of
+        a module that has no `.py`."""
 
         top, *rest = module_name.split(".")
         spec = PathFinder.find_spec(top)
@@ -72,6 +83,7 @@ class InstalledModule:
                     for candidate in (
                         location / part / PACKAGE_INIT_FILE_NAME,
                         location / f"{part}.py",
+                        location / f"{part}{STUB_SUFFIX}",
                     )
                     if candidate.is_file()
                 ),
@@ -80,26 +92,38 @@ class InstalledModule:
             if found is None:
                 return None
             locations = [found.parent] if source_path_is_package_init(found) else []
-        if found is None or found.suffix != ".py":
+        if found is None or found.suffix not in (".py", STUB_SUFFIX):
             return None
         return found
 
     @staticmethod
-    @cache
-    def located_source(module_name: str) -> tuple[Path, str] | None:
-        """The installed `.py` file and its text, or None when it has none."""
+    def stub_path(module_name: str) -> Path | None:
+        """The stub beside a module's `.py` source; None for a module that has no
+        `.py` (its stub is its source) or no stub."""
 
         path = InstalledModule.source_path(module_name)
+        if path is None or path.suffix == STUB_SUFFIX:
+            return None
+        stub = path.with_suffix(STUB_SUFFIX)
+        return stub if stub.is_file() else None
+
+    @staticmethod
+    @cache
+    def located_source(module_name: str, stub: bool = False) -> tuple[Path, str] | None:
+        """The installed file and its text, or None when it has none: the module's
+        source, or with `stub` the stub beside its `.py`."""
+
+        path = InstalledModule.stub_path(module_name) if stub else InstalledModule.source_path(module_name)
         return None if path is None else (path, path.read_text())
 
     @classmethod
     def family_items(
-        cls, module_name: str, family: type[CollectedFamily[ItemT]]
+        cls, module_name: str, family: type[CollectedFamily[ItemT]], stub: bool = False
     ) -> tuple[ItemT, ...] | None:
         """One family's items for the module: the scan's family cache holds them,
         or they are collected from the parsed source and stored there."""
 
-        located = cls.located_source(module_name)
+        located = cls.located_source(module_name, stub)
         if located is None:
             return None
         path, source = located
@@ -112,7 +136,7 @@ class InstalledModule:
         cached = context.load_items(family)
         if cached is not None:
             return cached
-        parsed = cls.parsed(module_name)
+        parsed = cls.parsed(module_name, stub)
         if parsed is None:
             return None
         items = tuple(family.collect(parsed))
@@ -121,10 +145,10 @@ class InstalledModule:
 
     @staticmethod
     @cache
-    def parsed(module_name: str) -> ParsedModule | None:
+    def parsed(module_name: str, stub: bool = False) -> ParsedModule | None:
         """The module parsed from its installed source, or None when it has none."""
 
-        located = InstalledModule.located_source(module_name)
+        located = InstalledModule.located_source(module_name, stub)
         if located is None:
             return None
         path, source = located
