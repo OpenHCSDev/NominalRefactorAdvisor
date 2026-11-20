@@ -447,9 +447,11 @@ class NamespaceReaders(ClassAttributeReaders):
         deleted: frozenset[str],
     ) -> bool:
         """Whether the read asks only for keys no deleted name can be: one
-        constant key that is not deleted (`ns["k"]`, `ns.get("k")`, `"k" in ns`),
+        constant key that is not deleted (`ns["k"]`, `ns.get("k")`, `"k" in ns`, or
+        `"k" in {name for ... in ns}`, which collects the names to ask the same),
         `self.<attribute>` whose every write builds a text with a constant
-        prefix or suffix no deleted name has, or a name that only holds what the
+        prefix or suffix no deleted name has, a local the function binds once to
+        such a text (`local_text_avoids`), or a name that only holds what the
         read class's own annotations declare (`OwnAnnotationKeys`) while the
         class losing the members annotates none of them."""
 
@@ -460,6 +462,8 @@ class NamespaceReaders(ClassAttributeReaders):
                 case ast.Attribute(value=ast.Name(id="self"), attr=attribute):
                     return self.keys_avoid(module, read, attribute, deleted)
                 case ast.Name(id=name):
+                    if self.local_text_avoids(module, read, name, deleted):
+                        return True
                     annotated = self.own_annotations(indexed)
                     return (
                         annotated is not None
@@ -477,6 +481,21 @@ class NamespaceReaders(ClassAttributeReaders):
                 return isinstance(around, ast.Call) and around.func is parent and bool(around.args) and other(
                     around.args[0]
                 )
+            case ast.comprehension(iter=iterated, target=ast.Name(id=element), ifs=[]) if iterated is read:
+                # `"k" in {name for c in order for name in vars(c)}`: the names are
+                # collected only to ask whether one constant is among them.
+                match around:
+                    case ast.SetComp(elt=ast.Name(id=kept)) | ast.ListComp(elt=ast.Name(id=kept)) | ast.GeneratorExp(
+                        elt=ast.Name(id=kept)
+                    ) if kept == element:
+                        return any(
+                            isinstance(node, ast.Compare)
+                            and len(node.ops) == 1
+                            and isinstance(node.ops[0], (ast.In, ast.NotIn))
+                            and node.comparators[0] is around
+                            and other(node.left)
+                            for node in ast.walk(module.module)
+                        )
         return False
 
     def own_annotations(self, indexed: CompactIndexedClass) -> frozenset[str] | None:
@@ -564,6 +583,47 @@ class NamespaceReaders(ClassAttributeReaders):
                         return False
                     writes += 1
         return writes > 0
+
+    def local_text_avoids(self, module: ParsedModule, read: ast.expr, name: str, deleted: frozenset[str]) -> bool:
+        """The key is a local of the function the read stands in, bound there once,
+        to a text with a constant prefix or suffix no deleted name has:
+        `name = f"action_{declared}"`, then `name in base.__dict__`. A parameter, a
+        second binding, or a comprehension around the read binding the name is not
+        that local."""
+
+        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        scope: ast.AST | None = parents.get(read)
+        while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)) and any(
+                isinstance(bound, ast.Name) and bound.id == name
+                for generator in scope.generators
+                for bound in ast.walk(generator.target)
+            ):
+                return False
+            scope = parents.get(scope)
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            return False
+        arguments = scope.args
+        if any(
+            argument.arg == name
+            for argument in (
+                *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
+                *(extra for extra in (arguments.vararg, arguments.kwarg) if extra is not None),
+            )
+        ) or any(
+            isinstance(node, (ast.Global, ast.Nonlocal)) and name in node.names for node in ast.walk(scope)
+        ):
+            return False
+        stores = [
+            node for node in ast.walk(scope)
+            if isinstance(node, ast.Name) and node.id == name and isinstance(node.ctx, (ast.Store, ast.Del))
+        ]
+        if len(stores) != 1:
+            return False
+        match parents.get(stores[0]):
+            case ast.Assign(targets=[target], value=value) if target is stores[0]:
+                return self.text_avoids(value, deleted)
+        return False
 
     @staticmethod
     def text_avoids(value: ast.expr, deleted: frozenset[str]) -> bool:
