@@ -3362,9 +3362,14 @@ class CodemodPlanExecutionRequest:
 
     @property
     def requires_finding_analysis(self) -> bool:
-        """Whether a caller requested the plan's finding projection."""
+        """A scan that executes no plan is a report of findings, so it analyses. One that
+        executes an authored plan needs findings only when their projection was asked for.
 
-        return self.finding_projection is not None
+        Asking only for the projection made every plain scan parse and stop: its report
+        read "No refactoring findings" with zero analysis time, whatever the source held.
+        """
+
+        return not self.mode.requested or self.finding_projection is not None
 
     def json_report_requested(self, json_flag: bool) -> bool:
         return (

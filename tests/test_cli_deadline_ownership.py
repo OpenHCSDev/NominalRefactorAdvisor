@@ -192,6 +192,37 @@ def test_authored_plan_without_projected_findings_needs_parsing_not_finding_anal
     assert projected.requires_finding_analysis is True
 
 
+def test_a_scan_that_executes_no_plan_analyses_findings():
+    report_scan = cli.CodemodPlanExecutionRequest(
+        CodemodPlanSequence(),
+        cli.CodemodExecutionMode.NONE,
+    )
+
+    assert report_scan.requires_finding_analysis is True
+
+
+def test_a_plain_scan_reports_the_type_switch_it_was_given(tmp_path, monkeypatch, capsys):
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    arms = "\n".join(
+        f"def {name}(shape):\n"
+        f"    if isinstance(shape, Circle):\n        return {name!r} + 'c'\n"
+        f"    elif isinstance(shape, Square):\n        return {name!r} + 's'\n"
+        f"    raise TypeError(shape)\n"
+        for name in ("area", "perimeter", "name")
+    )
+    (package / "shapes.py").write_text(
+        "class Shape:\n    pass\n\n\nclass Circle(Shape):\n    pass\n\n\n"
+        "class Square(Shape):\n    pass\n\n\n" + arms
+    )
+    monkeypatch.setattr("sys.argv", ["nra", str(package), "--no-cache", "--analysis-workers", "1"])
+
+    cli.main()
+
+    assert "No refactoring findings" not in capsys.readouterr().out
+
+
 @pytest.mark.parametrize(
     "argv",
     (
