@@ -685,6 +685,17 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.PROVENANCE,),
     )
+    SIBLING_OVERRIDE = _pattern(
+        stable_id=58,
+        display_name="Sibling Override",
+        required_relation=(
+            "Two or more classes override one inherited member with the same "
+            "declaration, bound to the same names, and none inherits it from "
+            "another of them: one answer to the ancestor's question written "
+            "once per class instead of once on a class they share."
+        ),
+        witness_capabilities=(CapabilityTag.MRO_ORDERING,),
+    )
 
     def __new__(
         cls,
