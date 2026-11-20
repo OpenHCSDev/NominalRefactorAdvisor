@@ -181,18 +181,65 @@ def test_a_bases_read_anywhere_in_an_installed_package_of_the_ancestry_is_judged
     assert evaluation.rejection_reason == ""
 
 
-def test_a_subscripted_header_keeps_its_bases_in_the_namespace_the_hooks_walk(roots):
+SUBSCRIPTED = (
+    "from toolkit.node import Box, Widget\n\n\n"
+    "class Hidden(Widget):\n    def render(self):\n        return ''\n\n\n"
+    "class Slot(Hidden, Widget, Box[int]):\n    pass\n"
+)
+WALKS = (
+    "        found = {}\n"
+    "        for owner in cls.__mro__:\n"
+    "            for name, value in vars(owner).items():\n"
+    "                found.setdefault(name, value)\n"
+    "        cls._handled = tuple(name for name, value in found.items() if getattr(value, '__handled__', ()))\n"
+    "        cls._union = cls._declared('_own')\n"
+    "        cls._paints = any(method in cls.__dict__ for method in ('render', '_render'))\n"
+    "        cls._first = [base.__dict__[key] for base in cls.__mro__ for key in ('_own',) if key in base.__dict__]\n"
+)
+DECLARED = (
+    "    @classmethod\n"
+    "    def _declared(cls, name):\n"
+    "        return tuple(base.__dict__[name] for base in cls.__mro__ if name in base.__dict__)\n\n"
+)
+
+
+def test_a_subscripted_header_s_bases_are_passed_by_in_every_namespace_walk(roots):
     site, scan = roots
-    _write(scan, {"app/views.py": (
-        "from toolkit.node import Box, Widget\n\n\n"
-        "class Hidden(Widget):\n    pass\n\n\n"
-        "class Slot(Hidden, Widget, Box[int]):\n    pass\n"
-    )})
+    # `__orig_bases__` is in `Slot`'s own namespace and the drop shortens it. The toolkit
+    # walks namespaces by a constant key, a parameter handed a constant, a display of
+    # constants, the first-found walk, and by value behind `isinstance`, `getattr`,
+    # `callable` and a name prefix: none of them does anything with that entry.
+    _write(site, {"toolkit/node.py": NODE.replace(
+        "        cls._inherit = inherit\n", "        cls._inherit = inherit\n" + WALKS
+    ).replace("    @classmethod\n    def _css_bases", DECLARED + "    @classmethod\n    def _css_bases")})
+    _write(scan, {"app/views.py": SUBSCRIPTED})
+    expected = _run(site, scan)
+    evaluation, snapshot = _evaluation(RestatedBaseDetector(), scan, "Slot")
+    assert evaluation.rejection_reason == ""
+    _apply(evaluation, snapshot)
+    assert (scan / "app/views.py").read_text() == SUBSCRIPTED.replace("Slot(Hidden, Widget, Box[int])", "Slot(Hidden, Box[int])")
+    assert _run(site, scan) == expected
+
+
+@pytest.mark.parametrize(
+    "walk",
+    [
+        "        cls._all = list(cls.__dict__.values())\n",
+        "        for name, value in cls.__dict__.items():\n            marked[name] = value\n",
+        "        cls._listed = cls.__dict__.get(inherit and '__orig_bases__')\n",
+    ],
+)
+def test_a_walk_that_keeps_a_subscripted_header_s_bases_leaves_the_drop_unproved(roots, walk: str):
+    site, scan = roots
+    _write(site, {"toolkit/node.py": NODE.replace("        cls._inherit = inherit\n", "        cls._inherit = inherit\n" + walk)})
+    _write(scan, {"app/views.py": SUBSCRIPTED})
     evaluation, _snapshot = _evaluation(RestatedBaseDetector(), scan, "Slot")
-    # `__orig_bases__` is in `Slot`'s own namespace and the drop shortens it; the hook
-    # walks that namespace's items.
-    assert "introspects the new class" in evaluation.rejection_reason or "reads the class namespace" in evaluation.rejection_reason
+    assert "toolkit/node.py" in evaluation.rejection_reason
     assert NeededInput.PROOF in evaluation.needs
+    # The same walk is the same body's namespace when no base is subscripted.
+    _write(scan, {"app/views.py": VIEWS})
+    evaluation, _snapshot = _evaluation(RestatedBaseDetector(), scan, "Slot")
+    assert evaluation.rejection_reason == ""
 
 
 def test_a_loop_over_a_family_s_subclasses_reads_only_that_family_s_bases(roots):
