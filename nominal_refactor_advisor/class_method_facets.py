@@ -200,6 +200,48 @@ class ClassMethodReceiverRequirements:
         return positional_parameters[0].arg if positional_parameters else None
 
 
+@dataclass(frozen=True)
+class ClassMethodReceiverSteps:
+    """What a method does through its receiver: the members it reads on it and the calls it
+    makes along them, by member path (`self.submissions.settle()` is `submissions.settle`,
+    `self.settle()` is `settle`).
+
+    Kept for every method, whatever its size: two classes that override one inherited method
+    differently are compared by the steps each takes (`SiblingOverrideStepDetector`), and a
+    hook that is one statement long is where a step goes missing.
+    """
+
+    members: frozenset[str]
+    calls: tuple[str, ...]
+
+    @classmethod
+    def from_method(cls, method: ast.FunctionDef | ast.AsyncFunctionDef) -> ClassMethodReceiverSteps:
+        receiver_name = ClassMethodReceiverRequirements.receiver_name(method)
+        if receiver_name is None:
+            return cls(frozenset(), ())
+        aliases = ClassMethodReceiverRequirements.receiver_aliases(method, receiver_name)
+        members: set[str] = set()
+        calls: set[str] = set()
+        for node in ast.walk(method):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
+                members.add(node.attr)
+            elif isinstance(node, ast.Call) and (path := cls.member_path(node.func, aliases)) is not None:
+                calls.add(path)
+        return cls(frozenset(members), tuple(sorted(calls)))
+
+    @staticmethod
+    def member_path(callee: ast.expr, aliases: frozenset[str]) -> str | None:
+        """The member path a callee names on the receiver, when it is nothing else."""
+
+        names: list[str] = []
+        while isinstance(callee, ast.Attribute):
+            names.append(callee.attr)
+            callee = callee.value
+        if not names or not isinstance(callee, ast.Name) or callee.id not in aliases:
+            return None
+        return ".".join(reversed(names))
+
+
 MethodPromotionHazardPredicate: TypeAlias = Callable[[MethodPromotionInspection], bool]
 
 
@@ -370,6 +412,9 @@ class CompactClassMethod:
     exact_source_digest: str | None
     promotion_hazards: tuple[ClassScopeDependency | MethodPromotionHazard, ...]
     receiver_member_names: frozenset[str]
+    receiver_steps: ClassMethodReceiverSteps = ClassMethodReceiverSteps(frozenset(), ())
+    """The members read and the calls made through the receiver, for a method of any size
+    (`receiver_member_names` is exact promotion's and is kept for a tiny method only)."""
 
     @property
     def statement_count(self) -> int:
@@ -559,6 +604,7 @@ def _compact_class_method(
             if is_tiny_role
             else frozenset()
         ),
+        receiver_steps=ClassMethodReceiverSteps.from_method(method),
     )
 
 

@@ -696,6 +696,19 @@ class PatternId(IntEnum):
         ),
         witness_capabilities=(CapabilityTag.MRO_ORDERING,),
     )
+    SIBLING_OVERRIDE_STEP = _pattern(
+        stable_id=59,
+        display_name="Sibling Override Step",
+        required_relation=(
+            "Two or more classes override one inherited method with different "
+            "declarations, none inheriting it from another of them, and a call "
+            "through the receiver is made by every one of them, or by every one "
+            "but a class that reads the same member: a step of the ancestor's "
+            "sequence written once per class, or left out of one, instead of once "
+            "in the ancestor's method with the difference left to a hook."
+        ),
+        witness_capabilities=(CapabilityTag.MRO_ORDERING,),
+    )
 
     def __new__(
         cls,
