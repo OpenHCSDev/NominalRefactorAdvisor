@@ -78,7 +78,11 @@ class SiblingOverrideStepDetector(CompactClassRepositoryCandidateDetector[Siblin
     - an *omitted* step: a call made on a member of the receiver (`self.app.f()`) by every
       override but one, which calls nothing on that member, while its class reads the
       member in some method of its own or of an ancestor: the collaborator is there and
-      this override does not go to it. Two overrides that each call something else on one
+      this override does not go to it. The method called is one some scanned class
+      declares: `self.document.setVisible()` in one frontend's override is a call into
+      its toolkit, which the other frontend has no reason to make (on Toad, of 40 hooks
+      left across its frontends after two rounds of hoists, the next four read were all
+      this: a window opened, a widget queried). Two overrides that each call something else on one
       member (`self.progress.setText()` and `self.progress.update()`) are each class's
       own spelling and are not reported: Toad's two frontends gave 107 such "omissions"
       in 88 hooks before this was required, nearly all a widget under one name in both.
@@ -117,6 +121,9 @@ class SiblingOverrideStepDetector(CompactClassRepositoryCandidateDetector[Siblin
         for projection in context.projections:
             for method in projection.class_methods:
                 methods[method.class_symbol][method.method_name] = method
+        declared = frozenset(name for owned in methods.values() for name in owned)
+        """Every method name some scanned class declares: what a call must name to be a step
+        of the scanned code and not a call into a library the classes sit on."""
         overriding: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
         for symbol in bodies.declarations_by_symbol:
             mine = methods.get(symbol)
@@ -152,6 +159,7 @@ class SiblingOverrideStepDetector(CompactClassRepositoryCandidateDetector[Siblin
                 for symbol in sorted(independent)
                 for call in sorted(self._made_by_every_other(steps, symbol))
                 if "." in call
+                and call.rsplit(".", 1)[1] in declared
                 and (member := call.split(".", 1)[0]) not in {made.split(".", 1)[0] for made in steps[symbol]}
                 and member in self._members_read(index, methods, symbol, read)
             )
