@@ -15,6 +15,7 @@ from nominal_refactor_advisor.scan_cache import ScanCache
 
 HOST = (
     "from abc import abstractmethod\n\n\n"
+    "class App:\n    def history_displayed(self) -> None:\n        pass\n\n\n"
     "class Host:\n"
     "    @abstractmethod\n    def history_painted(self) -> None:\n        \"\"\"A publication painted the history.\"\"\"\n\n"
     "    @abstractmethod\n    def label(self) -> str: ...\n\n"
@@ -115,3 +116,13 @@ def test_overrides_that_each_call_something_else_on_one_member_are_each_class_ow
     (finding,) = _findings(tmp_path)
     assert "every one of them calls `self.submissions.settle()`" in finding.summary
     assert "alone does not call" not in finding.summary
+
+
+def test_a_call_into_a_library_is_not_a_step_another_class_omits(tmp_path: Path):
+    """`history_displayed` is declared by a scanned class; `setVisible` by none."""
+    qt = QT.replace("        self.submissions.settle()\n\n    def opened", "        self.submissions.settle()\n        self.panel.setVisible(True)\n\n    def opened")
+    text = TEXT.replace("    def label(self) -> str:\n        return 'text'", "    def shown(self) -> None:\n        self.panel.refresh()\n\n    def label(self) -> str:\n        return 'text'")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": HOST + text + qt})
+    (finding,) = _findings(tmp_path)
+    assert "`QtView` alone does not call `self.app.history_displayed()`" in finding.summary
+    assert "setVisible" not in finding.summary
