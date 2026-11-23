@@ -157,6 +157,10 @@ class RestatedOverrideConcept(ClassFamilyAuthorityConcept):
     """Delete a member that restates the declaration its class would inherit."""
 
 
+class SiblingOverrideConcept(ClassFamilyAuthorityConcept):
+    """Lift a member several sibling subclasses override identically onto the shared ancestor that owns it."""
+
+
 class HiddenImportPromotionConcept(NominalBoundaryConcept):
     """Move a guarded or function-local import that closes no load-time cycle to
     its module's top."""
