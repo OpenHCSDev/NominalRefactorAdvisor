@@ -44,12 +44,18 @@ from nominal_refactor_advisor.class_symbols import iter_class_definitions
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.observation_shapes import AssertedSubject, RestatingSite
+from nominal_refactor_advisor.package_walks import WALKS_RECURSIVELY
 from nominal_refactor_advisor.probe_owner import (
     DeclaredPathProbeOwner,
     ProbeOwner,
     ProbeOwnerResolver,
 )
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
+from nominal_refactor_advisor.registration_facets import (
+    PackageWalkRoot,
+    registry_config_walk_root,
+    static_module_name,
+)
 
 # A subject needs this many distinct string arms before it is a family spelled out.
 STRING_DISPATCH_MIN_ARMS = 3
@@ -1475,8 +1481,9 @@ class ModuleReferenceFacts:
     imported: tuple[str, ...]
     named: tuple[str, ...]
     referenced: tuple[tuple[str, int], ...]
-    enumerated: tuple[str, ...] = ()
-    """Packages an enumerator lists through an imported package object (`pkg.__path__`)."""
+    enumerated: tuple[PackageWalkRoot, ...] = ()
+    """Package walks this module declares via `iter_modules`/`walk_packages`,
+    `RegistryConfig(discovery_package=...)`, or a `discovery_package=` class header."""
     paths: tuple[str, ...] = ()
     """Path strings this module spells: a file it runs or reads, or a directory of them."""
 
@@ -1515,7 +1522,6 @@ class ModuleReferenceFacts:
 class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
     item_type = ModuleReferenceFacts
     DOTTED_NAME = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+")
-    ENUMERATORS = frozenset(("iter_modules", "walk_packages"))
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ModuleReferenceFacts]:
@@ -1565,16 +1571,28 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
         named = {text for text in texts if cls.DOTTED_NAME.fullmatch(text)}
         named.update(name for text in texts for name in cls.code_imports(text))
         bound = cls.bound_modules(parsed_module)
-        enumerated = {
-            bound[argument.value.id]
-            for _i, call in index.indexed_nodes_of_type(ast.Call)
-            if cls.is_enumerator(call)
-            for argument in call.args[:1]
-            if isinstance(argument, ast.Attribute)
-            and argument.attr == "__path__"
-            and isinstance(argument.value, ast.Name)
-            and argument.value.id in bound
-        }
+        enumerated: set[PackageWalkRoot] = set()
+        for _i, call in index.indexed_nodes_of_type(ast.Call):
+            recursive = cls.enumerator_recursive(call)
+            if recursive is None:
+                continue
+            for argument in call.args[:1]:
+                if (
+                    isinstance(argument, ast.Attribute)
+                    and argument.attr == "__path__"
+                    and isinstance(argument.value, ast.Name)
+                    and argument.value.id in bound
+                ):
+                    enumerated.add(
+                        PackageWalkRoot(bound[argument.value.id], recursive=recursive)
+                    )
+        for _i, class_node in index.indexed_nodes_of_type(ast.ClassDef):
+            config_walk = registry_config_walk_root(parsed_module, class_node)
+            if isinstance(config_walk, PackageWalkRoot):
+                enumerated.add(config_walk)
+            header_walk = cls.class_keyword_walk_root(parsed_module, class_node)
+            if header_walk is not None:
+                enumerated.add(header_walk)
         return [
             ModuleReferenceFacts(
                 module_name=parsed_module.module_name,
@@ -1591,7 +1609,9 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                 imported=tuple(sorted(imported)),
                 named=tuple(sorted(named)),
                 referenced=tuple(sorted(referenced.items())),
-                enumerated=tuple(sorted(enumerated)),
+                enumerated=tuple(
+                    sorted(enumerated, key=lambda walk: (walk.package, walk.recursive))
+                ),
                 paths=tuple(sorted({text for text in texts if cls.is_path(text)})),
             )
         ]
@@ -1648,14 +1668,45 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
                         bound[alias.asname or alias.name] = f"{base}.{alias.name}"
         return bound
 
+    @staticmethod
+    def enumerator_recursive(call: ast.Call) -> bool | None:
+        """Whether `call` lists a package's modules (`iter_modules`/`walk_packages`),
+        returning whether the walk recurses into subpackages, or `None`."""
+
+        match call.func:
+            case ast.Attribute(attr=name) | ast.Name(id=name):
+                return WALKS_RECURSIVELY.get(name)
+        return None
+
     @classmethod
     def is_enumerator(cls, call: ast.Call) -> bool:
         """Whether the call lists a package's modules, which a loader then imports."""
 
-        match call.func:
-            case ast.Attribute(attr=name) | ast.Name(id=name):
-                return name in cls.ENUMERATORS
-        return False
+        return cls.enumerator_recursive(call) is not None
+
+    @staticmethod
+    def class_keyword_walk_root(
+        parsed_module: ParsedModule,
+        class_node: ast.ClassDef,
+    ) -> PackageWalkRoot | None:
+        """A package walk declared directly in a class header (`discovery_package=...`)."""
+
+        keywords = {
+            keyword.arg: keyword.value
+            for keyword in class_node.keywords
+            if keyword.arg is not None
+        }
+        package_expr = keywords.get("discovery_package")
+        if package_expr is None:
+            return None
+        package = static_module_name(package_expr, parsed_module)
+        if package is None:
+            return None
+        recursive_expr = keywords.get("discovery_recursive")
+        recursive = not (
+            isinstance(recursive_expr, ast.Constant) and recursive_expr.value is False
+        )
+        return PackageWalkRoot(package=package, recursive=recursive)
 
     @staticmethod
     def is_main_guard(node: ast.If) -> bool:
@@ -1795,12 +1846,15 @@ class UnreachedModules:
         for module in facts:
             for name in (*module.imported, *module.named):
                 reached_by[name].add(module.module_name)
-        # A loader that lists modules reaches those of the packages it can list: its
+        # Explicit package walks (`iter_modules`/`walk_packages` over `__path__`,
+        # `RegistryConfig(discovery_package=...)`, or `discovery_package=` class headers)
+        # reach their package's modules even when the underlying loader lives in a dependency.
+        walks = tuple(walk for module in facts for walk in module.enumerated)
+        # A generic loader that lists modules reaches those of the packages it can list: its
         # own, and any a string names. Which one it lists is not decidable here.
         listable = (
             {module.package_name for module in facts if module.enumerates_modules}
             | {name for module in facts for name in module.named}
-            | {name for module in facts for name in module.enumerated}
             if any(module.enumerates_modules for module in facts)
             else set()
         )
@@ -1828,6 +1882,7 @@ class UnreachedModules:
                 and not collected(module.file_path)
                 and not reached_by_path(module.file_path)
                 and not reached_by[module.module_name] - {module.module_name}
+                and not any(walk.walks(module.module_name) for walk in walks)
                 and not any(
                     module.module_name.startswith(f"{package}.") for package in listable
                 )

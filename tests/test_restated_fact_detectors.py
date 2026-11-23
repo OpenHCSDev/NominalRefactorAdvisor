@@ -923,6 +923,51 @@ def test_an_enumerator_over_an_imported_package_path_reaches_its_modules(tmp_pat
     assert _dead_in(tmp_path, files) == ["orphan"]
 
 
+def test_registry_config_discovery_package_reaches_its_direct_modules_only_when_flat(
+    tmp_path: Path,
+):
+    files = {
+        "pkg/__init__.py": "",
+        "pkg/base.py": (
+            "from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig\n\n\n"
+            "class Op(metaclass=AutoRegisterMeta):\n"
+            "    __registry_config__ = RegistryConfig(\n"
+            "        registry_dict=LazyDiscoveryDict(),\n"
+            "        discovery_package=f'{__package__}.ops',\n"
+            "    )\n"
+        ),
+        "pkg/ops/__init__.py": "",
+        "pkg/ops/move.py": "from pkg.base import Op\n\n\nclass Move(Op):\n    pass\n",
+        "pkg/ops/nested/__init__.py": "",
+        "pkg/ops/nested/unreached.py": "VALUE = 1\n",
+        "pkg/main.py": "from pkg.base import Op\n\n\nif __name__ == '__main__':\n    print(Op)\n",
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["orphan", "pkg.ops.nested.unreached"]
+
+
+def test_class_header_discovery_package_reaches_family_modules_without_local_iter_modules(
+    tmp_path: Path,
+):
+    files = {
+        "app/__init__.py": "",
+        "app/verbs/__init__.py": "",
+        "app/verbs/base.py": (
+            "class DeclaredFamily:\n"
+            "    def __init_subclass__(cls, **kwargs):\n        super().__init_subclass__()\n\n\n"
+            "class CliCommand(DeclaredFamily, discovery_package='app.verbs'):\n"
+            "    pass\n"
+        ),
+        "app/verbs/status.py": (
+            "from app.verbs.base import CliCommand\n\n\n"
+            "class StatusCliCommand(CliCommand):\n    pass\n"
+        ),
+        "app/main.py": "from app.verbs.base import CliCommand\n\n\nif __name__ == '__main__':\n    print(CliCommand)\n",
+        **ANCHORED,
+    }
+    assert _dead_in(tmp_path, files) == ["orphan"]
+
+
 def test_a_path_string_reaches_the_file_or_directory_it_names(tmp_path: Path):
     files = {
         "runner.py": (
