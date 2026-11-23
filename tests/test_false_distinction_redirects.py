@@ -8,10 +8,15 @@ exact rewritten source of every module, runs it again and re-scans.
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
+from nominal_refactor_advisor.ast_tools import (
+    PythonModuleRootParser,
+    PythonSourcePathPolicy,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
@@ -698,3 +703,81 @@ def test_a_consumer_that_shadows_the_builtin_needs_its_binding(
     with pytest.raises(ValueError) as needs:
         operation.source_edits(_snapshot(tmp_path))
     assert reason in str(needs.value).replace(tmp_path.as_posix() + "/", "")
+
+
+def test_sibling_test_prefilter_skips_unrelated_test_files(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            **ERROR_PACKAGE,
+            "tests/test_errors.py": CATCHING_TESTS["except"],
+            "tests/test_unrelated.py": "def test_math():\n    assert 1 + 1 == 2\n",
+        },
+    )
+    parsed_test_names: list[str] = []
+    original = PythonModuleRootParser.parsed_source_paths
+
+    def record(self: PythonModuleRootParser, paths: tuple[Path, ...]):
+        parsed_test_names.extend(path.name for path in paths if path.parent.name == "tests")
+        return original(self, paths)
+
+    with patch.object(PythonModuleRootParser, "parsed_source_paths", record):
+        assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+    assert parsed_test_names == ["test_errors.py"]
+
+    # When no production candidate survives, sibling test files are not parsed at all.
+    parsed_test_names.clear()
+    (tmp_path / "pkg/errors.py").write_text("class Concrete:\n    value = 1\n")
+    with patch.object(PythonModuleRootParser, "parsed_source_paths", record):
+        assert _findings(NameOnlySubclassDetector, tmp_path) == []
+
+    assert parsed_test_names == []
+
+
+def test_sibling_test_prefilter_checks_ancestor_identity_reads_and_enum_test_groups(
+    tmp_path: Path,
+):
+    ancestor_root = tmp_path / "ancestors"
+    _write(
+        ancestor_root,
+        {
+            **SEND_FAILURES,
+            "tests/test_report.py": IDENTITY_READS["type-name-of-the-base"],
+            "tests/test_noise.py": "def test_noise():\n    assert True\n",
+        },
+    )
+    parsed_test_names: list[str] = []
+    original = PythonModuleRootParser.parsed_source_paths
+
+    def record(self: PythonModuleRootParser, paths: tuple[Path, ...]):
+        parsed_test_names.extend(path.name for path in paths if path.parent.name == "tests")
+        return original(self, paths)
+
+    with patch.object(PythonModuleRootParser, "parsed_source_paths", record):
+        assert _findings(NameOnlySubclassDetector, ancestor_root) == []
+
+    assert parsed_test_names == ["test_report.py"]
+
+    enum_root = tmp_path / "enums"
+    _write(
+        enum_root,
+        {
+            "pkg/__init__.py": "",
+            "pkg/modes.py": MODES,
+            "pkg/use.py": "from pkg.modes import Mode\n\nDEFAULT = Mode.SLOW\n",
+            "tests/test_modes.py": (
+                "from pkg.modes import Mode\n\n\n"
+                "def test_fast(mode):\n    return mode in (Mode.FAST, Mode.QUICK)\n"
+            ),
+            "tests/test_noise.py": "def test_noise():\n    assert True\n",
+        },
+    )
+    parsed_test_names.clear()
+    with patch.object(PythonModuleRootParser, "parsed_source_paths", record):
+        (finding,) = _findings(UndistinguishedEnumMembersDetector, enum_root)
+
+    assert parsed_test_names == ["test_modes.py"]
+    assert finding.summary.startswith(
+        "`Mode` has members that every spelling names together: `Mode.FAST`, `Mode.QUICK`."
+    )
