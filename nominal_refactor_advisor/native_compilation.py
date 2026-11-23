@@ -2752,8 +2752,6 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         compilation: NativeCompilationIdentity,
         selected: tuple[NativeCodeEmission, ...],
         generated_class_frames: tuple[NativeGeneratedClassFrame, ...] = (),
-        *,
-        existing: _NativeExecutionIndex | None = None,
     ) -> None:
         """One code-identity authority joins both creator and executing-frame receipts."""
         owners = {id(emission): emission for emission in selected}
@@ -2767,48 +2765,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                 lambda frame: id(frame.owner.code),
             )
         )
-        existing_executions: dict[SourceByteSpan, ExactNativeFunctionExecution] = {}
-        existing_module_frame: ModuleNativeFrameOrigin | None = None
-        existing_source_frames: dict[int, SourceNativeFrameOrigin] = {}
-        existing_generated_frames: dict[
-            SourceByteSpan, GeneratedClassNativeFrameOrigin
-        ] = {}
-        if existing is not None:
-            existing_executions.update(
-                existing.declarations.unambiguous_declarations_by_handle
-            )
-            for scope in existing.scopes:
-                frame = scope.frame
-                if isinstance(frame, ModuleNativeFrameOrigin):
-                    existing_module_frame = frame
-                elif isinstance(frame, SourceNativeFrameOrigin):
-                    existing_source_frames[id(frame.execution)] = frame
-                elif isinstance(frame, GeneratedClassNativeFrameOrigin):
-                    existing_generated_frames[frame.execution.source_span] = frame
-            for span, capture in existing.class_captures.items():
-                if isinstance(capture, ExactNativeClassCapture):
-                    existing_executions[span] = capture.body
-                    frame = capture.builder.frame
-                    if isinstance(frame, ModuleNativeFrameOrigin):
-                        existing_module_frame = frame
-                    elif isinstance(frame, SourceNativeFrameOrigin):
-                        existing_source_frames[id(frame.execution)] = frame
-                    elif isinstance(frame, GeneratedClassNativeFrameOrigin):
-                        existing_generated_frames[span] = frame
-            for execution in existing_executions.values():
-                if isinstance(execution, CreatedNativeFunctionExecution):
-                    frame = execution.creation.frame
-                    if isinstance(frame, ModuleNativeFrameOrigin):
-                        existing_module_frame = frame
-                    elif isinstance(frame, SourceNativeFrameOrigin):
-                        existing_source_frames[id(frame.execution)] = frame
-        self.frame_origins = {
-            id(self.root_code): (
-                existing_module_frame
-                if existing_module_frame is not None
-                else ModuleNativeFrameOrigin(compilation)
-            )
-        }
+        self.frame_origins = {id(self.root_code): ModuleNativeFrameOrigin(compilation)}
         bound: set[int] = set()
         binding: set[int] = set()
 
@@ -2830,44 +2787,26 @@ class NativeCreationInventory(NativeScopeInventoryABC):
                 if identity in by_code.unambiguous_declarations_by_handle:
                     owner = by_code.unambiguous_declarations_by_handle[identity]
                     bind(owner)
-                    owner_receipt = (
-                        existing_executions.get(owner.source_span, owner.receipt)
-                        if owner.source_span is not None
-                        else owner.receipt
-                    )
-                    reused = existing_source_frames.get(id(owner_receipt))
-                    self.frame_origins[identity] = (
-                        reused
-                        if reused is not None
-                        else SourceNativeFrameOrigin(
-                            cast(ExactNativeFunctionExecution, owner_receipt)
-                        )
+                    self.frame_origins[identity] = SourceNativeFrameOrigin(
+                        cast(ExactNativeFunctionExecution, owner.receipt)
                     )
                 elif identity in generated_by_code.unambiguous_declarations_by_handle:
                     frame = generated_by_code.unambiguous_declarations_by_handle[
                         identity
                     ]
-                    reused_generated = (
-                        existing_generated_frames.get(frame.owner.source_span)
-                        if frame.owner.source_span is not None
-                        else None
-                    )
-                    if reused_generated is not None:
-                        self.frame_origins[identity] = reused_generated
-                    else:
-                        bind(frame.owner)
-                        execution = frame.owner.receipt
-                        if not isinstance(execution, CreatedNativeFunctionExecution):
-                            raise ValueError(
-                                "Generated class frame lacks its original function creation"
-                            )
-                        self.frame_origins[identity] = GeneratedClassNativeFrameOrigin(
-                            execution,
-                            NativeCaptureSite(
-                                frame.owner.frame_origin, frame.activation.offset
-                            ),
-                            frame.bindings,
+                    bind(frame.owner)
+                    execution = frame.owner.receipt
+                    if not isinstance(execution, CreatedNativeFunctionExecution):
+                        raise ValueError(
+                            "Generated class frame lacks its original function creation"
                         )
+                    self.frame_origins[identity] = GeneratedClassNativeFrameOrigin(
+                        execution,
+                        NativeCaptureSite(
+                            frame.owner.frame_origin, frame.activation.offset
+                        ),
+                        frame.bindings,
+                    )
                 else:
                     self.frame_origins[identity] = OpenNativeFrameOrigin(
                         compilation,
@@ -2892,8 +2831,6 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         compilation: NativeCompilationIdentity,
         selected: tuple[NativeCodeEmission, ...],
         backend: NativeCreationBackend,
-        *,
-        existing: _NativeExecutionIndex | None = None,
     ) -> dict[SourceByteSpan, NativeClassCapture]:
         builders: dict[SourceByteSpan, list[NativeInstructionSite]] = {}
         emissions: dict[tuple[SourceByteSpan, int], list[NativeCodeEmission]] = {}
@@ -2959,10 +2896,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
             compilation,
             (*selected, *(body for _, body, _ in captures.values())),
             tuple(generated_class_frames),
-            existing=existing,
         )
-        if existing is not None:
-            return existing.class_captures
         for span, (builder, body, prologue) in captures.items():
             origin = body.frame_origin
             results[span] = ExactNativeClassCapture(
@@ -3983,13 +3917,10 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         self,
         code: CodeType,
         compilation: NativeCompilationIdentity,
-        *,
-        existing: _NativeExecutionIndex | None = None,
     ) -> _NativeExecutionIndex:
         return self._project_inventory(
             self.inventory(code, compilation),
             compilation,
-            existing=existing,
         )
 
     def project_declarations(
@@ -4005,8 +3936,6 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         self,
         inventory: NativeCreationInventory,
         compilation: NativeCompilationIdentity,
-        *,
-        existing: _NativeExecutionIndex | None = None,
     ) -> _NativeExecutionIndex:
         buckets: dict[SourceByteSpan, list[NativeCodeEmission]] = {}
         incomplete = any(site.source_span is None for site in inventory.builder_loads)
@@ -4028,23 +3957,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             compilation,
             tuple(selected_emissions),
             self,
-            existing=existing,
         )
-        if existing is not None:
-            existing_frames = {id(scope.frame) for scope in existing.scopes}
-            added_scopes = tuple(
-                scope
-                for scope in inventory.scopes
-                if id(scope.frame) not in existing_frames
-            )
-            return _NativeExecutionIndex(
-                compilation,
-                existing.declarations,
-                existing.has_incomplete_ranges,
-                existing.class_captures,
-                existing.class_capture_fallback,
-                (*existing.scopes, *added_scopes),
-            )
         exact = {
             cast(SourceByteSpan, emission.source_span): cast(
                 ExactNativeFunctionExecution, emission.receipt
@@ -4930,42 +4843,6 @@ class CPython314CreationBackend(
         )
 
 
-@dataclass
-class _CompilationOutcomeCache:
-    """Single owner of a compilation's declaration and full-scope outcomes."""
-
-    declarations: NativeCompilationOutcome | None = None
-    execution: NativeCompilationOutcome | None = None
-
-    def declaration_outcome(
-        self, compilation: NativePythonCompilation
-    ) -> NativeCompilationOutcome:
-        if self.execution is not None:
-            return self.execution
-        if self.declarations is None:
-            self.declarations = compilation._projected(
-                NativeCreationBackend.project_declarations
-            )
-        return self.declarations
-
-    def execution_outcome(
-        self, compilation: NativePythonCompilation
-    ) -> NativeCompilationOutcome:
-        if self.execution is None:
-            existing = (
-                self.declarations
-                if isinstance(self.declarations, _NativeExecutionIndex)
-                else None
-            )
-            self.execution = compilation._projected(
-                lambda backend, code, identity: backend.project(
-                    code, identity, existing=existing
-                )
-            )
-            self.declarations = self.execution
-        return self.execution
-
-
 @dataclass(frozen=True)
 class NativePythonCompilation(SourceLineSegmentAuthority):
     """Lazily project original module context without importing or executing it.
@@ -4974,12 +4851,6 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
     """
 
     file_path: str
-    _outcomes: _CompilationOutcomeCache = field(
-        default_factory=_CompilationOutcomeCache,
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     @ScanCache.cached
     def _definition_start_line(self, span: SourceByteSpan) -> int:
@@ -5193,7 +5064,7 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         return self.execution_outcome.constant_store_for(source_span, name)
 
     def class_capture_for(self, source_span: SourceByteSpan) -> NativeClassCapture:
-        return self.declaration_outcome.class_capture_for(source_span)
+        return self.execution_outcome.class_capture_for(source_span)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "file_path", source_path_text(self.file_path))
@@ -5228,15 +5099,14 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         except SyntaxError:
             return _RejectedNativeCompilation(self.identity)
 
-    @property
+    @cached_property
     def execution_outcome(self) -> NativeCompilationOutcome:
         """This source's native observation, projected under its own identity."""
-        return self._outcomes.execution_outcome(self)
+        return self._projected(NativeCreationBackend.project)
 
-    @property
-    def declaration_outcome(self) -> NativeCompilationOutcome:
-        """Function and class capture declarations without leaf scope receipts."""
-        return self._outcomes.declaration_outcome(self)
+    def project_declarations(self) -> NativeCompilationOutcome:
+        """Project function and class capture declarations without leaf scope receipts."""
+        return self._projected(NativeCreationBackend.project_declarations)
 
     def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:
-        return self.declaration_outcome.execution_for(source_span)
+        return self.execution_outcome.execution_for(source_span)

@@ -14,6 +14,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativePythonCompilation,
 )
 from nominal_refactor_advisor.product_flow import (
+    CompactProductFlowModuleProjectionFamily,
     compact_product_flow_projection,
     source_product_flow_projection,
 )
@@ -131,7 +132,7 @@ def test_snapshot_keeps_scope_views_without_recompiling(monkeypatch):
 
 
 @pytest.mark.native_proof
-def test_compact_declaration_outcome_skips_leaf_functions_and_matches_full_compact(
+def test_compact_family_collection_skips_leaf_functions_and_matches_full_compact(
     monkeypatch,
 ):
     source = (
@@ -157,7 +158,7 @@ def test_compact_declaration_outcome_skips_leaf_functions_and_matches_full_compa
     compact_module = ParsedModule(
         Path("leaf_skip.py"), "leaf_skip", ast.parse(source), source
     )
-    compact = compact_product_flow_projection(compact_module)
+    (compact,) = CompactProductFlowModuleProjectionFamily.collect(compact_module)
     assert "leaf" not in disassembled
     assert "inner" not in disassembled
     assert "top_leaf" not in disassembled
@@ -169,23 +170,4 @@ def test_compact_declaration_outcome_skips_leaf_functions_and_matches_full_compa
     )
     source_proj = source_product_flow_projection(full_module)
     assert compact == source_proj.compact
-
-    # Upgrading declaration_outcome to execution_outcome on the same module
-    # preserves receipt object identity for execution_for, return_from, and return_after.
-    top_leaf_decl = next(
-        decl for decl in compact.function_declarations if decl.qualname == "top_leaf"
-    )
-    assert (
-        top_leaf_decl.execution
-        is compact_module.native_compilation.execution_for(top_leaf_decl.source_span)
-    )
-    body_return = compact_module.native_compilation.return_from(top_leaf_decl.execution)
-    assert body_return.frame.is_body_of(top_leaf_decl.execution)
-    after_return = compact_module.native_compilation.return_after(
-        top_leaf_decl.execution
-    )
-    assert after_return.frame is top_leaf_decl.execution.require_creation().frame
-    assert (
-        top_leaf_decl.execution
-        is compact_module.native_compilation.execution_for(top_leaf_decl.source_span)
-    )
+    assert compact == compact_product_flow_projection(full_module)
