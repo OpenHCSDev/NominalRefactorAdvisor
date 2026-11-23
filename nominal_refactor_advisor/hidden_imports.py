@@ -17,7 +17,7 @@ import ast
 import builtins
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 
 from nominal_refactor_advisor.ast_tools import (
@@ -60,6 +60,51 @@ def raw_import_targets(
         resolved,
         *(f"{resolved}.{alias.name}" for alias in statement.names if alias.name != "*"),
     )
+
+
+def top_level_imported_modules(module: ParsedModule) -> tuple[str, ...]:
+    """Direct module names imported at module top level (excluding member names
+    of `from mod import member`, where only `mod` is guaranteed to be a module)."""
+
+    imported: list[str] = []
+    for statement in module.module.body:
+        if isinstance(statement, ast.Import):
+            imported.extend(alias.name for alias in statement.names)
+        elif isinstance(statement, ast.ImportFrom):
+            resolved = module.module_path_identity.resolve_import_from_module(
+                imported_module=statement.module,
+                level=statement.level,
+            )
+            if resolved is not None:
+                imported.append(resolved)
+    return tuple(dict.fromkeys(imported))
+
+
+def unscanned_same_package_bridge(
+    importing_module: str,
+    targets: frozenset[str],
+    known: frozenset[str],
+    reachable_from: Callable[[str], frozenset[str]],
+    unscanned_by_module: Mapping[str, tuple[str, ...]],
+) -> tuple[str, str] | None:
+    """Return `(loader, unscanned)` if promoting `targets` into `importing_module`
+    loads a scanned module that imports an unscanned module in the same top-level
+    package, making acyclicity unprovable without scanning that bridge."""
+
+    if "." not in importing_module:
+        return None
+    importing_top = importing_module.partition(".")[0]
+    for target in sorted(targets):
+        triggered = known_import_targets((target,), known) - {importing_module}
+        loaded: set[str] = set(triggered)
+        for started in triggered:
+            loaded.update(reachable_from(started))
+        loaded.discard(importing_module)
+        for loader in sorted(loaded):
+            for unscanned in unscanned_by_module.get(loader, ()):
+                if unscanned.partition(".")[0] == importing_top:
+                    return loader, unscanned
+    return None
 
 
 def known_import_targets(
@@ -477,6 +522,25 @@ class ClosesCycle(HiddenImportRefusal):
 
 
 @dataclass(frozen=True)
+class UnscannedImportBridge(HiddenImportRefusal):
+    """Promoting the import runs a scanned module that imports an unscanned
+    module in the same package, which could import the target module back."""
+
+    hidden: HiddenImport
+    loader: str
+    unscanned: str
+
+    @property
+    def need(self) -> NeedsInput:
+        return NeedsInput(
+            f"{self.hidden.location}: `{self.loader}` imports unscanned `{self.unscanned}` "
+            f"at load; scan the enclosing package (`--context-root`) to prove it does not "
+            f"reach `{self.hidden.module.module_name}`",
+            NeededInput.PROOF,
+        )
+
+
+@dataclass(frozen=True)
 class UnpromotableImport(HiddenImportRefusal):
     """Moving the import would change what a name means, or no operation moves it."""
 
@@ -545,6 +609,17 @@ class HiddenImportPlan(ParsedModuleSetFact):
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> HiddenImportPlan:
         graph = SourceModuleImportGraph.of_modules(modules)
+        known = graph.known_module_names
+        unscanned_by_module = {
+            module.module_name: tuple(
+                sorted(
+                    imported
+                    for imported in top_level_imported_modules(module)
+                    if imported not in known
+                )
+            )
+            for module in modules
+        }
         accepted: list[HiddenImport] = []
         refused: list[HiddenImportRefusal] = []
         scopes: dict[str, RuntimeBindings] = {}
@@ -571,6 +646,16 @@ class HiddenImportPlan(ParsedModuleSetFact):
                 )
                 if reaching is not None:
                     refused.append(ClosesCycle(hidden, reaching))
+                    continue
+                bridge = unscanned_same_package_bridge(
+                    module.module_name,
+                    hidden.targets,
+                    known,
+                    graph.reachable_modules,
+                    unscanned_by_module,
+                )
+                if bridge is not None:
+                    refused.append(UnscannedImportBridge(hidden, *bridge))
                     continue
                 accepted.append(hidden)
                 graph = graph.with_edges(module.module_name, hidden.targets)
@@ -636,6 +721,7 @@ class HiddenImportModuleFacts:
     imported_bindings: tuple[ImportedBinding, ...]
     other_bindings: tuple[str, ...]
     hidden: tuple[CompactHiddenImport, ...]
+    top_level_imported_modules: tuple[str, ...] = ()
 
     def runtime_bindings(self) -> RuntimeBindings:
         return RuntimeBindings(
@@ -688,6 +774,7 @@ class HiddenImportModuleFamily(ShapeFamily[HiddenImportModuleFacts]):
                 ),
                 other_bindings=tuple(sorted(scope.other)),
                 hidden=tuple(compact_hidden),
+                top_level_imported_modules=top_level_imported_modules(parsed_module),
             )
         ]
 
@@ -739,6 +826,16 @@ class CompactHiddenImportPlan:
         }
         exports_by_module: dict[str, RuntimeBindings] = {
             projection.module_name: projection.runtime_bindings()
+            for projection in projections
+        }
+        unscanned_by_module: dict[str, tuple[str, ...]] = {
+            projection.module_name: tuple(
+                sorted(
+                    imported
+                    for imported in projection.top_level_imported_modules
+                    if imported not in known
+                )
+            )
             for projection in projections
         }
         reachable_cache: dict[str, frozenset[str]] = {}
@@ -836,6 +933,18 @@ class CompactHiddenImportPlan:
                     )
                     hub_readers[hub or reaching].add(projection.module_name)
                     continue
+                if (
+                    unscanned_same_package_bridge(
+                        projection.module_name,
+                        targets,
+                        known,
+                        reachable_from,
+                        unscanned_by_module,
+                    )
+                    is not None
+                ):
+                    unpromotable_count += 1
+                    continue
                 accepted_lines.append(hidden.lineno)
                 current_edges = edges.setdefault(projection.module_name, set())
                 if not targets <= current_edges:
@@ -879,6 +988,9 @@ __all__ = (
     "LocalImport",
     "RuntimeBindings",
     "UnpromotableImport",
+    "UnscannedImportBridge",
     "known_import_targets",
     "raw_import_targets",
+    "top_level_imported_modules",
+    "unscanned_same_package_bridge",
 )
