@@ -97,6 +97,38 @@ def test_a_containing_context_root_still_replaces_the_requested_roots(
     assert scope.analysis_roots == (tmp_path,)
 
 
+def test_subpackage_directories_auto_widen_to_enclosing_package(tmp_path: Path) -> None:
+    pkg = tmp_path / "src" / "pkg"
+    for relative in (
+        "__init__.py",
+        "registry/__init__.py",
+        "cli_verbs/__init__.py",
+        "messaging/__init__.py",
+    ):
+        path = pkg / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("", encoding="utf-8")
+
+    scope = AnalysisPathScope.from_requested_roots(
+        (pkg / "registry", pkg / "cli_verbs"),
+        auto_context=True,
+    )
+    assert scope.analysis_roots == (pkg,)
+    assert scope.report_roots == (pkg / "registry", pkg / "cli_verbs")
+    assert scope.has_report_filter
+
+    disabled = AnalysisPathScope.from_requested_roots(
+        (pkg / "registry", pkg / "cli_verbs"),
+        auto_context=False,
+    )
+    assert disabled.analysis_roots == (pkg / "registry", pkg / "cli_verbs")
+    assert not disabled.has_report_filter
+
+    top_package = AnalysisPathScope.from_requested_roots((pkg,), auto_context=True)
+    assert top_package.analysis_roots == (pkg,)
+    assert not top_package.has_report_filter
+
+
 def test_a_sibling_importer_keeps_a_module_alive(tmp_path: Path) -> None:
     files = {
         "scan/pkg/__init__.py": "",

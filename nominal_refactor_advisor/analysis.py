@@ -254,26 +254,20 @@ class AnalysisPathScope:
 
 @dataclass(frozen=True)
 class AnalysisContextRootResolver:
-    """Infer global context roots for focused file-only scans."""
+    """Infer global context roots for focused file or subpackage scans."""
 
     requested_roots: tuple[Path, ...]
 
     def context_roots(self) -> tuple[Path, ...]:
-        if not self.file_only_scan:
-            return self.requested_roots
         return self._dedupe(
-            self.context_root_for_file(root) for root in self.requested_roots
+            self.context_root_for_path(root) for root in self.requested_roots
         )
 
-    @property
-    def file_only_scan(self) -> bool:
-        return all(root.is_file() for root in self.requested_roots)
-
     @classmethod
-    def context_root_for_file(cls, file_path: Path) -> Path:
-        parent = lexical_absolute_path(file_path).parent
-        context_root = parent
-        cursor = parent
+    def context_root_for_path(cls, target: Path) -> Path:
+        absolute = lexical_absolute_path(target)
+        cursor = absolute.parent if absolute.is_file() else absolute
+        context_root = cursor
         while (cursor / PACKAGE_INIT_FILE_NAME).is_file():
             context_root = cursor
             cursor = cursor.parent

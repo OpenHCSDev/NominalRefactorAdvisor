@@ -10,10 +10,15 @@ import sys
 from pathlib import Path
 
 from nominal_refactor_advisor.analysis import (
+    AnalysisPathScope,
     analyze_compact_roots_with_cache,
     analyze_detector_types,
 )
-from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
+from nominal_refactor_advisor.ast_tools import (
+    PythonSourcePathPolicy,
+    parse_python_module_roots,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportCycleDetector
@@ -24,6 +29,7 @@ from nominal_refactor_advisor.hidden_imports import (
     HiddenImportPlan,
     LocalImport,
     UnpromotableImport,
+    UnscannedImportBridge,
 )
 from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.patterns import PatternId
@@ -269,3 +275,84 @@ def test_compact_root_analysis_matches_full_for_hidden_imports_and_cycles(
         HiddenImportDetector.detector_id,
         HiddenImportCycleDetector.detector_id,
     }
+
+
+def test_three_hop_cross_subpackage_cycle_is_refused_in_auto_and_partial_scans(
+    tmp_path: Path,
+) -> None:
+    """Regression for agent-comms thread_presentation -> recipient_activity ->
+    messaging.notification_progress -> thread_presentation: subpackage directory
+    scans auto-widen to the enclosing package and catch ClosesCycle, and even a
+    partial scan without messaging/ refuses via UnscannedImportBridge."""
+
+    src = tmp_path / "src"
+    _write(
+        src,
+        {
+            "pkg/registry/__init__.py": "",
+            "pkg/cli_verbs/__init__.py": "",
+            "pkg/messaging/__init__.py": "",
+            "pkg/registry/thread_presentation.py": (
+                "class ThreadPresentationStatus:\n    pass\n\n\n"
+                "def make_activity():\n"
+                "    from pkg.registry.recipient_activity import UnavailableRecipientActivity\n"
+                "    return UnavailableRecipientActivity()\n"
+            ),
+            "pkg/registry/recipient_activity.py": (
+                "from pkg.messaging.notification_progress import AssignmentProgress\n\n\n"
+                "class UnavailableRecipientActivity:\n"
+                "    progress = AssignmentProgress\n"
+            ),
+            "pkg/messaging/notification_progress.py": (
+                "from pkg.registry.thread_presentation import ThreadPresentationStatus\n\n\n"
+                "class AssignmentProgress:\n"
+                "    status = ThreadPresentationStatus\n"
+            ),
+            "pkg/cli_verbs/status.py": "STATUS = 'ok'\n",
+        },
+    )
+    registry = src / "pkg" / "registry"
+    cli_verbs = src / "pkg" / "cli_verbs"
+
+    # 1. Default auto-context widens subpackage directories to src/pkg and sees the 3-hop cycle.
+    scope = AnalysisPathScope.from_requested_roots((registry, cli_verbs), auto_context=True)
+    assert scope.analysis_roots == (src / "pkg",)
+    full_modules = parse_python_module_roots(scope.analysis_roots, use_parse_cache=False)
+    full_plan = HiddenImportPlan.derive(full_modules)
+    assert full_plan.accepted == ()
+    assert [type(refusal) for refusal in full_plan.refused] == [ClosesCycle]
+    assert (
+        analyze_detector_types(
+            full_modules,
+            DetectorConfig(),
+            detector_types=(HiddenImportDetector,),
+        )
+        == []
+    )
+
+    # 2. Even when auto-context is disabled (partial scan omitting pkg/messaging),
+    # promoting through an unscanned same-package import refuses with NeededInput.PROOF.
+    partial_modules = parse_python_module_roots((registry, cli_verbs), use_parse_cache=False)
+    partial_plan = HiddenImportPlan.derive(partial_modules)
+    assert partial_plan.accepted == ()
+    [refusal] = partial_plan.refused
+    assert isinstance(refusal, UnscannedImportBridge)
+    assert refusal.loader == "pkg.registry.recipient_activity"
+    assert refusal.unscanned == "pkg.messaging.notification_progress"
+    assert refusal.need.needs == (NeededInput.PROOF,)
+    assert (
+        analyze_detector_types(
+            partial_modules,
+            DetectorConfig(),
+            detector_types=(HiddenImportDetector,),
+        )
+        == []
+    )
+    compact_partial = analyze_compact_roots_with_cache(
+        (registry, cli_verbs),
+        DetectorConfig(),
+        cache_dir=tmp_path / "cache" / "ast",
+        analysis_cache_dir=tmp_path / "cache" / "analysis",
+        detector_types=(HiddenImportDetector,),
+    )
+    assert compact_partial.findings == []
