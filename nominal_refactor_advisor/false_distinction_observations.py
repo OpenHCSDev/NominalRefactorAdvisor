@@ -14,6 +14,7 @@ import builtins
 import io
 import re
 import tokenize
+import unicodedata
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -786,10 +787,11 @@ class NameUse:
                 ):
                     for name in IdentityRead.caught_names(caught):
                         yield name, NameUseKind.READ_IDENTITY, node.lineno
-        for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
-            if token.type == tokenize.COMMENT:
-                for word in SPELLED_WORD.findall(token.string):
-                    yield word, NameUseKind.OTHER, token.start[0]
+        if "#" in parsed_module.source:
+            for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
+                if token.type == tokenize.COMMENT:
+                    for word in SPELLED_WORD.findall(token.string):
+                        yield word, NameUseKind.OTHER, token.start[0]
 
 
 @dataclass(frozen=True)
@@ -814,6 +816,8 @@ class SiblingTestModules(ParsedModuleSetFact):
         cls,
         sources: Iterable[tuple[str, str]],
         held: frozenset[Path] = frozenset(),
+        *,
+        mentioning: frozenset[str] | None = None,
     ) -> SiblingTestModules:
         """The tests of each source's repository that the scan does not hold.
 
@@ -821,8 +825,13 @@ class SiblingTestModules(ParsedModuleSetFact):
         `held` is the scanned files, resolved. Their uses are already in the
         scan's own projections, and one file can sit under several roots, so a
         file is matched by where it is, not by the name a root gives it.
+        When `mentioning` is supplied, only test files whose source text names
+        at least one of those identifiers are parsed.
         """
 
+        if mentioning is not None and not mentioning:
+            return cls(())
+        patterns = cls._mention_patterns(mentioning) if mentioning is not None else None
         policy = PythonSourcePathPolicy(include_tests=True)
         modules: list[ParsedModule] = []
         repositories = {
@@ -836,13 +845,49 @@ class SiblingTestModules(ParsedModuleSetFact):
                 if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
                 and path.resolve() not in held
                 and DeclaredRoot.nearest_pyproject(path) == pyproject
+                and (patterns is None or cls._mentions_any(path, *patterns))
             )
+            if not paths:
+                continue
             modules.extend(
                 PythonModuleRootParser.for_root(root, source_policy=policy).parsed_source_paths(
                     paths
                 )
             )
         return cls(tuple(modules))
+
+    @staticmethod
+    def _mention_patterns(
+        mentioning: frozenset[str],
+    ) -> tuple[re.Pattern[bytes] | None, re.Pattern[str]]:
+        ordered = sorted(mentioning)
+        str_pattern = re.compile("|".join(re.escape(name) for name in ordered))
+        bytes_pattern = (
+            re.compile(b"|".join(re.escape(name.encode("ascii")) for name in ordered))
+            if all(name.isascii() for name in ordered)
+            else None
+        )
+        return bytes_pattern, str_pattern
+
+    @staticmethod
+    def _mentions_any(
+        path: Path,
+        bytes_pattern: re.Pattern[bytes] | None,
+        str_pattern: re.Pattern[str],
+    ) -> bool:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return True
+        if bytes_pattern is not None and raw.isascii():
+            return bytes_pattern.search(raw) is not None
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+        if str_pattern.search(text) is not None:
+            return True
+        return str_pattern.search(unicodedata.normalize("NFKC", text)) is not None
 
     @staticmethod
     def repository(import_root: Path, file_path: Path) -> tuple[Path, Path | None]:
@@ -865,9 +910,14 @@ class SiblingTestModules(ParsedModuleSetFact):
         )
 
     @classmethod
-    def derive(cls, modules: ParsedModuleSet) -> SiblingTestModules:
-        """The tests beside one module set, read once for every proof over it:
-        the set's own test parses, then the tests it does not hold."""
+    def beside(
+        cls,
+        modules: ParsedModuleSet,
+        *,
+        mentioning: frozenset[str] | None = None,
+    ) -> SiblingTestModules:
+        """The tests beside one module set: the set's own test parses, then the
+        tests it does not hold, optionally limited to files naming `mentioning`."""
 
         held_tests = tuple(module for module in modules if cls.holds(module))
         unheld = cls.under(
@@ -876,8 +926,16 @@ class SiblingTestModules(ParsedModuleSetFact):
                 for module in modules
             ),
             frozenset(Path(module.file_path).resolve() for module in modules),
+            mentioning=mentioning,
         )
         return cls((*held_tests, *unheld.modules))
+
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> SiblingTestModules:
+        """The tests beside one module set, read once for every proof over it:
+        the set's own test parses, then the tests it does not hold."""
+
+        return cls.beside(modules)
 
 
 SPELLED_WORD = re.compile(r"(?<![\w])[A-Z]\w*")
@@ -981,19 +1039,41 @@ class EmptySubclassIndex:
         for module in modules:
             for use in module.uses:
                 kinds[use.name].add(use.kind)
+        production_index = cls(
+            class_index, {name: frozenset(found) for name, found in kinds.items()}, {}
+        )
+        candidates = [
+            site
+            for module in modules
+            for site in module.sites
+            if any(production_index.undistinguished_base(site.detail[0], site.group))
+        ]
+        if not candidates:
+            return production_index
+        watched = frozenset(
+            name
+            for site in candidates
+            for name in (
+                site.group,
+                *cls.ancestor_names(
+                    (site.detail[0], *class_index.ancestor_symbols(site.detail[0]))
+                ),
+            )
+        )
         for test_module in SiblingTestModules.under(
             ((module.import_root, module.file_path) for module in modules),
             frozenset(Path(module.file_path).resolve() for module in modules),
+            mentioning=watched,
         ).modules:
             for use in NameUse.in_module(test_module):
-                kinds[use.name].add(use.kind)
+                if use.name in watched:
+                    kinds[use.name].add(use.kind)
         index = cls(class_index, {name: frozenset(found) for name, found in kinds.items()}, {})
         return replace(
             index,
             bases_by_symbol={
                 site.detail[0]: base
-                for module in modules
-                for site in module.sites
+                for site in candidates
                 for base in index.undistinguished_base(site.detail[0], site.group)
             },
         )
@@ -1486,28 +1566,36 @@ class EnumMemberIndex:
         modules = EnumUseSiteFamily.modules_in(projections_by_family)
         member_uses: dict[str, list[EnumMemberUse]] = defaultdict(list)
         class_kinds: dict[str, set[EnumUseKind]] = defaultdict(set)
-        tests = SiblingTestModules.under(
-            ((module.import_root, module.file_path) for module in modules),
-            frozenset(Path(module.file_path).resolve() for module in modules),
-        )
-        evidence = (
-            *((module.member_uses, module.class_uses) for module in modules),
-            *(
-                enum_uses(test, EnumUseSiteFamily.spelled_like_a_class)[:2]
-                for test in tests.modules
-            ),
-        )
-        for module_member_uses, module_class_uses in evidence:
-            for use in module_member_uses:
+        for module in modules:
+            for use in module.member_uses:
                 member_uses[use.owner].append(use)
-            for class_use in module_class_uses:
+            for class_use in module.class_uses:
                 class_kinds[class_use.owner].add(class_use.kind)
-        folds = {
-            site.detail[0]: found
+        candidates = [
+            site
             for module in modules
             for site in module.sites
             if cls.plain_enum(class_index, site.detail[0], site.group)
             and class_kinds.get(site.group, set()) <= {EnumUseKind.MEMBER, EnumUseKind.TYPE}
+        ]
+        if not candidates:
+            return cls(class_index, {})
+        watched = frozenset(site.group for site in candidates)
+        tests = SiblingTestModules.under(
+            ((module.import_root, module.file_path) for module in modules),
+            frozenset(Path(module.file_path).resolve() for module in modules),
+            mentioning=watched,
+        )
+        for test in tests.modules:
+            test_member_uses, test_class_uses, _groups = enum_uses(test, watched.__contains__)
+            for use in test_member_uses:
+                member_uses[use.owner].append(use)
+            for class_use in test_class_uses:
+                class_kinds[class_use.owner].add(class_use.kind)
+        folds = {
+            site.detail[0]: found
+            for site in candidates
+            if class_kinds.get(site.group, set()) <= {EnumUseKind.MEMBER, EnumUseKind.TYPE}
             for found in [cls.undistinguished(member_uses.get(site.group, []))]
             if found
         }
