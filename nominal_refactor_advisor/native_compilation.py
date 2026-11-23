@@ -2703,6 +2703,89 @@ class NativeScopeInventoryABC(ABC):
         )
 
 
+class NativeInventoryPolicy(ABC):
+    """Which code scopes a native inventory walks, simulates, and publishes."""
+
+    @classmethod
+    @abstractmethod
+    def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def observes_values(cls, has_children: bool) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def observes_entry(cls, requires_prefix: bool, boundary_reached: bool) -> bool:
+        raise NotImplementedError
+
+    @classmethod
+    @abstractmethod
+    def publish_scopes(
+        cls,
+        observations: tuple[NativeScopeObservation, ...],
+        origin_for: Callable[[int], NativeFrameOrigin],
+    ) -> tuple[NativeScopeReceipts, ...]:
+        raise NotImplementedError
+
+
+class FullScopeInventory(NativeInventoryPolicy):
+    """Observe every scope in the compilation and publish all scope receipts."""
+
+    @classmethod
+    def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
+        del has_children, requires_prefix
+        return True
+
+    @classmethod
+    def observes_values(cls, has_children: bool) -> bool:
+        del has_children
+        return True
+
+    @classmethod
+    def observes_entry(cls, requires_prefix: bool, boundary_reached: bool) -> bool:
+        return not requires_prefix or boundary_reached
+
+    @classmethod
+    def publish_scopes(
+        cls,
+        observations: tuple[NativeScopeObservation, ...],
+        origin_for: Callable[[int], NativeFrameOrigin],
+    ) -> tuple[NativeScopeReceipts, ...]:
+        return tuple(
+            observation.publish(origin_for(id(observation.code)))
+            for observation in observations
+        )
+
+
+class DeclarationInventory(NativeInventoryPolicy):
+    """Observe only declaration-bearing and class-body scopes without scope receipts."""
+
+    @classmethod
+    def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
+        return has_children or requires_prefix
+
+    @classmethod
+    def observes_values(cls, has_children: bool) -> bool:
+        return has_children
+
+    @classmethod
+    def observes_entry(cls, requires_prefix: bool, boundary_reached: bool) -> bool:
+        del requires_prefix, boundary_reached
+        return False
+
+    @classmethod
+    def publish_scopes(
+        cls,
+        observations: tuple[NativeScopeObservation, ...],
+        origin_for: Callable[[int], NativeFrameOrigin],
+    ) -> tuple[NativeScopeReceipts, ...]:
+        del observations, origin_for
+        return ()
+
+
 @dataclass(eq=False)
 class NativeCreationInventory(NativeScopeInventoryABC):
     """Transient results of the one complete emitted-code instruction walk."""
@@ -2727,7 +2810,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         selected: tuple[NativeCodeEmission, ...],
         generated_class_frames: tuple[NativeGeneratedClassFrame, ...] = (),
         *,
-        publish_scopes: bool = True,
+        policy: type[NativeInventoryPolicy] = FullScopeInventory,
     ) -> None:
         """One code-identity authority joins both creator and executing-frame receipts."""
         owners = {id(emission): emission for emission in selected}
@@ -2797,13 +2880,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
 
         for emission in self.emissions:
             bind(emission)
-        if publish_scopes:
-            self.scopes = tuple(
-                observation.publish(origin_for(id(observation.code)))
-                for observation in self.observations
-            )
-        else:
-            self.scopes = ()
+        self.scopes = policy.publish_scopes(self.observations, origin_for)
 
     def class_captures(
         self,
@@ -2811,7 +2888,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         selected: tuple[NativeCodeEmission, ...],
         backend: NativeCreationBackend,
         *,
-        publish_scopes: bool = True,
+        policy: type[NativeInventoryPolicy] = FullScopeInventory,
     ) -> dict[SourceByteSpan, NativeClassCapture]:
         builders: dict[SourceByteSpan, list[NativeInstructionSite]] = {}
         emissions: dict[tuple[SourceByteSpan, int], list[NativeCodeEmission]] = {}
@@ -2877,7 +2954,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
             compilation,
             (*selected, *(body for _, body, _ in captures.values())),
             tuple(generated_class_frames),
-            publish_scopes=publish_scopes,
+            policy=policy,
         )
         for span, (builder, body, prologue) in captures.items():
             origin = body.frame_origin
@@ -3761,16 +3838,16 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         self, code: CodeType, compilation: NativeCompilationIdentity
     ) -> NativeCreationInventory:
         """Observe creations, initial prefixes and entry stores in one native walk."""
-        return self._inventory(code, compilation, observe_leaf_scopes=True)
+        return self._inventory(code, compilation, policy=FullScopeInventory)
 
     def _inventory(
         self,
         code: CodeType,
         compilation: NativeCompilationIdentity,
         *,
-        observe_leaf_scopes: bool,
+        policy: type[NativeInventoryPolicy],
     ) -> NativeCreationInventory:
-        """Observe creations, initial prefixes and optionally leaf scope value stores."""
+        """Observe creations, initial prefixes and scope values admitted by `policy`."""
         pending = [(code, False)]
         emissions: list[NativeCodeEmission] = []
         builders: list[NativeInstructionSite] = []
@@ -3782,14 +3859,13 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             has_children = any(
                 isinstance(value, CodeType) for value in parent.co_consts
             )
-            if not observe_leaf_scopes and not has_children and not requires_prefix:
+            if not policy.includes_scope(has_children, requires_prefix):
                 continue
             prefix = NativeScopeObservation(parent, primitive_operations)
             prefixes[id(parent)] = prefix
             observations.append(prefix)
             parent_builders: set[SourceByteSpan] = set()
-            observe_values = observe_leaf_scopes or has_children
-            observe_entry = observe_leaf_scopes
+            observe_values = policy.observes_values(has_children)
             for instruction in self.instructions(parent):
                 prefix.observe(instruction)
                 previous = prefix.current
@@ -3817,8 +3893,9 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
                     prefix.observe_values(
                         instruction,
                         previous,
-                        after_prologue=observe_entry
-                        and (not requires_prefix or prefix.boundary is not None),
+                        after_prologue=policy.observes_entry(
+                            requires_prefix, prefix.boundary is not None
+                        ),
                     )
         return NativeCreationInventory(
             code,
@@ -3903,7 +3980,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         self, code: CodeType, compilation: NativeCompilationIdentity
     ) -> _NativeExecutionIndex:
         return self._project_inventory(
-            self.inventory(code, compilation), compilation, publish_scopes=True
+            self.inventory(code, compilation), compilation, policy=FullScopeInventory
         )
 
     def project_declarations(
@@ -3911,9 +3988,9 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
     ) -> _NativeExecutionIndex:
         """Project function and class capture declarations without leaf scope receipts."""
         return self._project_inventory(
-            self._inventory(code, compilation, observe_leaf_scopes=False),
+            self._inventory(code, compilation, policy=DeclarationInventory),
             compilation,
-            publish_scopes=False,
+            policy=DeclarationInventory,
         )
 
     def _project_inventory(
@@ -3921,7 +3998,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         inventory: NativeCreationInventory,
         compilation: NativeCompilationIdentity,
         *,
-        publish_scopes: bool,
+        policy: type[NativeInventoryPolicy],
     ) -> _NativeExecutionIndex:
         buckets: dict[SourceByteSpan, list[NativeCodeEmission]] = {}
         incomplete = any(site.source_span is None for site in inventory.builder_loads)
@@ -3943,7 +4020,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             compilation,
             tuple(selected_emissions),
             self,
-            publish_scopes=publish_scopes,
+            policy=policy,
         )
         exact = {
             cast(SourceByteSpan, emission.source_span): cast(
@@ -5072,27 +5149,29 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
             raise ValueError("Compiler filename belongs to a different source path")
         return compile(self.source, filename, "exec", dont_inherit=True, optimize=0)
 
-    @cached_property
-    def execution_outcome(self) -> NativeCompilationOutcome:
-        """This source's native observation, projected under its own identity."""
+    def _projected(
+        self,
+        projector: Callable[
+            [NativeCreationBackend, CodeType, NativeCompilationIdentity],
+            NativeCompilationOutcome,
+        ],
+    ) -> NativeCompilationOutcome:
         try:
-            return NativeCreationBackend.current().project(
-                self.compile(), self.identity
+            return projector(
+                NativeCreationBackend.current(), self.compile(), self.identity
             )
         except SyntaxError:
             return _RejectedNativeCompilation(self.identity)
 
     @cached_property
+    def execution_outcome(self) -> NativeCompilationOutcome:
+        """This source's native observation, projected under its own identity."""
+        return self._projected(NativeCreationBackend.project)
+
+    @cached_property
     def declaration_outcome(self) -> NativeCompilationOutcome:
         """Function and class capture declarations without leaf scope receipts."""
-        if "execution_outcome" in self.__dict__:
-            return self.execution_outcome
-        try:
-            return NativeCreationBackend.current().project_declarations(
-                self.compile(), self.identity
-            )
-        except SyntaxError:
-            return _RejectedNativeCompilation(self.identity)
+        return self._projected(NativeCreationBackend.project_declarations)
 
     def execution_for(self, source_span: SourceByteSpan) -> NativeFunctionExecution:
         return self.execution_outcome.execution_for(source_span)
