@@ -7,6 +7,7 @@ import pytest
 
 from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.refactor_search import (
+    ForkedPlay,
     RefactorSearch,
     ScoredMove,
     SearchBudget,
@@ -151,13 +152,27 @@ def test_one_worker_plays_the_concepts_one_after_another() -> None:
     assert time.monotonic() - started >= 1.2
 
 
-def test_a_failed_play_is_raised_with_its_traceback_and_leaves_no_worker_running() -> None:
+def test_a_failed_play_is_raised_with_its_traceback_and_leaves_no_worker_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    started_pids: list[int] = []
+    original_started = ForkedPlay.started
+
+    def recording_started(*args, **kwargs) -> ForkedPlay:
+        play = original_started(*args, **kwargs)
+        started_pids.append(play.pid)
+        return play
+
+    monkeypatch.setattr(ForkedPlay, "started", classmethod(lambda cls, *args, **kwargs: recording_started(*args, **kwargs)))
+
     with pytest.raises(RuntimeError, match="the worker playing Failing failed") as raised:
         timed_search(2).played(None, None, (Lingering, Failing))
 
     assert "the play broke" in str(raised.value)
-    with pytest.raises(ChildProcessError):
-        os.waitpid(-1, os.WNOHANG)
+    assert len(started_pids) == 2
+    for pid in started_pids:
+        with pytest.raises(ChildProcessError):
+            os.waitpid(pid, os.WNOHANG)
 
 
 def test_free_memory_for_one_worker_plays_the_concepts_one_after_another(monkeypatch) -> None:
