@@ -12,7 +12,18 @@ from nominal_refactor_advisor.codemod import (
     FindingRecipeEvaluator,
 )
 from nominal_refactor_advisor.refactors.module_move import DissolveModuleOperation
-from nominal_refactor_advisor.detectors._restated_facts import (AbsentAttributeProbeDetector, DeadModuleDetector, ExactKeySetDetector, ForeignAbsenceProbeDetector, ForwardingFacadeDetector, LegacyPathMarkerDetector, NamedAttributeDetector, OwnTypeTestDetector, StringKindDispatchDetector)
+from nominal_refactor_advisor.detectors._restated_facts import (
+    AbsentAttributeProbeDetector,
+    DeadModuleDetector,
+    ExactKeySetDetector,
+    ForeignAbsenceProbeDetector,
+    ForwardingFacadeDetector,
+    LegacyPathMarkerDetector,
+    NamedAttributeDetector,
+    OwnTypeTestDetector,
+    ProbeOwnerQuery,
+    StringKindDispatchDetector,
+)
 from nominal_refactor_advisor.detectors._restated_identity import RestatedIdentityDetector
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.dispatch_polymorphism import DispatchToPolymorphismOperation
@@ -706,6 +717,17 @@ def test_own_state_modules_and_truth_tests_are_not_foreign_probes(tmp_path: Path
         "\n\ndef f():\n    return sys.stdout is None\n"
     )
     assert _findings(tmp_path, ForeignAbsenceProbeDetector, {"m": source}) == []
+
+
+def test_probe_owner_query_narrows_to_transitive_imports_of_span_files(tmp_path: Path):
+    (tmp_path / "base.py").write_text("class Base:\n    paused_at: int | None = None\n")
+    (tmp_path / "owner.py").write_text("from base import Base\n\n\nclass Goal(Base):\n    pass\n")
+    (tmp_path / "unrelated.py").write_text("class Unrelated:\n    flag: int = 1\n")
+    (tmp_path / "m.py").write_text(_INFERRED_PROBE)
+    modules = parse_python_modules(tmp_path)
+    groups = ForeignAbsenceProbeDetector.compact_module_projection_groups(modules)
+    query = ProbeOwnerQuery.of(groups)
+    assert {Path(path).name for path in query.file_paths} == {"m.py", "owner.py", "base.py"}
 
 
 # ---- legacy markers

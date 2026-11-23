@@ -14,7 +14,7 @@ import importlib.util
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from itertools import chain
@@ -135,6 +135,137 @@ class SourceTexts(TypeCheckerSources):
         return tuple((module.file_path, module.module_name, module.source) for module in self.modules)
 
 
+class ExpressionExtractionScope(ABC):
+    """Which built expressions a mypy run checks in untyped defs and exports."""
+
+    @abstractmethod
+    def configure_options(
+        self,
+        options: Options,
+        unique: Sequence[tuple[str, BuildSource]],
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def extract(
+        self,
+        result: BuildResult,
+        options: Options,
+        unique_paths: frozenset[str],
+    ) -> dict[ReceiverSpan, InferredReceiverType]:
+        raise NotImplementedError
+
+    @staticmethod
+    def _inferred_type(
+        found: Type,
+        options: Options,
+        format_type_bare: object,
+    ) -> InferredReceiverType:
+        return InferredReceiverType(
+            format_type_bare(found, options, verbosity=2),  # type: ignore[operator]
+            _classes_of(found),
+            _instances_only(found),
+            _families_of(found),
+        )
+
+
+@dataclass(frozen=True)
+class AllBuiltExpressions(ExpressionExtractionScope):
+    """Check untyped defs and export every typed expression across all built files."""
+
+    def configure_options(
+        self,
+        options: Options,
+        unique: Sequence[tuple[str, BuildSource]],
+    ) -> None:
+        return None
+
+    def extract(
+        self,
+        result: BuildResult,
+        options: Options,
+        unique_paths: frozenset[str],
+    ) -> dict[ReceiverSpan, InferredReceiverType]:
+        format_type_bare = importlib.import_module("mypy.messages").format_type_bare
+        subexpressions = importlib.import_module("mypy.server.subexpr").get_subexpressions
+        inferred: dict[ReceiverSpan, InferredReceiverType] = {}
+        for state in result.graph.values():
+            if state.xpath not in unique_paths or state.tree is None:
+                continue
+            for expression in subexpressions(state.tree):
+                found = result.types.get(expression)
+                if found is not None:
+                    span = ReceiverSpan(
+                        state.xpath,
+                        expression.line,
+                        expression.column,
+                        expression.end_line,
+                        expression.end_column,
+                    )
+                    inferred[span] = self._inferred_type(found, options, format_type_bare)
+        return inferred
+
+
+@dataclass(frozen=True)
+class RequestedSpanExpressions(ExpressionExtractionScope):
+    """Check untyped defs only in files holding requested spans, and export only those spans."""
+
+    file_paths: frozenset[str]
+    coords_by_file: Mapping[str, frozenset[tuple[int, int, int, int]]]
+
+    @classmethod
+    def of(cls, spans: Iterable[ReceiverSpan]) -> RequestedSpanExpressions:
+        grouped: defaultdict[str, set[tuple[int, int, int, int]]] = defaultdict(set)
+        for span in spans:
+            grouped[span.file_path].add(
+                (span.line, span.column, span.end_line, span.end_column)
+            )
+        return cls(
+            frozenset(grouped),
+            {path: frozenset(coords) for path, coords in grouped.items()},
+        )
+
+    def configure_options(
+        self,
+        options: Options,
+        unique: Sequence[tuple[str, BuildSource]],
+    ) -> None:
+        options.check_untyped_defs = False
+        for path, source in unique:
+            if path in self.file_paths:
+                options.per_module_options[source.module] = {"check_untyped_defs": True}
+
+    def extract(
+        self,
+        result: BuildResult,
+        options: Options,
+        unique_paths: frozenset[str],
+    ) -> dict[ReceiverSpan, InferredReceiverType]:
+        format_type_bare = importlib.import_module("mypy.messages").format_type_bare
+        subexpressions = importlib.import_module("mypy.server.subexpr").get_subexpressions
+        inferred: dict[ReceiverSpan, InferredReceiverType] = {}
+        for state in result.graph.values():
+            if state.xpath not in unique_paths or state.tree is None:
+                continue
+            needed = self.coords_by_file.get(state.xpath)
+            if not needed:
+                continue
+            for expression in subexpressions(state.tree):
+                coords = (
+                    expression.line,
+                    expression.column,
+                    expression.end_line,
+                    expression.end_column,
+                )
+                if coords not in needed:
+                    continue
+                found = result.types.get(expression)
+                if found is not None:
+                    span = ReceiverSpan(state.xpath, *coords)
+                    inferred[span] = self._inferred_type(found, options, format_type_bare)
+        return inferred
+
+
 class TypeCheckerSession(ABC):
     """The scan's type checker: one finished build, or the reason there is none."""
 
@@ -159,19 +290,17 @@ class TypeCheckerSession(ABC):
         """Build these sources once with exported types, or name why that failed:
         a session for receivers asked about later, so it keeps every file's types."""
 
-        return TypeCheckerSession._built(sources, lambda built: built)
+        return TypeCheckerSession._built(sources, AllBuiltExpressions())
 
     @staticmethod
     def answers(
         sources: TypeCheckerSources, spans: Iterable[ReceiverSpan]
     ) -> Mapping[ReceiverSpan, ReceiverType]:
         """Build these sources once and answer `spans`. Only the files that hold one
-        are read for types: reading every expression of every built file cost as
-        much as a third of the build for a question about a handful of receivers."""
+        check untyped defs and only the requested spans are formatted and exported."""
 
         asked = tuple(spans)
-        held = frozenset(span.file_path for span in asked)
-        session = TypeCheckerSession._built(sources, lambda built: built & held)
+        session = TypeCheckerSession._built(sources, RequestedSpanExpressions.of(asked))
         try:
             return session.receiver_types(asked)
         finally:
@@ -180,9 +309,9 @@ class TypeCheckerSession(ABC):
     @staticmethod
     def _built(
         sources: TypeCheckerSources,
-        typed_files: Callable[[frozenset[str]], frozenset[str]],
+        scope: ExpressionExtractionScope,
     ) -> TypeCheckerSession:
-        """One build of `sources`, its types read for `typed_files` of the built files."""
+        """One build of `sources`, configured and exported according to `scope`."""
 
         if importlib.util.find_spec("mypy") is None:
             return UnavailableTypeChecker(f"mypy is not installed ({TYPES_EXTRA})")
@@ -192,6 +321,7 @@ class TypeCheckerSession(ABC):
         options.export_types = True
         options.preserve_asts = True
         unique, shared = TypeCheckerSession.unique_sources(sources, options)
+        scope.configure_options(options, unique)
         started = perf_counter()
         try:
             result = build.build([source for _path, source in unique], options)
@@ -202,8 +332,9 @@ class TypeCheckerSession(ABC):
         session = BuiltTypeChecker.of(
             result,
             options,
-            typed_files(frozenset(path for path, _source in unique)),
+            frozenset(path for path, _source in unique),
             shared,
+            scope,
         )
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
@@ -374,32 +505,11 @@ class BuiltTypeChecker(TypeCheckerSession):
         options: Options,
         paths: frozenset[str],
         shared: Mapping[str, str],
+        scope: ExpressionExtractionScope = AllBuiltExpressions(),
     ) -> BuiltTypeChecker:
-        """Every typed expression of the scanned files, with the classes it is."""
+        """The selected typed expressions of the scanned files, with the classes each is."""
 
-        format_type_bare = importlib.import_module("mypy.messages").format_type_bare
-        subexpressions = importlib.import_module("mypy.server.subexpr").get_subexpressions
-        inferred: dict[ReceiverSpan, InferredReceiverType] = {}
-        for state in result.graph.values():
-            if state.xpath not in paths or state.tree is None:
-                continue
-            for expression in subexpressions(state.tree):
-                found = result.types.get(expression)
-                if found is not None:
-                    span = ReceiverSpan(
-                        state.xpath,
-                        expression.line,
-                        expression.column,
-                        expression.end_line,
-                        expression.end_column,
-                    )
-                    inferred[span] = InferredReceiverType(
-                        format_type_bare(found, options, verbosity=2),
-                        _classes_of(found),
-                        _instances_only(found),
-                        _families_of(found),
-                    )
-        return cls(inferred, shared)
+        return cls(scope.extract(result, options, paths), shared)
 
     def receiver_types(
         self, spans: Iterable[ReceiverSpan]

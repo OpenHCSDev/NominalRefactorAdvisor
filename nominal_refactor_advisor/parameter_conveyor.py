@@ -367,6 +367,24 @@ class ClosedParameterConveyorComponentBuilder(
 
 
     @cached_property
+    def resolutions_by_owner(
+        self,
+    ) -> dict[str, tuple[CompactFunctionCallResolution, ...]]:
+        grouped: dict[str, list[CompactFunctionCallResolution]] = defaultdict(list)
+        for resolution in self.repository.function_call_resolutions:
+            grouped[resolution.context.owner_symbol].append(resolution)
+        return {owner: tuple(items) for owner, items in grouped.items()}
+
+    @cached_property
+    def constructions_by_class(
+        self,
+    ) -> dict[str, tuple[CompactResolvedProductConstruction, ...]]:
+        grouped: dict[str, list[CompactResolvedProductConstruction]] = defaultdict(list)
+        for construction in self.repository.resolved_product_constructions:
+            grouped[construction.authority.class_symbol].append(construction)
+        return {symbol: tuple(items) for symbol, items in grouped.items()}
+
+    @cached_property
     def calls_by_value_projection(
         self,
     ) -> dict[_ValueProjectionKey, tuple[CompactResolvedFunctionCall, ...]]:
@@ -836,32 +854,26 @@ class ClosedParameterConveyorComponentBuilder(
         component_call_ids: frozenset[CompactFunctionCallIdentity],
         field_mapping_by_participant: dict[str, tuple[tuple[str, str], ...]],
     ) -> tuple[set[str], set[str]]:
-        participant_symbols = frozenset(
-            participant.symbol for participant in participants
-        )
         open_alias_call_ids: set[str] = set()
         unresolved_call_ids: set[str] = set()
-        for resolution in self.repository.function_call_resolutions:
-            if resolution.context.owner_symbol not in participant_symbols:
-                continue
-            caller_mapping = field_mapping_by_participant.get(
-                resolution.context.owner_symbol
-            )
+        for participant in participants:
+            caller_mapping = field_mapping_by_participant.get(participant.symbol)
             if caller_mapping is None:
                 continue
             product_projection = ParameterConveyorProductProjection.from_field_mapping(
                 caller_mapping
             )
-            identity = self._raw_call_identity(resolution.context, resolution.call)
-            if identity in component_call_ids:
-                continue
-            self._record_call_hazard(
-                product_projection,
-                resolution,
-                open_alias_call_ids,
-                unresolved_call_ids,
-                source_alias_is_open=False,
-            )
+            for resolution in self.resolutions_by_owner.get(participant.symbol, ()):
+                identity = self._raw_call_identity(resolution.context, resolution.call)
+                if identity in component_call_ids:
+                    continue
+                self._record_call_hazard(
+                    product_projection,
+                    resolution,
+                    open_alias_call_ids,
+                    unresolved_call_ids,
+                    source_alias_is_open=False,
+                )
         return open_alias_call_ids, unresolved_call_ids
 
     def _root_call_hazards(
@@ -878,9 +890,7 @@ class ClosedParameterConveyorComponentBuilder(
         )
         open_alias_call_ids: set[str] = set()
         unresolved_call_ids: set[str] = set()
-        for construction in self.repository.resolved_product_constructions:
-            if construction.authority.class_symbol != authority.class_symbol:
-                continue
+        for construction in self.constructions_by_class.get(authority.class_symbol, ()):
             construction_arguments = construction.construction.field_values
             if frozenset(construction_arguments) != frozenset(authority.field_names):
                 continue
@@ -910,13 +920,10 @@ class ClosedParameterConveyorComponentBuilder(
                 resolution.exact_origin is None
                 for resolution in construction_origin_resolutions.values()
             )
-            for resolution in self.repository.function_call_resolutions:
-                if (
-                    resolution.context.owner_symbol != construction.context.owner_symbol
-                    or not construction.call.position.dominates(
-                        resolution.call.position
-                    )
-                ):
+            for resolution in self.resolutions_by_owner.get(
+                construction.context.owner_symbol, ()
+            ):
+                if not construction.call.position.dominates(resolution.call.position):
                     continue
                 identity = self._raw_call_identity(
                     resolution.context,
