@@ -127,6 +127,8 @@ def reads_as_type(index: int, nodes: Sequence[ast.AST], parents: Sequence[int]) 
                 isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and parent.returns is child
             )
+            or (isinstance(parent, ast.TypeVar) and parent.bound is child)
+            or (isinstance(parent, ast.TypeAlias) and parent.value is child)
             or (
                 isinstance(parent, ast.Subscript)
                 and parent.slice is child

@@ -1019,7 +1019,15 @@ class ClassReferenceSites:
                         node, parent, grandparent, aliases, as_type
                     ),
                     is_annotation=as_type,
-                    is_base=isinstance(parent, ast.ClassDef) and node in parent.bases,
+                    is_base=(
+                        (isinstance(parent, ast.ClassDef) and node in parent.bases)
+                        or (
+                            isinstance(parent, ast.Subscript)
+                            and parent.value is node
+                            and isinstance(grandparent, ast.ClassDef)
+                            and parent in grandparent.bases
+                        )
+                    ),
                     symbol=symbol,
                     tested_subclass=None if subject is None else resolver.symbol_for_node(subject),
                 )

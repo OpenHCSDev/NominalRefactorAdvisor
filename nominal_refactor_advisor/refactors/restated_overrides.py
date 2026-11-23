@@ -127,15 +127,106 @@ class NamespaceReads(ParsedModuleSetFact):
             reads = tuple(cls.found(module.module))
             if not reads:
                 continue
+            imported_modules = cls.imported_module_names(module.module)
             parents = {
                 child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
             }
             for read in reads:
-                if cls.reads_an_instance(read, parents):
+                if (
+                    cls.reads_an_instance(read, parents)
+                    or cls.reads_imported_module(read, parents, imported_modules)
+                    or cls.mutates_instance_dict(read, parents)
+                ):
                     continue
                 parent = parents.get(read)
                 found.append((module, read, parent, None if parent is None else parents.get(parent)))
         return cls(tuple(found))
+
+    INSTANCE_DICT_MUTATORS = frozenset(("setdefault", "pop", "popitem", "update", "clear"))
+
+    @classmethod
+    def mutates_instance_dict(cls, read: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:
+        """A class's `__dict__` is a read-only `mappingproxy`, which has no mutating
+        methods (`setdefault`, `pop`, `update`, `clear`) and forbids item assignment or
+        deletion; any mutation of `X.__dict__` therefore targets an instance dictionary."""
+
+        parent = parents.get(read)
+        match parent:
+            case ast.Subscript(value=target, ctx=ast.Store() | ast.Del()) if target is read:
+                return True
+            case ast.Attribute(value=target, attr=method) if (
+                target is read and method in cls.INSTANCE_DICT_MUTATORS
+            ):
+                grandparent = parents.get(parent)
+                return isinstance(grandparent, ast.Call) and grandparent.func is parent
+        return False
+
+    @staticmethod
+    def imported_module_names(tree: ast.Module) -> frozenset[str]:
+        """Top-level `import mod` / `import mod as alias` names that the module body never rebinds."""
+
+        imported = {
+            alias.asname or alias.name.partition(".")[0]
+            for statement in tree.body
+            if isinstance(statement, ast.Import)
+            for alias in statement.names
+        }
+        if not imported:
+            return frozenset()
+        rebound = {
+            node.id
+            for statement in tree.body
+            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+        }
+        return frozenset(imported - rebound)
+
+    @staticmethod
+    def reads_imported_module(
+        read: ast.expr,
+        parents: dict[ast.AST, ast.AST],
+        imported_modules: frozenset[str],
+    ) -> bool:
+        """Whether `vars(mod)` or `mod.__dict__` reads an unshadowed imported module."""
+
+        match read:
+            case ast.Attribute(value=ast.Name(id=name)) | ast.Call(args=[ast.Name(id=name)]) if (
+                name in imported_modules
+            ):
+                pass
+            case _:
+                return False
+        scope = parents.get(read)
+        while scope is not None:
+            if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = scope.args
+                if any(
+                    arg.arg == name
+                    for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+                ) or (args.vararg is not None and args.vararg.arg == name) or (
+                    args.kwarg is not None and args.kwarg.arg == name
+                ):
+                    return False
+                if any(
+                    isinstance(node, ast.Name)
+                    and node.id == name
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    for node in ast.walk(scope)
+                ):
+                    return False
+            elif isinstance(scope, ast.ClassDef):
+                if any(
+                    isinstance(node, ast.Name)
+                    and node.id == name
+                    and isinstance(node.ctx, (ast.Store, ast.Del))
+                    for statement in scope.body
+                    if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                    for node in ast.walk(statement)
+                ):
+                    return False
+            scope = parents.get(scope)
+        return True
 
     @staticmethod
     def reads_an_instance(read: ast.expr, parents: dict[ast.AST, ast.AST]) -> bool:

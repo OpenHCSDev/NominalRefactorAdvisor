@@ -468,6 +468,8 @@ def _instances_only(found: Type) -> bool:
             )
         case types.TupleType() | types.TypedDictType() | types.LiteralType() | types.NoneType():
             return True
+        case types.TypeVarType():
+            return _instances_only(proper.upper_bound)
         case types.UnionType():
             return all(_instances_only(item) for item in proper.items)
     return False
