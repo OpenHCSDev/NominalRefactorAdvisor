@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.detectors._base import (
-    CrossModuleCandidateDetector,
     DetectorConfig,
     finding_spec_template,
 )
-from nominal_refactor_advisor.hidden_imports import ClosesCycle, HiddenImportPlan
+from nominal_refactor_advisor.detectors._hidden_imports import (
+    CompactHiddenImportCandidateDetector,
+)
+from nominal_refactor_advisor.hidden_imports import CompactHiddenImportPlan
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.hidden_import_cuts import (
     HiddenImportCutFindingRecipeSynthesizer,
-    HubEdge,
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 
@@ -32,7 +31,7 @@ class HiddenImportCycleCandidate:
 
 class HiddenImportCycleDetector(
     HiddenImportCutFindingRecipeSynthesizer,
-    CrossModuleCandidateDetector[HiddenImportCycleCandidate],
+    CompactHiddenImportCandidateDetector[HiddenImportCycleCandidate],
 ):
     """A module other modules can import only by hiding it, because it loads them."""
 
@@ -47,21 +46,16 @@ class HiddenImportCycleDetector(
         (ObservationTag.PARTIAL_VIEW,),
     )
 
-    def _candidate_items(
+    def _candidates_from_compact_context(
         self,
-        modules: ParsedModuleSet,
+        context: CompactHiddenImportPlan,
         config: DetectorConfig,
     ) -> tuple[HiddenImportCycleCandidate, ...]:
         del config
-        paths = {module.module_name: module.file_path for module in modules}
-        readers: dict[str, set[str]] = defaultdict(set)
-        for refusal in modules.fact(HiddenImportPlan).refused:
-            if isinstance(refusal, ClosesCycle):
-                readers[HubEdge.hub_of(refusal) or refusal.reaching].add(refusal.hidden.module.module_name)
         return tuple(
-            HiddenImportCycleCandidate(hub, paths[hub], tuple(sorted(names)))
-            for hub, names in sorted(readers.items())
-            if hub in paths
+            HiddenImportCycleCandidate(hub, context.paths_by_module[hub], readers)
+            for hub, readers in sorted(context.hub_readers.items())
+            if hub in context.paths_by_module
         )
 
     def _finding_for_candidate(self, candidate: HiddenImportCycleCandidate) -> RefactorFinding:

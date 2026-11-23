@@ -10,6 +10,10 @@ import subprocess
 import sys
 from pathlib import Path
 
+from nominal_refactor_advisor.analysis import (
+    analyze_compact_roots_with_cache,
+    analyze_detector_types,
+)
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.composition_layering import CompositionRootLayering
@@ -314,3 +318,60 @@ def test_a_module_object_used_whole_stays_a_module_read(tmp_path: Path):
     )
     [finding] = _findings(tmp_path)
     assert "`pkg.threads` is read" in finding.summary
+
+
+def test_compact_root_analysis_matches_full_for_layering_violations(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    _write(
+        root,
+        {
+            "pkg/root.py": ROOT,
+            "pkg/registry.py": (
+                "class Registry:\n"
+                "    def __init__(self, root):\n"
+                "        self.root = root\n\n"
+                "    def thread_count(self):\n"
+                "        from pkg import threads\n\n"
+                "        return threads.LIMIT\n"
+            ),
+            "pkg/threads.py": (
+                "LIMIT = 3\n\n\n"
+                "class Threads:\n"
+                "    def __init__(self, root, registry):\n"
+                "        self.root = root\n"
+                "        self.registry = registry\n\n"
+                "    def states(self):\n"
+                "        return self.registry.thread_count()\n"
+            ),
+            "pkg/relations.py": (
+                "class Relations:\n"
+                "    def __init__(self, threads):\n"
+                "        self.threads = threads\n"
+            ),
+        },
+    )
+    detectors = (LayeringViolationDetector,)
+    config = DetectorConfig()
+    full_findings = analyze_detector_types(_modules(root), config, detector_types=detectors)
+    cache_dir = tmp_path / "cache" / "ast"
+    analysis_cache_dir = tmp_path / "cache" / "analysis"
+    cold = analyze_compact_roots_with_cache(
+        (root,),
+        config,
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detectors,
+    )
+    warm = analyze_compact_roots_with_cache(
+        (root,),
+        config,
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detectors,
+    )
+    assert cold.findings == full_findings
+    assert warm.findings == full_findings
+    assert len(cold.findings) == 1
+    assert "`pkg.threads.LIMIT`" in cold.findings[0].summary

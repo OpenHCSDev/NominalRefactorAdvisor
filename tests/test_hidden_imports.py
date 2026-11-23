@@ -9,9 +9,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+from nominal_refactor_advisor.analysis import (
+    analyze_compact_roots_with_cache,
+    analyze_detector_types,
+)
 from nominal_refactor_advisor.ast_tools import PythonSourcePathPolicy, parse_python_modules
 from nominal_refactor_advisor.codemod import CodemodPlanSequence, CodemodSourceSnapshot
 from nominal_refactor_advisor.detectors._base import DetectorConfig
+from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportCycleDetector
 from nominal_refactor_advisor.detectors._hidden_imports import HiddenImportDetector
 from nominal_refactor_advisor.hidden_imports import (
     ClosesCycle,
@@ -210,3 +215,57 @@ def test_an_import_after_its_function_changes_sys_path_names_the_path_setup_it_n
     assert NeededInput.SOURCE_CHANGE in refused.need.needs
     [accepted] = plan.accepted
     assert accepted.symbol == "plain"
+
+
+def test_compact_root_analysis_matches_full_for_hidden_imports_and_cycles(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "repo"
+    _write(
+        root,
+        {
+            "pkg/leaf.py": "VALUE = 1\n",
+            "pkg/hub.py": (
+                "from pkg.reader import helper\n\n\n"
+                "class Shared:\n"
+                "    pass\n\n\n"
+                "def use() -> int:\n"
+                "    return helper()\n"
+            ),
+            "pkg/reader.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.hub import Shared\n"
+                "    from pkg.leaf import VALUE\n\n\n"
+                "def helper() -> int:\n"
+                "    from pkg.leaf import VALUE\n\n"
+                "    return VALUE\n"
+            ),
+        },
+    )
+    detectors = (HiddenImportDetector, HiddenImportCycleDetector)
+    config = DetectorConfig()
+    full_findings = analyze_detector_types(_modules(root), config, detector_types=detectors)
+    cache_dir = tmp_path / "cache" / "ast"
+    analysis_cache_dir = tmp_path / "cache" / "analysis"
+    cold = analyze_compact_roots_with_cache(
+        (root,),
+        config,
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detectors,
+    )
+    warm = analyze_compact_roots_with_cache(
+        (root,),
+        config,
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detectors,
+    )
+    assert cold.findings == full_findings
+    assert warm.findings == full_findings
+    assert {finding.detector_id for finding in cold.findings} == {
+        HiddenImportDetector.detector_id,
+        HiddenImportCycleDetector.detector_id,
+    }

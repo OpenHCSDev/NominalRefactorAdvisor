@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_tools import ParsedModuleSet
-from nominal_refactor_advisor.composition_layering import CompositionRootLayering, LayerRead
+from nominal_refactor_advisor.composition_layering import (
+    CompositionLayeringModuleFacts,
+    CompositionLayeringModuleFamily,
+    CompositionRootLayering,
+    LayerRead,
+)
 from nominal_refactor_advisor.detectors._base import (
-    CrossModuleCandidateDetector,
+    CompactProjectionCandidateDetector,
     DetectorConfig,
     finding_spec_template,
 )
@@ -32,10 +37,14 @@ class LayeringViolationCandidate:
 
 class LayeringViolationDetector(
     LayeringViolationFindingRecipeSynthesizer,
-    CrossModuleCandidateDetector[LayeringViolationCandidate],
+    CompactProjectionCandidateDetector[
+        CompositionLayeringModuleFacts,
+        LayeringViolationCandidate,
+    ],
 ):
     """A declaration only a higher service loads, read by code a lower one loads."""
 
+    module_projection_family = CompositionLayeringModuleFamily
     candidate_type = LayeringViolationCandidate
     finding_spec = finding_spec_template(
         PatternId.LAYERING_VIOLATION,
@@ -47,31 +56,31 @@ class LayeringViolationDetector(
         (ObservationTag.PARTIAL_VIEW,),
     )
 
-    def _candidate_items(
+    def _candidates_from_compact_projections(
         self,
-        modules: ParsedModuleSet,
+        projections: Sequence[CompositionLayeringModuleFacts],
         config: DetectorConfig,
     ) -> tuple[LayeringViolationCandidate, ...]:
         del config
-        layering = modules.fact(CompositionRootLayering)
+        layering = CompositionRootLayering.from_module_facts(projections)
         if not layering.reads:
             return ()
-        parsed = {module.module_name: module for module in modules}
+        paths = {projection.module_name: projection.file_path for projection in projections}
         named = {(read.location, read.declaration[0]) for read in layering.reads if read.declaration[1] is not None}
         candidates: list[LayeringViolationCandidate] = []
         for (module, name), reads in sorted(layering.by_declaration.items(), key=lambda item: (item[0][0], item[0][1] or "")):
             if name is None and all((read.location, module) in named for read in reads):
                 continue
-            source = parsed.get(module)
-            if source is None:
+            file_path = paths.get(module)
+            if file_path is None:
                 continue
             home = layering.home((module, name))
             candidates.append(
                 LayeringViolationCandidate(
                     module,
                     name or module,
-                    source.file_path,
-                    1 if name is None or (node := layering.bindings.node((module, name))) is None else node.lineno,
+                    file_path,
+                    1 if name is None or (line := layering.bindings.lineno((module, name))) is None else line,
                     reads,
                     None if home is None else home[1],
                 )
