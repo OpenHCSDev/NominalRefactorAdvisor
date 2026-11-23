@@ -73,6 +73,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativeCaptureSite,
     NativeClassCapture,
     NativeClassCaptureResolverABC,
+    NativeCompilationOutcome,
     NativeFunctionExecution,
     NativeItemStoreOperand,
     NativeItemStoreValue,
@@ -3668,6 +3669,10 @@ class _DeclarationCollector(ast.NodeVisitor):
         self.function_contexts: list[_FunctionContext] = []
         self.class_contexts: list[_ClassContext] = []
 
+    @cached_property
+    def native_outcome(self) -> NativeCompilationOutcome:
+        return self.module.native_compilation.execution_outcome
+
     def generic_visit(self, node: ast.AST) -> None:
         """Traverse declaration-bearing statement suites, not expressions."""
 
@@ -3687,7 +3692,7 @@ class _DeclarationCollector(ast.NodeVisitor):
                 node,
                 CompactClassDeclaration(
                     qualname,
-                    self.module.native_compilation.class_capture_for(
+                    self.native_outcome.class_capture_for(
                         SourceByteSpan.require_node(node)
                     ),
                 ),
@@ -3726,7 +3731,7 @@ class _DeclarationCollector(ast.NodeVisitor):
         )
         declaration = CompactFunctionDeclaration(
             identity=CompactFunctionIdentity(self.module.module_name, qualname),
-            execution=self.module.native_compilation.execution_for(
+            execution=self.native_outcome.execution_for(
                 SourceByteSpan.require_node(node)
             ),
             owner_class=(
@@ -4132,12 +4137,24 @@ class _AnnotatedAssignmentFlow(StatementValueQuestion[None]):
             self.collector._record_exact_value_aliases((target,), None, mutations)
 
 
+class _CompactDeclarationCollector(_DeclarationCollector):
+    """Collect compact declarations without observing leaf function scopes."""
+
+    @cached_property
+    def native_outcome(self) -> NativeCompilationOutcome:
+        return self.module.native_compilation.declaration_outcome
+
+
 class _CompactFlowCollector(
     EagerFunctionAnnotationVisitor,
     DictionaryEvaluationVisitor,
     VariableAnnotationVisitorABC,
 ):
     """Collect one source scope without descending into nested scope bodies."""
+
+    declaration_collector_type: ClassVar[type[_DeclarationCollector]] = (
+        _CompactDeclarationCollector
+    )
 
     def visit_Tuple(self, node: ast.Tuple) -> CompactTupleValue | None:
         if not isinstance(node.ctx, ast.Load) or any(
@@ -4793,6 +4810,10 @@ class _CompactFlowCollector(
 class _SourceFlowCollector(_CompactFlowCollector):
     """Observe the inherited evaluation traversal; never re-interpret its AST."""
 
+    declaration_collector_type: ClassVar[type[_DeclarationCollector]] = (
+        _DeclarationCollector
+    )
+
     @cached_property
     def source_evaluations(self) -> list[SourceFlowEvaluation]:
         return []
@@ -4845,7 +4866,7 @@ class _ProductFlowCollection(Generic[FlowCollectorT]):
     @cached_property
     def declarations(self) -> _DeclarationCollector:
         parsed_module = self.parsed_module
-        declarations = _DeclarationCollector(parsed_module)
+        declarations = self.collector_type.declaration_collector_type(parsed_module)
         declarations.visit(parsed_module.module)
         return declarations
 
