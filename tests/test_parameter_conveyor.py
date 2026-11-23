@@ -127,7 +127,7 @@ def test_a_move_played_in_its_worker_is_the_move_played_in_process(
     start = search.score(scan)
 
     in_process = search.move(scan, start, SemanticCarrierConcept)
-    in_worker = search.played(scan, start, SemanticCarrierConcept)
+    [in_worker] = search.played(scan, start, (SemanticCarrierConcept,))
 
     assert isinstance(in_process, PlayableMove)
     assert isinstance(in_worker, PlayableMove)
