@@ -142,8 +142,8 @@ def test_compact_declaration_outcome_skips_leaf_functions_and_matches_full_compa
         "        def inner(y):\n"
         "            return y * 2\n"
         "        return [inner(v) for v in items]\n"
-        "def top_leaf(a, b):\n"
-        "    return a + b\n"
+        "def top_leaf():\n"
+        "    return 1\n"
     )
     disassembled: list[str] = []
     backend = NativeCreationBackend.current()
@@ -169,3 +169,23 @@ def test_compact_declaration_outcome_skips_leaf_functions_and_matches_full_compa
     )
     source_proj = source_product_flow_projection(full_module)
     assert compact == source_proj.compact
+
+    # Upgrading declaration_outcome to execution_outcome on the same module
+    # preserves receipt object identity for execution_for, return_from, and return_after.
+    top_leaf_decl = next(
+        decl for decl in compact.function_declarations if decl.qualname == "top_leaf"
+    )
+    assert (
+        top_leaf_decl.execution
+        is compact_module.native_compilation.execution_for(top_leaf_decl.source_span)
+    )
+    body_return = compact_module.native_compilation.return_from(top_leaf_decl.execution)
+    assert body_return.frame.is_body_of(top_leaf_decl.execution)
+    after_return = compact_module.native_compilation.return_after(
+        top_leaf_decl.execution
+    )
+    assert after_return.frame is top_leaf_decl.execution.require_creation().frame
+    assert (
+        top_leaf_decl.execution
+        is compact_module.native_compilation.execution_for(top_leaf_decl.source_span)
+    )
