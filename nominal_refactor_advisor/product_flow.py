@@ -4138,11 +4138,11 @@ class _AnnotatedAssignmentFlow(StatementValueQuestion[None]):
 
 
 class _CompactDeclarationCollector(_DeclarationCollector):
-    """Collect compact declarations without observing leaf function scopes."""
+    """Collect compact family declarations without observing leaf function scopes."""
 
     @cached_property
     def native_outcome(self) -> NativeCompilationOutcome:
-        return self.module.native_compilation.declaration_outcome
+        return self.module.native_compilation.project_declarations()
 
 
 class _CompactFlowCollector(
@@ -4153,7 +4153,7 @@ class _CompactFlowCollector(
     """Collect one source scope without descending into nested scope bodies."""
 
     declaration_collector_type: ClassVar[type[_DeclarationCollector]] = (
-        _CompactDeclarationCollector
+        _DeclarationCollector
     )
 
     def visit_Tuple(self, node: ast.Tuple) -> CompactTupleValue | None:
@@ -4807,12 +4807,16 @@ class _CompactFlowCollector(
             )
 
 
-class _SourceFlowCollector(_CompactFlowCollector):
-    """Observe the inherited evaluation traversal; never re-interpret its AST."""
+class _CompactFamilyFlowCollector(_CompactFlowCollector):
+    """Collect persisted family projections using declaration-only native walks."""
 
     declaration_collector_type: ClassVar[type[_DeclarationCollector]] = (
-        _DeclarationCollector
+        _CompactDeclarationCollector
     )
+
+
+class _SourceFlowCollector(_CompactFlowCollector):
+    """Observe the inherited evaluation traversal; never re-interpret its AST."""
 
     @cached_property
     def source_evaluations(self) -> list[SourceFlowEvaluation]:
@@ -5009,4 +5013,8 @@ class CompactProductFlowModuleProjectionFamily(
         parsed_module: ParsedModule,
     ) -> list[CompactProductFlowModuleProjection]:
         del cls
-        return [compact_product_flow_projection(parsed_module)]
+        return [
+            _ProductFlowCollection(
+                parsed_module, _CompactFamilyFlowCollector
+            ).projection
+        ]
