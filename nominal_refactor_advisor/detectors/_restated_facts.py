@@ -696,6 +696,7 @@ class ProbeOwnerQuery:
     classes: ScannedClasses
     typing: DeclaredReceiverTyping
     spans: tuple[ReceiverSpan, ...]
+    module_references: tuple[ModuleReferenceFacts, ...] = ()
 
     @classmethod
     def of(cls, projections_by_family: CompactProjectionGroups) -> ProbeOwnerQuery:
@@ -711,13 +712,36 @@ class ProbeOwnerQuery:
                 for site in module.sites
                 for span in site.owner.resolved(typing).type_checker_spans()
             ),
+            tuple(ModuleReferenceFamily.modules_in(projections_by_family)),
         )
 
     @property
     def file_paths(self) -> frozenset[str]:
-        return frozenset(span.file_path for span in self.spans) | frozenset(
-            indexed_class.file_path for indexed_class in self.classes.by_symbol.values()
-        )
+        span_files = frozenset(span.file_path for span in self.spans)
+        if not span_files:
+            return frozenset()
+        by_name = {module.module_name: module for module in self.module_references}
+        by_path = {module.file_path: module.module_name for module in self.module_references}
+        if not by_name or not span_files <= by_path.keys():
+            return span_files | frozenset(
+                indexed_class.file_path for indexed_class in self.classes.by_symbol.values()
+            )
+        visited: set[str] = set()
+        pending = [by_path[path] for path in sorted(span_files)]
+        while pending:
+            module_name = pending.pop()
+            if module_name in visited:
+                continue
+            visited.add(module_name)
+            prefix = module_name
+            while "." in prefix:
+                prefix = prefix.rpartition(".")[0]
+                if prefix in by_name and prefix not in visited:
+                    pending.append(prefix)
+            for imported in by_name[module_name].imported:
+                if imported in by_name and imported not in visited:
+                    pending.append(imported)
+        return span_files | frozenset(by_name[name].file_path for name in visited)
 
     def answered(self, sources: TypeCheckerSources) -> ProbeOwnerContext:
         """The type checker's owner for each undeclared receiver; it runs only when there is one."""
@@ -750,6 +774,7 @@ class ForeignAbsenceProbeDetector(
     module_projection_families = (
         ForeignAbsenceSiteFamily,
         CompactModuleClassProjectionFamily,
+        ModuleReferenceFamily,
     )
 
     compact_shared_group_context_builder = staticmethod(_probe_owner_context_from_files)
