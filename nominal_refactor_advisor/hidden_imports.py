@@ -16,8 +16,9 @@ from __future__ import annotations
 import ast
 import builtins
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections import defaultdict
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
@@ -33,10 +34,48 @@ from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, SourceSpanEdit
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
+from nominal_refactor_advisor.observation_families import ShapeFamily
 
 ImportStatement = ast.Import | ast.ImportFrom
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 BUILTIN_NAMES = frozenset(vars(builtins))
+
+
+def raw_import_targets(
+    module: ParsedModule,
+    statement: ImportStatement,
+) -> tuple[str, ...]:
+    """Candidate module names an import statement can trigger, before
+    intersecting with the scanned module set."""
+
+    if isinstance(statement, ast.Import):
+        return tuple(alias.name for alias in statement.names)
+    resolved = module.module_path_identity.resolve_import_from_module(
+        imported_module=statement.module,
+        level=statement.level,
+    )
+    if resolved is None:
+        return ()
+    return (
+        resolved,
+        *(f"{resolved}.{alias.name}" for alias in statement.names if alias.name != "*"),
+    )
+
+
+def known_import_targets(
+    candidate_targets: Iterable[str],
+    known: frozenset[str],
+) -> frozenset[str]:
+    """Every scanned module on the package path to any target in `candidate_targets`."""
+
+    targets: set[str] = set()
+    for target in candidate_targets:
+        parts = target.split(".")
+        for depth in range(1, len(parts) + 1):
+            prefix = ".".join(parts[:depth])
+            if prefix in known:
+                targets.add(prefix)
+    return frozenset(targets)
 
 
 @dataclass(frozen=True)
@@ -155,11 +194,19 @@ class HiddenImport(ABC):
         return f"{self.module.file_path}::{self.symbol}::{','.join(sorted(b.bound for b in self.bindings))}"
 
     @abstractmethod
+    def require_static_promotable(self) -> None:
+        """Raises, naming the input it needs, when local syntax or enclosing
+        bindings make moving this import unsound regardless of module scope."""
+
+        raise NotImplementedError
+
     def require_promotable(self, scope: RuntimeBindings) -> None:
         """Raises, naming the input it needs, when moving this import to the
         module's top would change what a name means."""
 
-        raise NotImplementedError
+        self.require_static_promotable()
+        for binding in self.bindings:
+            scope.already_bound(binding)
 
     @abstractmethod
     def source_edits(
@@ -171,16 +218,12 @@ class HiddenImport(ABC):
         raise NotImplementedError
 
     @staticmethod
-    def collected(module: ParsedModule, graph: SourceModuleImportGraph) -> tuple[HiddenImport, ...]:
-        """The module's hidden imports of scanned modules: guarded ones first,
-        then local ones, each in line order."""
-
-        source_file = graph.source_file_for_path(module.file_path)
-        if source_file is None:
-            return ()
-
-        def targets(statement: ImportStatement) -> frozenset[str]:
-            return graph.statement_edges(source_file, statement) - {module.module_name}
+    def collected_candidates(
+        module: ParsedModule,
+    ) -> tuple[tuple[HiddenImport, tuple[str, ...]], ...]:
+        """Every guarded or function-local import in `module` paired with its
+        unresolved candidate target module names: guarded first, then local,
+        each in line order."""
 
         # The module's own traversal answers which nodes are imports: walking the tree
         # again here cost every module of every projected state its whole syntax tree
@@ -188,19 +231,39 @@ class HiddenImport(ABC):
         syntax = module.syntax_index
         parents = syntax.parent_index
         guarded = (
-            GuardedImport(module, statement, targets(statement), guard)
+            (
+                GuardedImport(module, statement, frozenset(), guard),
+                raw_import_targets(module, statement),
+            )
             for guard in TypeCheckingGuardProjection.from_module(module.module).guards
             for statement in guard.body
             if isinstance(statement, ast.Import | ast.ImportFrom)
         )
         local = (
-            LocalImport(module, node, targets(node), function)
+            (
+                LocalImport(module, node, frozenset(), function),
+                raw_import_targets(module, node),
+            )
             for node in syntax.instances_of(ImportStatement)
             if (function := parents.enclosing_function(node)) is not None
         )
         return (
-            *sorted((hidden for hidden in guarded if hidden.targets), key=lambda hidden: hidden.statement.lineno),
-            *sorted((hidden for hidden in local if hidden.targets), key=lambda hidden: hidden.statement.lineno),
+            *sorted(guarded, key=lambda pair: pair[0].statement.lineno),
+            *sorted(local, key=lambda pair: pair[0].statement.lineno),
+        )
+
+    @staticmethod
+    def collected(module: ParsedModule, graph: SourceModuleImportGraph) -> tuple[HiddenImport, ...]:
+        """The module's hidden imports of scanned modules: guarded ones first,
+        then local ones, each in line order."""
+
+        if graph.source_file_for_path(module.file_path) is None:
+            return ()
+        known = graph.known_module_names
+        return tuple(
+            replace(hidden, targets=targets)
+            for hidden, candidate_targets in HiddenImport.collected_candidates(module)
+            if (targets := known_import_targets(candidate_targets, known) - {module.module_name})
         )
 
 
@@ -210,7 +273,7 @@ class GuardedImport(HiddenImport):
 
     guard: ast.If
 
-    def require_promotable(self, scope: RuntimeBindings) -> None:
+    def require_static_promotable(self) -> None:
         if not isinstance(self.statement, ast.ImportFrom) or any(alias.asname for alias in self.statement.names):
             raise NeedsInput(
                 "only an unaliased guarded `from ... import` moves out of its guard",
@@ -221,8 +284,6 @@ class GuardedImport(HiddenImport):
                 "the guard's `else` binds names at runtime",
                 NeededInput.SOURCE_CHANGE,
             )
-        for binding in self.bindings:
-            scope.already_bound(binding)
 
     def source_edits(
         self, scope: RuntimeBindings, moved: frozenset[ast.stmt], rationale: str
@@ -280,7 +341,7 @@ class LocalImport(HiddenImport):
             if isinstance(block := getattr(parent, field, None), list) and self.statement in block
         )
 
-    def require_promotable(self, scope: RuntimeBindings) -> None:
+    def require_static_promotable(self) -> None:
         ancestors = self.ancestors
         within = ancestors[: ancestors.index(self.function)]
         if any(isinstance(ancestor, ast.ClassDef) for ancestor in within):
@@ -333,7 +394,6 @@ class LocalImport(HiddenImport):
                     f"an enclosing function binds `{binding.bound}`, which would shadow the module's",
                     NeededInput.SOURCE_CHANGE,
                 )
-            scope.already_bound(binding)
 
     def source_edits(
         self, scope: RuntimeBindings, moved: frozenset[ast.stmt], rationale: str
@@ -555,15 +615,270 @@ class HiddenImportPlan(ParsedModuleSetFact):
         return tuple(edits)
 
 
+@dataclass(frozen=True)
+class CompactHiddenImport:
+    """AST-free summary of one guarded or function-local import."""
+
+    lineno: int
+    is_import_from: bool
+    bindings: tuple[ImportedBinding, ...]
+    candidate_targets: tuple[str, ...]
+    static_unpromotable: bool
+
+
+@dataclass(frozen=True)
+class HiddenImportModuleFacts:
+    """AST-free per-module facts for hidden-import and cycle detection."""
+
+    file_path: str
+    module_name: str
+    top_level_import_targets: tuple[str, ...]
+    imported_bindings: tuple[ImportedBinding, ...]
+    other_bindings: tuple[str, ...]
+    hidden: tuple[CompactHiddenImport, ...]
+
+    def runtime_bindings(self) -> RuntimeBindings:
+        return RuntimeBindings(
+            frozenset(self.imported_bindings),
+            frozenset(self.other_bindings),
+        )
+
+
+class HiddenImportModuleFamily(ShapeFamily[HiddenImportModuleFacts]):
+    """Compact per-module facts shared by hidden-import and cycle detectors."""
+
+    item_type = HiddenImportModuleFacts
+
+    @classmethod
+    def collect(cls, parsed_module: ParsedModule) -> list[HiddenImportModuleFacts]:
+        top_level_import_targets = tuple(
+            target
+            for statement in parsed_module.module.body
+            if isinstance(statement, ast.Import | ast.ImportFrom)
+            for target in raw_import_targets(parsed_module, statement)
+        )
+        scope = RuntimeBindings.of(parsed_module)
+        compact_hidden: list[CompactHiddenImport] = []
+        for hidden, candidate_targets in HiddenImport.collected_candidates(parsed_module):
+            try:
+                hidden.require_static_promotable()
+            except NeedsInput:
+                static_unpromotable = True
+            else:
+                static_unpromotable = False
+            compact_hidden.append(
+                CompactHiddenImport(
+                    lineno=hidden.statement.lineno,
+                    is_import_from=isinstance(hidden.statement, ast.ImportFrom),
+                    bindings=hidden.bindings,
+                    candidate_targets=candidate_targets,
+                    static_unpromotable=static_unpromotable,
+                )
+            )
+        return [
+            HiddenImportModuleFacts(
+                file_path=parsed_module.file_path,
+                module_name=parsed_module.module_name,
+                top_level_import_targets=top_level_import_targets,
+                imported_bindings=tuple(
+                    sorted(
+                        scope.imported,
+                        key=lambda binding: (binding.bound, binding.module, binding.member or ""),
+                    )
+                ),
+                other_bindings=tuple(sorted(scope.other)),
+                hidden=tuple(compact_hidden),
+            )
+        ]
+
+
+@dataclass(frozen=True)
+class CompactHiddenImportModuleSummary:
+    """One module's judged hidden imports for `HiddenImportDetector`."""
+
+    file_path: str
+    module_name: str
+    first_accepted_line: int
+    accepted_count: int
+    cycle_reaching: tuple[str, ...]
+    unpromotable_count: int
+
+
+@dataclass(frozen=True)
+class CompactHiddenImportPlan:
+    """Shared compact judgment of hidden imports and cycle hubs across modules."""
+
+    module_summaries: tuple[CompactHiddenImportModuleSummary, ...]
+    hub_readers: Mapping[str, tuple[str, ...]]
+    paths_by_module: Mapping[str, str]
+
+    @classmethod
+    def require(cls, context: object | None) -> CompactHiddenImportPlan:
+        if not isinstance(context, cls):
+            raise TypeError(
+                f"Expected CompactHiddenImportPlan shared context, got {type(context).__name__}"
+            )
+        return context
+
+    @classmethod
+    def from_projections(
+        cls,
+        projections: Sequence[HiddenImportModuleFacts],
+        config: object = None,
+    ) -> CompactHiddenImportPlan:
+        del config
+        known = frozenset(projection.module_name for projection in projections)
+        paths_by_module = {
+            projection.module_name: projection.file_path for projection in projections
+        }
+        edges: dict[str, set[str]] = {
+            projection.module_name: set(
+                known_import_targets(projection.top_level_import_targets, known)
+            )
+            for projection in projections
+        }
+        exports_by_module: dict[str, RuntimeBindings] = {
+            projection.module_name: projection.runtime_bindings()
+            for projection in projections
+        }
+        reachable_cache: dict[str, frozenset[str]] = {}
+
+        def reachable_from(start_module: str) -> frozenset[str]:
+            cached = reachable_cache.get(start_module)
+            if cached is not None:
+                return cached
+            visited: set[str] = set()
+            reached: set[str] = set()
+            stack = [start_module]
+            while stack:
+                current = stack.pop()
+                if current in visited:
+                    continue
+                visited.add(current)
+                for imported_module in edges.get(current, ()):
+                    reached.add(imported_module)
+                    stack.append(imported_module)
+            result = frozenset(reached)
+            reachable_cache[start_module] = result
+            return result
+
+        def reaching_back(importing_module: str, imported_module: str) -> str | None:
+            if importing_module == imported_module:
+                return None
+            triggered = known_import_targets((imported_module,), known) - {
+                importing_module
+            }
+            return next(
+                (
+                    target
+                    for target in sorted(triggered)
+                    if importing_module in reachable_from(target)
+                ),
+                None,
+            )
+
+        def exports_has(module_name: str, member: str) -> bool:
+            scope = exports_by_module.get(module_name)
+            if scope is None or f"{module_name}.{member}" in known:
+                return True
+            return scope.binds(member)
+
+        module_summaries: list[CompactHiddenImportModuleSummary] = []
+        hub_readers: dict[str, set[str]] = defaultdict(set)
+
+        for projection in sorted(projections, key=lambda item: item.file_path):
+            active = [
+                (hidden, targets)
+                for hidden in projection.hidden
+                if (
+                    targets := known_import_targets(hidden.candidate_targets, known)
+                    - {projection.module_name}
+                )
+            ]
+            if not active:
+                continue
+            scope = exports_by_module[projection.module_name]
+            accepted_lines: list[int] = []
+            cycle_reaching: list[str] = []
+            unpromotable_count = 0
+            for hidden, targets in active:
+                if any(
+                    binding.member is not None
+                    and not exports_has(binding.module, binding.member)
+                    for binding in hidden.bindings
+                ):
+                    unpromotable_count += 1
+                    continue
+                if hidden.static_unpromotable:
+                    unpromotable_count += 1
+                    continue
+                try:
+                    for binding in hidden.bindings:
+                        scope.already_bound(binding)
+                except NeedsInput:
+                    unpromotable_count += 1
+                    continue
+                reaching = next(
+                    (
+                        back
+                        for target in sorted(targets)
+                        if (back := reaching_back(projection.module_name, target))
+                        is not None
+                    ),
+                    None,
+                )
+                if reaching is not None:
+                    cycle_reaching.append(reaching)
+                    hub = (
+                        hidden.bindings[0].module
+                        if hidden.is_import_from and hidden.bindings
+                        else None
+                    )
+                    hub_readers[hub or reaching].add(projection.module_name)
+                    continue
+                accepted_lines.append(hidden.lineno)
+                current_edges = edges.setdefault(projection.module_name, set())
+                if not targets <= current_edges:
+                    current_edges.update(targets)
+                    reachable_cache.clear()
+                scope = scope.with_promoted(hidden.bindings)
+            if accepted_lines:
+                module_summaries.append(
+                    CompactHiddenImportModuleSummary(
+                        file_path=projection.file_path,
+                        module_name=projection.module_name,
+                        first_accepted_line=accepted_lines[0],
+                        accepted_count=len(accepted_lines),
+                        cycle_reaching=tuple(cycle_reaching),
+                        unpromotable_count=unpromotable_count,
+                    )
+                )
+
+        return cls(
+            module_summaries=tuple(module_summaries),
+            hub_readers={
+                hub: tuple(sorted(readers)) for hub, readers in hub_readers.items()
+            },
+            paths_by_module=paths_by_module,
+        )
+
+
 __all__ = (
     "BUILTIN_NAMES",
     "ClosesCycle",
+    "CompactHiddenImport",
+    "CompactHiddenImportModuleSummary",
+    "CompactHiddenImportPlan",
     "GuardedImport",
     "HiddenImport",
+    "HiddenImportModuleFacts",
+    "HiddenImportModuleFamily",
     "HiddenImportPlan",
     "HiddenImportRefusal",
     "ImportedBinding",
     "LocalImport",
     "RuntimeBindings",
     "UnpromotableImport",
+    "known_import_targets",
+    "raw_import_targets",
 )

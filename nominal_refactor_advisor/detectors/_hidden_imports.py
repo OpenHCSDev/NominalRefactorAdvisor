@@ -2,21 +2,55 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.detectors._base import (
-    CrossModuleCandidateDetector,
+    CompactContextCandidateDetector,
     DetectorConfig,
     finding_spec_template,
 )
-from nominal_refactor_advisor.hidden_imports import ClosesCycle, HiddenImportPlan
+from nominal_refactor_advisor.hidden_imports import (
+    CompactHiddenImportPlan,
+    HiddenImportModuleFacts,
+    HiddenImportModuleFamily,
+)
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.hidden_imports import (
     HiddenImportFindingRecipeSynthesizer,
 )
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+
+
+class CompactHiddenImportCandidateDetector[HiddenImportCandidateT](
+    CompactContextCandidateDetector[
+        HiddenImportModuleFacts,
+        CompactHiddenImportPlan,
+        HiddenImportCandidateT,
+    ],
+):
+    """Candidate detector sharing one compact hidden-import plan across detectors."""
+
+    module_projection_family = HiddenImportModuleFamily
+    compact_shared_context_builder = staticmethod(
+        CompactHiddenImportPlan.from_projections
+    )
+
+    @classmethod
+    def _compact_context_from_projections(
+        cls,
+        projections: Sequence[HiddenImportModuleFacts],
+        config: DetectorConfig,
+    ) -> CompactHiddenImportPlan:
+        return CompactHiddenImportPlan.from_projections(projections, config)
+
+    @classmethod
+    def _compact_context_from_shared(
+        cls,
+        context: object | None,
+    ) -> CompactHiddenImportPlan:
+        return CompactHiddenImportPlan.require(context)
 
 
 @dataclass(frozen=True)
@@ -34,7 +68,7 @@ class HiddenImportCandidate:
 
 class HiddenImportDetector(
     HiddenImportFindingRecipeSynthesizer,
-    CrossModuleCandidateDetector[HiddenImportCandidate],
+    CompactHiddenImportCandidateDetector[HiddenImportCandidate],
 ):
     """A module whose guarded or function-local imports close no load-time cycle."""
 
@@ -49,31 +83,23 @@ class HiddenImportDetector(
         (ObservationTag.PARTIAL_VIEW,),
     )
 
-    def _candidate_items(
+    def _candidates_from_compact_context(
         self,
-        modules: ParsedModuleSet,
+        context: CompactHiddenImportPlan,
         config: DetectorConfig,
     ) -> tuple[HiddenImportCandidate, ...]:
         del config
-        plan = modules.fact(HiddenImportPlan)
-        candidates = []
-        for module in modules:
-            accepted = plan.accepted_in(module.file_path)
-            if not accepted:
-                continue
-            refused = plan.refused_in(module.file_path)
-            reaching = tuple(refusal.reaching for refusal in refused if isinstance(refusal, ClosesCycle))
-            candidates.append(
-                HiddenImportCandidate(
-                    module.file_path,
-                    module.module_name,
-                    accepted[0].statement.lineno,
-                    len(accepted),
-                    reaching,
-                    len(refused) - len(reaching),
-                )
+        return tuple(
+            HiddenImportCandidate(
+                summary.file_path,
+                summary.module_name,
+                summary.first_accepted_line,
+                summary.accepted_count,
+                summary.cycle_reaching,
+                summary.unpromotable_count,
             )
-        return tuple(sorted(candidates, key=lambda candidate: candidate.file_path))
+            for summary in context.module_summaries
+        )
 
     def _finding_for_candidate(self, candidate: HiddenImportCandidate) -> RefactorFinding:
         kept = (
@@ -89,4 +115,8 @@ class HiddenImportDetector(
         )
 
 
-__all__ = ("HiddenImportCandidate", "HiddenImportDetector")
+__all__ = (
+    "CompactHiddenImportCandidateDetector",
+    "HiddenImportCandidate",
+    "HiddenImportDetector",
+)
