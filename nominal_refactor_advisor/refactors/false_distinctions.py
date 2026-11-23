@@ -63,6 +63,7 @@ from nominal_refactor_advisor.false_distinction_observations import (
     EnumUseKind,
     IdenticalArms,
     MemberGroup,
+    MentioningSiblingTests,
     NameUse,
     NameUseKind,
     Scope,
@@ -245,7 +246,8 @@ class RedirectEmptySubclassOperation(RepositorySourceReprovedOperation):
             snapshot.parsed_modules, target, node, bound_name=subclass.base.id
         )
         tests = SiblingTestModules.beside(
-            snapshot.module_set, mentioning=frozenset((subclass.name,))
+            snapshot.module_set,
+            test_filter=MentioningSiblingTests.for_names(frozenset((subclass.name,))),
         )
         refusals = (*self.refusals(proof, subclass), *self.test_refusals(tests, subclass))
         if refusals:
@@ -430,7 +432,8 @@ class EnumFoldProof:
             tuple(
                 (test, *enum_uses(test, name.__eq__))
                 for test in SiblingTestModules.beside(
-                    snapshot.module_set, mentioning=frozenset((name,))
+                    snapshot.module_set,
+                    test_filter=MentioningSiblingTests.for_names(frozenset((name,))),
                 ).modules
             ),
         )

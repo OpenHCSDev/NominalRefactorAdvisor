@@ -25,7 +25,7 @@ from itertools import groupby
 from operator import attrgetter
 from pathlib import Path
 from types import EllipsisType
-from typing import Any, cast
+from typing import Any, ClassVar, cast
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import (
@@ -794,6 +794,92 @@ class NameUse:
                         yield word, NameUseKind.OTHER, token.start[0]
 
 
+class SiblingTestFilter(ABC):
+    """Which unheld sibling test files need parsing for a proof."""
+
+    is_empty: ClassVar[bool] = False
+
+    @abstractmethod
+    def matches(self, path: Path) -> bool:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class AllSiblingTests(SiblingTestFilter):
+    """Parse every discovered sibling test file."""
+
+    def matches(self, path: Path) -> bool:
+        del path
+        return True
+
+
+ALL_SIBLING_TESTS = AllSiblingTests()
+
+
+@dataclass(frozen=True)
+class EmptySiblingTests(SiblingTestFilter):
+    """No candidate names survived, so no sibling test file needs parsing."""
+
+    is_empty: ClassVar[bool] = True
+
+    def matches(self, path: Path) -> bool:
+        del path
+        return False
+
+
+EMPTY_SIBLING_TESTS = EmptySiblingTests()
+
+
+@dataclass(frozen=True)
+class MentioningSiblingTests(SiblingTestFilter):
+    """Parse only sibling test files whose source text mentions a watched name."""
+
+    str_pattern: re.Pattern[str]
+
+    @classmethod
+    def for_names(cls, names: frozenset[str]) -> SiblingTestFilter:
+        if not names:
+            return EMPTY_SIBLING_TESTS
+        ordered = sorted(names)
+        str_pattern = re.compile("|".join(re.escape(name) for name in ordered))
+        if all(name.isascii() for name in ordered):
+            return AsciiMentioningSiblingTests(
+                str_pattern=str_pattern,
+                bytes_pattern=re.compile(
+                    b"|".join(re.escape(name.encode("ascii")) for name in ordered)
+                ),
+            )
+        return cls(str_pattern=str_pattern)
+
+    def matches_bytes(self, raw: bytes) -> bool:
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            return True
+        if self.str_pattern.search(text) is not None:
+            return True
+        return self.str_pattern.search(unicodedata.normalize("NFKC", text)) is not None
+
+    def matches(self, path: Path) -> bool:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return True
+        return self.matches_bytes(raw)
+
+
+@dataclass(frozen=True)
+class AsciiMentioningSiblingTests(MentioningSiblingTests):
+    """ASCII watched names scan ASCII test files directly without UTF-8 decoding."""
+
+    bytes_pattern: re.Pattern[bytes]
+
+    def matches_bytes(self, raw: bytes) -> bool:
+        if raw.isascii():
+            return self.bytes_pattern.search(raw) is not None
+        return super().matches_bytes(raw)
+
+
 @dataclass(frozen=True)
 class SiblingTestModules(ParsedModuleSetFact):
     """The test modules of the repositories the scanned modules belong to.
@@ -817,7 +903,7 @@ class SiblingTestModules(ParsedModuleSetFact):
         sources: Iterable[tuple[str, str]],
         held: frozenset[Path] = frozenset(),
         *,
-        mentioning: frozenset[str] | None = None,
+        test_filter: SiblingTestFilter = ALL_SIBLING_TESTS,
     ) -> SiblingTestModules:
         """The tests of each source's repository that the scan does not hold.
 
@@ -825,13 +911,11 @@ class SiblingTestModules(ParsedModuleSetFact):
         `held` is the scanned files, resolved. Their uses are already in the
         scan's own projections, and one file can sit under several roots, so a
         file is matched by where it is, not by the name a root gives it.
-        When `mentioning` is supplied, only test files whose source text names
-        at least one of those identifiers are parsed.
+        `test_filter` selects which discovered test files need parsing.
         """
 
-        if mentioning is not None and not mentioning:
+        if test_filter.is_empty:
             return cls(())
-        patterns = cls._mention_patterns(mentioning) if mentioning is not None else None
         policy = PythonSourcePathPolicy(include_tests=True)
         modules: list[ParsedModule] = []
         repositories = {
@@ -845,7 +929,7 @@ class SiblingTestModules(ParsedModuleSetFact):
                 if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
                 and path.resolve() not in held
                 and DeclaredRoot.nearest_pyproject(path) == pyproject
-                and (patterns is None or cls._mentions_any(path, *patterns))
+                and test_filter.matches(path)
             )
             if not paths:
                 continue
@@ -855,39 +939,6 @@ class SiblingTestModules(ParsedModuleSetFact):
                 )
             )
         return cls(tuple(modules))
-
-    @staticmethod
-    def _mention_patterns(
-        mentioning: frozenset[str],
-    ) -> tuple[re.Pattern[bytes] | None, re.Pattern[str]]:
-        ordered = sorted(mentioning)
-        str_pattern = re.compile("|".join(re.escape(name) for name in ordered))
-        bytes_pattern = (
-            re.compile(b"|".join(re.escape(name.encode("ascii")) for name in ordered))
-            if all(name.isascii() for name in ordered)
-            else None
-        )
-        return bytes_pattern, str_pattern
-
-    @staticmethod
-    def _mentions_any(
-        path: Path,
-        bytes_pattern: re.Pattern[bytes] | None,
-        str_pattern: re.Pattern[str],
-    ) -> bool:
-        try:
-            raw = path.read_bytes()
-        except OSError:
-            return True
-        if bytes_pattern is not None and raw.isascii():
-            return bytes_pattern.search(raw) is not None
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return True
-        if str_pattern.search(text) is not None:
-            return True
-        return str_pattern.search(unicodedata.normalize("NFKC", text)) is not None
 
     @staticmethod
     def repository(import_root: Path, file_path: Path) -> tuple[Path, Path | None]:
@@ -914,10 +965,10 @@ class SiblingTestModules(ParsedModuleSetFact):
         cls,
         modules: ParsedModuleSet,
         *,
-        mentioning: frozenset[str] | None = None,
+        test_filter: SiblingTestFilter = ALL_SIBLING_TESTS,
     ) -> SiblingTestModules:
         """The tests beside one module set: the set's own test parses, then the
-        tests it does not hold, optionally limited to files naming `mentioning`."""
+        tests it does not hold selected by `test_filter`."""
 
         held_tests = tuple(module for module in modules if cls.holds(module))
         unheld = cls.under(
@@ -926,7 +977,7 @@ class SiblingTestModules(ParsedModuleSetFact):
                 for module in modules
             ),
             frozenset(Path(module.file_path).resolve() for module in modules),
-            mentioning=mentioning,
+            test_filter=test_filter,
         )
         return cls((*held_tests, *unheld.modules))
 
@@ -1063,7 +1114,7 @@ class EmptySubclassIndex:
         for test_module in SiblingTestModules.under(
             ((module.import_root, module.file_path) for module in modules),
             frozenset(Path(module.file_path).resolve() for module in modules),
-            mentioning=watched,
+            test_filter=MentioningSiblingTests.for_names(watched),
         ).modules:
             for use in NameUse.in_module(test_module):
                 if use.name in watched:
@@ -1584,7 +1635,7 @@ class EnumMemberIndex:
         tests = SiblingTestModules.under(
             ((module.import_root, module.file_path) for module in modules),
             frozenset(Path(module.file_path).resolve() for module in modules),
-            mentioning=watched,
+            test_filter=MentioningSiblingTests.for_names(watched),
         )
         for test in tests.modules:
             test_member_uses, test_class_uses, _groups = enum_uses(test, watched.__contains__)
