@@ -2,14 +2,20 @@
 
 import ast
 from dataclasses import replace
+from pathlib import Path
 import pickle
 
 import pytest
 
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.native_compilation import (
     NativeCreationBackend,
     NativeExecutionUnavailable,
     NativePythonCompilation,
+)
+from nominal_refactor_advisor.product_flow import (
+    compact_product_flow_projection,
+    source_product_flow_projection,
 )
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 
@@ -122,3 +128,44 @@ def test_snapshot_keeps_scope_views_without_recompiling(monkeypatch):
     )
     with pytest.raises(ValueError, match="canonical compilation receipt"):
         restored.return_from(replace(execution))
+
+
+@pytest.mark.native_proof
+def test_compact_declaration_outcome_skips_leaf_functions_and_matches_full_compact(
+    monkeypatch,
+):
+    source = (
+        "class Holder:\n"
+        "    def leaf(self, x):\n"
+        "        return x + 1\n"
+        "    def nested(self, items):\n"
+        "        def inner(y):\n"
+        "            return y * 2\n"
+        "        return [inner(v) for v in items]\n"
+        "def top_leaf(a, b):\n"
+        "    return a + b\n"
+    )
+    disassembled: list[str] = []
+    backend = NativeCreationBackend.current()
+    original_instructions = type(backend).instructions
+
+    def traced_instructions(self, parent):
+        disassembled.append(parent.co_name)
+        return original_instructions(self, parent)
+
+    monkeypatch.setattr(type(backend), "instructions", traced_instructions)
+    compact_module = ParsedModule(
+        Path("leaf_skip.py"), "leaf_skip", ast.parse(source), source
+    )
+    compact = compact_product_flow_projection(compact_module)
+    assert "leaf" not in disassembled
+    assert "inner" not in disassembled
+    assert "top_leaf" not in disassembled
+    assert "Holder" in disassembled
+    assert "nested" in disassembled
+
+    full_module = ParsedModule(
+        Path("leaf_skip.py"), "leaf_skip", ast.parse(source), source
+    )
+    source_proj = source_product_flow_projection(full_module)
+    assert compact == source_proj.compact

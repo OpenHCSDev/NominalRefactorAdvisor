@@ -15,7 +15,6 @@ from collections.abc import (
 from dataclasses import (
     dataclass,
     field,
-    replace,
 )
 import dis
 from enum import (
@@ -1198,7 +1197,13 @@ class NativeBindingTransfer(StoredDataclassState):
         """
         if self is observation:
             return
-        if replace(self, value=None) != replace(observation, value=None):
+        if (
+            self.operation is not observation.operation
+            or self.name != observation.name
+            or self.instruction_offset != observation.instruction_offset
+            or self.operand_index != observation.operand_index
+            or self.source_span != observation.source_span
+        ):
             raise ValueError("Store observations describe a different native transfer")
         if observation.value is not None and observation.value is not self.value:
             raise ValueError("Store observation does not retain its original operand")
@@ -1606,7 +1611,9 @@ class NativeOperandStack:
     def emit(
         self, value: NativeProducedValue, instruction: dis.Instruction
     ) -> NativeProducedValue:
-        value = replace(value, source_span=NativeInstructionSite.span_for(instruction))
+        object.__setattr__(
+            value, "source_span", NativeInstructionSite.span_for(instruction)
+        )
         self.values.append(value)
         return value
 
@@ -1962,16 +1969,25 @@ class NativeCodeObservation:
         return candidates[0]
 
     def observe(self, instruction: dis.Instruction) -> None:
-        if self.observed(instruction):
+        identity = id(instruction)
+        if identity in self._walk_identities:
             return
         if self._boundary is None:
-            header = (self.code.co_firstlineno, self.code.co_firstlineno, 0, 0)
+            positions = instruction.positions
             if (
-                None not in instruction.positions
-                and tuple(instruction.positions) != header
+                positions[0] is not None
+                and positions[1] is not None
+                and positions[2] is not None
+                and positions[3] is not None
+                and (
+                    positions[0] != self.code.co_firstlineno
+                    or positions[1] != self.code.co_firstlineno
+                    or positions[2] != 0
+                    or positions[3] != 0
+                )
             ):
                 self._boundary = instruction
-        self._walk_identities.add(id(instruction))
+        self._walk_identities.add(identity)
         self._walk_positions.setdefault(instruction.offset, len(self._walk))
         self._walk.append(instruction)
 
@@ -2149,7 +2165,7 @@ class NativeInstructionSite:
     @staticmethod
     def span_for(instruction: dis.Instruction) -> SourceByteSpan | None:
         line, end_line, column, end_column = instruction.positions
-        if None in (line, end_line, column, end_column):
+        if line is None or end_line is None or column is None or end_column is None:
             return None
         return SourceByteSpan(line - 1, end_line - 1, column, end_column)
 
@@ -2710,6 +2726,8 @@ class NativeCreationInventory(NativeScopeInventoryABC):
         compilation: NativeCompilationIdentity,
         selected: tuple[NativeCodeEmission, ...],
         generated_class_frames: tuple[NativeGeneratedClassFrame, ...] = (),
+        *,
+        publish_scopes: bool = True,
     ) -> None:
         """One code-identity authority joins both creator and executing-frame receipts."""
         owners = {id(emission): emission for emission in selected}
@@ -2779,16 +2797,21 @@ class NativeCreationInventory(NativeScopeInventoryABC):
 
         for emission in self.emissions:
             bind(emission)
-        self.scopes = tuple(
-            observation.publish(origin_for(id(observation.code)))
-            for observation in self.observations
-        )
+        if publish_scopes:
+            self.scopes = tuple(
+                observation.publish(origin_for(id(observation.code)))
+                for observation in self.observations
+            )
+        else:
+            self.scopes = ()
 
     def class_captures(
         self,
         compilation: NativeCompilationIdentity,
         selected: tuple[NativeCodeEmission, ...],
         backend: NativeCreationBackend,
+        *,
+        publish_scopes: bool = True,
     ) -> dict[SourceByteSpan, NativeClassCapture]:
         builders: dict[SourceByteSpan, list[NativeInstructionSite]] = {}
         emissions: dict[tuple[SourceByteSpan, int], list[NativeCodeEmission]] = {}
@@ -2854,6 +2877,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
             compilation,
             (*selected, *(body for _, body, _ in captures.values())),
             tuple(generated_class_frames),
+            publish_scopes=publish_scopes,
         )
         for span, (builder, body, prologue) in captures.items():
             origin = body.frame_origin
@@ -2868,7 +2892,7 @@ class NativeCreationInventory(NativeScopeInventoryABC):
 
 
 @dataclass(frozen=True)
-class _NativeCompilationOutcome(ABC):
+class NativeCompilationOutcome(ABC):
     compilation: NativeCompilationIdentity
 
     @property
@@ -2937,7 +2961,7 @@ class _NativeCompilationOutcome(ABC):
         raise NotImplementedError
 
 
-class _RejectedNativeCompilation(_NativeCompilationOutcome):
+class _RejectedNativeCompilation(NativeCompilationOutcome):
 
     def class_capture_for(self, source_span: SourceByteSpan) -> NativeClassCapture:
         return OpenNativeClassCapture(
@@ -2955,7 +2979,7 @@ class _RejectedNativeCompilation(_NativeCompilationOutcome):
 
 
 @dataclass(frozen=True)
-class _NativeExecutionIndex(NativeScopeInventoryABC, _NativeCompilationOutcome):
+class _NativeExecutionIndex(NativeScopeInventoryABC, NativeCompilationOutcome):
     declarations: IdentityHandleMultiplicityProjection[
         SourceByteSpan, ExactNativeFunctionExecution
     ]
@@ -3737,20 +3761,35 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         self, code: CodeType, compilation: NativeCompilationIdentity
     ) -> NativeCreationInventory:
         """Observe creations, initial prefixes and entry stores in one native walk."""
+        return self._inventory(code, compilation, observe_leaf_scopes=True)
+
+    def _inventory(
+        self,
+        code: CodeType,
+        compilation: NativeCompilationIdentity,
+        *,
+        observe_leaf_scopes: bool,
+    ) -> NativeCreationInventory:
+        """Observe creations, initial prefixes and optionally leaf scope value stores."""
         pending = [(code, False)]
         emissions: list[NativeCodeEmission] = []
         builders: list[NativeInstructionSite] = []
         prefixes: dict[int, NativeCodeObservation] = {}
         observations: list[NativeScopeObservation] = []
+        primitive_operations = self.primitive_operations
         while pending:
             parent, requires_prefix = pending.pop()
             has_children = any(
                 isinstance(value, CodeType) for value in parent.co_consts
             )
-            prefix = NativeScopeObservation(parent, self.primitive_operations)
+            if not observe_leaf_scopes and not has_children and not requires_prefix:
+                continue
+            prefix = NativeScopeObservation(parent, primitive_operations)
             prefixes[id(parent)] = prefix
             observations.append(prefix)
             parent_builders: set[SourceByteSpan] = set()
+            observe_values = observe_leaf_scopes or has_children
+            observe_entry = observe_leaf_scopes
             for instruction in self.instructions(parent):
                 prefix.observe(instruction)
                 previous = prefix.current
@@ -3774,11 +3813,13 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
                         if prefix.boundary is None:
                             prefix.emissions.append(emission)
                     prefix.current = self.observe(prefix.current, instruction, emission)
-                prefix.observe_values(
-                    instruction,
-                    previous,
-                    after_prologue=not requires_prefix or prefix.boundary is not None,
-                )
+                if observe_values:
+                    prefix.observe_values(
+                        instruction,
+                        previous,
+                        after_prologue=observe_entry
+                        and (not requires_prefix or prefix.boundary is not None),
+                    )
         return NativeCreationInventory(
             code,
             tuple(emissions),
@@ -3812,10 +3853,19 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             NativeAnnotationOrderUnavailable.UNSUPPORTED_COMPILER,
         )
 
+    _current_instances: ClassVar[
+        dict[type[NativeCreationBackend], NativeCreationBackend]
+    ] = {}
+
     @classmethod
     def current(cls) -> NativeCreationBackend:
         native_identity = CompilerIdentity.running()
-        return cls.__registry__.get(native_identity, SpanOnlyCreationBackend)()
+        backend_cls = cls.__registry__.get(native_identity, SpanOnlyCreationBackend)
+        instance = cls._current_instances.get(backend_cls)
+        if instance is None:
+            instance = backend_cls()
+            cls._current_instances[backend_cls] = instance
+        return instance
 
     @abstractmethod
     def instructions(self, parent: CodeType) -> Iterable[dis.Instruction]:
@@ -3852,8 +3902,28 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
     def project(
         self, code: CodeType, compilation: NativeCompilationIdentity
     ) -> _NativeExecutionIndex:
+        return self._project_inventory(
+            self.inventory(code, compilation), compilation, publish_scopes=True
+        )
+
+    def project_declarations(
+        self, code: CodeType, compilation: NativeCompilationIdentity
+    ) -> _NativeExecutionIndex:
+        """Project function and class capture declarations without leaf scope receipts."""
+        return self._project_inventory(
+            self._inventory(code, compilation, observe_leaf_scopes=False),
+            compilation,
+            publish_scopes=False,
+        )
+
+    def _project_inventory(
+        self,
+        inventory: NativeCreationInventory,
+        compilation: NativeCompilationIdentity,
+        *,
+        publish_scopes: bool,
+    ) -> _NativeExecutionIndex:
         buckets: dict[SourceByteSpan, list[NativeCodeEmission]] = {}
-        inventory = self.inventory(code, compilation)
         incomplete = any(site.source_span is None for site in inventory.builder_loads)
         for emission in inventory.emissions:
             span = emission.source_span
@@ -3870,7 +3940,10 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             else:
                 selected_emissions.append(selected)
         class_captures = inventory.class_captures(
-            compilation, tuple(selected_emissions), self
+            compilation,
+            tuple(selected_emissions),
+            self,
+            publish_scopes=publish_scopes,
         )
         exact = {
             cast(SourceByteSpan, emission.source_span): cast(
@@ -5000,10 +5073,22 @@ class NativePythonCompilation(SourceLineSegmentAuthority):
         return compile(self.source, filename, "exec", dont_inherit=True, optimize=0)
 
     @cached_property
-    def execution_outcome(self) -> _NativeCompilationOutcome:
+    def execution_outcome(self) -> NativeCompilationOutcome:
         """This source's native observation, projected under its own identity."""
         try:
             return NativeCreationBackend.current().project(
+                self.compile(), self.identity
+            )
+        except SyntaxError:
+            return _RejectedNativeCompilation(self.identity)
+
+    @cached_property
+    def declaration_outcome(self) -> NativeCompilationOutcome:
+        """Function and class capture declarations without leaf scope receipts."""
+        if "execution_outcome" in self.__dict__:
+            return self.execution_outcome
+        try:
+            return NativeCreationBackend.current().project_declarations(
                 self.compile(), self.identity
             )
         except SyntaxError:
