@@ -734,3 +734,45 @@ def test_a_re_export_cycle_stops_at_the_name_it_comes_back_to() -> None:
     aliases = {"pkg": {"Y": "pkg.other.Z"}, "pkg.other": {"Z": "pkg.Y"}}
     assert followed_reexports("pkg.Y", aliases) == "pkg.other.Z"
     assert followed_reexports("pkg.unbound", aliases) == "pkg.unbound"
+
+
+def test_block_fields_handles_partial_covering_owner() -> None:
+    """When two plain owners each hold part of a block shared by two dataclasses,
+    construction_kept checks each covering owner against the block without crashing
+    on names that owner does not declare."""
+
+    source = (
+        "from dataclasses import dataclass\n"
+        "\n"
+        "class HoldA:\n"
+        "    def a(self) -> int:\n"
+        "        return 1\n"
+        "\n"
+        "class HoldB:\n"
+        "    def b(self) -> int:\n"
+        "        return 2\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class First:\n"
+        "    x: int\n"
+        "    def a(self) -> int:\n"
+        "        return 1\n"
+        "    def b(self) -> int:\n"
+        "        return 2\n"
+        "\n"
+        "@dataclass(frozen=True)\n"
+        "class Second:\n"
+        "    y: int\n"
+        "    def a(self) -> int:\n"
+        "        return 1\n"
+        "    def b(self) -> int:\n"
+        "        return 2\n"
+    )
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules((_module("pkg.m", source),))
+    )
+    scan = ClassOverlapVerdicts(projections, build_compact_class_family_index(projections))
+
+    assert scan.block_fields("pkg.m.HoldA", ("a", "b")) == frozenset()
+    assert scan.candidates
+

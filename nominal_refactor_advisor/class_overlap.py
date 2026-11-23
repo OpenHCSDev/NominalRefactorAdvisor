@@ -965,8 +965,11 @@ class ClassOverlapVerdicts(DeclaredC3):
         """The names of the block that the class declares as fields, own or
         inherited: only a block with one needs a dataclass to hold it."""
 
+        resolved = self.resolved_declarations(symbol)
         return frozenset(
-            name for name in block if self.declaration(symbol, name).kind.is_field
+            name
+            for name in block
+            if (found := resolved.get(name)) is not None and found.declaration.kind.is_field
         )
 
     def _inheriting_pairs_of(self, symbols: Iterable[str]) -> frozenset[tuple[str, str]]:
