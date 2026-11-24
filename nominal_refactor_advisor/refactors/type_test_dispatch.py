@@ -234,7 +234,8 @@ class DispatchSite(ABC):
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         raise NotImplementedError
 
-    def render_call_replacement(self, call_expr: str) -> str:
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
         return call_expr
 
     def tested_expr_nodes(self) -> tuple[ast.AST, ...]:
@@ -279,8 +280,19 @@ class StatementDispatchSite(DispatchSite):
 class ReturningStatementDispatchSite(StatementDispatchSite):
     """Returning `if/elif/else`, early-return `if`, or `match` replaced by `return x.method(...)`."""
 
-    def render_call_replacement(self, call_expr: str) -> str:
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
         return f"return {call_expr}"
+
+
+@dataclass(frozen=True)
+class PrefixGuardedStatementDispatchSite(StatementDispatchSite):
+    """Void `if PREFIX and isinstance(x, Sub): body` replaced by `if PREFIX:\\n    x.method(...)`."""
+
+    guard_expr: ast.expr
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return f"if {ast.unparse(self.guard_expr)}:\n{line_indent}    {call_expr}"
 
 
 def _is_docstring_stmt(statement: ast.stmt) -> bool:
@@ -348,15 +360,175 @@ def _statement_list_children(block: list[ast.stmt]) -> list[tuple[list[ast.stmt]
     return found
 
 
+def _extract_compound_if_site(
+    container: list[ast.stmt],
+    index: int,
+    stmt: ast.If,
+    whole_fn_body: list[ast.stmt],
+    test_line: int,
+) -> DispatchSite | None:
+    """Extract `if [PREFIX and] isinstance(x, Sub) [and REST]:` or `if not isinstance(x, Sub) or REST:`."""
+
+    if not isinstance(stmt.test, ast.BoolOp) or len(stmt.test.values) < 2:
+        return None
+    if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
+        return None
+    first_test = _parse_type_test(stmt.test.values[0])
+    if first_test is None:
+        # Void `if PREFIX and isinstance(x, Sub) [and SUFFIX]: body` preserves PREFIX short-circuiting.
+        if (
+            not isinstance(stmt.test.op, ast.And)
+            or stmt.orelse
+            or _has_any_return(stmt.body)
+        ):
+            return None
+        match_index: int | None = None
+        matched_test: ParsedTypeTest | None = None
+        for idx, value in enumerate(stmt.test.values[1:], start=1):
+            parsed = _parse_type_test(value)
+            if parsed is not None and not parsed.negated and value.lineno == test_line:
+                match_index = idx
+                matched_test = parsed
+                break
+        if match_index is None or matched_test is None:
+            return None
+        prefix_values = stmt.test.values[:match_index]
+        guard_expr: ast.expr = (
+            prefix_values[0]
+            if len(prefix_values) == 1
+            else ast.BoolOp(op=ast.And(), values=prefix_values)
+        )
+        suffix_values = stmt.test.values[match_index + 1 :]
+        if suffix_values:
+            suffix_expr: ast.expr = (
+                suffix_values[0]
+                if len(suffix_values) == 1
+                else ast.BoolOp(op=ast.And(), values=suffix_values)
+            )
+            arm_body_guarded: tuple[ast.stmt, ...] = (
+                ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
+            )
+        else:
+            arm_body_guarded = tuple(stmt.body)
+        return PrefixGuardedStatementDispatchSite(
+            subject=matched_test.subject,
+            kind=matched_test.kind,
+            arms=(
+                TypeTestArm(
+                    matched_test.tested_exprs, arm_body_guarded, matched_test.exact
+                ),
+            ),
+            default_body=(ast.Pass(),),
+            is_whole_function=False,
+            test_nodes=(matched_test.test_node,),
+            replaced_nodes=(stmt,),
+            guard_expr=guard_expr,
+        )
+    rest_values = stmt.test.values[1:]
+    rest_expr: ast.expr = (
+        rest_values[0]
+        if len(rest_values) == 1
+        else ast.BoolOp(op=stmt.test.op, values=rest_values)
+    )
+    if isinstance(stmt.test.op, ast.And) and not first_test.negated:
+        # `if isinstance(x, Sub) and REST: body [else: orelse]`
+        if stmt.orelse:
+            arm_stmt: ast.stmt = ast.If(
+                test=rest_expr, body=list(stmt.body), orelse=list(stmt.orelse)
+            )
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            return _build_statement_site(
+                first_test,
+                (TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
+                tuple(stmt.orelse),
+                (stmt,),
+                is_whole,
+                (first_test.test_node,),
+            )
+        tail = container[index + 1 :]
+        if _always_terminates(stmt.body) and tail and _always_terminates(tail):
+            arm_body: tuple[ast.stmt, ...] = (
+                ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            is_whole = container is whole_fn_body and index == 0
+            return _build_statement_site(
+                first_test,
+                (TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                tuple(tail),
+                tuple(container[index:]),
+                is_whole,
+                (first_test.test_node,),
+            )
+        if not _has_any_return(stmt.body):
+            arm_stmt = ast.If(test=rest_expr, body=list(stmt.body), orelse=[])
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
+                default_body=(ast.Pass(),),
+                is_whole_function=is_whole,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=(stmt,),
+            )
+        return None
+    if isinstance(stmt.test.op, ast.Or) and first_test.negated:
+        # `if not isinstance(x, Sub) or REST: default [else: orelse]`
+        if stmt.orelse:
+            arm_stmt = ast.If(
+                test=rest_expr, body=list(stmt.body), orelse=list(stmt.orelse)
+            )
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            return _build_statement_site(
+                first_test,
+                (TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
+                tuple(stmt.body),
+                (stmt,),
+                is_whole,
+                (first_test.test_node,),
+            )
+        if len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Raise):
+            arm_stmt = ast.If(test=rest_expr, body=list(stmt.body), orelse=[])
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
+                default_body=tuple(stmt.body),
+                is_whole_function=is_whole,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=(stmt,),
+            )
+        tail = container[index + 1 :]
+        if _always_terminates(stmt.body) and tail and _always_terminates(tail):
+            arm_body = (
+                ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            is_whole = container is whole_fn_body and index == 0
+            return _build_statement_site(
+                first_test,
+                (TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                tuple(stmt.body),
+                tuple(container[index:]),
+                is_whole,
+                (first_test.test_node,),
+            )
+        return None
+    return None
+
+
 def _extract_if_site(
     container: list[ast.stmt],
     index: int,
     stmt: ast.If,
     whole_fn_body: list[ast.stmt],
+    test_line: int,
 ) -> DispatchSite | None:
     first_test = _parse_type_test(stmt.test)
     if first_test is None:
-        return None
+        return _extract_compound_if_site(container, index, stmt, whole_fn_body, test_line)
     subject_dump = ast.dump(first_test.subject)
 
     # Negated single `if not test:` with early return/raise or else.
@@ -498,23 +670,41 @@ def _build_statement_site(
 
 def _extract_match_pattern_classes(
     pattern: ast.pattern,
-) -> tuple[tuple[ast.expr, ...], str | None] | None:
+) -> tuple[tuple[ast.expr, ...], str | None, tuple[tuple[str, str], ...]] | None:
     match pattern:
-        case ast.MatchClass(cls=cls_expr, patterns=[], kwd_attrs=[], kwd_patterns=[]):
-            return ((cls_expr,), None)
+        case ast.MatchClass(
+            cls=cls_expr, patterns=[], kwd_attrs=kwd_attrs, kwd_patterns=kwd_patterns
+        ):
+            bindings: list[tuple[str, str]] = []
+            for attr, subpattern in zip(kwd_attrs, kwd_patterns, strict=True):
+                match subpattern:
+                    case ast.MatchAs(pattern=None, name=str() as bound_name):
+                        bindings.append((attr, bound_name))
+                    case _:
+                        return None
+            return ((cls_expr,), None, tuple(bindings))
         case ast.MatchAs(
-            pattern=ast.MatchClass(cls=cls_expr, patterns=[], kwd_attrs=[], kwd_patterns=[]),
+            pattern=ast.MatchClass(
+                cls=cls_expr, patterns=[], kwd_attrs=kwd_attrs, kwd_patterns=kwd_patterns
+            ),
             name=str() as alias,
         ):
-            return ((cls_expr,), alias)
+            bindings = []
+            for attr, subpattern in zip(kwd_attrs, kwd_patterns, strict=True):
+                match subpattern:
+                    case ast.MatchAs(pattern=None, name=str() as bound_name):
+                        bindings.append((attr, bound_name))
+                    case _:
+                        return None
+            return ((cls_expr,), alias, tuple(bindings))
         case ast.MatchOr(patterns=subpatterns) if subpatterns:
             classes: list[ast.expr] = []
             for sub in subpatterns:
                 extracted = _extract_match_pattern_classes(sub)
-                if extracted is None or extracted[1] is not None:
+                if extracted is None or extracted[1] is not None or extracted[2]:
                     return None
                 classes.extend(extracted[0])
-            return (tuple(classes), None)
+            return (tuple(classes), None, ())
     return None
 
 
@@ -541,8 +731,19 @@ def _extract_match_site(
         extracted = _extract_match_pattern_classes(case.pattern)
         if extracted is None:
             return None
-        cls_exprs, alias = extracted
-        arms.append(TypeTestArm(cls_exprs, tuple(case.body), False, alias=alias))
+        cls_exprs, alias, attr_bindings = extracted
+        binding_stmts: tuple[ast.stmt, ...] = tuple(
+            ast.Assign(
+                targets=[ast.Name(id=bound_name, ctx=ast.Store())],
+                value=ast.Attribute(
+                    value=copy.deepcopy(stmt.subject), attr=attr, ctx=ast.Load()
+                ),
+            )
+            for attr, bound_name in attr_bindings
+        )
+        arms.append(
+            TypeTestArm(cls_exprs, (*binding_stmts, *case.body), False, alias=alias)
+        )
     if not arms:
         return None
     if default_body is None:
@@ -597,13 +798,81 @@ def _extract_ternary_site(
     )
 
 
+def _extract_boolean_expr_site(
+    expr: ast.expr,
+    is_whole_return: bool,
+) -> BooleanPredicateDispatchSite | None:
+    """Extract bare `isinstance(x, Sub)` or compound `isinstance(x, Sub) and/or REST`."""
+
+    parsed = _parse_type_test(expr)
+    if parsed is not None:
+        true_val = not parsed.negated
+        return BooleanPredicateDispatchSite(
+            subject=parsed.subject,
+            kind=parsed.kind,
+            arms=(
+                TypeTestArm(
+                    parsed.tested_exprs,
+                    (ast.Return(value=ast.Constant(value=true_val)),),
+                    parsed.exact,
+                ),
+            ),
+            default_body=(ast.Return(value=ast.Constant(value=not true_val)),),
+            is_whole_function=is_whole_return,
+            test_nodes=(parsed.test_node,),
+            predicate_expr=expr,
+        )
+    if not isinstance(expr, ast.BoolOp) or len(expr.values) < 2:
+        return None
+    first = _parse_type_test(expr.values[0])
+    if first is None:
+        return None
+    rest_values = expr.values[1:]
+    rest_expr: ast.expr = (
+        rest_values[0]
+        if len(rest_values) == 1
+        else ast.BoolOp(op=expr.op, values=rest_values)
+    )
+    if isinstance(expr.op, ast.And):
+        if first.negated:
+            arm_body: tuple[ast.stmt, ...] = (ast.Return(value=ast.Constant(value=False)),)
+            default_body: tuple[ast.stmt, ...] = (ast.Return(value=rest_expr),)
+        else:
+            arm_body = (ast.Return(value=rest_expr),)
+            default_body = (ast.Return(value=ast.Constant(value=False)),)
+    else:
+        if first.negated:
+            arm_body = (ast.Return(value=rest_expr),)
+            default_body = (ast.Return(value=ast.Constant(value=True)),)
+        else:
+            arm_body = (ast.Return(value=ast.Constant(value=True)),)
+            default_body = (ast.Return(value=rest_expr),)
+    return BooleanPredicateDispatchSite(
+        subject=first.subject,
+        kind=first.kind,
+        arms=(TypeTestArm(first.tested_exprs, arm_body, first.exact),),
+        default_body=default_body,
+        is_whole_function=is_whole_return,
+        test_nodes=(first.test_node,),
+        predicate_expr=expr,
+    )
+
+
 def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite | None:
     """Locate the normalized type-test dispatch in `function` whose test sits on `test_line`."""
 
     body = _body_without_docstring(function)
     for container, index, stmt in _statement_list_children(body):
-        if isinstance(stmt, ast.If) and stmt.test.lineno == test_line:
-            return _extract_if_site(container, index, stmt, body)
+        if isinstance(stmt, ast.If) and (
+            stmt.test.lineno == test_line
+            or (
+                isinstance(stmt.test, ast.BoolOp)
+                and any(value.lineno == test_line for value in stmt.test.values)
+            )
+        ):
+            extracted = _extract_if_site(container, index, stmt, body, test_line)
+            if extracted is not None:
+                return extracted
         if isinstance(stmt, ast.Match) and (
             stmt.lineno == test_line
             or any(case.pattern.lineno == test_line for case in stmt.cases)
@@ -614,32 +883,30 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                 case ast.Return(value=ast.IfExp() as ifexp) if ifexp.test.lineno == test_line:
                     is_whole = container is body and len(body) == 1
                     return _extract_ternary_site(ifexp, is_whole)
-                case ast.Return(value=ast.expr() as returned) if returned.lineno == test_line:
-                    parsed = _parse_type_test(returned)
-                    if parsed is not None:
-                        is_whole = container is body and len(body) == 1
-                        true_val = not parsed.negated
-                        return BooleanPredicateDispatchSite(
-                            subject=parsed.subject,
-                            kind=parsed.kind,
-                            arms=(
-                                TypeTestArm(
-                                    parsed.tested_exprs,
-                                    (ast.Return(value=ast.Constant(value=true_val)),),
-                                    parsed.exact,
-                                ),
-                            ),
-                            default_body=(
-                                ast.Return(value=ast.Constant(value=not true_val)),
-                            ),
-                            is_whole_function=is_whole,
-                            test_nodes=(parsed.test_node,),
-                            predicate_expr=parsed.test_node,
-                        )
-    # Fallback: ternary `IfExp` anywhere inside the function on `test_line`.
+                case ast.Return(value=ast.expr() as returned) if (
+                    returned.lineno == test_line
+                    or (
+                        isinstance(returned, ast.BoolOp)
+                        and bool(returned.values)
+                        and returned.values[0].lineno == test_line
+                    )
+                ):
+                    is_whole = container is body and len(body) == 1
+                    extracted = _extract_boolean_expr_site(returned, is_whole)
+                    if extracted is not None:
+                        return extracted
+    # Fallback: ternary `IfExp` or compound `BoolOp` anywhere inside the function on `test_line`.
     for node in ast.walk(function):
         if isinstance(node, ast.IfExp) and node.test.lineno == test_line:
             return _extract_ternary_site(node, is_whole_return=False)
+        if (
+            isinstance(node, ast.BoolOp)
+            and bool(node.values)
+            and node.values[0].lineno == test_line
+        ):
+            extracted = _extract_boolean_expr_site(node, is_whole_return=False)
+            if extracted is not None:
+                return extracted
     return None
 
 
@@ -659,11 +926,68 @@ def _function_local_names(function: FunctionNode) -> frozenset[str]:
     return frozenset(names)
 
 
+@dataclass(frozen=True)
+class CapturedArgument:
+    """One outer local forwarded into the pushed method, renaming on receiver collision."""
+
+    call_expr: str
+    param_name: str
+
+
+def _outer_receiver_alias(
+    function: FunctionNode,
+    site: DispatchSite,
+    raw_bodies: Sequence[tuple[ast.stmt, ...]],
+) -> str | None:
+    """Fresh parameter name when the outer function binds `receiver` independently of `site.subject`."""
+
+    receiver = site.kind.receiver
+    if isinstance(site.subject, ast.Name) and site.subject.id == receiver:
+        return None
+    fn_locals = _function_local_names(function)
+    if receiver not in fn_locals:
+        return None
+    subject_dump = ast.dump(site.subject)
+    uses_outer_receiver = False
+
+    def scan(node: ast.AST) -> None:
+        nonlocal uses_outer_receiver
+        if uses_outer_receiver:
+            return
+        if isinstance(node, ast.expr) and ast.dump(node) == subject_dump:
+            return
+        if isinstance(node, ast.Name) and node.id == receiver:
+            uses_outer_receiver = True
+            return
+        for child in ast.iter_child_nodes(node):
+            scan(child)
+
+    for body in raw_bodies:
+        for stmt in body:
+            scan(stmt)
+    if not uses_outer_receiver:
+        return None
+    used_names = set(fn_locals)
+    for body in raw_bodies:
+        for stmt in body:
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Name):
+                    used_names.add(node.id)
+    for candidate in ("owner", "caller", "other"):
+        if candidate not in used_names:
+            return candidate
+    suffix = 1
+    while f"outer_{receiver}_{suffix}" in used_names:
+        suffix += 1
+    return f"outer_{receiver}_{suffix}"
+
+
 def _rewrite_subject_to_receiver(
     statements: tuple[ast.stmt, ...],
     subject: ast.expr,
     receiver: str,
     alias: str | None = None,
+    outer_receiver_param: str | None = None,
 ) -> tuple[ast.stmt, ...]:
     subject_dump = ast.dump(subject)
 
@@ -674,6 +998,10 @@ def _rewrite_subject_to_receiver(
             match node:
                 case ast.Name(id=name, ctx=ast.Load()) if name == alias:
                     return ast.Name(id=receiver, ctx=ast.Load())
+                case ast.Name(id=name, ctx=ast.Load()) if (
+                    outer_receiver_param is not None and name == receiver
+                ):
+                    return ast.Name(id=outer_receiver_param, ctx=ast.Load())
             return super().visit(node)
 
     rewriter = _Rewriter()
@@ -684,12 +1012,13 @@ def _analyze_arm_bodies(
     function: FunctionNode,
     site: DispatchSite,
     rewritten_bodies: Sequence[tuple[ast.stmt, ...]],
-) -> tuple[tuple[str, ...], bool]:
-    """Validate purity of rewritten bodies and return `(captured_locals, is_async)`."""
+    outer_receiver_param: str | None = None,
+) -> tuple[tuple[CapturedArgument, ...], bool]:
+    """Validate purity of rewritten bodies and return `(captured_args, is_async)`."""
 
     fn_locals = _function_local_names(function)
     receiver = site.kind.receiver
-    captured: list[str] = []
+    captured: list[CapturedArgument] = []
     seen_captured: set[str] = set()
     uses_await = False
 
@@ -722,13 +1051,21 @@ def _analyze_arm_bodies(
             for node in ast.walk(stmt):
                 match node:
                     case ast.Name(id=name, ctx=ast.Load()) if (
+                        outer_receiver_param is not None
+                        and name == outer_receiver_param
+                        and name not in local_stores
+                        and name not in seen_captured
+                    ):
+                        seen_captured.add(name)
+                        captured.append(CapturedArgument(call_expr=receiver, param_name=name))
+                    case ast.Name(id=name, ctx=ast.Load()) if (
                         name != receiver
                         and name in fn_locals
                         and name not in local_stores
                         and name not in seen_captured
                     ):
                         seen_captured.add(name)
-                        captured.append(name)
+                        captured.append(CapturedArgument(call_expr=name, param_name=name))
                     case ast.Name(id=name, ctx=ast.Store() | ast.Del()) if name == receiver:
                         raise NeedsInput(
                             f"`{function.name}` rebinds the tested subject `{ast.unparse(site.subject)}`",
@@ -1004,7 +1341,7 @@ def _render_method(
     if docstring:
         lines.append(f'    """{docstring}"""')
     for stmt in body:
-        for raw_line in ast.unparse(stmt).splitlines():
+        for raw_line in ast.unparse(ast.fix_missing_locations(stmt)).splitlines():
             lines.append(f"    {raw_line}" if raw_line else "")
     return "\n".join(lines)
 
@@ -1143,7 +1480,7 @@ class TypeTestDispatchProof:
     base_symbol: str
     arms: tuple[ResolvedTargetArm, ...]
     default_body: tuple[ast.stmt, ...]
-    params: tuple[str, ...]
+    captured_args: tuple[CapturedArgument, ...]
     is_async: bool
     method_name: str
     docstring: str | None
@@ -1263,6 +1600,9 @@ class TypeTestDispatchProof:
         )
 
         receiver = site.kind.receiver
+        outer_receiver_param = _outer_receiver_alias(
+            function, site, (*(arm.body for arm in site.arms), site.default_body)
+        )
         rewritten_arms: list[ResolvedTargetArm] = []
         for arm, arm_symbols in zip(site.arms, resolved_arm_symbols):
             targets = tuple(
@@ -1280,23 +1620,33 @@ class TypeTestDispatchProof:
                     targets=targets,
                     symbols=arm_symbols,
                     body=_rewrite_subject_to_receiver(
-                        arm.body, site.subject, receiver, alias=arm.alias
+                        arm.body,
+                        site.subject,
+                        receiver,
+                        alias=arm.alias,
+                        outer_receiver_param=outer_receiver_param,
                     ),
                     exact=arm.exact,
                 )
             )
         rewritten_default = _rewrite_subject_to_receiver(
-            site.default_body, site.subject, receiver
+            site.default_body,
+            site.subject,
+            receiver,
+            outer_receiver_param=outer_receiver_param,
         )
 
-        params, is_async = _analyze_arm_bodies(
+        captured_args, is_async = _analyze_arm_bodies(
             function,
             site,
             (*(arm.body for arm in rewritten_arms), rewritten_default),
+            outer_receiver_param=outer_receiver_param,
         )
 
         # Verify cross-module imports are cycle-free and unambiguous during proof.
-        local_exclusions = frozenset((receiver, *params))
+        local_exclusions = frozenset(
+            (receiver, *(arg.param_name for arg in captured_args))
+        )
         rationale_probe = f"Push `{method_name}` onto `{base.qualname}`."
         _cross_module_imports_for_body(
             snapshot,
@@ -1328,7 +1678,7 @@ class TypeTestDispatchProof:
             base_symbol=base_symbol,
             arms=tuple(rewritten_arms),
             default_body=rewritten_default,
-            params=params,
+            captured_args=captured_args,
             is_async=is_async,
             method_name=method_name,
             docstring=docstring.strip() if docstring else None,
@@ -1431,23 +1781,29 @@ class TypeTestDispatchProof:
             replacements_by_file.setdefault(file_path, []).append((start, end, text))
 
         # 1. Consumer call replacement.
-        call_args = ", ".join(self.params)
+        call_args = ", ".join(arg.call_expr for arg in self.captured_args)
+        param_names = tuple(arg.param_name for arg in self.captured_args)
         call = f"{ast.unparse(self.site.subject)}.{self.method_name}({call_args})"
         if self.is_async:
             call = f"await {call}"
-        start, end = self.site.replaced_offsets(geometry(self.source_path))
+        source_geometry = geometry(self.source_path)
+        start, end = self.site.replaced_offsets(source_geometry)
+        line_start = source_geometry.source.rfind("\n", 0, start) + 1
+        line_indent = source_geometry.source[line_start:start]
+        if not line_indent.isspace():
+            line_indent = ""
         add_span(
             self.source_path,
             start,
             end,
-            self.site.render_call_replacement(call),
+            self.site.render_call_replacement(call, line_indent),
         )
 
         # 2. Base method and per-arm overrides.
         base_method = _render_method(
             self.site.kind,
             self.method_name,
-            self.params,
+            param_names,
             self.default_body,
             is_async=self.is_async,
             docstring=self.docstring,
@@ -1460,7 +1816,7 @@ class TypeTestDispatchProof:
             arm_method = _render_method(
                 self.site.kind,
                 self.method_name,
-                self.params,
+                param_names,
                 resolved_arm.body,
                 is_async=self.is_async,
             )
@@ -1474,7 +1830,7 @@ class TypeTestDispatchProof:
 
         # 3. Cross-module imports for moved bodies and obsolete-import cleanup at consumer.
         parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
-        local_exclusions = frozenset((self.site.kind.receiver, *self.params))
+        local_exclusions = frozenset((self.site.kind.receiver, *param_names))
         extra_edits: list[NominalSourceEdit] = [
             *_cross_module_imports_for_body(
                 snapshot,

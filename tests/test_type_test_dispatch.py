@@ -360,3 +360,252 @@ def test_pushes_negated_raise_guard_and_boolean_return_predicate(tmp_path: Path)
     else:
         raise AssertionError("expected RuntimeError for non-Resize Event")
     assert _findings(tmp_path) == []
+
+
+def test_pushes_compound_and_return_with_outer_self_rename(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/messages.py": (
+                "class Message:\n"
+                "    pass\n\n\n"
+                "class CoreEventMessage(Message):\n"
+                "    def __init__(self, topic: str, seq: int) -> None:\n"
+                "        self.topic = topic\n"
+                "        self.seq = seq\n\n\n"
+                "class CarrierMatcher:\n"
+                "    def __init__(self, topic: str, seq: int) -> None:\n"
+                "        self.topic = topic\n"
+                "        self.seq = seq\n\n"
+                "    def matches_carrier(self, message: Message) -> bool:\n"
+                "        return (\n"
+                "            isinstance(message, CoreEventMessage)\n"
+                "            and self.topic == message.topic\n"
+                "            and self.seq <= message.seq\n"
+                "        )\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    evaluation = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        finding, _snapshot(tmp_path)
+    )
+    recipe = evaluation.executable_recipe
+    _apply(tmp_path, recipe)
+
+    after = (tmp_path / "pkg" / "messages.py").read_text()
+    assert "isinstance" not in after
+    assert "message.matches_carrier(self)" in after
+    assert "def matches_carrier(self, owner):" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    matcher = ns["CarrierMatcher"]("bus", 1)  # type: ignore[operator]
+    b = ns["CoreEventMessage"]("bus", 2)  # type: ignore[operator]
+    earlier = ns["CoreEventMessage"]("bus", 0)  # type: ignore[operator]
+    c = ns["CoreEventMessage"]("other", 2)  # type: ignore[operator]
+    plain = ns["Message"]()  # type: ignore[operator]
+    assert matcher.matches_carrier(b) is True
+    assert matcher.matches_carrier(earlier) is False
+    assert matcher.matches_carrier(c) is False
+    assert matcher.matches_carrier(plain) is False
+    assert _findings(tmp_path) == []
+
+
+def test_pushes_prefix_guarded_void_if_and_match_keyword_bindings(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/offers.py": (
+                "class Offer:\n"
+                "    pass\n\n\n"
+                "class TailnetOffer(Offer):\n"
+                "    def __init__(self, endpoint: str) -> None:\n"
+                "        self.endpoint = endpoint\n"
+                "        self.settled: list[str] = []\n\n\n"
+                "def resolve_endpoint(offer: Offer) -> str:\n"
+                "    match offer:\n"
+                "        case TailnetOffer(endpoint=served):\n"
+                "            return f'https://{served}'\n"
+                "    return 'none'\n\n\n"
+                "def publish(offer: Offer, answers: tuple[str, ...]) -> None:\n"
+                "    if answers and isinstance(offer, TailnetOffer):\n"
+                "        offer.settled.extend(answers)\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    by_fn = {f.evidence[0].symbol: f for f in findings}
+
+    match_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["resolve_endpoint"], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, match_eval.executable_recipe)
+
+    (publish_finding,) = _findings(tmp_path)
+    unpicked = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        publish_finding, _snapshot(tmp_path)
+    )
+    assert unpicked.recipe is None
+    assert NeededInput.OWNER_PICK in unpicked.needs
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=publish_finding.stable_id,
+                owner="publish",
+                because="tailnet offers settle answered deliveries",
+                name="settle_answers",
+                judgement="Record settled answer IDs when applicable.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((publish_finding,))
+    publish_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, publish_eval.executable_recipe)
+
+    after = (tmp_path / "pkg" / "offers.py").read_text()
+    assert "isinstance" not in after
+    assert "match " not in after
+    assert "if answers:\n        offer.settle_answers(answers)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    tailnet = ns["TailnetOffer"]("bus.ts.net")  # type: ignore[operator]
+    plain = ns["Offer"]()  # type: ignore[operator]
+    assert ns["resolve_endpoint"](tailnet) == "https://bus.ts.net"  # type: ignore[operator]
+    assert ns["resolve_endpoint"](plain) == "none"  # type: ignore[operator]
+    ns["publish"](tailnet, ())  # type: ignore[operator]
+    assert tailnet.settled == []
+    ns["publish"](tailnet, ("a1", "a2"))  # type: ignore[operator]
+    assert tailnet.settled == ["a1", "a2"]
+    ns["publish"](plain, ("a1",))  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_pushes_compound_or_return_and_embedded_issubclass_conjunction(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/settings.py": (
+                "class Declaration:\n"
+                "    pass\n\n\n"
+                "class SettingsDeclaration(Declaration):\n"
+                "    @classmethod\n"
+                "    def admits_field(cls, field_name: str) -> bool:\n"
+                "        return field_name.startswith('ok_')\n\n\n"
+                "def allows_missing_or_ready(decl: Declaration) -> bool:\n"
+                "    return not isinstance(decl, SettingsDeclaration) or decl.admits_field('ok_x')\n\n\n"
+                "def admits(owner: type[Declaration], field_name: str) -> bool:\n"
+                "    key = field_name.strip()\n"
+                "    return (\n"
+                "        issubclass(owner, SettingsDeclaration)\n"
+                "        and owner.admits_field(key)\n"
+                "    )\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    by_fn = {f.evidence[0].symbol: f for f in findings}
+
+    # Whole-function `not isinstance(...) or REST` synthesizes automatically.
+    or_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["allows_missing_or_ready"], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, or_eval.executable_recipe)
+
+    # Embedded `issubclass(...) and REST` asks for OWNER_PICK, then executes cleanly.
+    re_findings = _findings(tmp_path)
+    assert len(re_findings) == 1
+    admits_finding = re_findings[0]
+    unpicked = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        admits_finding, _snapshot(tmp_path)
+    )
+    assert unpicked.recipe is None
+    assert NeededInput.OWNER_PICK in unpicked.needs
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=admits_finding.stable_id,
+                owner="admits",
+                because="settings declarations own field admission",
+                name="admits_setting_field",
+                judgement="Whether this declaration admits the named field.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((admits_finding,))
+    admits_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, admits_eval.executable_recipe)
+
+    after = (tmp_path / "pkg" / "settings.py").read_text()
+    assert "isinstance" not in after
+    assert "issubclass" not in after
+    assert "@classmethod" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["allows_missing_or_ready"](ns["Declaration"]()) is True  # type: ignore[operator]
+    assert ns["allows_missing_or_ready"](ns["SettingsDeclaration"]()) is True  # type: ignore[operator]
+    assert ns["admits"](ns["SettingsDeclaration"], " ok_a ") is True  # type: ignore[operator]
+    assert ns["admits"](ns["SettingsDeclaration"], " bad ") is False  # type: ignore[operator]
+    assert ns["admits"](ns["Declaration"], " ok_a ") is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_pushes_compound_if_and_guard_and_or_early_return(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/nodes.py": (
+                "class Node:\n"
+                "    pass\n\n\n"
+                "class ActiveNode(Node):\n"
+                "    def __init__(self, label: str, active: bool) -> None:\n"
+                "        self.label = label\n"
+                "        self.active = active\n\n\n"
+                "def active_label(node: Node) -> str:\n"
+                "    if isinstance(node, ActiveNode) and node.active:\n"
+                "        return node.label\n"
+                "    return 'idle'\n\n\n"
+                "def required_label(node: Node) -> str:\n"
+                "    if not isinstance(node, ActiveNode) or not node.active:\n"
+                "        return 'none'\n"
+                "    return node.label\n"
+            ),
+        },
+    )
+    for fn_name in ("active_label", "required_label"):
+        findings = _findings(tmp_path)
+        target_finding = next(f for f in findings if f.evidence[0].symbol == fn_name)
+        evaluation = OwnTypeTestDetector().evaluate_recipe_for_finding(
+            target_finding, _snapshot(tmp_path)
+        )
+        _apply(tmp_path, evaluation.executable_recipe)
+
+    after = (tmp_path / "pkg" / "nodes.py").read_text()
+    assert "isinstance" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    on = ns["ActiveNode"]("go", True)  # type: ignore[operator]
+    off = ns["ActiveNode"]("go", False)  # type: ignore[operator]
+    plain = ns["Node"]()  # type: ignore[operator]
+    assert ns["active_label"](on) == "go"  # type: ignore[operator]
+    assert ns["active_label"](off) == "idle"  # type: ignore[operator]
+    assert ns["active_label"](plain) == "idle"  # type: ignore[operator]
+    assert ns["required_label"](on) == "go"  # type: ignore[operator]
+    assert ns["required_label"](off) == "none"  # type: ignore[operator]
+    assert ns["required_label"](plain) == "none"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
