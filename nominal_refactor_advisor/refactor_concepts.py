@@ -165,6 +165,10 @@ class SiblingOverrideStepConcept(ClassFamilyAuthorityConcept):
     """Hoist shared leading or trailing steps of sibling overrides into a template method on their shared ancestor."""
 
 
+class TypeTestDispatchConcept(ClassFamilyAuthorityConcept):
+    """Push a type test on a scanned class family onto a polymorphic method of that family."""
+
+
 class HiddenImportPromotionConcept(NominalBoundaryConcept):
     """Move a guarded or function-local import that closes no load-time cycle to
     its module's top."""
