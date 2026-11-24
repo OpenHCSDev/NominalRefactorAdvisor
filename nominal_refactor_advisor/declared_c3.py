@@ -9,7 +9,7 @@ it. Composing an owner and dropping a restated base both ask this one question.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from functools import cached_property
 
 from nominal_refactor_advisor.class_index import ClassCreationOrderProof, CompactIndexedClass
@@ -108,11 +108,41 @@ class DeclaredC3(ABC):
         native = NativeMroBase.for_python_type(entry)
         return entry.__name__ if native is None else native.value
 
-    def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
-        """Python's C3 order of `symbol`, over its declared bases or `bases`; refuses
-        when creating a class with that ancestry is not proved to keep it."""
+    def _inert_with(
+        self,
+        symbol: str,
+        overrides: Mapping[str, tuple[str, ...]],
+        built: dict[str, type],
+    ) -> type:
+        if symbol in built:
+            return built[symbol]
+        if symbol not in overrides and (
+            native := RuntimeProofBases().foreign_base(symbol)
+        ) is not None:
+            built[symbol] = native
+            return native
+        bases = overrides[symbol] if symbol in overrides else self.bases(symbol)
+        base_types = tuple(self._inert_with(base, overrides, built) for base in bases)
+        if symbol not in overrides and all(
+            base_type is self.inert(base)
+            for base, base_type in zip(bases, base_types, strict=True)
+        ):
+            entry = self.inert(symbol)
+        else:
+            try:
+                entry = DeclarationMroType.from_declaration(
+                    self.declared(symbol), base_types
+                )
+            except TypeError as refused:
+                raise NeedsInput(
+                    f"`{symbol.rpartition('.')[2]}` has no C3 order with bases "
+                    + ", ".join(f"`{base.rpartition('.')[2]}`" for base in bases),
+                    NeededInput.PROOF,
+                ) from refused
+        built[symbol] = entry
+        return entry
 
-        entry = self.inert(symbol) if bases is None else self.composed(symbol, bases)
+    def _require_created_order(self, symbol: str, entry: type) -> tuple[str, ...]:
         try:
             self.creation.require_order(
                 tuple(
@@ -127,6 +157,23 @@ class DeclaredC3(ABC):
                 *unproved.needs,
             ) from unproved
         return tuple(self.entry_symbol(ancestor) for ancestor in entry.__mro__)
+
+    def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
+        """Python's C3 order of `symbol`, over its declared bases or `bases`; refuses
+        when creating a class with that ancestry is not proved to keep it."""
+
+        entry = self.inert(symbol) if bases is None else self.composed(symbol, bases)
+        return self._require_created_order(symbol, entry)
+
+    def linearized_with(
+        self, symbol: str, overrides: Mapping[str, tuple[str, ...]]
+    ) -> tuple[str, ...]:
+        """Python's C3 order of `symbol` when each class in `overrides` takes its
+        new direct bases; refuses when C3 or class creation fails anywhere in the
+        resulting ancestry."""
+
+        entry = self._inert_with(symbol, overrides, {})
+        return self._require_created_order(symbol, entry)
 
     def restated_bases(
         self, symbol: str, plain: Sequence[bool], leading: tuple[str, ...] = ()

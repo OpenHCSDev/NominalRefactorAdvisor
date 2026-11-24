@@ -60,7 +60,7 @@ from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
     PrimaryEvidenceActionKeysMixin,
 )
-from nominal_refactor_advisor.refactors.restated_bases import ClassAttributeReaders
+from nominal_refactor_advisor.refactors.class_attribute_reads import ClassAttributeReaders
 
 
 def inherited_restatements(verdicts: ClassOverlapVerdicts, symbol: str) -> tuple[tuple[str, str], ...]:
