@@ -98,7 +98,13 @@ class CreatedClassStore:
 
     @classmethod
     def of(cls, node: ast.ClassDef, module: ast.Module) -> CreatedClassStore:
-        return cls(_functions(node.body), _functions(module.body))
+        return cls.of_module_functions(node, _functions(module.body))
+
+    @classmethod
+    def of_module_functions(
+        cls, node: ast.ClassDef, module_functions: Mapping[str, FunctionNode]
+    ) -> CreatedClassStore:
+        return cls(_functions(node.body), module_functions)
 
     def stores_created_class(self) -> bool:
         """As a metaclass: `__new__` or `__init__` stores the class it creates."""

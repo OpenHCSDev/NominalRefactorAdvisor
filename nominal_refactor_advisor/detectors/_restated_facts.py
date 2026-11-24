@@ -778,6 +778,7 @@ class ForeignAbsenceProbeDetector(
     )
 
     compact_shared_group_context_builder = staticmethod(_probe_owner_context_from_files)
+    compact_analysis_priority = 2
 
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
