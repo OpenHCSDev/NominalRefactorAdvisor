@@ -800,6 +800,267 @@ class SpliceProbeSite(SingleNodeProbeSite):
         )
 
 
+def _is_pure_fallback(expression: ast.expr) -> bool:
+    """Whether `expression` is side-effect-free and safe to evaluate eagerly as a
+    default argument to `next(iter(...), fallback)`."""
+
+    match expression:
+        case ast.Constant() | ast.Name():
+            return True
+        case ast.Attribute(value=inner):
+            return _is_pure_fallback(inner)
+        case ast.UnaryOp(operand=inner):
+            return _is_pure_fallback(inner)
+        case ast.Tuple(elts=items) | ast.List(elts=items) | ast.Set(elts=items):
+            return all(_is_pure_fallback(item) for item in items)
+        case ast.Dict(keys=keys, values=values):
+            return all(
+                key is not None and _is_pure_fallback(key) and _is_pure_fallback(val)
+                for key, val in zip(keys, values)
+            )
+        case ast.JoinedStr(values=parts):
+            return all(
+                isinstance(part, ast.Constant)
+                or (
+                    isinstance(part, ast.FormattedValue)
+                    and _is_pure_fallback(part.value)
+                )
+                for part in parts
+            )
+    return False
+
+
+def _reads_same_attribute(
+    nodes: Iterable[ast.AST], subject: ast.expr, field: str
+) -> bool:
+    for root in nodes:
+        for node in ast.walk(root):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == field
+                and _same_expression(node.value, subject)
+            ):
+                return True
+    return False
+
+
+def _statements_after_in_block(
+    parent: ast.AST, statement: ast.stmt
+) -> tuple[ast.stmt, ...]:
+    """Statements that follow `statement` in its immediately enclosing statement list."""
+
+    block_lists: list[list[ast.stmt]] = []
+    match parent:
+        case ast.FunctionDef(body=b) | ast.AsyncFunctionDef(body=b) | ast.ClassDef(body=b):
+            block_lists.append(b)
+        case ast.If(body=b, orelse=o) | ast.For(body=b, orelse=o) | ast.AsyncFor(
+            body=b, orelse=o
+        ) | ast.While(body=b, orelse=o):
+            block_lists.extend((b, o))
+        case ast.With(body=b) | ast.AsyncWith(body=b):
+            block_lists.append(b)
+        case ast.Try(body=b, orelse=o, finalbody=f):
+            block_lists.extend((b, o, f))
+        case ast.ExceptHandler(body=b) | ast.match_case(body=b):
+            block_lists.append(b)
+    for statements in block_lists:
+        for idx, candidate in enumerate(statements):
+            if candidate is statement:
+                return tuple(statements[idx + 1 :])
+    return ()
+
+
+@dataclass(frozen=True)
+class FallbackTernaryProbeSite(SingleNodeProbeSite):
+    """``V.f if V.f is not None else FALLBACK`` or ``FALLBACK if V.f is None else V.f``.
+
+    When ``FALLBACK`` is side-effect-free and does not read ``V.f``, this becomes
+    ``next(iter(DECODED(V)), FALLBACK)``.
+    """
+
+    expression: ast.IfExp
+    fallback: ast.expr
+
+    @classmethod
+    def at(cls, probe, authority):
+        expression = authority.parents.get(probe)
+        if not isinstance(expression, ast.IfExp) or expression.test is not probe:
+            return None
+        present = cls.proved_subject(probe, authority, absent=False)
+        absent = cls.proved_subject(probe, authority, absent=True)
+        if present is not None:
+            subject, field = present
+            value_expr, fallback = expression.body, expression.orelse
+        elif absent is not None:
+            subject, field = absent
+            fallback, value_expr = expression.body, expression.orelse
+        else:
+            return None
+        if not _same_expression(value_expr, probe.left):
+            return None
+        if not _is_pure_fallback(fallback) or _reads_same_attribute(
+            (fallback,), subject, field
+        ):
+            return None
+        return cls(
+            authority.decoder,
+            probe,
+            ast.unparse(subject),
+            subject,
+            field,
+            expression,
+            fallback,
+        )
+
+    @property
+    def anchor(self) -> ast.AST:
+        return self.expression
+
+    def replacements(self, authority):
+        geometry = authority.geometry
+        start, end = geometry.required_node_offsets(self.expression)
+        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+            raise authority.refusal(self.expression, "the fallback ternary holds a comment")
+        decoded = self.decoder.single(authority.source_of(self.subject))
+        fallback_source = authority.source_of(self.fallback)
+        candidate = f"next(iter({decoded}), {fallback_source})"
+        replacement = authority.fit.fitted(candidate, start, end)
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=replacement,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PresenceTestProbeSite(SingleNodeProbeSite):
+    """Pure absence or presence test ``V.f is None`` / ``V.f is not None`` when no
+    narrowed downstream code reads ``V.f``.
+
+    ``V.f is None`` becomes ``not DECODED(V)``; ``V.f is not None`` becomes
+    ``DECODED(V)`` in truth-tested slots and ``bool(DECODED(V))`` elsewhere.
+    """
+
+    absent: bool
+
+    @classmethod
+    def at(cls, probe, authority):
+        absent_match = cls.proved_subject(probe, authority, absent=True)
+        present_match = (
+            None
+            if absent_match is not None
+            else cls.proved_subject(probe, authority, absent=False)
+        )
+        if absent_match is not None:
+            subject, field = absent_match
+            absent = True
+        elif present_match is not None:
+            subject, field = present_match
+            absent = False
+        else:
+            return None
+        if cls._downstream_reads_narrowed_field(probe, authority, subject, field, absent):
+            return None
+        return cls(
+            authority.decoder,
+            probe,
+            ast.unparse(subject),
+            subject,
+            field,
+            absent,
+        )
+
+    @staticmethod
+    def _downstream_reads_narrowed_field(
+        probe: ast.Compare,
+        authority: OptionalAstFieldAuthority,
+        subject: ast.expr,
+        field: str,
+        absent: bool,
+    ) -> bool:
+        """Whether any code guarded by `probe` reads `subject.field` relying on narrowing."""
+
+        effective_absent = absent
+        for child, parent in authority.ancestors(probe):
+            match parent:
+                case ast.UnaryOp(op=ast.Not()):
+                    effective_absent = not effective_absent
+                case ast.BoolOp(op=ast.And(), values=values):
+                    idx = next(i for i, v in enumerate(values) if v is child)
+                    if not effective_absent and _reads_same_attribute(
+                        values[idx + 1 :], subject, field
+                    ):
+                        return True
+                case ast.BoolOp(op=ast.Or(), values=values):
+                    idx = next(i for i, v in enumerate(values) if v is child)
+                    if effective_absent and _reads_same_attribute(
+                        values[idx + 1 :], subject, field
+                    ):
+                        return True
+                case ast.If(test=test, body=body, orelse=orelse) if test is child:
+                    if not effective_absent and _reads_same_attribute(body, subject, field):
+                        return True
+                    if effective_absent and _reads_same_attribute(orelse, subject, field):
+                        return True
+                    if effective_absent:
+                        enclosing = authority.parents.get(parent)
+                        if enclosing is not None and _reads_same_attribute(
+                            _statements_after_in_block(enclosing, parent),
+                            subject,
+                            field,
+                        ):
+                            return True
+                    break
+                case ast.IfExp(test=test, body=body, orelse=orelse) if test is child:
+                    narrowed = orelse if effective_absent else body
+                    if _reads_same_attribute((narrowed,), subject, field):
+                        return True
+                    break
+                case ast.comprehension(ifs=ifs) if any(c is child for c in ifs):
+                    if not effective_absent:
+                        comp = authority.parents.get(parent)
+                        if comp is not None:
+                            idx = next(i for i, c in enumerate(ifs) if c is child)
+                            rest_nodes: list[ast.AST] = list(ifs[idx + 1 :])
+                            match comp:
+                                case ast.ListComp(elt=e) | ast.SetComp(elt=e) | ast.GeneratorExp(
+                                    elt=e
+                                ):
+                                    rest_nodes.append(e)
+                                case ast.DictComp(key=k, value=v):
+                                    rest_nodes.extend((k, v))
+                            if _reads_same_attribute(rest_nodes, subject, field):
+                                return True
+                    break
+                case _:
+                    break
+        return False
+
+    def replacements(self, authority):
+        geometry = authority.geometry
+        start, end = geometry.required_node_offsets(self.probe)
+        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+            raise authority.refusal(self.probe, "the probe holds a comment")
+        decoded = self.decoder.single(authority.source_of(self.subject))
+        if self.absent:
+            candidate = f"not {decoded}"
+            replacement = authority.fit.fitted(candidate, start, end)
+            if not authority.holds_boolean_operand(self.probe):
+                replacement = f"({replacement})"
+        else:
+            candidate = authority.truth_of(self.probe, decoded)
+            replacement = authority.fit.fitted(candidate, start, end)
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=replacement,
+            ),
+        )
+
+
 @dataclass(frozen=True)
 class PairedProbeSite(SingleNodeProbeSite):
     """Both fields of a pair asked together of one node.
@@ -946,7 +1207,12 @@ class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     __registry__: ClassVar[dict[str, type[OptionalAstFieldDecoder]]]
     fields: ClassVar[Mapping[type[ast.AST], str]]
     owners: ClassVar[tuple[type | Callable[..., object], ...]]
-    shapes: ClassVar[tuple[type[ProbeSite], ...]]
+    shapes: ClassVar[tuple[type[ProbeSite], ...]] = (
+        IfPresentProbeSite,
+        SpliceProbeSite,
+        FallbackTernaryProbeSite,
+        PresenceTestProbeSite,
+    )
 
     @classmethod
     def for_field(cls, field: str) -> tuple[type[OptionalAstFieldDecoder], ...]:
@@ -1011,6 +1277,13 @@ class CollectionDecoder(OptionalAstFieldDecoder, ABC):
     present_field: ClassVar[str]
     present_attributes: ClassVar[frozenset[str]]
     collection_variable: ClassVar[str]
+    shapes: ClassVar[tuple[type[ProbeSite], ...]] = (
+        *CollectionProbeSite.__subclasses__(),
+        IfPresentProbeSite,
+        SpliceProbeSite,
+        FallbackTernaryProbeSite,
+        PresenceTestProbeSite,
+    )
 
     @classmethod
     def collected_classes(cls) -> frozenset[str]:
@@ -1029,11 +1302,6 @@ class KeywordNameDecoder(CollectionDecoder):
         ast_projection.CallKeyword,
         *ast_projection.CallKeyword.__subclasses__(),
         ast_projection.CallKeywords,
-    )
-    shapes = (
-        *CollectionProbeSite.__subclasses__(),
-        IfPresentProbeSite,
-        SpliceProbeSite,
     )
     element_type = ast.keyword
     collection_owner = "CallKeywords"
@@ -1077,7 +1345,6 @@ class CaptureNameDecoder(ExceptHandlerDecoder):
         ast.MatchMapping: "rest",
     }
     owners = (ast_field_decoders.capture_names,)
-    shapes = (IfPresentProbeSite, SpliceProbeSite)
 
     @classmethod
     def single(cls, subject_source: str) -> str:
@@ -1099,11 +1366,6 @@ class DeclaredAnnotationDecoder(CollectionDecoder):
         ast_field_decoders.declared_annotations,
         ast_field_decoders.AnnotatedParameter,
         ast_field_decoders.ParameterAnnotations,
-    )
-    shapes = (
-        *CollectionProbeSite.__subclasses__(),
-        IfPresentProbeSite,
-        SpliceProbeSite,
     )
     element_type = ast.arg
     collection_owner = "ParameterAnnotations"
@@ -1159,7 +1421,6 @@ class ImportAliasDecoder(OptionalAstFieldDecoder):
 
     fields = {ast.alias: "asname"}
     owners = (ast_field_decoders.alias_names,)
-    shapes = (IfPresentProbeSite, SpliceProbeSite)
 
     @classmethod
     def collected_classes(cls) -> frozenset[str]:
@@ -1188,7 +1449,6 @@ class OptionalValueDecoder(OptionalAstFieldDecoder):
         ast.Yield: "value",
     }
     owners = (ast_field_decoders.optional_values,)
-    shapes = (IfPresentProbeSite, SpliceProbeSite)
 
     @classmethod
     def single(cls, subject_source: str) -> str:
@@ -1200,7 +1460,6 @@ class ImportModuleDecoder(OptionalAstFieldDecoder):
 
     fields = {ast.ImportFrom: "module"}
     owners = (ast_field_decoders.import_modules,)
-    shapes = (IfPresentProbeSite, SpliceProbeSite)
 
     @classmethod
     def single(cls, subject_source: str) -> str:
@@ -1212,7 +1471,6 @@ class ExceptionTypeDecoder(ExceptHandlerDecoder):
 
     fields = {ast.ExceptHandler: "type"}
     owners = (ast_field_decoders.exception_types,)
-    shapes = (IfPresentProbeSite, SpliceProbeSite)
 
     @classmethod
     def single(cls, subject_source: str) -> str:
@@ -2259,6 +2517,7 @@ __all__ = (
     "DeclareAndRouteOptionalAstFieldProbesOperation",
     "DeclaredAnnotationDecoder",
     "ExceptionTypeDecoder",
+    "FallbackTernaryProbeSite",
     "ImportAliasDecoder",
     "ImportModuleDecoder",
     "OptionalAstFieldAuthority",
@@ -2266,6 +2525,7 @@ __all__ = (
     "OptionalAstFieldDecoderFindingRecipeSynthesizer",
     "OptionalValueDecoder",
     "PendingDecoderMigration",
+    "PresenceTestProbeSite",
     "ProjectDecoderOwners",
     "RouteOptionalAstFieldProbesOperation",
     "VariadicParameterDecoder",

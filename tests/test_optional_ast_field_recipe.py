@@ -23,7 +23,7 @@ from nominal_refactor_advisor.refactors.optional_ast_field import (
     ProjectDecoderOwners,
     VariadicParameterDecoder,
 )
-from nominal_refactor_advisor.codemod import codemod_plan_from_findings
+from nominal_refactor_advisor.codemod import CodemodPlanSequence, codemod_plan_from_findings
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from nominal_refactor_advisor.codemod_source_edits import SourceTextGeometry
@@ -368,13 +368,22 @@ def test_parameter_lists_split_into_annotated_parameters(
 
 
 def test_call_before_the_probe_keeps_the_filter() -> None:
-    with pytest.raises(ValueError, match="no shape"):
-        _rewritten(
-            "def f(node):\n"
-            "    return [p for p in node.args.kwonlyargs"
-            " if seen(p) and p.annotation is not None]\n",
-            DeclaredAnnotationDecoder,
-        )
+    """A call before the probe cannot hoist `ParameterAnnotations.of(...)` past it,
+    so the comprehension keeps the filter and checks `declared_annotations(p)` in place."""
+
+    rewritten = _rewritten(
+        "def f(node):\n"
+        "    return [p for p in node.args.kwonlyargs"
+        " if seen(p) and p.annotation is not None]\n",
+        DeclaredAnnotationDecoder,
+    )
+    assert "ParameterAnnotations" not in rewritten
+    assert (
+        rewritten
+        == "def f(node):\n"
+        "    return [p for p in node.args.kwonlyargs"
+        " if seen(p) and declared_annotations(p)]\n"
+    )
 
 
 def test_loop_over_a_once_bound_parameter_tuple_drops_unannotated() -> None:
@@ -502,3 +511,75 @@ def test_without_a_same_name_declaration_the_capture_names_routing_is_executable
     assert record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE, (
         record.reason
     )
+
+
+def test_routes_fallback_ternary_and_presence_absence_probes(tmp_path: Path) -> None:
+    """`alias.name if alias.asname is None else alias.asname`, `if alias.asname is None:`,
+    and `any(alias.asname is None and ...)` route through `alias_names` cleanly."""
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "mod.py").write_text(
+        "import ast\n\n\n"
+        "def bound_name(alias: ast.alias) -> str:\n"
+        "    return alias.name if alias.asname is None else alias.asname\n\n\n"
+        "def unaliased_names(node: ast.Import) -> list[str]:\n"
+        "    found: list[str] = []\n"
+        "    for alias in node.names:\n"
+        "        if alias.asname is None and alias.name != 'os':\n"
+        "            found.append(alias.name)\n"
+        "    return found\n\n\n"
+        "def has_plain_import(node: ast.Import, target: str) -> bool:\n"
+        "    return any(alias.asname is None and alias.name == target for alias in node.names)\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+    )
+    assert len(findings) == 3
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert len(plan.document.recipes) == 1
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = (package / "mod.py").read_text()
+    assert "next(iter(alias_names(alias)), alias.name)" in after
+    assert "if not alias_names(alias) and alias.name != 'os':" in after
+    assert "any(not alias_names(alias) and alias.name == target for alias in node.names)" in after
+    assert "is None" not in after
+
+
+def test_refuses_presence_rewrite_when_downstream_relies_on_none_narrowing(
+    tmp_path: Path,
+) -> None:
+    """`if alias.asname is None: return; use(alias.asname)` relies on mypy narrowing
+    after the guard, and impure fallbacks cannot be eagerly evaluated."""
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "mod.py").write_text(
+        "import ast\n\n\n"
+        "def compute_default() -> str:\n"
+        "    return 'x'\n\n\n"
+        "def narrowed(alias: ast.alias) -> str:\n"
+        "    if alias.asname is None:\n"
+        "        return alias.name\n"
+        "    return alias.asname.upper()\n\n\n"
+        "def impure_fallback(alias: ast.alias) -> str:\n"
+        "    return alias.asname if alias.asname is not None else compute_default()\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+    )
+    assert len(findings) == 2
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert plan.document.recipes == ()
