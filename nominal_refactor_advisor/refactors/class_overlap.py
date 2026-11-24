@@ -3226,15 +3226,19 @@ class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperati
     ) -> tuple[NominalSourceEdit, ...]:
         move = self.relocation(snapshot)
         try:
-            RefactorRecipe(recipe_id="placement").with_operation(move).simulate(
+            move_result = RefactorRecipe(recipe_id="placement").with_operation(move).simulate(
                 snapshot
-            ).preflight_report.require_clean()
+            )
+            move_result.preflight_report.require_clean()
         except ValueError as error:
             raise NeedsInput(
                 f"`{self.owner.qualname}` moves to `{self.home_module}` so composing it "
                 f"closes no import cycle, and that move refuses: {error}",
                 *NeedsInput.needs_of(error),
             ) from error
+        moved_snapshot = snapshot.with_virtual_sources(
+            move_result.simulation.rewritten_sources
+        )
         moved = SourceRewriteTarget(file_path=move.destination_path, qualname=self.owner.qualname)
         owner = OverlapClass.require(snapshot, self.owner)
         names = tuple(declaration.name for declaration in owner.facts.body_declarations)
@@ -3245,18 +3249,15 @@ class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperati
         for composer in (self.target, *self.composers):
             restated = RestatedDeclarations(owner, OverlapClass.require(snapshot, composer), names)
             rationale = KeptDocumentation.composing(restated).rationale(rationale)
-        return in_order_edits(
-            snapshot,
-            (
-                move,
-                *(
-                    ComposeExistingClassOperation(target=composer, owner=moved)
-                    for composer in (self.target, *self.composers)
-                ),
+        states = in_order_states(
+            moved_snapshot,
+            tuple(
+                ComposeExistingClassOperation(target=composer, owner=moved)
+                for composer in (self.target, *self.composers)
             ),
             f"compose-moved-{self.owner.qualname}",
-            rationale,
         )
+        return changed_source_edits(snapshot, states[-1], rationale)
 
     def current_source_authority_claims(
         self, context: CodemodSelectorContext

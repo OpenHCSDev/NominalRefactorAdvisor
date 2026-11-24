@@ -28,8 +28,25 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
+from nominal_refactor_advisor.scan_cache import ScanCache
+
 TABLE = "[tool.nominal-refactor-advisor.family-root]"
 BLACK_DEFAULT_LINE_LENGTH = 88
+
+
+@ScanCache.cached
+def _nearest_pyproject_for_parent(parent: Path) -> Path | None:
+    resolved = parent.resolve()
+    for directory in (resolved, *resolved.parents):
+        candidate = directory / "pyproject.toml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+@ScanCache.cached
+def _pyproject_table(pyproject: Path) -> dict[str, object]:
+    return tomllib.loads(pyproject.read_text())
 
 
 class ValueCarrier(ABC):
@@ -125,6 +142,8 @@ class DeclaredRoot:
     def nearest_pyproject(path: Path) -> Path | None:
         """The closest ``pyproject.toml`` in ``path``'s ancestor directories."""
 
+        if ScanCache.active() is not None and path.is_absolute():
+            return _nearest_pyproject_for_parent(path.parent)
         return next(
             (
                 directory / "pyproject.toml"
@@ -141,7 +160,12 @@ class DeclaredRoot:
         pyproject = cls.nearest_pyproject(path)
         if pyproject is None:
             return BLACK_DEFAULT_LINE_LENGTH
-        return cls.line_length_of(tomllib.loads(pyproject.read_text()))
+        table = (
+            _pyproject_table(pyproject)
+            if ScanCache.active() is not None
+            else tomllib.loads(pyproject.read_text())
+        )
+        return cls.line_length_of(table)
 
     @classmethod
     def durable_bases_for(cls, path: Path) -> frozenset[str]:
@@ -186,9 +210,16 @@ class DeclaredRoot:
         pyproject = cls.nearest_pyproject(path)
         if pyproject is None:
             return frozenset()
-        match tomllib.loads(pyproject.read_text()):
-            case {"tool": {"nominal-refactor-advisor": {**table}}} if isinstance(table.get(key), list):
-                return frozenset(str(name).replace(":", ".") for name in table[key])
+        table_data = (
+            _pyproject_table(pyproject)
+            if ScanCache.active() is not None
+            else tomllib.loads(pyproject.read_text())
+        )
+        match table_data:
+            case {"tool": {"nominal-refactor-advisor": dict(table)}}:
+                names = table.get(key)
+                if isinstance(names, list):
+                    return frozenset(str(name).replace(":", ".") for name in names)
         return frozenset()
 
     @classmethod

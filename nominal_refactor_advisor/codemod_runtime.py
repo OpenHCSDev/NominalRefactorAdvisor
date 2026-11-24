@@ -263,6 +263,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         """This state with `findings` as the findings its index names; its
         parses, class index, product flow and text files are this one's."""
 
+        existing_product_flow = (
+            self.__dict__.get("product_flow_repository")
+            or self._retained_product_flow_repository
+        )
         return type(self)._from_modules_with_indexes(
             self.parsed_modules,
             self.required_class_family_index,
@@ -270,7 +274,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 source_index=self.source_index.with_findings(findings),
                 node_index=self._source_index_build_artifacts.node_index,
             ),
-            retained_product_flow_repository=self.product_flow_repository,
+            retained_product_flow_repository=existing_product_flow,
             text_files=self.text_files,
         )
 
@@ -561,6 +565,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         projection = self.source_projection(source_overlay)
         if not projection.changed_modules:
             return self
+        existing_product_flow = (
+            self.__dict__.get("product_flow_repository")
+            or self._retained_product_flow_repository
+        )
         return type(self)._from_modules_with_indexes(
             projection.projected_modules,
             self.required_class_family_index.projected(
@@ -571,9 +579,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 projection.changed_modules,
             ),
             retained_product_flow_repository=(
-                self.product_flow_repository.projected_with_source_projection(
-                    projection
-                )
+                None
+                if existing_product_flow is None
+                else existing_product_flow.projected_with_source_projection(projection)
             ),
             text_files=self.text_files,
         )

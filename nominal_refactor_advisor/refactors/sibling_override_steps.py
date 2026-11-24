@@ -194,10 +194,11 @@ def sibling_override_step_candidates(
     nearest: dict[tuple[str, frozenset[str]], SiblingOverrideStepCandidate] = {}
     read: dict[str, frozenset[str]] = {}
     for (declaring, name), symbols in overriding.items():
+        symbol_set = frozenset(symbols)
         independent = [
             symbol
             for symbol in symbols
-            if not any(other in index.ancestor_symbols(symbol) for other in symbols)
+            if symbol_set.isdisjoint(index.ancestor_symbols(symbol))
         ]
         if len(independent) < 2:
             continue
@@ -727,6 +728,35 @@ class _SiblingMethod:
     class_bound_names: frozenset[str]
 
 
+def _snapshot_sibling_override_step_candidates(
+    snapshot: CodemodSourceSnapshot,
+) -> tuple[SiblingOverrideStepCandidate, ...]:
+    """Compute sibling-override-step candidates once per ``CodemodSourceSnapshot``."""
+
+    return snapshot.retained_operation_derivation(
+        (SiblingOverrideStepCandidate,),
+        lambda: sibling_override_step_candidates(
+            snapshot.class_overlap_verdicts,
+            snapshot.compact_class_projections,
+        ),
+    )
+
+
+def _snapshot_sibling_override_step_by_evidence(
+    snapshot: CodemodSourceSnapshot,
+) -> dict[frozenset[tuple[str, str]], SiblingOverrideStepCandidate]:
+    return snapshot.retained_operation_derivation(
+        (SiblingOverrideStepCandidate, "by_evidence"),
+        lambda: {
+            frozenset(
+                (indexed.file_path, f"{indexed.qualname}.{cand.name}")
+                for indexed, _line in cand.overriding
+            ): cand
+            for cand in _snapshot_sibling_override_step_candidates(snapshot)
+        },
+    )
+
+
 @dataclass(frozen=True)
 class SiblingOverrideStepHoist:
     """A sibling-override step hoist proved safe onto `declaring`."""
@@ -762,9 +792,7 @@ class SiblingOverrideStepHoist:
         verdicts = snapshot.class_overlap_verdicts
         matches = [
             candidate
-            for candidate in sibling_override_step_candidates(
-                verdicts, snapshot.compact_class_projections
-            )
+            for candidate in _snapshot_sibling_override_step_candidates(snapshot)
             if candidate.declaring.symbol == declaring.symbol
             and candidate.name == member_name
         ]
@@ -1429,20 +1457,8 @@ class SiblingOverrideStepFindingRecipeSynthesizer(
         evidence_keys = frozenset(
             (location.file_path, location.symbol) for location in finding.evidence
         )
-        candidate = next(
-            (
-                cand
-                for cand in sibling_override_step_candidates(
-                    snapshot.class_overlap_verdicts,
-                    snapshot.compact_class_projections,
-                )
-                if frozenset(
-                    (indexed.file_path, f"{indexed.qualname}.{cand.name}")
-                    for indexed, _line in cand.overriding
-                )
-                == evidence_keys
-            ),
-            None,
+        candidate = _snapshot_sibling_override_step_by_evidence(snapshot).get(
+            evidence_keys
         )
         if candidate is None:
             return self.rejected_evaluation("the sibling override step left the source")

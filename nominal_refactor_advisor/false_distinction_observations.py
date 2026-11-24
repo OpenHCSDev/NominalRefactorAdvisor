@@ -52,6 +52,7 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.codemod_foreign_family_source import RewrittenLineFit
 from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.enum_semantics import (
     PythonEnumBaseKind,
     PythonEnumDeclarationAuthority,
@@ -880,6 +881,17 @@ class AsciiMentioningSiblingTests(MentioningSiblingTests):
         return super().matches_bytes(raw)
 
 
+@ScanCache.cached
+def _repository_test_paths(root: Path, pyproject: Path | None) -> tuple[Path, ...]:
+    policy = PythonSourcePathPolicy(include_tests=True)
+    return tuple(
+        path
+        for path in PythonSourcePathDiscovery(root, policy).paths()
+        if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
+        and DeclaredRoot.nearest_pyproject(path) == pyproject
+    )
+
+
 @dataclass(frozen=True)
 class SiblingTestModules(ParsedModuleSetFact):
     """The test modules of the repositories the scanned modules belong to.
@@ -918,18 +930,30 @@ class SiblingTestModules(ParsedModuleSetFact):
             return cls(())
         policy = PythonSourcePathPolicy(include_tests=True)
         modules: list[ParsedModule] = []
-        repositories = {
-            cls.repository(Path(import_root), Path(file_path))
-            for import_root, file_path in sources
-        }
+        repositories: set[tuple[Path, Path | None]] = set()
+        seen_dirs: set[tuple[str, str]] = set()
+        for import_root, file_path in sources:
+            parent_key = (import_root, str(Path(file_path).parent))
+            if parent_key in seen_dirs:
+                continue
+            seen_dirs.add(parent_key)
+            repositories.add(cls.repository(Path(import_root), Path(file_path)))
+        active_cache = ScanCache.active() is not None
         for root, pyproject in sorted(repositories):
+            discovered = (
+                _repository_test_paths(root, pyproject)
+                if active_cache
+                else tuple(
+                    path
+                    for path in PythonSourcePathDiscovery(root, policy).paths()
+                    if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
+                    and DeclaredRoot.nearest_pyproject(path) == pyproject
+                )
+            )
             paths = tuple(
                 path
-                for path in PythonSourcePathDiscovery(root, policy).paths()
-                if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
-                and path.resolve() not in held
-                and DeclaredRoot.nearest_pyproject(path) == pyproject
-                and test_filter.matches(path)
+                for path in discovered
+                if path.resolve() not in held and test_filter.matches(path)
             )
             if not paths:
                 continue
@@ -955,7 +979,7 @@ class SiblingTestModules(ParsedModuleSetFact):
 
         identity = parsed_module.module_path_identity
         return PythonSourcePathPolicy.is_test_path(
-            Path(parsed_module.file_path).resolve().relative_to(
+            Path(parsed_module.resolved_file_path).relative_to(
                 identity.declared_import_root.resolve()
             )
         )
@@ -976,7 +1000,7 @@ class SiblingTestModules(ParsedModuleSetFact):
                 (str(module.module_path_identity.declared_import_root), module.file_path)
                 for module in modules
             ),
-            frozenset(Path(module.file_path).resolve() for module in modules),
+            frozenset(Path(module.resolved_file_path) for module in modules),
             test_filter=test_filter,
         )
         return cls((*held_tests, *unheld.modules))
