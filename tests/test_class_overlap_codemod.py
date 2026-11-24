@@ -1533,3 +1533,80 @@ def test_composing_owner_refuses_descendant_drop_that_reorders_intermediate_supe
         match=r"reorders \['tag'\] with `Mid`",
     ):
         operation.source_edits(snapshot)
+
+
+def test_compose_existing_refuses_prepending_owner_whose_ancestor_hijacks_super_call(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/install.py": (
+                "class InstallOutcome:\n"
+                "    def lines(self) -> tuple[str, ...]:\n"
+                "        return ()\n\n\n"
+                "class UnfinishedInstall(InstallOutcome):\n"
+                "    def lines(self) -> tuple[str, ...]:\n"
+                "        raise RuntimeError('unfinished')\n\n\n"
+                "class ObservedInstall(UnfinishedInstall):\n"
+                "    def live_lines(self) -> tuple[str, ...]:\n"
+                "        return ('live',)\n\n\n"
+                "class RehearsedUpgrade(InstallOutcome):\n"
+                "    def lines(self) -> tuple[str, ...]:\n"
+                "        return ('rehearsed',)\n\n\n"
+                "class InstalledUpgrade(RehearsedUpgrade):\n"
+                "    def live_lines(self) -> tuple[str, ...]:\n"
+                "        return ('live',)\n\n"
+                "    def lines(self) -> tuple[str, ...]:\n"
+                "        return (*super().lines(), *self.live_lines())\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/install.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="InstalledUpgrade"),
+        owner=SourceRewriteTarget(file_path=path, qualname="ObservedInstall"),
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"super\(\)\.lines.*InstalledUpgrade.*UnfinishedInstall.*RehearsedUpgrade",
+    ):
+        operation.source_edits(snapshot)
+
+
+def test_compose_existing_allows_descendant_super_call_to_deleted_restated_method(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": (
+                "class Owner:\n"
+                "    def tag(self) -> str:\n"
+                "        return 'owner'\n\n\n"
+                "class Composer:\n"
+                "    def tag(self) -> str:\n"
+                "        return 'owner'\n\n"
+                "    def extra(self) -> str:\n"
+                "        return 'e'\n\n\n"
+                "class Child(Composer):\n"
+                "    def tag(self) -> str:\n"
+                "        return f'child:{super().tag()}'\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/m.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Composer"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
+    )
+    simulation = RefactorRecipe(recipe_id="class-overlap").with_operation(operation).simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    ns: dict[str, object] = {}
+    exec((tmp_path / "pkg/m.py").read_text(), ns)
+    assert ns["Child"]().tag() == "child:owner"  # type: ignore[operator]

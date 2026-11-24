@@ -1314,13 +1314,36 @@ def required_name_imports(
     return tuple(imports)
 
 
+def _super_looked_up_names(node: ast.ClassDef) -> tuple[frozenset[str], bool]:
+    """Direct `super().<attr>` names in `node`, and whether any non-attribute `super()` use exists."""
+
+    attrs: set[str] = set()
+    dynamic = False
+    attribute_super_ids: set[int] = set()
+    for item in ast.walk(node):
+        if (
+            isinstance(item, ast.Attribute)
+            and isinstance(item.value, ast.Call)
+            and isinstance(item.value.func, ast.Name)
+            and item.value.func.id == "super"
+        ):
+            attrs.add(item.attr)
+            attribute_super_ids.add(id(item.value))
+    for item in ast.walk(node):
+        if (
+            isinstance(item, ast.Call)
+            and isinstance(item.func, ast.Name)
+            and item.func.id == "super"
+            and id(item) not in attribute_super_ids
+        ):
+            dynamic = True
+            break
+    return frozenset(attrs), dynamic
+
+
 def _has_super_call(node: ast.ClassDef) -> bool:
-    return any(
-        isinstance(item, ast.Call)
-        and isinstance(item.func, ast.Name)
-        and item.func.id == "super"
-        for item in ast.walk(node)
-    )
+    attrs, dynamic = _super_looked_up_names(node)
+    return bool(attrs) or dynamic
 
 
 @dataclass(frozen=True)
@@ -1700,6 +1723,7 @@ class ComposedAncestry:
                     f"`{becomes or 'nothing'}` instead of `{was or 'nothing'}`",
                     NeededInput.PROOF,
                 )
+            self.require_super_lookups(descendant.qualname, before_d, after_d)
             d_bases = overrides.get(symbol, self.c3.bases(symbol))
             non_object_bases = tuple(
                 base for base in d_bases if base != NativeMroBase.OBJECT.value
@@ -1755,6 +1779,7 @@ class ComposedAncestry:
                     f"`{becomes or 'nothing'}` instead of `{was or 'nothing'}`",
                     NeededInput.PROOF,
                 )
+        self.require_super_lookups(composer.qualname, before, after)
         self.require_slots_fit(kept_bases)
         self.descendant_drops
         class_index = self.snapshot.class_overlap_verdicts.class_index
@@ -1762,6 +1787,94 @@ class ComposedAncestry:
             {symbol: AnswersFor.gaining(symbol, (composer.symbol,), class_index) for symbol in gained}
         )
         return tuple(ancestry.values())
+
+    def require_super_lookups(
+        self,
+        subject_qualname: str,
+        before: tuple[str, ...],
+        after: tuple[str, ...],
+    ) -> None:
+        """Every `super().<attr>` lookup along `before -> after` keeps its next-MRO winner."""
+
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        owner_set = frozenset(owner.symbol for owner in self.owners)
+        before_set = frozenset(before)
+        all_names = frozenset().union(
+            *(self.names(item, composed=False) for item in after)
+        )
+
+        # 1. Existing classes in `before` whose post-class MRO tail changed.
+        for index_before, cls_sym in enumerate(before):
+            if cls_sym not in after:
+                continue
+            b_tail = before[index_before + 1 :]
+            a_tail = after[after.index(cls_sym) + 1 :]
+            if a_tail == b_tail:
+                continue
+            if class_index.class_for(cls_sym) is not None:
+                attrs, dynamic = _super_looked_up_names(
+                    OverlapClass.for_symbol(self.snapshot, cls_sym).node
+                )
+                check_names = all_names if dynamic else attrs
+            elif any(item not in before_set for item in a_tail):
+                check_names = all_names
+            else:
+                continue
+            for name in sorted(check_names):
+                was = next(
+                    (s for s in b_tail if name in self.names(s, composed=False)), None
+                )
+                becomes = next(
+                    (s for s in a_tail if name in self.names(s, composed=True)), None
+                )
+                if was == becomes:
+                    continue
+                if (
+                    was == self.composer.symbol
+                    and name in self.deleted
+                    and becomes in owner_set
+                ):
+                    continue
+                if (
+                    was is not None
+                    and was in self.peer_deleted
+                    and name in self.peer_deleted[was]
+                    and becomes in owner_set
+                ):
+                    continue
+                raise NeedsInput(
+                    f"Composing makes `super().{name}` in `{cls_sym.rpartition('.')[2]}` "
+                    f"(via `{subject_qualname}`) resolve to `{becomes or 'nothing'}` "
+                    f"instead of `{was or 'nothing'}`",
+                    NeededInput.PROOF,
+                )
+
+        # 2. Newly inserted owners and gained ancestors calling `super()` into the composed tail.
+        for index_after, ins in enumerate(after):
+            if ins in before_set or class_index.class_for(ins) is None:
+                continue
+            attrs, dynamic = _super_looked_up_names(
+                OverlapClass.for_symbol(self.snapshot, ins).node
+            )
+            check_names = all_names if dynamic else attrs
+            if not check_names:
+                continue
+            ins_tail = self.c3.linearized(ins)[1:]
+            a_tail = after[index_after + 1 :]
+            for name in sorted(check_names):
+                was = next(
+                    (s for s in ins_tail if name in self.names(s, composed=False)), None
+                )
+                becomes = next(
+                    (s for s in a_tail if name in self.names(s, composed=True)), None
+                )
+                if was != becomes:
+                    raise NeedsInput(
+                        f"Composing makes `super().{name}` in `{ins.rpartition('.')[2]}` "
+                        f"(via `{subject_qualname}`) resolve to `{becomes or 'nothing'}` "
+                        f"instead of `{was or 'nothing'}`",
+                        NeededInput.PROOF,
+                    )
 
     def require_inert_gain(self, symbol: str) -> None:
         if NativeMroBase.for_qualified_name(symbol) is not None:
