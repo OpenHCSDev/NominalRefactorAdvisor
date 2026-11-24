@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.ast_field_decoders import alias_names
 from nominal_refactor_advisor.class_body import ClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
     PER_CLASS_NAMES,
@@ -24,8 +25,14 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.class_references import ClassReferenceRole
-from nominal_refactor_advisor.codemod_declaration_source import ClassBodySourceAuthority
+from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
+from nominal_refactor_advisor.codemod_declaration_source import (
+    ClassBodySourceAuthority,
+    ClassHeaderSpanSourceAuthority,
+)
+from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
+    PayloadRecordArrayValueCodec,
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
 )
@@ -36,14 +43,19 @@ from nominal_refactor_advisor.codemod_runtime import (
     RefactorRecipe,
 )
 from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
+from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     NominalSourceEdit,
+    SourceInsertion,
     SourceNodeSpan,
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import (
+    RefactorFinding,
+    SourceLocation,
+)
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactor_concepts import SiblingOverrideConcept
 from nominal_refactor_advisor.refactors.class_creation import (
@@ -161,17 +173,78 @@ def _shared_answers(index, overrides: list[Override]) -> list[list[Override]]:
     return [answer for answer in independent if len(answer) > 1]
 
 
+def _remains_abstract_after_lift(
+    verdicts: ClassOverlapVerdicts,
+    order: tuple[str, ...],
+    lifted_member: str,
+) -> bool:
+    """Whether a descendant still has another unimplemented abstract method in its
+    MRO, so it cannot be instantiated directly (all of its concrete subclasses are
+    checked independently by the same descendant walk)."""
+
+    class_index = verdicts.class_index
+    if not any(
+        symbol in ("abc.ABC", "abc.ABCMeta")
+        or (
+            (indexed := class_index.class_for(symbol)) is not None
+            and any(
+                meta in ("abc.ABCMeta", "ABCMeta")
+                for meta in indexed.metaclass_names
+            )
+        )
+        for symbol in order
+    ):
+        return False
+    abstract_names: set[str] = set()
+    for symbol in order:
+        indexed = class_index.class_for(symbol)
+        if indexed is not None:
+            abstract_names.update(indexed.abstract_method_names)
+    abstract_names.discard(lifted_member)
+    for abstract_name in abstract_names:
+        first = next_binder(verdicts, order, abstract_name)
+        if first is None:
+            continue
+        owner = class_index.class_for(first)
+        if owner is not None and abstract_name in owner.abstract_method_names:
+            return True
+    return False
+
+
+def _every_non_answering_descendant_is_abstract(
+    verdicts: ClassOverlapVerdicts,
+    declaring: str,
+    answering: frozenset[str],
+    name: str,
+) -> bool:
+    """Whether no concrete descendant outside `answering` inherits `declaring.name`."""
+
+    index = verdicts.class_index
+    for desc_symbol in index.descendant_symbols(declaring):
+        if desc_symbol in answering:
+            continue
+        if any(ancestor in answering for ancestor in index.ancestor_symbols(desc_symbol)):
+            continue
+        try:
+            order = verdicts.linearized(desc_symbol)
+        except NeedsInput:
+            return False
+        if not _remains_abstract_after_lift(verdicts, order, name):
+            return False
+    return True
+
+
 def _home_for(
-    index,
+    verdicts: ClassOverlapVerdicts,
     declaring: str,
     name: str,
     answering: frozenset[str],
     otherwise: frozenset[str],
     unanswered: bool,
-    bodies,
 ) -> str | None:
     """The existing class the shared answer belongs on, if one exists."""
 
+    index, bodies = verdicts.class_index, verdicts.bodies
     shared = frozenset.intersection(
         *(frozenset(index.ancestor_symbols(symbol)) for symbol in answering)
     )
@@ -187,7 +260,14 @@ def _home_for(
         return max(
             beneath, key=lambda symbol: (len(index.ancestor_symbols(symbol)), symbol)
         )
-    return declaring if unanswered and not otherwise else None
+    if not otherwise and (
+        unanswered
+        or _every_non_answering_descendant_is_abstract(
+            verdicts, declaring, answering, name
+        )
+    ):
+        return declaring
+    return None
 
 
 def sibling_override_candidates(
@@ -236,7 +316,7 @@ def sibling_override_candidates(
             answering = frozenset(override.symbol for override in answer)
             otherwise = frozenset(override.symbol for override in overrides) - answering
             home = _home_for(
-                index, declaring, name, answering, otherwise, unanswered, bodies
+                verdicts, declaring, name, answering, otherwise, unanswered
             )
             if (
                 home is None
@@ -423,43 +503,41 @@ class ReplaceHomeStub(HomePlacement):
         lifted_statements: tuple[ast.stmt, ...],
         rationale: str,
     ) -> tuple[NominalSourceEdit, ...]:
-        if isinstance(self.stub, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            decorators = tuple(self.stub.decorator_list)
-            if decorators:
-                lifted_names = {
-                    node.id
-                    for statement in lifted_statements
-                    for node in ast.walk(statement)
-                    if isinstance(node, ast.Name)
-                }
-                dropped = tuple(
-                    decorator
-                    for decorator in decorators
-                    if not (
-                        {
-                            node.id
-                            for node in ast.walk(decorator)
-                            if isinstance(node, ast.Name)
-                        }
-                        & lifted_names
-                    )
-                )
-                if dropped:
-                    return obsolete_import_edits(
-                        snapshot, home.file_path, dropped, rationale
-                    )
+        lifted_names = {
+            node.id
+            for statement in lifted_statements
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Name)
+        }
+        dropped_loads = tuple(
+            node
+            for node in ast.walk(self.stub)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id not in lifted_names
+        )
+        if dropped_loads:
+            return obsolete_import_edits(
+                snapshot, home.file_path, dropped_loads, rationale
+            )
         return ()
 
 
 @dataclass(frozen=True)
-class SiblingOverrideLift:
-    """A sibling override proved safe to lift onto its shared ancestor `home`."""
+class SiblingOverrideMove(ABC):
+    """Proved state shared by lifting onto an existing home or a new intermediate base."""
 
     candidate: SiblingOverrideCandidate
-    home: OverlapClass
-    placement: HomePlacement
     children: tuple[OverlapClass, ...]
     restated: tuple[RestatedDeclarations, ...]
+
+
+@dataclass(frozen=True)
+class SiblingOverrideLift(SiblingOverrideMove):
+    """A sibling override proved safe to lift onto its shared ancestor `home`."""
+
+    home: OverlapClass
+    placement: HomePlacement
 
     @classmethod
     def proved(
@@ -515,7 +593,9 @@ class SiblingOverrideLift:
             children[0],
             first.statements,
         )
-        placement = cls._require_home_placement(snapshot, candidate, home, member_name)
+        placement = cls._require_home_placement(
+            snapshot, verdicts, candidate, home, member_name
+        )
         cls._require_mro_and_descendants_safe(
             snapshot,
             verdicts,
@@ -558,12 +638,19 @@ class SiblingOverrideLift:
         RestatedOverrideDeletion.require_plain_decorators(home_proof, home)
         home_proof.require_unchanged()
         NamespaceReaders(snapshot).require_unread(home.facts, names)
-        return cls(candidate, home, placement, children, restated)
+        return cls(
+            candidate=candidate,
+            children=children,
+            restated=restated,
+            home=home,
+            placement=placement,
+        )
 
     @classmethod
     def _require_home_placement(
         cls,
         snapshot: CodemodSourceSnapshot,
+        verdicts: ClassOverlapVerdicts,
         candidate: SiblingOverrideCandidate,
         home: OverlapClass,
         member_name: str,
@@ -602,6 +689,21 @@ class SiblingOverrideLift:
                     NeededInput.PROOF,
                 )
             return ReplaceHomeStub(stub)
+        if isinstance(stub, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Assign, ast.AnnAssign)):
+            if (
+                isinstance(stub, ast.AnnAssign)
+                and home.facts.dataclass_declaration.generates_construction
+                and not _is_classvar_annotation(stub.annotation)
+            ):
+                raise NeedsInput(
+                    f"`{home.qualname}.{member_name}` is a dataclass field, not an abstract contract",
+                    NeededInput.PROOF,
+                )
+            cls._require_home_not_directly_used(
+                snapshot, candidate, home, member_name, allow_abstract_home=False
+            )
+            cls._require_no_super_calls_on_member(snapshot, verdicts, home, member_name)
+            return ReplaceHomeStub(stub)
         raise NeedsInput(
             f"`{home.qualname}.{member_name}` is a concrete declaration; NRA needs a proof "
             "that replacing it leaves every consumer unchanged",
@@ -614,12 +716,14 @@ class SiblingOverrideLift:
         candidate: SiblingOverrideCandidate,
         home: OverlapClass,
         member_name: str,
+        *,
+        allow_abstract_home: bool = True,
     ) -> None:
         """When `declaring.name` is concrete, lifting a different answer onto `home`
         is only safe if `home` itself is never instantiated or read directly for the
         old default."""
 
-        if home.facts.abstract_method_names:
+        if allow_abstract_home and home.facts.abstract_method_names:
             return
         allowed_roles = frozenset((ClassReferenceRole.TYPE_TEST,))
         for site in ClassReferenceSites(snapshot, frozenset((home.symbol,))).sites:
@@ -630,6 +734,30 @@ class SiblingOverrideLift:
                 f"which currently inherits `{candidate.declaring.qualname}.{member_name}`",
                 NeededInput.PROOF,
             )
+
+    @staticmethod
+    def _require_no_super_calls_on_member(
+        snapshot: CodemodSourceSnapshot,
+        verdicts: ClassOverlapVerdicts,
+        home: OverlapClass,
+        member_name: str,
+    ) -> None:
+        """Replacing a concrete declaration on `home` is unsafe if any descendant
+        reaches the old default through `super().<member_name>`."""
+
+        for desc_symbol in verdicts.class_index.descendant_symbols(home.symbol):
+            desc = OverlapClass.for_symbol(snapshot, desc_symbol)
+            for node in ast.walk(desc.node):
+                match node:
+                    case ast.Attribute(
+                        attr=attr,
+                        value=ast.Call(func=ast.Name(id="super")),
+                    ) if attr == member_name:
+                        raise NeedsInput(
+                            f"{desc.file_path}:{node.lineno} calls `super().{member_name}` "
+                            f"in `{desc.qualname}`, which reads `{home.qualname}.{member_name}`",
+                            NeededInput.PROOF,
+                        )
 
     @classmethod
     def _require_mro_and_descendants_safe(
@@ -674,7 +802,7 @@ class SiblingOverrideLift:
                 continue
             binder = next_binder(verdicts, before_home, member_name)
             if binder is None:
-                if cls._remains_abstract_after_lift(verdicts, order, member_name):
+                if _remains_abstract_after_lift(verdicts, order, member_name):
                     continue
                 raise NeedsInput(
                     f"`{desc.qualname}` inherits from `{home.qualname}` without overriding "
@@ -688,44 +816,6 @@ class SiblingOverrideLift:
                     f"a property on `{home.qualname}` would shadow",
                     NeededInput.PROOF,
                 )
-
-    @staticmethod
-    def _remains_abstract_after_lift(
-        verdicts: ClassOverlapVerdicts,
-        order: tuple[str, ...],
-        lifted_member: str,
-    ) -> bool:
-        """Whether a descendant still has another unimplemented abstract method in its
-        MRO, so it cannot be instantiated directly (all of its concrete subclasses are
-        checked independently by the same descendant walk)."""
-
-        class_index = verdicts.class_index
-        if not any(
-            symbol in ("abc.ABC", "abc.ABCMeta")
-            or (
-                (indexed := class_index.class_for(symbol)) is not None
-                and any(
-                    meta in ("abc.ABCMeta", "ABCMeta")
-                    for meta in indexed.metaclass_names
-                )
-            )
-            for symbol in order
-        ):
-            return False
-        abstract_names: set[str] = set()
-        for symbol in order:
-            indexed = class_index.class_for(symbol)
-            if indexed is not None:
-                abstract_names.update(indexed.abstract_method_names)
-        abstract_names.discard(lifted_member)
-        for abstract_name in abstract_names:
-            first = next_binder(verdicts, order, abstract_name)
-            if first is None:
-                continue
-            owner = class_index.class_for(first)
-            if owner is not None and abstract_name in owner.abstract_method_names:
-                return True
-        return False
 
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str
@@ -804,12 +894,890 @@ class LiftSiblingOverrideOperation(RepositorySourceReprovedOperation):
         return lift.edits(snapshot, self.rationale_text(lift.rationale()))
 
 
+def _c3_merge(sequences: list[list[str]]) -> tuple[str, ...] | None:
+    """Python C3 linearization merge; returns None if no consistent MRO exists."""
+
+    pending = [list(seq) for seq in sequences if seq]
+    result: list[str] = []
+    while pending:
+        head = next(
+            (
+                seq[0]
+                for seq in pending
+                if all(seq[0] not in other[1:] for other in pending)
+            ),
+            None,
+        )
+        if head is None:
+            return None
+        result.append(head)
+        pending = [
+            seq[1:] if seq[0] == head else seq
+            for seq in pending
+            if len(seq) > 1 or seq[0] != head
+        ]
+    return tuple(result)
+
+
+def _module_top_level_bound_names(module: ast.Module) -> frozenset[str]:
+    names: set[str] = set()
+    for statement in module.body:
+        match statement:
+            case ast.ClassDef(name=name) | ast.FunctionDef(name=name) | ast.AsyncFunctionDef(
+                name=name
+            ):
+                names.add(name)
+            case ast.Import(names=aliases) | ast.ImportFrom(names=aliases):
+                for alias in aliases:
+                    bound = next(iter(alias_names(alias)), alias.name)
+                    names.add(bound.split(".")[0])
+            case ast.Assign(targets=targets):
+                for target in targets:
+                    for node in ast.walk(target):
+                        if isinstance(node, ast.Name):
+                            names.add(node.id)
+            case ast.AnnAssign(target=ast.Name(id=name)):
+                names.add(name)
+    return frozenset(names)
+
+
+def _creation_keywords_for_intermediate(
+    snapshot: CodemodSourceSnapshot, parent: OverlapClass
+) -> tuple[str, ...]:
+    """Copy `declared_name=None`-style opt-out keywords from a registering parent."""
+
+    keywords: list[str] = []
+    for keyword in parent.node.keywords:
+        match keyword:
+            case ast.keyword(arg=str() as arg, value=ast.Constant(value=None)):
+                keywords.append(arg)
+    if keywords:
+        return tuple(keywords)
+    index = snapshot.class_overlap_verdicts.class_index
+    verdicts = snapshot.class_overlap_verdicts
+    order = verdicts.linearized(parent.symbol)
+    for symbol in order:
+        indexed = index.class_for(symbol)
+        if indexed is None:
+            continue
+        if any(
+            meta.rsplit(".", 1)[-1] == "AutoRegisterMeta"
+            for meta in indexed.metaclass_names
+        ):
+            raise NeedsInput(
+                f"`{parent.qualname}` uses `AutoRegisterMeta` and declares no `None` "
+                "creation keyword that keeps an unnamed intermediate out of the registry",
+                NeededInput.PROOF,
+            )
+    return ()
+
+
+def _require_no_direct_subclass_reads(
+    snapshot: CodemodSourceSnapshot, parent_simple_name: str
+) -> None:
+    for path, module in snapshot.module_nodes_by_file_path.items():
+        for node in ast.walk(module):
+            match node:
+                case ast.Attribute(attr="__subclasses__", value=value) if (
+                    ast.unparse(value).rsplit(".", 1)[-1] == parent_simple_name
+                ):
+                    raise NeedsInput(
+                        f"`{parent_simple_name}.__subclasses__()` is read at "
+                        f"{path}:{node.lineno}, and rebasing the siblings moves them out of it",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+
+
+class SiblingBaseRebase(ABC):
+    """How each answering sibling inherits the newly extracted intermediate base."""
+
+    parent: OverlapClass
+
+    @abstractmethod
+    def new_base_items_for(
+        self,
+        child_index: int,
+        header: ClassHeaderSpanSourceAuthority,
+        base_name: str,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def replaced_base_nodes(self, child_index: int) -> tuple[ast.AST, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def new_base_symbols_for(
+        self,
+        child: OverlapClass,
+        new_symbol: str,
+    ) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    def require_parent_safe(self, snapshot: CodemodSourceSnapshot) -> None:
+        del snapshot
+
+    def direct_base_spelling_for(self, child_index: int) -> str | None:
+        del child_index
+        return None
+
+
+@dataclass(frozen=True)
+class DirectBaseRebase(SiblingBaseRebase):
+    """Every answering sibling directly inherits `parent`: replace `parent` with `base_name`."""
+
+    parent: OverlapClass
+    base_exprs: tuple[ast.expr, ...]
+
+    def new_base_items_for(
+        self,
+        child_index: int,
+        header: ClassHeaderSpanSourceAuthority,
+        base_name: str,
+    ) -> tuple[str, ...]:
+        target_expr = self.base_exprs[child_index]
+        return tuple(
+            base_name if base is target_expr else header.item_source(base)
+            for base in header.node.bases
+        )
+
+    def replaced_base_nodes(self, child_index: int) -> tuple[ast.AST, ...]:
+        return (self.base_exprs[child_index],)
+
+    def new_base_symbols_for(
+        self,
+        child: OverlapClass,
+        new_symbol: str,
+    ) -> tuple[str, ...]:
+        return tuple(
+            new_symbol if symbol == self.parent.symbol else symbol
+            for symbol in child.facts.resolved_base_symbols
+        )
+
+    def require_parent_safe(self, snapshot: CodemodSourceSnapshot) -> None:
+        _require_no_direct_subclass_reads(snapshot, self.parent.facts.simple_name)
+
+    def direct_base_spelling_for(self, child_index: int) -> str | None:
+        return ast.unparse(self.base_exprs[child_index])
+
+
+@dataclass(frozen=True)
+class PrependBaseRebase(SiblingBaseRebase):
+    """Answering siblings inherit `parent` through distinct branches: prepend `base_name`."""
+
+    parent: OverlapClass
+
+    def new_base_items_for(
+        self,
+        child_index: int,
+        header: ClassHeaderSpanSourceAuthority,
+        base_name: str,
+    ) -> tuple[str, ...]:
+        del child_index
+        return (base_name, *(header.item_source(base) for base in header.node.bases))
+
+    def replaced_base_nodes(self, child_index: int) -> tuple[ast.AST, ...]:
+        del child_index
+        return ()
+
+    def new_base_symbols_for(
+        self,
+        child: OverlapClass,
+        new_symbol: str,
+    ) -> tuple[str, ...]:
+        return (new_symbol, *child.facts.resolved_base_symbols)
+
+
+class NewBasePlacement(ABC):
+    """Where the newly extracted intermediate base is declared."""
+
+    @property
+    @abstractmethod
+    def file_path(self) -> str:
+        raise NotImplementedError
+
+    @property
+    @abstractmethod
+    def anchor(self) -> OverlapClass:
+        raise NotImplementedError
+
+    @abstractmethod
+    def insertion_edit(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent_spelling: str,
+        creation_keywords: tuple[str, ...],
+        docstring: str,
+        first: RestatedDeclarations,
+        documentation: KeptDocumentation,
+        rationale: str,
+    ) -> SourceInsertion:
+        raise NotImplementedError
+
+    @abstractmethod
+    def extra_imports(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent: OverlapClass,
+        children: tuple[OverlapClass, ...],
+        rationale: str,
+    ) -> tuple[ModuleImportMutation, ...]:
+        raise NotImplementedError
+
+
+def _rendered_class_lines(
+    snapshot: CodemodSourceSnapshot,
+    indentation: str,
+    base_name: str,
+    parent_spelling: str,
+    creation_keywords: tuple[str, ...],
+    docstring: str,
+    first: RestatedDeclarations,
+    documentation: KeptDocumentation,
+) -> tuple[str, ...]:
+    member_indentation = indentation + "    "
+    keywords = "".join(f", {keyword}=None" for keyword in creation_keywords)
+    members: list[str] = []
+    for member_text, is_fn in first.member_sources(
+        snapshot, member_indentation, documentation
+    ):
+        if is_fn and members:
+            members.append("\n")
+        members.append(member_text if member_text.endswith("\n") else member_text + "\n")
+    return (
+        f"{indentation}class {base_name}({parent_spelling}{keywords}):\n",
+        f'{member_indentation}"""{docstring}"""\n\n',
+        *members,
+    )
+
+
+@dataclass(frozen=True)
+class SameModuleBeforeFirstSibling(NewBasePlacement):
+    """Declare the new base right above the earliest sibling in their shared module."""
+
+    first_sibling: OverlapClass
+
+    @property
+    def file_path(self) -> str:
+        return self.first_sibling.file_path
+
+    @property
+    def anchor(self) -> OverlapClass:
+        return self.first_sibling
+
+    def insertion_edit(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent_spelling: str,
+        creation_keywords: tuple[str, ...],
+        docstring: str,
+        first: RestatedDeclarations,
+        documentation: KeptDocumentation,
+        rationale: str,
+    ) -> SourceInsertion:
+        source = snapshot.sources_by_file_path[self.file_path]
+        lines = source.splitlines(keepends=True)
+        first_line = min(
+            (dec.lineno for dec in self.first_sibling.node.decorator_list),
+            default=self.first_sibling.node.lineno,
+        )
+        header = lines[first_line - 1]
+        indentation = header[: len(header) - len(header.lstrip())]
+        class_lines = _rendered_class_lines(
+            snapshot,
+            indentation,
+            base_name,
+            parent_spelling,
+            creation_keywords,
+            docstring,
+            first,
+            documentation,
+        )
+        return SourceInsertion(
+            file_path=self.file_path,
+            insertion_line=first_line,
+            inserted_lines=(*class_lines, "\n\n"),
+            rationale=rationale,
+        )
+
+    def extra_imports(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent: OverlapClass,
+        children: tuple[OverlapClass, ...],
+        rationale: str,
+    ) -> tuple[ModuleImportMutation, ...]:
+        del snapshot, base_name, parent, children, rationale
+        return ()
+
+
+@dataclass(frozen=True)
+class SameModuleImportingParent(SameModuleBeforeFirstSibling):
+    """Declare the new base above the earliest sibling and import `parent` there."""
+
+    def extra_imports(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent: OverlapClass,
+        children: tuple[OverlapClass, ...],
+        rationale: str,
+    ) -> tuple[ModuleImportMutation, ...]:
+        del base_name, children
+        return (
+            ModuleImportMutation.from_source(
+                file_path=self.file_path,
+                import_source=snapshot.module_import_graph.required_import_source(
+                    importing_file_path=self.file_path,
+                    imported_file_path=parent.file_path,
+                    imported_name=parent.facts.simple_name,
+                ),
+                rationale=rationale,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class ParentModuleAfterParent(NewBasePlacement):
+    """Declare the new base right after `parent` in `parent`'s module and import it into
+    each sibling module."""
+
+    parent: OverlapClass
+
+    @property
+    def file_path(self) -> str:
+        return self.parent.file_path
+
+    @property
+    def anchor(self) -> OverlapClass:
+        return self.parent
+
+    def insertion_edit(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent_spelling: str,
+        creation_keywords: tuple[str, ...],
+        docstring: str,
+        first: RestatedDeclarations,
+        documentation: KeptDocumentation,
+        rationale: str,
+    ) -> SourceInsertion:
+        source = snapshot.sources_by_file_path[self.file_path]
+        lines = source.splitlines(keepends=True)
+        end_line = self.parent.node.end_lineno or self.parent.node.lineno
+        header = lines[self.parent.node.lineno - 1]
+        indentation = header[: len(header) - len(header.lstrip())]
+        class_lines = _rendered_class_lines(
+            snapshot,
+            indentation,
+            base_name,
+            parent_spelling,
+            creation_keywords,
+            docstring,
+            first,
+            documentation,
+        )
+        return SourceInsertion(
+            file_path=self.file_path,
+            insertion_line=end_line + 1,
+            inserted_lines=("\n\n", *class_lines),
+            rationale=rationale,
+        )
+
+    def extra_imports(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        parent: OverlapClass,
+        children: tuple[OverlapClass, ...],
+        rationale: str,
+    ) -> tuple[ModuleImportMutation, ...]:
+        sibling_paths = sorted(
+            {child.file_path for child in children if child.file_path != self.file_path}
+        )
+        return tuple(
+            ModuleImportMutation.from_source(
+                file_path=sibling_path,
+                import_source=snapshot.module_import_graph.required_import_source(
+                    importing_file_path=sibling_path,
+                    imported_file_path=parent.file_path,
+                    imported_name=base_name,
+                ),
+                rationale=rationale,
+            )
+            for sibling_path in sibling_paths
+        )
+
+
+@dataclass(frozen=True)
+class SiblingOverrideBaseExtraction(SiblingOverrideMove):
+    """A partial-subset sibling override proved safe to lift into a new intermediate base."""
+
+    rebase: SiblingBaseRebase
+    placement: NewBasePlacement
+    parent_spelling: str
+    base_name: str
+    docstring: str
+    creation_keywords: tuple[str, ...]
+
+    @classmethod
+    def proved(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        declaring_target: SourceRewriteTarget,
+        member_name: str,
+        sibling_targets: tuple[SourceRewriteTarget, ...],
+        base_name: str,
+        docstring: str,
+    ) -> SiblingOverrideBaseExtraction:
+        cls._require_valid_pick(base_name, docstring)
+        declaring = OverlapClass.require(snapshot, declaring_target)
+        if member_name.startswith("__") and member_name.endswith("__"):
+            raise NeedsInput(
+                f"`{declaring.qualname}.{member_name}` is a dunder member, which class "
+                "creation and decorators treat by name: NRA needs a proof that lifting "
+                "it into a new base leaves each class unchanged",
+                NeededInput.PROOF,
+            )
+        target_symbols = frozenset(
+            OverlapClass.require(snapshot, target).symbol for target in sibling_targets
+        )
+        verdicts = snapshot.class_overlap_verdicts
+        matches = [
+            cand
+            for cand in sibling_override_candidates(verdicts)
+            if cand.declaring.symbol == declaring.symbol
+            and cand.name == member_name
+            and frozenset(indexed.symbol for indexed, _ in cand.answering)
+            == target_symbols
+        ]
+        if len(matches) != 1:
+            raise NeedsInput(
+                f"expected one sibling-override group for `{declaring.qualname}.{member_name}`, "
+                f"found {len(matches)}",
+                NeededInput.SOURCE_CHANGE,
+            )
+        (candidate,) = matches
+        if candidate.home is not None:
+            raise NeedsInput(
+                f"`{candidate.home.qualname}` already exists to hold `{member_name}`; "
+                "lift onto it directly instead of declaring a new base",
+                NeededInput.SOURCE_CHANGE,
+            )
+        if candidate.unordered:
+            raise NeedsInput(
+                f"lookup order of {', '.join(f'`{name}`' for name in candidate.unordered)} "
+                "is not proved (a base has no source the scan reads)",
+                NeededInput.PROOF,
+            )
+        require_static_c3(snapshot, declaring.facts)
+        children = tuple(
+            OverlapClass.for_symbol(snapshot, indexed.symbol)
+            for indexed, _ in candidate.answering
+        )
+        for child in children:
+            if "." in child.qualname:
+                raise NeedsInput(
+                    f"`{child.qualname}` is nested inside another class; declaring an "
+                    "intermediate base needs top-level sibling classes",
+                    NeededInput.SOURCE_CHANGE,
+                )
+        restated = tuple(
+            RestatedDeclarations.require(snapshot, children[0], child, (member_name,))
+            for child in children
+        )
+        first = restated[0]
+        first.require_no_owner_bound_values(snapshot)
+        rebase = cls._select_rebase(snapshot, verdicts, declaring, children)
+        if "." in rebase.parent.qualname:
+            raise NeedsInput(
+                f"`{rebase.parent.qualname}` is nested inside another class",
+                NeededInput.SOURCE_CHANGE,
+            )
+        require_static_c3(snapshot, rebase.parent.facts)
+        rebase.require_parent_safe(snapshot)
+        placement, parent_spelling = cls._select_placement(
+            snapshot, rebase, children, base_name
+        )
+        cls._require_base_name_unbound(snapshot, base_name, placement, children)
+        creation_keywords = _creation_keywords_for_intermediate(snapshot, rebase.parent)
+        movable_members(
+            ClassMemberMoveProofContext.between(
+                snapshot, children[0].target, placement.anchor.target
+            ),
+            children[0],
+            first.statements,
+        )
+        cls._require_post_rebase_mro_safe(
+            snapshot,
+            verdicts,
+            rebase,
+            declaring,
+            children,
+            member_name,
+            base_name,
+            lifted_is_property=any(
+                _is_property_statement(statement) for statement in first.statements
+            ),
+        )
+        names = frozenset((member_name,))
+        for child, restatement in zip(children, restated):
+            ancestry = require_static_c3(snapshot, child.facts)
+            order = verdicts.linearized(child.symbol)
+            proof = MemberDeletionCreationProof(
+                snapshot,
+                child.facts,
+                ancestry,
+                f"`{child.qualname}.{member_name}`",
+                names,
+                frozenset(),
+                MroWalk(order, order, child.symbol, names),
+            )
+            for statement in restatement.statements:
+                RestatedOverrideDeletion.require_once_per_class(proof, child, statement)
+            RestatedOverrideDeletion.require_plain_decorators(proof, child)
+            proof.require_unchanged()
+            NamespaceReaders(snapshot).require_unread(child.facts, names)
+        return cls(
+            candidate=candidate,
+            rebase=rebase,
+            placement=placement,
+            parent_spelling=parent_spelling,
+            base_name=base_name,
+            docstring=docstring.strip(),
+            creation_keywords=creation_keywords,
+            children=children,
+            restated=restated,
+        )
+
+    @staticmethod
+    def _require_valid_pick(base_name: str, docstring: str) -> None:
+        if not base_name.isidentifier() or keyword_module.iskeyword(base_name):
+            raise NeedsInput(
+                f"`{base_name}` is not a valid class name",
+                NeededInput.OWNER_PICK,
+            )
+        cleaned = docstring.strip()
+        forbidden = ('"""', "\\", "\n")
+        if not cleaned or any(token in cleaned for token in forbidden):
+            raise NeedsInput(
+                f"`{base_name}` needs a one-line docstring without triple quotes or backslashes",
+                NeededInput.OWNER_PICK,
+            )
+
+    @staticmethod
+    def _select_rebase(
+        snapshot: CodemodSourceSnapshot,
+        verdicts: ClassOverlapVerdicts,
+        declaring: OverlapClass,
+        children: tuple[OverlapClass, ...],
+    ) -> SiblingBaseRebase:
+        index = verdicts.class_index
+        shared_direct = [
+            symbol
+            for symbol in children[0].facts.resolved_base_symbols
+            if symbol in index.classes_by_symbol
+            and (
+                symbol == declaring.symbol
+                or declaring.symbol in index.ancestor_symbols(symbol)
+            )
+            and all(symbol in child.facts.resolved_base_symbols for child in children)
+        ]
+        if shared_direct:
+            parent_symbol = max(
+                shared_direct,
+                key=lambda sym: (len(index.ancestor_symbols(sym)), sym),
+            )
+            parent = OverlapClass.for_symbol(snapshot, parent_symbol)
+            simple = parent.facts.simple_name
+            base_exprs: list[ast.expr] = []
+            for child in children:
+                matches = [
+                    base
+                    for base in child.node.bases
+                    if (declared := ClassSymbolResolutionAuthority.declared_base_name(base))
+                    is not None
+                    and declared.rsplit(".", 1)[-1] == simple
+                ]
+                if len(matches) != 1:
+                    return PrependBaseRebase(declaring)
+                base_exprs.append(matches[0])
+            return DirectBaseRebase(parent, tuple(base_exprs))
+        return PrependBaseRebase(declaring)
+
+    @staticmethod
+    def _select_placement(
+        snapshot: CodemodSourceSnapshot,
+        rebase: SiblingBaseRebase,
+        children: tuple[OverlapClass, ...],
+        base_name: str,
+    ) -> tuple[NewBasePlacement, str]:
+        del base_name
+        parent = rebase.parent
+        sibling_files = {child.file_path for child in children}
+        if len(sibling_files) == 1:
+            first_index, first_sibling = min(
+                enumerate(children), key=lambda pair: pair[1].node.lineno
+            )
+            direct_spelling = rebase.direct_base_spelling_for(first_index)
+            if direct_spelling is not None:
+                return SameModuleBeforeFirstSibling(first_sibling), direct_spelling
+            parsed = snapshot.parsed_module_for_source_path(first_sibling.file_path)
+            witness = snapshot.module_binding_proof.reference_or_builtin_witness_at(
+                parsed,
+                ast.Name(id=parent.facts.simple_name, ctx=ast.Load()),
+                line=first_sibling.node.lineno,
+            )
+            if witness is not None:
+                if witness.qualified_name == parent.symbol:
+                    return (
+                        SameModuleBeforeFirstSibling(first_sibling),
+                        parent.facts.simple_name,
+                    )
+                raise NeedsInput(
+                    f"`{parent.facts.simple_name}` in {first_sibling.file_path} refers "
+                    f"to `{witness.qualified_name}`, not `{parent.symbol}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            return (
+                SameModuleImportingParent(first_sibling),
+                parent.facts.simple_name,
+            )
+        return ParentModuleAfterParent(parent), parent.facts.simple_name
+
+    @staticmethod
+    def _require_base_name_unbound(
+        snapshot: CodemodSourceSnapshot,
+        base_name: str,
+        placement: NewBasePlacement,
+        children: tuple[OverlapClass, ...],
+    ) -> None:
+        checked_paths = sorted({placement.file_path, *(c.file_path for c in children)})
+        for file_path in checked_paths:
+            module = snapshot.module_nodes_by_file_path[file_path]
+            if base_name in _module_top_level_bound_names(module):
+                raise NeedsInput(
+                    f"`{base_name}` is already bound in {file_path}",
+                    NeededInput.OWNER_PICK,
+                )
+
+    @staticmethod
+    def _require_post_rebase_mro_safe(
+        snapshot: CodemodSourceSnapshot,
+        verdicts: ClassOverlapVerdicts,
+        rebase: SiblingBaseRebase,
+        declaring: OverlapClass,
+        children: tuple[OverlapClass, ...],
+        member_name: str,
+        base_name: str,
+        *,
+        lifted_is_property: bool,
+    ) -> None:
+        index = verdicts.class_index
+        bodies = verdicts.bodies
+        parent_mro = verdicts.linearized(rebase.parent.symbol)
+        new_symbol = f"<extracted>.{base_name}"
+        new_mros: dict[str, tuple[str, ...]] = {
+            new_symbol: (new_symbol, *parent_mro),
+        }
+        answering_by_symbol = {child.symbol: child for child in children}
+        for child in children:
+            old_order = verdicts.linearized(child.symbol)
+            if declaring.symbol not in old_order:
+                raise NeedsInput(
+                    f"`{declaring.qualname}` is not in `{child.qualname}`'s MRO",
+                    NeededInput.PROOF,
+                )
+            between = old_order[1 : old_order.index(declaring.symbol)]
+            intervening = next_binder(verdicts, between, member_name)
+            if intervening is not None:
+                raise NeedsInput(
+                    f"`{intervening}` binds `{member_name}` between `{child.qualname}` "
+                    f"and `{declaring.qualname}`",
+                    NeededInput.PROOF,
+                )
+            rebased_bases = rebase.new_base_symbols_for(child, new_symbol)
+            base_mros = [
+                list(new_mros[b] if b in new_mros else verdicts.linearized(b))
+                for b in rebased_bases
+            ]
+            merged = _c3_merge([*base_mros, list(rebased_bases)])
+            if merged is None:
+                raise NeedsInput(
+                    f"inserting `{base_name}` produces an inconsistent C3 MRO for `{child.qualname}`",
+                    NeededInput.PROOF,
+                )
+            new_order = (child.symbol, *merged)
+            if tuple(s for s in new_order if s != new_symbol) != old_order:
+                raise NeedsInput(
+                    f"inserting `{base_name}` changes `{child.qualname}`'s MRO order beyond `{member_name}`",
+                    NeededInput.PROOF,
+                )
+            new_mros[child.symbol] = new_order
+
+        # Check all descendants of answering siblings in topological base-before-child order.
+        descendants: set[str] = set()
+        for child in children:
+            descendants.update(index.descendant_symbols(child.symbol))
+        ordered_descendants = sorted(
+            descendants - frozenset(answering_by_symbol),
+            key=lambda sym: (len(index.ancestor_symbols(sym)), sym),
+        )
+        for desc_symbol in ordered_descendants:
+            desc = OverlapClass.for_symbol(snapshot, desc_symbol)
+            require_static_c3(snapshot, desc.facts)
+            old_order = verdicts.linearized(desc_symbol)
+            base_mros = [
+                list(new_mros[b] if b in new_mros else verdicts.linearized(b))
+                for b in desc.facts.resolved_base_symbols
+            ]
+            merged = _c3_merge([*base_mros, list(desc.facts.resolved_base_symbols)])
+            if merged is None:
+                raise NeedsInput(
+                    f"inserting `{base_name}` produces an inconsistent C3 MRO for descendant `{desc.qualname}`",
+                    NeededInput.PROOF,
+                )
+            new_order = (desc_symbol, *merged)
+            if tuple(s for s in new_order if s != new_symbol) != old_order:
+                raise NeedsInput(
+                    f"inserting `{base_name}` changes descendant `{desc.qualname}`'s MRO order",
+                    NeededInput.PROOF,
+                )
+            new_mros[desc_symbol] = new_order
+            if lifted_is_property:
+                before_new = new_order[: new_order.index(new_symbol)]
+                binder = next_binder(verdicts, before_new, member_name)
+                if binder is not None:
+                    binder_decl = bodies.declarations_of(binder).get(member_name)
+                    if binder_decl is not None and binder_decl.kind.is_field:
+                        raise NeedsInput(
+                            f"`{desc.qualname}` binds `{member_name}` as a dataclass field, "
+                            f"which a property on `{base_name}` would shadow",
+                            NeededInput.PROOF,
+                        )
+
+    def edits(
+        self, snapshot: CodemodSourceSnapshot, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        first = self.restated[0]
+        documentation = KeptDocumentation(self.children, first.deleted_names)
+        rationale = documentation.rationale(rationale)
+        edits: list[NominalSourceEdit] = [
+            self.placement.insertion_edit(
+                snapshot,
+                self.base_name,
+                self.parent_spelling,
+                self.creation_keywords,
+                self.docstring,
+                first,
+                documentation,
+                rationale,
+            ),
+            *required_name_imports(
+                snapshot,
+                first.statements,
+                first.restating,
+                self.placement.anchor,
+                rationale,
+            ),
+            *self.placement.extra_imports(
+                snapshot, self.base_name, self.rebase.parent, self.children, rationale
+            ),
+        ]
+        deleted_by_file: defaultdict[str, list[ast.AST]] = defaultdict(list)
+        for child_index, restatement in enumerate(self.restated):
+            child = restatement.restating
+            source = snapshot.sources_by_file_path[child.file_path]
+            header = ClassHeaderSpanSourceAuthority(child.node, source)
+            edits.extend(
+                header.source_edits(
+                    header.with_base_items(
+                        self.rebase.new_base_items_for(
+                            child_index, header, self.base_name
+                        )
+                    ),
+                    file_path=child.file_path,
+                    rationale=rationale,
+                )
+            )
+            deletion = StatementDeletionSource(
+                source=source,
+                node=child.node,
+                file_path=child.file_path,
+            )
+            edits.extend(
+                deletion.physical_edits(
+                    file_path=child.file_path,
+                    replacements=deletion.replacements_for_statements(
+                        restatement.written_statements
+                    ),
+                    rationale=rationale,
+                )
+            )
+            if child.file_path != self.placement.file_path:
+                deleted_by_file[child.file_path].extend(restatement.statements)
+                deleted_by_file[child.file_path].extend(
+                    self.rebase.replaced_base_nodes(child_index)
+                )
+        for file_path, dropped in deleted_by_file.items():
+            edits.extend(
+                obsolete_import_edits(snapshot, file_path, tuple(dropped), rationale)
+            )
+        return tuple(edits)
+
+    def rationale(self) -> str:
+        siblings = ", ".join(f"`{child.qualname}`" for child in self.children)
+        return (
+            f"Declares `{self.base_name}` beneath `{self.rebase.parent.qualname}` "
+            f"holding `{self.candidate.name}` once and deletes the identical sibling "
+            f"copies from {siblings}."
+        )
+
+
+@dataclass(frozen=True, kw_only=True)
+class ExtractSiblingOverrideBaseOperation(RepositorySourceReprovedOperation):
+    """Declare a new intermediate base beneath `target` holding one identically
+    overridden member and rebase the answering sibling classes onto it."""
+
+    member_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    sibling_targets: tuple[SourceRewriteTarget, ...] = codemod_payload_field(
+        PayloadRecordArrayValueCodec(SourceRewriteTarget)
+    )
+    base_name: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+    docstring: str = codemod_payload_field(RequiredStringPayloadValueCodec())
+
+    def __post_init__(self) -> None:
+        if not self.member_name.isidentifier() or keyword_module.iskeyword(
+            self.member_name
+        ):
+            raise ValueError("member_name must be a Python identifier")
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        extraction = SiblingOverrideBaseExtraction.proved(
+            snapshot,
+            self.target,
+            self.member_name,
+            self.sibling_targets,
+            self.base_name,
+            self.docstring,
+        )
+        return extraction.edits(snapshot, self.rationale_text(extraction.rationale()))
+
+
 class SiblingOverrideFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     SiblingOverrideConcept,
 ):
-    """Lift a sibling override onto its existing shared ancestor when one is proved."""
+    """Lift a sibling override onto its existing shared ancestor, or into a picked
+    intermediate base when no shared ancestor holds only these siblings."""
 
     def evaluate_recipe_for_finding(
         self,
@@ -839,13 +1807,7 @@ class SiblingOverrideFindingRecipeSynthesizer(
         if candidate is None:
             return self.rejected_evaluation("the sibling override left the source")
         if candidate.home is None:
-            return self.stopped_evaluation(
-                NeedsInput(
-                    f"no existing class beneath `{candidate.declaring.qualname}` holds "
-                    f"`{candidate.name}` for only these siblings",
-                    NeededInput.SOURCE_CHANGE,
-                )
-            )
+            return self._evaluate_intermediate_base_recipe(finding, context, candidate)
         operation = LiftSiblingOverrideOperation(
             target=source_rewrite_target(candidate.home),
             member_name=candidate.name,
@@ -864,15 +1826,79 @@ class SiblingOverrideFindingRecipeSynthesizer(
             ).with_operation(operation)
         )
 
+    def _evaluate_intermediate_base_recipe(
+        self,
+        finding: RefactorFinding,
+        context: CodemodSelectorContext,
+        candidate: SiblingOverrideCandidate,
+    ) -> FindingRecipeEvaluation:
+        base_pick = finding.metrics.picked_base
+        if base_pick is None:
+            if candidate.unordered:
+                return self.stopped_evaluation(
+                    NeedsInput(
+                        f"lookup order of {', '.join(f'`{name}`' for name in candidate.unordered)} "
+                        "is not proved (a base has no source the scan reads)",
+                        NeededInput.PROOF,
+                    )
+                )
+            if candidate.name.startswith("__") and candidate.name.endswith("__"):
+                return self.stopped_evaluation(
+                    NeedsInput(
+                        f"`{candidate.declaring.qualname}.{candidate.name}` is a dunder member",
+                        NeededInput.PROOF,
+                    )
+                )
+            return self.stopped_evaluation(
+                NeedsInput(
+                    f"no existing class beneath `{candidate.declaring.qualname}` holds "
+                    f"`{candidate.name}` for only these siblings; supply a new intermediate "
+                    "base name and one-line judgement in `--codemod-owner-picks`",
+                    NeededInput.OWNER_PICK,
+                )
+            )
+        operation = ExtractSiblingOverrideBaseOperation(
+            target=source_rewrite_target(candidate.declaring),
+            member_name=candidate.name,
+            sibling_targets=tuple(
+                source_rewrite_target(indexed) for indexed, _ in candidate.answering
+            ),
+            base_name=base_pick.name,
+            docstring=base_pick.judgement,
+        )
+        try:
+            operation.source_edits(context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(
+            RefactorRecipe(
+                recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
+                reason=(
+                    f"Declares `{base_pick.name}` beneath `{candidate.declaring.qualname}` "
+                    f"to hold `{candidate.name}` once for these siblings."
+                ),
+            ).with_operation(operation)
+        )
+
 
 __all__ = (
+    "DirectBaseRebase",
+    "ExtractSiblingOverrideBaseOperation",
     "HomePlacement",
     "InsertIntoHome",
     "LiftSiblingOverrideOperation",
+    "NewBasePlacement",
     "Override",
+    "ParentModuleAfterParent",
+    "PrependBaseRebase",
     "ReplaceHomeStub",
+    "SameModuleBeforeFirstSibling",
+    "SameModuleImportingParent",
+    "SiblingBaseRebase",
+    "SiblingOverrideBaseExtraction",
     "SiblingOverrideCandidate",
     "SiblingOverrideFindingRecipeSynthesizer",
     "SiblingOverrideLift",
+    "SiblingOverrideMove",
     "sibling_override_candidates",
 )

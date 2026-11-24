@@ -40,8 +40,8 @@ from nominal_refactor_advisor.class_overlap import ClassOverlapMetrics, ExtractM
 from nominal_refactor_advisor.json_reports import SemanticRecord
 from nominal_refactor_advisor.models import (
     DeclaredBasePick,
+    DeclaredBasePickMetrics,
     RefactorFinding,
-    RegistrationMetrics,
 )
 from nominal_refactor_advisor.owner_candidates import (
     OwnerPick,
@@ -156,20 +156,20 @@ class OwnerPicks:
                     if owner.permitted
                 ),
             )
-        rosters = [
+        base_pickables = [
             finding
             for finding in findings
-            if isinstance(finding.metrics, RegistrationMetrics)
+            if isinstance(finding.metrics, DeclaredBasePickMetrics)
             and finding.stable_id in by_finding
         ]
         bases: dict[str, DeclaredBasePick] = {}
-        for finding in rosters:
+        for finding in base_pickables:
             pick = by_finding[finding.stable_id]
             outcome, base = self.base_outcome(finding, pick)
             outcomes[finding.stable_id] = outcome
             if base is not None:
                 bases[finding.stable_id] = base
-        present = frozenset(finding.stable_id for finding in (*mixins, *rosters))
+        present = frozenset(finding.stable_id for finding in (*mixins, *base_pickables))
         return (
             [
                 replace(
@@ -181,9 +181,10 @@ class OwnerPicks:
                 if finding.stable_id in picks_by_finding
                 else replace(
                     finding,
-                    metrics=replace(finding.metrics, base_pick=bases[finding.stable_id]),
+                    metrics=finding.metrics.with_base_pick(bases[finding.stable_id]),
                 )
                 if finding.stable_id in bases
+                and isinstance(finding.metrics, DeclaredBasePickMetrics)
                 else finding
                 for finding in findings
             ],
@@ -191,7 +192,7 @@ class OwnerPicks:
                 picks_file=self.path,
                 picks_sha256=self.digest,
                 outcomes=tuple(
-                    outcomes[finding.stable_id] for finding in (*mixins, *rosters)
+                    outcomes[finding.stable_id] for finding in (*mixins, *base_pickables)
                 ),
                 unmatched=tuple(
                     pick.finding for pick in self.picks if pick.finding not in present
@@ -208,13 +209,17 @@ class OwnerPicks:
 
         if pick.owner is None:
             return OwnerPickOutcome(finding.stable_id, "declined", pick.because), None
-        authority = finding.authority_evidence
-        if authority is None or pick.owner != authority.symbol:
+        expected_owner = (
+            finding.metrics.base_pick_owner_name(finding.authority_evidence)
+            if isinstance(finding.metrics, DeclaredBasePickMetrics)
+            else None
+        )
+        if expected_owner is None or pick.owner != expected_owner:
             return (
                 OwnerPickOutcome(
                     finding.stable_id,
                     "rejected",
-                    f"`{pick.owner}` is not the family the roster names members of",
+                    f"`{pick.owner}` is not the declaring family `{expected_owner}` for this finding",
                 ),
                 None,
             )
