@@ -1330,3 +1330,206 @@ def test_an_installed_base_binding_the_called_name_is_read_as_its_code(
     snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path / "repo"))
     with pytest.raises(CodemodOperationPreflightError, match=r"extdispatch_binding.py:\d+ `opaque\(cls\)`"):
         operation.source_edits(snapshot)
+
+
+def test_composing_owner_drops_direct_owner_base_from_descendant_and_keeps_subclasses_valid(
+    tmp_path: Path,
+) -> None:
+    """When `ActivityRegistryRead` composes `PresenceSnapshot`, downstream
+    `RegistrySnapshot(..., PresenceSnapshot, ActivityRegistryRead)` would fail
+    C3 MRO unless `PresenceSnapshot` is dropped from `RegistrySnapshot`'s bases;
+    its subclass `RegistrySlice` stays valid and the obsolete import goes."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/presence.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class PresenceSnapshot(ABC):\n"
+                "    __slots__ = ()\n\n"
+                "    @abstractmethod\n"
+                "    def owner_identity(self, name: str) -> str: ...\n"
+            ),
+            "pkg/activity.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class ActivityRegistryRead(ABC):\n"
+                "    __slots__ = ()\n\n"
+                "    @abstractmethod\n"
+                "    def owner_identity(self, name: str) -> str: ...\n\n"
+                "    @abstractmethod\n"
+                "    def require(self, name: str) -> str: ...\n"
+            ),
+            "pkg/document.py": (
+                "from dataclasses import dataclass\n"
+                "from pkg.activity import ActivityRegistryRead\n"
+                "from pkg.presence import PresenceSnapshot\n\n\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class RegistrySnapshot(PresenceSnapshot, ActivityRegistryRead):\n"
+                "    label: str\n\n"
+                "    def owner_identity(self, name: str) -> str:\n"
+                "        return f'{self.label}:{name}'\n\n"
+                "    def require(self, name: str) -> str:\n"
+                "        return name\n\n\n"
+                "@dataclass(frozen=True, slots=True)\n"
+                "class RegistrySlice(RegistrySnapshot):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    probe = (
+        "from pkg.document import RegistrySlice, RegistrySnapshot\n"
+        "from pkg.presence import PresenceSnapshot\n"
+        "s = RegistrySlice(label='ok')\n"
+        "print(s.owner_identity('a'), s.require('b'), isinstance(s, PresenceSnapshot))\n"
+    )
+    before = _run(tmp_path, probe)
+    _apply(
+        tmp_path,
+        ComposeExistingClassOperation(
+            target=SourceRewriteTarget(
+                file_path=(tmp_path / "pkg/activity.py").as_posix(),
+                qualname="ActivityRegistryRead",
+            ),
+            owner=SourceRewriteTarget(
+                file_path=(tmp_path / "pkg/presence.py").as_posix(),
+                qualname="PresenceSnapshot",
+            ),
+        ),
+    )
+    activity_source = (tmp_path / "pkg/activity.py").read_text()
+    document_source = (tmp_path / "pkg/document.py").read_text()
+    assert "class ActivityRegistryRead(PresenceSnapshot):" in activity_source
+    assert "class RegistrySnapshot(ActivityRegistryRead):" in document_source
+    assert "PresenceSnapshot" not in document_source
+    assert _run(tmp_path, probe) == before
+
+
+def test_composing_owner_refuses_when_descendant_inherits_owner_transitively_before_composer(
+    tmp_path: Path,
+) -> None:
+    """`RegistrySnapshot(Other, ActivityRegistryRead)` inherits `PresenceSnapshot`
+    through `Other` rather than directly, so composing moves `PresenceSnapshot`
+    past `ActivityRegistryRead` and reorders `RegistrySnapshot`'s ancestors."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/reads.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class PresenceSnapshot(ABC):\n"
+                "    __slots__ = ()\n\n"
+                "    @abstractmethod\n"
+                "    def owner_identity(self, name: str) -> str: ...\n\n\n"
+                "class Other(PresenceSnapshot):\n"
+                "    __slots__ = ()\n\n\n"
+                "class ActivityRegistryRead(ABC):\n"
+                "    __slots__ = ()\n\n"
+                "    @abstractmethod\n"
+                "    def owner_identity(self, name: str) -> str: ...\n\n"
+                "    @abstractmethod\n"
+                "    def require(self, name: str) -> str: ...\n\n\n"
+                "class RegistrySnapshot(Other, ActivityRegistryRead):\n"
+                "    def owner_identity(self, name: str) -> str:\n"
+                "        return name\n\n"
+                "    def require(self, name: str) -> str:\n"
+                "        return name\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/reads.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="ActivityRegistryRead"),
+        owner=SourceRewriteTarget(file_path=path, qualname="PresenceSnapshot"),
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"Composing reorders `RegistrySnapshot`'s ancestors",
+    ):
+        operation.source_edits(snapshot)
+
+
+def test_composing_owner_refuses_when_descendant_has_unfixable_c3_conflict(
+    tmp_path: Path,
+) -> None:
+    """`Owner` orders `G1` before `G2` while `Other` orders `G2` before `G1`;
+    `Composer(G1, G2)` itself linearizes with `Owner`, but descendant
+    `Child(Composer, Other)` would fail C3 at class creation."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": (
+                "class G1:\n"
+                "    pass\n\n\n"
+                "class G2:\n"
+                "    pass\n\n\n"
+                "class Owner(G1, G2):\n"
+                "    def kind(self) -> str:\n"
+                "        return 'k'\n\n\n"
+                "class Other(G2, G1):\n"
+                "    pass\n\n\n"
+                "class Composer:\n"
+                "    def kind(self) -> str:\n"
+                "        return 'k'\n\n"
+                "    def extra(self) -> str:\n"
+                "        return 'e'\n\n\n"
+                "class Child(Composer, Other):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/m.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Composer"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"`Child` has no C3 order",
+    ):
+        operation.source_edits(snapshot)
+
+
+def test_composing_owner_refuses_descendant_drop_that_reorders_intermediate_super_or_override(
+    tmp_path: Path,
+) -> None:
+    """`Child(Owner, Mid, Composer)` has `Mid` between `Owner` and `Composer`;
+    dropping `Owner` moves `Owner` after `Mid`, flipping `Child.tag` from `Owner` to `Mid`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": (
+                "class Owner:\n"
+                "    def tag(self) -> str:\n"
+                "        return 'owner'\n\n\n"
+                "class Mid:\n"
+                "    def tag(self) -> str:\n"
+                "        return 'mid'\n\n\n"
+                "class Composer:\n"
+                "    def tag(self) -> str:\n"
+                "        return 'owner'\n\n"
+                "    def extra(self) -> str:\n"
+                "        return 'e'\n\n\n"
+                "class Child(Owner, Mid, Composer):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/m.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Composer"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
+    )
+    with pytest.raises(
+        CodemodOperationPreflightError,
+        match=r"reorders \['tag'\] with `Mid`",
+    ):
+        operation.source_edits(snapshot)

@@ -21,7 +21,7 @@ from nominal_refactor_advisor.detectors._restated_bases import RestatedBaseDetec
 from nominal_refactor_advisor.detectors._restated_overrides import RestatedOverrideDetector
 from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.needed_input import NeededInput
-from nominal_refactor_advisor.refactors.restated_bases import InstalledPackageBaseReads
+from nominal_refactor_advisor.refactors.class_attribute_reads import InstalledPackageBaseReads
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 META = (

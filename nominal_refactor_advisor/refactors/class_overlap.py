@@ -17,6 +17,7 @@ from collections.abc import (
 )
 from dataclasses import (
     dataclass,
+    field,
     replace,
 )
 from functools import cached_property
@@ -25,7 +26,9 @@ from importlib import import_module
 from pathlib import Path
 from typing import ClassVar, Self, cast
 
+from nominal_refactor_advisor.declared_c3 import BASES_READ_AT_CREATION
 from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.refactors.class_attribute_reads import BasesReaders
 from nominal_refactor_advisor.refactors.class_creation import (
     ClassCreationProof,
     MroWalk,
@@ -1320,6 +1323,77 @@ def required_name_imports(
     return tuple(imports)
 
 
+def _has_super_call(node: ast.ClassDef) -> bool:
+    return any(
+        isinstance(item, ast.Call)
+        and isinstance(item.func, ast.Name)
+        and item.func.id == "super"
+        for item in ast.walk(node)
+    )
+
+
+@dataclass(frozen=True)
+class DescendantBaseDrop:
+    """Direct owner bases dropped from a descendant of the composer so C3
+    still orders the descendant once the composer inherits those owners."""
+
+    descendant: OverlapClass
+    dropped: tuple[tuple[ast.expr, str], ...]
+
+    def header_edits(
+        self, snapshot: CodemodSourceSnapshot, rationale: str
+    ) -> tuple[NominalSourceEdit, ...]:
+        node = self.descendant.node
+        header = ClassHeaderSpanSourceAuthority(
+            node, snapshot.sources_by_file_path[self.descendant.file_path]
+        )
+        dropped = frozenset(id(base) for base, _supplier in self.dropped)
+        return header.source_edits(
+            header.with_base_items(
+                tuple(
+                    header.item_source(base)
+                    for base in node.bases
+                    if id(base) not in dropped
+                )
+            ),
+            file_path=self.descendant.file_path,
+            rationale=rationale,
+        )
+
+    def rationale(self) -> str:
+        return " ".join(
+            f"Drops `{ast.unparse(base)}` from `{self.descendant.qualname}`'s bases: "
+            f"`{supplier.rpartition('.')[2]}` now supplies it."
+            for base, supplier in self.dropped
+        )
+
+
+def emit_descendant_drop_edits(
+    snapshot: CodemodSourceSnapshot,
+    drops: Sequence[DescendantBaseDrop],
+    rationale: str,
+    *,
+    skip_obsolete_import_paths: frozenset[str] = frozenset(),
+) -> tuple[NominalSourceEdit, ...]:
+    """Header edits and per-file obsolete import removals for descendant drops."""
+
+    if not drops:
+        return ()
+    edits: list[NominalSourceEdit] = []
+    dropped_by_file: dict[str, list[ast.expr]] = {}
+    for drop in drops:
+        edits.extend(drop.header_edits(snapshot, rationale))
+        if drop.descendant.file_path not in skip_obsolete_import_paths:
+            dropped_by_file.setdefault(drop.descendant.file_path, []).extend(
+                base for base, _supplier in drop.dropped
+            )
+    for file_path, dropped_nodes in dropped_by_file.items():
+        edits.extend(
+            obsolete_import_edits(snapshot, file_path, tuple(dropped_nodes), rationale)
+        )
+    return tuple(edits)
+
+
 @dataclass(frozen=True)
 class ComposedAncestry:
     """A composer's C3 order before and after its owners become its first bases.
@@ -1334,12 +1408,18 @@ class ComposedAncestry:
     no fields or metaclass and is read as no identity: a type test of it would
     answer differently for the class. Its creation hook, `__init_subclass__`,
     is a name like any other, so the composer's creation runs the same hook.
+    Every scanned descendant of the composer is proved by the same C3 order and
+    lookup check; when a descendant already listed an owner directly ahead of
+    the composer, dropping that now-redundant direct base is proved and emitted
+    with the composition.
     """
 
     snapshot: CodemodSourceSnapshot
     composer: OverlapClass
     owners: tuple[OverlapClass, ...]
     deleted: frozenset[str]
+    peer_overrides: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
+    peer_deleted: Mapping[str, frozenset[str]] = field(default_factory=dict)
 
     def creation(self) -> ClassCreationProof:
         """What the composer's creation reads. An abstract method moved to an owner
@@ -1384,8 +1464,11 @@ class ComposedAncestry:
         if (native := namespace_read_native(symbol)) is not None:
             return native_declared_names(native)
         declared = frozenset(declaration.name for declaration in self.c3.declared(symbol).body_declarations)
-        if composed and symbol == self.composer.symbol:
-            return declared - self.deleted
+        if composed:
+            if symbol == self.composer.symbol:
+                return declared - self.deleted
+            if symbol in self.peer_deleted:
+                return declared - self.peer_deleted[symbol]
         return declared
 
     @cached_property
@@ -1437,7 +1520,7 @@ class ComposedAncestry:
         )
 
     def rationale(self, rationale: str) -> str:
-        """The step's rationale, naming each base the composer no longer lists."""
+        """The step's rationale, naming each base the composer or a descendant no longer lists."""
 
         return " ".join(
             (
@@ -1447,8 +1530,192 @@ class ComposedAncestry:
                     f"`{supplier.rpartition('.')[2]}` already supplies it."
                     for node, supplier in self.restated
                 ),
+                *(drop.rationale() for drop in self.descendant_drops),
             )
         )
+
+    def descendant_edits(
+        self,
+        rationale: str,
+        *,
+        skip_obsolete_import_paths: frozenset[str] = frozenset(),
+    ) -> tuple[NominalSourceEdit, ...]:
+        return emit_descendant_drop_edits(
+            self.snapshot,
+            self.descendant_drops,
+            rationale,
+            skip_obsolete_import_paths=skip_obsolete_import_paths,
+        )
+
+    @cached_property
+    def descendant_drops(self) -> tuple[DescendantBaseDrop, ...]:
+        """Prove every scanned descendant of the composer still linearizes and
+        keeps its lookups; drop any direct plain owner base whose presence ahead
+        of the composer breaks C3 when dropping it is proved behaviour-preserving."""
+
+        class_index = self.snapshot.class_overlap_verdicts.class_index
+        descendant_set = frozenset(class_index.descendant_symbols(self.composer.symbol))
+        if not descendant_set:
+            return ()
+        owner_symbols = tuple(owner.symbol for owner in self.owners)
+        owner_set = frozenset(owner_symbols)
+        ordered = sorted(
+            descendant_set,
+            key=lambda sym: (
+                len(frozenset(class_index.ancestor_symbols(sym)) & descendant_set),
+                sym,
+            ),
+        )
+        overrides: dict[str, tuple[str, ...]] = {
+            **self.peer_overrides,
+            self.composer.symbol: (*owner_symbols, *self.kept_bases),
+        }
+        dropped_by_symbol: dict[str, frozenset[str]] = {}
+        drops: list[DescendantBaseDrop] = []
+        for symbol in ordered:
+            descendant = OverlapClass.for_symbol(self.snapshot, symbol)
+            d_ancestry = require_static_c3(self.snapshot, descendant.facts)
+            before_d = self.c3.linearized(symbol)
+            dropped_symbols: tuple[str, ...] = ()
+            try:
+                after_d = self.c3.linearized_with(symbol, overrides)
+            except NeedsInput:
+                referenced = tuple(_referenced_bases(descendant.node))
+                if len(referenced) != len(descendant.node.bases):
+                    raise
+                listed = self.c3.bases(symbol)
+                drop_indices = tuple(
+                    index
+                    for index, ((base_node, _parts), base_symbol) in enumerate(
+                        zip(referenced, listed)
+                    )
+                    if isinstance(base_node, (ast.Name, ast.Attribute))
+                    and base_symbol in owner_set
+                    and base_symbol not in BASES_READ_AT_CREATION
+                )
+                if not drop_indices:
+                    raise
+                drop_index_set = frozenset(drop_indices)
+                new_d_bases = tuple(
+                    base for index, base in enumerate(listed) if index not in drop_index_set
+                ) or (NativeMroBase.OBJECT.value,)
+                after_d = self.c3.linearized_with(symbol, {**overrides, symbol: new_d_bases})
+                require_rewritable_header(self.snapshot, descendant)
+                dropped_symbols = tuple(listed[index] for index in drop_indices)
+                creation = ClassCreationProof.dropping(
+                    self.snapshot, descendant.facts, d_ancestry, dropped_symbols
+                )
+                creation.require_unchanged()
+                BasesReaders(self.snapshot).require_unread(
+                    descendant.facts, dropped_symbols, creation.installed_packages()
+                )
+                if descendant.facts.dataclass_declaration.generates_construction and any(
+                    owner.own_field_names
+                    for owner in self.owners
+                    if owner.symbol in dropped_symbols
+                ):
+                    dropped_names = ", ".join(
+                        f"`{item.rpartition('.')[2]}`" for item in dropped_symbols
+                    )
+                    raise NeedsInput(
+                        f"Dropping {dropped_names} "
+                        f"from dataclass `{descendant.qualname}` may reorder its fields",
+                        NeededInput.PROOF,
+                    )
+                overrides[symbol] = new_d_bases
+                dropped_by_symbol[symbol] = frozenset(dropped_symbols)
+                drops.append(
+                    DescendantBaseDrop(
+                        descendant,
+                        tuple(
+                            (referenced[index][0], self.composer.symbol)
+                            for index in drop_indices
+                        ),
+                    )
+                )
+            ancestor_dropped: set[str] = set()
+            for ancestor in before_d[1:]:
+                ancestor_dropped |= dropped_by_symbol.get(ancestor, frozenset())
+            shifted = frozenset(dropped_symbols) | (frozenset(before_d) & ancestor_dropped)
+            kept_before = tuple(item for item in before_d if item not in shifted)
+            kept_after = tuple(
+                item for item in after_d if item in before_d and item not in shifted
+            )
+            if kept_after != kept_before:
+                raise NeedsInput(
+                    f"Composing reorders `{descendant.qualname}`'s ancestors: "
+                    f"{[item.rpartition('.')[2] for item in before_d]} becomes "
+                    f"{[item.rpartition('.')[2] for item in after_d]}",
+                    NeededInput.PROOF,
+                )
+            for shifted_owner in sorted(shifted):
+                before_pos = before_d.index(shifted_owner)
+                after_pos = after_d.index(shifted_owner)
+                passed = tuple(
+                    item
+                    for item in before_d
+                    if before_d.index(item) > before_pos
+                    and item in after_d
+                    and after_d.index(item) < after_pos
+                )
+                for checked in (shifted_owner, *passed):
+                    if class_index.class_for(checked) is None or _has_super_call(
+                        OverlapClass.for_symbol(self.snapshot, checked).node
+                    ):
+                        raise NeedsInput(
+                            f"Dropping `{shifted_owner.rpartition('.')[2]}` shifts "
+                            f"`{checked.rpartition('.')[2]}` in `{descendant.qualname}`'s MRO "
+                            "across a `super()` call",
+                            NeededInput.PROOF,
+                        )
+                owner_names = self.names(shifted_owner, composed=False) - {"__slots__"}
+                for item in passed:
+                    overlap = sorted(owner_names & (self.names(item, composed=True) - {"__slots__"}))
+                    if overlap:
+                        raise NeedsInput(
+                            f"Dropping `{shifted_owner.rpartition('.')[2]}` from "
+                            f"`{descendant.qualname}` reorders {overlap} with "
+                            f"`{item.rpartition('.')[2]}`",
+                            NeededInput.PROOF,
+                        )
+            d_names = frozenset().union(
+                *(self.names(item, composed=False) for item in before_d),
+                *(self.names(item, composed=False) for item in after_d),
+            )
+            for name in sorted(d_names):
+                was = next(
+                    (item for item in before_d if name in self.names(item, composed=False)),
+                    None,
+                )
+                becomes = next(
+                    (item for item in after_d if name in self.names(item, composed=True)),
+                    None,
+                )
+                if was == becomes:
+                    continue
+                if was == self.composer.symbol and name in self.deleted and becomes in owner_set:
+                    continue
+                if (
+                    was is not None
+                    and was in self.peer_deleted
+                    and name in self.peer_deleted[was]
+                    and becomes in owner_set
+                ):
+                    continue
+                if name == "__slots__" and was in shifted and becomes == self.composer.symbol:
+                    continue
+                raise NeedsInput(
+                    f"Composing makes `{descendant.qualname}.{name}` resolve to "
+                    f"`{becomes or 'nothing'}` instead of `{was or 'nothing'}`",
+                    NeededInput.PROOF,
+                )
+            d_bases = overrides.get(symbol, self.c3.bases(symbol))
+            non_object_bases = tuple(
+                base for base in d_bases if base != NativeMroBase.OBJECT.value
+            )
+            if len(non_object_bases) > 1:
+                self.require_slots_fit(non_object_bases)
+        return tuple(drops)
 
     @cached_property
     def ancestry(self) -> tuple[CompactIndexedClass, ...]:
@@ -1498,6 +1765,7 @@ class ComposedAncestry:
                     NeededInput.PROOF,
                 )
         self.require_slots_fit(kept_bases)
+        self.descendant_drops
         class_index = self.snapshot.class_overlap_verdicts.class_index
         ClassReferenceSites(self.snapshot, frozenset(gained)).require_no_identity_reads(
             {symbol: AnswersFor.gaining(symbol, (composer.symbol,), class_index) for symbol in gained}
@@ -1723,6 +1991,10 @@ class ClassComposition:
                 (*self.restated.statements, *self.composed.redundant_bases),
                 rationale,
             ),
+            *self.composed.descendant_edits(
+                rationale,
+                skip_obsolete_import_paths=frozenset((restating.file_path,)),
+            ),
         )
 
     def owner_import_edits(self, rationale: str) -> tuple[ModuleImportMutation, ...]:
@@ -1831,16 +2103,43 @@ class CoveringComposition:
     def composed(self) -> tuple[ComposedAncestry, ...]:
         """Each composer's C3 order with the owners first."""
 
+        owner_symbols = tuple(owner.symbol for owner in self.owners)
+        verdicts = self.snapshot.class_overlap_verdicts
+        all_overrides = {
+            composer.symbol: (
+                *owner_symbols,
+                *(
+                    base
+                    for base in verdicts.bases(composer.symbol)
+                    if base != NativeMroBase.OBJECT.value
+                ),
+            )
+            for composer in self.composers
+        }
+        all_deleted = {
+            composer.symbol: frozenset(
+                name for restatement in restatements for name in restatement.deleted_names
+            )
+            for composer, restatements in zip(self.composers, self.restated, strict=True)
+        }
         return tuple(
             ComposedAncestry(
                 self.snapshot,
                 composer,
                 self.owners,
-                frozenset(
-                    name for restatement in restatements for name in restatement.deleted_names
-                ),
+                all_deleted[composer.symbol],
+                peer_overrides={
+                    symbol: bases
+                    for symbol, bases in all_overrides.items()
+                    if symbol != composer.symbol
+                },
+                peer_deleted={
+                    symbol: names
+                    for symbol, names in all_deleted.items()
+                    if symbol != composer.symbol
+                },
             )
-            for composer, restatements in zip(self.composers, self.restated, strict=True)
+            for composer in self.composers
         )
 
     def require_field_order(self) -> None:
@@ -1913,6 +2212,20 @@ class CoveringComposition:
                     ),
                 )
             )
+        unique_drops: dict[str, DescendantBaseDrop] = {}
+        for composed in self.composed:
+            for drop in composed.descendant_drops:
+                unique_drops.setdefault(drop.descendant.symbol, drop)
+        edits.extend(
+            emit_descendant_drop_edits(
+                self.snapshot,
+                tuple(unique_drops.values()),
+                rationale,
+                skip_obsolete_import_paths=frozenset(
+                    composer.file_path for composer in self.composers
+                ),
+            )
+        )
         return tuple(edits)
 
 
