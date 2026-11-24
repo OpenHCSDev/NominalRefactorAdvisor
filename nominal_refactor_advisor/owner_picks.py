@@ -214,12 +214,17 @@ class OwnerPicks:
             if isinstance(finding.metrics, DeclaredBasePickMetrics)
             else None
         )
+        owner_label = (
+            finding.metrics.base_pick_owner_label()
+            if isinstance(finding.metrics, DeclaredBasePickMetrics)
+            else "declaring family"
+        )
         if expected_owner is None or pick.owner != expected_owner:
             return (
                 OwnerPickOutcome(
                     finding.stable_id,
                     "rejected",
-                    f"`{pick.owner}` is not the declaring family `{expected_owner}` for this finding",
+                    f"`{pick.owner}` is not the {owner_label} `{expected_owner}` for this finding",
                 ),
                 None,
             )

@@ -569,12 +569,95 @@ def reads_through_self(expression: ast.expr) -> bool:
     return False
 
 
-def own_state_probes(expression: ast.expr) -> Iterator[str]:
+def _mutated_module_state(
+    parsed_module: ParsedModule,
+) -> tuple[frozenset[tuple[str, str]], frozenset[str]]:
+    """Class attributes and module globals mutated after import inside functions.
+
+    Comparing a frozen field against a mutable `ClassVar` (e.g.
+    `self.generation == Declarations.generation` where `Declarations.changed`
+    increments `cls.generation`) or a mutated module global is not fixed at
+    construction."""
+
+    mutated_attrs: set[tuple[str, str]] = set()
+    mutated_globals: set[str] = set()
+
+    def record_target(
+        target: ast.AST,
+        enclosing_class: str | None,
+        receiver_name: str | None,
+        declared_globals: frozenset[str],
+    ) -> None:
+        match target:
+            case ast.Attribute(value=ast.Name(id=owner), attr=attr):
+                if enclosing_class is not None and owner == receiver_name:
+                    mutated_attrs.add((enclosing_class, attr))
+                else:
+                    mutated_attrs.add((owner, attr))
+            case ast.Name(id=name) if name in declared_globals:
+                mutated_globals.add(name)
+            case ast.Tuple(elts=elts) | ast.List(elts=elts):
+                for elt in elts:
+                    record_target(elt, enclosing_class, receiver_name, declared_globals)
+
+    for definition in scoped_definitions(parsed_module):
+        enclosing_class = (
+            definition.owner.name
+            if isinstance(definition.owner, ast.ClassDef)
+            else None
+        )
+        positional = (*definition.node.args.posonlyargs, *definition.node.args.args)
+        receiver_name = (
+            positional[0].arg if enclosing_class is not None and positional else None
+        )
+        declared_globals = frozenset(
+            name
+            for node in ast.walk(definition.node)
+            if isinstance(node, ast.Global)
+            for name in node.names
+        )
+        for node in ast.walk(definition.node):
+            match node:
+                case ast.Assign(targets=targets):
+                    for target in targets:
+                        record_target(
+                            target, enclosing_class, receiver_name, declared_globals
+                        )
+                case ast.AugAssign(target=target) | ast.AnnAssign(
+                    target=target, value=ast.expr()
+                ):
+                    record_target(
+                        target, enclosing_class, receiver_name, declared_globals
+                    )
+                case ast.Delete(targets=targets):
+                    for target in targets:
+                        record_target(
+                            target, enclosing_class, receiver_name, declared_globals
+                        )
+                case ast.Call(
+                    func=ast.Name(id="setattr" | "delattr"),
+                    args=[ast.Name(id=owner), ast.Constant(value=str() as attr), *_],
+                ):
+                    if enclosing_class is not None and owner == receiver_name:
+                        mutated_attrs.add((enclosing_class, attr))
+                    else:
+                        mutated_attrs.add((owner, attr))
+    return frozenset(mutated_attrs), frozenset(mutated_globals)
+
+
+def own_state_probes(
+    expression: ast.expr,
+    *,
+    mutated_attrs: frozenset[tuple[str, str]] = frozenset(),
+    mutated_globals: frozenset[str] = frozenset(),
+) -> Iterator[str]:
     """Each direct probe of one of the record's own fields: absence or a kind.
 
-    A kind is a constant, a name or another object's attribute; a comparison
-    with a computed value (`self.count == len(self.items)`) or with another own
-    field (`self.start == self.end`) is a relation, not a state.
+    A kind is a constant, an unmutated name or another object's unmutated
+    attribute; a comparison with a computed value (`self.count == len(self.items)`),
+    with another own field (`self.start == self.end`), or with a mutable class
+    attribute (`self.generation == Declarations.generation`) is not fixed at
+    construction.
     """
 
     for node in ast.walk(expression):
@@ -594,6 +677,16 @@ def own_state_probes(expression: ast.expr) -> Iterator[str]:
                 left=ast.Attribute(value=ast.Name(id="self")),
                 comparators=[ast.Attribute() as other],
             ) if reads_through_self(other):
+                pass
+            case ast.Compare(
+                left=ast.Attribute(value=ast.Name(id="self")),
+                comparators=[ast.Attribute(value=ast.Name(id=owner), attr=attr)],
+            ) if (owner, attr) in mutated_attrs:
+                pass
+            case ast.Compare(
+                left=ast.Attribute(value=ast.Name(id="self")),
+                comparators=[ast.Name(id=name)],
+            ) if name in mutated_globals:
                 pass
             case ast.Compare(
                 left=ast.Attribute(value=ast.Name(id="self")) as field,
@@ -637,6 +730,7 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        mutated_attrs, mutated_globals = _mutated_module_state(parsed_module)
         for qualname, node, bindings in bound_classes(parsed_module):
             if not is_frozen_record(node, bindings):
                 continue
@@ -654,7 +748,13 @@ class OwnStateBoolSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                     case [ast.Return(value=ast.expr() as expression)] if calls_only_pure_builtins(
                         expression, bindings
                     ):
-                        probes = list(own_state_probes(expression))
+                        probes = list(
+                            own_state_probes(
+                                expression,
+                                mutated_attrs=mutated_attrs,
+                                mutated_globals=mutated_globals,
+                            )
+                        )
                     case _:
                         continue
                 match probes:

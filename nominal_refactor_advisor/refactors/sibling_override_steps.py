@@ -213,15 +213,19 @@ def sibling_override_step_candidates(
             for symbol in independent
         }
         restated = frozenset.intersection(*steps.values())
-        omitted = tuple(
-            OmittedStep(call, index.classes_by_symbol[symbol])
-            for symbol in sorted(independent)
-            for call in sorted(_made_by_every_other(steps, symbol))
-            if "." in call
-            and call.rsplit(".", 1)[1] in declared
-            and (member := call.split(".", 1)[0])
-            not in {made.split(".", 1)[0] for made in steps[symbol]}
-            and member in _members_read(index, methods, symbol, read)
+        omitted = (
+            tuple(
+                OmittedStep(call, index.classes_by_symbol[symbol])
+                for symbol in sorted(independent)
+                for call in sorted(_made_by_every_other(steps, symbol))
+                if "." in call
+                and call.rsplit(".", 1)[1] in declared
+                and (member := call.split(".", 1)[0])
+                not in {made.split(".", 1)[0] for made in steps[symbol]}
+                and member in _members_read(index, methods, symbol, read)
+            )
+            if restated or len(independent) >= 3
+            else ()
         )
         if not restated and not omitted:
             continue

@@ -234,6 +234,28 @@ def test_two_own_fields_compared_are_a_relation_not_a_kind(tmp_path):
     assert _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source})) == []
 
 
+def test_comparing_against_mutable_classvar_is_not_own_state_answer(tmp_path):
+    source = (
+        "from dataclasses import dataclass\nfrom typing import ClassVar\n\n"
+        "class Declarations:\n"
+        "    generation: ClassVar[int] = 0\n\n"
+        "    @classmethod\n"
+        "    def changed(cls) -> None:\n"
+        "        cls.generation += 1\n\n"
+        "@dataclass(frozen=True)\n"
+        "class DerivedFact:\n"
+        "    generation: int\n"
+        "    value: object\n\n"
+        "    def current(self) -> bool:\n"
+        "        return self.generation == Declarations.generation\n\n"
+        "def use(fact: DerivedFact):\n"
+        "    if not fact.current():\n"
+        "        return None\n"
+        "    return fact.value\n"
+    )
+    assert _findings(OwnStateBranchAnswerDetector, _sources(tmp_path, {"m": source})) == []
+
+
 def test_a_branch_read_links_by_its_receivers_class_never_by_the_bare_name(tmp_path):
     # pkg_b never imports pkg_a: its `.visible` reads are another class's
     # member, whether its receiver is declared (`Cursor`) or not (`cursor`).

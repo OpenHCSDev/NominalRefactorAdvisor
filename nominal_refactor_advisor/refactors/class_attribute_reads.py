@@ -39,11 +39,7 @@ class BaseListReads(ParsedModuleSetFact):
             reads = tuple(cls.found(module.module))
             if not reads:
                 continue
-            parents = {
-                child: parent
-                for parent in ast.walk(module.module)
-                for child in ast.iter_child_nodes(parent)
-            }
+            parents = module.syntax_index.parent_index
             found.extend((module, read, parents.get(read)) for read in reads)
         return cls(tuple(found))
 
@@ -196,15 +192,14 @@ class ClassAttributeReaders:
 
         if not isinstance(receiver, ast.Name):
             return None
-        scopes = [
-            node
-            for node in ast.walk(module.module)
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and any(inner is read for inner in ast.walk(node))
-        ]
-        if not scopes:
+        parents = module.syntax_index.parent_index
+        scope: ast.AST | None = parents.get(read)
+        while scope is not None and not isinstance(
+            scope, (ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            scope = parents.get(scope)
+        if scope is None:
             return None
-        scope = min(scopes, key=lambda node: sum(1 for _ in ast.walk(node)))
         annotations = [
             argument.annotation
             for argument in (
@@ -252,11 +247,7 @@ class ClassAttributeReaders:
 
         if not isinstance(receiver, ast.Name):
             return None
-        parents = {
-            child: parent
-            for parent in ast.walk(module.module)
-            for child in ast.iter_child_nodes(parent)
-        }
+        parents = module.syntax_index.parent_index
         scope: ast.AST | None = read
         while scope is not None and not isinstance(
             scope, (ast.FunctionDef, ast.AsyncFunctionDef)

@@ -797,6 +797,9 @@ class DeclaredBasePickMetrics(FindingMetrics, ABC):
     ) -> str | None:
         return None if authority_evidence is None else authority_evidence.symbol
 
+    def base_pick_owner_label(self) -> str:
+        return "declaring family"
+
 
 @dataclass(frozen=True)
 class SiblingOverrideMetrics(DeclaredBasePickMetrics):
@@ -826,6 +829,9 @@ class OwnTypeTestMetrics(DeclaredBasePickMetrics):
     ) -> str | None:
         del authority_evidence
         return self.consumer_symbol
+
+    def base_pick_owner_label(self) -> str:
+        return "consumer"
 
 
 @dataclass(frozen=True)
