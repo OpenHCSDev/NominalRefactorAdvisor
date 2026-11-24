@@ -1318,8 +1318,7 @@ class StubModules(StubAnswers[tuple[ParsedModule, ...]]):
 def stub_projection(stub: ParsedModule) -> CompactModuleClassProjection:
     """A stub module's class declarations, projected once per process."""
 
-    (projection,) = collect_family_items(stub, CompactModuleClassProjectionFamily)
-    return projection
+    return CompactModuleClassProjectionFamily.collect_stub(stub)
 
 
 REEXPORT_HOPS = 8

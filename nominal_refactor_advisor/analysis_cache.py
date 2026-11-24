@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterable, Iterator, MutableMapping
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 import hashlib
 import os
 from pathlib import Path
 import pickle
+import sys
 from time import monotonic, sleep, time
 from types import TracebackType
 from typing import BinaryIO, Generic, TypeAlias, TypeVar
@@ -587,11 +588,108 @@ def detector_implementation_module_names(
 
 
 @ScanCache.cached
+def _verified_detector_hash_store() -> dict[tuple[str, str], str]:
+    """Per-scan store seeded from stat-verified on-disk detector implementation hashes."""
+    return {}
+
+
+@dataclass(frozen=True)
+class CachedDetectorRegistrySignatures:
+    """Persisted detector implementation hashes invalidated by any reached module stat change."""
+
+    python_version: PythonVersion
+    tracked_module_stats: tuple[tuple[str, int, int], ...]
+    hashes_by_detector: Mapping[tuple[str, str], str]
+
+    @classmethod
+    def load_verified(
+        cls,
+        storage: AnalysisCacheStorage,
+        detector_types: tuple[type[IssueDetector], ...],
+    ) -> Mapping[tuple[str, str], str] | None:
+        payload = storage.load_typed_payload(
+            storage.detector_registry_signature_path(), cls
+        )
+        if payload is None or payload.python_version != PythonVersion.running():
+            return None
+        tracked_paths: set[str] = set()
+        for path_text, mtime_ns, size in payload.tracked_module_stats:
+            try:
+                stat_result = os.stat(path_text)
+            except OSError:
+                return None
+            if stat_result.st_mtime_ns != mtime_ns or stat_result.st_size != size:
+                return None
+            tracked_paths.add(path_text)
+        for detector_type in detector_types:
+            key = (detector_type.__module__, detector_type.__qualname__)
+            if key not in payload.hashes_by_detector:
+                return None
+            module = sys.modules.get(detector_type.__module__)
+            source_path = None if module is None else module.__dict__.get("__file__")
+            if not isinstance(source_path, str):
+                return None
+            try:
+                resolved = str(Path(source_path).resolve())
+            except OSError:
+                return None
+            if resolved not in tracked_paths:
+                return None
+        return payload.hashes_by_detector
+
+    @classmethod
+    def store_for_detectors(
+        cls,
+        storage: AnalysisCacheStorage,
+        detector_types: tuple[type[IssueDetector], ...],
+        hashes_by_detector: Mapping[tuple[str, str], str],
+    ) -> None:
+        reached_modules: set[str] = set()
+        for detector_type in detector_types:
+            reached_modules.add(detector_type.__module__)
+            reached_modules.update(detector_implementation_module_names(detector_type))
+        stats: dict[str, tuple[int, int]] = {}
+        for module_name in reached_modules:
+            module = sys.modules.get(module_name)
+            source_path = None if module is None else module.__dict__.get("__file__")
+            if not isinstance(source_path, str):
+                continue
+            try:
+                resolved = str(Path(source_path).resolve())
+                stat_result = os.stat(resolved)
+            except OSError:
+                return
+            stats[resolved] = (stat_result.st_mtime_ns, stat_result.st_size)
+        if not stats:
+            return
+        tracked = tuple(
+            (path_text, mtime_ns, size)
+            for path_text, (mtime_ns, size) in sorted(stats.items())
+        )
+        try:
+            storage.store_typed_payload_atomic(
+                storage.detector_registry_signature_path(),
+                cls(
+                    python_version=PythonVersion.running(),
+                    tracked_module_stats=tracked,
+                    hashes_by_detector=dict(hashes_by_detector),
+                ),
+            )
+        except OSError:
+            pass
+
+
+@ScanCache.cached
 def detector_implementation_hash(detector_type: type[IssueDetector]) -> str:
     """Hash every module that decides one detector's findings. A finding is keyed
     on this, so an edit re-keys only the detectors whose code it reaches, not
     every family in the engine."""
 
+    verified = _verified_detector_hash_store().get(
+        (detector_type.__module__, detector_type.__qualname__)
+    )
+    if verified is not None:
+        return verified
     digest = hashlib.blake2s(digest_size=16)
     for module_name in sorted(detector_implementation_module_names(detector_type)):
         source = ImplementationSource.from_module_name(module_name)
@@ -698,11 +796,30 @@ class DetectorRegistrySignature:
 
     @classmethod
     def current(
-        cls, *, detector_types: tuple[type[IssueDetector], ...] | None = None
+        cls,
+        *,
+        detector_types: tuple[type[IssueDetector], ...] | None = None,
+        storage: AnalysisCacheStorage | None = None,
     ) -> DetectorRegistrySignature:
         """Resolve omitted/full and explicit rosters before caching their signatures."""
         if detector_types is None:
             detector_types = IssueDetector.registered_detector_types()
+        if storage is not None:
+            verified = CachedDetectorRegistrySignatures.load_verified(
+                storage, detector_types
+            )
+            if verified is not None:
+                _verified_detector_hash_store().update(verified)
+                return cls.from_detector_types(detector_types)
+            signature = cls.from_detector_types(detector_types)
+            hashes_by_detector = {
+                (item.implementation_import_path, item.qualname): item.implementation_source_hash
+                for item in signature.detector_types
+            }
+            CachedDetectorRegistrySignatures.store_for_detectors(
+                storage, detector_types, hashes_by_detector
+            )
+            return signature
         return cls.from_detector_types(detector_types)
 
     @classmethod
@@ -844,7 +961,12 @@ class AnalysisCacheIdentity(AnalysisOrchestrationContext):
         return cls(
             config=config,
             detector_registry=DetectorRegistrySignature.current(
-                detector_types=detector_types
+                detector_types=detector_types,
+                storage=(
+                    None
+                    if source_signature_cache is None
+                    else source_signature_cache.entries_by_path.storage
+                ),
             ),
             python_version=PythonVersion.running(),
             roots=semantic_root_labels(roots),
@@ -1413,6 +1535,9 @@ class AnalysisCacheStorage:
         )
         return self.cache_file_path(f"source-file-signatures-{shard}.pickle")
 
+    def detector_registry_signature_path(self) -> Path:
+        return self.cache_file_path("detector-implementation-hashes.pickle")
+
     def rebuild_lock_path(self, identity: AnalysisCacheIdentity) -> Path:
         return self.cache_file_path(f"{identity.cache_token}.lock")
 
@@ -1677,6 +1802,10 @@ class CheckoutShardedSourceSignatures(MutableMapping[str, CachedSourceFileSignat
             CheckoutRelocation | None, dict[str, CachedSourceFileSignature]
         ] = {}
         self._dirty: set[CheckoutRelocation | None] = set()
+
+    @property
+    def storage(self) -> AnalysisCacheStorage | None:
+        return self._storage
 
     def _shard(self, path_text: str) -> dict[str, CachedSourceFileSignature]:
         return self._loaded(CheckoutRelocation.containing(path_text))

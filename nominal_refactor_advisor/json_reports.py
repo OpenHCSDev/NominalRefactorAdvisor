@@ -85,52 +85,83 @@ class DataclassJsonRow(ABC):
 class JsonReportValueProjection:
     """Project the closed JSON value algebra through nominal runtime types."""
 
-    @singledispatchmethod
     def project(self, value: object) -> JsonValue:
+        value_type = type(value)
+        if (
+            value_type is str
+            or value_type is int
+            or value_type is bool
+            or value_type is float
+            or value is None
+        ):
+            return cast(JsonScalar, value)
+        if value_type is tuple:
+            return tuple(self.project(item) for item in cast(tuple[object, ...], value))
+        if value_type is list:
+            return [self.project(item) for item in cast(list[object], value)]
+        if value_type is dict:
+            return JsonObject(
+                {
+                    (
+                        key
+                        if type(key) is str
+                        else self.mapping_key(key)
+                    ): self.project(item)
+                    for key, item in cast(dict[object, object], value).items()
+                }
+            )
+        if isinstance(value, JsonReport):
+            return json_report_object(value)
+        if isinstance(value, StrEnum):
+            return value.value
+        return self._project_dispatch(value)
+
+    @singledispatchmethod
+    def _project_dispatch(self, value: object) -> JsonValue:
         raise TypeError(
             f"No JSON report projection is declared for {type(value).__name__}"
         )
 
-    @project.register
+    @_project_dispatch.register
     def _project_scalar(self, value: JsonScalar) -> JsonScalar:
         return value
 
-    @project.register
+    @_project_dispatch.register
     def _project_enum(self, value: StrEnum) -> str:
         return value.value
 
-    @project.register
+    @_project_dispatch.register
     def _project_case(self, value: CaseMeta) -> str:
         """A case class of a folded family projects as the value it carries."""
 
         return value.value
 
-    @project.register
+    @_project_dispatch.register
     def _project_tuple(self, value: tuple) -> tuple[JsonValue, ...]:
         return tuple(self.project(item) for item in value)
 
-    @project.register
+    @_project_dispatch.register
     def _project_list(self, value: list) -> list[JsonValue]:
         return [self.project(item) for item in value]
 
-    @project.register
+    @_project_dispatch.register
     def _project_frozenset(self, value: frozenset) -> tuple[JsonValue, ...]:
         """JSON has no set: a set's members travel in sorted order."""
 
         return tuple(sorted(self.project(item) for item in value))
 
-    @project.register
+    @_project_dispatch.register
     def _project_text(self, value: JsonText) -> str:
         return value.text
 
-    @project.register
+    @_project_dispatch.register
     def _project_row(self, value: DataclassJsonRow) -> tuple[JsonValue, ...]:
         return tuple(
             self.project(getattr(value, record_field.name))
             for record_field in dataclass_fields(value)
         )
 
-    @project.register
+    @_project_dispatch.register
     def _project_mapping(self, value: Mapping) -> JsonObject:
         return JsonObject(
             {
@@ -139,29 +170,34 @@ class JsonReportValueProjection:
             }
         )
 
-    @singledispatchmethod
     def mapping_key(self, key: object) -> str:
+        if type(key) is str:
+            return cast(str, key)
+        return self._mapping_key_dispatch(key)
+
+    @singledispatchmethod
+    def _mapping_key_dispatch(self, key: object) -> str:
         raise TypeError(
             "JSON report mappings require string, StrEnum, case class or JsonText keys"
         )
 
-    @mapping_key.register
+    @_mapping_key_dispatch.register
     def _string_key(self, key: str) -> str:
         return key
 
-    @mapping_key.register
+    @_mapping_key_dispatch.register
     def _text_key(self, key: JsonText) -> str:
         return key.text
 
-    @mapping_key.register
+    @_mapping_key_dispatch.register
     def _enum_key(self, key: StrEnum) -> str:
         return key.value
 
-    @mapping_key.register
+    @_mapping_key_dispatch.register
     def _case_key(self, key: CaseMeta) -> str:
         return key.value
 
-    @project.register
+    @_project_dispatch.register
     def _project_report(self, value: JsonReport) -> JsonObject:
         return json_report_object(value)
 
@@ -475,11 +511,30 @@ class JsonReportBindingSet(tuple[JsonReportBinding, ...]):
 
     def payload(self, owner: object) -> JsonObject:
         payload = JsonObject()
+        project = JSON_REPORT_VALUE_PROJECTION.project
         for binding in self:
-            for field_name, value in binding.payload_items(owner):
+            source_value = getattr(owner, binding.source_name)
+            if binding.omit_none and source_value is None:
+                continue
+            value = project(source_value)
+            if not binding.flattened:
+                field_name = binding.field_name
                 if field_name in payload:
                     raise TypeError(
                         f"Duplicate projected JSON report field {field_name!r}"
                     )
                 payload[field_name] = value
+                continue
+            if not isinstance(value, Mapping):
+                raise TypeError(
+                    f"Flattened JSON report field {binding.source_name!r} must project "
+                    "to an object"
+                )
+            for key, item in value.items():
+                field_name = str(key)
+                if field_name in payload:
+                    raise TypeError(
+                        f"Duplicate projected JSON report field {field_name!r}"
+                    )
+                payload[field_name] = item
         return payload
