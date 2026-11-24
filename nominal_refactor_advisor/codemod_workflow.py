@@ -1605,6 +1605,12 @@ class FindingCoverage(DataclassJsonReport, ABC):
 
         return frozenset()
 
+    @property
+    def exact_detector_ids(self) -> frozenset[str]:
+        """Detectors whose findings in this scan are already exact over the whole tree."""
+
+        return frozenset()
+
     def settled(
         self, scans: CodemodRefactorGoalRunner, scan: CodemodWorkflowScan
     ) -> CodemodWorkflowScan:
@@ -1650,6 +1656,10 @@ class StageProofCoverage(NamedDetectorCoverage):
     mode = CodemodProjectedScanMode.TARGET_DETECTOR_PARTIAL
     source = "the stage proof"
 
+    @property
+    def exact_detector_ids(self) -> frozenset[str]:
+        return frozenset(self.detector_ids)
+
 
 @dataclass(frozen=True)
 class DeferredStageProofCoverage(StageProofCoverage):
@@ -1665,6 +1675,10 @@ class DeferredStageProofCoverage(StageProofCoverage):
     @property
     def stale_file_paths(self) -> frozenset[str]:
         return frozenset(self.deferred_file_paths)
+
+    @property
+    def exact_detector_ids(self) -> frozenset[str]:
+        return frozenset(self.detector_ids) - frozenset(self.deferred_detector_ids)
 
     def covers(self, finding: RefactorFinding) -> bool:
         return super().covers(finding) and not (
@@ -2043,13 +2057,18 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             findings=self.report_scoped_findings(self.initial_scan.findings),
         )
 
+    def effective_analysis_workers(self) -> int:
+        """Worker count for the next scan this goal runs."""
+
+        return self.analysis_workers
+
     def fresh_scan(self) -> CodemodWorkflowScan:
         scan = CodemodWorkflowScan.parsed(
             self.roots,
             self.config,
             cache_dir=self.resolved_dir,
             use_parse_cache=self.enabled,
-            analysis_workers=self.analysis_workers,
+            analysis_workers=self.effective_analysis_workers(),
         )
         return replace(scan, findings=self.report_scoped_findings(scan.findings))
 
@@ -2065,7 +2084,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             config=self.config,
             roots=self.roots,
             report_roots=self.report_roots,
-            analysis_workers=self.analysis_workers,
+            analysis_workers=self.effective_analysis_workers(),
             text_files=scan.text_files,
         ).scan()
 
@@ -2158,6 +2177,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         detector_types=IssueDetector.registered_detector_types_with_ids(
                             detector_ids
                         ),
+                        analysis_workers=self.effective_analysis_workers(),
                     ),
                 )
             ),
@@ -2172,6 +2192,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
 
         if scan.scan_mode.exact:
             return scan
+        effective_workers = self.effective_analysis_workers()
         baseline = self.initial_scan
         if baseline is not None and baseline.scan_mode.exact:
             before_by_path = {module.file_path: module for module in baseline.modules}
@@ -2184,9 +2205,15 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             invalidated = frozenset(
                 module.file_path for module in changed_or_created
             ) | (frozenset(before_by_path) - frozenset(after_by_path))
+            already_exact_ids = scan.coverage.exact_detector_ids
             all_detectors = default_detector_types_for_analysis()
+            remaining_detectors = tuple(
+                detector_type
+                for detector_type in all_detectors
+                if detector_type.effective_detector_id() not in already_exact_ids
+            )
             per_module_types = DetectorCacheGranularity.PER_MODULE.select_detector_types(
-                all_detectors
+                remaining_detectors
             )
             per_module_ids = frozenset(
                 detector_type.effective_detector_id()
@@ -2194,9 +2221,14 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             )
             cross_module_types = tuple(
                 detector_type
-                for detector_type in all_detectors
+                for detector_type in remaining_detectors
                 if detector_type not in per_module_types
             )
+            carried_exact = [
+                finding
+                for finding in scan.findings
+                if finding.detector_id in already_exact_ids
+            ]
             carried = [
                 finding
                 for finding in baseline.findings
@@ -2221,7 +2253,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     scan.modules,
                     self.config,
                     detector_types=cross_module_types,
-                    analysis_workers=self.analysis_workers,
+                    analysis_workers=effective_workers,
                 )
                 if cross_module_types
                 else []
@@ -2230,7 +2262,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 scan,
                 findings=self.report_scoped_findings(
                     SortedFindingsAuthority.sort(
-                        (*carried, *reproved_local, *reproved_cross)
+                        (*carried_exact, *carried, *reproved_local, *reproved_cross)
                     )
                 ),
                 coverage=EveryDetectorCoverage(),
@@ -2239,7 +2271,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             scan,
             findings=self.report_scoped_findings(
                 analyze_modules(
-                    scan.modules, self.config, analysis_workers=self.analysis_workers
+                    scan.modules, self.config, analysis_workers=effective_workers
                 )
             ),
             coverage=EveryDetectorCoverage(),
@@ -2451,6 +2483,8 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 if rewritten_source_digest in analyzed_rewritten_source_digests:
                     continue
                 analyzed_rewritten_source_digests.add(rewritten_source_digest)
+                if simulation.required_after_snapshot.source_state_id in visited_source_state_ids:
+                    continue
                 with self.progress.phase(
                     f"depth {state.depth} reproof {branch_number}/{len(frontier.branches)}"
                 ) as details:

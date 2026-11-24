@@ -535,6 +535,12 @@ class IssueDetector(
     )
 
     @classmethod
+    def prefers_in_process_execution(cls) -> bool:
+        """Whether this detector keeps stateful incremental caches in the parent
+        process and should run there concurrently with any worker pool."""
+        return False
+
+    @classmethod
     def registered_detector_types(cls) -> tuple[type[IssueDetector], ...]:
         detector_registry = cast("dict[str, type[IssueDetector]]", cls.__registry__)
         return cls._ordered_registered_detector_types(tuple(detector_registry.values()))

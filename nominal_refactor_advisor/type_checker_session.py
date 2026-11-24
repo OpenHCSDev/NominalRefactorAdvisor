@@ -520,6 +520,11 @@ class TypeCheckerSession(ABC):
         return _incremental_type_checker_slot()[0]
 
     @staticmethod
+    def has_active_incremental() -> bool:
+        """Whether an in-memory incremental type checker is active in this scope."""
+        return TypeCheckerSession._active_incremental() is not None
+
+    @staticmethod
     def seed_incremental(sources: SourceTexts) -> TypeCheckerSession:
         """Seed or sync an in-memory fine-grained mypy engine inside the active
         ``ScanCache.scope()`` so subsequent queries and forked workers share it COW."""

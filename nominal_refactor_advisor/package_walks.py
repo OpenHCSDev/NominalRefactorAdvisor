@@ -56,51 +56,71 @@ class ClassKeyword:
 
 @dataclass(frozen=True)
 class ModuleWalks(ParsedModuleFact):
-    """The walkers one module defines, by qualified name, the calls it makes that
-    hand a method an imported package, the metaclasses that turn a class keyword
-    into a walk, and its classes' metaclasses and header keywords."""
+    """The walkers one module defines, by qualified name, the metaclasses that
+    turn a class keyword into a walk, and its classes' metaclasses and header
+    keywords."""
 
     walkers: dict[str, Walker]
-    calls: tuple[PackageWalkCall, ...]
     keyword_walks: dict[str, KeywordWalk]
     metaclasses: dict[str, str]
     class_keywords: dict[str, dict[str, ClassKeyword]]
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
-        functions = _functions(parsed_module)
+        source = parsed_module.source
         walkers: dict[str, Walker] = {}
-        changed = True
-        while changed:
-            changed = False
-            local = {name.rpartition(".")[2]: walker for name, walker in walkers.items()}
-            for qualname, function in functions.items():
-                if qualname in walkers:
-                    continue
-                walker = _walker(function, local)
-                if walker is not None:
-                    walkers[qualname] = walker
-                    changed = True
-        aliases = module_import_aliases(parsed_module)
+        if "iter_modules" in source or "walk_packages" in source:
+            functions = _functions(parsed_module)
+            changed = True
+            while changed:
+                changed = False
+                local = {name.rpartition(".")[2]: walker for name, walker in walkers.items()}
+                for qualname, function in functions.items():
+                    if qualname in walkers:
+                        continue
+                    walker = _walker(function, local)
+                    if walker is not None:
+                        walkers[qualname] = walker
+                        changed = True
         classes = {
             f"{parsed_module.module_name}.{statement.name}": statement
             for statement in parsed_module.module.body
             if isinstance(statement, ast.ClassDef)
         }
-        return cls(
-            walkers=walkers,
-            calls=_walk_calls(parsed_module),
-            keyword_walks={
+        if not classes:
+            return cls(
+                walkers=walkers,
+                keyword_walks={},
+                metaclasses={},
+                class_keywords={},
+            )
+        local_class_names = frozenset(node.name for node in classes.values())
+        aliases = module_import_aliases(parsed_module)
+        keyword_walks = (
+            {
                 symbol: walk
                 for symbol, node in classes.items()
                 if (walk := _keyword_walk(node)) is not None
-            },
+            }
+            if "RegistryConfig" in source
+            else {}
+        )
+        return cls(
+            walkers=walkers,
+            keyword_walks=keyword_walks,
             metaclasses={
                 symbol: metaclass
                 for symbol, node in classes.items()
                 for keyword in node.keywords
                 if keyword.arg == "metaclass" and isinstance(keyword.value, ast.Name)
-                if (metaclass := _class_symbol(parsed_module, aliases, keyword.value.id))
+                if (
+                    metaclass := _class_symbol(
+                        parsed_module.module_name,
+                        local_class_names,
+                        aliases,
+                        keyword.value.id,
+                    )
+                )
                 is not None
             },
             class_keywords={
@@ -118,14 +138,28 @@ class ModuleWalks(ParsedModuleFact):
         )
 
 
-def _class_symbol(parsed_module: ParsedModule, aliases: dict[str, str], name: str) -> str | None:
+@dataclass(frozen=True)
+class ModuleWalkCalls(ParsedModuleFact):
+    """Calls in one module handing a method an imported name; derived only when
+    some queried family actually declares a package walker."""
+
+    calls: tuple[PackageWalkCall, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(calls=_walk_calls(parsed_module))
+
+
+def _class_symbol(
+    module_name: str,
+    local_class_names: frozenset[str],
+    aliases: dict[str, str],
+    name: str,
+) -> str | None:
     """The class a module-level name refers to: its own class, or an imported one."""
 
-    if any(
-        isinstance(statement, ast.ClassDef) and statement.name == name
-        for statement in parsed_module.module.body
-    ):
-        return f"{parsed_module.module_name}.{name}"
+    if name in local_class_names:
+        return f"{module_name}.{name}"
     return aliases.get(name)
 
 
@@ -207,16 +241,32 @@ def _walk_calls(parsed_module: ParsedModule) -> tuple[PackageWalkCall, ...]:
     `from a import b` binds a submodule and a name alike."""
 
     aliases = module_import_aliases(parsed_module)
+    if not aliases:
+        return ()
+    local_class_names = frozenset(
+        statement.name
+        for statement in parsed_module.module.body
+        if isinstance(statement, ast.ClassDef)
+    )
     calls: list[PackageWalkCall] = []
-    for node in ast.walk(parsed_module.module):
-        match node:
-            case ast.Call(
-                func=ast.Attribute(value=ast.Name(id=receiver), attr=method),
-                args=[ast.Name(id=package), *_],
-            ) if package in aliases:
-                owner = _class_symbol(parsed_module, aliases, receiver)
-                if owner is not None:
-                    calls.append(PackageWalkCall(owner, method, aliases[package]))
+    for _, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Call):
+        if (
+            isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in aliases
+        ):
+            owner = _class_symbol(
+                parsed_module.module_name,
+                local_class_names,
+                aliases,
+                node.func.value.id,
+            )
+            if owner is not None:
+                calls.append(
+                    PackageWalkCall(owner, node.func.attr, aliases[node.args[0].id])
+                )
     return tuple(calls)
 
 
@@ -232,16 +282,23 @@ def family_walk_roots(
     keyword_walks = {name: kw for walk in walks for name, kw in walk.keyword_walks.items()}
     metaclasses = {name: meta for walk in walks for name, meta in walk.metaclasses.items()}
     class_keywords = {name: kws for walk in walks for name, kws in walk.class_keywords.items()}
-    module_names = frozenset(module.module_name for module in modules)
-    called: tuple[tuple[str, FamilyWalkRoot], ...] = tuple(
-        (call.receiver, PackageWalkRoot(package=call.package, recursive=walker.recursive))
-        for walk in walks
-        for call in walk.calls
-        if call.receiver in families and call.package in module_names
-        for family in families
-        if (walker := walkers.get(f"{family}.{call.method}")) is not None
-        if walker.position == 0
+    has_family_walker = any(
+        name.rpartition(".")[0] in families and walker.position == 0
+        for name, walker in walkers.items()
     )
+    if has_family_walker:
+        module_names = frozenset(module.module_name for module in modules)
+        called: tuple[tuple[str, FamilyWalkRoot], ...] = tuple(
+            (call.receiver, PackageWalkRoot(package=call.package, recursive=walker.recursive))
+            for module in modules
+            for call in module.fact(ModuleWalkCalls).calls
+            if call.receiver in families and call.package in module_names
+            for family in families
+            if (walker := walkers.get(f"{family}.{call.method}")) is not None
+            if walker.position == 0
+        )
+    else:
+        called = ()
     keyed = tuple(
         (family, _keyword_root(keyword, walk.recursive))
         for metaclass in {metaclasses[family] for family in families if family in metaclasses}

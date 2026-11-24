@@ -26,7 +26,11 @@ never ran. Inherited pairs are scored on each state's own source text.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+from contextvars import ContextVar
+from ctypes import c_int
 import gc
+import multiprocessing
 import os
 import pickle
 import selectors
@@ -35,7 +39,7 @@ import sys
 import traceback
 from abc import ABC, abstractmethod
 from collections import deque
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -349,6 +353,75 @@ class SearchBudget(SemanticRecord):
     )
 
 
+class SearchWorkerBudget(ABC):
+    """Worker share available to one concept's inner scans."""
+
+    @abstractmethod
+    def available(self) -> int:
+        raise NotImplementedError
+
+    @contextmanager
+    def scope(self) -> Iterator[None]:
+        token = _ACTIVE_SEARCH_WORKER_BUDGET.set(self)
+        try:
+            yield
+        finally:
+            _ACTIVE_SEARCH_WORKER_BUDGET.reset(token)
+
+    @staticmethod
+    def current() -> SearchWorkerBudget:
+        return _ACTIVE_SEARCH_WORKER_BUDGET.get()
+
+
+@dataclass(frozen=True)
+class FixedSearchWorkerBudget(SearchWorkerBudget):
+    """Constant inner-scan worker count when a concept plays alone."""
+
+    workers: int = 1
+
+    def available(self) -> int:
+        return max(1, self.workers)
+
+
+_ACTIVE_SEARCH_WORKER_BUDGET: ContextVar[SearchWorkerBudget] = ContextVar(
+    "nra_search_worker_budget", default=FixedSearchWorkerBudget()
+)
+
+
+@dataclass(frozen=True)
+class SharedSearchWorkerBudget(SearchWorkerBudget):
+    """Share idle search workers across the remaining forked plays via shared memory."""
+
+    total_workers: int
+    active_plays: c_int
+
+    @classmethod
+    def create(cls, total_workers: int) -> SharedSearchWorkerBudget:
+        return cls(
+            total_workers=max(1, total_workers),
+            active_plays=multiprocessing.RawValue(c_int, 1),
+        )
+
+    def set_active(self, active: int) -> None:
+        self.active_plays.value = max(1, active)
+
+    def available(self) -> int:
+        # Forking a populated search worker copies its page tables (~150ms/worker),
+        # so beyond 4 inner workers fork/teardown overhead outweighs incremental
+        # detector speedup.
+        return min(4, max(1, self.total_workers // max(1, int(self.active_plays.value))))
+
+
+@dataclass(frozen=True, kw_only=True)
+class BudgetedCodemodRefactorGoalRunner(CodemodRefactorGoalRunner):
+    """Goal runner that draws idle search workers whenever peer plays finish."""
+
+    worker_budget: SearchWorkerBudget = field(default_factory=FixedSearchWorkerBudget)
+
+    def effective_analysis_workers(self) -> int:
+        return self.worker_budget.available()
+
+
 @dataclass(frozen=True)
 class RefactorSearch:
     """Plays every concept from a state, scores the results, and looks ahead."""
@@ -431,11 +504,14 @@ class RefactorSearch:
         workers = DetectorAnalysisWorkerPlan(
             self.budget.workers, len(waiting), minimum_auto_work_items=2
         ).effective_worker_count
+        worker_budget = SharedSearchWorkerBudget.create(workers)
+        worker_budget.set_active(min(workers, len(waiting)))
         running: dict[int, ForkedPlay] = {}
         try:
-            with selectors.DefaultSelector() as answered:
+            with worker_budget.scope(), selectors.DefaultSelector() as answered:
                 while waiting or running:
                     while waiting and len(running) < workers:
+                        worker_budget.set_active(min(workers, len(running) + len(waiting)))
                         play = ForkedPlay.started(self, scan, start, waiting.popleft())
                         running[play.reader] = play
                         answered.register(play.reader, selectors.EVENT_READ)
@@ -447,6 +523,7 @@ class RefactorSearch:
                             # and it answered again under the next play that got its number.
                             answered.unregister(key.fd)
                             del running[key.fd]
+                            worker_budget.set_active(min(workers, len(running) + len(waiting)))
                             moves[play.concept] = play.move()
         finally:
             for play in running.values():
@@ -472,7 +549,7 @@ class RefactorSearch:
         self, scan: CodemodWorkflowScan, start: StateScore, concept: type[RefactorConcept]
     ) -> SearchMove:
         key = concept.concept_key()
-        report = CodemodRefactorGoalRunner(
+        report = BudgetedCodemodRefactorGoalRunner(
             roots=self.roots,
             config=self.config,
             dry_run=True,
@@ -480,6 +557,7 @@ class RefactorSearch:
             initial_scan=scan,
             migration_type=concept,
             trajectory_budget=CodemodRefactorTrajectoryBudget(),
+            worker_budget=SearchWorkerBudget.current(),
         ).run()
         if not report.stop_reason.completed or not report.stages:
             return UnscoredMove(key, f"goal search stopped: {report.stop_reason.value}")

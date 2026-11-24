@@ -800,6 +800,10 @@ class ForeignAbsenceProbeDetector(
     compact_shared_group_context_builder = staticmethod(_probe_owner_context_from_files)
     compact_analysis_priority = 2
 
+    @classmethod
+    def prefers_in_process_execution(cls) -> bool:
+        return TypeCheckerSession.has_active_incremental()
+
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
         owner="The owner is the other object's type: its states as subclasses, or a null member.",

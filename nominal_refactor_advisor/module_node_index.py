@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import unicodedata
-from collections import Counter, deque
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -78,11 +78,7 @@ class ModuleNodeIndex(ParsedModuleFact):
         bound: Counter[str] = Counter()
         package_heads: set[str] = set()
         sites: dict[str, list[ast.AST]] = {}
-        pending: deque[ast.AST] = deque([parsed_module.module])
-        while pending:
-            node = pending.popleft()
-            for child in ast.iter_child_nodes(node):
-                pending.append(child)
+        for node in parsed_module.syntax_index.breadth_first_nodes:
             match node:
                 case ast.Import(names=aliases):
                     imports.append(node)
