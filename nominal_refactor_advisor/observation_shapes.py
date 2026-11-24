@@ -12,6 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 from nominal_refactor_advisor.class_composition import CompositeClassSpec
@@ -613,10 +614,17 @@ class TypeTestShape(RestatingSite):
 
         return self.reading.restated(self.declared_type_names(scope), scope)
 
-    def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
+    def is_foreign_to(
+        self, scanned_module_names: Sequence[str] | DeclaredClassScope
+    ) -> bool:
         """Whether no tested class is declared in the scan."""
 
-        return not self.declared_type_names(DeclaredClassScope(tuple(scanned_module_names)))
+        scope = (
+            scanned_module_names
+            if isinstance(scanned_module_names, DeclaredClassScope)
+            else DeclaredClassScope(tuple(scanned_module_names))
+        )
+        return not self.declared_type_names(scope)
 
 
 @dataclass(frozen=True)
@@ -637,7 +645,9 @@ class ClassIdentityTestShape(TypeTestShape):
             name for name in self.type_names if name in scope.family_class_symbols
         )
 
-    def is_foreign_to(self, scanned_module_names: Sequence[str]) -> bool:
+    def is_foreign_to(
+        self, scanned_module_names: Sequence[str] | DeclaredClassScope
+    ) -> bool:
         return False
 
 
@@ -649,16 +659,34 @@ class DeclaredClassScope:
     module_names: tuple[str, ...]
     family_class_symbols: frozenset[str] = frozenset()
 
+    @cached_property
+    def _module_name_set(self) -> frozenset[str]:
+        return frozenset(self.module_names)
+
+    @cached_property
+    def _module_prefixes(self) -> frozenset[str]:
+        prefixes: set[str] = set()
+        for scanned in self.module_names:
+            prefixes.add(scanned)
+            index = scanned.find(".")
+            while index != -1:
+                prefixes.add(scanned[:index])
+                index = scanned.find(".", index + 1)
+        return frozenset(prefixes)
+
     def declares_module_of(self, name: str) -> bool:
         """Whether a scanned module is, contains, or sits inside the module of `name`."""
 
         owner = name.rpartition(".")[0]
-        return any(
-            owner == scanned
-            or owner.startswith(f"{scanned}.")
-            or scanned.startswith(f"{owner}.")
-            for scanned in self.module_names
-        )
+        if owner in self._module_prefixes:
+            return True
+        module_names = self._module_name_set
+        index = owner.find(".")
+        while index != -1:
+            if owner[:index] in module_names:
+                return True
+            index = owner.find(".", index + 1)
+        return False
 
 
 @dataclass(frozen=True)

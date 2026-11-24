@@ -189,6 +189,7 @@ def inheritance_amortization_for_calls(
     pairs: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
     consumers: defaultdict[str, set[str]] = defaultdict(set)
     symbols_by_answer: dict[ReceiverType, tuple[str, ...]] = {}
+    owners_by_call_key: dict[tuple[tuple[str, ...], str], tuple[str, ...]] = {}
     typed = reaching = 0
     for call in calls:
         answer = answers[call.span]
@@ -196,15 +197,27 @@ def inheritance_amortization_for_calls(
         if symbols is None:
             symbols = answer.owner(classes).class_symbols()
             symbols_by_answer[answer] = symbols
-        typed += bool(symbols)
-        reached = False
-        for member in chain.from_iterable(methods.reached(symbol) for symbol in symbols):
-            owner = methods.owner_of(member, call.method)
-            if owner is not None:
-                pairs[owner].add((member, call.method))
-                consumers[owner].add(call.consumer)
-                reached = True
-        reaching += reached
+        if not symbols:
+            continue
+        typed += 1
+        method_name = call.method
+        call_key = (symbols, method_name)
+        hit_owners = owners_by_call_key.get(call_key)
+        if hit_owners is None:
+            seen_owners: dict[str, None] = {}
+            for symbol in symbols:
+                for member in methods.reached(symbol):
+                    owner = methods.owner_of(member, method_name)
+                    if owner is not None:
+                        pairs[owner].add((member, method_name))
+                        seen_owners[owner] = None
+            hit_owners = tuple(seen_owners)
+            owners_by_call_key[call_key] = hit_owners
+        if hit_owners:
+            reaching += 1
+            consumer = call.consumer
+            for owner in hit_owners:
+                consumers[owner].add(consumer)
     return InheritanceAmortization(
         scanned_line_count=sum(len(module.source.splitlines()) for module in modules),
         type_checker=session.status,

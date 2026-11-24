@@ -6,6 +6,7 @@ import ast
 import io
 import re
 import tokenize
+import unicodedata
 from collections import defaultdict, deque
 from dataclasses import dataclass, replace
 from functools import cached_property
@@ -21,6 +22,7 @@ from nominal_refactor_advisor.annotation_semantics import StringizedAnnotationSu
 from nominal_refactor_advisor.ast_tools import (
     ModuleAnnotationEvaluationMode,
     ParsedModule,
+    ParsedModuleFact,
 )
 from nominal_refactor_advisor.class_index import (
     ModuleNominalBindingAuthority,
@@ -46,6 +48,38 @@ from nominal_refactor_advisor.public_exports import (
     module_public_export_contract,
 )
 from nominal_refactor_advisor.source_index import AstTargetDigest
+
+
+@dataclass(frozen=True)
+class _ModuleDynamicNameSurfaceIndex(ParsedModuleFact):
+    """Lightweight per-module text & string-literal summary so dynamic-surface
+    proofs skip modules without building a full ``ModuleNodeIndex``."""
+
+    identifier_text: str
+    non_source_strings: tuple[ast.Constant, ...]
+    non_source_strings_joined: str
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _ModuleDynamicNameSurfaceIndex:
+        source = parsed_module.source
+        identifier_text = (
+            source if source.isascii() else unicodedata.normalize("NFKC", source)
+        )
+        non_source: list[ast.Constant] = []
+        for node in ast.walk(parsed_module.module):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value not in identifier_text
+            ):
+                non_source.append(node)
+        return cls(
+            identifier_text=identifier_text,
+            non_source_strings=tuple(non_source),
+            non_source_strings_joined="\0".join(
+                str(node.value) for node in non_source
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -194,6 +228,12 @@ class DeclarationAuthorityImportReference:
         module: ParsedModule,
         imported_name: str,
     ) -> tuple[DeclarationAuthorityImportReference, ...]:
+        if (
+            imported_name.isascii()
+            and module.source.isascii()
+            and imported_name not in module.source
+        ):
+            return ()
         return tuple(
             cls(module, imported_module_name, statement, alias)
             for statement in module.module.body
@@ -990,38 +1030,51 @@ class DeclarationAuthorityRenameProof:
             for module in modules
             for reference in (*module.public_exports, *module.stable_public_exports)
         )
+        target_name = target.name
         for parsed_module in parsed_modules:
-            index = parsed_module.fact(ModuleNodeIndex)
-            spelled = index.spells(target.name)
-            # A module that never spells the name declares no `global` of it and
-            # comments none; only a string assembled from pieces can still hold it.
-            for node in ast.walk(parsed_module.module) if spelled else index.string_constants:
+            surface = parsed_module.fact(_ModuleDynamicNameSurfaceIndex)
+            spelled = target_name in surface.identifier_text
+            if not spelled:
+                if target_name not in surface.non_source_strings_joined:
+                    continue
+                for node in surface.non_source_strings:
+                    if (
+                        isinstance(node.value, str)
+                        and name_pattern.search(node.value)
+                        and id(node) not in annotation_literal_ids
+                        and id(node) not in public_export_literal_ids
+                    ):
+                        raise ValueError(
+                            f"Declaration authority {target_name!r} has a string "
+                            "name surface"
+                        )
+                continue
+            for node in ast.walk(parsed_module.module):
                 if (
                     isinstance(node, ast.Constant)
                     and isinstance(node.value, str)
+                    and target_name in node.value
                     and name_pattern.search(node.value)
                     and id(node) not in annotation_literal_ids
                     and id(node) not in public_export_literal_ids
                 ):
                     raise ValueError(
-                        f"Declaration authority {target.name!r} has a string "
+                        f"Declaration authority {target_name!r} has a string "
                         "name surface"
                     )
-                if isinstance(node, ast.Global | ast.Nonlocal) and target.name in (
+                if isinstance(node, ast.Global | ast.Nonlocal) and target_name in (
                     node.names
                 ):
                     raise ValueError(
-                        f"Declaration authority {target.name!r} has an explicit "
+                        f"Declaration authority {target_name!r} has an explicit "
                         "lexical scope declaration"
                     )
-            if not spelled:
-                continue
             for token in tokenize.generate_tokens(
                 io.StringIO(parsed_module.source).readline
             ):
                 if token.type == tokenize.COMMENT and name_pattern.search(token.string):
                     raise ValueError(
-                        f"Declaration authority {target.name!r} has a comment "
+                        f"Declaration authority {target_name!r} has a comment "
                         "name surface"
                     )
 

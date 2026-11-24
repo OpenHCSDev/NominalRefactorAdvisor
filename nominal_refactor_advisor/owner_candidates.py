@@ -586,33 +586,55 @@ class ModuleImportGraph:
             candidates = sorted(module for module in common if module in self.imports)
         else:
             candidates = sorted(self.imports)
-        qualifying = tuple(
-            module
-            for module in candidates
-            if (module not in importers or module in allowed)
-            and module.startswith(within)
-            and module not in packages
-            and all(self.reaches(importer, module) for importer in importers if importer != module)
-            and not any(self.reaches(module, importer) for importer in importers if importer != module)
-            and all(self.can_bind_at(module, read, importers) for read in read_modules)
-            and module not in readers
-            and not any(self.reaches(module, reader) for reader in readers)
-        )
+        read_reach = {read: self.reachable(read) for read in read_modules}
+        qualifying_list: list[str] = []
+        for module in candidates:
+            if (module in importers and module not in allowed) or not module.startswith(within) or module in packages or module in readers:
+                continue
+            if source and not all(
+                module in self.reachable(importer) for importer in importers if importer != module
+            ):
+                continue
+            mod_reach = self.reachable(module)
+            if not mod_reach.isdisjoint(importers - {module}):
+                continue
+            if readers and not mod_reach.isdisjoint(readers):
+                continue
+            if read_modules:
+                other_importers = importers - {module}
+                if not all(
+                    read == module
+                    or (
+                        module not in read_reach[read]
+                        and read_reach[read].isdisjoint(other_importers)
+                    )
+                    for read in read_modules
+                ):
+                    continue
+            qualifying_list.append(module)
+        qualifying = tuple(qualifying_list)
+        if not qualifying:
+            return None
+        qualifying_set = frozenset(qualifying)
+        imported_by_other_qualifying: set[str] = set()
+        if len(qualifying) > 1:
+            for other in qualifying:
+                reached = self.reachable(other) & qualifying_set
+                if len(reached) > 1:
+                    imported_by_other_qualifying.update(reached - {other})
+        source_mode = modes.get(source)
+        has_layer = bool(layer)
         ranked = sorted(
             qualifying,
             key=lambda module: (
-                bool(layer) and module not in layer,
-                modes.get(module) != modes.get(source),
+                has_layer and module not in layer,
+                modes.get(module) != source_mode,
                 module in importers,
-                any(other != module and self.reaches(other, module) for other in qualifying),
+                module in imported_by_other_qualifying,
                 module,
             ),
         )
-        return (
-            LowerHome(ranked[0], modes.get(ranked[0]) == modes.get(source))
-            if ranked
-            else None
-        )
+        return LowerHome(ranked[0], modes.get(ranked[0]) == source_mode)
 
     def pinning_reads(self, users: Iterable[str], reads: Iterable[str]) -> tuple[str, ...]:
         """The read modules no home below `users` can import without a cycle:

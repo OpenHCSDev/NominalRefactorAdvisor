@@ -95,7 +95,12 @@ class ModuleWalks(ParsedModuleFact):
                 class_keywords={},
             )
         local_class_names = frozenset(node.name for node in classes.values())
-        aliases = module_import_aliases(parsed_module)
+        has_metaclass_kw = any(
+            keyword.arg == "metaclass" and isinstance(keyword.value, ast.Name)
+            for node in classes.values()
+            for keyword in node.keywords
+        )
+        aliases = module_import_aliases(parsed_module) if has_metaclass_kw else {}
         keyword_walks = (
             {
                 symbol: walk
@@ -249,9 +254,10 @@ def _walk_calls(parsed_module: ParsedModule) -> tuple[PackageWalkCall, ...]:
         if isinstance(statement, ast.ClassDef)
     )
     calls: list[PackageWalkCall] = []
-    for _, node in parsed_module.syntax_index.indexed_nodes_of_type(ast.Call):
+    for node in ast.walk(parsed_module.module):
         if (
-            isinstance(node.func, ast.Attribute)
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
             and node.args
             and isinstance(node.args[0], ast.Name)
@@ -282,15 +288,17 @@ def family_walk_roots(
     keyword_walks = {name: kw for walk in walks for name, kw in walk.keyword_walks.items()}
     metaclasses = {name: meta for walk in walks for name, meta in walk.metaclasses.items()}
     class_keywords = {name: kws for walk in walks for name, kws in walk.class_keywords.items()}
-    has_family_walker = any(
-        name.rpartition(".")[0] in families and walker.position == 0
+    matching_walker_methods = frozenset(
+        name.rpartition(".")[2]
         for name, walker in walkers.items()
+        if name.rpartition(".")[0] in families and walker.position == 0
     )
-    if has_family_walker:
+    if matching_walker_methods:
         module_names = frozenset(module.module_name for module in modules)
         called: tuple[tuple[str, FamilyWalkRoot], ...] = tuple(
             (call.receiver, PackageWalkRoot(package=call.package, recursive=walker.recursive))
             for module in modules
+            if any(method in module.source for method in matching_walker_methods)
             for call in module.fact(ModuleWalkCalls).calls
             if call.receiver in families and call.package in module_names
             for family in families

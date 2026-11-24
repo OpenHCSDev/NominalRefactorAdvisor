@@ -70,6 +70,7 @@ from nominal_refactor_advisor.class_overlap import (
     ComposeExisting,
     ExtractMixin,
     PromoteToSharedBase,
+    REPORTED,
     SubclassAnswers,
 )
 from nominal_refactor_advisor.class_references import (
@@ -1136,6 +1137,42 @@ def require_static_c3(
     return ancestry
 
 
+def _direct_pair_verdicts(
+    verdicts: ClassOverlapVerdicts, first: str, second: str
+) -> tuple[ClassOverlapCandidate, ...]:
+    """The `REPORTED` verdict rungs for one exact class pair (own overlap, or
+    inheriting overlap when own overlap produces no verdict)."""
+
+    if (
+        first not in verdicts.bodies.classes_by_symbol
+        or second not in verdicts.bodies.classes_by_symbol
+    ):
+        return ()
+    own_overlap = verdicts.bodies.overlap(first, second)
+    candidate = verdicts.verdict(own_overlap)
+    if candidate is not None:
+        return candidate.rungs
+    first_resolved = verdicts.resolved_declarations(first)
+    second_resolved = verdicts.resolved_declarations(second)
+    shared_names = first_resolved.keys() & second_resolved.keys()
+    if not shared_names:
+        return ()
+    inheriting_overlap = own_overlap.with_inherited(first_resolved, second_resolved)
+    if (
+        inheriting_overlap.inherited
+        and (
+            inheriting_overlap.first_is_contained
+            or inheriting_overlap.second_is_contained
+            or len(inheriting_overlap.shared) >= REPORTED.declarations
+        )
+        and not verdicts._restated_through_an_ancestor(inheriting_overlap)
+    ):
+        candidate = verdicts.verdict(inheriting_overlap)
+        if candidate is not None:
+            return candidate.rungs
+    return ()
+
+
 def require_verdict(
     snapshot: CodemodSourceSnapshot,
     classes: Iterable[str],
@@ -1152,11 +1189,26 @@ def require_verdict(
     """
 
     wanted = frozenset(classes)
-    matches = tuple(
-        candidate
-        for candidate in snapshot.class_overlap_verdicts.candidates_touching(
+    verdicts = snapshot.class_overlap_verdicts
+    if "candidates" not in verdicts.__dict__ and owner_symbol is None and len(wanted) == 2:
+        first, second = sorted(wanted)
+        pool = _direct_pair_verdicts(verdicts, first, second)
+    elif (
+        "candidates" not in verdicts.__dict__
+        and owner_symbol is not None
+        and len(wanted) == 1
+        and not verdicts.class_index.children_by_symbol.get(owner_symbol)
+    ):
+        (restating_symbol,) = wanted
+        first, second = sorted((owner_symbol, restating_symbol))
+        pool = _direct_pair_verdicts(verdicts, first, second)
+    else:
+        pool = verdicts.candidates_touching(
             wanted if owner_symbol is None else frozenset((owner_symbol,))
         )
+    matches = tuple(
+        candidate
+        for candidate in pool
         if candidate.move is move
         and (
             wanted <= candidate.restating_symbols
@@ -1168,7 +1220,7 @@ def require_verdict(
     )
     if not matches and owner_symbol is not None:
         requested = tuple(
-            snapshot.class_overlap_verdicts.requested_verdict(owner_symbol, symbol)
+            verdicts.requested_verdict(owner_symbol, symbol)
             for symbol in sorted(wanted)
         )
         if all(
@@ -1180,7 +1232,7 @@ def require_verdict(
             matches = tuple(candidate for candidate in requested if candidate is not None)
     if not matches and owner_symbol is None and len(wanted) == 2:
         first, second = sorted(wanted)
-        judged = snapshot.class_overlap_verdicts.requested_as(first, second, move)
+        judged = verdicts.requested_as(first, second, move)
         matches = () if judged is None or judged.move is not move else (judged,)
     if not matches or (owner_symbol is None and len(matches) != 1):
         raise ValueError(

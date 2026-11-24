@@ -32,8 +32,14 @@ from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 @ScanCache.cached
-def _static_class_declarations_cache() -> dict[CompactIndexedClass, dict[str, ClassBodyDeclaration]]:
-    """Per-class declarations independent of star imports and field wrappers."""
+def _static_class_declarations_cache() -> (
+    dict[int, tuple[CompactIndexedClass, dict[str, ClassBodyDeclaration]]]
+):
+    """Per-class declarations independent of star imports and field wrappers.
+
+    Keyed by object identity and holding the `CompactIndexedClass` alongside its
+    built declarations so the identity stays unique for the cache's lifetime
+    without hashing nested dataclass tuples on every lookup."""
 
     return {}
 
@@ -433,6 +439,35 @@ class ClassBodyIndex:
             for indexed_class in projection.classes
         }
 
+    def _declarations_for_class(
+        self,
+        indexed_class: CompactIndexedClass,
+        cache: (
+            dict[int, tuple[CompactIndexedClass, dict[str, ClassBodyDeclaration]]] | None
+        ) = None,
+    ) -> dict[str, ClassBodyDeclaration]:
+        if cache is not None:
+            cached = cache.get(id(indexed_class))
+            if cached is not None and cached[0] is indexed_class:
+                return cached[1]
+        body_declarations = indexed_class.body_declarations
+        if not any(
+            declaration.deferred or declaration.field_declaration.depends_on_repository
+            for declaration in body_declarations
+        ):
+            built = {
+                declaration.name: _static_declaration(declaration)
+                for declaration in body_declarations
+            }
+            if cache is not None:
+                cache[id(indexed_class)] = (indexed_class, built)
+            return built
+        module_name = indexed_class.module_name
+        return {
+            declaration.name: self._declaration(module_name, declaration)
+            for declaration in body_declarations
+        }
+
     @cached_property
     def declarations_by_symbol(
         self,
@@ -444,35 +479,31 @@ class ClassBodyIndex:
             if ScanCache.active() is not None
             else None
         )
+        lazy = self.__dict__.get("_lazy_declarations_by_symbol")
         result: dict[str, dict[str, ClassBodyDeclaration]] = {}
         for symbol, indexed_class in self.classes_by_symbol.items():
-            if cache is not None:
-                cached = cache.get(indexed_class)
-                if cached is not None:
-                    result[symbol] = cached
-                    continue
-            body_declarations = indexed_class.body_declarations
-            if not any(
-                declaration.deferred or declaration.field_declaration.depends_on_repository
-                for declaration in body_declarations
-            ):
-                built = {
-                    declaration.name: _static_declaration(declaration)
-                    for declaration in body_declarations
-                }
-                if cache is not None:
-                    cache[indexed_class] = built
-                result[symbol] = built
-            else:
-                module_name = indexed_class.module_name
-                result[symbol] = {
-                    declaration.name: self._declaration(module_name, declaration)
-                    for declaration in body_declarations
-                }
+            if lazy is not None and symbol in lazy:
+                result[symbol] = lazy[symbol]
+                continue
+            result[symbol] = self._declarations_for_class(indexed_class, cache)
         return result
 
     def declarations_of(self, symbol: str) -> Mapping[str, ClassBodyDeclaration]:
-        return self.declarations_by_symbol[symbol]
+        if "declarations_by_symbol" in self.__dict__:
+            return self.declarations_by_symbol[symbol]
+        lazy: dict[str, dict[str, ClassBodyDeclaration]] = self.__dict__.setdefault(
+            "_lazy_declarations_by_symbol", {}
+        )
+        found = lazy.get(symbol)
+        if found is None:
+            cache = (
+                _static_class_declarations_cache()
+                if ScanCache.active() is not None
+                else None
+            )
+            found = self._declarations_for_class(self.classes_by_symbol[symbol], cache)
+            lazy[symbol] = found
+        return found
 
     def resolved_declarations_of(
         self, mro_prefix: Sequence[CompactIndexedClass]
@@ -481,10 +512,11 @@ class ClassBodyIndex:
         first class there that makes a name answers it."""
 
         resolved: dict[str, ResolvedClassBodyDeclaration] = {}
+        classes = self.classes_by_symbol
         for owner in mro_prefix:
-            if owner.symbol not in self.declarations_by_symbol:
+            if owner.symbol not in classes:
                 continue
-            for name, declaration in self.declarations_by_symbol[owner.symbol].items():
+            for name, declaration in self.declarations_of(owner.symbol).items():
                 resolved.setdefault(name, ResolvedClassBodyDeclaration(declaration, owner))
         return resolved
 
@@ -510,9 +542,9 @@ class ClassBodyIndex:
     def overlap(self, first: str, second: str) -> ClassBodyOverlap:
         return ClassBodyOverlap.of(
             self.classes_by_symbol[first],
-            self.declarations_by_symbol[first],
+            self.declarations_of(first),
             self.classes_by_symbol[second],
-            self.declarations_by_symbol[second],
+            self.declarations_of(second),
         )
 
     @cached_property
@@ -526,11 +558,13 @@ class ClassBodyIndex:
         itself, in the same order: the pairs among the holders of those
         classes' own declarations, theirs included."""
 
+        classes = self.classes_by_symbol
+        holders = self.holders
         return self._overlaps_of(
-            self.holders[identity]
+            holders[identity]
             for symbol in symbols
-            if symbol in self.declarations_by_symbol
-            for declaration in self.declarations_by_symbol[symbol].values()
+            if symbol in classes
+            for declaration in self.declarations_of(symbol).values()
             for identity in declaration.identities
         )
 

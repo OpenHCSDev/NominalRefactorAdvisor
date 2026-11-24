@@ -862,11 +862,24 @@ class MentioningSiblingTests(SiblingTestFilter):
         return self.str_pattern.search(unicodedata.normalize("NFKC", text)) is not None
 
     def matches(self, path: Path) -> bool:
+        if ScanCache.active() is not None:
+            raw = _cached_sibling_test_bytes(path)
+            if raw is None:
+                return True
+            return self.matches_bytes(raw)
         try:
             raw = path.read_bytes()
         except OSError:
             return True
         return self.matches_bytes(raw)
+
+
+@ScanCache.cached
+def _cached_sibling_test_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
 
 
 @dataclass(frozen=True)

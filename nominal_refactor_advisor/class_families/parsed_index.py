@@ -343,29 +343,93 @@ class ClassFamilyIndexBuilder:
             ).values()
         )
         known_symbols = frozenset(record.symbol for record in class_records)
-        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
+        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex | None = None
         moved_terminal_names = self.moved_terminal_names(known_symbols)
         classes_by_symbol: dict[str, IndexedClass] = {}
+        previous = self.previous
+        module_by_file_path = self.module_by_file_path if previous is not None else {}
+        prev_modules = previous.modules_by_file_path if previous is not None else {}
+        prev_classes = previous.index.classes_by_symbol if previous is not None else {}
         for record in class_records:
-            resolved = self.reused_record(record, moved_terminal_names)
+            resolved: IndexedClass | None = None
+            if previous is not None and prev_modules.get(record.file_path) is module_by_file_path[record.file_path]:
+                prev_record = prev_classes.get(record.symbol)
+                if prev_record is not None and (
+                    not moved_terminal_names
+                    or not any(
+                        reference.resolved_parts[-1] in moved_terminal_names
+                        for reference in record.registry_facts.base_references
+                    )
+                ):
+                    resolved = prev_record
             if resolved is None:
+                if unique_symbols_by_suffix is None:
+                    unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
                 resolved = self.resolved_record(
                     record, known_symbols, unique_symbols_by_suffix
                 )
             classes_by_symbol[record.symbol] = resolved
-        authority = RegisteringMetaclassAuthority(
-            classes_by_symbol,
-            CompactRepositoryPublicExposureIndex(
-                tuple(
-                    parsed_module.family_batch(CompactModuleClassProjectionFamily).items[0]
-                    if parsed_module.has_family_batch(CompactModuleClassProjectionFamily)
-                    else parsed_module.fact(ModuleClassHeaderCore).projection
-                    for parsed_module in self.modules
-                )
-            ),
+        metaclass_records = tuple(
+            (symbol, record)
+            for symbol, record in classes_by_symbol.items()
+            if record.registry_facts.metaclass_references
         )
-        for symbol, record in classes_by_symbol.items():
-            if record.registry_facts.metaclass_references:
+        need_metaclass_recheck = bool(metaclass_records)
+        if need_metaclass_recheck and previous is not None:
+            changed_paths = {
+                module.file_path
+                for module in self.modules
+                if prev_modules.get(module.file_path) is not module
+            }
+            removed_paths = prev_modules.keys() - module_by_file_path.keys()
+            changed_or_removed_classes = (
+                *(
+                    record
+                    for module in self.modules
+                    if module.file_path in changed_paths
+                    for record in module.fact(ModuleIndexedClasses).records
+                ),
+                *(
+                    record
+                    for path in (*changed_paths, *removed_paths)
+                    if path in prev_modules
+                    for record in prev_modules[path].fact(ModuleIndexedClasses).records
+                ),
+            )
+            if not any(
+                record.registry_facts.stores_created_class
+                or record.registry_facts.metaclass_references
+                or any(
+                    ref.resolved_parts[-1] == "type"
+                    for ref in record.registry_facts.base_references
+                )
+                for record in changed_or_removed_classes
+            ) and not any(
+                record.file_path in changed_paths
+                or (
+                    moved_terminal_names
+                    and any(
+                        ref.resolved_parts[-1] in moved_terminal_names
+                        for ref in record.registry_facts.metaclass_references
+                    )
+                )
+                for _, record in metaclass_records
+            ):
+                need_metaclass_recheck = False
+        if need_metaclass_recheck:
+            authority = RegisteringMetaclassAuthority(
+                classes_by_symbol,
+                CompactRepositoryPublicExposureIndex(
+                    tuple(
+                        parsed_module.family_batch(CompactModuleClassProjectionFamily).items[0]
+                        if parsed_module.has_family_batch(CompactModuleClassProjectionFamily)
+                        else parsed_module.fact(ModuleClassHeaderCore).projection
+                        for parsed_module in self.modules
+                    )
+                ),
+                _suffix_index=unique_symbols_by_suffix,
+            )
+            for symbol, record in metaclass_records:
                 classes_by_symbol[symbol] = record.with_registering_metaclass(authority)
         return ClassFamilyIndex(classes_by_symbol=classes_by_symbol)
 

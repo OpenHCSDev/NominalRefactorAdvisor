@@ -42,6 +42,7 @@ from collections import defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
+from itertools import combinations
 from typing import NamedTuple, Self
 from enum import StrEnum
 from functools import cached_property
@@ -50,11 +51,13 @@ from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.class_body import (
     ClassBodyDeclaration,
+    ClassBodyDeclarationIdentity,
     ResolvedClassBodyDeclaration,
     SharedClassBodyDeclaration,
     ClassBodyIndex,
     ClassBodyOverlap,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.field_order_reads import FieldOrderReads
 from nominal_refactor_advisor.class_index import (
     ClassBodyDeclarationKind,
@@ -382,13 +385,14 @@ class ClassUseIndex:
     A reference is resolved only when a class it may name is asked about. Every
     answer the resolver gives ends in the same name as one of the reference's
     parts, or as the last part of an imported prefix's target once it follows
-    every re-export rename (`followed_reexports`), so a reference is filed under
-    those names and resolved as a whole, longest prefix first, exactly as when
-    every reference is resolved up front."""
+    every re-export rename (`followed_reexports`). Each immutable projection
+    indexes its own references by part name once; this index records only the
+    few renamed aliases whose resolved tail differs from their local spelling,
+    and reads matching references on demand."""
 
     resolver: CompactClassReferenceResolver
-    references_by_terminal_name: Mapping[str, tuple[tuple[str, str, CompactClassReference], ...]]
-    """Each reference with the file holding it and the module scope it resolves in."""
+    projections: tuple[CompactModuleClassProjection, ...]
+    extra_part_names_by_tail: Mapping[str, tuple[str, ...]]
 
     @classmethod
     def from_projections(
@@ -396,88 +400,92 @@ class ClassUseIndex:
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> ClassUseIndex:
-        scoped = CompactClassReferenceResolver.from_index(projections, class_index)
-        resolver = replace(
-            scoped,
-            import_aliases_by_module_name={
-                **scoped.import_aliases_by_module_name,
-                **{
-                    script.module_name: dict(script.import_aliases)
-                    for projection in projections
-                    for script in projection.script_scopes
+        proj_tuple = tuple(projections)
+        scoped = CompactClassReferenceResolver.from_index(proj_tuple, class_index)
+        script_aliases = {
+            script.module_name: dict(script.import_aliases)
+            for projection in proj_tuple
+            for script in projection.script_scopes
+        }
+        resolver = (
+            replace(
+                scoped,
+                import_aliases_by_module_name={
+                    **scoped.import_aliases_by_module_name,
+                    **script_aliases,
                 },
-            },
-        )
-        scopes = tuple(
-            (projection.file_path, scope_name, references)
-            for projection in projections
-            for scope_name, references in (
-                (projection.module_name, projection.class_references),
-                *((script.module_name, script.class_references) for script in projection.script_scopes),
             )
+            if script_aliases
+            else scoped
         )
-        filed: dict[str, list[tuple[str, str, CompactClassReference]]] = defaultdict(list)
         import_aliases_by_module = resolver.import_aliases_by_module_name
         reexport_tail: dict[str, str] = {}
-        for file_path, module_name, references in scopes:
-            aliases = import_aliases_by_module.get(module_name)
-            if not aliases:
-                for reference in references:
-                    parts = reference.reference_parts
-                    entry = (file_path, module_name, reference)
-                    if len(parts) == 1:
-                        filed[parts[0]].append(entry)
-                    else:
-                        for name in set(parts):
-                            filed[name].append(entry)
-                continue
-            first_tail_cache: dict[str, str] = {}
-            for reference in references:
-                parts = reference.reference_parts
-                first = parts[0]
-                entry = (file_path, module_name, reference)
-                if len(parts) == 1:
-                    if first not in aliases:
-                        filed[first].append(entry)
-                    else:
-                        tail = first_tail_cache.get(first)
-                        if tail is None:
-                            alias_target = aliases[first]
-                            tail = reexport_tail.get(alias_target)
-                            if tail is None:
-                                tail = followed_reexports(
-                                    alias_target,
-                                    import_aliases_by_module,
-                                ).rpartition(".")[2]
-                                reexport_tail[alias_target] = tail
-                            first_tail_cache[first] = tail
-                        filed[first].append(entry)
-                        if tail != first:
-                            filed[tail].append(entry)
-                    continue
-                names = {*parts}
-                if first in aliases:
-                    alias_target = aliases[first]
-                    for length in range(1, len(parts) + 1):
-                        key = (
-                            alias_target
-                            if length == 1
-                            else ".".join((alias_target, *parts[1:length]))
-                        )
-                        tail = reexport_tail.get(key)
-                        if tail is None:
-                            tail = followed_reexports(
-                                key,
-                                import_aliases_by_module,
-                            ).rpartition(".")[2]
-                            reexport_tail[key] = tail
-                        names.add(tail)
-                for name in names:
-                    filed[name].append(entry)
+        extra_by_tail: dict[str, list[str]] = defaultdict(list)
+        for aliases in import_aliases_by_module.values():
+            for local_name, alias_target in aliases.items():
+                tail = reexport_tail.get(alias_target)
+                if tail is None:
+                    tail = followed_reexports(
+                        alias_target,
+                        import_aliases_by_module,
+                    ).rpartition(".")[2]
+                    reexport_tail[alias_target] = tail
+                if tail != local_name:
+                    extra_by_tail[tail].append(local_name)
         return cls(
             resolver,
-            {name: tuple(entries) for name, entries in filed.items()},
+            proj_tuple,
+            {
+                tail: tuple(dict.fromkeys(names))
+                for tail, names in extra_by_tail.items()
+            },
         )
+
+    def _candidate_references(
+        self, terminal_name: str
+    ) -> Iterator[tuple[str, str, CompactClassReference]]:
+        extra_names = self.extra_part_names_by_tail.get(terminal_name, ())
+        if not extra_names:
+            for projection in self.projections:
+                entries = projection.references_by_part.get(terminal_name)
+                if entries:
+                    file_path = projection.file_path
+                    for scope_name, reference in entries:
+                        yield file_path, scope_name, reference
+            return
+        wanted_names = (terminal_name, *extra_names)
+        for projection in self.projections:
+            by_part = projection.references_by_part
+            matched: list[tuple[str, CompactClassReference]] = []
+            for name in wanted_names:
+                entries = by_part.get(name)
+                if entries:
+                    matched.extend(entries)
+            if not matched:
+                continue
+            file_path = projection.file_path
+            if len(matched) == 1:
+                scope_name, reference = matched[0]
+                yield file_path, scope_name, reference
+                continue
+            seen: set[tuple[str, int]] = set()
+            for scope_name, references in (
+                (projection.module_name, projection.class_references),
+                *(
+                    (script.module_name, script.class_references)
+                    for script in projection.script_scopes
+                ),
+            ):
+                matched_ids = {
+                    id(reference) for scope, reference in matched if scope == scope_name
+                }
+                if not matched_ids:
+                    continue
+                for reference in references:
+                    reference_id = id(reference)
+                    if reference_id in matched_ids and (scope_name, reference_id) not in seen:
+                        seen.add((scope_name, reference_id))
+                        yield file_path, scope_name, reference
 
     def resolved(
         self, module_name: str, reference: CompactClassReference
@@ -516,8 +524,8 @@ class ClassUseIndex:
                     if reference.tested_subclass
                     else None,
                 )
-                for file_path, module_name, reference in self.references_by_terminal_name.get(
-                    symbol.rpartition(".")[2], ()
+                for file_path, module_name, reference in self._candidate_references(
+                    symbol.rpartition(".")[2]
                 )
                 for resolved in [self.resolved(module_name, reference)]
                 if resolved is not None and resolved[0] == symbol
@@ -800,6 +808,16 @@ class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
         return self.shared_declaration_names
 
 
+@ScanCache.cached
+def _base_class_overlap_verdicts_slot() -> list[
+    tuple[ClassOverlapVerdicts, tuple[tuple[str, str, bool], ...]] | None
+]:
+    """One baseline full-scan ``ClassOverlapVerdicts`` and its candidate pairs
+    for incremental projection across small source edits in a ``ScanCache.scope()``."""
+
+    return [None]
+
+
 @dataclass(frozen=True)
 class ClassOverlapVerdicts(DeclaredC3):
     """Every overlap worth a verdict in one scan, with its receipts, over the
@@ -810,7 +828,117 @@ class ClassOverlapVerdicts(DeclaredC3):
 
     @cached_property
     def bodies(self) -> ClassBodyIndex:
-        return ClassBodyIndex.from_projections(self.projections)
+        index = ClassBodyIndex.from_projections(self.projections)
+        if ScanCache.active() is not None:
+            base_entry = _base_class_overlap_verdicts_slot()[0]
+            if base_entry is not None:
+                base_verdicts = base_entry[0]
+                if base_verdicts is not self and "holders" in base_verdicts.bodies.__dict__:
+                    self._try_project_holders(index, base_verdicts)
+        return index
+
+    def _try_project_holders(
+        self,
+        index: ClassBodyIndex,
+        base_verdicts: ClassOverlapVerdicts,
+    ) -> tuple[
+        tuple[CompactModuleClassProjection, ...],
+        tuple[CompactModuleClassProjection, ...],
+        tuple[CompactModuleClassProjection, ...],
+        set[ClassBodyDeclarationIdentity],
+        bool,
+    ] | None:
+        """Project ``holders`` incrementally from ``base_verdicts`` when only a
+        small set of modules changed without star imports or wrapper edits."""
+
+        cached_delta = self.__dict__.get("_projected_holders_delta")
+        if cached_delta is not None:
+            return cached_delta
+        if any(p.star_import_origins for p in self.projections) or any(
+            p.star_import_origins for p in base_verdicts.projections
+        ):
+            return None
+        base_by_path = {p.file_path: p for p in base_verdicts.projections}
+        cur_by_path = {p.file_path: p for p in self.projections}
+        changed_projs = tuple(
+            p for p in self.projections if base_by_path.get(p.file_path) is not p
+        )
+        removed_projs = tuple(
+            p for path, p in base_by_path.items() if path not in cur_by_path
+        )
+        if len(changed_projs) + len(removed_projs) > 64:
+            return None
+        old_changed = tuple(
+            base_by_path[p.file_path]
+            for p in changed_projs
+            if p.file_path in base_by_path
+        )
+        old_wrappers = tuple(
+            w for p in (*old_changed, *removed_projs) for w in p.field_declaration_wrappers
+        )
+        new_wrappers = tuple(
+            w for p in changed_projs for w in p.field_declaration_wrappers
+        )
+        if old_wrappers != new_wrappers:
+            return None
+        if not changed_projs and not removed_projs:
+            index.__dict__["holders"] = base_verdicts.bodies.holders
+            delta = (changed_projs, old_changed, removed_projs, set(), False)
+            self.__dict__["_projected_holders_delta"] = delta
+            return delta
+
+        old_symbols = {
+            c.symbol for p in (*old_changed, *removed_projs) for c in p.classes
+        }
+        new_symbols = {c.symbol for p in changed_projs for c in p.classes}
+        base_holders = base_verdicts.bodies.holders
+        holders_dict: dict[ClassBodyDeclarationIdentity, tuple[str, ...]] = dict(
+            base_holders
+        )
+        touched_idents: dict[ClassBodyDeclarationIdentity, list[str]] = {}
+        for sym in old_symbols:
+            if sym not in base_verdicts.bodies.classes_by_symbol:
+                continue
+            for decl in base_verdicts.bodies.declarations_of(sym).values():
+                for ident in decl.identities:
+                    bucket = touched_idents.get(ident)
+                    if bucket is None:
+                        bucket = list(holders_dict.get(ident, ()))
+                        touched_idents[ident] = bucket
+                    if sym in bucket:
+                        bucket.remove(sym)
+        for sym in new_symbols:
+            if sym not in index.classes_by_symbol:
+                continue
+            for decl in index.declarations_of(sym).values():
+                for ident in decl.identities:
+                    bucket = touched_idents.get(ident)
+                    if bucket is None:
+                        bucket = list(holders_dict.get(ident, ()))
+                        touched_idents[ident] = bucket
+                    if sym not in bucket:
+                        bucket.append(sym)
+        limit = index.holder_limit
+        any_crossed_limit = False
+        for ident, bucket in touched_idents.items():
+            old_len = len(base_holders.get(ident, ()))
+            new_len = len(bucket)
+            if (old_len <= limit) != (new_len <= limit):
+                any_crossed_limit = True
+            if bucket:
+                holders_dict[ident] = tuple(sorted(bucket))
+            else:
+                holders_dict.pop(ident, None)
+        index.__dict__["holders"] = holders_dict
+        delta = (
+            changed_projs,
+            old_changed,
+            removed_projs,
+            set(touched_idents),
+            any_crossed_limit,
+        )
+        self.__dict__["_projected_holders_delta"] = delta
+        return delta
 
     @cached_property
     def exposure(self) -> CompactRepositoryPublicExposureIndex:
@@ -853,10 +981,187 @@ class ClassOverlapVerdicts(DeclaredC3):
         """A verdict per pair of classes: on their own declarations, or, when
         those are too few, on the declarations they have through their MROs."""
 
+        if ScanCache.active() is not None:
+            slot = _base_class_overlap_verdicts_slot()
+            base_entry = slot[0]
+            if base_entry is None:
+                candidates, pairs = self._judged_with_pairs(
+                    self.bodies.overlaps,
+                    self._inheriting_pairs_of(self.bodies.classes_by_symbol),
+                )
+                slot[0] = (self, pairs)
+                return candidates
+            base_verdicts, base_pairs = base_entry
+            projected = self._projected_candidates(base_verdicts, base_pairs)
+            if projected is not None:
+                return projected
         return self.judged(
             self.bodies.overlaps,
             self._inheriting_pairs_of(self.bodies.classes_by_symbol),
         )
+
+    def _judged_with_pairs(
+        self,
+        overlaps: Iterable[ClassBodyOverlap],
+        inheriting_pairs: frozenset[tuple[str, str]],
+    ) -> tuple[tuple[ClassOverlapCandidate, ...], tuple[tuple[str, str, bool], ...]]:
+        """Run ``judged`` while recording each surviving pair and whether it came
+        from direct own-body overlap or inherited overlap."""
+
+        candidates: list[ClassOverlapCandidate] = []
+        judged_direct: set[tuple[str, str]] = set()
+        recorded_pairs: list[tuple[str, str, bool]] = []
+        for overlap in overlaps:
+            candidate = self.verdict(overlap)
+            if candidate is not None:
+                candidates.extend(candidate.rungs)
+                pair = (overlap.first.symbol, overlap.second.symbol)
+                judged_direct.add(pair)
+                recorded_pairs.append((pair[0], pair[1], True))
+        floor_declarations = REPORTED.declarations
+        for first, second in sorted(inheriting_pairs - judged_direct):
+            first_resolved = self.resolved_declarations(first)
+            second_resolved = self.resolved_declarations(second)
+            shared_names = first_resolved.keys() & second_resolved.keys()
+            if not shared_names:
+                continue
+            first_own = self.bodies.declarations_of(first)
+            second_own = self.bodies.declarations_of(second)
+            if (
+                len(shared_names) < floor_declarations
+                and not (first_own.keys() <= shared_names)
+                and not (second_own.keys() <= shared_names)
+            ):
+                continue
+            has_candidate_inherited = False
+            for name in shared_names:
+                first_owner = first_resolved[name].owner.symbol
+                second_owner = second_resolved[name].owner.symbol
+                if first_owner == second_owner:
+                    continue
+                if first_owner != first and second_owner != second:
+                    continue
+                if first_owner == first and second_owner == second:
+                    continue
+                has_candidate_inherited = True
+                break
+            if not has_candidate_inherited:
+                continue
+            overlap = self.bodies.overlap(first, second).with_inherited(
+                first_resolved, second_resolved
+            )
+            if (
+                overlap.inherited
+                and (
+                    overlap.first_is_contained
+                    or overlap.second_is_contained
+                    or len(overlap.shared) >= floor_declarations
+                )
+                and not self._restated_through_an_ancestor(overlap)
+                and (candidate := self.verdict(overlap)) is not None
+            ):
+                candidates.extend(candidate.rungs)
+                recorded_pairs.append((first, second, False))
+        return tuple(candidates), tuple(recorded_pairs)
+
+    def _projected_candidates(
+        self,
+        base_verdicts: ClassOverlapVerdicts,
+        base_pairs: tuple[tuple[str, str, bool], ...],
+    ) -> tuple[ClassOverlapCandidate, ...] | None:
+        """Exact incremental projection of ``candidates`` from ``base_verdicts``."""
+
+        bodies = self.bodies
+        delta = self._try_project_holders(bodies, base_verdicts)
+        if delta is None:
+            return None
+        changed_projs, old_changed, removed_projs, changed_identities, any_crossed_limit = (
+            delta
+        )
+        if not changed_projs and not removed_projs:
+            return base_verdicts.candidates
+        if any_crossed_limit:
+            return None
+
+        old_symbols = {
+            c.symbol for p in (*old_changed, *removed_projs) for c in p.classes
+        }
+        new_symbols = {c.symbol for p in changed_projs for c in p.classes}
+        direct_changed = old_symbols | new_symbols
+        classes = bodies.classes_by_symbol
+        base_index = base_verdicts.class_index
+        cur_index = self.class_index
+
+        mro_changed: set[str] = set(direct_changed)
+        for sym in direct_changed:
+            mro_changed.update(base_index.descendant_symbols(sym))
+            mro_changed.update(cur_index.descendant_symbols(sym))
+
+        sibling_changed: set[str] = set(mro_changed)
+        affected_bases: set[str] = set()
+        for sym in mro_changed:
+            if (old_cls := base_index.class_for(sym)) is not None:
+                affected_bases.update(old_cls.resolved_base_symbols)
+            if (cur_cls := cur_index.class_for(sym)) is not None:
+                affected_bases.update(cur_cls.resolved_base_symbols)
+        for base_sym in affected_bases:
+            sibling_changed.update(base_index.children_by_symbol.get(base_sym, ()))
+            sibling_changed.update(cur_index.children_by_symbol.get(base_sym, ()))
+
+        live_mro = frozenset(sym for sym in mro_changed if sym in classes)
+        live_affected = frozenset(sym for sym in sibling_changed if sym in classes)
+
+        holders = bodies.holders
+        limit = bodies.holder_limit
+        direct_pairs: set[tuple[str, str]] = set()
+        for ident in changed_identities:
+            group = holders.get(ident, ())
+            if 2 <= len(group) <= limit:
+                direct_pairs.update(combinations(sorted(group), 2))
+        for sym in live_affected:
+            for decl in bodies.declarations_of(sym).values():
+                for ident in decl.identities:
+                    group = holders.get(ident, ())
+                    if 2 <= len(group) <= limit:
+                        direct_pairs.update(combinations(sorted(group), 2))
+
+        inheriting_seeds = set(live_affected)
+        if live_mro:
+            inheriting_seeds.update(self._inheritors_pairing_with(live_mro))
+        for ident in changed_identities:
+            group = holders.get(ident, ())
+            if len(group) <= limit:
+                for owner in group:
+                    for desc in cur_index.descendant_symbols(owner):
+                        if desc in classes:
+                            inheriting_seeds.add(desc)
+        inh_pairs: set[tuple[str, str]] = set(
+            self._inheriting_pairs_of(inheriting_seeds)
+        )
+
+        for first, second, was_direct in base_pairs:
+            if first not in classes or second not in classes:
+                continue
+            pair = (first, second)
+            if was_direct:
+                if pair not in direct_pairs:
+                    # Confirm they still share at least one pairing identity.
+                    first_decls = bodies.declarations_of(first)
+                    second_decls = bodies.declarations_of(second)
+                    if any(
+                        ident in holders
+                        and len(holders[ident]) <= limit
+                        and first in holders[ident]
+                        and second in holders[ident]
+                        for name in first_decls.keys() & second_decls.keys()
+                        for ident in first_decls[name].identities
+                    ):
+                        direct_pairs.add(pair)
+            else:
+                inh_pairs.add(pair)
+
+        overlaps = tuple(bodies.overlap(a, b) for a, b in sorted(direct_pairs))
+        return self.judged(overlaps, frozenset(inh_pairs))
 
     def candidates_touching(self, symbols: frozenset[str]) -> tuple[ClassOverlapCandidate, ...]:
         """The verdicts `candidates` holds whose owner or restating classes include

@@ -300,6 +300,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
             retained_product_flow_repository=existing_product_flow,
             text_files=self.text_files,
+            previous_compact_class_state=self._compact_class_predecessor(),
         )
 
     def with_text_files(self, text_files: Mapping[str, FileText]) -> CodemodSourceSnapshot:
@@ -313,6 +314,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self._source_index_build_artifacts,
             retained_product_flow_repository=self._retained_product_flow_repository,
             text_files=text_files,
+            previous_compact_class_state=self._compact_class_predecessor(),
         )
 
     _retained_product_flow_repository: SourceProductFlowRepository | None = field(
@@ -320,6 +322,20 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         repr=False,
         compare=False,
     )
+    _previous_compact_class_state: (
+        tuple[tuple[CompactModuleClassProjection, ...], CompactClassFamilyIndex] | None
+    ) = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+
+    def _compact_class_predecessor(
+        self,
+    ) -> tuple[tuple[CompactModuleClassProjection, ...], CompactClassFamilyIndex] | None:
+        if "compact_class_index" in self.__dict__:
+            return (self.compact_class_projections, self.compact_class_index)
+        return self._previous_compact_class_state
 
     module_binding_proof = AliasProperty[RepositoryModuleBindingProof]("product_flow_repository")
 
@@ -350,6 +366,12 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
     @cached_property
     def compact_class_index(self) -> CompactClassFamilyIndex:
+        previous = self._previous_compact_class_state
+        if previous is not None:
+            previous_projections, previous_index = previous
+            return previous_index.projected(
+                previous_projections, self.compact_class_projections
+            )
         return build_compact_class_family_index(self.compact_class_projections)
 
     @cached_property
@@ -532,6 +554,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         source_index_artifacts: SourceIndexBuildArtifacts,
         retained_product_flow_repository: SourceProductFlowRepository | None = None,
         text_files: Mapping[str, FileText] | None = None,
+        previous_compact_class_state: (
+            tuple[tuple[CompactModuleClassProjection, ...], CompactClassFamilyIndex] | None
+        ) = None,
     ) -> CodemodSourceSnapshot:
         """Build from source and semantic indexes proved for that exact source."""
 
@@ -549,6 +574,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 module_nodes_by_file_path=module_node_cache,
             ),
             _retained_product_flow_repository=retained_product_flow_repository,
+            _previous_compact_class_state=previous_compact_class_state,
             text_files={} if text_files is None else text_files,
         )
         snapshot._parsed_modules_by_file_path.update(
@@ -595,6 +621,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 else existing_product_flow.projected_with_source_projection(projection)
             ),
             text_files=self.text_files,
+            previous_compact_class_state=self._compact_class_predecessor(),
         )
 
     @cached_property
@@ -662,6 +689,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
                 remaining, ()
             ),
             text_files=self.text_files,
+            previous_compact_class_state=self._compact_class_predecessor(),
         )
 
     def modules_with_source_overlay(
