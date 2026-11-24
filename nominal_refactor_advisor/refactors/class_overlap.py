@@ -1230,17 +1230,8 @@ def obsolete_import_edits(
         for element in statement.value.elts
         if isinstance(element, ast.Constant) and isinstance(element.value, str)
     )
-    reexported = frozenset(
-        alias.name
-        for other in snapshot.parsed_modules
-        if other.file_path != parsed_module.file_path
-        for statement in ast.walk(other.module)
-        if isinstance(statement, ast.ImportFrom)
-        and other.module_path_identity.resolve_import_from_module(
-            imported_module=statement.module, level=statement.level
-        )
-        == parsed_module.module_name
-        for alias in statement.names
+    reexported = snapshot.names_imported_from_module(
+        parsed_module.file_path, parsed_module.module_name
     )
     imported = frozenset(
         alias.name

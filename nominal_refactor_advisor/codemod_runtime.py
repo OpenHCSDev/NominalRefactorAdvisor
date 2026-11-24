@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import difflib
 import hashlib
 import os
@@ -43,6 +44,11 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleSourceProjection,
     PythonModulePathAuthority,
+    collect_family_items,
+)
+from nominal_refactor_advisor.restated_fact_observations import (
+    ModuleReferenceFamily,
+    ReferenceIndex,
 )
 from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
 from nominal_refactor_advisor.class_families.parsed_index import ClassFamilyIndex
@@ -317,6 +323,57 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
     @cached_property
     def compact_class_index(self) -> CompactClassFamilyIndex:
         return build_compact_class_family_index(self.compact_class_projections)
+
+    @cached_property
+    def _import_from_names_by_target_module(
+        self,
+    ) -> Mapping[str, tuple[tuple[str, tuple[str, ...]], ...]]:
+        """Names imported via `from <module> import ...` across this snapshot, indexed once."""
+
+        grouped: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
+        for other in self.parsed_modules:
+            identity = other.module_path_identity
+            for _node_index, statement in other.syntax_index.indexed_nodes_of_type(
+                ast.ImportFrom
+            ):
+                resolved = identity.resolve_import_from_module(
+                    imported_module=statement.module,
+                    level=statement.level,
+                )
+                if resolved is not None:
+                    grouped[resolved].append(
+                        (
+                            other.file_path,
+                            tuple(alias.name for alias in statement.names),
+                        )
+                    )
+        return {module_name: tuple(entries) for module_name, entries in grouped.items()}
+
+    def names_imported_from_module(
+        self, source_file_path: str, source_module_name: str
+    ) -> frozenset[str]:
+        """Every name another module imports from `source_module_name` via `from ... import`."""
+
+        return frozenset(
+            name
+            for importer_file_path, names in self._import_from_names_by_target_module.get(
+                source_module_name, ()
+            )
+            if importer_file_path != source_file_path
+            for name in names
+        )
+
+    @cached_property
+    def reference_index(self) -> ReferenceIndex:
+        """Every scanned module's identifier references, indexed once per snapshot."""
+
+        return ReferenceIndex.from_facts(
+            tuple(
+                fact
+                for module in self.parsed_modules
+                for fact in collect_family_items(module, ModuleReferenceFamily)
+            )
+        )
 
     @cached_property
     def class_overlap_verdicts(self) -> ClassOverlapVerdicts:

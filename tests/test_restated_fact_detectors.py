@@ -848,6 +848,24 @@ def test_an_unused_legacy_function_gets_an_executable_erasure(tmp_path: Path):
     assert isinstance(operation, EraseDeadCompatibilityOperation)
 
 
+def test_a_legacy_path_with_live_consumers_stops_until_they_migrate(tmp_path: Path):
+    (finding,) = _findings(
+        tmp_path,
+        LegacyPathMarkerDetector,
+        {
+            "old": "def load(path):\n    return path\n\n\n"
+            "def legacy_load(path):\n    return load(path)\n",
+            "user": "from old import legacy_load\n\n\ndef f():\n    return legacy_load('x')\n",
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    assert "still has 1 consumer(s)" in evaluation.rejection_reason
+    assert "user.py" in evaluation.rejection_reason
+
+
 def test_a_marked_parameter_is_not_widened_to_its_function(tmp_path: Path):
     (finding,) = _findings(
         tmp_path,

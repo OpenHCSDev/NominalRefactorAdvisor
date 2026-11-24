@@ -5131,6 +5131,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         return cls._collect(parsed_module, None)
 
     @classmethod
+    @ScanCache.scope()
     def collect_modules(
         cls,
         parsed_modules: Iterable[ParsedModule],
