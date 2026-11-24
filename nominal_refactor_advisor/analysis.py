@@ -335,6 +335,7 @@ class DetectorAnalysisWorkerPlan:
         each of them and dirty those pages, so the tree is frozen out of its reach
         while the pool runs."""
 
+        already_frozen = gc.get_freeze_count() > 0
         gc.freeze()
         try:
             with ProcessPoolExecutor(
@@ -345,7 +346,8 @@ class DetectorAnalysisWorkerPlan:
             ) as executor:
                 yield executor
         finally:
-            gc.unfreeze()
+            if not already_frozen:
+                gc.unfreeze()
 
     @property
     def effective_worker_count(self) -> int:
@@ -630,6 +632,17 @@ def detect_with_active_worker_state(
     return state.detect_with(detector_type)
 
 
+def detect_batch_with_active_worker_state(
+    detector_types: tuple[type[IssueDetector], ...],
+) -> list[list[RefactorFinding]]:
+    """Run one worker's slice of detectors in a single IPC round-trip."""
+
+    state = detector_analysis_worker_state
+    if state is None:
+        raise RuntimeError("detector analysis worker state has not been initialized")
+    return [state.detect_with(detector_type) for detector_type in detector_types]
+
+
 @dataclass(frozen=True)
 class PerModuleDetectorShardWorkerState(DetectorWorkerContext):
     """Process-local parsed source for per-module detector shard tasks."""
@@ -708,37 +721,129 @@ class DetectorTypeShardRunner:
         if not self.detector_types:
             return []
         if self.worker_plan.uses_process_pool:
-            if _analysis_process_pool_mp_context() is not None:
-                global detector_analysis_worker_state
-                previous_state = detector_analysis_worker_state
-                detector_analysis_worker_state = self.worker_state
-                try:
-                    with self.worker_plan.pool(
-                        ScanCache.initialize_worker, ()
-                    ) as executor:
-                        return list(
-                            executor.map(
-                                detect_with_active_worker_state,
-                                self.detector_types,
-                                chunksize=self.worker_plan.process_map_chunksize,
-                            )
-                        )
-                finally:
-                    detector_analysis_worker_state = previous_state
-            with self.worker_plan.pool(
-                initialize_detector_analysis_worker, (self.worker_state,)
-            ) as executor:
-                return list(
-                    executor.map(
-                        detect_with_active_worker_state,
-                        self.detector_types,
-                        chunksize=self.worker_plan.process_map_chunksize,
-                    )
+            in_process_indices = [
+                index
+                for index, detector_type in enumerate(self.detector_types)
+                if detector_type.prefers_in_process_execution()
+            ]
+            if not in_process_indices:
+                return self._pooled_findings(self.detector_types, self.worker_plan)
+            in_process_set = set(in_process_indices)
+            pooled_indices = [
+                index
+                for index in range(len(self.detector_types))
+                if index not in in_process_set
+            ]
+            if not pooled_indices:
+                return [
+                    self.worker_state.detect_with(detector_type)
+                    for detector_type in self.detector_types
+                ]
+            pooled_types = tuple(self.detector_types[index] for index in pooled_indices)
+            in_process_types = tuple(
+                self.detector_types[index] for index in in_process_indices
+            )
+            pool_plan = replace(self.worker_plan, work_item_count=len(pooled_types))
+            if pool_plan.uses_process_pool:
+                pooled_results, in_process_results = self._concurrent_findings(
+                    pooled_types, in_process_types, pool_plan
                 )
+            else:
+                pooled_results = [
+                    self.worker_state.detect_with(detector_type)
+                    for detector_type in pooled_types
+                ]
+                in_process_results = [
+                    self.worker_state.detect_with(detector_type)
+                    for detector_type in in_process_types
+                ]
+            combined: list[list[RefactorFinding]] = [[] for _ in self.detector_types]
+            for index, findings in zip(pooled_indices, pooled_results, strict=True):
+                combined[index] = findings
+            for index, findings in zip(
+                in_process_indices, in_process_results, strict=True
+            ):
+                combined[index] = findings
+            return combined
         return [
             self.worker_state.detect_with(detector_type)
             for detector_type in self.detector_types
         ]
+
+    def _pooled_findings(
+        self,
+        detector_types: tuple[type[IssueDetector], ...],
+        worker_plan: DetectorAnalysisWorkerPlan,
+    ) -> list[list[RefactorFinding]]:
+        if _analysis_process_pool_mp_context() is not None:
+            global detector_analysis_worker_state
+            previous_state = detector_analysis_worker_state
+            detector_analysis_worker_state = self.worker_state
+            try:
+                with worker_plan.pool(ScanCache.initialize_worker, ()) as executor:
+                    return list(
+                        executor.map(
+                            detect_with_active_worker_state,
+                            detector_types,
+                            chunksize=worker_plan.process_map_chunksize,
+                        )
+                    )
+            finally:
+                detector_analysis_worker_state = previous_state
+        with worker_plan.pool(
+            initialize_detector_analysis_worker, (self.worker_state,)
+        ) as executor:
+            return list(
+                executor.map(
+                    detect_with_active_worker_state,
+                    detector_types,
+                    chunksize=worker_plan.process_map_chunksize,
+                )
+            )
+
+    def _concurrent_findings(
+        self,
+        pooled_types: tuple[type[IssueDetector], ...],
+        in_process_types: tuple[type[IssueDetector], ...],
+        worker_plan: DetectorAnalysisWorkerPlan,
+    ) -> tuple[list[list[RefactorFinding]], list[list[RefactorFinding]]]:
+        """Run pooled detectors across worker processes while stateful incremental
+        detectors run in the parent process, keeping parent caches warm."""
+
+        worker_count = worker_plan.effective_worker_count
+        batches = tuple(
+            pooled_types[offset::worker_count] for offset in range(worker_count)
+        )
+
+        def run_with(executor: ProcessPoolExecutor) -> tuple[list[list[RefactorFinding]], list[list[RefactorFinding]]]:
+            futures = [
+                executor.submit(detect_batch_with_active_worker_state, batch)
+                for batch in batches
+                if batch
+            ]
+            in_process_results = [
+                self.worker_state.detect_with(detector_type)
+                for detector_type in in_process_types
+            ]
+            pooled_results: list[list[RefactorFinding]] = [[] for _ in pooled_types]
+            for offset, future in enumerate(futures):
+                for batch_index, findings in enumerate(future.result()):
+                    pooled_results[offset + batch_index * worker_count] = findings
+            return pooled_results, in_process_results
+
+        if _analysis_process_pool_mp_context() is not None:
+            global detector_analysis_worker_state
+            previous_state = detector_analysis_worker_state
+            detector_analysis_worker_state = self.worker_state
+            try:
+                with worker_plan.pool(ScanCache.initialize_worker, ()) as executor:
+                    return run_with(executor)
+            finally:
+                detector_analysis_worker_state = previous_state
+        with worker_plan.pool(
+            initialize_detector_analysis_worker, (self.worker_state,)
+        ) as executor:
+            return run_with(executor)
 
     def sorted_findings(self) -> list[RefactorFinding]:
         return SortedFindingsAuthority.sort(

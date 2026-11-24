@@ -99,6 +99,7 @@ from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOpe
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
+    RefactorRecipeSimulation,
 )
 from nominal_refactor_advisor.codemod_selection_context import (
     CodemodSelectorContext,
@@ -3221,15 +3222,27 @@ class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperati
             snapshot, self.owner, self.home_module, MovedClosure.of(snapshot, self.owner).qualnames
         )
 
+    def _simulated_relocation(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        move: RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation,
+    ) -> RefactorRecipeSimulation:
+        def simulate_and_check() -> RefactorRecipeSimulation:
+            result = RefactorRecipe(recipe_id="placement").with_operation(move).simulate(snapshot)
+            result.preflight_report.require_clean()
+            return result
+
+        return snapshot.retained_operation_derivation(
+            (ComposeMovedOwnerOperation.relocation, move),
+            simulate_and_check,
+        )
+
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
         move = self.relocation(snapshot)
         try:
-            move_result = RefactorRecipe(recipe_id="placement").with_operation(move).simulate(
-                snapshot
-            )
-            move_result.preflight_report.require_clean()
+            move_result = self._simulated_relocation(snapshot, move)
         except ValueError as error:
             raise NeedsInput(
                 f"`{self.owner.qualname}` moves to `{self.home_module}` so composing it "
