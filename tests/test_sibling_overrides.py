@@ -15,8 +15,10 @@ from nominal_refactor_advisor.detectors._sibling_overrides import (
     SiblingOverrideDetector,
 )
 from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.owner_picks import OwnerPick, OwnerPicks
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.sibling_overrides import (
+    ExtractSiblingOverrideBaseOperation,
     LiftSiblingOverrideOperation,
 )
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -395,7 +397,7 @@ def test_refuses_lift_when_concrete_home_is_instantiated_directly(tmp_path: Path
     assert NeededInput.PROOF in evaluation.needs
 
 
-def test_refuses_with_source_change_when_no_home_exists(tmp_path: Path):
+def test_stops_for_owner_pick_when_no_home_exists(tmp_path: Path):
     _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": VIEWS})
     findings = sorted(_findings(tmp_path), key=lambda finding: finding.primary_evidence.symbol)
     evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
@@ -403,7 +405,7 @@ def test_refuses_with_source_change_when_no_home_exists(tmp_path: Path):
     )
     assert evaluation.recipe is None
     assert "no existing class beneath" in evaluation.rejection_reason
-    assert NeededInput.SOURCE_CHANGE in evaluation.needs
+    assert NeededInput.OWNER_PICK in evaluation.needs
 
 
 def test_lifts_past_abstract_intermediate_and_module_or_instance_dict_writes(
@@ -453,3 +455,273 @@ def test_lifts_past_abstract_intermediate_and_module_or_instance_dict_writes(
     after = (tmp_path / "pkg" / "edges.py").read_text()
     assert "    def sources(self) -> tuple[str, ...]:\n        return ('a',)\n" in after
     assert _findings(tmp_path) == []
+
+
+def test_lifts_over_unused_concrete_default_on_declaring_and_cleans_obsolete_imports(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/old_helper.py": "def legacy_default() -> str:\n    return 'old'\n",
+            "pkg/new_helper.py": "def shared_answer() -> str:\n    return 'shared'\n",
+            "pkg/nodes.py": (
+                "from pkg.old_helper import legacy_default\n"
+                "from pkg.new_helper import shared_answer\n\n\n"
+                "class ContextNode:\n"
+                "    def search_description(self) -> str:\n"
+                "        return legacy_default()\n\n\n"
+                "class FileNode(ContextNode):\n"
+                "    def search_description(self) -> str:\n"
+                "        return shared_answer()\n\n\n"
+                "class SymbolNode(ContextNode):\n"
+                "    def search_description(self) -> str:\n"
+                "        return shared_answer()\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        finding, _snapshot(tmp_path)
+    )
+    recipe = evaluation.executable_recipe
+    (operation,) = recipe.operations
+    assert isinstance(operation, LiftSiblingOverrideOperation)
+    assert operation.target.qualname == "ContextNode"
+    _apply(tmp_path, recipe)
+    after = (tmp_path / "pkg" / "nodes.py").read_text()
+    assert "legacy_default" not in after
+    assert "class ContextNode:\n    def search_description(self) -> str:\n        return shared_answer()\n" in after
+    assert "class FileNode(ContextNode):\n    pass\n" in after
+    assert "class SymbolNode(ContextNode):\n    pass\n" in after
+    assert _findings(tmp_path) == []
+
+
+def test_refuses_concrete_default_lift_when_descendant_calls_super_or_declaring_used(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/nodes.py": (
+                "class Node:\n"
+                "    def describe(self) -> str:\n"
+                "        return 'base'\n\n\n"
+                "class Left(Node):\n"
+                "    def describe(self) -> str:\n"
+                "        return 'same'\n\n\n"
+                "class Right(Node):\n"
+                "    def describe(self) -> str:\n"
+                "        return 'same'\n\n"
+                "    def original(self) -> str:\n"
+                "        return super().describe()\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        finding, _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is None
+    assert "super().describe" in evaluation.rejection_reason
+    assert NeededInput.PROOF in evaluation.needs
+
+
+def test_extracts_same_module_intermediate_base_with_owner_pick_and_clears_finding(
+    tmp_path: Path,
+):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": VIEWS})
+    findings = sorted(_findings(tmp_path), key=lambda f: f.primary_evidence.symbol)
+    label_finding = findings[0]
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=label_finding.stable_id,
+                owner="StatusOwner",
+                because="both conversation views share the conversation label",
+                name="ConversationStatusOwner",
+                judgement="Conversation views sharing the conversation label.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((label_finding,))
+    assert [outcome.outcome for outcome in report.outcomes] == ["picked"]
+    assert report.unmatched == ()
+
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    recipe = evaluation.executable_recipe
+    (operation,) = recipe.operations
+    assert isinstance(operation, ExtractSiblingOverrideBaseOperation)
+    assert operation.base_name == "ConversationStatusOwner"
+    _apply(tmp_path, recipe)
+    after = (tmp_path / "pkg" / "views.py").read_text()
+    assert "class ConversationStatusOwner(StatusOwner):" in after
+    assert "class TextConversation(ConversationStatusOwner):" in after
+    assert "class QtConversation(ConversationStatusOwner):" in after
+    assert "class WireView(StatusOwner):" in after
+
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["TextConversation"]().label() == "conversation"  # type: ignore[operator]
+    assert ns["QtConversation"]().label() == "conversation"  # type: ignore[operator]
+    assert ns["WireView"]().label() == "view"  # type: ignore[operator]
+    remaining = _findings(tmp_path)
+    assert all(f.primary_evidence.symbol != "TextConversation.label" for f in remaining)
+
+
+def test_extracts_cross_module_intermediate_base_and_migrates_imports(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/helpers.py": "def mode_name() -> str:\n    return 'interactive'\n",
+            "pkg/driver.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "class Driver(ABC):\n"
+                "    @abstractmethod\n"
+                "    def mode(self) -> str: ...\n\n\n"
+                "class HeadlessDriver(Driver):\n"
+                "    def mode(self) -> str:\n"
+                "        return 'headless'\n"
+            ),
+            "pkg/linux.py": (
+                "from pkg.driver import Driver\n"
+                "from pkg.helpers import mode_name\n\n\n"
+                "class LinuxDriver(Driver):\n"
+                "    def mode(self) -> str:\n"
+                "        return mode_name()\n"
+            ),
+            "pkg/windows.py": (
+                "from pkg.driver import Driver\n"
+                "from pkg.helpers import mode_name\n\n\n"
+                "class WindowsDriver(Driver):\n"
+                "    def mode(self) -> str:\n"
+                "        return mode_name()\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner="Driver",
+                because="terminal drivers share interactive mode",
+                name="InteractiveDriver",
+                judgement="Drivers that operate in interactive terminal mode.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((finding,))
+    assert [outcome.outcome for outcome in report.outcomes] == ["picked"]
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, evaluation.executable_recipe)
+    driver_after = (tmp_path / "pkg" / "driver.py").read_text()
+    linux_after = (tmp_path / "pkg" / "linux.py").read_text()
+    windows_after = (tmp_path / "pkg" / "windows.py").read_text()
+    assert "from pkg.helpers import mode_name" in driver_after
+    assert "class InteractiveDriver(Driver):" in driver_after
+    assert "from pkg.driver import InteractiveDriver" in linux_after
+    assert "class LinuxDriver(InteractiveDriver):" in linux_after
+    assert "mode_name" not in linux_after
+    assert "from pkg.driver import InteractiveDriver" in windows_after
+    assert "class WindowsDriver(InteractiveDriver):" in windows_after
+    assert "mode_name" not in windows_after
+    assert _findings(tmp_path) == []
+
+
+def test_extracts_indirect_sibling_intermediate_base_with_prepend_mi_and_valid_c3(
+    tmp_path: Path,
+):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/modes.py": (
+                "class Mode:\n"
+                "    def accepts_escape(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class InsertBase(Mode):\n"
+                "    def kind(self) -> str:\n"
+                "        return 'insert'\n\n\n"
+                "class VisualBase(Mode):\n"
+                "    def kind(self) -> str:\n"
+                "        return 'visual'\n\n\n"
+                "class VimInsert(InsertBase):\n"
+                "    def accepts_escape(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class VimVisual(VisualBase):\n"
+                "    def accepts_escape(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class PlainInsert(InsertBase):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner="Mode",
+                because="vim sub-modes exit on escape",
+                name="EscapableMode",
+                judgement="Modes that accept escape.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((finding,))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, evaluation.executable_recipe)
+    after = (tmp_path / "pkg" / "modes.py").read_text()
+    assert "class EscapableMode(Mode):" in after
+    assert "class VimInsert(EscapableMode, InsertBase):" in after
+    assert "class VimVisual(EscapableMode, VisualBase):" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["VimInsert"]().accepts_escape() is True  # type: ignore[operator]
+    assert ns["VimInsert"]().kind() == "insert"  # type: ignore[operator]
+    assert ns["VimVisual"]().accepts_escape() is True  # type: ignore[operator]
+    assert ns["VimVisual"]().kind() == "visual"  # type: ignore[operator]
+    assert ns["PlainInsert"]().accepts_escape() is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_refuses_extract_when_picked_base_name_collides(tmp_path: Path):
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": VIEWS})
+    findings = sorted(_findings(tmp_path), key=lambda f: f.primary_evidence.symbol)
+    label_finding = findings[0]
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=label_finding.stable_id,
+                owner="StatusOwner",
+                because="collides with existing name",
+                name="WireView",
+                judgement="Existing class name.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((label_finding,))
+    evaluation = SiblingOverrideDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    assert evaluation.recipe is None
+    assert "already bound" in evaluation.rejection_reason
+    assert NeededInput.OWNER_PICK in evaluation.needs

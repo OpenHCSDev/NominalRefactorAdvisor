@@ -9,7 +9,7 @@ from nominal_refactor_advisor.detectors._base import (
     DetectorConfig,
     finding_spec_template,
 )
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import RefactorFinding, SiblingOverrideMetrics
 from nominal_refactor_advisor.patterns import PatternId
 from nominal_refactor_advisor.refactors.sibling_overrides import (
     SiblingOverrideCandidate,
@@ -94,6 +94,12 @@ class SiblingOverrideDetector(
         return self.build_finding(
             f"{classes} each override `{declaring}.{candidate.name}` with the same declaration: {owner}{others}{home}{unordered}.",
             candidate.evidence,
+            metrics=SiblingOverrideMetrics(
+                member_name=candidate.name,
+                declaring_qualname=declaring,
+                declaring_symbol=candidate.declaring.symbol,
+                sibling_count=len(candidate.answering),
+            ),
         )
 
 

@@ -402,6 +402,12 @@ class FindingMetrics(SemanticRecord, ABC):
 
         return ()
 
+    @property
+    def picked_base(self) -> DeclaredBasePick | None:
+        """The picker's intermediate base choice, when these metrics accept one."""
+
+        return None
+
     def finding_identity(
         self, summary: str, evidence: tuple[SourceLocation, ...]
     ) -> tuple[str, ...]:
@@ -765,7 +771,7 @@ class ConstructorOwnedMappingMetrics(MappingMetrics):
 
 @dataclass(frozen=True)
 class DeclaredBasePick(SemanticRecord):
-    """A picker's new base for the classes one roster names: its class name and
+    """A picker's new base for the classes one finding names: its class name and
     the one sentence its docstring says they share. Naming a new identity is the
     picker's decision; where it goes and what moves onto it is proved."""
 
@@ -774,15 +780,48 @@ class DeclaredBasePick(SemanticRecord):
 
 
 @dataclass(frozen=True)
-class RegistrationMetrics(RegistrationFindingMetrics):
+class DeclaredBasePickMetrics(FindingMetrics, ABC):
+    """Finding metrics that can carry a picker's intermediate base choice."""
+
+    base_pick: DeclaredBasePick | None = field(default=None, kw_only=True)
+
+    @property
+    def picked_base(self) -> DeclaredBasePick | None:
+        return self.base_pick
+
+    def with_base_pick(self, pick: DeclaredBasePick) -> Self:
+        return replace(self, base_pick=pick)
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        return None if authority_evidence is None else authority_evidence.symbol
+
+
+@dataclass(frozen=True)
+class SiblingOverrideMetrics(DeclaredBasePickMetrics):
+    """One inherited member overridden identically by sibling classes."""
+
+    member_name: str
+    declaring_qualname: str
+    declaring_symbol: str
+    sibling_count: int
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.declaring_qualname
+
+
+@dataclass(frozen=True)
+class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
     registration_site_count: int
     registry_name: str | None = None
     class_names: tuple[str, ...] = ()
     class_key_pairs: tuple[str, ...] = ()
-    base_pick: DeclaredBasePick | None = None
-    """The base a picks file declares for the roster's classes (#67)."""
 
     @classmethod
     def from_class_names(
