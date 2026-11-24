@@ -645,36 +645,59 @@ class AttributeStores:
 
     @classmethod
     def of(cls, parsed_module: ParsedModule) -> AttributeStores:
-        by_class: list[tuple[str, tuple[str, ...]]] = []
-        unbounded: list[str] = []
-        attributed: set[int] = set()
+        index = parsed_module.syntax_index
+        names_by_symbol: dict[str, set[str]] = {}
+        symbol_order: list[str] = []
+        method_info_by_id: dict[int, tuple[str, str]] = {}
         for qualname, class_node in iter_class_definitions(list(parsed_module.module.body)):
             symbol = f"{parsed_module.module_name}.{qualname}"
-            names: set[str] = set()
+            symbol_order.append(symbol)
+            names_by_symbol[symbol] = set()
             for method in class_node.body:
                 if not isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef):
                     continue
                 arguments = [*method.args.posonlyargs, *method.args.args]
                 if not arguments:
                     continue
-                own = arguments[0].arg
-                for node in ast.walk(method):
-                    stored = cls.stored_name(node, own)
-                    if stored is None:
-                        continue
-                    attributed.add(id(node))
-                    if stored == "":
-                        unbounded.append(symbol)
-                    else:
-                        names.add(stored)
-            by_class.append((symbol, tuple(sorted(names))))
-        elsewhere = {
-            stored
-            for node in ast.walk(parsed_module.module)
-            if id(node) not in attributed
-            if (stored := cls.stored_name(node, None))
-        }
-        return cls(tuple(by_class), tuple(sorted(set(unbounded))), tuple(sorted(elsewhere)))
+                method_info_by_id[id(method)] = (symbol, arguments[0].arg)
+        unbounded: set[str] = set()
+        elsewhere: set[str] = set()
+        scopes = index.scopes
+        scope_ids = index.scope_ids
+        depth_first = index.depth_first_nodes
+        scope_method_cache: dict[int, tuple[tuple[str, str], ...]] = {}
+        for node_index, node in (
+            *index.indexed_nodes_of_type(ast.Attribute),
+            *index.indexed_nodes_of_type(ast.Call),
+        ):
+            scope_id = scope_ids[node_index]
+            enclosing = scope_method_cache.get(scope_id)
+            if enclosing is None:
+                enclosing = tuple(
+                    info
+                    for fn_idx in scopes[scope_id].function_node_indices
+                    if (info := method_info_by_id.get(id(depth_first[fn_idx]))) is not None
+                )
+                scope_method_cache[scope_id] = enclosing
+            was_attributed = False
+            for symbol, own in enclosing:
+                stored = cls.stored_name(node, own)
+                if stored is None:
+                    continue
+                was_attributed = True
+                if stored == "":
+                    unbounded.add(symbol)
+                else:
+                    names_by_symbol[symbol].add(stored)
+            if not was_attributed:
+                stored = cls.stored_name(node, None)
+                if stored:
+                    elsewhere.add(stored)
+        by_class = tuple(
+            (symbol, tuple(sorted(names_by_symbol[symbol])))
+            for symbol in symbol_order
+        )
+        return cls(by_class, tuple(sorted(unbounded)), tuple(sorted(elsewhere)))
 
     @classmethod
     def stored_name(cls, node: ast.AST, own: str | None) -> str | None:
@@ -1653,7 +1676,15 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
 
         bound: dict[str, str] = {}
         identity = parsed_module.module_path_identity
-        for node in ast.walk(parsed_module.module):
+        index = parsed_module.syntax_index
+        import_nodes = sorted(
+            (
+                *index.indexed_nodes_of_type(ast.Import),
+                *index.indexed_nodes_of_type(ast.ImportFrom),
+            ),
+            key=lambda pair: pair[0],
+        )
+        for _node_index, node in import_nodes:
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.asname:

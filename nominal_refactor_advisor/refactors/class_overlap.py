@@ -3275,9 +3275,13 @@ class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperati
     def current_source_authority_claims(
         self, context: CodemodSelectorContext
     ) -> tuple[AuthorityClaim, ...]:
-        return ComposeExistingClassOperation(
-            target=self.target, owner=self.owner
-        ).current_source_authority_claims(context)
+        owner = OverlapClass.require(context.execution_snapshot(), self.owner)
+        return (
+            AstTargetAuthorityClaim.from_target(
+                owner.target.target,
+                authority_kind=SemanticAuthorityKind.CLASS_FAMILY,
+            ),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)

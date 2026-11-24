@@ -18,6 +18,7 @@ from nominal_refactor_advisor.class_index import (
     ModuleClassHeaderCore,
     ClassDeclaration,
     ClassDeclarationIndex,
+    ClassLineBindingSnapshots,
     ClassMethodPromotionSafeDecorator,
     ClassRegistryFacts,
     CompactClassFamilyIndexBuilder,
@@ -28,7 +29,6 @@ from nominal_refactor_advisor.class_index import (
     RegisteringMetaclassAuthority,
     _class_scope_qualified_import_name,
     _dataclass_declaration,
-    _module_nominal_binding_snapshots,
     _single_assignment_target_name,
     module_import_aliases,
 )
@@ -261,11 +261,9 @@ class ModuleIndexedClasses(ParsedModuleFact):
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> ModuleIndexedClasses:
         indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
-        binding_snapshots = _module_nominal_binding_snapshots(
-            ModuleNominalBindingAuthority(parsed_module),
-            tuple(node.lineno for _qualname, node in indexed_class_nodes),
-            include_final=False,
-        )
+        if not indexed_class_nodes:
+            return cls(())
+        binding_snapshots = parsed_module.fact(ClassLineBindingSnapshots).snapshots
         return cls(
             tuple(
                 IndexedClass.from_parsed_class(

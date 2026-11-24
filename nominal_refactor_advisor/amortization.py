@@ -25,7 +25,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
 from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
 from nominal_refactor_advisor.probe_owner import ReceiverSpan, ScannedClasses
-from nominal_refactor_advisor.type_checker_session import TypeCheckerSession
+from nominal_refactor_advisor.type_checker_session import ReceiverType, TypeCheckerSession
 
 
 @dataclass(frozen=True)
@@ -188,9 +188,14 @@ def inheritance_amortization_for_calls(
     methods = InheritedMethods(index)
     pairs: defaultdict[str, set[tuple[str, str]]] = defaultdict(set)
     consumers: defaultdict[str, set[str]] = defaultdict(set)
+    symbols_by_answer: dict[ReceiverType, tuple[str, ...]] = {}
     typed = reaching = 0
     for call in calls:
-        symbols = answers[call.span].owner(classes).class_symbols()
+        answer = answers[call.span]
+        symbols = symbols_by_answer.get(answer)
+        if symbols is None:
+            symbols = answer.owner(classes).class_symbols()
+            symbols_by_answer[answer] = symbols
         typed += bool(symbols)
         reached = False
         for member in chain.from_iterable(methods.reached(symbol) for symbol in symbols):

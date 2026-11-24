@@ -3379,9 +3379,9 @@ class ModuleNominalBindingAuthority:
     ) -> dict[int | None, ModuleNominalBindingSnapshot]:
         """Resolve requested declaration positions and final bindings in one pass."""
         requested_lines = tuple(dict.fromkeys(lines))
-        if (
-            not self.declared_assignment_authority_names
-            and policy is ModuleNominalBindingSnapshotPolicy.EXACT
+        if not self.declared_assignment_authority_names and (
+            policy is ModuleNominalBindingSnapshotPolicy.EXACT
+            or not module_star_import_origins(self.parsed_module)
         ):
             timeline = self.parsed_module.fact(ModuleNominalBindingTimeline)
             return {
@@ -4597,15 +4597,14 @@ class ModuleImportBindings(ParsedModuleFact):
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
+        final = ModuleNominalBindingAuthority(parsed_module).snapshots_before(
+            (None,),
+            policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
+        )[None]
         return cls(
             {
                 local_name: binding
-                for local_name, binding in _module_nominal_binding_snapshots(
-                    ModuleNominalBindingAuthority(parsed_module),
-                    (),
-                    include_final=True,
-                    policy=ModuleNominalBindingSnapshotPolicy.NAMED_IMPORT_PROJECTION,
-                )[None].bindings_by_name.items()
+                for local_name, binding in final.bindings_by_name.items()
                 if binding.kind.projects_as_import_alias
             }
         )
@@ -4628,36 +4627,49 @@ def module_import_names(parsed_module: ParsedModule) -> frozenset[str]:
     )
 
 
+@dataclass(frozen=True)
+class _ModuleStarImportOrigins(ParsedModuleFact):
+    """Module-scope star-import origins cached once per parsed module."""
+
+    origins: tuple[CompactModuleStarImportOrigin, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        if "*" not in parsed_module.source:
+            return cls(())
+        origins: list[CompactModuleStarImportOrigin] = []
+
+        class ModuleScopeStarImportCollector(ast.NodeVisitor):
+            def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+                if any(alias.name == "*" for alias in node.names):
+                    origins.append(
+                        CompactModuleStarImportOrigin.resolved_as(
+                            parsed_module.module_path_identity.resolve_import_from_module(
+                                imported_module=node.module,
+                                level=node.level,
+                            )
+                        )
+                    )
+
+            def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+                return
+
+            visit_AsyncFunctionDef = visit_FunctionDef
+
+            def visit_ClassDef(self, node: ast.ClassDef) -> None:
+                return
+
+            def visit_Lambda(self, node: ast.Lambda) -> None:
+                return
+
+        ModuleScopeStarImportCollector().visit(parsed_module.module)
+        return cls(tuple(origins))
+
+
 def module_star_import_origins(
     parsed_module: ParsedModule,
 ) -> tuple[CompactModuleStarImportOrigin, ...]:
-    origins: list[CompactModuleStarImportOrigin] = []
-
-    class ModuleScopeStarImportCollector(ast.NodeVisitor):
-        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
-            if any(alias.name == "*" for alias in node.names):
-                origins.append(
-                    CompactModuleStarImportOrigin.resolved_as(
-                        parsed_module.module_path_identity.resolve_import_from_module(
-                            imported_module=node.module,
-                            level=node.level,
-                        )
-                    )
-                )
-
-        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
-            return
-
-        visit_AsyncFunctionDef = visit_FunctionDef
-
-        def visit_ClassDef(self, node: ast.ClassDef) -> None:
-            return
-
-        def visit_Lambda(self, node: ast.Lambda) -> None:
-            return
-
-    ModuleScopeStarImportCollector().visit(parsed_module.module)
-    return tuple(origins)
+    return parsed_module.fact(_ModuleStarImportOrigins).origins
 
 
 @dataclass(frozen=True)

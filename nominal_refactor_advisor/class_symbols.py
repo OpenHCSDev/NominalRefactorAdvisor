@@ -90,7 +90,7 @@ class _UniqueKnownSymbolSuffixIndex:
         return matches[0] if len(matches) == 1 else None
 
 
-@lru_cache(maxsize=8)
+@lru_cache(maxsize=64)
 def _unique_known_symbol_by_suffix(
     known_symbols: frozenset[str],
 ) -> _UniqueKnownSymbolSuffixIndex:
