@@ -884,6 +884,31 @@ class ParsedModule(SourceFileIdentity):
     ) -> dict[tuple[type[CollectedFamily], str], CollectedFamilyBatch]:
         return {}
 
+    def has_family_batch(
+        self,
+        family: type[CollectedFamily],
+        demand: object | None = None,
+    ) -> bool:
+        """Whether this parse already retains the family's collected batch in memory."""
+
+        signature = (
+            "" if demand is None else collected_family_demand_cache_signature(demand)
+        )
+        return (family, signature) in self._family_batches
+
+    def install_family_batch(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        items: tuple[ShapeItemT, ...],
+    ) -> None:
+        """Retain an already-collected default family batch on this parse."""
+
+        key = (family, "")
+        if key not in self._family_batches:
+            self._family_batches[key] = CollectedFamilyBatch(
+                items, self.collected_family_cache.store_items(family, items, "")
+            )
+
     def family_batch(
         self,
         family: type[CollectedFamily[ShapeItemT]],

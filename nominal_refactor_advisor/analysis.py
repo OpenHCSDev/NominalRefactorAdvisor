@@ -101,7 +101,9 @@ from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     CompactMultiModuleProjectionDetectorMixin,
     CompactProjectionContextBuilder,
+    CompactProjectionContextCacheKey,
     CompactProjectionGroupContextBuilder,
+    CompactProjectionGroupContextCacheKey,
     CompactProjectionGroups,
     ContextualGlobalCacheContract,
     ContextualModuleIssueDetector,
@@ -403,12 +405,169 @@ class DetectorWorkerContext:
     config: DetectorConfig
 
 
+class _PreparedProjectionSequence(DeferredBatchSequence[object]):
+    """In-memory compact projection sequence retaining derived SequenceViews."""
+
+    def __init__(self, items: tuple[object, ...]) -> None:
+        super().__init__()
+        self._items = items
+
+    @property
+    def batch_count(self) -> int:
+        return 1
+
+    def _load_batch(self, index: int) -> tuple[object, ...]:
+        if index != 0:
+            raise IndexError(index)
+        return self._items
+
+
+_module_family_prewarm_modules: tuple[ParsedModule, ...] = ()
+
+
+def _initialize_module_family_prewarm_worker(
+    modules: tuple[ParsedModule, ...],
+) -> None:
+    ScanCache.initialize_worker()
+    global _module_family_prewarm_modules
+    _module_family_prewarm_modules = modules
+
+
+def _collect_missing_module_families(
+    task: tuple[int, tuple[type[CollectedFamily], ...]],
+) -> tuple[int, dict[type[CollectedFamily], tuple[object, ...]]]:
+    module_index, families = task
+    module = _module_family_prewarm_modules[module_index]
+    return (
+        module_index,
+        {family: module.family_batch(family).items for family in families},
+    )
+
+
+def _prewarm_compact_families(
+    modules: ParsedModuleSet,
+    families: tuple[type[CollectedFamily], ...],
+    analysis_workers: int,
+) -> None:
+    """Collect missing default compact family batches once across `modules`."""
+
+    if not families or not modules:
+        return
+    tasks: list[tuple[int, tuple[type[CollectedFamily], ...]]] = []
+    for index, module in enumerate(modules):
+        missing = tuple(
+            family for family in families if not module.has_family_batch(family)
+        )
+        if missing:
+            tasks.append((index, missing))
+    if not tasks:
+        return
+    worker_plan = DetectorAnalysisWorkerPlan(
+        requested_worker_count=analysis_workers,
+        work_item_count=len(tasks),
+        minimum_auto_work_items=4,
+    )
+    if worker_plan.uses_process_pool:
+        collected = worker_plan.map(
+            _collect_missing_module_families,
+            tasks,
+            initializer=_initialize_module_family_prewarm_worker,
+            initargs=(tuple(modules),),
+        )
+        for module_index, items_by_family in collected:
+            module = modules[module_index]
+            for family, items in items_by_family.items():
+                module.install_family_batch(family, items)
+        return
+    for module_index, missing in tasks:
+        module = modules[module_index]
+        for family in missing:
+            module.family_batch(family)
+
+
 @dataclass(frozen=True)
 class DetectorAnalysisWorkerState(DetectorWorkerContext):
     """Process-local parsed source and config for detector worker tasks."""
 
+    projections_by_family: Mapping[type[CollectedFamily], Sequence[object]] = field(
+        default_factory=dict
+    )
+    shared_contexts: Mapping[Hashable, object] = field(default_factory=dict)
+
+    @classmethod
+    def prepared(
+        cls,
+        modules: ParsedModuleSet,
+        config: DetectorConfig,
+        detector_types: tuple[type[IssueDetector], ...],
+        *,
+        analysis_workers: int,
+    ) -> DetectorAnalysisWorkerState:
+        """Pre-collect shared compact families and contexts once before detection."""
+
+        compact_detectors = tuple(
+            detector_type
+            for detector_type in detector_types
+            if issubclass(detector_type, CompactModuleProjectionDetectorMixin)
+        )
+        if not compact_detectors:
+            return cls(modules, config)
+        families = tuple(
+            dict.fromkeys(
+                family
+                for detector_type in compact_detectors
+                for family in detector_type.compact_projection_families()
+            )
+        )
+        _prewarm_compact_families(modules, families, analysis_workers)
+        projections_by_family: dict[type[CollectedFamily], Sequence[object]] = {
+            family: _PreparedProjectionSequence(
+                tuple(
+                    projection
+                    for module in modules
+                    for projection in collect_family_items(module, family)
+                )
+            )
+            for family in families
+        }
+        if CompactModuleClassProjectionFamily in projections_by_family:
+            build_compact_class_family_index(
+                cast(
+                    Sequence[CompactModuleClassProjection],
+                    projections_by_family[CompactModuleClassProjectionFamily],
+                )
+            )
+        shared_contexts: dict[Hashable, object] = {}
+        single_family_detectors = tuple(
+            detector_type
+            for detector_type in compact_detectors
+            if not issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
+        )
+        multi_family_detectors = tuple(
+            detector_type
+            for detector_type in compact_detectors
+            if issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
+        )
+        for detector_type in (*single_family_detectors, *multi_family_detectors):
+            detector_type.prebuild_in_memory_shared_context(
+                projections_by_family,
+                shared_contexts,
+                config,
+            )
+        return cls(
+            modules=modules,
+            config=config,
+            projections_by_family=projections_by_family,
+            shared_contexts=shared_contexts,
+        )
+
     def detect_with(self, detector_type: type[IssueDetector]) -> list[RefactorFinding]:
-        return detector_type().detect(self.modules, self.config)
+        return detector_type().detect_with_prepared_projections(
+            self.modules,
+            self.projections_by_family,
+            self.shared_contexts,
+            self.config,
+        )
 
 
 detector_analysis_worker_state: DetectorAnalysisWorkerState | None = None
@@ -514,7 +673,12 @@ class DetectorTypeShardRunner:
         minimum_auto_work_items: int = 4,
     ) -> DetectorTypeShardRunner:
         return cls(
-            worker_state=DetectorAnalysisWorkerState(modules, config),
+            worker_state=DetectorAnalysisWorkerState.prepared(
+                modules,
+                config,
+                detector_types,
+                analysis_workers=analysis_workers,
+            ),
             detector_types=detector_types,
             worker_plan=DetectorAnalysisWorkerPlan(
                 requested_worker_count=analysis_workers,
@@ -538,10 +702,7 @@ class DetectorTypeShardRunner:
                     )
                 )
         return [
-            detector_type().detect(
-                self.worker_state.modules,
-                self.worker_state.config,
-            )
+            self.worker_state.detect_with(detector_type)
             for detector_type in self.detector_types
         ]
 
@@ -812,21 +973,6 @@ class CompactGlobalProjectionAccumulator:
     ) -> bool:
         del cls
         return retains_python_ast(value, seen_ids)
-
-
-@dataclass(frozen=True)
-class CompactProjectionContextCacheKey:
-    """Identity of one shared single-family detector context."""
-
-    family: type[CollectedFamily]
-    context_builder: CompactProjectionContextBuilder
-
-
-@dataclass(frozen=True)
-class CompactProjectionGroupContextCacheKey:
-    """Identity of one shared multi-family detector context."""
-
-    context_builder: CompactProjectionGroupContextBuilder
 
 
 def _compact_findings_by_detector(

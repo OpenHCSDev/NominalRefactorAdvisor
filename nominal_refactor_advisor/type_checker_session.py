@@ -559,6 +559,19 @@ class TypeCheckerSession(ABC):
         finally:
             session.stop()
 
+    @staticmethod
+    @contextmanager
+    def scoped_session(
+        sources: TypeCheckerSources, spans: Iterable[ReceiverSpan]
+    ) -> Iterator[TypeCheckerSession]:
+        """Build these sources once, formatting and exporting only `spans`."""
+
+        session = TypeCheckerSession._built(sources, RequestedSpanExpressions.of(spans))
+        try:
+            yield session
+        finally:
+            session.stop()
+
 
 @dataclass(frozen=True)
 class UnavailableTypeChecker(TypeCheckerSession):

@@ -15,7 +15,7 @@ from pathlib import Path
 import re
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Hashable, Iterator, MutableMapping
+from collections.abc import Hashable, Iterator, Mapping, MutableMapping
 from dataclasses import MISSING, dataclass, field, fields, is_dataclass
 from enum import StrEnum
 from functools import cached_property, lru_cache
@@ -715,6 +715,17 @@ class IssueDetector(
         """One detection is one analysis invocation: its modules share a scan scope."""
         return self._normalize_findings(self._collect_findings(modules, config), config)
 
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        """Run this detector using pre-collected compact projections when applicable."""
+        del projections_by_family, shared_contexts
+        return self.detect(modules, config)
+
     @staticmethod
     def _normalize_findings(
         findings: list[RefactorFinding], config: DetectorConfig
@@ -1022,6 +1033,21 @@ class CompactClassRepositoryContext:
         self._derived.clear()
 
 
+@dataclass(frozen=True)
+class CompactProjectionContextCacheKey:
+    """Identity of one shared single-family detector context."""
+
+    family: type[CollectedFamily]
+    context_builder: CompactProjectionContextBuilder
+
+
+@dataclass(frozen=True)
+class CompactProjectionGroupContextCacheKey:
+    """Identity of one shared multi-family detector context."""
+
+    context_builder: CompactProjectionGroupContextBuilder
+
+
 class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
     """Global detector whose cross-module input is a compact cached fact family."""
 
@@ -1137,6 +1163,60 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         del context
         return self._findings_from_compact_projections(projections, config)
 
+    @classmethod
+    def prebuild_in_memory_shared_context(
+        cls,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: MutableMapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> None:
+        """Build this detector's shared single-family context once per scan."""
+
+        builder = cls.compact_shared_context_builder
+        if builder is None:
+            return
+        family = cls.module_projection_family
+        if family not in projections_by_family:
+            return
+        key = CompactProjectionContextCacheKey(family, builder)
+        if key not in shared_contexts:
+            context = builder(projections_by_family[family], config)
+            shared_contexts[key] = context
+            if isinstance(context, CompactClassRepositoryContext):
+                shared_contexts.setdefault(
+                    CompactProjectionGroupContextCacheKey(
+                        CompactClassFamilyIndex.from_projection_groups
+                    ),
+                    context.class_index,
+                )
+
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        family = type(self).module_projection_family
+        if family not in projections_by_family:
+            return cast(IssueDetector, self).detect(modules, config)
+        projections = cast(
+            Sequence[CompactProjectionItemT], projections_by_family[family]
+        )
+        builder = type(self).compact_shared_context_builder
+        context: object | None = None
+        if builder is not None:
+            key = CompactProjectionContextCacheKey(family, builder)
+            context = (
+                shared_contexts[key]
+                if key in shared_contexts
+                else builder(projections, config)
+            )
+        return cast(IssueDetector, self)._normalize_findings(
+            self._findings_from_compact_context(projections, context, config),
+            config,
+        )
+
     @abstractmethod
     def _findings_from_compact_projections(
         self,
@@ -1224,6 +1304,54 @@ class CompactMultiModuleProjectionDetectorMixin(
     ) -> CompactFindingStream | None:
         del projections_by_family, context, config
         return None
+
+    @classmethod
+    def prebuild_in_memory_shared_context(
+        cls,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: MutableMapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> None:
+        """Build this detector's shared multi-family context once per scan."""
+
+        del config
+        builder = cls.compact_shared_group_context_builder
+        if builder is None:
+            return
+        families = cls.compact_projection_families()
+        if not all(family in projections_by_family for family in families):
+            return
+        key = CompactProjectionGroupContextCacheKey(builder)
+        if key not in shared_contexts:
+            grouped = {family: projections_by_family[family] for family in families}
+            shared_contexts[key] = builder(grouped)
+
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        families = type(self).compact_projection_families()
+        if not all(family in projections_by_family for family in families):
+            return cast(IssueDetector, self).detect(modules, config)
+        grouped: CompactProjectionGroups = {
+            family: projections_by_family[family] for family in families
+        }
+        builder = type(self).compact_shared_group_context_builder
+        context: object | None = None
+        if builder is not None:
+            key = CompactProjectionGroupContextCacheKey(builder)
+            context = (
+                shared_contexts[key] if key in shared_contexts else builder(grouped)
+            )
+        return cast(IssueDetector, self)._normalize_findings(
+            self._findings_from_compact_projection_groups_context(
+                grouped, context, config
+            ),
+            config,
+        )
 
 
 class CompactClassIndexMultiProjectionDetector(
@@ -2081,6 +2209,17 @@ class CompactProjectionCandidateDetector(
 ):
     """Candidate detector derived exclusively from one compact fact family."""
 
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return CompactModuleProjectionDetectorMixin.detect_with_prepared_projections(
+            self, modules, projections_by_family, shared_contexts, config
+        )
+
     def _candidate_items(
         self,
         modules: ParsedModuleSet,
@@ -2117,6 +2256,17 @@ class CompactMultiProjectionCandidateDetector(
     ABC,
 ):
     """Candidate detector joining multiple compact fact families once."""
+
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        return CompactMultiModuleProjectionDetectorMixin.detect_with_prepared_projections(
+            self, modules, projections_by_family, shared_contexts, config
+        )
 
     def _candidate_items(
         self,

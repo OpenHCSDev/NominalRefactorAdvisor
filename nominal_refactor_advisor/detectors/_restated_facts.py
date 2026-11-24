@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Hashable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Generic, TypeVar
 
@@ -25,7 +25,7 @@ from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
 )
-from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import CollectedFamily, ParsedModuleSet
 from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
 from nominal_refactor_advisor.probe_owner import (
     ProbeOwnerContext,
@@ -812,6 +812,46 @@ class ForeignAbsenceProbeDetector(
         (),
         (ObservationTag.ATTRIBUTE_PROBE,),
     )
+
+    @classmethod
+    def prebuild_in_memory_shared_context(
+        cls,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: MutableMapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> None:
+        """In-memory scans type parsed module texts directly, never disk files."""
+        del projections_by_family, shared_contexts, config
+
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del shared_contexts
+        families = type(self).compact_projection_families()
+        if not all(family in projections_by_family for family in families):
+            return self.detect(modules, config)
+        grouped = {family: projections_by_family[family] for family in families}
+        query = ProbeOwnerQuery.of(grouped)
+        return self._normalize_findings(
+            self._findings_from_compact_projection_groups_context(
+                grouped,
+                query.answered(
+                    SourceTexts(
+                        tuple(
+                            module
+                            for module in modules
+                            if module.file_path in query.file_paths
+                        )
+                    )
+                ),
+                config,
+            ),
+            config,
+        )
 
     def _collect_findings(
         self, modules: ParsedModuleSet, config: DetectorConfig

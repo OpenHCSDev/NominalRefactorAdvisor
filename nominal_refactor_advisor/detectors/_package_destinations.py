@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Hashable, Mapping, MutableMapping, Sequence
 
-from nominal_refactor_advisor.ast_tools import ParsedModuleSet
+from nominal_refactor_advisor.ast_tools import CollectedFamily, ParsedModuleSet
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -43,6 +43,25 @@ class FlatModulePackageDestinationDetector(
         (CapabilityTag.PROVENANCE,),
         (ObservationTag.PARTIAL_VIEW,),
     )
+
+    @classmethod
+    def prebuild_in_memory_shared_context(
+        cls,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: MutableMapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> None:
+        del projections_by_family, shared_contexts, config
+
+    def detect_with_prepared_projections(
+        self,
+        modules: ParsedModuleSet,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: Mapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> list[RefactorFinding]:
+        del projections_by_family, shared_contexts
+        return self.detect(modules, config)
 
     def _collect_findings(
         self, modules: ParsedModuleSet, config: DetectorConfig
