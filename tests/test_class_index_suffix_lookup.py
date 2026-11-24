@@ -135,7 +135,7 @@ def test_import_alias_suffix_index_is_lazy_and_repository_bounded() -> None:
     assert suffix_index.get("types.Target") is None
     assert set(suffix_index._matches_by_suffix) == {"types.Unique", "types.Target"}
     assert _unique_known_symbol_by_suffix.cache_parameters() == {
-        "maxsize": 8,
+        "maxsize": 64,
         "typed": False,
     }
 
