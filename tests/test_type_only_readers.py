@@ -176,3 +176,52 @@ def test_a_mixin_nearer_than_the_contract_base_is_passed_over_for_it(tmp_path: P
 def test_a_registry_family_class_is_a_contract_base(tmp_path: Path):
     _write(tmp_path, HUB, base=REGISTRY)
     assert _retyped_to(tmp_path) == [("Hub", "pkg.service", "Service")]
+
+
+def test_fine_grained_type_errors_match_cold_build_across_edits_and_reverts(tmp_path: Path):
+    """Incremental `TypeErrors.of` inside `ScanCache.scope()` must match cold
+    `TypeErrors._built` across clean edits, newly introduced errors, pre-existing
+    errors in untouched modules, and reverts back to the baseline."""
+
+    from nominal_refactor_advisor.type_checker_session import (
+        SourceTexts,
+        TypeErrors,
+        _incremental_type_errors_slot,
+    )
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "base.py").write_text("class Base:\n    x: int = 1\n\n\nclass Sub(Base):\n    y: str = 'ok'\n")
+    reader_path = pkg / "reader.py"
+    original_reader = "from pkg.base import Sub\n\n\ndef read(item: Sub) -> str:\n    return item.y\n"
+    broken_reader = "from pkg.base import Base\n\n\ndef read(item: Base) -> str:\n    return item.y\n"
+    reader_path.write_text(original_reader)
+    (pkg / "preexisting.py").write_text("def broken() -> int:\n    return 'not-an-int'\n")
+
+    with ScanCache.scope():
+        mods_initial = parse_python_modules(tmp_path, use_parse_cache=False)
+        st_initial = SourceTexts(tuple(mods_initial))
+        inc_initial = TypeErrors.of(st_initial)
+        cold_initial = TypeErrors._built(st_initial)
+        assert inc_initial.by_file == cold_initial.by_file
+        engine = _incremental_type_errors_slot()[0]
+        assert engine is not None
+
+        reader_path.write_text(broken_reader)
+        mods_broken = parse_python_modules(tmp_path, use_parse_cache=False)
+        st_broken = SourceTexts(tuple(mods_broken))
+        inc_broken = TypeErrors.of(st_broken)
+        cold_broken = TypeErrors._built(st_broken)
+        assert inc_broken.by_file == cold_broken.by_file
+        assert inc_broken.new_since(inc_initial) == cold_broken.new_since(cold_initial)
+        assert len(inc_broken.new_since(inc_initial)) == 1
+        assert _incremental_type_errors_slot()[0] is engine
+
+        reader_path.write_text(original_reader)
+        mods_reverted = parse_python_modules(tmp_path, use_parse_cache=False)
+        st_reverted = SourceTexts(tuple(mods_reverted))
+        inc_reverted = TypeErrors.of(st_reverted)
+        assert inc_reverted.by_file == cold_initial.by_file
+        assert inc_reverted.new_since(inc_initial) == ()
+        assert _incremental_type_errors_slot()[0] is engine

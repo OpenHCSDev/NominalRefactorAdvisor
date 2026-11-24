@@ -34,7 +34,10 @@ from nominal_refactor_advisor.hidden_imports import ClosesCycle, GuardedImport
 from nominal_refactor_advisor.lexical_bindings import ImportFromModuleName
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.owner_candidates import ModuleImportGraph
-from nominal_refactor_advisor.refactors.class_overlap import changed_source_edits, in_order_states
+from nominal_refactor_advisor.refactors.class_overlap import (
+    _line_difference_edits,
+    in_order_states,
+)
 from nominal_refactor_advisor.refactors.module_move import ImportedNameOwner, PromoteGuardedImportOperation
 
 
@@ -413,11 +416,49 @@ class RetypeTypeOnlyReadsOperation(RepositorySourceReprovedOperation):
         errors = states[-1].type_errors.new_since(snapshot.type_errors)
         if errors:
             raise RetypeReachesConsumer(self.described, errors)
-        return changed_source_edits(
-            snapshot,
-            states[-1],
-            self.rationale_text(f"Annotate with each class's base below the module: {self.described}."),
+        rationale = self.rationale_text(
+            f"Annotate with each class's base below the module: {self.described}."
         )
+        mutations_by_file: dict[str, list[ModuleImportMutation]] = {}
+        for path, hub, name, base_module, base in zip(
+            self.readers, self.hubs, self.names, self.base_modules, self.base_names, strict=True
+        ):
+            spelled = self.spelled(snapshot, path, hub)
+            mutations_by_file.setdefault(path, []).extend(
+                (
+                    ModuleImportMutation.remove_names(
+                        file_path=path,
+                        module_name=spelled,
+                        names=(name,),
+                        scope=ModuleImportScope.TYPE_CHECKING,
+                        rationale=rationale,
+                    ),
+                    ModuleImportMutation.from_source(
+                        file_path=path,
+                        import_source=f"from {base_module} import {base}\n",
+                        scope=ModuleImportScope.RUNTIME,
+                        rationale=rationale,
+                    ),
+                )
+            )
+        edits: list[NominalSourceEdit] = []
+        for path, after in states[-1].sources_by_file_path.items():
+            before = snapshot.sources_by_file_path.get(path)
+            if before is None or before == after:
+                continue
+            composed = ModuleImportMutation.composed_sequence(
+                mutations_by_file.get(path, ()),
+                rationale=rationale,
+            )
+            if composed is not None and path in overlay:
+                retyped = overlay[path]
+                if retyped != before:
+                    edits.extend(_line_difference_edits(path, before, retyped, rationale))
+                if composed.additions or composed.removals:
+                    edits.append(composed)
+                continue
+            edits.extend(_line_difference_edits(path, before, after, rationale))
+        return tuple(edits)
 
     @staticmethod
     def spelled(snapshot: CodemodSourceSnapshot, path: str, hub: str) -> str:

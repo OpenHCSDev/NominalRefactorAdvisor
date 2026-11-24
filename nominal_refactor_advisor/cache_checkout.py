@@ -105,13 +105,16 @@ def checkout_relative_path(
     observed_roots = tuple(CheckoutRoot.capture(root) for root in roots)
     if is_relative:
         (root,) = observed_roots
+        cwd_lexical = lexical_absolute_path(candidate_path)
         lexical_path = (
             root.path
             if root.is_file
             and (
                 candidate_path == Path(root.path.name)
-                or lexical_absolute_path(candidate_path) == root.path
+                or cwd_lexical == root.path
             )
+            else cwd_lexical
+            if not root.is_file and root.relative_path(cwd_lexical) is not None
             else lexical_absolute_path(root.path / candidate_path)
         )
     else:

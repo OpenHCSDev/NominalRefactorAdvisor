@@ -388,3 +388,54 @@ def test_a_class_reading_back_through_more_than_the_limit_is_central(tmp_path: P
         )
         for need in needs
     )
+
+
+def test_pair_composition_of_promote_and_cut_removes_emptied_type_checking_guard(tmp_path: Path):
+    """Composing `promote_hidden_imports` (removing non-cycle guarded imports) with
+    `cut_hidden_cycle` (moving and promoting the last guarded import in the same
+    `if TYPE_CHECKING:` block) must remove the empty guard instead of leaving an
+    orphan `if TYPE_CHECKING:` header (`IndentationError`)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/free_a.py": "class FreeA:\n    pass\n",
+            "pkg/free_b.py": "class FreeB:\n    pass\n",
+            "pkg/hub.py": (
+                "from pkg.surface import Surface\n\n\n"
+                "class HubRecord:\n    value = 1\n\n\n"
+                "def use_surface() -> Surface:\n    return Surface()\n"
+            ),
+            "pkg/surface.py": (
+                "from __future__ import annotations\n\n"
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from pkg.free_a import FreeA\n"
+                "    from pkg.free_b import FreeB\n"
+                "    from pkg.hub import HubRecord\n\n\n"
+                "class Surface:\n"
+                "    def refs(self, a: FreeA, b: FreeB, h: HubRecord) -> tuple[FreeA, FreeB, HubRecord]:\n"
+                "        return (a, b, h)\n"
+            ),
+            "main.py": "from pkg.hub import use_surface\n\nprint(type(use_surface()).__name__)\n",
+        },
+    )
+    expected = _run(tmp_path)
+    modules = _modules(tmp_path)
+    with ScanCache.scope():
+        findings = [
+            *HiddenImportDetector().detect(modules, DetectorConfig()),
+            *HiddenImportCycleDetector().detect(modules, DetectorConfig()),
+        ]
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = snapshot.plan_from_findings(findings)
+    assert plan.trajectory_frontier.complete
+    assert plan.trajectory_frontier.obstacles == ()
+    assert len(plan.trajectory_frontier.branches) == 1
+    simulation = plan.trajectory_frontier.branches[0].document_simulation
+    assert simulation.is_clean
+    simulation.apply()
+    surface_text = (tmp_path / "pkg/surface.py").read_text()
+    assert "if TYPE_CHECKING:" not in surface_text
+    assert "from typing import TYPE_CHECKING" not in surface_text
+    assert _run(tmp_path) == expected

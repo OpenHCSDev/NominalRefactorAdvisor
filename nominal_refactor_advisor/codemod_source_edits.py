@@ -1377,6 +1377,10 @@ class SourceTextMutation(KeyedSourceEdit):
         )
 
     @property
+    def file_path(self) -> str:
+        return self.revision.file_path
+
+    @property
     def coalescence_key(self) -> Hashable:
         return self.revision.file_path
 
