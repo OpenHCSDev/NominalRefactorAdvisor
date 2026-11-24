@@ -91,8 +91,12 @@ def edit_tokens(before: Mapping[str, str], after: Mapping[str, str]) -> int:
 
     characters = 0
     for path in before.keys() | after.keys():
-        old = before.get(path, "").splitlines(keepends=True)
-        new = after.get(path, "").splitlines(keepends=True)
+        old_text = before.get(path, "")
+        new_text = after.get(path, "")
+        if old_text == new_text:
+            continue
+        old = old_text.splitlines(keepends=True)
+        new = new_text.splitlines(keepends=True)
         for tag, old_start, old_end, new_start, new_end in SequenceMatcher(
             None, old, new, autojunk=False
         ).get_opcodes():
@@ -434,9 +438,15 @@ class RefactorSearch:
     def score(self, scan: CodemodWorkflowScan) -> StateScore:
         if ScanCache.active() is not None:
             TypeCheckerSession.seed_incremental(SourceTexts(tuple(scan.modules)))
+        snapshot = scan.source_snapshot
         census = MemberAwarenessCensusBuilder.from_sources(
-            CensusCorpus(tuple(scan.modules), self.config)
-        ).report(self.introspection)
+            CensusCorpus(
+                tuple(scan.modules),
+                self.config,
+                precomputed_projections=snapshot.compact_class_projections,
+                precomputed_class_index=snapshot.compact_class_index,
+            )
+        ).report(self.introspection, include_owners=False)
         return StateScore(
             findings=len(scan.findings),
             derived=census.derived_total,

@@ -1766,6 +1766,14 @@ class CompactModuleClassHeader(CompactModuleIdentity):
     classes: tuple[CompactIndexedClass, ...]
     field_declaration_wrappers: tuple[CompactFieldDeclarationWrapper, ...] = ()
 
+    @cached_property
+    def has_unsettled_field_declarations(self) -> bool:
+        return any(
+            member.declaration_call is not None
+            for indexed_class in self.classes
+            for member in indexed_class.dataclass_declaration.fields
+        )
+
     @staticmethod
     @ScanCache.cached
     def from_modules(
@@ -1882,17 +1890,25 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
             lambda projection: projection.module_name,
         )
 
-    @cached_property
-    def _module_declaration_lookups(
-        self,
-    ) -> dict[str, tuple[dict[str, CompactIndexedClass], dict[str, str]]]:
-        return {
-            module_name: (
+    def module_declaration_lookup(
+        self, module_name: str
+    ) -> tuple[dict[str, CompactIndexedClass], dict[str, str]] | None:
+        lookups: dict[
+            str, tuple[dict[str, CompactIndexedClass], dict[str, str]] | None
+        ] = self.__dict__.setdefault("_lazy_module_declaration_lookups", {})
+        if module_name in lookups:
+            return lookups[module_name]
+        projection = self.projections_by_module_name.get(module_name)
+        lookup = (
+            None
+            if projection is None
+            else (
                 {declared.symbol: declared for declared in projection.classes},
                 dict(projection.import_aliases),
             )
-            for module_name, projection in self.module_projection_multiplicity.unambiguous_declarations_by_handle.items()
-        }
+        )
+        lookups[module_name] = lookup
+        return lookup
 
     @cached_property
     def projections_by_module_name(self) -> dict[str, CompactModuleClassHeader]:
@@ -1982,6 +1998,30 @@ class CompactModuleClassProjection(
     script_scopes: tuple[CompactScriptScope, ...] = ()
     field_order_summaries: tuple[FunctionOrderSummary, ...] = ()
     """What each function contributes to reading a dataclass's fields in order."""
+
+    @cached_property
+    def references_by_part(
+        self,
+    ) -> Mapping[str, tuple[tuple[str, CompactClassReference], ...]]:
+        """This module's class references indexed by each part name they spell,
+        built once on the immutable projection and reused across virtual states."""
+
+        filed: dict[str, list[tuple[str, CompactClassReference]]] = defaultdict(list)
+        for scope_name, references in (
+            (self.module_name, self.class_references),
+            *(
+                (script.module_name, script.class_references)
+                for script in self.script_scopes
+            ),
+        ):
+            for reference in references:
+                parts = reference.reference_parts
+                if len(parts) == 1:
+                    filed[parts[0]].append((scope_name, reference))
+                else:
+                    for name in dict.fromkeys(parts):
+                        filed[name].append((scope_name, reference))
+        return {name: tuple(entries) for name, entries in filed.items()}
 
     def header_core(self) -> CompactModuleClassProjection:
         """Project only the class declarations required by the family index."""
@@ -2526,6 +2566,12 @@ class ClassDeclarationIndex(Generic[ClassDeclarationT]):
         }
 
     @cached_property
+    def unique_symbols_by_suffix(self) -> _UniqueKnownSymbolSuffixIndex:
+        return _UniqueKnownSymbolSuffixIndex.from_terminal_buckets(
+            self.symbols_by_simple_name
+        )
+
+    @cached_property
     def symbols_by_file_and_qualname(self) -> dict[tuple[str, str], str]:
         return {
             (record.file_path, record.qualname): record.symbol
@@ -2728,6 +2774,8 @@ class _ProductLineageComposer:
 class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
     """Repository inheritance graph reconstructed from compact declarations."""
 
+    _has_duplicate_symbols: bool = field(default=False, repr=False, compare=False)
+
     @cached_property
     def creation(self) -> ClassCreationOrderProof:
         """What creating each class does to its order and its names."""
@@ -2844,6 +2892,314 @@ class CompactClassFamilyIndex(ClassDeclarationIndex[CompactIndexedClass]):
         return build_compact_class_family_index(
             CompactModuleClassHeader.from_modules(modules)
         )
+
+    def projected(
+        self,
+        previous_projections: Sequence[CompactModuleClassHeader],
+        projected_projections: Sequence[CompactModuleClassHeader],
+    ) -> CompactClassFamilyIndex:
+        """Project this index across a source update, reusing every unchanged
+        class whose bases, metaclass, star imports and field wrappers are
+        unaffected."""
+
+        prev_by_path = {projection.file_path: projection for projection in previous_projections}
+        proj_tuple = tuple(projected_projections)
+        proj_by_path = {projection.file_path: projection for projection in proj_tuple}
+        changed_projs = tuple(
+            projection
+            for projection in proj_tuple
+            if prev_by_path.get(projection.file_path) is not projection
+        )
+        removed_projs = tuple(
+            projection
+            for path, projection in prev_by_path.items()
+            if path not in proj_by_path
+        )
+        if not changed_projs and not removed_projs:
+            _remember_compact_class_family_index(proj_tuple, self)
+            return self
+        if any(projection.star_import_origins for projection in proj_tuple):
+            built = CompactClassFamilyIndexBuilder(proj_tuple).build()
+            _remember_compact_class_family_index(proj_tuple, built)
+            return built
+        old_changed = tuple(
+            prev_by_path[projection.file_path]
+            for projection in changed_projs
+            if projection.file_path in prev_by_path
+        )
+        old_wrappers = tuple(
+            wrapper
+            for projection in (*old_changed, *removed_projs)
+            for wrapper in projection.field_declaration_wrappers
+        )
+        new_wrappers = tuple(
+            wrapper
+            for projection in changed_projs
+            for wrapper in projection.field_declaration_wrappers
+        )
+        if old_wrappers != new_wrappers:
+            built = CompactClassFamilyIndexBuilder(proj_tuple).build()
+            _remember_compact_class_family_index(proj_tuple, built)
+            return built
+
+        needs_field_settling = any(
+            projection.has_unsettled_field_declarations for projection in changed_projs
+        )
+        field_index = (
+            FieldDeclarationIndex.of_projections(proj_tuple)
+            if needs_field_settling
+            else None
+        )
+        if field_index is not None:
+            settled_changed: tuple[CompactModuleClassHeader, ...] = tuple(
+                projection
+                if not projection.has_unsettled_field_declarations
+                else replace(
+                    projection,
+                    classes=tuple(
+                        indexed_class.with_settled_field_declarations(field_index)
+                        for indexed_class in projection.classes
+                    ),
+                )
+                for projection in changed_projs
+            )
+        else:
+            settled_changed = changed_projs
+
+        if any(
+            indexed_class.registry_facts.stores_created_class
+            or any(
+                reference.resolved_parts[-1] == "type"
+                for reference in indexed_class.base_references
+            )
+            for projection in (*settled_changed, *old_changed, *removed_projs)
+            for indexed_class in projection.classes
+        ):
+            built = CompactClassFamilyIndexBuilder(proj_tuple).build()
+            _remember_compact_class_family_index(proj_tuple, built)
+            return built
+
+        prev_classes = self.classes_by_symbol
+        old_changed_symbols: set[str] = set()
+        duplicate_collision = self._has_duplicate_symbols
+        if not duplicate_collision:
+            for projection in (*old_changed, *removed_projs):
+                for indexed_class in projection.classes:
+                    if indexed_class.symbol not in prev_classes:
+                        duplicate_collision = True
+                        break
+                    old_changed_symbols.add(indexed_class.symbol)
+                if duplicate_collision:
+                    break
+        settled_changed_by_symbol: dict[str, CompactIndexedClass] = {}
+        if not duplicate_collision:
+            for projection in settled_changed:
+                for indexed_class in projection.classes:
+                    symbol = indexed_class.symbol
+                    if symbol in settled_changed_by_symbol or (
+                        symbol in prev_classes and symbol not in old_changed_symbols
+                    ):
+                        duplicate_collision = True
+                        break
+                    settled_changed_by_symbol[symbol] = indexed_class
+                if duplicate_collision:
+                    break
+        if duplicate_collision:
+            built = CompactClassFamilyIndexBuilder(proj_tuple).build()
+            _remember_compact_class_family_index(proj_tuple, built)
+            return built
+
+        added_symbols = settled_changed_by_symbol.keys() - old_changed_symbols
+        removed_symbols = old_changed_symbols - settled_changed_by_symbol.keys()
+        if not added_symbols and not removed_symbols:
+            known_symbols = self.known_symbols
+            unique_symbols_by_suffix = self.unique_symbols_by_suffix
+            moved_terminal_names: frozenset[str] = frozenset()
+        else:
+            known_symbols = (self.known_symbols - removed_symbols) | added_symbols
+            unique_symbols_by_suffix = _unique_known_symbol_by_suffix(known_symbols)
+            moved_terminal_names = frozenset(
+                symbol.rsplit(".", 1)[-1]
+                for symbol in (added_symbols | removed_symbols)
+            )
+
+        changed_alias_symbols: set[str] = set()
+        for projection in changed_projs:
+            old_projection = prev_by_path.get(projection.file_path)
+            old_aliases = (
+                dict(old_projection.import_aliases) if old_projection is not None else {}
+            )
+            new_aliases = dict(projection.import_aliases)
+            for name in old_aliases.keys() | new_aliases.keys():
+                if old_aliases.get(name) != new_aliases.get(name):
+                    changed_alias_symbols.add(f"{projection.module_name}.{name}")
+        for projection in removed_projs:
+            for name, _ in projection.import_aliases:
+                changed_alias_symbols.add(f"{projection.module_name}.{name}")
+
+        classes_by_symbol = dict(prev_classes)
+        for symbol in removed_symbols:
+            classes_by_symbol.pop(symbol, None)
+
+        own_dirty: set[str] = set()
+        propagating_dirty: set[str] = set()
+
+        for symbol, record in settled_changed_by_symbol.items():
+            resolved_record = record.with_resolved_base_symbols(
+                tuple(
+                    resolved
+                    for reference in record.base_references
+                    if (
+                        resolved := CompactClassFamilyIndexBuilder._resolved_bound_symbol(
+                            reference,
+                            record.module_name,
+                            known_symbols,
+                            unique_symbols_by_suffix,
+                        )
+                    )
+                    is not None
+                )
+            )
+            classes_by_symbol[symbol] = resolved_record
+            own_dirty.add(symbol)
+            prev_record = prev_classes.get(symbol)
+            if (
+                prev_record is None
+                or resolved_record.resolved_base_symbols != prev_record.resolved_base_symbols
+                or resolved_record.registry_facts.metaclass_references
+                != prev_record.registry_facts.metaclass_references
+                or resolved_record.registry_facts.base_references
+                != prev_record.registry_facts.base_references
+                or resolved_record.registry_facts.stores_subclass
+                != prev_record.registry_facts.stores_subclass
+                or resolved_record.registry_facts.stores_created_class
+                != prev_record.registry_facts.stores_created_class
+                or (
+                    changed_alias_symbols
+                    and any(
+                        ".".join(ref.resolved_parts) in changed_alias_symbols
+                        for ref in (
+                            *resolved_record.base_references,
+                            *resolved_record.registry_facts.metaclass_references,
+                        )
+                    )
+                )
+            ):
+                propagating_dirty.add(symbol)
+
+        if moved_terminal_names or changed_alias_symbols:
+            for symbol, prev_record in prev_classes.items():
+                if symbol in old_changed_symbols:
+                    continue
+                if (
+                    moved_terminal_names
+                    and (
+                        any(
+                            ref.resolved_parts[-1] in moved_terminal_names
+                            for ref in prev_record.base_references
+                        )
+                        or any(
+                            ref.resolved_parts[-1] in moved_terminal_names
+                            for ref in prev_record.registry_facts.metaclass_references
+                        )
+                    )
+                ) or (
+                    changed_alias_symbols
+                    and (
+                        any(
+                            ".".join(ref.resolved_parts) in changed_alias_symbols
+                            for ref in prev_record.base_references
+                        )
+                        or any(
+                            ".".join(ref.resolved_parts) in changed_alias_symbols
+                            for ref in prev_record.registry_facts.metaclass_references
+                        )
+                    )
+                ):
+                    raw_module = proj_by_path[prev_record.file_path]
+                    raw_record = next(
+                        c for c in raw_module.classes if c.symbol == symbol
+                    )
+                    base_record = (
+                        raw_record.with_settled_field_declarations(field_index)
+                        if field_index is not None and raw_module.has_unsettled_field_declarations
+                        else raw_record
+                    )
+                    classes_by_symbol[symbol] = base_record.with_resolved_base_symbols(
+                        tuple(
+                            resolved
+                            for reference in base_record.base_references
+                            if (
+                                resolved := CompactClassFamilyIndexBuilder._resolved_bound_symbol(
+                                    reference,
+                                    base_record.module_name,
+                                    known_symbols,
+                                    unique_symbols_by_suffix,
+                                )
+                            )
+                            is not None
+                        )
+                    )
+                    own_dirty.add(symbol)
+                    propagating_dirty.add(symbol)
+
+        if not own_dirty and not removed_symbols:
+            _remember_compact_class_family_index(proj_tuple, self)
+            return self
+        seed_propagating = propagating_dirty | removed_symbols
+        if seed_propagating:
+            descendants_dirty: set[str] = set(propagating_dirty)
+            for symbol in tuple(seed_propagating):
+                for descendant in self.descendant_symbols(symbol):
+                    if descendant in classes_by_symbol:
+                        descendants_dirty.add(descendant)
+            # Follow any newly added base edges from dirty classes as well.
+            children_map: dict[str, list[str]] = defaultdict(list)
+            for symbol, record in classes_by_symbol.items():
+                for base in record.resolved_base_symbols:
+                    children_map[base].append(symbol)
+            stack = list(descendants_dirty)
+            while stack:
+                current = stack.pop()
+                for child in children_map.get(current, ()):
+                    if child not in descendants_dirty:
+                        descendants_dirty.add(child)
+                        stack.append(child)
+            own_dirty.update(descendants_dirty)
+
+        if own_dirty:
+            for symbol in own_dirty:
+                if symbol in settled_changed_by_symbol:
+                    continue
+                current_record = classes_by_symbol[symbol]
+                raw_module = proj_by_path[current_record.file_path]
+                raw = next(c for c in raw_module.classes if c.symbol == symbol)
+                if (
+                    current_record.declares_autoregister_meta != raw.declares_autoregister_meta
+                    or current_record.is_registration_authority != raw.is_registration_authority
+                    or current_record.keyed_family_key_type_name != raw.keyed_family_key_type_name
+                ):
+                    classes_by_symbol[symbol] = replace(
+                        current_record,
+                        declares_autoregister_meta=raw.declares_autoregister_meta,
+                        is_registration_authority=raw.is_registration_authority,
+                        keyed_family_key_type_name=raw.keyed_family_key_type_name,
+                    )
+            authority = RegisteringMetaclassAuthority(
+                classes_by_symbol,
+                CompactRepositoryPublicExposureIndex(proj_tuple),
+                _suffix_index=unique_symbols_by_suffix,
+            )
+            for symbol in own_dirty:
+                classes_by_symbol[symbol] = classes_by_symbol[
+                    symbol
+                ].with_registering_metaclass(authority)
+        result = CompactClassFamilyIndex(
+            classes_by_symbol=classes_by_symbol,
+            _has_duplicate_symbols=False,
+        )
+        _remember_compact_class_family_index(proj_tuple, result)
+        return result
 
     @classmethod
     def from_projection_groups(
@@ -4841,6 +5197,83 @@ def _compact_class_binding_facets(
     )
 
 
+@ScanCache.cached
+def _cached_class_body_digests() -> dict[
+    tuple[str, str, tuple[object, ...]],
+    tuple[int, tuple[ClassBodyDeclarationDigest, ...]],
+]:
+    """Reuse ``ClassBodyNormalForm.of_class`` digests for unchanged classes
+    across virtual snapshots during a ``ScanCache.scope()``."""
+
+    return {}
+
+
+def _binding_snapshot_key(snapshot: ModuleNominalBindingSnapshot) -> tuple[object, ...]:
+    return (
+        tuple(
+            sorted(
+                (name, binding.qualified_name)
+                for name, binding in snapshot.bindings_by_name.items()
+            )
+        ),
+        snapshot.annotation_mode,
+        snapshot.unresolved_bound_names,
+        snapshot.star_import_ambiguity,
+        snapshot.star_import_excluded_names,
+    )
+
+
+def _class_body_digests_for_node(
+    source_lines: tuple[str, ...],
+    node: ast.ClassDef,
+    scope: ClassBodyModuleScope,
+    scope_keys: dict[int, tuple[object, ...]],
+    cache: (
+        dict[
+            tuple[str, str, tuple[object, ...]],
+            tuple[int, tuple[ClassBodyDeclarationDigest, ...]],
+        ]
+        | None
+    ),
+) -> tuple[ClassBodyDeclarationDigest, ...]:
+    if cache is not None and node.end_lineno is not None:
+        scope_key = scope_keys.get(id(scope))
+        if scope_key is None:
+            scope_key = (
+                scope.module_name,
+                _binding_snapshot_key(scope.declaration),
+                _binding_snapshot_key(scope.final),
+                None
+                if scope.star_blind_declaration is None
+                else _binding_snapshot_key(scope.star_blind_declaration),
+                None
+                if scope.star_blind_final is None
+                else _binding_snapshot_key(scope.star_blind_final),
+            )
+            scope_keys[id(scope)] = scope_key
+        class_src = "".join(source_lines[node.lineno - 1 : node.end_lineno])
+        key = (scope.module_name, class_src, scope_key)
+        cached = cache.get(key)
+        if cached is not None:
+            cached_lineno, cached_digests = cached
+            delta = node.lineno - cached_lineno
+            if delta == 0:
+                return cached_digests
+            return tuple(
+                digest._replace(line=digest.line + delta) for digest in cached_digests
+            )
+        digests = tuple(
+            declaration.compact()
+            for declaration in ClassBodyNormalForm.of_class(node, scope)
+        )
+        cache[key] = (node.lineno, digests)
+        return digests
+    return tuple(
+        declaration.compact()
+        for declaration in ClassBodyNormalForm.of_class(node, scope)
+    )
+
+
 def _compact_indexed_classes(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
@@ -4849,6 +5282,13 @@ def _compact_indexed_classes(
     include_body_facets: bool,
 ) -> tuple[CompactIndexedClass, ...]:
     file_path = parsed_module.file_path
+    source_lines = parsed_module.source_segments.lines
+    body_cache = (
+        _cached_class_body_digests()
+        if include_body_facets and ScanCache.active() is not None
+        else None
+    )
+    body_scope_keys: dict[int, tuple[object, ...]] = {}
     star_snapshots = (
         _module_nominal_binding_snapshots(
             ModuleNominalBindingAuthority(parsed_module),
@@ -4957,11 +5397,12 @@ def _compact_indexed_classes(
                 _compact_predicate_selected_methods(node) if include_body_facets else ()
             ),
             body_declarations=(
-                tuple(
-                    declaration.compact()
-                    for declaration in ClassBodyNormalForm.of_class(
-                        node, body_scopes[node.lineno]
-                    )
+                _class_body_digests_for_node(
+                    source_lines,
+                    node,
+                    body_scopes[node.lineno],
+                    body_scope_keys,
+                    body_cache,
                 )
                 if include_body_facets
                 else ()
@@ -5021,19 +5462,28 @@ def star_resolved_projections(
     """Settle every class's star-import-dependent facts from the repository's
     export contracts: the one place those facts are resolved."""
 
+    if not any(projection.star_import_origins for projection in projections):
+        return projections
     exposure = CompactRepositoryPublicExposureIndex(projections)
-    return tuple(
-        projection
-        if not projection.star_import_origins
-        else replace(
-            projection,
-            classes=tuple(
-                indexed_class.resolved_past_star_imports(exposure)
-                for indexed_class in projection.classes
-            ),
+    result: list[ClassProjectionT] = []
+    changed_any = False
+    for projection in projections:
+        if not projection.star_import_origins:
+            result.append(projection)
+            continue
+        resolved_classes = tuple(
+            indexed_class.resolved_past_star_imports(exposure)
+            for indexed_class in projection.classes
         )
-        for projection in projections
-    )
+        if all(
+            resolved is original
+            for resolved, original in zip(resolved_classes, projection.classes)
+        ):
+            result.append(projection)
+        else:
+            changed_any = True
+            result.append(replace(projection, classes=resolved_classes))
+    return tuple(result) if changed_any else projections
 
 
 def repository_settled_projections(
@@ -5045,23 +5495,69 @@ def repository_settled_projections(
     return field_declaration_settled_projections(star_resolved_projections(projections))
 
 
+@ScanCache.cached
+def _interned_settled_projections() -> dict[
+    int,
+    tuple[
+        CompactModuleClassHeader,
+        tuple[CompactDataclassFieldRole, ...],
+        CompactModuleClassHeader,
+    ],
+]:
+    """Preserve settled projection object identity across snapshots when a
+    module's field-declaration call roles did not change."""
+
+    return {}
+
+
 def field_declaration_settled_projections(
     projections: tuple[ClassProjectionT, ...],
 ) -> tuple[ClassProjectionT, ...]:
     """Settle every field whose value calls a function, from the repository's
     field declarations: the one place those roles are decided."""
 
+    if not any(projection.has_unsettled_field_declarations for projection in projections):
+        return projections
     index = FieldDeclarationIndex.of_projections(projections)
-    return tuple(
-        replace(
-            projection,
-            classes=tuple(
-                indexed_class.with_settled_field_declarations(index)
-                for indexed_class in projection.classes
-            ),
-        )
-        for projection in projections
+    cache = (
+        _interned_settled_projections() if ScanCache.active() is not None else None
     )
+    result: list[ClassProjectionT] = []
+    changed_any = False
+    for projection in projections:
+        if not projection.has_unsettled_field_declarations:
+            result.append(projection)
+            continue
+        if cache is not None:
+            roles = tuple(
+                index.field_role(member.declaration_call)
+                for indexed_class in projection.classes
+                for member in indexed_class.dataclass_declaration.fields
+                if member.declaration_call is not None
+            )
+            cached = cache.get(id(projection))
+            if cached is not None and cached[0] is projection and cached[1] == roles:
+                settled_proj = cast(ClassProjectionT, cached[2])
+                if settled_proj is not projection:
+                    changed_any = True
+                result.append(settled_proj)
+                continue
+        settled_classes = tuple(
+            indexed_class.with_settled_field_declarations(index)
+            for indexed_class in projection.classes
+        )
+        if all(
+            settled is original
+            for settled, original in zip(settled_classes, projection.classes)
+        ):
+            settled_proj = projection
+        else:
+            changed_any = True
+            settled_proj = replace(projection, classes=settled_classes)
+        if cache is not None:
+            cache[id(projection)] = (projection, roles, settled_proj)
+        result.append(settled_proj)
+    return tuple(result) if changed_any else projections
 
 
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
@@ -6182,11 +6678,23 @@ class FieldDeclarationIndex:
     """
 
     wrappers: Mapping[str, CompactFieldDeclarationWrapper]
-    classes: RegisteringMetaclassAuthority[CompactIndexedClass]
-    """The repository's classes, and installed ones read from source, as bases
-    and metaclasses resolve to them."""
+    _projections: tuple[CompactModuleClassHeader, ...]
     built: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
     """`builds_own_instance`, remembered per class symbol."""
+
+    @cached_property
+    def classes(self) -> RegisteringMetaclassAuthority[CompactIndexedClass]:
+        """The repository's classes, and installed ones read from source, as bases
+        and metaclasses resolve to them."""
+
+        return RegisteringMetaclassAuthority(
+            {
+                indexed_class.symbol: indexed_class
+                for projection in self._projections
+                for indexed_class in projection.classes
+            },
+            CompactRepositoryPublicExposureIndex(self._projections),
+        )
 
     @classmethod
     def of_projections(cls, projections: Iterable[CompactModuleClassHeader]) -> Self:
@@ -6197,14 +6705,7 @@ class FieldDeclarationIndex:
                 for projection in projections
                 for wrapper in projection.field_declaration_wrappers
             },
-            RegisteringMetaclassAuthority(
-                {
-                    indexed_class.symbol: indexed_class
-                    for projection in projections
-                    for indexed_class in projection.classes
-                },
-                CompactRepositoryPublicExposureIndex(projections),
-            ),
+            projections,
         )
 
     def named_class(self, qualified_name: str) -> CompactIndexedClass | None:
@@ -6316,17 +6817,16 @@ class FieldDeclarationIndex:
         """A stored init field when the call declares a field and nothing on its
         way to `dataclasses.field` names `init`; otherwise unresolved."""
 
+        if call.called and (signature := self.signatures.get(call.callee)) is not None:
+            if signature.supplied(call) is None or self.supplies(call, "init"):
+                return CompactDataclassFieldRole.UNRESOLVED
+            return CompactDataclassFieldRole.STORED_INIT
         named = self.named_class(call.callee)
         if named is not None and (not call.called or self.builds_own_instance(named)):
             # A class object is an instance of its metaclass, a `type`, which
             # `Field`'s instance layout cannot share: it is never a `Field`.
             return CompactDataclassFieldRole.STORED_INIT
-        if not call.called:
-            return CompactDataclassFieldRole.UNRESOLVED
-        signature = self.signatures.get(call.callee)
-        if signature is None or signature.supplied(call) is None or self.supplies(call, "init"):
-            return CompactDataclassFieldRole.UNRESOLVED
-        return CompactDataclassFieldRole.STORED_INIT
+        return CompactDataclassFieldRole.UNRESOLVED
 
     def supplies(self, call: CompactFieldDeclarationCall, parameter: str) -> bool:
         """Whether the call, or a declaration it reaches, names this parameter."""
@@ -6810,7 +7310,6 @@ class InstalledClassDeclarations:
         """
 
         modules = scan.module_projection_multiplicity
-        scanned_lookups = scan._module_declaration_lookups
         installed_lookups: dict[
             str, tuple[dict[str, CompactIndexedClass], dict[str, str]] | None
         ] = {}
@@ -6818,7 +7317,7 @@ class InstalledClassDeclarations:
             module_name, _dot, name = qualified_name.rpartition(".")
             if module_name in modules.ambiguous_handles:
                 return None
-            lookup = scanned_lookups.get(module_name)
+            lookup = scan.module_declaration_lookup(module_name)
             in_scan = lookup is not None
             if not in_scan:
                 if module_name in installed_lookups:
@@ -6871,6 +7370,9 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
 
     scanned: Mapping[str, ClassDeclarationT]
     exposure: CompactRepositoryPublicExposureIndex
+    _suffix_index: _UniqueKnownSymbolSuffixIndex | None = field(
+        default=None, repr=False, compare=False
+    )
     registering: dict[str, bool] = field(
         default_factory=dict, init=False, repr=False, compare=False
     )
@@ -6888,9 +7390,13 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
 
     @cached_property
     def suffix_index(self) -> _UniqueKnownSymbolSuffixIndex:
+        if self._suffix_index is not None:
+            return self._suffix_index
         return _unique_known_symbol_by_suffix(frozenset(self.scanned))
 
     def registers(self, declaration: ClassDeclaration) -> bool:
+        if not declaration.registry_facts.metaclass_references:
+            return False
         pending = [
             (reference, declaration.module_name)
             for reference in declaration.registry_facts.metaclass_references
@@ -7241,13 +7747,15 @@ class CompactClassFamilyIndexBuilder:
     projections: Sequence[CompactModuleClassHeader]
 
     def build(self) -> CompactClassFamilyIndex:
+        settled_projections = repository_settled_projections(tuple(self.projections))
+        raw_records = tuple(
+            record
+            for projection in settled_projections
+            for record in projection.classes
+        )
         records = tuple(
             UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-                (
-                    record
-                    for projection in repository_settled_projections(tuple(self.projections))
-                    for record in projection.classes
-                ),
+                raw_records,
                 lambda record: record.symbol,
             ).values()
         )
@@ -7275,7 +7783,9 @@ class CompactClassFamilyIndexBuilder:
             classes_by_symbol=RegisteringMetaclassAuthority(
                 classes_by_symbol,
                 CompactRepositoryPublicExposureIndex(tuple(self.projections)),
-            ).resolved()
+                _suffix_index=unique_symbols_by_suffix,
+            ).resolved(),
+            _has_duplicate_symbols=len(raw_records) != len(records),
         )
 
     @staticmethod
@@ -7359,11 +7869,41 @@ def followed_reexports(
         target = followed
 
 
+@ScanCache.cached
+def _compact_class_family_index_by_projection_ids() -> dict[
+    tuple[int, ...],
+    tuple[tuple[CompactModuleClassHeader, ...], CompactClassFamilyIndex],
+]:
+    """Share built or projected ``CompactClassFamilyIndex`` instances across
+    equivalent projection tuples during a ``ScanCache.scope()``."""
+
+    return {}
+
+
+def _remember_compact_class_family_index(
+    projections: tuple[CompactModuleClassHeader, ...],
+    index: CompactClassFamilyIndex,
+) -> None:
+    if ScanCache.active() is None:
+        return
+    key = tuple(id(projection) for projection in projections)
+    _compact_class_family_index_by_projection_ids()[key] = (projections, index)
+
+
 def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:
     """The exact inheritance graph of AST-free per-module facts, built once per
     projection sequence that holds its views."""
 
-    return SequenceViews.of(projections).view(_built_class_family_index)
+    if ScanCache.active() is not None:
+        key = tuple(id(projection) for projection in projections)
+        cached = _compact_class_family_index_by_projection_ids().get(key)
+        if cached is not None:
+            return cached[1]
+    built = SequenceViews.of(projections).view(_built_class_family_index)
+    if ScanCache.active() is not None:
+        proj_tuple = projections if isinstance(projections, tuple) else tuple(projections)
+        _remember_compact_class_family_index(proj_tuple, built)
+    return built
 
 
 def _built_class_family_index(
@@ -7387,16 +7927,8 @@ class CompactClassReferenceResolver:
                 for projection in projections
             },
             known_symbols=class_index.classes_by_symbol,
-            unique_symbols_by_name={
-                name: symbols[0]
-                for name, symbols in class_index.symbols_by_simple_name.items()
-                if len(symbols) == 1
-            },
-            unique_symbols_by_suffix=(
-                _UniqueKnownSymbolSuffixIndex.from_terminal_buckets(
-                    class_index.symbols_by_simple_name
-                )
-            ),
+            unique_symbols_by_name=class_index.unique_symbols_by_name,
+            unique_symbols_by_suffix=class_index.unique_symbols_by_suffix,
         )
 
     def symbol_for(

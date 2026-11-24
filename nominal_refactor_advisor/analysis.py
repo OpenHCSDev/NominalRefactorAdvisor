@@ -21,7 +21,11 @@ import hashlib
 import multiprocessing
 import os
 from pathlib import Path
+import pickle
+import selectors
+import signal
 import sys
+import traceback
 from time import perf_counter
 from abc import ABC, abstractmethod
 from typing import ClassVar, Generic, TypeVar, cast
@@ -446,6 +450,99 @@ def _collect_missing_module_families(
     )
 
 
+def _fork_map_batches(
+    items: Sequence[WorkItemT],
+    worker_count: int,
+    run_batch: Callable[[tuple[WorkItemT, ...]], list[WorkResultT]],
+) -> list[WorkResultT]:
+    """Run round-robin batches across parent + `worker_count - 1` direct forked
+    children on Linux, avoiding ProcessPoolExecutor queue/feeder overhead."""
+
+    w = min(worker_count, len(items))
+    if w <= 1:
+        return run_batch(tuple(items))
+    batches = tuple(tuple(items[offset::w]) for offset in range(w))
+    already_frozen = gc.get_freeze_count() > 0
+    gc.freeze()
+    children: dict[int, tuple[int, int, bytearray]] = {}
+    results_by_offset: list[list[WorkResultT] | None] = [None] * w
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        for offset in range(1, w):
+            reader, writer = os.pipe()
+            pid = os.fork()
+            if pid == 0:
+                os.close(reader)
+                for open_fd in children:
+                    os.close(open_fd)
+                gc.disable()
+                ScanCache.initialize_worker()
+                try:
+                    try:
+                        payload = pickle.dumps((True, run_batch(batches[offset])))
+                    except BaseException:  # noqa: BLE001
+                        payload = pickle.dumps((False, traceback.format_exc()))
+                    with os.fdopen(writer, "wb") as out:
+                        out.write(payload)
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                finally:
+                    os._exit(0)
+            os.close(writer)
+            children[reader] = (offset, pid, bytearray())
+
+        results_by_offset[0] = run_batch(batches[0])
+
+        with selectors.DefaultSelector() as selector:
+            for fd in children:
+                selector.register(fd, selectors.EVENT_READ)
+            while children:
+                for sel_key, _ in selector.select():
+                    fd = sel_key.fd
+                    offset, pid, buf = children[fd]
+                    chunk = os.read(fd, 1 << 20)
+                    if chunk:
+                        buf += chunk
+                        continue
+                    selector.unregister(fd)
+                    os.close(fd)
+                    del children[fd]
+                    _, status = os.waitpid(pid, 0)
+                    if not buf:
+                        raise RuntimeError(
+                            f"forked analysis worker exited without result (wait status {status})"
+                        )
+                    ok, value = pickle.loads(bytes(buf))
+                    if not ok:
+                        raise RuntimeError(f"forked analysis worker failed:\n{value}")
+                    results_by_offset[offset] = value
+    except BaseException:
+        for fd, (_offset, pid, _buf) in list(children.items()):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+        raise
+    finally:
+        if not already_frozen:
+            gc.unfreeze()
+
+    ordered: list[WorkResultT] = [cast(WorkResultT, None)] * len(items)
+    for offset, batch_results in enumerate(results_by_offset):
+        assert batch_results is not None
+        ordered[offset::w] = batch_results
+    return ordered
+
+
 def _prewarm_compact_families(
     modules: ParsedModuleSet,
     families: tuple[type[CollectedFamily], ...],
@@ -777,20 +874,14 @@ class DetectorTypeShardRunner:
         worker_plan: DetectorAnalysisWorkerPlan,
     ) -> list[list[RefactorFinding]]:
         if _analysis_process_pool_mp_context() is not None:
-            global detector_analysis_worker_state
-            previous_state = detector_analysis_worker_state
-            detector_analysis_worker_state = self.worker_state
-            try:
-                with worker_plan.pool(ScanCache.initialize_worker, ()) as executor:
-                    return list(
-                        executor.map(
-                            detect_with_active_worker_state,
-                            detector_types,
-                            chunksize=worker_plan.process_map_chunksize,
-                        )
-                    )
-            finally:
-                detector_analysis_worker_state = previous_state
+            worker_state = self.worker_state
+            return _fork_map_batches(
+                detector_types,
+                worker_plan.effective_worker_count,
+                lambda batch: [
+                    worker_state.detect_with(detector_type) for detector_type in batch
+                ],
+            )
         with worker_plan.pool(
             initialize_detector_analysis_worker, (self.worker_state,)
         ) as executor:

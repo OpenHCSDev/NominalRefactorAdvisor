@@ -565,6 +565,28 @@ class ModuleNameRedirect:
         source = parsed.source
         if source_module_name not in source:
             return ()
+        import_pattern = re.compile(rf"\bfrom\s+{re.escape(source_module_name)}\s+import\b")
+        matches = tuple(import_pattern.finditer(source))
+        if not matches:
+            return ()
+        real_import_starts: set[tuple[int, int]] = {
+            (statement.lineno, statement.col_offset)
+            for statement in parsed.fact(ModuleImportStatements).import_froms
+            if statement.level == 0 and statement.module == source_module_name
+        }
+        if real_import_starts:
+            line_offsets = [0]
+            offset = 0
+            for line in source.splitlines(keepends=True):
+                offset += len(line)
+                line_offsets.append(offset)
+            real_byte_starts = {
+                line_offsets[lineno - 1] + col_offset
+                for lineno, col_offset in real_import_starts
+                if 1 <= lineno <= len(line_offsets) - 1
+            }
+            if all(match.start() in real_byte_starts for match in matches):
+                return ()
         geometry = SourceTextGeometry(source)
         embedded = _EmbeddedImportFrom(source_module_name)
         replacements: list[SourceTextSpanReplacement] = []
@@ -4647,12 +4669,23 @@ class _ModuleIdentityStrings:
 
     def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
         embedded = _EmbeddedImportFrom(self.source_module_name)
+        file_suffix = "/" + self.source_path.rsplit("/", 1)[-1]
+        head = self.source_module_name.partition(".")[0]
+        glued_hint = re.compile(
+            rf"(?<![\w.]){re.escape(head)}\.(?:[A-Za-z_]\w*\.)*(?:\s*['\"]+[\s\\()]*[fFrRuU]*['\"]+)*\s*\{{"
+        )
         edits: list[NominalSourceEdit] = []
         for source_file, parsed in FilesReachingModule(context, self.source_module_name):
             file_path = source_file.file_path
             if file_path == self.source_path:
                 continue
             source = parsed.source
+            if (
+                self.source_module_name not in source
+                and file_suffix not in source
+                and glued_hint.search(source) is None
+            ):
+                continue
             geometry = SourceTextGeometry(source)
             retained = self._retained_nodes(parsed.fact(ModuleNodeIndex))
             replacements: list[SourceTextSpanReplacement] = []

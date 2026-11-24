@@ -55,6 +55,7 @@ from nominal_refactor_advisor.observation_families import (
     TypeTestShape,
     type_test_shapes,
 )
+from nominal_refactor_advisor.observation_shapes import DeclaredClassScope
 from nominal_refactor_advisor.type_checker_session import (
     SourceTexts,
     TypeCheckerSession,
@@ -246,13 +247,19 @@ class CensusCorpus:
 
     modules: tuple[ParsedModule, ...]
     config: DetectorConfig
+    precomputed_projections: tuple | None = None
+    precomputed_class_index: CompactClassFamilyIndex | None = None
 
     @cached_property
     def projections(self) -> tuple:
+        if self.precomputed_projections is not None:
+            return self.precomputed_projections
         return CompactModuleClassProjectionFamily.collect_modules(self.modules)
 
     @cached_property
     def class_index(self) -> CompactClassFamilyIndex:
+        if self.precomputed_class_index is not None:
+            return self.precomputed_class_index
         return CompactClassRepositoryContext.from_projections(
             self.projections, self.config
         ).class_index
@@ -260,6 +267,10 @@ class CensusCorpus:
     @cached_property
     def module_names(self) -> tuple[str, ...]:
         return tuple(module.module_name for module in self.modules)
+
+    @cached_property
+    def declared_class_scope(self) -> DeclaredClassScope:
+        return DeclaredClassScope(self.module_names)
 
     @cached_property
     def module_name_by_file(self) -> dict[str, str]:
@@ -366,10 +377,11 @@ class ForeignModuleSource(MemberCensusSource):
         )
 
     def observations(self) -> Iterator[MemberObservation]:
+        scope = self.corpus.declared_class_scope
         for module in self.corpus.modules:
             for shape in module.fact(_ModuleTypeTestShapesFact).shapes:
                 match tuple(shape.owners):
-                    case (owner,) if owner and shape.is_foreign_to(self.corpus.module_names):
+                    case (owner,) if owner and shape.is_foreign_to(scope):
                         yield MemberObservation(
                             kind=CensusFamilyKind.FOREIGN_MODULE,
                             family=owner,
@@ -725,7 +737,12 @@ class MemberAwarenessCensusBuilder:
             key=lambda cost: (-cost.edits, cost.kind.value, cost.family),
         ))
 
-    def report(self, introspection: IntrospectionSource) -> MemberAwarenessCensus:
+    def report(
+        self,
+        introspection: IntrospectionSource,
+        *,
+        include_owners: bool = True,
+    ) -> MemberAwarenessCensus:
         groups = self.groups()
         return MemberAwarenessCensus(
             scanned_module_count=len(self.corpus.modules),
@@ -738,7 +755,7 @@ class MemberAwarenessCensusBuilder:
                 }
             ),
             groups=groups,
-            owners=self.owner_census(),
+            owners=self.owner_census() if include_owners else (),
             add_member_costs=self.add_member_costs(groups),
             inherited=self.inherited(),
             introspected=introspection.amortization(),

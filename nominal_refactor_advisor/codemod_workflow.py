@@ -37,6 +37,7 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleSourceProjection,
     parse_python_module_roots,
 )
+from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
@@ -2355,7 +2356,14 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         if pooled_cross
                         else []
                     )
-                    payload = pickle.dumps((True, (local, pooled)))
+                    changed_projections = {
+                        module.file_path: module.family_batch(
+                            CompactModuleClassProjectionFamily
+                        ).items
+                        for module in changed_or_created
+                        if module.has_family_batch(CompactModuleClassProjectionFamily)
+                    }
+                    payload = pickle.dumps((True, (local, pooled, changed_projections)))
                 except BaseException:  # noqa: BLE001
                     payload = pickle.dumps((False, traceback.format_exc()))
                 with os.fdopen(writer, "wb") as out:
@@ -2397,7 +2405,13 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
         ok, value = pickle.loads(raw)
         if not ok:
             raise RuntimeError(f"exact reproof worker failed:\n{value}")
-        local_findings, pooled_findings = value
+        local_findings, pooled_findings, changed_projections = value
+        if changed_projections:
+            modules_by_path = {module.file_path: module for module in changed_or_created}
+            for file_path, items in changed_projections.items():
+                module = modules_by_path.get(file_path)
+                if module is not None:
+                    module.install_family_batch(CompactModuleClassProjectionFamily, items)
         return local_findings, [*in_process_findings, *pooled_findings]
 
     def certified(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
@@ -2717,8 +2731,28 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                             projected = self.projected_target_scan(
                                 active_scan, simulation, target_findings
                             )
+                            changed_paths = frozenset(
+                                simulation.simulation.changed_file_paths
+                            )
+                            changed_projections = {
+                                module.file_path: module.family_batch(
+                                    CompactModuleClassProjectionFamily
+                                ).items
+                                for module in projected.modules
+                                if module.file_path in changed_paths
+                                and module.has_family_batch(
+                                    CompactModuleClassProjectionFamily
+                                )
+                            }
                             payload = pickle.dumps(
-                                (True, (projected.findings, projected.coverage))
+                                (
+                                    True,
+                                    (
+                                        projected.findings,
+                                        projected.coverage,
+                                        changed_projections,
+                                    ),
+                                )
                             )
                         except BaseException:  # noqa: BLE001
                             payload = pickle.dumps((False, traceback.format_exc()))
@@ -2765,10 +2799,19 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         ok, value = pickle.loads(bytes(buf))
                         if not ok:
                             raise RuntimeError(f"branch reproof worker failed:\n{value}")
-                        findings, coverage = value
+                        findings, coverage, changed_projections = value
                         _branch_number, simulation = branches[index]
+                        after_snapshot = simulation.required_after_snapshot
+                        if changed_projections:
+                            for file_path, items in changed_projections.items():
+                                if file_path in after_snapshot.sources_by_file_path:
+                                    after_snapshot.parsed_module_for_source_path(
+                                        file_path
+                                    ).install_family_batch(
+                                        CompactModuleClassProjectionFamily, items
+                                    )
                         projected = ProvedWorkflowScan(
-                            proved=simulation.required_after_snapshot,
+                            proved=after_snapshot,
                             findings=findings,
                             coverage=coverage,
                         )

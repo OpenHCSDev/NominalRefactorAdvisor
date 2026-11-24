@@ -10,7 +10,7 @@ from collections import (
     deque,
 )
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from functools import cached_property
 from typing import (
@@ -20,6 +20,7 @@ from typing import (
 )
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.class_namespace import PROMOTABLE_METHOD_DECORATOR_IDENTITIES
 from nominal_refactor_advisor.class_symbols import (
     ClassSymbolResolutionAuthority,
@@ -649,6 +650,16 @@ def _compact_class_method(
     )
 
 
+@ScanCache.cached
+def _cached_class_methods() -> dict[
+    tuple[str, str, frozenset[str] | None, tuple[tuple[bool, ...], ...]],
+    tuple[int, tuple[CompactClassMethod, ...]],
+]:
+    """Reuse compact method facets for unchanged classes across virtual snapshots."""
+
+    return {}
+
+
 def _compact_class_methods(
     parsed_module: ParsedModule,
     indexed_class_nodes: tuple[tuple[str, ast.ClassDef], ...],
@@ -658,8 +669,40 @@ def _compact_class_methods(
 ) -> tuple[CompactClassMethod, ...]:
     methods: list[CompactClassMethod] = []
     source_lines = tuple(parsed_module.source.splitlines(keepends=True))
+    cache = _cached_class_methods() if ScanCache.active() is not None else None
     for qualname, node in indexed_class_nodes:
         class_symbol = f"{parsed_module.module_name}.{qualname}"
+        fn_stmts = tuple(
+            statement
+            for statement in FunctionDefinition.within(node.body)
+            if method_names is None or statement.name in method_names
+        )
+        if not fn_stmts:
+            continue
+        bindings = binding_snapshots[node.lineno]
+        if cache is not None and node.end_lineno is not None:
+            class_src = "".join(source_lines[node.lineno - 1 : node.end_lineno])
+            decorator_flags = tuple(
+                bindings.decorators_bound_to(
+                    statement, PROMOTABLE_METHOD_DECORATOR_IDENTITIES
+                )
+                if statement.decorator_list
+                else ()
+                for statement in fn_stmts
+            )
+            key = (class_symbol, class_src, method_names, decorator_flags)
+            cached = cache.get(key)
+            if cached is not None:
+                cached_lineno, cached_methods = cached
+                delta = node.lineno - cached_lineno
+                if delta == 0:
+                    methods.extend(cached_methods)
+                else:
+                    methods.extend(
+                        replace(method, line=method.line + delta)
+                        for method in cached_methods
+                    )
+                continue
         class_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(node.body)
         establishes_nominal_family = any(
             ClassSymbolResolutionAuthority.establishes_nominal_family(declared_name)
@@ -669,23 +712,25 @@ def _compact_class_methods(
             )
             is not None
         )
-        for statement in FunctionDefinition.within(node.body):
-            if method_names is not None and statement.name not in method_names:
-                continue
+        class_methods: list[CompactClassMethod] = []
+        for statement in fn_stmts:
             body = _trim_leading_docstring(list(statement.body))
             if not establishes_nominal_family and len(body) > 2:
                 continue
-            methods.append(
+            class_methods.append(
                 _compact_class_method(
                     class_symbol,
                     statement,
                     source_lines,
-                    binding_snapshots[node.lineno],
+                    bindings,
                     class_bound_names,
                     include_family_semantics=establishes_nominal_family,
                     body=body,
                 )
             )
+        if cache is not None and node.end_lineno is not None:
+            cache[key] = (node.lineno, tuple(class_methods))
+        methods.extend(class_methods)
     return tuple(methods)
 
 
