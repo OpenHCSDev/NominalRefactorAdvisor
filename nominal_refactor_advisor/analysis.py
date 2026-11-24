@@ -8,6 +8,7 @@ from collections.abc import (
     Hashable,
     Iterable,
     Iterator,
+    Mapping,
     Sequence,
 )
 from concurrent.futures import ProcessPoolExecutor
@@ -87,6 +88,8 @@ from nominal_refactor_advisor.cache_checkout import (
 )
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
+    build_compact_class_family_index,
+    repository_settled_projections,
     CompactClassProjectionDemand,
     CompactModuleClassProjection,
     CompactModuleClassProjectionFamily,
@@ -1305,13 +1308,18 @@ def build_compact_projection_shard(
 @dataclass(frozen=True)
 class CompactGroupWorkerState:
     """What a forked group worker inherits: the manifest that loads each family
-    from the cache, the config, and the family groups to join."""
+    from the cache, the config, the family groups to join, and any multi-group
+    families/contexts preloaded once in the parent for COW sharing across forks."""
 
     manifest: BoundedCompactProjectionManifest
     config: DetectorConfig
     groups: tuple[
         tuple[tuple[type[CollectedFamily], ...], tuple[type[IssueDetector], ...]], ...
     ]
+    preloaded_families: Mapping[type[CollectedFamily], Sequence[object]] = field(
+        default_factory=dict
+    )
+    preloaded_contexts: Mapping[Hashable, object] = field(default_factory=dict)
     active: ClassVar[CompactGroupWorkerState | None] = None
 
     @classmethod
@@ -1335,9 +1343,13 @@ class CompactGroupWorkerState:
             raise RuntimeError("compact group worker started without its state")
         families, detector_types = state.groups[index]
         manifest = state.manifest
-        projections_by_family = {
-            family: manifest.deferred_projections_for_family(
-                family, derive_content_identity=False
+        projections_by_family: dict[type[CollectedFamily], Sequence[object]] = {
+            family: (
+                state.preloaded_families[family]
+                if family in state.preloaded_families
+                else manifest.deferred_projections_for_family(
+                    family, derive_content_identity=False
+                )
             )
             for family in families
         }
@@ -1347,7 +1359,7 @@ class CompactGroupWorkerState:
                 tuple(detector_types),
                 projections_by_family,
                 state.config,
-                shared_contexts={},
+                shared_contexts=dict(state.preloaded_contexts),
                 finding_consumer=lambda detector_type, detector_findings: (
                     collected.append((detector_type, list(detector_findings)))
                 ),
@@ -1786,7 +1798,60 @@ class BoundedCompactProjectionManifest:
                     ),
                 )
             )
-            CompactGroupWorkerState.install(CompactGroupWorkerState(self, config, groups))
+            family_group_counts: dict[type[CollectedFamily], int] = {}
+            for families, _selected in groups:
+                for family in families:
+                    family_group_counts[family] = family_group_counts.get(family, 0) + 1
+            preloaded_families: dict[
+                type[CollectedFamily], DeferredCompactProjectionFamily
+            ] = {}
+            for family, count in family_group_counts.items():
+                if count >= 2:
+                    sequence = self.deferred_projections_for_family(
+                        family, derive_content_identity=False
+                    )
+                    for _ in sequence:
+                        pass
+                    preloaded_families[family] = sequence
+            preloaded_contexts: dict[Hashable, object] = {}
+            if CompactModuleClassProjectionFamily in preloaded_families:
+                class_sequence = preloaded_families[CompactModuleClassProjectionFamily]
+                class_index = build_compact_class_family_index(
+                    cast(Sequence[CompactModuleClassProjection], class_sequence)
+                )
+                class_context = CompactClassRepositoryContext(
+                    projections=repository_settled_projections(
+                        cast(
+                            tuple[CompactModuleClassProjection, ...],
+                            tuple(class_sequence),
+                        )
+                    ),
+                    config=config,
+                    class_index=class_index,
+                )
+                preloaded_contexts[
+                    CompactProjectionContextCacheKey(
+                        CompactModuleClassProjectionFamily,
+                        cast(
+                            CompactProjectionContextBuilder,
+                            CompactClassRepositoryContext.from_projections,
+                        ),
+                    )
+                ] = class_context
+                preloaded_contexts[
+                    CompactProjectionGroupContextCacheKey(
+                        CompactClassFamilyIndex.from_projection_groups
+                    )
+                ] = class_index
+            CompactGroupWorkerState.install(
+                CompactGroupWorkerState(
+                    self,
+                    config,
+                    groups,
+                    preloaded_families=preloaded_families,
+                    preloaded_contexts=preloaded_contexts,
+                )
+            )
             try:
                 group_results = group_plan.map(
                     CompactGroupWorkerState.analyze_group, range(len(groups))

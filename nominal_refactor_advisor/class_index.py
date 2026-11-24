@@ -5178,6 +5178,40 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         ]
 
     @classmethod
+    def collect_stub(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> CompactModuleClassProjection:
+        """Project only the declarations stdlib stub typing reads."""
+        del cls
+        declarations = CompactModuleClassHeader.from_module(parsed_module)
+        return CompactModuleClassProjection(
+            module_name=declarations.module_name,
+            file_path=declarations.file_path,
+            import_aliases=declarations.import_aliases,
+            public_export_contract=declarations.public_export_contract,
+            star_import_origins=declarations.star_import_origins,
+            classes=declarations.classes,
+            field_declaration_wrappers=declarations.field_declaration_wrappers,
+            top_level_definitions=tuple(
+                (node.name, node.lineno)
+                for node in parsed_module.module.body
+                if isinstance(
+                    node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                )
+            ),
+            type_variable_names=_module_type_variable_names(parsed_module),
+            annotated_function_returns=tuple(
+                CompactAnnotatedFunctionReturn(
+                    node.name, node.lineno, ast.unparse(returns)
+                )
+                for node in parsed_module.module.body
+                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                for returns in declared_annotations(node)
+            ),
+        )
+
+    @classmethod
     def _collect(
         cls,
         parsed_module: ParsedModule,
