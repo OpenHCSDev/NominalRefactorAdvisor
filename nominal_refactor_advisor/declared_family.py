@@ -6,7 +6,7 @@ import ast
 from abc import ABC
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
-from typing import ClassVar, Self
+from typing import ClassVar, Self, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -48,6 +48,14 @@ class ForeignAdapter(DeclaredFamily, ABC, metaclass=AutoRegisterMeta):
     declaration_marker = "__registry_key__"
     adapts: ClassVar[type]
     node: ast.AST
+    _adapter_cache: ClassVar[dict[type, type[ForeignAdapter] | None]] = {}
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        cls._adapter_cache = {}
+        for base in cls.__mro__[1:]:
+            if issubclass(base, ForeignAdapter) and "_adapter_cache" in vars(base):
+                base._adapter_cache.clear()
 
     @classmethod
     def adapters(cls) -> tuple[type[Self], ...]:
@@ -72,11 +80,20 @@ class ForeignAdapter(DeclaredFamily, ABC, metaclass=AutoRegisterMeta):
         adapter for a subclass overrides an adapter for its base.
         """
 
-        for foreign in type(node).__mro__:
-            adapter = cls.__registry__.get(foreign)
-            if adapter is not None:
-                return adapter(node)
-        return None
+        node_type = type(node)
+        cache = cls._adapter_cache
+        if node_type in cache:
+            adapter = cache[node_type]
+        else:
+            registry = cls.__registry__
+            adapter = None
+            for foreign in node_type.__mro__:
+                found = registry.get(foreign)
+                if found is not None:
+                    adapter = found
+                    break
+            cache[node_type] = adapter
+        return None if adapter is None else cast(Self, adapter(cast(ast.AST, node)))
 
     @classmethod
     def within(cls, nodes: Iterable[object]) -> Iterator[Self]:

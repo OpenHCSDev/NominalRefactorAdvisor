@@ -1469,8 +1469,9 @@ class NativeOperandStack:
 
     def pop(self, count: int) -> tuple[NativeProducedValue, ...]:
         operands = self.take(count)
-        if any(not isinstance(value, NativeProducedValue) for value in operands):
-            raise ValueError("A call protocol marker is not a Python operand")
+        for value in operands:
+            if not isinstance(value, NativeProducedValue):
+                raise ValueError("A call protocol marker is not a Python operand")
         return cast(tuple[NativeProducedValue, ...], operands)
 
     def invoke(
@@ -1974,14 +1975,15 @@ class NativeCodeObservation:
             return
         if self._boundary is None:
             positions = instruction.positions
+            firstlineno = self.code.co_firstlineno
             if (
                 positions[0] is not None
                 and positions[1] is not None
                 and positions[2] is not None
                 and positions[3] is not None
                 and (
-                    positions[0] != self.code.co_firstlineno
-                    or positions[1] != self.code.co_firstlineno
+                    positions[0] != firstlineno
+                    or positions[1] != firstlineno
                     or positions[2] != 0
                     or positions[3] != 0
                 )
@@ -1990,6 +1992,16 @@ class NativeCodeObservation:
         self._walk_identities.add(identity)
         self._walk_positions.setdefault(instruction.offset, len(self._walk))
         self._walk.append(instruction)
+
+    def observe_values(
+        self,
+        instruction: dis.Instruction,
+        previous: NativeCodeEmission | None,
+        *,
+        requires_prefix: bool,
+    ) -> None:
+        """Code-only observations retain prefixes and creations without value streams."""
+        del instruction, previous, requires_prefix
 
 
 @dataclass(frozen=True)
@@ -2657,10 +2669,10 @@ class NativeScopeObservation(NativeCodeObservation):
         instruction: dis.Instruction,
         previous: NativeCodeEmission | None,
         *,
-        after_prologue: bool,
+        requires_prefix: bool,
     ) -> None:
         self.value_stream.observe(instruction)
-        if after_prologue:
+        if not requires_prefix or self._boundary is not None:
             self.entry_window.observe(instruction)
         if previous is not None and previous.installation is not None:
             previous.installation = self.value_stream.record_store(
@@ -2704,29 +2716,60 @@ class NativeScopeInventoryABC(ABC):
 
 
 class NativeInventoryPolicy(ABC):
-    """Which code scopes a native inventory walks."""
+    """Which code scopes and observations a native inventory walks."""
 
     @classmethod
     @abstractmethod
     def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
         raise NotImplementedError
 
+    @classmethod
+    @abstractmethod
+    def start_scope(
+        cls,
+        parent: CodeType,
+        primitive_operations: dict[int, NativePrimitiveOperation],
+        observations: list[NativeScopeObservation],
+    ) -> NativeCodeObservation:
+        raise NotImplementedError
+
 
 class FullScopeInventory(NativeInventoryPolicy):
-    """Observe every scope in the compilation, including leaf functions."""
+    """Observe every scope in the compilation, including leaf functions and value streams."""
 
     @classmethod
     def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
         del has_children, requires_prefix
         return True
 
+    @classmethod
+    def start_scope(
+        cls,
+        parent: CodeType,
+        primitive_operations: dict[int, NativePrimitiveOperation],
+        observations: list[NativeScopeObservation],
+    ) -> NativeCodeObservation:
+        prefix = NativeScopeObservation(parent, primitive_operations)
+        observations.append(prefix)
+        return prefix
+
 
 class DeclarationInventory(NativeInventoryPolicy):
-    """Observe declaration-bearing and class-body scopes, skipping leaf functions."""
+    """Observe declaration-bearing and class-body scopes without value streams."""
 
     @classmethod
     def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
         return has_children or requires_prefix
+
+    @classmethod
+    def start_scope(
+        cls,
+        parent: CodeType,
+        primitive_operations: dict[int, NativePrimitiveOperation],
+        observations: list[NativeScopeObservation],
+    ) -> NativeCodeObservation:
+        del primitive_operations, observations
+        return NativeCodeObservation(parent)
 
 
 @dataclass(eq=False)
@@ -3802,9 +3845,8 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
             )
             if not policy.includes_scope(has_children, requires_prefix):
                 continue
-            prefix = NativeScopeObservation(parent, primitive_operations)
+            prefix = policy.start_scope(parent, primitive_operations, observations)
             prefixes[id(parent)] = prefix
-            observations.append(prefix)
             parent_builders: set[SourceByteSpan] = set()
             for instruction in self.instructions(parent):
                 prefix.observe(instruction)
@@ -3832,7 +3874,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
                 prefix.observe_values(
                     instruction,
                     previous,
-                    after_prologue=not requires_prefix or prefix.boundary is not None,
+                    requires_prefix=requires_prefix,
                 )
         return NativeCreationInventory(
             code,

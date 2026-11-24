@@ -4718,22 +4718,21 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
             self._record(node, node.func.value, node.args[0])
         self.generic_visit(node)
 
-    def _record(self, node: ast.AST, subject: ast.AST, key_node: ast.AST) -> None:
-        if (
-            not isinstance(key_node, ast.Constant)
-            or not isinstance(key_node.value, str)
-            or ExpressionReference.decoded(subject).attribute_chain is None
-        ):
-            return
-        key = key_node.value
+    @classmethod
+    def _constructions_for_ancestors(
+        cls,
+        parents: Sequence[ast.AST],
+        key: str,
+    ) -> set[MappingReadArgument]:
         constructions: set[MappingReadArgument] = set()
-        for index, ancestor in enumerate(self.parents[:-1]):
+        for index in range(len(parents) - 1):
+            ancestor = parents[index]
             if not isinstance(ancestor, ast.Call):
                 continue
             parts = ExpressionReference.decoded(ancestor.func).attribute_chain
             if not parts:
                 continue
-            child = self.parents[index + 1]
+            child = parents[index + 1]
             if isinstance(child, ast.keyword):
                 for keyword in CallKeywords.of((child,)).named:
                     constructions.add(
@@ -4744,6 +4743,86 @@ class MappingReadProjectionCollector(ast.NodeVisitor):
                     constructions.add(
                         PositionalMappingReadArgument(parts, key, position)
                     )
+        return constructions
+
+    @classmethod
+    def by_function(
+        cls,
+        parsed_module: ParsedModule,
+    ) -> dict[
+        ast.FunctionDef | ast.AsyncFunctionDef,
+        dict[str, list[tuple[ast.AST, str, set[MappingReadArgument]]]],
+    ]:
+        """Collect all lexical-function mapping reads in one pass over indexed Subscript and Call nodes."""
+
+        syntax_index = parsed_module.syntax_index
+        nodes = syntax_index.depth_first_nodes
+        parent_indices = syntax_index.parent_indices
+        reads_by_function: dict[
+            ast.FunctionDef | ast.AsyncFunctionDef,
+            dict[str, list[tuple[ast.AST, str, set[MappingReadArgument]]]],
+        ] = {}
+        body_statement_ids: dict[ast.FunctionDef | ast.AsyncFunctionDef, frozenset[int]] = {}
+
+        def record_indexed(node_index: int, node: ast.AST, subject: ast.AST, key_node: ast.AST) -> None:
+            if not isinstance(key_node, ast.Constant) or not isinstance(key_node.value, str):
+                return
+            if ExpressionReference.decoded(subject).attribute_chain is None:
+                return
+            chain: list[ast.AST] = [node]
+            current_index = parent_indices[node_index]
+            enclosing_function: ast.FunctionDef | ast.AsyncFunctionDef | None = None
+            while current_index >= 0:
+                ancestor = nodes[current_index]
+                if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    enclosing_function = ancestor
+                    break
+                if isinstance(ancestor, (ast.ClassDef, ast.Lambda, ast.Module)):
+                    return
+                chain.append(ancestor)
+                current_index = parent_indices[current_index]
+            if enclosing_function is None:
+                return
+            body_ids = body_statement_ids.get(enclosing_function)
+            if body_ids is None:
+                body_ids = frozenset(id(stmt) for stmt in enclosing_function.body)
+                body_statement_ids[enclosing_function] = body_ids
+            if id(chain[-1]) not in body_ids:
+                return
+            chain.reverse()
+            key = key_node.value
+            constructions = cls._constructions_for_ancestors(chain, key)
+            reads_by_function.setdefault(enclosing_function, {}).setdefault(
+                ast.unparse(subject), []
+            ).append((node, key, constructions))
+
+        for node_index in syntax_index.node_indices_by_type.get(ast.Subscript, ()):
+            subscript = nodes[node_index]
+            if isinstance(subscript, ast.Subscript) and isinstance(subscript.ctx, ast.Load):
+                record_indexed(node_index, subscript, subscript.value, subscript.slice)
+
+        for node_index in syntax_index.node_indices_by_type.get(ast.Call, ()):
+            call = nodes[node_index]
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "get"
+                and 1 <= len(call.args) <= 2
+                and not call.keywords
+            ):
+                record_indexed(node_index, call, call.func.value, call.args[0])
+
+        return reads_by_function
+
+    def _record(self, node: ast.AST, subject: ast.AST, key_node: ast.AST) -> None:
+        if (
+            not isinstance(key_node, ast.Constant)
+            or not isinstance(key_node.value, str)
+            or ExpressionReference.decoded(subject).attribute_chain is None
+        ):
+            return
+        key = key_node.value
+        constructions = self._constructions_for_ancestors(self.parents, key)
         self.reads.setdefault(ast.unparse(subject), []).append(
             (node, key, constructions)
         )
@@ -4907,6 +4986,11 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         self.class_supplement_stack: list[CompactSemanticClassSupplementFrame] = []
         self.active_class_method_frames: list[CompactSemanticClassSupplementFrame] = []
         self._class_supplements: list[SemanticClassSupplement | None] = []
+        self.mapping_reads_by_function = (
+            MappingReadProjectionCollector.by_function(parsed_module)
+            if include_presentations
+            else {}
+        )
 
     @property
     def class_supplements(self) -> tuple[SemanticClassSupplement, ...]:
@@ -4971,17 +5055,24 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
         )
         try:
             super().visit_FunctionDef(node)
-            if self.include_presentations:
-                collector = MappingReadProjectionCollector()
-                bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                    node.body
-                ) | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
-                for statement in node.body:
-                    collector.visit(statement)
-                for subject, reads in collector.reads.items():
+            if self.include_presentations and (
+                reads_by_subject := self.mapping_reads_by_function.get(node)
+            ):
+                body_bound_names: frozenset[str] | None = None
+                bound_names: frozenset[str] | None = None
+                for subject, reads in reads_by_subject.items():
                     keys = sorted_tuple({key for _, key, _ in reads})
                     if len(keys) < 2:
                         continue
+                    if bound_names is None:
+                        body_bound_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
+                            node.body
+                        )
+                        bound_names = (
+                            body_bound_names
+                            | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(node)
+                        )
+                    assert body_bound_names is not None
                     common_references = set.intersection(
                         *(
                             {argument.reference_parts for argument in targets}
@@ -5021,10 +5112,7 @@ class _ProjectionVisitor(ClassFunctionStackNodeVisitor):
                         if parts[0] not in bound_names
                         or (
                             parts == (classmethod_receiver,)
-                            and classmethod_receiver
-                            not in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                                node.body
-                            )
+                            and classmethod_receiver not in body_bound_names
                         )
                     )
                     self.function_stack.append(node.name)

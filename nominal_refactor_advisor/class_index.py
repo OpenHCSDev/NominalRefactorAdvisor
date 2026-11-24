@@ -5239,9 +5239,9 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 ),
                 class_methods=class_methods,
                 class_references=_compact_class_references(parsed_module),
-                field_order_summaries=FunctionOrderSummary.of_module(
+                field_order_summaries=FunctionOrderSummary.of_syntax_index(
                     parsed_module.module_name,
-                    parsed_module.module,
+                    parsed_module.syntax_index,
                     module_import_aliases(parsed_module),
                 ),
                 script_scopes=tuple(
@@ -5505,6 +5505,15 @@ def _compact_class_references(
             )
             if receiver_class is not None:
                 parts = receiver_class
+            elif isinstance(node, ast.Name):
+                if node.id not in module_bound_names:
+                    continue
+                if any(
+                    node.id in locals_by_function_index.get(function_index, ())
+                    for function_index in scope.function_node_indices
+                ):
+                    continue
+                parts = (node.id,)
             else:
                 parts = ExpressionReference.decoded(node).attribute_chain
                 if parts is None or parts[0] not in module_bound_names:
