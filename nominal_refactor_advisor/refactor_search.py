@@ -64,6 +64,8 @@ from nominal_refactor_advisor.member_census import (
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
 
 
 @dataclass(frozen=True)
@@ -357,6 +359,8 @@ class RefactorSearch:
     introspection: IntrospectionSource = field(default_factory=NoTrace)
 
     def score(self, scan: CodemodWorkflowScan) -> StateScore:
+        if ScanCache.active() is not None:
+            TypeCheckerSession.seed_incremental(SourceTexts(tuple(scan.modules)))
         census = MemberAwarenessCensusBuilder.from_sources(
             CensusCorpus(tuple(scan.modules), self.config)
         ).report(self.introspection)
@@ -369,27 +373,29 @@ class RefactorSearch:
     def turn(self, scan: CodemodWorkflowScan, start: StateScore, depth: int) -> SearchTurn:
         """Every concept played from `scan`, whose score is `start`, looking `depth` moves ahead."""
 
-        concepts = RefactorConcept.declaration_types()
-        scan.populate_concept_findings(concepts)
-        # The workers share this process's pages until they write to them; a
-        # frozen generation keeps the collector from writing to every object
-        # this state holds.
-        gc.collect()
-        gc.freeze()
-        try:
-            moves = self.played(scan, start, concepts)
-        finally:
-            gc.unfreeze()
-        turn = SearchTurn(start, moves)
-        if depth <= 1:
-            return turn
-        widened = frozenset(move.concept for move in turn.front[: self.budget.width])
-        return replace(
-            turn,
-            moves=tuple(
-                move.looked_past(self, scan, widened, depth - 1) for move in turn.moves
-            ),
-        )
+        with ScanCache.scope():
+            concepts = RefactorConcept.declaration_types()
+            scan.populate_concept_findings(concepts)
+            TypeCheckerSession.seed_incremental(SourceTexts(tuple(scan.modules)))
+            # The workers share this process's pages until they write to them; a
+            # frozen generation keeps the collector from writing to every object
+            # this state holds.
+            gc.collect()
+            gc.freeze()
+            try:
+                moves = self.played(scan, start, concepts)
+            finally:
+                gc.unfreeze()
+            turn = SearchTurn(start, moves)
+            if depth <= 1:
+                return turn
+            widened = frozenset(move.concept for move in turn.front[: self.budget.width])
+            return replace(
+                turn,
+                moves=tuple(
+                    move.looked_past(self, scan, widened, depth - 1) for move in turn.moves
+                ),
+            )
 
     def played(
         self,
@@ -571,11 +577,12 @@ def build_refactor_search(
     """
 
     search = RefactorSearch((root,), config, budget, introspection)
-    scan = CodemodWorkflowScan.parsed(
-        (root,),
-        config,
-        cache_dir=cache_dir,
-        use_parse_cache=use_parse_cache,
-        analysis_workers=analysis_workers,
-    )
-    return search.turn(scan, search.score(scan), budget.depth)
+    with ScanCache.scope():
+        scan = CodemodWorkflowScan.parsed(
+            (root,),
+            config,
+            cache_dir=cache_dir,
+            use_parse_cache=use_parse_cache,
+            analysis_workers=analysis_workers,
+        )
+        return search.turn(scan, search.score(scan), budget.depth)
