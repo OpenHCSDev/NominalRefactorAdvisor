@@ -6,6 +6,8 @@ import time
 import pytest
 
 from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
+from nominal_refactor_advisor.ast_tools import SourceModule
+from nominal_refactor_advisor.probe_owner import InferredReceiverType, ReceiverSpan
 from nominal_refactor_advisor.refactor_search import (
     ForkedPlay,
     RefactorSearch,
@@ -15,6 +17,12 @@ from nominal_refactor_advisor.refactor_search import (
     StateScore,
     UnscoredMove,
     edit_tokens,
+)
+from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.type_checker_session import (
+    FineGrainedTypeChecker,
+    SourceTexts,
+    TypeCheckerSession,
 )
 
 START = StateScore(findings=10, derived=100, add_member_edits=5)
@@ -196,3 +204,64 @@ def test_more_plays_than_workers_each_answer_once() -> None:
     moves = timed_search(3).played(None, None, concepts)
 
     assert [move.concept for move in moves] == [concept.__name__ for concept in concepts]
+
+
+def test_fine_grained_type_checker_updates_in_memory_and_matches_cold_build(tmp_path) -> None:
+    """In-memory edits, cross-file return-type propagation, new virtual modules,
+    removals, and subset overlay queries match a cold mypy build without touching disk."""
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    init_path = pkg / "__init__.py"
+    a_path = pkg / "a.py"
+    b_path = pkg / "b.py"
+    c_path = pkg / "c.py"
+    # Write stale content on disk to prove the fine-grained engine reads memory, not disk.
+    init_path.write_text("", encoding="utf-8")
+    a_path.write_text("class Foo:\n    def ping(self) -> int:\n        return 1\n", encoding="utf-8")
+    b_path.write_text("from pkg.a import Foo\ndef use(x: Foo) -> int:\n    return x.ping()\n", encoding="utf-8")
+
+    mod_init = SourceModule(init_path, "pkg", "").parse()
+    mod_a1 = SourceModule(a_path, "pkg.a", "class Foo:\n    def ping(self) -> int:\n        return 1\n").parse()
+    mod_b1 = SourceModule(b_path, "pkg.b", "from pkg.a import Foo\ndef use(x: Foo) -> int:\n    return x.ping()\n").parse()
+    call_span = ReceiverSpan(str(b_path), 3, 11, 3, 19)
+
+    with ScanCache.scope():
+        engine = TypeCheckerSession.seed_incremental(SourceTexts((mod_init, mod_a1, mod_b1)))
+        assert isinstance(engine, FineGrainedTypeChecker)
+        first = engine.receiver_types((call_span,))[call_span]
+        assert isinstance(first, InferredReceiverType)
+        assert first.classes == ("builtins.int",)
+
+        # 1. Cross-file edit in memory ONLY (disk still says -> int): Foo.ping() -> str propagates to pkg.b.use!
+        mod_a2 = SourceModule(a_path, "pkg.a", "class Foo:\n    def ping(self) -> str:\n        return 'ok'\n").parse()
+        with TypeCheckerSession.scoped_session(SourceTexts((mod_init, mod_a2, mod_b1)), (call_span,)) as synced:
+            assert synced is engine
+            propagated = synced.receiver_types((call_span,))[call_span]
+        assert isinstance(propagated, InferredReceiverType)
+        assert propagated.classes == ("builtins.str",)
+
+        # 2. Subset overlay query (answers) does NOT drop untouched modules from the live corpus!
+        subset_answers = TypeCheckerSession.answers(SourceTexts((mod_a2, mod_b1)), (call_span,))
+        assert subset_answers[call_span] == propagated
+        assert "pkg" in engine._path_by_module
+
+        # 3. Brand-new virtual module c.py (never on disk) + edit b.py to import it!
+        mod_c = SourceModule(c_path, "pkg.c", "class Baz:\n    def zap(self) -> bytes:\n        return b'x'\n").parse()
+        mod_b2 = SourceModule(b_path, "pkg.b", "from pkg.c import Baz\ndef use(x: Baz) -> bytes:\n    return x.zap()\n").parse()
+        c_call_span = ReceiverSpan(str(b_path), 3, 11, 3, 18)
+        fg_session = TypeCheckerSession.started(SourceTexts((mod_init, mod_a2, mod_b2, mod_c)))
+        assert fg_session is engine
+        fg_answer = fg_session.receiver_types((c_call_span,))[c_call_span]
+        assert isinstance(fg_answer, InferredReceiverType)
+        assert fg_answer.classes == ("builtins.bytes",)
+
+        # 4. Deleting virtual module c.py + reverting b.py matches cold build!
+        reverted = TypeCheckerSession.started(SourceTexts((mod_init, mod_a1, mod_b1)))
+        assert reverted is engine
+        assert "pkg.c" not in engine._path_by_module
+        assert reverted.receiver_types((call_span,))[call_span] == first
+
+    # Compare against cold build outside ScanCache.scope()
+    cold = TypeCheckerSession.started(SourceTexts((mod_init, mod_a2, mod_b2, mod_c)))
+    assert cold.receiver_types((c_call_span,))[c_call_span] == fg_answer

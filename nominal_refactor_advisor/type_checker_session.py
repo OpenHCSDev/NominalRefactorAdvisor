@@ -12,10 +12,12 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import os
+import stat
 import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -35,9 +37,12 @@ from nominal_refactor_advisor.probe_owner import (
 )
 
 if TYPE_CHECKING:
-    from mypy.build import BuildResult
+    from mypy.build import BuildResult, State
+    from mypy.fscache import FileSystemCache
     from mypy.modulefinder import BuildSource
+    from mypy.nodes import Expression, MypyFile
     from mypy.options import Options
+    from mypy.server.update import FineGrainedBuildManager
 
     from nominal_refactor_advisor.ast_tools import ParsedModule
     from mypy.types import Type
@@ -509,10 +514,39 @@ class TypeCheckerSession(ABC):
         raise NotImplementedError
 
     @staticmethod
+    def _active_incremental() -> FineGrainedTypeChecker | None:
+        if ScanCache.active() is None:
+            return None
+        return _incremental_type_checker_slot()[0]
+
+    @staticmethod
+    def seed_incremental(sources: SourceTexts) -> TypeCheckerSession:
+        """Seed or sync an in-memory fine-grained mypy engine inside the active
+        ``ScanCache.scope()`` so subsequent queries and forked workers share it COW."""
+
+        if ScanCache.active() is None:
+            return TypeCheckerSession.started(sources)
+        slot = _incremental_type_checker_slot()
+        existing = slot[0]
+        if existing is not None:
+            synced = existing.sync_corpus(sources)
+            if synced is not None:
+                return synced
+        built = FineGrainedTypeChecker.seeded(sources)
+        slot[0] = built if isinstance(built, FineGrainedTypeChecker) else None
+        return built
+
+    @staticmethod
     def started(sources: TypeCheckerSources) -> TypeCheckerSession:
         """Build these sources once with exported types, or name why that failed:
         a session for receivers asked about later, so it keeps every file's types."""
 
+        if isinstance(sources, SourceTexts):
+            existing = TypeCheckerSession._active_incremental()
+            if existing is not None:
+                synced = existing.sync_corpus(sources)
+                if synced is not None:
+                    return synced
         return TypeCheckerSession._built(sources, AllBuiltExpressions())
 
     @staticmethod
@@ -523,6 +557,12 @@ class TypeCheckerSession(ABC):
         check untyped defs and only the requested spans are formatted and exported."""
 
         asked = tuple(spans)
+        if isinstance(sources, SourceTexts):
+            existing = TypeCheckerSession._active_incremental()
+            if existing is not None:
+                synced = existing.sync_overlay(sources)
+                if synced is not None:
+                    return synced.receiver_types(asked)
         session = TypeCheckerSession._built(sources, RequestedSpanExpressions.of(asked))
         try:
             return session.receiver_types(asked)
@@ -614,6 +654,13 @@ class TypeCheckerSession(ABC):
     ) -> Iterator[TypeCheckerSession]:
         """Build these sources once, formatting and exporting only `spans`."""
 
+        if isinstance(sources, SourceTexts):
+            existing = TypeCheckerSession._active_incremental()
+            if existing is not None:
+                synced = existing.sync_corpus(sources)
+                if synced is not None:
+                    yield synced
+                    return
         session = TypeCheckerSession._built(sources, RequestedSpanExpressions.of(spans))
         try:
             yield session
@@ -778,8 +825,404 @@ class BuiltTypeChecker(TypeCheckerSession):
         )
 
 
+@ScanCache.cached
+def _incremental_type_checker_slot() -> list[FineGrainedTypeChecker | None]:
+    """The active fine-grained mypy engine for this ``ScanCache.scope()``, if seeded."""
+
+    return [None]
+
+
+class FineGrainedTypeChecker(TypeCheckerSession):
+    """One live in-memory mypy ``FineGrainedBuildManager`` updated on source deltas.
+
+    Seeded once before ``RefactorSearch`` forks so every worker inherits the built
+    module graph copy-on-write and updates only the files a candidate move changed,
+    without touching disk or rebuilding untouched modules.
+    """
+
+    def __init__(
+        self,
+        manager: FineGrainedBuildManager,
+        fscache: FileSystemCache,
+        options: Options,
+        format_type_bare: object,
+        mypy_types: ModuleType,
+        subexpressions: Callable[[MypyFile], list[Expression]],
+        module_prefix: Callable[[dict[str, State], str], str | None],
+        hash_digest: Callable[[bytes], str],
+        text_by_module: dict[str, str],
+        path_by_module: dict[str, str],
+        shared: dict[str, str],
+        mtime: int,
+    ) -> None:
+        self._manager = manager
+        self._fscache = fscache
+        self._options = options
+        self._format_type_bare = format_type_bare
+        self._mypy_types = mypy_types
+        self._subexpressions = subexpressions
+        self._module_prefix = module_prefix
+        self._hash_digest = hash_digest
+        self._text_by_module = text_by_module
+        self._path_by_module = path_by_module
+        self._state_by_path: dict[str, State] = {
+            state.xpath: state for state in manager.graph.values()
+        }
+        self._shared = shared
+        self._raw_by_file: dict[str, dict[ReceiverSpan, Type]] = {}
+        self._formatted_by_file: dict[str, dict[ReceiverSpan, InferredReceiverType]] = {}
+        self._mtime = mtime
+
+    @staticmethod
+    def _ensure_virtual_dir(fscache: FileSystemCache, directory: str, mtime: int) -> None:
+        norm = os.path.normpath(directory)
+        if norm in fscache.listdir_cache:
+            return
+        pending: list[str] = []
+        cursor = norm
+        while cursor not in fscache.listdir_cache:
+            if os.path.isdir(cursor):
+                try:
+                    fscache.listdir_cache[cursor] = list(os.listdir(cursor))
+                except OSError:
+                    fscache.listdir_cache[cursor] = []
+                break
+            pending.append(cursor)
+            parent = os.path.normpath(os.path.dirname(cursor))
+            if parent == cursor:
+                fscache.listdir_cache[cursor] = []
+                break
+            cursor = parent
+        dir_stat = os.stat_result(
+            (stat.S_IFDIR | 0o755, 0, 0, 2, 0, 0, 0, mtime, mtime, mtime)
+        )
+        for virtual_dir in reversed(pending):
+            fscache.stat_or_none_cache[virtual_dir] = dir_stat
+            fscache.exists_case_cache[virtual_dir] = True
+            fscache.listdir_error_cache.pop(virtual_dir, None)
+            fscache.listdir_cache.setdefault(virtual_dir, [])
+            parent = os.path.normpath(os.path.dirname(virtual_dir))
+            child = os.path.basename(virtual_dir)
+            if parent != virtual_dir and parent in fscache.listdir_cache:
+                entries = fscache.listdir_cache[parent]
+                if child and child not in entries:
+                    entries.append(child)
+
+    @classmethod
+    def _put_memory_file(
+        cls,
+        fscache: FileSystemCache,
+        hash_digest: Callable[[bytes], str],
+        path: str,
+        text: str,
+        mtime: int,
+        register_in_dir: bool,
+    ) -> None:
+        data = text.encode("utf-8")
+        fscache.read_cache[path] = data
+        fscache.hash_cache[path] = hash_digest(data)
+        fscache.read_error_cache.pop(path, None)
+        fscache.stat_or_none_cache[path] = os.stat_result(
+            (stat.S_IFREG | 0o644, 0, 0, 1, 0, 0, len(data), mtime, mtime, mtime)
+        )
+        fscache.isfile_case_cache[path] = True
+        fscache.exists_case_cache[path] = True
+        parent = os.path.normpath(os.path.dirname(path))
+        if register_in_dir or parent in fscache.listdir_cache:
+            cls._ensure_virtual_dir(fscache, parent, mtime)
+            name = os.path.basename(path)
+            entries = fscache.listdir_cache[parent]
+            if name and name not in entries:
+                entries.append(name)
+
+    def _delete_memory_file(self, module_name: str, path: str) -> None:
+        self._fscache.read_cache.pop(path, None)
+        self._fscache.hash_cache.pop(path, None)
+        self._fscache.read_error_cache.pop(path, None)
+        self._fscache.stat_or_none_cache[path] = None
+        self._fscache.isfile_case_cache[path] = False
+        self._fscache.exists_case_cache[path] = False
+        parent = os.path.normpath(os.path.dirname(path))
+        if parent in self._fscache.listdir_cache:
+            name = os.path.basename(path)
+            entries = self._fscache.listdir_cache[parent]
+            if name in entries:
+                entries.remove(name)
+        self._manager.manager.ast_cache.pop(module_name, None)
+
+    @classmethod
+    def seeded(cls, sources: SourceTexts) -> TypeCheckerSession:
+        """Seed one live ``FineGrainedBuildManager`` over ``sources`` in memory."""
+
+        if importlib.util.find_spec("mypy") is None:
+            return UnavailableTypeChecker(f"mypy is not installed ({TYPES_EXTRA})")
+        build = importlib.import_module("mypy.build")
+        errors = importlib.import_module("mypy.errors")
+        fscache_mod = importlib.import_module("mypy.fscache")
+        modulefinder = importlib.import_module("mypy.modulefinder")
+        update_mod = importlib.import_module("mypy.server.update")
+        subexpr_mod = importlib.import_module("mypy.server.subexpr")
+        util_mod = importlib.import_module("mypy.util")
+        messages_mod = importlib.import_module("mypy.messages")
+        mypy_types = importlib.import_module("mypy.types")
+
+        options = TypeCheckerSession.options()
+        options.incremental = True
+        options.fine_grained_incremental = True
+        options.use_fine_grained_cache = False
+        options.local_partial_types = True
+        options.cache_dir = os.devnull
+        options.export_types = True
+        options.preserve_asts = True
+        options.ignore_errors = True
+        # Force reads through FileSystemCache instead of mypy 2.x's native parser
+        # opening unmodified files directly from disk.
+        options.native_parser = False
+
+        unique, shared = TypeCheckerSession.unique_sources(sources, options)
+        fscache: FileSystemCache = fscache_mod.FileSystemCache()
+        hash_digest: Callable[[bytes], str] = util_mod.hash_digest
+        build_source = modulefinder.BuildSource
+        text_by_module: dict[str, str] = {}
+        path_by_module: dict[str, str] = {}
+        build_sources: list[BuildSource] = []
+        mtime = 1
+        for path, source in unique:
+            text = source.text or ""
+            mtime += 1
+            cls._put_memory_file(
+                fscache,
+                hash_digest,
+                path,
+                text,
+                mtime,
+                register_in_dir=not os.path.exists(path),
+            )
+            text_by_module[source.module] = text
+            path_by_module[source.module] = path
+            build_sources.append(build_source(path, source.module, None))
+
+        started = perf_counter()
+        try:
+            result = build.build(build_sources, options, fscache=fscache)
+            manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(result)
+        except errors.CompileError as error:
+            return UnavailableTypeChecker(
+                "the mypy build failed: " + "\n".join(error.messages)[-500:]
+            )
+        TypeCheckerTimingLedger.active().record(
+            TypeCheckerTiming(build_seconds=perf_counter() - started)
+        )
+        return cls(
+            manager=manager,
+            fscache=fscache,
+            options=options,
+            format_type_bare=messages_mod.format_type_bare,
+            mypy_types=mypy_types,
+            subexpressions=subexpr_mod.get_subexpressions,
+            module_prefix=update_mod.module_prefix,
+            hash_digest=hash_digest,
+            text_by_module=text_by_module,
+            path_by_module=path_by_module,
+            shared=shared,
+            mtime=mtime,
+        )
+
+    def _apply_delta(
+        self,
+        changed: list[tuple[str, str, str]],
+        removed: list[tuple[str, str]],
+        shared: dict[str, str],
+    ) -> bool:
+        if not changed and not removed:
+            self._shared = shared
+            return True
+        started = perf_counter()
+        for module_name, path in removed:
+            self._delete_memory_file(module_name, path)
+            self._text_by_module.pop(module_name, None)
+            self._path_by_module.pop(module_name, None)
+            self._state_by_path.pop(path, None)
+            self._raw_by_file.pop(path, None)
+            self._formatted_by_file.pop(path, None)
+        for module_name, path, text in changed:
+            old_path = self._path_by_module.get(module_name)
+            if old_path is not None and old_path != path:
+                self._delete_memory_file(module_name, old_path)
+                self._state_by_path.pop(old_path, None)
+                self._raw_by_file.pop(old_path, None)
+                self._formatted_by_file.pop(old_path, None)
+            self._mtime += 1
+            is_new = module_name not in self._path_by_module or old_path != path
+            self._put_memory_file(
+                self._fscache,
+                self._hash_digest,
+                path,
+                text,
+                self._mtime,
+                register_in_dir=is_new or not os.path.exists(path),
+            )
+            self._manager.manager.ast_cache.pop(module_name, None)
+            self._text_by_module[module_name] = text
+            self._path_by_module[module_name] = path
+        self._manager.update(
+            [(module_name, path) for module_name, path, _text in changed],
+            removed,
+        )
+        if self._manager.blocking_error is not None or self._manager.stale:
+            return False
+        touched_modules: set[str] = (
+            {module_name for module_name, _path, _text in changed}
+            | {module_name for module_name, _path in removed}
+            | set(self._manager.updated_modules)
+        )
+        for target in self._manager.processed_targets:
+            prefix = self._module_prefix(self._manager.graph, target)
+            if prefix is not None:
+                touched_modules.add(prefix)
+        for module_name in touched_modules:
+            state = self._manager.graph.get(module_name)
+            touched_path = (
+                state.xpath
+                if state is not None
+                else self._path_by_module.get(module_name)
+            )
+            if touched_path is not None:
+                self._raw_by_file.pop(touched_path, None)
+                self._formatted_by_file.pop(touched_path, None)
+                if state is not None:
+                    self._state_by_path[touched_path] = state
+                else:
+                    self._state_by_path.pop(touched_path, None)
+        self._shared = shared
+        TypeCheckerTimingLedger.active().record(
+            TypeCheckerTiming(build_seconds=perf_counter() - started)
+        )
+        return True
+
+    def sync_corpus(self, sources: SourceTexts) -> TypeCheckerSession | None:
+        """Update this live engine to match a full corpus ``sources``.
+
+        Returns ``None`` if too many modules changed (different corpus) or mypy
+        encountered a blocking error so the caller falls back to a fresh build.
+        """
+
+        unique, shared = TypeCheckerSession.unique_sources(sources, self._options)
+        next_by_module = {
+            source.module: (path, source.text or "") for path, source in unique
+        }
+        changed = [
+            (module_name, path, text)
+            for module_name, (path, text) in next_by_module.items()
+            if self._path_by_module.get(module_name) != path
+            or self._text_by_module.get(module_name) != text
+        ]
+        removed = [
+            (module_name, path)
+            for module_name, path in self._path_by_module.items()
+            if module_name not in next_by_module
+        ]
+        if len(changed) + len(removed) > max(32, len(self._path_by_module) // 2):
+            return None
+        if not self._apply_delta(changed, removed, shared):
+            return None
+        return self
+
+    def sync_overlay(self, sources: SourceTexts) -> TypeCheckerSession | None:
+        """Update only files present in a subset ``sources`` without removing
+        untouched modules from the live corpus."""
+
+        unique, shared = TypeCheckerSession.unique_sources(sources, self._options)
+        changed: list[tuple[str, str, str]] = []
+        for path, source in unique:
+            if path in self._shared:
+                continue
+            text = source.text or ""
+            if (
+                self._path_by_module.get(source.module) != path
+                or self._text_by_module.get(source.module) != text
+            ):
+                changed.append((source.module, path, text))
+        merged_shared = {**self._shared, **shared} if shared else self._shared
+        if not self._apply_delta(changed, [], merged_shared):
+            return None
+        return self
+
+    def _file_raw_types(self, file_path: str) -> dict[ReceiverSpan, Type]:
+        cached = self._raw_by_file.get(file_path)
+        if cached is not None:
+            return cached
+        state = self._state_by_path.get(file_path)
+        if state is None or state.tree is None:
+            empty: dict[ReceiverSpan, Type] = {}
+            self._raw_by_file[file_path] = empty
+            return empty
+        all_types = self._manager.manager.all_types
+        raw: dict[ReceiverSpan, Type] = {}
+        for expression in self._subexpressions(state.tree):
+            found = all_types.get(expression)
+            if (
+                found is not None
+                and expression.end_line is not None
+                and expression.end_column is not None
+            ):
+                raw[
+                    ReceiverSpan(
+                        state.xpath,
+                        expression.line,
+                        expression.column,
+                        expression.end_line,
+                        expression.end_column,
+                    )
+                ] = found
+        self._raw_by_file[file_path] = raw
+        return raw
+
+    def answer(self, span: ReceiverSpan) -> ReceiverType:
+        formatted = self._formatted_by_file.get(span.file_path)
+        if formatted is not None:
+            hit = formatted.get(span)
+            if hit is not None:
+                return hit
+        raw = self._file_raw_types(span.file_path)
+        found = raw.get(span)
+        if found is not None:
+            inferred = ExpressionExtractionScope._inferred_type(
+                found,
+                self._options,
+                self._format_type_bare,
+                self._mypy_types,
+            )
+            self._formatted_by_file.setdefault(span.file_path, {})[span] = inferred
+            return inferred
+        if span.file_path in self._shared:
+            return FailedReceiverType(self._shared[span.file_path])
+        return FailedReceiverType(f"the build exported no type at {span.location}")
+
+    def receiver_types(
+        self, spans: Iterable[ReceiverSpan]
+    ) -> Mapping[ReceiverSpan, ReceiverType]:
+        started = perf_counter()
+        answers = {span: self.answer(span) for span in spans}
+        TypeCheckerTimingLedger.active().record(
+            TypeCheckerTiming(lookup_seconds=perf_counter() - started, lookups=len(answers))
+        )
+        return answers
+
+    def stop(self) -> None:
+        """The live engine persists until the enclosing ``ScanCache.scope()`` exits."""
+
+    @property
+    def status(self) -> str:
+        return (
+            f"mypy fine-grained ({len(self._path_by_module)} module(s); "
+            f"{len(self._shared)} file(s) left out for a module name another file shares)"
+        )
+
+
 __all__ = (
     "BuiltTypeChecker",
+    "FineGrainedTypeChecker",
     "SourceFiles",
     "SourceTexts",
     "TypeCheckerSession",

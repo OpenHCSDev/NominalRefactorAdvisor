@@ -62,6 +62,12 @@ class ScanCache:
             cls._active.reset(token)
 
     @classmethod
+    def active(cls) -> ScanCache | None:
+        """The active scan cache in this context, or None outside a scope."""
+
+        return cls._active.get()
+
+    @classmethod
     def initialize_worker(cls) -> None:
         """Begin process-local storage whose lifetime is the analysis pool."""
         cls._active.set(cls())
