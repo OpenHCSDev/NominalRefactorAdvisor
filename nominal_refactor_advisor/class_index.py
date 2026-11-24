@@ -6954,9 +6954,36 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         cached = self._inherits_cache.get(symbol)
         if cached is not None:
             return cached
-        answer = self.some_ancestor(declaration, self.registers_remembered)
+        answer = self._inherits_registering_recursive(declaration, {symbol}, 0)
         self._inherits_cache[symbol] = answer
         return answer
+
+    def _inherits_registering_recursive(
+        self, declaration: ClassDeclaration, visiting: set[str], depth: int
+    ) -> bool:
+        if depth >= self.MAX_ANCESTORS:
+            return bool(declaration.registry_facts.base_references)
+        for base in declaration.registry_facts.base_references:
+            found = self.declaration_for(base, declaration.module_name)
+            if found is None or found.symbol in visiting:
+                continue
+            if self.registers_remembered(found):
+                return True
+            cached = self._inherits_cache.get(found.symbol)
+            if cached is not None:
+                if cached:
+                    return True
+                continue
+            visiting.add(found.symbol)
+            found_inherits = self._inherits_registering_recursive(
+                found, visiting, depth + 1
+            )
+            visiting.discard(found.symbol)
+            if depth + 1 < self.MAX_ANCESTORS:
+                self._inherits_cache[found.symbol] = found_inherits
+            if found_inherits:
+                return True
+        return False
 
     def stores_subclasses(self, declaration: ClassDeclaration) -> bool:
         """Whether its own `__init_subclass__`, or one it inherits, stores each subclass."""
@@ -6965,11 +6992,37 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         cached = self._stores_cache.get(symbol)
         if cached is not None:
             return cached
-        answer = declaration.registry_facts.stores_subclass or self.some_ancestor(
-            declaration, lambda found: found.registry_facts.stores_subclass
+        answer = declaration.registry_facts.stores_subclass or self._stores_subclasses_recursive(
+            declaration, {symbol}, 0
         )
         self._stores_cache[symbol] = answer
         return answer
+
+    def _stores_subclasses_recursive(
+        self, declaration: ClassDeclaration, visiting: set[str], depth: int
+    ) -> bool:
+        if depth >= self.MAX_ANCESTORS:
+            return bool(declaration.registry_facts.base_references)
+        for base in declaration.registry_facts.base_references:
+            found = self.declaration_for(base, declaration.module_name)
+            if found is None or found.symbol in visiting:
+                continue
+            cached = self._stores_cache.get(found.symbol)
+            if cached is not None:
+                if cached:
+                    return True
+                continue
+            if found.registry_facts.stores_subclass:
+                self._stores_cache[found.symbol] = True
+                return True
+            visiting.add(found.symbol)
+            found_stores = self._stores_subclasses_recursive(found, visiting, depth + 1)
+            visiting.discard(found.symbol)
+            if depth + 1 < self.MAX_ANCESTORS:
+                self._stores_cache[found.symbol] = found_stores
+            if found_stores:
+                return True
+        return False
 
     def registers_remembered(self, declaration: ClassDeclaration) -> bool:
         if declaration.symbol not in self.registering:

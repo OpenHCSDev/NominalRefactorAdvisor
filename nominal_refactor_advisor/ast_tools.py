@@ -3888,14 +3888,22 @@ class ModuleSyntaxIndex:
     @cached_property
     def parent_by_node(self) -> dict[ast.AST, ast.AST]:
         """Project unambiguous original parents without traversing the tree again."""
+        nodes = self.depth_first_nodes
+        parent_indices = self.parent_indices
+        parents = {
+            node: nodes[parent_index]
+            for node, parent_index in zip(nodes, parent_indices)
+            if parent_index >= 0
+        }
+        if len(parents) == len(nodes) - 1:
+            return parents
+        # Synthetic DAG ASTs where one node appears under multiple parents drop ambiguous edges.
         return {
-            node: self.depth_first_nodes[parent_index]
+            node: nodes[parent_index]
             for node, parent_index in UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
                 (
                     (node, parent_index)
-                    for node, parent_index in zip(
-                        self.depth_first_nodes, self.parent_indices, strict=True
-                    )
+                    for node, parent_index in zip(nodes, parent_indices, strict=True)
                     if parent_index >= 0
                 ),
                 lambda edge: edge[0],

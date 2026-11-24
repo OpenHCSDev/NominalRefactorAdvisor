@@ -420,11 +420,42 @@ class ClassUseIndex:
         import_aliases_by_module = resolver.import_aliases_by_module_name
         reexport_tail: dict[str, str] = {}
         for file_path, module_name, references in scopes:
-            aliases = import_aliases_by_module.get(module_name, {})
+            aliases = import_aliases_by_module.get(module_name)
+            if not aliases:
+                for reference in references:
+                    parts = reference.reference_parts
+                    entry = (file_path, module_name, reference)
+                    if len(parts) == 1:
+                        filed[parts[0]].append(entry)
+                    else:
+                        for name in set(parts):
+                            filed[name].append(entry)
+                continue
+            first_tail_cache: dict[str, str] = {}
             for reference in references:
                 parts = reference.reference_parts
-                names = {*parts}
                 first = parts[0]
+                entry = (file_path, module_name, reference)
+                if len(parts) == 1:
+                    if first not in aliases:
+                        filed[first].append(entry)
+                    else:
+                        tail = first_tail_cache.get(first)
+                        if tail is None:
+                            alias_target = aliases[first]
+                            tail = reexport_tail.get(alias_target)
+                            if tail is None:
+                                tail = followed_reexports(
+                                    alias_target,
+                                    import_aliases_by_module,
+                                ).rpartition(".")[2]
+                                reexport_tail[alias_target] = tail
+                            first_tail_cache[first] = tail
+                        filed[first].append(entry)
+                        if tail != first:
+                            filed[tail].append(entry)
+                    continue
+                names = {*parts}
                 if first in aliases:
                     alias_target = aliases[first]
                     for length in range(1, len(parts) + 1):
@@ -441,7 +472,6 @@ class ClassUseIndex:
                             ).rpartition(".")[2]
                             reexport_tail[key] = tail
                         names.add(tail)
-                entry = (file_path, module_name, reference)
                 for name in names:
                     filed[name].append(entry)
         return cls(
@@ -906,11 +936,20 @@ class ClassOverlapVerdicts(DeclaredC3):
             if candidate is not None:
                 candidates.extend(candidate.rungs)
                 judged.add((overlap.first.symbol, overlap.second.symbol))
+        floor_declarations = REPORTED.declarations
         for first, second in sorted(inheriting_pairs - judged):
             first_resolved = self.resolved_declarations(first)
             second_resolved = self.resolved_declarations(second)
             shared_names = first_resolved.keys() & second_resolved.keys()
             if not shared_names:
+                continue
+            first_own = self.bodies.declarations_of(first)
+            second_own = self.bodies.declarations_of(second)
+            if (
+                len(shared_names) < floor_declarations
+                and not (first_own.keys() <= shared_names)
+                and not (second_own.keys() <= shared_names)
+            ):
                 continue
             has_candidate_inherited = False
             for name in shared_names:
@@ -931,6 +970,11 @@ class ClassOverlapVerdicts(DeclaredC3):
             )
             if (
                 overlap.inherited
+                and (
+                    overlap.first_is_contained
+                    or overlap.second_is_contained
+                    or len(overlap.shared) >= floor_declarations
+                )
                 and not self._restated_through_an_ancestor(overlap)
                 and (candidate := self.verdict(overlap)) is not None
             ):
@@ -1145,6 +1189,12 @@ class ClassOverlapVerdicts(DeclaredC3):
         """The verdict on this block, with the extraction below a move only its
         own guards refuse."""
 
+        if (
+            not overlap.first_is_contained
+            and not overlap.second_is_contained
+            and len(overlap.shared) < floor.declarations
+        ):
+            return None
         first, second = self.resolved(overlap.first), self.resolved(overlap.second)
         if second.symbol in self.class_index.ancestor_symbols(
             first.symbol

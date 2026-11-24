@@ -989,7 +989,7 @@ class ClassReferenceSites:
             alias
             for alias, qualified_name in (
                 *aliases.items(),
-                *parsed_module.fact(ScopedImportBindings).aliases(),
+                *ScopedImportBindings.inner_import_aliases(parsed_module),
             )
             if qualified_name.rsplit(".", 1)[-1] in terminal_names
         )
@@ -1232,9 +1232,6 @@ def obsolete_import_edits(
         for element in statement.value.elts
         if isinstance(element, ast.Constant) and isinstance(element.value, str)
     )
-    reexported = snapshot.names_imported_from_module(
-        parsed_module.file_path, parsed_module.module_name
-    )
     imported = frozenset(
         alias.name
         for statement in parsed_module.module.body
@@ -1242,9 +1239,13 @@ def obsolete_import_edits(
         for alias in statement.names
         if ImportBoundNameProjection(statement).alias_bound_name(alias) == alias.name
     )
-    obsolete = sorted(
-        (read_by_deleted & imported) - still_read - exported - reexported
+    candidates = (read_by_deleted & imported) - still_read - exported
+    if not candidates:
+        return ()
+    reexported = snapshot.names_imported_from_module(
+        parsed_module.file_path, parsed_module.module_name
     )
+    obsolete = sorted(candidates - reexported)
     if not obsolete:
         return ()
     return (
