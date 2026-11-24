@@ -39,6 +39,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from types import MappingProxyType
 from dataclasses import dataclass, field, replace
+from functools import cached_property
 from itertools import combinations
 from typing import ClassVar, TypeVar
 
@@ -523,6 +524,20 @@ class ModuleImportGraph:
             or any(read == user or self.reaches(read, user) for user in users if user != home)
         )
 
+    @cached_property
+    def package_modules(self) -> frozenset[str]:
+        """Every scanned module that owns a submodule (its package `__init__`)."""
+
+        packages: set[str] = set()
+        for module in self.imports:
+            prefix, sep, _leaf = module.rpartition(".")
+            while sep:
+                if prefix in packages:
+                    break
+                packages.add(prefix)
+                prefix, sep, _leaf = prefix.rpartition(".")
+        return frozenset(packages)
+
     def shared_lower_module(
         self,
         users: Iterable[str],
@@ -558,13 +573,25 @@ class ModuleImportGraph:
             return None
         package = common_package(importers)
         within = package + "."
+        packages = self.package_modules
+        if source:
+            candidates = sorted(module for module in allowed if module in self.imports)
+        elif importers:
+            iterator = iter(importers)
+            common = set(self.reachable(next(iterator)))
+            for importer in iterator:
+                common &= self.reachable(importer)
+                if not common:
+                    return None
+            candidates = sorted(module for module in common if module in self.imports)
+        else:
+            candidates = sorted(self.imports)
         qualifying = tuple(
             module
-            for module in sorted(self.imports)
+            for module in candidates
             if (module not in importers or module in allowed)
             and module.startswith(within)
-            and (not source or module in allowed)
-            and not any(other.startswith(module + ".") for other in self.imports)
+            and module not in packages
             and all(self.reaches(importer, module) for importer in importers if importer != module)
             and not any(self.reaches(module, importer) for importer in importers if importer != module)
             and all(self.can_bind_at(module, read, importers) for read in read_modules)

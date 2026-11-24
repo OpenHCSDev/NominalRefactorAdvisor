@@ -468,6 +468,7 @@ def _prewarm_compact_families(
         minimum_auto_work_items=4,
     )
     if worker_plan.uses_process_pool:
+        tasks.sort(key=lambda item: -len(modules[item[0]].source))
         collected = worker_plan.map(
             _collect_missing_module_families,
             tasks,
@@ -520,40 +521,41 @@ class DetectorAnalysisWorkerState(DetectorWorkerContext):
             )
         )
         _prewarm_compact_families(modules, families, analysis_workers)
-        projections_by_family: dict[type[CollectedFamily], Sequence[object]] = {
-            family: _PreparedProjectionSequence(
-                tuple(
-                    projection
-                    for module in modules
-                    for projection in collect_family_items(module, family)
+        with suspend_cyclic_gc():
+            projections_by_family: dict[type[CollectedFamily], Sequence[object]] = {
+                family: _PreparedProjectionSequence(
+                    tuple(
+                        projection
+                        for module in modules
+                        for projection in collect_family_items(module, family)
+                    )
                 )
-            )
-            for family in families
-        }
-        if CompactModuleClassProjectionFamily in projections_by_family:
-            build_compact_class_family_index(
-                cast(
-                    Sequence[CompactModuleClassProjection],
-                    projections_by_family[CompactModuleClassProjectionFamily],
+                for family in families
+            }
+            if CompactModuleClassProjectionFamily in projections_by_family:
+                build_compact_class_family_index(
+                    cast(
+                        Sequence[CompactModuleClassProjection],
+                        projections_by_family[CompactModuleClassProjectionFamily],
+                    )
                 )
+            shared_contexts: dict[Hashable, object] = {}
+            single_family_detectors = tuple(
+                detector_type
+                for detector_type in compact_detectors
+                if not issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
             )
-        shared_contexts: dict[Hashable, object] = {}
-        single_family_detectors = tuple(
-            detector_type
-            for detector_type in compact_detectors
-            if not issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
-        )
-        multi_family_detectors = tuple(
-            detector_type
-            for detector_type in compact_detectors
-            if issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
-        )
-        for detector_type in (*single_family_detectors, *multi_family_detectors):
-            detector_type.prebuild_in_memory_shared_context(
-                projections_by_family,
-                shared_contexts,
-                config,
+            multi_family_detectors = tuple(
+                detector_type
+                for detector_type in compact_detectors
+                if issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
             )
+            for detector_type in (*single_family_detectors, *multi_family_detectors):
+                detector_type.prebuild_in_memory_shared_context(
+                    projections_by_family,
+                    shared_contexts,
+                    config,
+                )
         return cls(
             modules=modules,
             config=config,
