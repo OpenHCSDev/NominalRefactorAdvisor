@@ -14,7 +14,8 @@ from __future__ import annotations
 import ast
 import builtins
 import re
-from collections.abc import Iterator
+from collections import defaultdict
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from typing import cast
 
@@ -849,15 +850,39 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
         resolver = TypeArgumentResolver(parsed_module)
         definitions = list(scoped_definitions(parsed_module))
-        threads = {id(definition.node): OptionalParameterThread.of(definition) for definition in definitions}
-        copies = cls.threaded_copies(definitions, threads)
-        decided = frozenset(id(definition.node) for definition in definitions if cls.decides(definition))
+        threads = {
+            id(definition.node): OptionalParameterThread.of(definition)
+            for definition in definitions
+        }
+        calls_by_target = cls.index_calls(definitions)
+        optional_params_by_def = {
+            id(definition.node): _optional_parameters(definition.node)
+            for definition in definitions
+        }
+        copies = cls.threaded_copies(
+            definitions, threads, calls_by_target, optional_params_by_def
+        )
+        decided = frozenset(
+            id(definition.node) for definition in definitions if cls.decides(definition)
+        )
         for definition in definitions:
             if id(definition.node) in decided:
                 continue
-            optional = threads[id(definition.node)].optional - copies.get(id(definition.node), frozenset())
+            optional = threads[id(definition.node)].optional - copies.get(
+                id(definition.node), frozenset()
+            )
+            if not optional:
+                continue
             yield from cls.probes(parsed_module, resolver, definition, optional)
-        yield from cls.origins(parsed_module, definitions, threads, copies, decided)
+        yield from cls.origins(
+            parsed_module,
+            definitions,
+            threads,
+            copies,
+            decided,
+            calls_by_target,
+            optional_params_by_def,
+        )
 
     @staticmethod
     def decides(definition: ScopedDefinition) -> bool:
@@ -887,36 +912,35 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         definition: ScopedDefinition,
         optional: frozenset[str],
     ) -> Iterator[RestatingSite]:
+        if not optional:
+            return
         match definition.node.returns:
             case ast.expr() as declared:
                 settles = not optional_annotation(declared)
             case _:
                 settles = False
-        deciding = {
-            id(node.test)
-            for node in function_nodes(definition.node)
-            if isinstance(node, ast.IfExp)
-            and any(
-                isinstance(arm, ast.Name) and arm.id in optional
-                for arm in (node.body, node.orelse)
-            )
-        } | {
-            id(node.value.test)
-            for node in function_nodes(definition.node)
-            if settles
-            and isinstance(node, ast.Return)
-            and isinstance(node.value, ast.IfExp)
-        }
-        branches: dict[int, tuple[list[ast.AST], list[ast.AST]]] = {
-            id(node.test): (list(node.body), list(node.orelse))
-            for node in function_nodes(definition.node)
-            if isinstance(node, ast.If)
-        } | {
-            id(node.test): ([node.body], [node.orelse])
-            for node in function_nodes(definition.node)
-            if isinstance(node, ast.IfExp)
-        }
+        deciding: set[int] = set()
+        branches: dict[int, tuple[list[ast.AST], list[ast.AST]]] = {}
+        compares: list[ast.Compare] = []
         for node in function_nodes(definition.node):
+            if isinstance(node, ast.If):
+                branches[id(node.test)] = (list(node.body), list(node.orelse))
+            elif isinstance(node, ast.IfExp):
+                branches[id(node.test)] = ([node.body], [node.orelse])
+                if any(
+                    isinstance(arm, ast.Name) and arm.id in optional
+                    for arm in (node.body, node.orelse)
+                ):
+                    deciding.add(id(node.test))
+            elif (
+                settles
+                and isinstance(node, ast.Return)
+                and isinstance(node.value, ast.IfExp)
+            ):
+                deciding.add(id(node.value.test))
+            elif isinstance(node, ast.Compare):
+                compares.append(node)
+        for node in compares:
             match node:
                 case ast.Compare(
                     left=ast.Name(id=name),
@@ -931,7 +955,9 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         name,
                         (
                             "is None" if is_none else "is not None",
-                            cls.none_answer(resolver, definition, branches.get(id(node)), is_none),
+                            cls.none_answer(
+                                resolver, definition, branches.get(id(node)), is_none
+                            ),
                         ),
                     )
 
@@ -957,27 +983,59 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         return resolver.qualified_class_at(named, (definition.node,)) or ""
 
     @staticmethod
+    def index_calls(
+        definitions: list[ScopedDefinition],
+    ) -> dict[tuple[int | None, str], list[tuple[ScopedDefinition, ast.Call, bool]]]:
+        """Index every module-function call and `self`/`cls` method call once per module."""
+
+        indexed: dict[
+            tuple[int | None, str], list[tuple[ScopedDefinition, ast.Call, bool]]
+        ] = defaultdict(list)
+        for caller in definitions:
+            caller_owner_id = id(caller.owner)
+            for node in function_nodes(caller.node):
+                if not isinstance(node, ast.Call):
+                    continue
+                match node.func:
+                    case ast.Name(id=name):
+                        indexed[(None, name)].append((caller, node, False))
+                    case ast.Attribute(value=ast.Name(id="self" | "cls"), attr=name):
+                        indexed[(caller_owner_id, name)].append((caller, node, True))
+        return indexed
+
+    @staticmethod
+    def calls_for(
+        calls_by_target: Mapping[
+            tuple[int | None, str], list[tuple[ScopedDefinition, ast.Call, bool]]
+        ],
+        callee: ScopedDefinition,
+    ) -> list[tuple[ScopedDefinition, ast.Call, bool]]:
+        key = (
+            None if isinstance(callee.owner, ast.Module) else id(callee.owner),
+            callee.node.name,
+        )
+        return calls_by_target.get(key, [])
+
+    @staticmethod
     def calls(
         definitions: list[ScopedDefinition], callee: ScopedDefinition
     ) -> Iterator[tuple[ScopedDefinition, ast.Call, bool]]:
         """Each call of `callee` in this module: by name for a module function,
         through `self`/`cls` from its own class's methods for a method."""
 
-        for caller in definitions:
-            for node in function_nodes(caller.node):
-                if not isinstance(node, ast.Call):
-                    continue
-                match node.func:
-                    case ast.Name(id=name) if name == callee.node.name and isinstance(callee.owner, ast.Module):
-                        yield caller, node, False
-                    case ast.Attribute(value=ast.Name(id="self" | "cls"), attr=name) if (
-                        name == callee.node.name and caller.owner is callee.owner
-                    ):
-                        yield caller, node, True
+        yield from ThreadedAbsenceSiteFamily.calls_for(
+            ThreadedAbsenceSiteFamily.index_calls(definitions), callee
+        )
 
     @classmethod
     def threaded_copies(
-        cls, definitions: list[ScopedDefinition], threads: dict[int, OptionalParameterThread]
+        cls,
+        definitions: list[ScopedDefinition],
+        threads: dict[int, OptionalParameterThread],
+        calls_by_target: Mapping[
+            tuple[int | None, str], list[tuple[ScopedDefinition, ast.Call, bool]]
+        ],
+        optional_params_by_def: Mapping[int, dict[str, ast.arg]],
     ) -> dict[int, frozenset[str]]:
         """For each private function, the optional parameters that every call in the
         module passes an optional parameter of its caller."""
@@ -987,15 +1045,17 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             thread = threads[id(definition.node)]
             if not thread.private or not thread.optional:
                 continue
-            calls = list(cls.calls(definitions, definition))
+            calls = cls.calls_for(calls_by_target, definition)
             if not calls:
                 continue
             copies[id(definition.node)] = frozenset(
                 parameter
                 for parameter in thread.optional
                 if all(
-                    isinstance(passed := thread.passed(call, parameter, on_receiver), ast.Name)
-                    and passed.id in _optional_parameters(caller.node)
+                    isinstance(
+                        passed := thread.passed(call, parameter, on_receiver), ast.Name
+                    )
+                    and passed.id in optional_params_by_def[id(caller.node)]
                     for caller, call, on_receiver in calls
                 )
             )
@@ -1009,6 +1069,10 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         threads: dict[int, OptionalParameterThread],
         copies: dict[int, frozenset[str]],
         decided: frozenset[int],
+        calls_by_target: Mapping[
+            tuple[int | None, str], list[tuple[ScopedDefinition, ast.Call, bool]]
+        ],
+        optional_params_by_def: Mapping[int, dict[str, ast.arg]],
     ) -> Iterator[RestatingSite]:
         """One site per caller parameter whose `None` reaches a threaded copy that
         probes it: the outermost declaration in the module that owns the absence, its
@@ -1019,6 +1083,9 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
         seen: set[tuple[int, str]] = set()
         for definition in definitions:
+            copied = copies.get(id(definition.node))
+            if not copied:
+                continue
             probed = {
                 node.left.id
                 for node in function_nodes(definition.node)
@@ -1027,14 +1094,19 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                 and isinstance(node.ops[0], ast.Is | ast.IsNot)
                 and spells_none(node.comparators[0])
             }
-            for parameter in sorted(copies.get(id(definition.node), frozenset()) & probed):
+            for parameter in sorted(copied & probed):
                 pending = [(definition, parameter)]
                 while pending:
                     callee, name = pending.pop()
                     thread = threads[id(callee.node)]
-                    for caller, call, on_receiver in cls.calls(definitions, callee):
+                    for caller, call, on_receiver in cls.calls_for(
+                        calls_by_target, callee
+                    ):
                         passed = thread.passed(call, name, on_receiver)
-                        if not isinstance(passed, ast.Name) or (id(caller.node), passed.id) in seen:
+                        if (
+                            not isinstance(passed, ast.Name)
+                            or (id(caller.node), passed.id) in seen
+                        ):
                             continue
                         seen.add((id(caller.node), passed.id))
                         if passed.id in copies.get(id(caller.node), frozenset()):
@@ -1042,7 +1114,7 @@ class ThreadedAbsenceSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
                         elif id(caller.node) not in decided:
                             yield RestatingSite(
                                 parsed_module.file_path,
-                                _optional_parameters(caller.node)[passed.id].lineno,
+                                optional_params_by_def[id(caller.node)][passed.id].lineno,
                                 caller.qualname,
                                 passed.id,
                                 (

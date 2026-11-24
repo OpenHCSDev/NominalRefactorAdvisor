@@ -146,6 +146,8 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
     def projected_components(self) -> tuple[EnumKeyedDerivedMapFacadeComponent, ...]:
         """Project local shapes while preserving star-import proof obligations."""
 
+        if not self.can_contain_facade(self.module):
+            return ()
         return self._proven_components(
             build_class_family_index((self.module,)),
             NamedImportModuleBindingProjection(),
@@ -181,40 +183,31 @@ class EnumKeyedDerivedMapFacadeComponentBuilder:
     def can_contain_facade(module: ParsedModule) -> bool:
         """Return whether one AST can contain the complete facade relation."""
 
-        nodes = tuple(ast.walk(module.module))
+        index = module.syntax_index
         possible_map_method_names = frozenset(
             node.name
-            for node in nodes
-            if isinstance(node, ast.FunctionDef)
-            and isinstance(node.returns, ast.Subscript)
+            for _i, node in index.indexed_nodes_of_type(ast.FunctionDef)
+            if isinstance(node.returns, ast.Subscript)
             and isinstance(node.returns.value, ast.Name)
             and node.returns.value.id == "dict"
         )
         if not possible_map_method_names:
             return False
-        has_direct_consumer = False
-        has_reverse_query = False
-        for node in nodes:
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr == "items"
-                and isinstance(node.value, ast.Call)
-            ):
-                map_call = node.value
-                has_reverse_query = has_reverse_query or bool(
-                    isinstance(map_call.func, ast.Attribute)
-                    and map_call.func.attr in possible_map_method_names
-                )
-            elif isinstance(node, ast.Subscript):
-                map_call = node.value
-                has_direct_consumer = has_direct_consumer or bool(
-                    isinstance(map_call, ast.Call)
-                    and isinstance(map_call.func, ast.Attribute)
-                    and map_call.func.attr in possible_map_method_names
-                )
-            if has_direct_consumer and has_reverse_query:
-                return True
-        return False
+        has_reverse_query = any(
+            node.attr == "items"
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr in possible_map_method_names
+            for _i, node in index.indexed_nodes_of_type(ast.Attribute)
+        )
+        if not has_reverse_query:
+            return False
+        return any(
+            isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Attribute)
+            and node.value.func.attr in possible_map_method_names
+            for _i, node in index.indexed_nodes_of_type(ast.Subscript)
+        )
 
     def _proven_components(
         self,
