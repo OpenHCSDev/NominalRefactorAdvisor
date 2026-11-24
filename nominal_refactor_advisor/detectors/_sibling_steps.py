@@ -2,14 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-from dataclasses import dataclass
-
-from nominal_refactor_advisor.class_index import (
-    ClassBodyDeclarationKind,
-    CompactIndexedClass,
-)
-from nominal_refactor_advisor.class_method_facets import CompactClassMethod
 from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryCandidateDetector,
@@ -17,49 +9,21 @@ from nominal_refactor_advisor.detectors._base import (
     DetectorConfig,
     finding_spec_template,
 )
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.patterns import PatternId
-from nominal_refactor_advisor.refactors.restated_overrides import PER_CLASS_NAMES
+from nominal_refactor_advisor.refactors.sibling_override_steps import (
+    OmittedStep,
+    SiblingOverrideStepCandidate,
+    SiblingOverrideStepFindingRecipeSynthesizer,
+    sibling_override_step_candidates,
+)
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 
 
-@dataclass(frozen=True)
-class OmittedStep:
-    """A call every overriding class makes but one, which reads the member it is made on."""
-
-    call: str
-    omitting: CompactIndexedClass
-
-
-@dataclass(frozen=True)
-class SiblingOverrideStepCandidate:
-    """One inherited method, the classes overriding it differently, and the steps they share."""
-
-    declaring: CompactIndexedClass
-    """The nearest class every one of them inherits from that declares the method."""
-    name: str
-    overriding: tuple[tuple[CompactIndexedClass, int], ...]
-    """Each overriding class, with the line of its override."""
-    restated: tuple[str, ...]
-    """The calls through the receiver that every override makes, by member path."""
-    omitted: tuple[OmittedStep, ...]
-
-    @property
-    def unanswered(self) -> bool:
-        """Whether the overridden declaration is an abstract hook: the ancestor runs no
-        sequence of its own, so every step of it is written in the overriding classes."""
-
-        return self.name in self.declaring.abstract_method_names
-
-    @property
-    def evidence(self) -> tuple[SourceLocation, ...]:
-        return tuple(
-            SourceLocation(indexed.file_path, line, f"{indexed.qualname}.{self.name}")
-            for indexed, line in self.overriding
-        )
-
-
-class SiblingOverrideStepDetector(CompactClassRepositoryCandidateDetector[SiblingOverrideStepCandidate]):
+class SiblingOverrideStepDetector(
+    CompactClassRepositoryCandidateDetector[SiblingOverrideStepCandidate],
+    SiblingOverrideStepFindingRecipeSynthesizer,
+):
     """Two or more classes overriding one inherited method differently, with a step in common.
 
     `SiblingOverrideDetector` finds overrides that are one declaration. Most overrides of a
@@ -116,101 +80,7 @@ class SiblingOverrideStepDetector(CompactClassRepositoryCandidateDetector[Siblin
             ClassOverlapVerdicts,
             lambda: ClassOverlapVerdicts(tuple(context.projections), context.class_index),
         )
-        index, bodies = verdicts.class_index, verdicts.bodies
-        methods: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
-        for projection in context.projections:
-            for method in projection.class_methods:
-                methods[method.class_symbol][method.method_name] = method
-        declared = frozenset(name for owned in methods.values() for name in owned)
-        """Every method name some scanned class declares: what a call must name to be a step
-        of the scanned code and not a call into a library the classes sit on."""
-        overriding: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
-        for symbol in bodies.declarations_by_symbol:
-            mine = methods.get(symbol)
-            if not mine:
-                continue
-            abstract = index.class_for(symbol).abstract_method_names
-            for name, declaration in bodies.declarations_of(symbol).items():
-                if (
-                    name in PER_CLASS_NAMES
-                    or name in abstract
-                    or name not in mine
-                    or declaration.kind is not ClassBodyDeclarationKind.METHOD
-                ):
-                    continue
-                for ancestor in index.ancestor_symbols(symbol):
-                    if ancestor in bodies.declarations_by_symbol and name in bodies.declarations_of(ancestor):
-                        overriding[(ancestor, name)].append(symbol)
-        nearest: dict[tuple[str, frozenset[str]], SiblingOverrideStepCandidate] = {}
-        read: dict[str, frozenset[str]] = {}
-        for (declaring, name), symbols in overriding.items():
-            independent = [
-                symbol for symbol in symbols if not any(other in index.ancestor_symbols(symbol) for other in symbols)
-            ]
-            if len(independent) < 2:
-                continue
-            declarations = [bodies.declarations_of(symbol)[name] for symbol in independent]
-            if all(declaration.same_declaration_as(declarations[0]) for declaration in declarations[1:]):
-                continue  # one declaration: `SiblingOverrideDetector`'s finding
-            steps = {symbol: frozenset(methods[symbol][name].receiver_steps.calls) - {name} for symbol in independent}
-            restated = frozenset.intersection(*steps.values())
-            omitted = tuple(
-                OmittedStep(call, index.class_for(symbol))
-                for symbol in sorted(independent)
-                for call in sorted(self._made_by_every_other(steps, symbol))
-                if "." in call
-                and call.rsplit(".", 1)[1] in declared
-                and (member := call.split(".", 1)[0]) not in {made.split(".", 1)[0] for made in steps[symbol]}
-                and member in self._members_read(index, methods, symbol, read)
-            )
-            if not restated and not omitted:
-                continue
-            key = (name, frozenset(independent))
-            held = nearest.get(key)
-            # Several ancestors can declare the method: the sequence belongs on the nearest
-            # one, which every other one is an ancestor of.
-            if held is None or held.declaring.symbol in index.ancestor_symbols(declaring):
-                nearest[key] = SiblingOverrideStepCandidate(
-                    declaring=index.class_for(declaring),
-                    name=name,
-                    overriding=tuple(
-                        sorted(
-                            ((index.class_for(symbol), methods[symbol][name].line) for symbol in independent),
-                            key=lambda found: (found[0].file_path, found[1]),
-                        )
-                    ),
-                    restated=tuple(sorted(restated)),
-                    omitted=omitted,
-                )
-        return tuple(
-            sorted(
-                nearest.values(),
-                key=lambda candidate: (candidate.evidence[0].file_path, candidate.evidence[0].line, candidate.name),
-            )
-        )
-
-    @staticmethod
-    def _made_by_every_other(steps: dict[str, frozenset[str]], symbol: str) -> frozenset[str]:
-        """The calls every override but `symbol`'s makes and `symbol`'s does not."""
-
-        others = [calls for other, calls in steps.items() if other != symbol]
-        return frozenset.intersection(*others) - steps[symbol]
-
-    @staticmethod
-    def _members_read(
-        index, methods: dict[str, dict[str, CompactClassMethod]], symbol: str, read: dict[str, frozenset[str]]
-    ) -> frozenset[str]:
-        """The members of the receiver that some method of the class, or of a scanned
-        ancestor, reads: what the class has to call a step on. Kept in `read` by class."""
-
-        if symbol not in read:
-            read[symbol] = frozenset(
-                member
-                for owner in (symbol, *index.ancestor_symbols(symbol))
-                for method in methods.get(owner, {}).values()
-                for member in method.receiver_steps.members
-            )
-        return read[symbol]
+        return sibling_override_step_candidates(verdicts, context.projections)
 
     def _finding_for_candidate(self, candidate: SiblingOverrideStepCandidate) -> RefactorFinding:
         classes = ", ".join(f"`{indexed.qualname}`" for indexed, _ in candidate.overriding)

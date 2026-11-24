@@ -161,6 +161,10 @@ class SiblingOverrideConcept(ClassFamilyAuthorityConcept):
     """Lift a member several sibling subclasses override identically onto the shared ancestor that owns it."""
 
 
+class SiblingOverrideStepConcept(ClassFamilyAuthorityConcept):
+    """Hoist shared leading or trailing steps of sibling overrides into a template method on their shared ancestor."""
+
+
 class HiddenImportPromotionConcept(NominalBoundaryConcept):
     """Move a guarded or function-local import that closes no load-time cycle to
     its module's top."""
