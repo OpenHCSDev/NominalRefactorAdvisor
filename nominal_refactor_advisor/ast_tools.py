@@ -13,6 +13,7 @@ import __future__
 from array import array
 import copy
 from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import io
 import gc
@@ -27,9 +28,9 @@ from dataclasses import dataclass, field, fields, is_dataclass, replace
 from enum import Enum, StrEnum
 from fnmatch import fnmatchcase
 from functools import cached_property
-from pathlib import Path
+from pathlib import Path, PurePath
 from types import EllipsisType
-from typing import Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
+from typing import BinaryIO, Callable, ClassVar, Generic, Self, TypeAlias, TypeVar, cast
 
 from metaclass_registry import AutoRegisterMeta
 
@@ -295,12 +296,31 @@ class CollectedFamilySchemaIdentity(CachedDataclassRepresentation):
             digest_size=16,
         ).hexdigest()
 
+    _worker_schemas: ClassVar[
+        ContextVar[
+            Mapping[type[CollectedFamily[object]], CollectedFamilySchemaIdentity] | None
+        ]
+    ] = ContextVar("nra_worker_family_schemas", default=None)
+
+    @classmethod
+    def install_worker_schemas(
+        cls,
+        schemas: Mapping[type[CollectedFamily[object]], CollectedFamilySchemaIdentity],
+    ) -> None:
+        """Seed one worker process with family schemas already derived in its parent."""
+        cls._worker_schemas.set(schemas)
+
     @classmethod
     @ScanCache.cached
     def from_family(
         cls,
         family: type[CollectedFamily[object]],
     ) -> CollectedFamilySchemaIdentity:
+        precomputed = cls._worker_schemas.get()
+        if precomputed is not None:
+            cached = precomputed.get(family)
+            if cached is not None:
+                return cached
         item_type = family.item_type
         return cls(
             family_module=family.__module__,
@@ -2089,6 +2109,23 @@ class CollectedFamilyCachePayload(Generic[ShapeItemT]):
     """The checkout these items still spell after relocation; None when portable."""
 
 
+@dataclass(frozen=True)
+class _SplitCollectedFamilyCacheHeader:
+    """Header written ahead of pre-serialized items in a single-pass cache entry."""
+
+    identity: CollectedFamilyCacheIdentity
+    ast_free: bool
+    checkout_root: str | None = None
+
+
+@dataclass(frozen=True)
+class _PreSerializedFamilyCachePayload(CollectedFamilyCachePayload[ShapeItemT]):
+    """A cache payload whose items were already serialized while computing their digest."""
+
+    pickled_items: bytes = b""
+    portable: bool = True
+
+
 def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
     return (
         registered_type.__module__,
@@ -2395,8 +2432,7 @@ def collected_family_items_content_signature(
 
 @dataclass(frozen=True)
 class StableCacheDigest:
-    """Content signature and syntax-retention check computed in one streaming hash
-    walk without allocating an intermediate normal-form tuple tree."""
+    """Content signature and syntax-retention check computed in one pass."""
 
     signature: str
     retains_syntax: bool
@@ -2405,12 +2441,154 @@ class StableCacheDigest:
     def of(
         cls, value: object, relocation: CheckoutRelocation | None = None
     ) -> StableCacheDigest:
+        try:
+            buffer = io.BytesIO()
+            pickler = _StableDigestPickler(buffer, relocation)
+            pickler.dump(value)
+        except (pickle.PicklingError, TypeError, AttributeError):
+            pickler = None
+        if (
+            pickler is not None
+            and not pickler.retains_syntax
+            and not pickler.has_unordered
+            and not pickler.has_str_subclass_root
+        ):
+            data = buffer.getvalue()
+            portable = relocation is None or not relocation.is_mentioned_in(data)
+            if not portable:
+                data = pickle.dumps(value, protocol=pickle.HIGHEST_PROTOCOL)
+            signature = hashlib.blake2s(
+                b"pickle-v1:" + data, digest_size=16
+            ).hexdigest()
+            return PreSerializedCacheDigest(
+                signature=signature,
+                retains_syntax=False,
+                pickled_items=data,
+                portable=portable,
+            )
         hasher = _StableCacheHasher(relocation)
         hasher.feed(value)
         if hasher.bound_to_checkout:
             hasher = _StableCacheHasher(None)
             hasher.feed(value)
         return cls(hasher.hexdigest(), hasher.retains_syntax)
+
+
+@dataclass(frozen=True)
+class PreSerializedCacheDigest(StableCacheDigest):
+    """A cache digest whose deterministic, syntax-free pickle bytes are already built."""
+
+    pickled_items: bytes
+    portable: bool
+
+
+class _StableDigestPickler(pickle.Pickler):
+    """Single-pass C pickler that relocates checkout paths while proving the
+    value carries no ASTs, no unordered collections, and no non-field state."""
+
+    def __init__(
+        self, handle: BinaryIO, relocation: CheckoutRelocation | None
+    ) -> None:
+        super().__init__(handle, protocol=pickle.HIGHEST_PROTOCOL)
+        self._relocation = relocation
+        if relocation is not None:
+            roots = relocation.root_texts
+            self._root0 = roots[0]
+            self._root0_len = len(roots[0])
+            self._extra_roots = roots[1:]
+        else:
+            self._root0 = ""
+            self._root0_len = 0
+            self._extra_roots = ()
+        self.retains_syntax = False
+        self.has_unordered = False
+        self.has_str_subclass_root = False
+        self._known_dataclass_field_tuples: set[tuple[str, ...]] = set()
+        self._checked_dataclass_types: set[type] = set()
+
+    def persistent_id(self, obj: object) -> tuple[object, ...] | None:
+        obj_type = type(obj)
+        if obj_type is str:
+            root0 = self._root0
+            if root0:
+                text = cast(str, obj)
+                if text.startswith(root0):
+                    root0_len = self._root0_len
+                    if len(text) == root0_len or text[root0_len] == "/":
+                        return ("checkout", None, text[root0_len:])
+                if self._extra_roots:
+                    for root in self._extra_roots:
+                        if text.startswith(root) and (
+                            len(text) == len(root) or text[len(root)] == "/"
+                        ):
+                            return ("checkout", None, text[len(root) :])
+            return None
+        if (
+            obj_type is int
+            or obj_type is tuple
+            or obj is None
+            or obj_type is bool
+            or obj_type is float
+            or obj_type is bytes
+        ):
+            return None
+        if obj_type is dict:
+            if (
+                tuple(cast(dict[object, object], obj))
+                in self._known_dataclass_field_tuples
+            ):
+                return None
+            self.has_unordered = True
+            return None
+        if obj_type is set or obj_type is frozenset:
+            self.has_unordered = True
+            return None
+        if isinstance(obj, (ast.AST, ParsedModule)):
+            self.retains_syntax = True
+            return None
+        if isinstance(obj, PurePath):
+            if self._relocation is not None:
+                return self._relocation.relative_id(obj)
+            return None
+        if isinstance(obj, str):
+            if self._relocation is not None and any(
+                root in obj for root in self._relocation.root_texts
+            ):
+                self.has_str_subclass_root = True
+            return None
+        if isinstance(obj, (dict, set, frozenset)):
+            self.has_unordered = True
+            return None
+        if not isinstance(obj, type):
+            if obj_type not in self._checked_dataclass_types:
+                field_names = dataclass_field_names(obj_type)
+                if field_names:
+                    if isinstance(obj, StoredDataclassState):
+                        self._known_dataclass_field_tuples.add(field_names)
+                        self._checked_dataclass_types.add(obj_type)
+                    else:
+                        obj_dict = getattr(obj, "__dict__", None)
+                        if obj_dict is None:
+                            self._known_dataclass_field_tuples.add(field_names)
+                            self._checked_dataclass_types.add(obj_type)
+                        elif (
+                            type(obj_dict) is dict
+                            and len(obj_dict) == len(field_names)
+                            and tuple(obj_dict) == field_names
+                        ):
+                            self._known_dataclass_field_tuples.add(field_names)
+                else:
+                    self._checked_dataclass_types.add(obj_type)
+            elif not isinstance(obj, StoredDataclassState):
+                obj_dict = getattr(obj, "__dict__", None)
+                if type(obj_dict) is dict:
+                    field_names = dataclass_field_names(obj_type)
+                    if field_names is not None and (
+                        len(obj_dict) != len(field_names)
+                        or tuple(obj_dict) != field_names
+                    ):
+                        self.has_unordered = True
+        return None
 
 
 class _StableCacheHasher:
@@ -2736,6 +2914,36 @@ class CollectedFamilyCacheContext:
         prefix = signature.encode("ascii")
         if len(prefix) != self.SIGNATURE_BYTES:
             raise ValueError(f"content signature {signature!r} is not 32 characters")
+        if isinstance(payload, _PreSerializedFamilyCachePayload):
+            checkout_root = (
+                None
+                if payload.portable or self.relocation is None
+                else self.relocation.root_texts[0]
+            )
+            header = _SplitCollectedFamilyCacheHeader(
+                identity=payload.identity,
+                ast_free=payload.ast_free,
+                checkout_root=checkout_root,
+            )
+            if self.relocation is not None and payload.portable:
+                header_bytes, header_portable = self.relocation.portable_dumps(header)
+                if header_portable:
+                    return prefix + header_bytes + payload.pickled_items
+                header = _SplitCollectedFamilyCacheHeader(
+                    identity=payload.identity,
+                    ast_free=payload.ast_free,
+                    checkout_root=self.relocation.root_texts[0],
+                )
+                return (
+                    prefix
+                    + pickle.dumps(header, protocol=pickle.HIGHEST_PROTOCOL)
+                    + pickle.dumps(payload.items, protocol=pickle.HIGHEST_PROTOCOL)
+                )
+            return (
+                prefix
+                + pickle.dumps(header, protocol=pickle.HIGHEST_PROTOCOL)
+                + payload.pickled_items
+            )
         if self.relocation is None:
             return prefix + pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
         data, portable = self.relocation.portable_dumps(payload)
@@ -2760,9 +2968,24 @@ class CollectedFamilyCacheContext:
         with path.open("rb") as handle:
             if len(handle.read(self.SIGNATURE_BYTES)) != self.SIGNATURE_BYTES:
                 raise EOFError(f"{path} ends inside its content signature")
-            if self.relocation is None:
-                return pickle.load(handle)
-            return self.relocation.load(handle)
+            loaded = (
+                pickle.load(handle)
+                if self.relocation is None
+                else self.relocation.load(handle)
+            )
+            if isinstance(loaded, _SplitCollectedFamilyCacheHeader):
+                items = (
+                    pickle.load(handle)
+                    if self.relocation is None or loaded.checkout_root is not None
+                    else self.relocation.load(handle)
+                )
+                return CollectedFamilyCachePayload(
+                    identity=loaded.identity,
+                    items=cast(tuple[object, ...], items),
+                    ast_free=loaded.ast_free,
+                    checkout_root=loaded.checkout_root,
+                )
+            return loaded
 
     @ScanCache.cached
     def identity(
@@ -2890,10 +3113,20 @@ class CollectedFamilyCacheContext:
         if stable.retains_syntax:
             return None
         identity = self.identity(family, demand_signature)
-        payload = CollectedFamilyCachePayload(
-            identity=identity,
-            items=items,
-            ast_free=True,
+        payload: CollectedFamilyCachePayload[ShapeItemT] = (
+            _PreSerializedFamilyCachePayload(
+                identity=identity,
+                items=items,
+                ast_free=True,
+                pickled_items=stable.pickled_items,
+                portable=stable.portable,
+            )
+            if isinstance(stable, PreSerializedCacheDigest)
+            else CollectedFamilyCachePayload(
+                identity=identity,
+                items=items,
+                ast_free=True,
+            )
         )
         try:
             payload_bytes = self.payload_bytes(payload, stable.signature)

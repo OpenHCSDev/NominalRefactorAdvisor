@@ -22,7 +22,7 @@ from typing import cast
 from nominal_refactor_advisor.annotation_semantics import TypeWrapper
 from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_projection import ExpressionReference
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import (
     ABSTRACT_METHOD_DECORATOR,
     PROPERTY_DECORATORS,
@@ -186,11 +186,15 @@ def function_nodes(node: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast
 
 
 def scope_nodes(node: ast.AST) -> Iterator[ast.AST]:
-    yield node
-    if isinstance(node, (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)):
-        return
-    for child in ast.iter_child_nodes(node):
-        yield from scope_nodes(child)
+    stack: list[ast.AST] = [node]
+    while stack:
+        current = stack.pop()
+        yield current
+        if isinstance(current, (*FunctionDefinition.members, ast.ClassDef, ast.Lambda)):
+            continue
+        children = tuple(ast.iter_child_nodes(current))
+        if children:
+            stack.extend(reversed(children))
 
 
 # ---- the class shapes every family join reads
@@ -520,6 +524,22 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 # ---- site families, one per relocation detector
 
 
+@dataclass(frozen=True)
+class ModuleClassBodyReadings(ParsedModuleFact):
+    """Per-class body readings derived once per module and shared across site families."""
+
+    entries: tuple[tuple[str, ClassBodyReading], ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleClassBodyReadings:
+        return cls(
+            tuple(
+                (qualname, ClassBodyReading.of(node, bindings))
+                for qualname, node, bindings in bound_classes(parsed_module)
+            )
+        )
+
+
 class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     """A member declaration that answers with one constant: `group` is the member."""
 
@@ -527,8 +547,8 @@ class ConstantAnswerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node, bindings in bound_classes(parsed_module):
-            for answer in ClassBodyReading.of(node, bindings).answers:
+        for qualname, reading in parsed_module.fact(ModuleClassBodyReadings).entries:
+            for answer in reading.answers:
                 yield RestatingSite(
                     parsed_module.file_path,
                     answer.lineno,
@@ -666,8 +686,8 @@ class LambdaFoldSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
-        for qualname, node, bindings in bound_classes(parsed_module):
-            for fold in ClassBodyReading.of(node, bindings).folds:
+        for qualname, reading in parsed_module.fact(ModuleClassBodyReadings).entries:
+            for fold in reading.folds:
                 yield RestatingSite(
                     parsed_module.file_path,
                     fold.lineno,

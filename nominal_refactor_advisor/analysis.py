@@ -59,6 +59,7 @@ from nominal_refactor_advisor.ast_tools import (
     CollectedFamilyCacheContext,
     CollectedFamilyContentSignatureIndex,
     CollectedFamilyPresenceDemand,
+    CollectedFamilySchemaIdentity,
     ParsedModule,
     PythonModuleRootParser,
     PythonSourceSemanticHash,
@@ -290,6 +291,13 @@ WorkItemT = TypeVar("WorkItemT")
 WorkResultT = TypeVar("WorkResultT")
 
 
+def _initialize_projection_worker(
+    family_schemas: dict[type[CollectedFamily[object]], CollectedFamilySchemaIdentity],
+) -> None:
+    ScanCache.initialize_worker()
+    CollectedFamilySchemaIdentity.install_worker_schemas(family_schemas)
+
+
 @dataclass(frozen=True)
 class DetectorAnalysisWorkerPlan:
     """Resolve detector-analysis process parallelism for one scan."""
@@ -303,11 +311,14 @@ class DetectorAnalysisWorkerPlan:
         self,
         function: Callable[[WorkItemT], WorkResultT],
         items: Iterable[WorkItemT],
+        *,
+        initializer: Callable[..., None] = ScanCache.initialize_worker,
+        initargs: tuple[object, ...] = (),
     ) -> list[WorkResultT]:
         """Run independent preparation tasks under this plan's worker budget."""
         if not self.uses_process_pool:
             return [function(item) for item in items]
-        with self.pool(ScanCache.initialize_worker) as executor:
+        with self.pool(initializer, initargs) as executor:
             return list(executor.map(function, items, chunksize=1))
 
     @contextmanager
@@ -2544,8 +2555,15 @@ def analyze_compact_roots_with_cache(
         ),
     )
     scan_deadline_checkpoint("compact_projection_build")
+    precomputed_schemas = {
+        family: CollectedFamilySchemaIdentity.from_family(family)
+        for family in projection_manifest.projection_families
+    }
     build_results = worker_plan.map(
-        build_compact_projection_shard, ordered_build_requests,
+        build_compact_projection_shard,
+        ordered_build_requests,
+        initializer=_initialize_projection_worker,
+        initargs=(precomputed_schemas,),
     )
     build_wall_seconds = perf_counter() - build_started
     worker_total_seconds = sum(result.total_seconds for result in build_results)
