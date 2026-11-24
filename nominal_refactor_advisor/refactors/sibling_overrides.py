@@ -226,9 +226,10 @@ def sibling_override_candidates(
                     )
     nearest: dict[tuple[str, frozenset[str]], SiblingOverrideCandidate] = {}
     for (declaring, name), overrides in overriding.items():
+        declaring_class = index.classes_by_symbol[declaring]
         theirs = bodies.declarations_of(declaring)[name]
         unanswered = (
-            name in index.class_for(declaring).abstract_method_names
+            name in declaring_class.abstract_method_names
             or theirs.kind is ClassBodyDeclarationKind.FIELD
         )
         for answer in _shared_answers(index, overrides):
@@ -250,14 +251,14 @@ def sibling_override_candidates(
                 declaring
             ):
                 nearest[key] = SiblingOverrideCandidate(
-                    home=None if home is None else index.class_for(home),
-                    declaring=index.class_for(declaring),
+                    home=None if home is None else index.classes_by_symbol[home],
+                    declaring=declaring_class,
                     name=name,
                     answering=tuple(
                         sorted(
                             (
                                 (
-                                    index.class_for(override.symbol),
+                                    index.classes_by_symbol[override.symbol],
                                     override.declaration.declaration.line,
                                 )
                                 for override in answer
@@ -268,7 +269,7 @@ def sibling_override_candidates(
                     answering_otherwise=len(overrides) - len(answer),
                     unordered=tuple(
                         sorted(
-                            index.class_for(override.symbol).qualname
+                            index.classes_by_symbol[override.symbol].qualname
                             for override in answer
                             if not override.ordered
                         )
