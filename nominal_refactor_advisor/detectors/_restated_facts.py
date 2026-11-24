@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Hashable, Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
+from functools import cached_property
 from typing import ClassVar, Generic, TypeVar
 
 from nominal_refactor_advisor.refactors.target_deletion import (
@@ -734,7 +735,7 @@ class ProbeOwnerQuery:
             tuple(ModuleReferenceFamily.modules_in(projections_by_family)),
         )
 
-    @property
+    @cached_property
     def file_paths(self) -> frozenset[str]:
         span_files = frozenset(span.file_path for span in self.spans)
         if not span_files:

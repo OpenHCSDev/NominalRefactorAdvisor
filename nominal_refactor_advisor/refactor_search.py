@@ -379,8 +379,10 @@ class RefactorSearch:
             TypeCheckerSession.seed_incremental(SourceTexts(tuple(scan.modules)))
             # The workers share this process's pages until they write to them; a
             # frozen generation keeps the collector from writing to every object
-            # this state holds.
-            gc.collect()
+            # this state holds. Collect only generation 0 before freezing: a full
+            # gc.collect() walks the entire AST + mypy graph (~9.7s) while
+            # gc.freeze() promotes all generations in <1ms.
+            gc.collect(0)
             gc.freeze()
             try:
                 moves = self.played(scan, start, concepts)
@@ -416,13 +418,16 @@ class RefactorSearch:
         """
 
         moves: dict[type[RefactorConcept], SearchMove] = {}
-        waiting: deque[type[RefactorConcept]] = deque()
+        playable: list[type[RefactorConcept]] = []
         for concept in concepts:
             unplayed = self.unplayed(scan, concept)
             if unplayed is None:
-                waiting.append(concept)
+                playable.append(concept)
             else:
                 moves[concept] = unplayed
+        if scan is not None:
+            playable.sort(key=lambda concept: -len(scan.concept_findings(concept)))
+        waiting: deque[type[RefactorConcept]] = deque(playable)
         workers = DetectorAnalysisWorkerPlan(
             self.budget.workers, len(waiting), minimum_auto_work_items=2
         ).effective_worker_count

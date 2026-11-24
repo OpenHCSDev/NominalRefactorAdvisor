@@ -1005,11 +1005,18 @@ class CompactClassRepositoryContext:
         projections: Sequence[CompactModuleClassProjection],
         config: DetectorConfig,
     ) -> CompactClassRepositoryContext:
-        resolved = repository_settled_projections(tuple(projections))
+        raw_tuple = tuple(projections)
+        resolved = repository_settled_projections(raw_tuple)
+        index_source = (
+            projections
+            if len(resolved) == len(raw_tuple)
+            and all(settled is original for settled, original in zip(resolved, raw_tuple))
+            else resolved
+        )
         return cls(
             projections=resolved,
             config=config,
-            class_index=build_compact_class_family_index(resolved),
+            class_index=build_compact_class_family_index(index_source),
         )
 
     @classmethod
