@@ -19,6 +19,7 @@ from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorCo
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
 from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.refactor_concepts import LegacyPathErasureConcept
 from nominal_refactor_advisor.source_index import AstTargetNodeKind
 
@@ -66,6 +67,19 @@ class LegacyPathErasureFindingRecipeSynthesizer(
                 "class declaration, so only a reader can retire it"
             )
         (target,) = targets
+        snapshot = context.execution_snapshot()
+        consumers = snapshot.reference_index.consumers_of(
+            target.name, (target.file_path, target.line)
+        )
+        if consumers:
+            where = ", ".join(f"{path}:{line}" for path, line in consumers[:4])
+            return self.stopped_evaluation(
+                NeedsInput(
+                    f"`{target.qualname}` still has {len(consumers)} consumer(s) "
+                    f"({where}); migrate them onto the replacement before erasing it",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            )
         operation = EraseDeadCompatibilityOperation(
             target=SourceRewriteTarget(target_id=target.target_id),
             forbidden_call_names=(target.name,),
