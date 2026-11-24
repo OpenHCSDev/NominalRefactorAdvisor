@@ -117,6 +117,8 @@ if TYPE_CHECKING:
 NativeScalar: TypeAlias = str | int | bool | None
 NativeDictionaryKey: TypeAlias = NativeScalar | type
 NativeConstantAtom: TypeAlias = NativeScalar | types.EllipsisType
+_NATIVE_SCALAR_TYPES: frozenset[type] = frozenset(get_args(NativeScalar))
+_NATIVE_CONSTANT_ATOM_TYPES: frozenset[type] = frozenset(get_args(NativeConstantAtom))
 
 
 class NativeConstantContentsABC(ABC):
@@ -128,13 +130,20 @@ class NativeConstantContentsABC(ABC):
 
     @staticmethod
     def supports_scalar(value: object) -> bool:
-        return any(type(value) is declaration for declaration in get_args(NativeScalar))
+        return type(value) in _NATIVE_SCALAR_TYPES
 
     def _native_constant_value(self) -> object:
         raise ValueError("Native constant contents remain unproved")
 
     @staticmethod
     def _require_same_constant(left: object, right: object) -> None:
+        left_type = type(left)
+        if left_type is not type(right):
+            raise ValueError("Native constant types differ")
+        if left_type in _NATIVE_CONSTANT_ATOM_TYPES:
+            if left != right:
+                raise ValueError("Native constant contents differ")
+            return
         pending = [(left, right)]
         examined: set[tuple[int, int]] = set()
         while pending:
@@ -143,27 +152,42 @@ class NativeConstantContentsABC(ABC):
             if pair in examined:
                 continue
             examined.add(pair)
-            if type(actual) is not type(expected):
+            actual_type = type(actual)
+            if actual_type is not type(expected):
                 raise ValueError("Native constant types differ")
-            if type(actual) is tuple:
-                if len(actual) != len(expected):
+            if actual_type is tuple:
+                actual_tuple = cast(tuple[object, ...], actual)
+                expected_tuple = cast(tuple[object, ...], expected)
+                if len(actual_tuple) != len(expected_tuple):
                     raise ValueError("Native constant tuple lengths differ")
-                pending.extend(zip(actual, expected, strict=True))
+                pending.extend(zip(actual_tuple, expected_tuple, strict=True))
                 continue
-            if not any(
-                type(actual) is declaration
-                for declaration in get_args(NativeConstantAtom)
-            ):
+            if actual_type not in _NATIVE_CONSTANT_ATOM_TYPES:
                 raise ValueError("Native constant requires admitted exact contents")
             if actual != expected:
                 raise ValueError("Native constant contents differ")
 
     @classmethod
     def supports_constant(cls, value: object) -> bool:
-        try:
-            cls._require_same_constant(value, value)
-        except ValueError:
+        value_type = type(value)
+        if value_type in _NATIVE_CONSTANT_ATOM_TYPES:
+            return True
+        if value_type is not tuple:
             return False
+        pending: list[object] = list(cast(tuple[object, ...], value))
+        examined: set[int] = {id(value)}
+        while pending:
+            item = pending.pop()
+            item_type = type(item)
+            if item_type in _NATIVE_CONSTANT_ATOM_TYPES:
+                continue
+            if item_type is not tuple:
+                return False
+            item_id = id(item)
+            if item_id in examined:
+                continue
+            examined.add(item_id)
+            pending.extend(cast(tuple[object, ...], item))
         return True
 
     def require_constant_contents(self, expected: object) -> None:

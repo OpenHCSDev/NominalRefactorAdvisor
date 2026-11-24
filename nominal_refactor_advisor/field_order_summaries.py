@@ -16,8 +16,10 @@ joins them across the scan.
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import astuple, dataclass, fields
+
+from nominal_refactor_advisor.ast_tools import ModuleSyntaxIndex
 
 READERS: frozenset[str] = frozenset(
     f"{reader.__module__}.{reader.__name__}" for reader in (fields, astuple)
@@ -84,6 +86,70 @@ class FunctionOrderSummary:
         return self.positional[index] if index < len(self.positional) else None
 
     @classmethod
+    def of_syntax_index(
+        cls,
+        module_name: str,
+        syntax_index: ModuleSyntaxIndex,
+        aliases: Mapping[str, str],
+    ) -> tuple[FunctionOrderSummary, ...]:
+        """Every function of the module that reads or hands a parameter on, from one syntax index."""
+
+        module = syntax_index.module
+        local = {
+            node.name
+            for node in module.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        }
+        declarations: list[tuple[str | None, ast.FunctionDef | ast.AsyncFunctionDef]] = []
+        for node in module.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                declarations.append((None, node))
+            elif isinstance(node, ast.ClassDef):
+                class_symbol = f"{module_name}.{node.name}"
+                for item in node.body:
+                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        declarations.append((class_symbol, item))
+        if not declarations:
+            return ()
+
+        nodes_by_function: dict[ast.AST, list[ast.AST]] = {
+            function: [] for _, function in declarations
+        }
+        nodes = syntax_index.depth_first_nodes
+        scopes = syntax_index.scopes
+        scope_ids = syntax_index.scope_ids
+        for node_index in syntax_index.node_indices_by_type.get(ast.Attribute, ()):
+            attribute = nodes[node_index]
+            if (
+                isinstance(attribute, ast.Attribute)
+                and attribute.attr == TABLE
+                and isinstance(attribute.value, ast.Name)
+            ):
+                function_indices = scopes[scope_ids[node_index]].function_node_indices
+                if function_indices:
+                    bucket = nodes_by_function.get(nodes[function_indices[0]])
+                    if bucket is not None:
+                        bucket.append(attribute)
+        for node_index in syntax_index.node_indices_by_type.get(ast.Call, ()):
+            function_indices = scopes[scope_ids[node_index]].function_node_indices
+            if function_indices:
+                bucket = nodes_by_function.get(nodes[function_indices[0]])
+                if bucket is not None:
+                    bucket.append(nodes[node_index])
+
+        found: list[FunctionOrderSummary] = []
+        for owner_class_symbol, function in declarations:
+            interesting = nodes_by_function[function]
+            if not interesting:
+                continue
+            summary = cls._from_nodes(
+                module_name, owner_class_symbol, function, interesting, aliases, local
+            )
+            if summary is not None:
+                found.append(summary)
+        return tuple(found)
+
+    @classmethod
     def of_module(
         cls,
         module_name: str,
@@ -92,25 +158,7 @@ class FunctionOrderSummary:
     ) -> tuple[FunctionOrderSummary, ...]:
         """Every function of the module that reads or hands a parameter on."""
 
-        local = {
-            node.name
-            for node in module.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-        }
-        found: list[FunctionOrderSummary] = []
-        for node in module.body:
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                summary = cls.of_function(module_name, None, node, aliases, local)
-                if summary is not None:
-                    found.append(summary)
-            elif isinstance(node, ast.ClassDef):
-                class_symbol = f"{module_name}.{node.name}"
-                for item in node.body:
-                    if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        summary = cls.of_function(module_name, class_symbol, item, aliases, local)
-                        if summary is not None:
-                            found.append(summary)
-        return tuple(found)
+        return cls.of_syntax_index(module_name, ModuleSyntaxIndex.build(module), aliases)
 
     @classmethod
     def of_function(
@@ -121,15 +169,34 @@ class FunctionOrderSummary:
         aliases: Mapping[str, str],
         local: frozenset[str] | set[str],
     ) -> FunctionOrderSummary | None:
+        return cls._from_nodes(
+            module_name, class_symbol, function, ast.walk(function), aliases, local
+        )
+
+    @classmethod
+    def _from_nodes(
+        cls,
+        module_name: str,
+        class_symbol: str | None,
+        function: ast.FunctionDef | ast.AsyncFunctionDef,
+        nodes: Iterable[ast.AST],
+        aliases: Mapping[str, str],
+        local: frozenset[str] | set[str],
+    ) -> FunctionOrderSummary | None:
         positional = tuple(item.arg for item in (*function.args.posonlyargs, *function.args.args))
         keyword_only = tuple(item.arg for item in function.args.kwonlyargs)
         parameters = frozenset((*positional, *keyword_only))
-        decorators = [ast.unparse(item) for item in function.decorator_list]
-        bare_static = decorators == [staticmethod.__name__]
+        if not parameters:
+            return None
+        has_static = any(
+            isinstance(item, ast.Name) and item.id == staticmethod.__name__
+            for item in function.decorator_list
+        )
+        bare_static = has_static and len(function.decorator_list) == 1
         receiver = None if bare_static or not positional else positional[0]
         reads: list[tuple[str, str]] = []
         handed: list[HandedParameter] = []
-        for node in ast.walk(function):
+        for node in nodes:
             if (
                 isinstance(node, ast.Attribute)
                 and node.attr == TABLE
@@ -179,7 +246,7 @@ class FunctionOrderSummary:
         symbol = f"{class_symbol or module_name}.{function.name}"
         return cls(
             symbol, class_symbol, function.name, function.lineno, positional, keyword_only,
-            bare_static, staticmethod.__name__ not in decorators, tuple(reads), tuple(handed),
+            bare_static, not has_static, tuple(reads), tuple(handed),
         )
 
     @staticmethod
