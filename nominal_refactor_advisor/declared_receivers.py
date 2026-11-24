@@ -1788,6 +1788,46 @@ class ReceiverPathBuilder:
     aliases: Mapping[str, str]
     parents: AstParentIndex
     _bindings: dict[tuple[int, str], ReceiverPath] = field(default_factory=dict)
+    _function_scopes: dict[
+        int, tuple[tuple[ast.AST, ...], frozenset[str], frozenset[str], frozenset[str]]
+    ] = field(default_factory=dict)
+
+    def _function_scope_facts(
+        self, function: FunctionNode
+    ) -> tuple[tuple[ast.AST, ...], frozenset[str], frozenset[str], frozenset[str]]:
+        key = id(function)
+        cached = self._function_scopes.get(key)
+        if cached is not None:
+            return cached
+        own_nodes = tuple(_own_nodes(function))
+        bound: set[str] = set()
+        globals_nonlocals: set[str] = set()
+        for node in own_nodes:
+            match node:
+                case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
+                    bound.add(name)
+                case ast.ExceptHandler(name=str() as name):
+                    bound.add(name)
+                case ast.Import() | ast.ImportFrom():
+                    bound.update(ImportBoundNameProjection(node).names())
+                case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(
+                    name=name
+                ) | ast.ClassDef(name=name):
+                    bound.add(name)
+                case ast.MatchAs(name=str() as name) | ast.MatchStar(name=str() as name):
+                    bound.add(name)
+                case ast.MatchMapping(rest=str() as name):
+                    bound.add(name)
+                case ast.Global(names=names) | ast.Nonlocal(names=names):
+                    globals_nonlocals.update(names)
+        facts = (
+            own_nodes,
+            frozenset(bound),
+            frozenset(globals_nonlocals),
+            _parameter_names(function.args),
+        )
+        self._function_scopes[key] = facts
+        return facts
 
     @cached_property
     def module_names(self) -> frozenset[str]:
@@ -1989,9 +2029,12 @@ class ReceiverPathBuilder:
                         if found:
                             return found[0]
                 case ast.FunctionDef() | ast.AsyncFunctionDef():
-                    if name in _declared_global_or_nonlocal(scope):
+                    _nodes, bound_names, globals_nonlocals, param_names = (
+                        self._function_scope_facts(scope)
+                    )
+                    if name in globals_nonlocals:
                         return unresolved(f"`{name}` is declared global or nonlocal")
-                    if name in _parameter_names(scope.args) or name in _bound_names(scope):
+                    if name in param_names or name in bound_names:
                         return self._function_binding(scope, name, pending)
         return unresolved(f"`{name}` is bound by no scope")
 
@@ -2004,11 +2047,12 @@ class ReceiverPathBuilder:
         if key in self._bindings:
             return self._bindings[key]
         inner = pending | {key}
+        own_nodes = self._function_scope_facts(function)[0]
         paths = [
             *self._parameter_paths(function, name),
             *(
                 path
-                for node in _own_nodes(function)
+                for node in own_nodes
                 for path in self._binding_paths(function, node, name, inner)
             ),
         ]
@@ -2200,9 +2244,7 @@ def _own_nodes(function: FunctionNode) -> Iterator[ast.AST]:
     belong to the function."""
 
     stack: list[ast.AST] = list(function.body)
-    for _visit in range(sum(1 for _ in ast.walk(function))):
-        if not stack:
-            break
+    while stack:
         node = stack.pop()
         yield node
         match node:

@@ -8,7 +8,7 @@ import pickle
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path, PurePath, PurePosixPath
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from nominal_refactor_advisor.scan_cache import ScanCache
 
@@ -261,9 +261,29 @@ class _RelocatingPickler(pickle.Pickler):
     def __init__(self, handle: BinaryIO, relocation: CheckoutRelocation) -> None:
         super().__init__(handle, protocol=pickle.HIGHEST_PROTOCOL)
         self._relocation = relocation
+        roots = relocation.root_texts
+        self._root0 = roots[0]
+        self._root0_len = len(roots[0])
+        self._extra_roots = roots[1:]
 
     def persistent_id(self, obj: object) -> tuple[object, ...] | None:
-        return self._relocation.relative_id(obj)
+        if type(obj) is str:
+            text = cast(str, obj)
+            root0 = self._root0
+            if text.startswith(root0):
+                root0_len = self._root0_len
+                if len(text) == root0_len or text[root0_len] == "/":
+                    return ("checkout", None, text[root0_len:])
+            if self._extra_roots:
+                for root in self._extra_roots:
+                    if text.startswith(root) and (
+                        len(text) == len(root) or text[len(root)] == "/"
+                    ):
+                        return ("checkout", None, text[len(root) :])
+            return None
+        if isinstance(obj, PurePath):
+            return self._relocation.relative_id(obj)
+        return None
 
 
 class _RelocatingUnpickler(pickle.Unpickler):

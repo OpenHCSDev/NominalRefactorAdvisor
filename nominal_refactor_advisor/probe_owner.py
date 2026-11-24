@@ -17,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import (
     CompactIndexedClass,
     module_import_aliases,
@@ -274,14 +274,14 @@ class DeclaredPathProbeOwner(ProbeOwner):
 
 
 @dataclass(frozen=True)
-class ProbeOwnerResolver:
+class ProbeOwnerResolver(ParsedModuleFact):
     """Records each probe receiver as the path its module declares it by."""
 
     file_path: str
     builder: ReceiverPathBuilder
 
     @classmethod
-    def of(cls, parsed_module: ParsedModule) -> ProbeOwnerResolver:
+    def derive(cls, parsed_module: ParsedModule) -> ProbeOwnerResolver:
         return cls(
             parsed_module.file_path,
             ReceiverPathBuilder(
@@ -291,6 +291,10 @@ class ProbeOwnerResolver:
                 parsed_module.syntax_index.parent_index,
             ),
         )
+
+    @classmethod
+    def of(cls, parsed_module: ParsedModule) -> ProbeOwnerResolver:
+        return parsed_module.fact(cls)
 
     def owner(self, receiver: ast.expr) -> DeclaredPathProbeOwner:
         return DeclaredPathProbeOwner(

@@ -3001,7 +3001,7 @@ class OwnerClass(FunctionOwnerClass):
 
 
 @dataclass(frozen=True)
-class CompactFunctionDeclaration(CompactDefinitionFlowOwner):
+class CompactFunctionDeclaration(StoredDataclassState, CompactDefinitionFlowOwner):
     identity: CompactFunctionIdentity
     execution: NativeFunctionExecution
     owner_class: FunctionOwnerClass

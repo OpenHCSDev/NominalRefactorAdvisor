@@ -1304,13 +1304,21 @@ class CompactIndexedClass(CompactClassHeader):
         """Its own metaclass, whether it is a registry family, and its registry family's key type."""
 
         registers = authority.registers_remembered(self)
+        is_authority = (
+            self.is_registration_authority or authority.is_registry_family(self)
+        )
+        key_type_name = authority.registry_family_key_type_name(self)
+        if (
+            registers == self.declares_autoregister_meta
+            and is_authority == self.is_registration_authority
+            and key_type_name == self.keyed_family_key_type_name
+        ):
+            return self
         return replace(
             self,
             declares_autoregister_meta=registers,
-            is_registration_authority=(
-                self.is_registration_authority or authority.is_registry_family(self)
-            ),
-            keyed_family_key_type_name=authority.registry_family_key_type_name(self),
+            is_registration_authority=is_authority,
+            keyed_family_key_type_name=key_type_name,
         )
 
     @property
@@ -1857,6 +1865,18 @@ class CompactRepositoryPublicExposureIndex(RepositoryPublicExposureAuthority):
             self.module_projections,
             lambda projection: projection.module_name,
         )
+
+    @cached_property
+    def _module_declaration_lookups(
+        self,
+    ) -> dict[str, tuple[dict[str, CompactIndexedClass], dict[str, str]]]:
+        return {
+            module_name: (
+                {declared.symbol: declared for declared in projection.classes},
+                dict(projection.import_aliases),
+            )
+            for module_name, projection in self.module_projection_multiplicity.unambiguous_declarations_by_handle.items()
+        }
 
     @cached_property
     def projections_by_module_name(self) -> dict[str, CompactModuleClassHeader]:
@@ -6549,20 +6569,38 @@ class InstalledClassDeclarations:
         """
 
         modules = scan.module_projection_multiplicity
+        scanned_lookups = scan._module_declaration_lookups
+        installed_lookups: dict[
+            str, tuple[dict[str, CompactIndexedClass], dict[str, str]] | None
+        ] = {}
         for _hop in range(cls.MAX_REEXPORTS):
             module_name, _dot, name = qualified_name.rpartition(".")
             if module_name in modules.ambiguous_handles:
                 return None
-            projection = modules.unambiguous_declarations_by_handle.get(module_name) or (
-                cls.module(module_name) if module_name else None
-            )
-            if projection is None:
+            lookup = scanned_lookups.get(module_name)
+            in_scan = lookup is not None
+            if not in_scan:
+                if module_name in installed_lookups:
+                    lookup = installed_lookups[module_name]
+                else:
+                    projection = cls.module(module_name) if module_name else None
+                    lookup = (
+                        None
+                        if projection is None
+                        else (
+                            {declared.symbol: declared for declared in projection.classes},
+                            dict(projection.import_aliases),
+                        )
+                    )
+                    installed_lookups[module_name] = lookup
+            if lookup is None:
                 return None
-            for declared in projection.classes:
-                if declared.symbol == qualified_name:
-                    return declared
-            target = dict(projection.import_aliases).get(name)
-            if target is None and module_name not in modules.unambiguous_declarations_by_handle:
+            classes_by_symbol, aliases = lookup
+            declared = classes_by_symbol.get(qualified_name)
+            if declared is not None:
+                return declared
+            target = aliases.get(name)
+            if target is None and not in_scan:
                 # The `.py` computes the name when it is read (`__getattr__`); its stub states it.
                 stated = cls.stub(module_name)
                 target = None if stated is None else dict(stated.import_aliases).get(name)
@@ -6596,6 +6634,15 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         default_factory=dict, init=False, repr=False, compare=False
     )
     """`registers`, remembered per class symbol while ancestors are walked."""
+    _inherits_cache: dict[str, bool] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _stores_cache: dict[str, bool] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _declaration_cache: dict[
+        tuple[CompactNominalReference, str], ClassDeclaration | None
+    ] = field(default_factory=dict, init=False, repr=False, compare=False)
     MAX_ANCESTORS: ClassVar[int] = 64
 
     @cached_property
@@ -6662,14 +6709,26 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
         itself.
         """
 
-        return self.some_ancestor(declaration, self.registers_remembered)
+        symbol = declaration.symbol
+        cached = self._inherits_cache.get(symbol)
+        if cached is not None:
+            return cached
+        answer = self.some_ancestor(declaration, self.registers_remembered)
+        self._inherits_cache[symbol] = answer
+        return answer
 
     def stores_subclasses(self, declaration: ClassDeclaration) -> bool:
         """Whether its own `__init_subclass__`, or one it inherits, stores each subclass."""
 
-        return declaration.registry_facts.stores_subclass or self.some_ancestor(
+        symbol = declaration.symbol
+        cached = self._stores_cache.get(symbol)
+        if cached is not None:
+            return cached
+        answer = declaration.registry_facts.stores_subclass or self.some_ancestor(
             declaration, lambda found: found.registry_facts.stores_subclass
         )
+        self._stores_cache[symbol] = answer
+        return answer
 
     def registers_remembered(self, declaration: ClassDeclaration) -> bool:
         if declaration.symbol not in self.registering:
@@ -6713,16 +6772,24 @@ class RegisteringMetaclassAuthority(Generic[ClassDeclarationT]):
     def declaration_for(
         self, reference: CompactNominalReference, module_name: str
     ) -> ClassDeclaration | None:
+        key = (reference, module_name)
+        if key in self._declaration_cache:
+            return self._declaration_cache[key]
         symbol = CompactClassFamilyIndexBuilder._resolved_bound_symbol(
             reference, module_name, self.scanned, self.suffix_index
         )
         if symbol is not None:
-            return self.scanned[symbol]
+            found: ClassDeclaration | None = self.scanned[symbol]
+            self._declaration_cache[key] = found
+            return found
         qualified_name = reference.settled_qualified_name(self, module_name)
         if qualified_name is None:
+            self._declaration_cache[key] = None
             return None
-        found = InstalledClassDeclarations.declaration(qualified_name, self.exposure)
-        return None if found is None else self.scanned.get(found.symbol, found)
+        installed = InstalledClassDeclarations.declaration(qualified_name, self.exposure)
+        found = None if installed is None else self.scanned.get(installed.symbol, installed)
+        self._declaration_cache[key] = found
+        return found
 
     def star_settled_name(
         self, reference: CompactNominalReference, module_name: str
