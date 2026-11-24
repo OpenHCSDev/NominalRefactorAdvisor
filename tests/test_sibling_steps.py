@@ -93,6 +93,29 @@ def test_overrides_with_no_step_in_common_are_not_found(tmp_path: Path):
     assert not _findings(tmp_path)
 
 
+def test_two_siblings_with_no_shared_step_do_not_report_omitted_steps(tmp_path: Path):
+    """With only two independent overrides and zero shared steps, one backend calling a
+    collaborator method is not consensus on an ancestor sequence; with three overrides,
+    two agreeing still flags the third's omission."""
+
+    qt = QT.replace("self.submissions.settle()", "self.repaint()")
+    text = TEXT.replace("        self.submissions.settle()\n", "")
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": HOST + text + qt})
+    assert not _findings(tmp_path)
+
+    third = (
+        "\n\nclass WebView(Host):\n"
+        "    def __init__(self, app, submissions):\n        self.app, self.submissions = app, submissions\n\n"
+        "    def history_painted(self) -> None:\n"
+        "        self.app.history_displayed()\n"
+        "        self.flush()\n\n"
+        "    def label(self) -> str:\n        return 'web'\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/views.py": HOST + text + qt + third})
+    (finding,) = _findings(tmp_path)
+    assert "`QtView` alone does not call `self.app.history_displayed()`" in finding.summary
+
+
 def test_overrides_that_are_one_declaration_are_the_sibling_override_finding(tmp_path: Path):
     same = "    def history_painted(self) -> None:\n        self.submissions.settle()\n\n"
     text = TEXT.replace(

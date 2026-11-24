@@ -1985,8 +1985,8 @@ class OwnTypeTestFindingRecipeSynthesizer(
             return self.stopped_evaluation(
                 NeedsInput(
                     f"embedded type test in `{primary.symbol}` can push onto "
-                    f"`{proof.base.qualname}`; supply a method name and one-line "
-                    "judgement in `--codemod-owner-picks`",
+                    f"`{proof.base.qualname}`; supply `owner` `{primary.symbol}` with a "
+                    "method name and one-line judgement in `--codemod-owner-picks`",
                     NeededInput.OWNER_PICK,
                 )
             )

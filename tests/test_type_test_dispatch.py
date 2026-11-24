@@ -530,6 +530,24 @@ def test_pushes_compound_or_return_and_embedded_issubclass_conjunction(tmp_path:
     )
     assert unpicked.recipe is None
     assert NeededInput.OWNER_PICK in unpicked.needs
+    assert "supply `owner` `admits`" in unpicked.rejection_reason
+
+    wrong_picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=admits_finding.stable_id,
+                owner="Declaration",
+                because="wrong owner",
+                name="admits_setting_field",
+                judgement="Whether this declaration admits the named field.",
+            ),
+        ),
+    )
+    _, wrong_report = wrong_picks.applied((admits_finding,))
+    assert wrong_report.outcomes[0].outcome == "rejected"
+    assert "is not the consumer `admits`" in wrong_report.outcomes[0].detail
 
     picks = OwnerPicks(
         "picks.json",

@@ -128,9 +128,7 @@ class NamespaceReads(ParsedModuleSetFact):
             if not reads:
                 continue
             imported_modules = cls.imported_module_names(module.module)
-            parents = {
-                child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)
-            }
+            parents = module.syntax_index.parent_index
             for read in reads:
                 if (
                     cls.reads_an_instance(read, parents)
@@ -332,18 +330,47 @@ class AnnotationNames(ParsedModuleSetFact):
         return cls(frozenset(names))
 
     @classmethod
-    def spelled(cls, annotation: ast.expr) -> Iterator[str]:
-        for node in ast.walk(annotation):
-            match node:
-                case ast.Name(id=name):
-                    yield name
-                case ast.Constant(value=str() as text):
-                    try:
-                        parsed = ast.parse(text, mode="eval").body
-                    except SyntaxError:
-                        yield from ()
-                    else:
-                        yield from cls.spelled(parsed)
+    def spelled(cls, annotation: ast.expr, *, allow_string_ref: bool = True) -> Iterator[str]:
+        match annotation:
+            case ast.Name(id=name):
+                yield name
+            case ast.Constant(value=str() as text) if allow_string_ref:
+                try:
+                    parsed = ast.parse(text, mode="eval").body
+                except SyntaxError:
+                    return
+                else:
+                    yield from cls.spelled(parsed, allow_string_ref=True)
+            case ast.Subscript(value=value, slice=slice_expr):
+                yield from cls.spelled(value, allow_string_ref=False)
+                is_literal = (
+                    (isinstance(value, ast.Name) and value.id == "Literal")
+                    or (isinstance(value, ast.Attribute) and value.attr == "Literal")
+                )
+                if is_literal:
+                    return
+                is_annotated = (
+                    (isinstance(value, ast.Name) and value.id == "Annotated")
+                    or (isinstance(value, ast.Attribute) and value.attr == "Annotated")
+                )
+                if is_annotated and isinstance(slice_expr, ast.Tuple) and slice_expr.elts:
+                    yield from cls.spelled(slice_expr.elts[0], allow_string_ref=True)
+                    for meta in slice_expr.elts[1:]:
+                        yield from cls.spelled(meta, allow_string_ref=False)
+                    return
+                yield from cls.spelled(slice_expr, allow_string_ref=True)
+            case ast.BinOp(op=ast.BitOr(), left=left, right=right):
+                yield from cls.spelled(left, allow_string_ref=allow_string_ref)
+                yield from cls.spelled(right, allow_string_ref=allow_string_ref)
+            case ast.Tuple(elts=elts) | ast.List(elts=elts):
+                for elt in elts:
+                    yield from cls.spelled(elt, allow_string_ref=allow_string_ref)
+            case _:
+                for child in ast.iter_child_nodes(annotation):
+                    if isinstance(child, ast.expr):
+                        yield from cls.spelled(child, allow_string_ref=False)
+                    elif isinstance(child, ast.keyword) and isinstance(child.value, ast.expr):
+                        yield from cls.spelled(child.value, allow_string_ref=False)
 
 
 ANNOTATION_SLOTS = frozenset({"__annotations__", "__annotate__"})
@@ -373,7 +400,7 @@ class OwnAnnotationKeys:
         """Whether `key`, at this read, only holds names its receiver's own
         annotations declare."""
 
-        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        parents = module.syntax_index.parent_index
         scope: ast.AST | None = parents.get(read)
         while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
             scope = parents.get(scope)
@@ -463,6 +490,56 @@ class OwnAnnotationKeys:
     @staticmethod
     def inside(statements: list[ast.stmt] | list[ast.AST], node: ast.AST) -> bool:
         return any(inner is node for statement in statements for inner in ast.walk(statement))
+
+
+@dataclass(frozen=True)
+class AttributeWriteIndex(ParsedModuleSetFact):
+    """Every attribute write (`x.a = v`, `x.a += v`, `setattr(x, "a", v)`) across one
+    state's modules, indexed by attribute name so `NamespaceReaders.keys_avoid` checks
+    each attribute in O(writes of that attribute) instead of walking every module AST."""
+
+    writes_by_attribute: dict[str, tuple[tuple[str, ast.ClassDef | None, ast.expr | None], ...]]
+    """Maps `attr` to `(file_path, enclosing_class, self_assigned_value_or_none)` entries.
+    An entry has a non-None value only for plain `self.<attr> = value` inside a class;
+    any other target, `AugAssign`, or `setattr` records `None`."""
+
+    @staticmethod
+    def enclosing_class(module: ParsedModule, node: ast.AST) -> ast.ClassDef | None:
+        parents = module.syntax_index.parent_index
+        current: ast.AST | None = parents.get(node)
+        while current is not None:
+            if isinstance(current, ast.ClassDef):
+                return current
+            current = parents.get(current)
+        return None
+
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> AttributeWriteIndex:
+        writes: dict[str, list[tuple[str, ast.ClassDef | None, ast.expr | None]]] = {}
+        for scanned in modules:
+            file_path = scanned.file_path
+            for node in ast.walk(scanned.module):
+                match node:
+                    case ast.Assign(targets=targets, value=value):
+                        for target in targets:
+                            if isinstance(target, ast.Attribute):
+                                owner = cls.enclosing_class(scanned, target)
+                                is_self = (
+                                    owner is not None
+                                    and isinstance(target.value, ast.Name)
+                                    and target.value.id == "self"
+                                )
+                                writes.setdefault(target.attr, []).append(
+                                    (file_path, owner, value if is_self else None)
+                                )
+                    case ast.AugAssign(target=ast.Attribute(attr=name)):
+                        writes.setdefault(name, []).append((file_path, None, None))
+                    case ast.Call(
+                        func=ast.Name(id="setattr"),
+                        args=[_, ast.Constant(value=str() as name), *_],
+                    ):
+                        writes.setdefault(name, []).append((file_path, None, None))
+        return cls({attr: tuple(entries) for attr, entries in writes.items()})
 
 
 @dataclass(frozen=True)
@@ -619,7 +696,7 @@ class NamespaceReaders(ClassAttributeReaders):
         merged through `dict(...)` and `|`, so it answers only names annotations
         spell: no deleted name is one of them."""
 
-        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        parents = module.syntax_index.parent_index
         node: ast.AST = read
         while True:
             parent = parents.get(node)
@@ -642,38 +719,21 @@ class NamespaceReaders(ClassAttributeReaders):
         inside the class that reads it, and each written text starts or ends with a
         constant that no deleted name starts or ends with."""
 
-        owners = [
-            node
-            for node in ast.walk(module.module)
-            if isinstance(node, ast.ClassDef) and any(inner is read for inner in ast.walk(node))
-        ]
-        if not owners:
+        owner = AttributeWriteIndex.enclosing_class(module, read)
+        if owner is None:
             return False
-        owner = min(owners, key=lambda node: sum(1 for _ in ast.walk(node)))
-        owned = {id(node) for node in ast.walk(owner)}
-        writes = 0
-        for scanned in self.snapshot.module_set:
-            for node in ast.walk(scanned.module):
-                match node:
-                    case ast.Assign(targets=targets, value=value):
-                        written = [target for target in targets if isinstance(target, ast.Attribute) and target.attr == attribute]
-                    case ast.AugAssign(target=ast.Attribute(attr=name) as target, value=value) if name == attribute:
-                        return False
-                    case ast.Call(func=ast.Name(id="setattr"), args=[_, ast.Constant(value=name), *_]) if name == attribute:
-                        return False
-                    case _:
-                        continue
-                for target in written:
-                    if not (
-                        scanned is module
-                        and id(target) in owned
-                        and isinstance(target.value, ast.Name)
-                        and target.value.id == "self"
-                        and self.text_avoids(value, deleted)
-                    ):
-                        return False
-                    writes += 1
-        return writes > 0
+        entries = self.snapshot.module_set.fact(AttributeWriteIndex).writes_by_attribute.get(
+            attribute, ()
+        )
+        if not entries:
+            return False
+        return all(
+            entry_path == module.file_path
+            and entry_owner is owner
+            and entry_value is not None
+            and self.text_avoids(entry_value, deleted)
+            for entry_path, entry_owner, entry_value in entries
+        )
 
     def local_text_avoids(self, module: ParsedModule, read: ast.expr, name: str, deleted: frozenset[str]) -> bool:
         """The key is a local of the function the read stands in, bound there once,
@@ -682,7 +742,7 @@ class NamespaceReaders(ClassAttributeReaders):
         second binding, or a comprehension around the read binding the name is not
         that local."""
 
-        parents = {child: parent for parent in ast.walk(module.module) for child in ast.iter_child_nodes(parent)}
+        parents = module.syntax_index.parent_index
         scope: ast.AST | None = parents.get(read)
         while scope is not None and not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             if isinstance(scope, (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)) and any(

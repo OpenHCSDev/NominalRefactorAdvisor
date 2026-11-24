@@ -253,6 +253,27 @@ def test_a_namespace_only_resolving_annotations_sees_no_unannotated_name(tmp_pat
     assert NeededInput.PROOF in evaluation.needs
 
 
+def test_literal_and_metadata_strings_in_annotations_do_not_block_localns_reads(tmp_path: Path):
+    source = (
+        "import sys\nfrom typing import Annotated, Literal, get_type_hints\n\n\n"
+        "class Meta:\n    def __init__(self, text: str) -> None:\n        self.text = text\n\n\n"
+        "class Base:\n    def status(self):\n        return 1\n\n\n"
+        "class Child(Base):\n    def status(self):\n        return 1\n\n\n"
+        "def hints(declaration: type):\n"
+        "    return get_type_hints(\n"
+        "        declaration, globalns=vars(sys.modules[declaration.__module__]),\n"
+        "        localns=dict(vars(declaration)), include_extras=True,\n"
+        "    )\n\n\n"
+        "def consumer(\n"
+        "    mode: Literal['status'],\n"
+        "    label: Annotated[str, Meta('status')],\n"
+        ") -> None:\n"
+        "    pass\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/hints.py": source})
+    assert _evaluation(tmp_path, "Child").rejection_reason == ""
+
+
 def test_a_namespace_read_the_type_checker_types_as_an_instance_sees_no_class(tmp_path: Path):
     source = (
         "import argparse\n\n\n"
