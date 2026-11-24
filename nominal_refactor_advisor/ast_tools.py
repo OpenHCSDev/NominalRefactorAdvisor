@@ -4010,26 +4010,37 @@ class ModuleSyntaxIndex:
         scopes = [LexicalSyntaxScope()]
         named_functions: list[tuple[str, ast.FunctionDef | ast.AsyncFunctionDef]] = []
         nodes_by_depth: list[list[ast.AST]] = []
+        ast_type = ast.AST
+        list_type = list
+        class_def_type = ast.ClassDef
+        func_def_types = (ast.FunctionDef, ast.AsyncFunctionDef)
         stack: list[tuple[ast.AST, int, int, int]] = [(module, -1, 0, 0)]
+        nodes_append = nodes.append
+        parent_append = parent_indices.append
+        scope_append = scope_ids.append
+        stack_pop = stack.pop
+        stack_append = stack.append
+        bucket_get = node_indices_by_type.get
         while stack:
-            node, parent_index, scope_id, depth = stack.pop()
+            node, parent_index, scope_id, depth = stack_pop()
             node_index = len(nodes)
             scope = scopes[scope_id]
-            nodes.append(node)
-            node_indices_by_type.setdefault(type(node), array("I")).append(node_index)
+            nodes_append(node)
+            node_type = type(node)
+            bucket = bucket_get(node_type)
+            if bucket is None:
+                bucket = array("I")
+                node_indices_by_type[node_type] = bucket
+            bucket.append(node_index)
             if depth == len(nodes_by_depth):
                 nodes_by_depth.append([])
             nodes_by_depth[depth].append(node)
-            parent_indices.append(parent_index)
-            scope_ids.append(scope_id)
-
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                named_functions.append(
-                    (".".join((*scope.class_names, node.name)), node)
-                )
+            parent_append(parent_index)
+            scope_append(scope_id)
 
             child_scope_id = scope_id
-            if isinstance(node, ast.ClassDef):
+            if node_type is class_def_type:
+                assert isinstance(node, ast.ClassDef)
                 child_scope_id = len(scopes)
                 scopes.append(
                     LexicalSyntaxScope(
@@ -4041,7 +4052,11 @@ class ModuleSyntaxIndex:
                         executable_function_index=-1,
                     )
                 )
-            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            elif node_type in func_def_types:
+                assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                named_functions.append(
+                    (".".join((*scope.class_names, node.name)), node)
+                )
                 child_scope_id = len(scopes)
                 scopes.append(
                     LexicalSyntaxScope(
@@ -4056,16 +4071,18 @@ class ModuleSyntaxIndex:
                         executable_function_index=node_index,
                     )
                 )
-            children = tuple(ast.iter_child_nodes(node))
-            stack.extend(
-                (
-                    child,
-                    node_index,
-                    child_scope_id,
-                    depth + 1,
-                )
-                for child in reversed(children)
-            )
+            next_depth = depth + 1
+            node_dict = node.__dict__
+            for field_name in reversed(node._fields):
+                value = node_dict.get(field_name)
+                if value is None:
+                    continue
+                if isinstance(value, ast_type):
+                    stack_append((value, node_index, child_scope_id, next_depth))
+                elif type(value) is list_type:
+                    for item in reversed(value):
+                        if isinstance(item, ast_type):
+                            stack_append((item, node_index, child_scope_id, next_depth))
         return cls(
             module=module,
             depth_first_nodes=tuple(nodes),

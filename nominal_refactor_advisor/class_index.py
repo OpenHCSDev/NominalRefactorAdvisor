@@ -3760,6 +3760,14 @@ class CompactFieldFact(ABC):
     """The bare field, `name: annotation`, one class-body declaration makes:
     none, the declaration itself, or what a call that declares one names."""
 
+    depends_on_repository: ClassVar[bool] = False
+
+    def static_field_identity(self, identity: IdentityT) -> IdentityT | None:
+        """The field identity when independent of repository field wrappers."""
+
+        del identity
+        return None
+
     @abstractmethod
     def field_identity(
         self,
@@ -3787,6 +3795,9 @@ class NoFieldFact(CompactFieldFact):
 class CompactBareFieldFact(CompactFieldFact):
     """`name: annotation` with no value: the declaration is its own field."""
 
+    def static_field_identity(self, identity: IdentityT) -> IdentityT | None:
+        return identity
+
     def field_identity(
         self,
         identity: IdentityT,
@@ -3800,6 +3811,8 @@ class CompactBareFieldFact(CompactFieldFact):
 class CompactCalledFieldFact(CompactFieldFact):
     """A field whose value is a call: it declares `bare` when the repository
     proves the call declares a field without a default."""
+
+    depends_on_repository: ClassVar[bool] = True
 
     call: CompactFieldDeclarationCall
     bare: ClassBodyDeclarationDigest
