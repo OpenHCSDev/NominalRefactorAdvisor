@@ -2651,14 +2651,10 @@ class NativeScopeReceipts:
 
 
 @dataclass(eq=False)
-class NativeScopeObservation(NativeCodeObservation):
-    """One original walk owns creation, entry and continuation observations."""
+class NativeDeclarationObservation(NativeCodeObservation):
+    """Track value-store installation provenance without scope entry windows."""
 
     operations: dict[int, NativePrimitiveOperation]
-
-    @cached_property
-    def entry_window(self) -> NativeEntryValueWindow:
-        return NativeEntryValueWindow(self.code, self.operations)
 
     @cached_property
     def value_stream(self) -> NativeValueStoreStream:
@@ -2671,13 +2667,32 @@ class NativeScopeObservation(NativeCodeObservation):
         *,
         requires_prefix: bool,
     ) -> None:
+        del requires_prefix
         self.value_stream.observe(instruction)
-        if not requires_prefix or self._boundary is not None:
-            self.entry_window.observe(instruction)
         if previous is not None and previous.installation is not None:
             previous.installation = self.value_stream.record_store(
                 previous.installation
             )
+
+
+@dataclass(eq=False)
+class NativeScopeObservation(NativeDeclarationObservation):
+    """One original walk owns creation, entry and continuation observations."""
+
+    @cached_property
+    def entry_window(self) -> NativeEntryValueWindow:
+        return NativeEntryValueWindow(self.code, self.operations)
+
+    def observe_values(
+        self,
+        instruction: dis.Instruction,
+        previous: NativeCodeEmission | None,
+        *,
+        requires_prefix: bool,
+    ) -> None:
+        super().observe_values(instruction, previous, requires_prefix=requires_prefix)
+        if not requires_prefix or self._boundary is not None:
+            self.entry_window.observe(instruction)
 
     def publish(self, frame: NativeFrameOrigin) -> NativeScopeReceipts:
         continuation = self.value_stream.return_receipt(frame)
@@ -2755,7 +2770,7 @@ class FullScopeInventory(NativeInventoryPolicy):
 
 
 class DeclarationInventory(NativeInventoryPolicy):
-    """Observe declaration-bearing and class-body scopes without value streams."""
+    """Observe declaration-bearing and class-body scopes without entry-window publication."""
 
     @classmethod
     def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
@@ -2768,8 +2783,8 @@ class DeclarationInventory(NativeInventoryPolicy):
         primitive_operations: dict[int, NativePrimitiveOperation],
         observations: list[NativeScopeObservation],
     ) -> NativeCodeObservation:
-        del primitive_operations, observations
-        return NativeCodeObservation(parent)
+        del observations
+        return NativeDeclarationObservation(parent, primitive_operations)
 
 
 @dataclass(eq=False)
