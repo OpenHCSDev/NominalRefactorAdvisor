@@ -3648,7 +3648,7 @@ class _ClassContext:
 class _DeclarationCollector(ast.NodeVisitor):
     """Collect declaration identities while preserving Python scope nesting."""
 
-    @property
+    @cached_property
     def owners_by_node(
         self,
     ) -> dict[

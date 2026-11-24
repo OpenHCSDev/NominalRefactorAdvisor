@@ -907,8 +907,27 @@ class ClassOverlapVerdicts(DeclaredC3):
                 candidates.extend(candidate.rungs)
                 judged.add((overlap.first.symbol, overlap.second.symbol))
         for first, second in sorted(inheriting_pairs - judged):
+            first_resolved = self.resolved_declarations(first)
+            second_resolved = self.resolved_declarations(second)
+            shared_names = first_resolved.keys() & second_resolved.keys()
+            if not shared_names:
+                continue
+            has_candidate_inherited = False
+            for name in shared_names:
+                first_owner = first_resolved[name].owner.symbol
+                second_owner = second_resolved[name].owner.symbol
+                if first_owner == second_owner:
+                    continue
+                if first_owner != first and second_owner != second:
+                    continue
+                if first_owner == first and second_owner == second:
+                    continue
+                has_candidate_inherited = True
+                break
+            if not has_candidate_inherited:
+                continue
             overlap = self.bodies.overlap(first, second).with_inherited(
-                self.resolved_declarations(first), self.resolved_declarations(second)
+                first_resolved, second_resolved
             )
             if (
                 overlap.inherited

@@ -11,6 +11,7 @@ from collections.abc import (
     Hashable,
     Iterable,
     Iterator,
+    Sequence,
 )
 from dataclasses import (
     dataclass,
@@ -4353,7 +4354,7 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
         )
 
     def instructions(self, parent: CodeType) -> Iterable[dis.Instruction]:
-        return dis.Bytecode(parent)
+        return _fast_cpython_instructions(parent)
 
     def observe(
         self,
@@ -4367,6 +4368,201 @@ class ContiguousNativeCreationBackend(NativeCreationBackend):
         if operation is None:
             return None
         return operation.advance(self, current, instruction, emission)
+
+
+_DIS_ALL_OPNAME: Sequence[str] = getattr(dis, "_all_opname", dis.opname)
+_DIS_DEOPTOP: Callable[[int], int] = getattr(dis, "_deoptop", lambda op: op)
+_DIS_GET_CACHE_SIZE: Callable[[str], int] = getattr(dis, "_get_cache_size", lambda _name: 0)
+_DIS_FINDLABELS: Callable[[bytes], list[int]] = cast(
+    Callable[[bytes], list[int]], dis.findlabels
+)
+_FAST_HAS_ARG: tuple[bool, ...] = tuple(
+    op in getattr(dis, "hasarg", range(dis.HAVE_ARGUMENT, 256)) for op in range(256)
+)
+_FAST_OPNAME: tuple[str, ...] = tuple(
+    _DIS_ALL_OPNAME[op] if op < len(_DIS_ALL_OPNAME) else "" for op in range(256)
+)
+_FAST_CACHE_SIZES: tuple[int, ...] = tuple(
+    _DIS_GET_CACHE_SIZE(_DIS_ALL_OPNAME[_DIS_DEOPTOP(op)])
+    if op < len(_DIS_ALL_OPNAME)
+    else 0
+    for op in range(256)
+)
+
+
+def _build_fast_arg_kinds() -> tuple[int, ...]:
+    opname = _DIS_ALL_OPNAME
+    deoptop = _DIS_DEOPTOP
+    hasconst = frozenset(dis.hasconst)
+    hasname = frozenset(dis.hasname)
+    haslocal = frozenset(dis.haslocal)
+    hasfree = frozenset(dis.hasfree)
+    hascompare = frozenset(dis.hascompare)
+    load_global = dis.opmap.get("LOAD_GLOBAL", -1)
+    load_attr = dis.opmap.get("LOAD_ATTR", -1)
+    load_super_attr = dis.opmap.get("LOAD_SUPER_ATTR", -1)
+    load_small_int = dis.opmap.get("LOAD_SMALL_INT", -1)
+    convert_value = dis.opmap.get("CONVERT_VALUE", -1)
+    pair_local = frozenset(
+        dis.opmap[name]
+        for name in (
+            "LOAD_FAST_LOAD_FAST",
+            "LOAD_FAST_BORROW_LOAD_FAST_BORROW",
+            "STORE_FAST_LOAD_FAST",
+            "STORE_FAST_STORE_FAST",
+        )
+        if name in dis.opmap
+    )
+    kinds = [0] * 256
+    for op in range(256):
+        if op >= len(opname):
+            continue
+        base_op = deoptop(op)
+        if base_op == load_small_int:
+            kinds[op] = 0
+        elif base_op in hasconst:
+            kinds[op] = 1
+        elif base_op in hasname:
+            if base_op == load_global or base_op == load_attr:
+                kinds[op] = 3
+            elif base_op == load_super_attr:
+                kinds[op] = 4
+            else:
+                kinds[op] = 2
+        elif base_op in pair_local:
+            kinds[op] = 6
+        elif base_op in haslocal or base_op in hasfree:
+            kinds[op] = 5
+        elif base_op in hascompare:
+            kinds[op] = 7
+        elif base_op == convert_value:
+            kinds[op] = 8
+    return tuple(kinds)
+
+
+_FAST_ARG_KIND: tuple[int, ...] = _build_fast_arg_kinds()
+_FAST_CONVERT_FUNCS: tuple[object, ...] = (None, str, repr, ascii)
+
+
+def _fast_cpython_instructions(parent: CodeType) -> list[dis.Instruction]:
+    """Decode `parent`'s bytecode into `dis.Instruction` without formatting unused `argrepr` strings."""
+
+    raw = parent.co_code
+    length = len(raw)
+    labels = set(_DIS_FINDLABELS(raw))
+    if parent.co_exceptiontable:
+        for entry in dis._parse_exception_table(parent):  # type: ignore[attr-defined]
+            labels.add(entry.start)
+            labels.add(entry.end)
+            labels.add(entry.target)
+    consts = parent.co_consts
+    names = parent.co_names
+    varname_from_oparg = parent._varname_from_oparg  # type: ignore[attr-defined]
+    pos_iter = iter(parent.co_positions())
+    has_arg = _FAST_HAS_ARG
+    opnames = _FAST_OPNAME
+    cache_sizes = _FAST_CACHE_SIZES
+    arg_kinds = _FAST_ARG_KIND
+    cmp_op = dis.cmp_op
+    extended_arg_op = dis.EXTENDED_ARG
+    convert_funcs = _FAST_CONVERT_FUNCS
+    instr_make = dis.Instruction._make
+    pos_make = dis.Positions._make
+    empty_pos = (None, None, None, None)
+    out: list[dis.Instruction] = []
+    append = out.append
+    offset = 0
+    extended_arg = 0
+    start_offset = 0
+    arg: int | None
+    while offset < length:
+        op = raw[offset]
+        arg_byte = raw[offset + 1]
+        current_offset = offset
+        if extended_arg == 0:
+            start_offset = offset
+        if op == extended_arg_op:
+            ext_arg = arg_byte | extended_arg
+            extended_arg = ext_arg << 8
+            pos = pos_make(next(pos_iter, empty_pos))
+            offset += 2
+            label = 1 if current_offset in labels else None
+            append(
+                instr_make(
+                    (
+                        opnames[op],
+                        op,
+                        ext_arg,
+                        ext_arg,
+                        "",
+                        current_offset,
+                        start_offset,
+                        False,
+                        None,
+                        label,
+                        pos,
+                        None,
+                    )
+                )
+            )
+            continue
+        if has_arg[op]:
+            resolved_arg = arg_byte | extended_arg
+            arg = resolved_arg
+            kind = arg_kinds[op]
+            if kind == 0:
+                argval: object = resolved_arg
+            elif kind == 1:
+                argval = consts[resolved_arg]
+            elif kind == 2:
+                argval = names[resolved_arg]
+            elif kind == 3:
+                argval = names[resolved_arg >> 1]
+            elif kind == 4:
+                argval = names[resolved_arg >> 2]
+            elif kind == 5:
+                argval = varname_from_oparg(resolved_arg)
+            elif kind == 6:
+                argval = (
+                    varname_from_oparg(resolved_arg >> 4),
+                    varname_from_oparg(resolved_arg & 15),
+                )
+            elif kind == 7:
+                argval = cmp_op[resolved_arg >> 5]
+            else:
+                argval = convert_funcs[resolved_arg]
+        else:
+            arg = None
+            argval = None
+        extended_arg = 0
+        pos = pos_make(next(pos_iter, empty_pos))
+        caches = cache_sizes[op]
+        if caches:
+            for _ in range(caches):
+                next(pos_iter, None)
+            offset += 2 + (caches << 1)
+        else:
+            offset += 2
+        label = 1 if current_offset in labels else None
+        append(
+            instr_make(
+                (
+                    opnames[op],
+                    op,
+                    arg,
+                    argval,
+                    "",
+                    current_offset,
+                    start_offset,
+                    False,
+                    None,
+                    label,
+                    pos,
+                    None,
+                )
+            )
+        )
+    return out
 
 
 class CPythonClassConstructionField(StrEnum):

@@ -327,15 +327,18 @@ class ClassBodyOverlap:
         if not inherited:
             return self
         names = frozenset(shared.name for shared in inherited)
-        return replace(
-            self,
+        return ClassBodyOverlap(
+            first=self.first,
+            second=self.second,
             shared=(*self.shared, *inherited),
+            divergent=self.divergent,
             first_only=tuple(
                 declaration for declaration in self.first_only if declaration.name not in names
             ),
             second_only=tuple(
                 declaration for declaration in self.second_only if declaration.name not in names
             ),
+            withheld=self.withheld,
         )
 
     @property
