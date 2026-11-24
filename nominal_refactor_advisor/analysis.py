@@ -469,12 +469,27 @@ def _prewarm_compact_families(
     )
     if worker_plan.uses_process_pool:
         tasks.sort(key=lambda item: -len(modules[item[0]].source))
-        collected = worker_plan.map(
-            _collect_missing_module_families,
-            tasks,
-            initializer=_initialize_module_family_prewarm_worker,
-            initargs=(tuple(modules),),
-        )
+        module_tuple = tuple(modules)
+        if _analysis_process_pool_mp_context() is not None:
+            global _module_family_prewarm_modules
+            previous_modules = _module_family_prewarm_modules
+            _module_family_prewarm_modules = module_tuple
+            try:
+                collected = worker_plan.map(
+                    _collect_missing_module_families,
+                    tasks,
+                    initializer=ScanCache.initialize_worker,
+                    initargs=(),
+                )
+            finally:
+                _module_family_prewarm_modules = previous_modules
+        else:
+            collected = worker_plan.map(
+                _collect_missing_module_families,
+                tasks,
+                initializer=_initialize_module_family_prewarm_worker,
+                initargs=(module_tuple,),
+            )
         for module_index, items_by_family in collected:
             module = modules[module_index]
             for family, items in items_by_family.items():
@@ -693,6 +708,23 @@ class DetectorTypeShardRunner:
         if not self.detector_types:
             return []
         if self.worker_plan.uses_process_pool:
+            if _analysis_process_pool_mp_context() is not None:
+                global detector_analysis_worker_state
+                previous_state = detector_analysis_worker_state
+                detector_analysis_worker_state = self.worker_state
+                try:
+                    with self.worker_plan.pool(
+                        ScanCache.initialize_worker, ()
+                    ) as executor:
+                        return list(
+                            executor.map(
+                                detect_with_active_worker_state,
+                                self.detector_types,
+                                chunksize=self.worker_plan.process_map_chunksize,
+                            )
+                        )
+                finally:
+                    detector_analysis_worker_state = previous_state
             with self.worker_plan.pool(
                 initialize_detector_analysis_worker, (self.worker_state,)
             ) as executor:

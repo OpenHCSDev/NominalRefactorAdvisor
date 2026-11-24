@@ -416,25 +416,37 @@ class ClassUseIndex:
                 *((script.module_name, script.class_references) for script in projection.script_scopes),
             )
         )
-        filed: dict[str, dict[tuple[int, int], tuple[str, str, CompactClassReference]]] = defaultdict(dict)
-        for module_order, (file_path, module_name, references) in enumerate(scopes):
-            aliases = resolver.import_aliases_by_module_name.get(module_name, {})
-            for reference_order, reference in enumerate(references):
+        filed: dict[str, list[tuple[str, str, CompactClassReference]]] = defaultdict(list)
+        import_aliases_by_module = resolver.import_aliases_by_module_name
+        reexport_tail: dict[str, str] = {}
+        for file_path, module_name, references in scopes:
+            aliases = import_aliases_by_module.get(module_name, {})
+            for reference in references:
                 parts = reference.reference_parts
                 names = {*parts}
-                if parts[0] in aliases:
+                first = parts[0]
+                if first in aliases:
+                    alias_target = aliases[first]
                     for length in range(1, len(parts) + 1):
-                        names.add(
-                            followed_reexports(
-                                ".".join((aliases[parts[0]], *parts[1:length])),
-                                resolver.import_aliases_by_module_name,
-                            ).rpartition(".")[2]
+                        key = (
+                            alias_target
+                            if length == 1
+                            else ".".join((alias_target, *parts[1:length]))
                         )
+                        tail = reexport_tail.get(key)
+                        if tail is None:
+                            tail = followed_reexports(
+                                key,
+                                import_aliases_by_module,
+                            ).rpartition(".")[2]
+                            reexport_tail[key] = tail
+                        names.add(tail)
+                entry = (file_path, module_name, reference)
                 for name in names:
-                    filed[name][module_order, reference_order] = (file_path, module_name, reference)
+                    filed[name].append(entry)
         return cls(
             resolver,
-            {name: tuple(found[key] for key in sorted(found)) for name, found in filed.items()},
+            {name: tuple(entries) for name, entries in filed.items()},
         )
 
     def resolved(

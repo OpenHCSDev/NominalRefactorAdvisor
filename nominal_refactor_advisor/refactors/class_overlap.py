@@ -974,6 +974,7 @@ class ClassReferenceSites:
         return tuple(
             site
             for parsed_module in self.snapshot.parsed_modules
+            if any(name in parsed_module.source for name in terminal_names)
             for source in (ModuleSource(parsed_module), *parsed_module.fact(EmbeddedSources).sources)
             for site in self._source_sites(source, terminal_names)
         )
@@ -3136,7 +3137,10 @@ class ComposeExistingClassOperation(RepositorySourceReprovedOperation):
     )
 
     def composition(self, snapshot: CodemodSourceSnapshot) -> ClassComposition:
-        return ClassComposition.require(snapshot, self.owner, self.target)
+        return snapshot.retained_operation_derivation(
+            (self, ComposeExistingClassOperation.composition),
+            lambda: ClassComposition.require(snapshot, self.owner, self.target),
+        )
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
@@ -3274,8 +3278,11 @@ class ComposeExistingClassesOperation(RepositorySourceReprovedOperation):
     )
 
     def composition(self, snapshot: CodemodSourceSnapshot) -> CoveringComposition:
-        return CoveringComposition.require(
-            snapshot, self.owners, (self.target, *self.composers)
+        return snapshot.retained_operation_derivation(
+            (self, ComposeExistingClassesOperation.composition),
+            lambda: CoveringComposition.require(
+                snapshot, self.owners, (self.target, *self.composers)
+            ),
         )
 
     def source_edits_from_snapshot(
@@ -3321,7 +3328,10 @@ class FoldSharedDeclarationsIntoBaseOperation(RepositorySourceReprovedOperation)
             raise ValueError("A fold needs Python identifiers")
 
     def fold(self, snapshot: CodemodSourceSnapshot) -> BaseFold:
-        return BaseFold.require(snapshot, self.target, self.member_names)
+        return snapshot.retained_operation_derivation(
+            (self, FoldSharedDeclarationsIntoBaseOperation.fold),
+            lambda: BaseFold.require(snapshot, self.target, self.member_names),
+        )
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
@@ -3990,9 +4000,16 @@ class CreateMixinOperation(RelocationStep, RepositorySourceReprovedOperation):
     mixin is created beside the anchor, moved there, then composed."""
 
     def creation(self, snapshot: CodemodSourceSnapshot) -> MixinCreation:
-        return MixinCreation.require(
-            snapshot, self.target, self.member_names, self.mixin_name, self.docstring,
-            None if self.home_module is None else home_subject(snapshot, self.home_module),
+        return snapshot.retained_operation_derivation(
+            (self, CreateMixinOperation.creation),
+            lambda: MixinCreation.require(
+                snapshot,
+                self.target,
+                self.member_names,
+                self.mixin_name,
+                self.docstring,
+                None if self.home_module is None else home_subject(snapshot, self.home_module),
+            ),
         )
 
     def declared(self, creation: MixinCreation) -> SourceRewriteTarget:
@@ -4140,7 +4157,12 @@ class ExtendOwnerOperation(RepositorySourceReprovedOperation):
     member_names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
 
     def extension(self, snapshot: CodemodSourceSnapshot) -> OwnerExtension:
-        return OwnerExtension.require(snapshot, self.target, self.anchor, self.member_names)
+        return snapshot.retained_operation_derivation(
+            (self, ExtendOwnerOperation.extension),
+            lambda: OwnerExtension.require(
+                snapshot, self.target, self.anchor, self.member_names
+            ),
+        )
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
@@ -4170,7 +4192,10 @@ class KeywordizeConstructionOperation(RepositorySourceReprovedOperation):
     """Bind every positional construction of a dataclass by keyword (#86)."""
 
     def keywording(self, snapshot: CodemodSourceSnapshot) -> ConstructionKeywording:
-        return ConstructionKeywording.require(snapshot, self.target)
+        return snapshot.retained_operation_derivation(
+            (self, KeywordizeConstructionOperation.keywording),
+            lambda: ConstructionKeywording.require(snapshot, self.target),
+        )
 
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
