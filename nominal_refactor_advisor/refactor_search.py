@@ -369,13 +369,15 @@ class RefactorSearch:
     def turn(self, scan: CodemodWorkflowScan, start: StateScore, depth: int) -> SearchTurn:
         """Every concept played from `scan`, whose score is `start`, looking `depth` moves ahead."""
 
+        concepts = RefactorConcept.declaration_types()
+        scan.populate_concept_findings(concepts)
         # The workers share this process's pages until they write to them; a
         # frozen generation keeps the collector from writing to every object
         # this state holds.
         gc.collect()
         gc.freeze()
         try:
-            moves = self.played(scan, start, RefactorConcept.declaration_types())
+            moves = self.played(scan, start, concepts)
         finally:
             gc.unfreeze()
         turn = SearchTurn(start, moves)
@@ -446,11 +448,7 @@ class RefactorSearch:
         """Why `concept` has no move to play from `scan`, or None when it has one to play."""
 
         key = concept.concept_key()
-        targets = len(
-            FindingRecipeSynthesizer.findings_for_concept(
-                scan.findings, concept, scan.source_snapshot
-            )
-        )
+        targets = len(scan.concept_findings(concept))
         if not targets:
             return UnscoredMove(key, "no targets")
         if targets > self.budget.max_targets:

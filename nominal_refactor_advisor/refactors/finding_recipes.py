@@ -302,6 +302,37 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
         )
 
     @classmethod
+    def findings_by_concepts(
+        cls,
+        findings: Iterable[RefactorFinding],
+        concept_types: Iterable[type[RefactorConcept]],
+        selector_context: CodemodSelectorContext,
+    ) -> dict[type[RefactorConcept], tuple[RefactorFinding, ...]]:
+        """Bucket findings across concepts by evaluating each finding once."""
+
+        concepts = tuple(concept_types)
+        buckets: dict[type[RefactorConcept], list[RefactorFinding]] = {
+            concept: [] for concept in concepts
+        }
+        matching_by_declaration: dict[type, tuple[type[RefactorConcept], ...]] = {}
+        for finding in findings:
+            evaluator = FindingRecipeEvaluator.for_finding(finding)
+            if evaluator is None:
+                continue
+            declaration = evaluator.evaluation_declaration_for_finding(
+                finding, selector_context
+            )
+            matched = matching_by_declaration.get(declaration)
+            if matched is None:
+                matched = tuple(
+                    concept for concept in concepts if issubclass(declaration, concept)
+                )
+                matching_by_declaration[declaration] = matched
+            for concept in matched:
+                buckets[concept].append(finding)
+        return {concept: tuple(items) for concept, items in buckets.items()}
+
+    @classmethod
     def detector_ids_for_concept(
         cls,
         concept_type: type[RefactorConcept],

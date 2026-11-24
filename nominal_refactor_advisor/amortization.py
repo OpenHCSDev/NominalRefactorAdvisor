@@ -116,6 +116,10 @@ class MethodCall:
                         f"{module.module_name}.{index.lexical_symbol(node_index)}",
                     )
 
+    @classmethod
+    def in_modules(cls, modules: Iterable[ParsedModule]) -> tuple[MethodCall, ...]:
+        return tuple(chain.from_iterable(cls.in_module(module) for module in modules))
+
 
 def inheritance_amortization(
     modules: Iterable[ParsedModule],
@@ -124,8 +128,23 @@ def inheritance_amortization(
 ) -> InheritanceAmortization:
     """Count the inherited pairs that calls with resolved receivers reach across ``modules``."""
 
-    modules = tuple(modules)
-    calls = tuple(chain.from_iterable(MethodCall.in_module(module) for module in modules))
+    resolved_modules = tuple(modules)
+    return inheritance_amortization_for_calls(
+        resolved_modules,
+        MethodCall.in_modules(resolved_modules),
+        index,
+        session,
+    )
+
+
+def inheritance_amortization_for_calls(
+    modules: tuple[ParsedModule, ...],
+    calls: tuple[MethodCall, ...],
+    index: CompactClassFamilyIndex,
+    session: TypeCheckerSession,
+) -> InheritanceAmortization:
+    """Count inherited pairs reached by already-collected method calls."""
+
     answers = session.receiver_types(call.span for call in calls)
     classes = ScannedClasses(index.classes_by_symbol)
     methods = InheritedMethods(index)

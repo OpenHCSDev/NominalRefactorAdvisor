@@ -1735,6 +1735,25 @@ class CodemodWorkflowScan:
     ) -> dict[type[RefactorConcept], tuple[RefactorFinding, ...]]:
         return {}
 
+    def populate_concept_findings(
+        self, concept_types: Iterable[type[RefactorConcept]]
+    ) -> None:
+        """Bucket this scan's findings across all `concept_types` in one pass."""
+
+        by_concept = self._findings_by_concept
+        missing = tuple(
+            concept for concept in concept_types if concept not in by_concept
+        )
+        if not missing:
+            return
+        by_concept.update(
+            FindingRecipeSynthesizer.findings_by_concepts(
+                self.findings,
+                missing,
+                self.source_snapshot,
+            )
+        )
+
     def concept_findings(
         self, concept_type: type[RefactorConcept]
     ) -> tuple[RefactorFinding, ...]:
@@ -2153,6 +2172,69 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
 
         if scan.scan_mode.exact:
             return scan
+        baseline = self.initial_scan
+        if baseline is not None and baseline.scan_mode.exact:
+            before_by_path = {module.file_path: module for module in baseline.modules}
+            after_by_path = {module.file_path: module for module in scan.modules}
+            changed_or_created = tuple(
+                module
+                for path, module in after_by_path.items()
+                if before_by_path.get(path) is not module
+            )
+            invalidated = frozenset(
+                module.file_path for module in changed_or_created
+            ) | (frozenset(before_by_path) - frozenset(after_by_path))
+            all_detectors = default_detector_types_for_analysis()
+            per_module_types = DetectorCacheGranularity.PER_MODULE.select_detector_types(
+                all_detectors
+            )
+            per_module_ids = frozenset(
+                detector_type.effective_detector_id()
+                for detector_type in per_module_types
+            )
+            cross_module_types = tuple(
+                detector_type
+                for detector_type in all_detectors
+                if detector_type not in per_module_types
+            )
+            carried = [
+                finding
+                for finding in baseline.findings
+                if finding.detector_id in per_module_ids
+                and not any(
+                    evidence.file_path in invalidated
+                    for evidence in finding.evidence
+                )
+            ]
+            reproved_local = (
+                analyze_detector_types(
+                    ParsedModuleSet.of(changed_or_created),
+                    self.config,
+                    detector_types=per_module_types,
+                    analysis_workers=self.analysis_workers,
+                )
+                if changed_or_created and per_module_types
+                else []
+            )
+            reproved_cross = (
+                analyze_detector_types(
+                    scan.modules,
+                    self.config,
+                    detector_types=cross_module_types,
+                    analysis_workers=self.analysis_workers,
+                )
+                if cross_module_types
+                else []
+            )
+            return replace(
+                scan,
+                findings=self.report_scoped_findings(
+                    SortedFindingsAuthority.sort(
+                        (*carried, *reproved_local, *reproved_cross)
+                    )
+                ),
+                coverage=EveryDetectorCoverage(),
+            )
         return replace(
             scan,
             findings=self.report_scoped_findings(

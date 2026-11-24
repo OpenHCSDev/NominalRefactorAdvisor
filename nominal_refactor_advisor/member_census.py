@@ -25,8 +25,9 @@ from nominal_refactor_advisor.amortization import (
     InheritanceAmortization,
     IntrospectionAmortization,
     IntrospectionSource,
+    MethodCall,
     NoTrace,
-    inheritance_amortization,
+    inheritance_amortization_for_calls,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
@@ -265,20 +266,30 @@ class CensusCorpus:
             module.file_path: TypeArgumentResolver(module) for module in self.modules
         }
 
+    @cached_property
+    def _reexports_by_target(self) -> dict[str, tuple[str, ...]]:
+        """Reverse re-export adjacency built once per corpus."""
+
+        reexports: dict[str, set[str]] = defaultdict(set)
+        for module in self.modules:
+            snapshot = self.resolvers[module.file_path].snapshot
+            prefix = f"{module.module_name}."
+            for name, binding in snapshot.bindings_by_name.items():
+                reexports[binding.qualified_name].add(f"{prefix}{name}")
+        return {target: tuple(aliases) for target, aliases in reexports.items()}
+
     def aliases_of(self, import_path: str) -> frozenset[str]:
         """The import path and every scanned name that re-exports it."""
 
         aliases = {import_path}
-        grew = True
-        while grew:
-            grew = False
-            for module in self.modules:
-                snapshot = self.resolvers[module.file_path].snapshot
-                for name, binding in snapshot.bindings_by_name.items():
-                    alias = f"{module.module_name}.{name}"
-                    if binding.qualified_name in aliases and alias not in aliases:
-                        aliases.add(alias)
-                        grew = True
+        frontier = [import_path]
+        reexports = self._reexports_by_target
+        while frontier:
+            target = frontier.pop()
+            for alias in reexports.get(target, ()):
+                if alias not in aliases:
+                    aliases.add(alias)
+                    frontier.append(alias)
         return frozenset(aliases)
 
 
@@ -696,9 +707,13 @@ class MemberAwarenessCensusBuilder:
         )
 
     def inherited(self) -> InheritanceAmortization:
-        with TypeCheckerSession.session(SourceTexts(self.corpus.modules)) as session:
-            return inheritance_amortization(
-                self.corpus.modules, self.corpus.class_index, session
+        calls = MethodCall.in_modules(self.corpus.modules)
+        with TypeCheckerSession.scoped_session(
+            SourceTexts(self.corpus.modules),
+            (call.span for call in calls),
+        ) as session:
+            return inheritance_amortization_for_calls(
+                self.corpus.modules, calls, self.corpus.class_index, session
             )
 
 
