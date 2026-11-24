@@ -28,6 +28,28 @@ from nominal_refactor_advisor.class_index import (
     FieldDeclarationIndex,
     StarSettlements,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
+
+
+@ScanCache.cached
+def _static_class_declarations_cache() -> dict[CompactIndexedClass, dict[str, ClassBodyDeclaration]]:
+    """Per-class declarations independent of star imports and field wrappers."""
+
+    return {}
+
+
+def _static_declaration(declaration: ClassBodyDeclarationDigest) -> ClassBodyDeclaration:
+    if declaration.unbound:
+        return UnprovedClassBodyDeclaration(declaration)
+    identity = ClassBodyDeclarationIdentity(
+        declaration.digest,
+        tuple(sorted(declaration.bindings)),
+    )
+    return ProvedClassBodyDeclaration(
+        declaration,
+        identity,
+        field_identity=declaration.field_declaration.static_field_identity(identity),
+    )
 
 
 class ClassBodyDeclarationIdentity(NamedTuple):
@@ -271,15 +293,21 @@ class ClassBodyOverlap:
         two classes makes it itself and the other's copy has another owner.
         """
 
-        own = {shared.name for shared in self.shared}
+        shared_names = first_resolved.keys() & second_resolved.keys()
+        if self.shared:
+            shared_names = shared_names - {shared.name for shared in self.shared}
+        if not shared_names:
+            return self
         inherited: list[SharedClassBodyDeclaration] = []
-        for name in sorted(set(first_resolved) & set(second_resolved) - own):
+        first_symbol = self.first.symbol
+        second_symbol = self.second.symbol
+        for name in sorted(shared_names):
             first, second = first_resolved[name], second_resolved[name]
             if first.owner.symbol == second.owner.symbol:
                 continue
             if (
-                first.owner.symbol != self.first.symbol
-                and second.owner.symbol != self.second.symbol
+                first.owner.symbol != first_symbol
+                and second.owner.symbol != second_symbol
             ):
                 continue
             identical = first.declaration.same_declaration_as(second.declaration)
@@ -296,6 +324,8 @@ class ClassBodyOverlap:
                     declaration_differs=not identical,
                 )
             )
+        if not inherited:
+            return self
         names = frozenset(shared.name for shared in inherited)
         return replace(
             self,
@@ -406,15 +436,37 @@ class ClassBodyIndex:
     ) -> Mapping[str, Mapping[str, ClassBodyDeclaration]]:
         """Each class's effective declarations: a later statement replaces an earlier one."""
 
-        return {
-            symbol: {
-                declaration.name: self._declaration(
-                    indexed_class.module_name, declaration
-                )
-                for declaration in indexed_class.body_declarations
-            }
-            for symbol, indexed_class in self.classes_by_symbol.items()
-        }
+        cache = (
+            _static_class_declarations_cache()
+            if ScanCache.active() is not None
+            else None
+        )
+        result: dict[str, dict[str, ClassBodyDeclaration]] = {}
+        for symbol, indexed_class in self.classes_by_symbol.items():
+            if cache is not None:
+                cached = cache.get(indexed_class)
+                if cached is not None:
+                    result[symbol] = cached
+                    continue
+            body_declarations = indexed_class.body_declarations
+            if not any(
+                declaration.deferred or declaration.field_declaration.depends_on_repository
+                for declaration in body_declarations
+            ):
+                built = {
+                    declaration.name: _static_declaration(declaration)
+                    for declaration in body_declarations
+                }
+                if cache is not None:
+                    cache[indexed_class] = built
+                result[symbol] = built
+            else:
+                module_name = indexed_class.module_name
+                result[symbol] = {
+                    declaration.name: self._declaration(module_name, declaration)
+                    for declaration in body_declarations
+                }
+        return result
 
     def declarations_of(self, symbol: str) -> Mapping[str, ClassBodyDeclaration]:
         return self.declarations_by_symbol[symbol]
@@ -504,6 +556,20 @@ class ClassBodyIndex:
 
         if declaration.unbound:
             return UnprovedClassBodyDeclaration(declaration)
+        if not declaration.deferred:
+            identity = ClassBodyDeclarationIdentity(
+                declaration.digest,
+                tuple(sorted(declaration.bindings)),
+            )
+            return ProvedClassBodyDeclaration(
+                declaration,
+                identity,
+                field_identity=(
+                    self._field_identity(module_name, declaration, identity)
+                    if declaration.field_declaration.depends_on_repository
+                    else declaration.field_declaration.static_field_identity(identity)
+                ),
+            )
         settlements = StarSettlements.keyed(
             (
                 deferred.name,

@@ -993,21 +993,25 @@ class ClassOverlapVerdicts(DeclaredC3):
         """
 
         pairs: set[tuple[str, str]] = set()
+        class_index = self.class_index
+        holders_map = self.bodies.holders
+        holder_limit = self.bodies.holder_limit
         for symbol in symbols:
-            family = {symbol, *self.class_index.ancestor_symbols(symbol)}
+            ancestors = class_index.ancestor_symbols(symbol)
+            if not ancestors:
+                continue
+            family = {symbol, *ancestors, *class_index.descendant_symbols(symbol)}
             for resolved in self.resolved_declarations(symbol).values():
                 if resolved.owner.symbol == symbol:
                     continue
                 for identity in resolved.declaration.identities:
-                    holders = self.bodies.holders.get(identity, ())
-                    if len(holders) > self.bodies.holder_limit:
+                    holders = holders_map.get(identity, ())
+                    if len(holders) > holder_limit:
                         continue
                     for holder in holders:
-                        if holder in family or symbol in self.class_index.ancestor_symbols(
-                            holder
-                        ):
+                        if holder in family:
                             continue
-                        pairs.add((min(holder, symbol), max(holder, symbol)))
+                        pairs.add((holder, symbol) if holder < symbol else (symbol, holder))
         return frozenset(pairs)
 
     def _inheritors_pairing_with(self, symbols: frozenset[str]) -> tuple[str, ...]:

@@ -30,7 +30,11 @@ from nominal_refactor_advisor.amortization import (
     inheritance_amortization_for_calls,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
-from nominal_refactor_advisor.ast_tools import ParsedModule, parse_python_modules
+from nominal_refactor_advisor.ast_tools import (
+    ParsedModule,
+    ParsedModuleFact,
+    parse_python_modules,
+)
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -48,6 +52,7 @@ from nominal_refactor_advisor.foreign_family import ForeignFamily
 from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
 from nominal_refactor_advisor.observation_families import (
     TypeArgumentResolver,
+    TypeTestShape,
     type_test_shapes,
 )
 from nominal_refactor_advisor.type_checker_session import (
@@ -332,6 +337,17 @@ def _public_method_names(owner: type) -> frozenset[str]:
     )
 
 
+@dataclass(frozen=True)
+class _ModuleTypeTestShapesFact(ParsedModuleFact):
+    """Cached ``type_test_shapes`` extraction per ``ParsedModule``."""
+
+    shapes: tuple[TypeTestShape, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _ModuleTypeTestShapesFact:
+        return cls(tuple(type_test_shapes(parsed_module)))
+
+
 class ForeignModuleSource(MemberCensusSource):
     """Classes of foreign modules named by type tests and class patterns."""
 
@@ -351,7 +367,7 @@ class ForeignModuleSource(MemberCensusSource):
 
     def observations(self) -> Iterator[MemberObservation]:
         for module in self.corpus.modules:
-            for shape in type_test_shapes(module):
+            for shape in module.fact(_ModuleTypeTestShapesFact).shapes:
                 match tuple(shape.owners):
                     case (owner,) if owner and shape.is_foreign_to(self.corpus.module_names):
                         yield MemberObservation(

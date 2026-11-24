@@ -14,14 +14,14 @@ import ast
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from itertools import chain
 from pathlib import Path
 
 from nra_introspection_trace import IntrospectionTrace
 
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
 from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
 from nominal_refactor_advisor.probe_owner import ReceiverSpan, ScannedClasses
@@ -64,6 +64,12 @@ class InheritedMethods:
     """Which declaring class answers a method a class does not define itself."""
 
     index: CompactClassFamilyIndex
+    _owner_cache: dict[tuple[str, str], str | None] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _reached_cache: dict[str, tuple[str, ...]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @cached_property
     def own_by_symbol(self) -> dict[str, frozenset[str]]:
@@ -81,19 +87,55 @@ class InheritedMethods:
         return self.own_by_symbol.get(symbol, frozenset())
 
     def owner_of(self, symbol: str, method: str) -> str | None:
+        key = (symbol, method)
+        if key in self._owner_cache:
+            return self._owner_cache[key]
         if method in self.own(symbol):
-            return None
-        return next(
-            (
-                ancestor
-                for ancestor in self.index.ancestor_symbols(symbol)
-                if method in self.own(ancestor)
-            ),
-            None,
-        )
+            owner: str | None = None
+        else:
+            own_by_symbol = self.own_by_symbol
+            owner = next(
+                (
+                    ancestor
+                    for ancestor in self.index.ancestor_symbols(symbol)
+                    if method in own_by_symbol.get(ancestor, ())
+                ),
+                None,
+            )
+        self._owner_cache[key] = owner
+        return owner
 
     def reached(self, symbol: str) -> tuple[str, ...]:
-        return (symbol, *self.index.descendant_symbols(symbol))
+        cached = self._reached_cache.get(symbol)
+        if cached is None:
+            cached = (symbol, *self.index.descendant_symbols(symbol))
+            self._reached_cache[symbol] = cached
+        return cached
+
+
+@dataclass(frozen=True)
+class _ModuleMethodCallsFact(ParsedModuleFact):
+    """Cached ``MethodCall`` extraction per ``ParsedModule``."""
+
+    calls: tuple[MethodCall, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _ModuleMethodCallsFact:
+        index = parsed_module.syntax_index
+        file_path = parsed_module.file_path
+        module_name = parsed_module.module_name
+        calls: list[MethodCall] = []
+        for node_index, call in index.indexed_nodes_of_type(ast.Call):
+            match call.func:
+                case ast.Attribute(value=receiver, attr=method):
+                    calls.append(
+                        MethodCall(
+                            ReceiverSpan.of(file_path, receiver),
+                            method,
+                            f"{module_name}.{index.lexical_symbol(node_index)}",
+                        )
+                    )
+        return cls(tuple(calls))
 
 
 @dataclass(frozen=True)
@@ -106,19 +148,15 @@ class MethodCall:
 
     @classmethod
     def in_module(cls, module: ParsedModule) -> Iterator[MethodCall]:
-        index = module.syntax_index
-        for node_index, call in index.indexed_nodes_of_type(ast.Call):
-            match call.func:
-                case ast.Attribute(value=receiver, attr=method):
-                    yield cls(
-                        ReceiverSpan.of(module.file_path, receiver),
-                        method,
-                        f"{module.module_name}.{index.lexical_symbol(node_index)}",
-                    )
+        return iter(module.fact(_ModuleMethodCallsFact).calls)
 
     @classmethod
     def in_modules(cls, modules: Iterable[ParsedModule]) -> tuple[MethodCall, ...]:
-        return tuple(chain.from_iterable(cls.in_module(module) for module in modules))
+        return tuple(
+            chain.from_iterable(
+                module.fact(_ModuleMethodCallsFact).calls for module in modules
+            )
+        )
 
 
 def inheritance_amortization(
