@@ -1082,6 +1082,16 @@ class CompactFamilyProjectionBatch(CompactFamilyProjectionReceipt):
 
 
 @dataclass(frozen=True)
+class VerifiedAstFreeProjectionBatch(CompactFamilyProjectionBatch):
+    """A projection batch whose items were already proved AST-free by the cache
+    authority (`StableCacheDigest.retains_syntax is False` or loaded from an
+    `ast_free=True` cache entry), avoiding a duplicate full-tree AST walk."""
+
+    def __post_init__(self) -> None:
+        return None
+
+
+@dataclass(frozen=True)
 class CompactProjectionBuildResult:
     """AST-free worker result, retaining facts only for incomplete publication.
 
@@ -1112,10 +1122,15 @@ def build_compact_projection_shard(
         projections: Sequence[object],
         signature: str | None,
     ) -> None:
+        batch_type = (
+            VerifiedAstFreeProjectionBatch
+            if signature is not None
+            else CompactFamilyProjectionBatch
+        )
         projection_batches.append(
-            CompactFamilyProjectionBatch(
+            batch_type(
                 family=family,
-                items=projections,
+                items=tuple(projections),
                 content_signature=signature,
             )
         )

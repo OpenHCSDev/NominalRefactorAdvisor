@@ -2390,7 +2390,171 @@ def collected_family_items_content_signature(
     """Content identity of collected items; checkout paths relocated, so every
     checkout of the same content derives the same signature."""
 
-    return StableCacheValue.of(items, relocation).signature
+    return StableCacheDigest.of(items, relocation).signature
+
+
+@dataclass(frozen=True)
+class StableCacheDigest:
+    """Content signature and syntax-retention check computed in one streaming hash
+    walk without allocating an intermediate normal-form tuple tree."""
+
+    signature: str
+    retains_syntax: bool
+
+    @classmethod
+    def of(
+        cls, value: object, relocation: CheckoutRelocation | None = None
+    ) -> StableCacheDigest:
+        hasher = _StableCacheHasher(relocation)
+        hasher.feed(value)
+        if hasher.bound_to_checkout:
+            hasher = _StableCacheHasher(None)
+            hasher.feed(value)
+        return cls(hasher.hexdigest(), hasher.retains_syntax)
+
+
+class _StableCacheHasher:
+    """Stream order-independent, checkout-relocated value encodings directly into blake2s."""
+
+    def __init__(self, relocation: CheckoutRelocation | None) -> None:
+        self.roots = () if relocation is None else relocation.root_texts
+        self.bound_to_checkout = False
+        self.retains_syntax = False
+        self._hasher = hashlib.blake2s(digest_size=16)
+
+    def hexdigest(self) -> str:
+        return self._hasher.hexdigest()
+
+    def _update_text(self, value: str) -> None:
+        encoded = value.encode("utf-8", "surrogatepass")
+        self._hasher.update(len(encoded).to_bytes(8, "little"))
+        self._hasher.update(encoded)
+
+    def _feed_relocated_text(self, value: str) -> None:
+        for root in self.roots:
+            if value.startswith(root) and (
+                len(value) == len(root) or value[len(root)] == "/"
+            ):
+                self._hasher.update(b"C")
+                self._update_text(value[len(root) :])
+                return
+            if root in value:
+                self.bound_to_checkout = True
+        self._hasher.update(b"S")
+        self._update_text(value)
+
+    def _sub_digest(self, value: object) -> bytes:
+        sub = _StableCacheHasher(None)
+        sub.roots = self.roots
+        sub.feed(value)
+        if sub.bound_to_checkout:
+            self.bound_to_checkout = True
+        if sub.retains_syntax:
+            self.retains_syntax = True
+        return sub._hasher.digest()
+
+    def feed(self, value: object) -> None:
+        value_type = type(value)
+        if value_type is str:
+            self._feed_relocated_text(cast(str, value))
+            return
+        if value is None:
+            self._hasher.update(b"N")
+            return
+        if value_type is bool:
+            self._hasher.update(b"B1" if value else b"B0")
+            return
+        if value_type is int:
+            self._hasher.update(b"I")
+            self._update_text(str(value))
+            return
+        if value_type is float:
+            self._hasher.update(b"F")
+            self._update_text(repr(value))
+            return
+        if value_type is bytes:
+            raw = cast(bytes, value)
+            self._hasher.update(b"Y")
+            self._hasher.update(len(raw).to_bytes(8, "little"))
+            self._hasher.update(raw)
+            return
+        if value_type is tuple:
+            items = cast(tuple[object, ...], value)
+            self._hasher.update(b"T")
+            self._hasher.update(len(items).to_bytes(8, "little"))
+            for item in items:
+                self.feed(item)
+            return
+        if isinstance(value, (ast.AST, ParsedModule)):
+            self.retains_syntax = True
+            self._hasher.update(b"R")
+            self._update_text(value_type.__module__)
+            self._update_text(value_type.__qualname__)
+            self._update_text(repr(value))
+            return
+        names = None if isinstance(value, type) else dataclass_field_names(value_type)
+        if names is not None:
+            self._hasher.update(b"D")
+            self._update_text(value_type.__module__)
+            self._update_text(value_type.__qualname__)
+            self._hasher.update(len(names).to_bytes(8, "little"))
+            for name in names:
+                self._update_text(name)
+                self.feed(getattr(value, name))
+            return
+        if isinstance(value, dict):
+            self._hasher.update(b"M")
+            self._hasher.update(len(value).to_bytes(8, "little"))
+            pairs = sorted(
+                (self._sub_digest(key), self._sub_digest(item))
+                for key, item in value.items()
+            )
+            for key_digest, item_digest in pairs:
+                self._hasher.update(key_digest)
+                self._hasher.update(item_digest)
+            return
+        if isinstance(value, (set, frozenset)):
+            self._hasher.update(b"U" if value_type is frozenset else b"X")
+            self._hasher.update(len(value).to_bytes(8, "little"))
+            for item_digest in sorted(self._sub_digest(item) for item in value):
+                self._hasher.update(item_digest)
+            return
+        if isinstance(value, tuple):
+            self._hasher.update(b"T")
+            self._hasher.update(len(value).to_bytes(8, "little"))
+            for item in value:
+                self.feed(item)
+            return
+        if isinstance(value, list):
+            self._hasher.update(b"L")
+            self._hasher.update(len(value).to_bytes(8, "little"))
+            for item in value:
+                self.feed(item)
+            return
+        if isinstance(value, Path):
+            self._hasher.update(b"P")
+            self._feed_relocated_text(str(value))
+            return
+        if isinstance(value, Enum):
+            self._hasher.update(b"E")
+            self._update_text(value_type.__module__)
+            self._update_text(value_type.__qualname__)
+            self.feed(value.value)
+            return
+        if isinstance(value, str):
+            self._hasher.update(b"s")
+            self._update_text(value_type.__module__)
+            self._update_text(value_type.__qualname__)
+            self._feed_relocated_text(value)
+            return
+        if isinstance(value, (bytes, int, float, bool)):
+            self._hasher.update(b"V")
+            self._update_text(repr(value))
+            return
+        self._hasher.update(b"R")
+        self._update_text(value_type.__module__)
+        self._update_text(value_type.__qualname__)
+        self._update_text(repr(value))
 
 
 @dataclass(frozen=True)
@@ -2406,6 +2570,7 @@ class StableCacheValue:
 
     form: object
     retains_syntax: bool
+    signature: str
 
     @classmethod
     def of(
@@ -2415,13 +2580,8 @@ class StableCacheValue:
         form = walk.normal_form(value)
         if walk.bound_to_checkout:
             form = _StableCacheWalk(None).normal_form(value)
-        return cls(form, walk.retains_syntax)
-
-    @cached_property
-    def signature(self) -> str:
-        return hashlib.blake2s(
-            pickle.dumps(self.form, protocol=pickle.HIGHEST_PROTOCOL), digest_size=16
-        ).hexdigest()
+        digest = StableCacheDigest.of(value, relocation)
+        return cls(form, walk.retains_syntax, digest.signature)
 
 
 class _StableCacheWalk:
@@ -2726,7 +2886,7 @@ class CollectedFamilyCacheContext:
     ) -> str | None:
         if self.family_cache_dir is None:
             return None
-        stable = StableCacheValue.of(items, self.relocation)
+        stable = StableCacheDigest.of(items, self.relocation)
         if stable.retains_syntax:
             return None
         identity = self.identity(family, demand_signature)
