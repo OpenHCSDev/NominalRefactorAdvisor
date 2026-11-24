@@ -469,38 +469,39 @@ def _prewarm_compact_families(
         work_item_count=len(tasks),
         minimum_auto_work_items=4,
     )
-    if worker_plan.uses_process_pool:
-        tasks.sort(key=lambda item: -len(modules[item[0]].source))
-        module_tuple = tuple(modules)
-        if _analysis_process_pool_mp_context() is not None:
-            global _module_family_prewarm_modules
-            previous_modules = _module_family_prewarm_modules
-            _module_family_prewarm_modules = module_tuple
-            try:
+    with suspend_cyclic_gc():
+        if worker_plan.uses_process_pool:
+            tasks.sort(key=lambda item: -len(modules[item[0]].source))
+            module_tuple = tuple(modules)
+            if _analysis_process_pool_mp_context() is not None:
+                global _module_family_prewarm_modules
+                previous_modules = _module_family_prewarm_modules
+                _module_family_prewarm_modules = module_tuple
+                try:
+                    collected = worker_plan.map(
+                        _collect_missing_module_families,
+                        tasks,
+                        initializer=ScanCache.initialize_worker,
+                        initargs=(),
+                    )
+                finally:
+                    _module_family_prewarm_modules = previous_modules
+            else:
                 collected = worker_plan.map(
                     _collect_missing_module_families,
                     tasks,
-                    initializer=ScanCache.initialize_worker,
-                    initargs=(),
+                    initializer=_initialize_module_family_prewarm_worker,
+                    initargs=(module_tuple,),
                 )
-            finally:
-                _module_family_prewarm_modules = previous_modules
-        else:
-            collected = worker_plan.map(
-                _collect_missing_module_families,
-                tasks,
-                initializer=_initialize_module_family_prewarm_worker,
-                initargs=(module_tuple,),
-            )
-        for module_index, items_by_family in collected:
+            for module_index, items_by_family in collected:
+                module = modules[module_index]
+                for family, items in items_by_family.items():
+                    module.install_family_batch(family, items)
+            return
+        for module_index, missing in tasks:
             module = modules[module_index]
-            for family, items in items_by_family.items():
-                module.install_family_batch(family, items)
-        return
-    for module_index, missing in tasks:
-        module = modules[module_index]
-        for family in missing:
-            module.family_batch(family)
+            for family in missing:
+                module.family_batch(family)
 
 
 @dataclass(frozen=True)
@@ -3355,24 +3356,25 @@ def analyze_detector_types(
         if not issubclass(detector_type, SemanticDescentGraphIssueDetector)
     )
     findings: list[RefactorFinding] = []
-    if non_graph_detector_types:
-        findings.extend(
-            DetectorTypeShardRunner.from_modules(
-                modules=modules,
-                config=config,
-                detector_types=non_graph_detector_types,
-                analysis_workers=analysis_workers,
-                minimum_auto_work_items=detector_type_minimum_auto_work_items,
-            ).sorted_findings()
-        )
-    if graph_detector_types:
-        graph_source = semantic_descent_source or SemanticDescentGraphAnalysisSource()
-        graph = graph_source.graph_for_modules(modules)
-        for detector_type in graph_detector_types:
-            detector = detector_type()
+    with suspend_cyclic_gc():
+        if non_graph_detector_types:
             findings.extend(
-                detector._collect_findings_from_graph(graph, modules, config)
+                DetectorTypeShardRunner.from_modules(
+                    modules=modules,
+                    config=config,
+                    detector_types=non_graph_detector_types,
+                    analysis_workers=analysis_workers,
+                    minimum_auto_work_items=detector_type_minimum_auto_work_items,
+                ).sorted_findings()
             )
+        if graph_detector_types:
+            graph_source = semantic_descent_source or SemanticDescentGraphAnalysisSource()
+            graph = graph_source.graph_for_modules(modules)
+            for detector_type in graph_detector_types:
+                detector = detector_type()
+                findings.extend(
+                    detector._collect_findings_from_graph(graph, modules, config)
+                )
     return SortedFindingsAuthority.sort(findings)
 
 

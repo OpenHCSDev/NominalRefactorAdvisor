@@ -472,7 +472,7 @@ class OwnClassSource(MemberCensusSource):
 
         tested: dict[tuple[str, str, str], set[str]] = defaultdict(set)
         for module in self.corpus.modules:
-            for shape in type_test_shapes(module):
+            for shape in module.fact(_ModuleTypeTestShapesFact).shapes:
                 if set(shape.type_names) <= self.class_index.classes_by_symbol.keys():
                     tested[shape.file_path, shape.symbol, shape.subject].update(shape.type_names)
         for (file_path, symbol, subject), names in sorted(tested.items()):
@@ -579,19 +579,41 @@ class MemberAwarenessCensusBuilder:
         )
 
     @cached_property
+    def _owner_method_names(self) -> frozenset[str]:
+        return frozenset().union(*(owner.method_names for owner in self.owners))
+
+    @cached_property
+    def _modules_by_file_path(self) -> dict[str, ParsedModule]:
+        return {module.file_path: module for module in self.corpus.modules}
+
+    @cached_property
+    def _calls_by_file_path(self) -> dict[str, ModuleCalls]:
+        return {}
+
+    @cached_property
     def calls(self) -> dict[str, ModuleCalls]:
-        method_names = frozenset().union(*(owner.method_names for owner in self.owners))
-        return {
-            module.file_path: ModuleCalls(
-                module, self.corpus.resolvers[module.file_path], method_names
+        method_names = self._owner_method_names
+        for module in self.corpus.modules:
+            if module.file_path not in self._calls_by_file_path:
+                self._calls_by_file_path[module.file_path] = ModuleCalls(
+                    module, self.corpus.resolvers[module.file_path], method_names
+                )
+        return self._calls_by_file_path
+
+    def _module_calls(self, file_path: str) -> ModuleCalls:
+        cached = self._calls_by_file_path.get(file_path)
+        if cached is None:
+            module = self._modules_by_file_path[file_path]
+            cached = ModuleCalls(
+                module, self.corpus.resolvers[file_path], self._owner_method_names
             )
-            for module in self.corpus.modules
-        }
+            self._calls_by_file_path[file_path] = cached
+        return cached
 
     def owners_called(
         self, consumer: Consumer, owners: Iterable[MemberOwner]
     ) -> tuple[str, ...]:
-        calls = self.calls[consumer.file_path].by_symbol.get(consumer.symbol, ())
+        calls = self._module_calls(consumer.file_path).by_symbol.get(consumer.symbol, ())
         return tuple(
             owner.name for owner in owners if any(owner.called_by(call) for call in calls)
         )

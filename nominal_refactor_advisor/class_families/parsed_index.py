@@ -263,6 +263,35 @@ class ModuleIndexedClasses(ParsedModuleFact):
         indexed_class_nodes = iter_class_definitions(list(parsed_module.module.body))
         if not indexed_class_nodes:
             return cls(())
+        if parsed_module.has_family_batch(CompactModuleClassProjectionFamily):
+            (projection,) = parsed_module.family_batch(
+                CompactModuleClassProjectionFamily
+            ).items
+            if len(projection.classes) == len(indexed_class_nodes):
+                return cls(
+                    tuple(
+                        IndexedClass(
+                            symbol=compact.symbol,
+                            module_name=compact.module_name,
+                            qualname=compact.qualname,
+                            simple_name=compact.simple_name,
+                            file_path=compact.file_path,
+                            line=compact.line,
+                            node=node,
+                            declared_base_names=compact.declared_base_names,
+                            resolved_base_symbols=compact.resolved_base_symbols,
+                            dataclass_declaration=compact.dataclass_declaration,
+                            class_decorators_are_promotion_safe=(
+                                compact.class_decorators_are_promotion_safe
+                            ),
+                            registry_facts=compact.registry_facts,
+                            declares_autoregister_meta=compact.declares_autoregister_meta,
+                        )
+                        for compact, (_qualname, node) in zip(
+                            projection.classes, indexed_class_nodes, strict=True
+                        )
+                    )
+                )
         binding_snapshots = parsed_module.fact(ClassLineBindingSnapshots).snapshots
         return cls(
             tuple(
@@ -327,7 +356,12 @@ class ClassFamilyIndexBuilder:
         authority = RegisteringMetaclassAuthority(
             classes_by_symbol,
             CompactRepositoryPublicExposureIndex(
-                CompactModuleClassProjectionFamily.header_core_projections(self.modules)
+                tuple(
+                    parsed_module.family_batch(CompactModuleClassProjectionFamily).items[0]
+                    if parsed_module.has_family_batch(CompactModuleClassProjectionFamily)
+                    else parsed_module.fact(ModuleClassHeaderCore).projection
+                    for parsed_module in self.modules
+                )
             ),
         )
         for symbol, record in classes_by_symbol.items():

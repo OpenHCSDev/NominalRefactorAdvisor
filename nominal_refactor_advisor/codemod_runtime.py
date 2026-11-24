@@ -40,8 +40,10 @@ from typing import (
 
 from nominal_refactor_advisor.type_checker_session import DeferredTypeChecker, SourceTexts, TypeErrors
 from nominal_refactor_advisor.implementation_identity import AnswerFreeDeclaration
+from nominal_refactor_advisor.module_node_index import ModuleImportStatements
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
+    ParsedModuleFact,
     ParsedModuleSourceProjection,
     PythonModulePathAuthority,
     collect_family_items,
@@ -194,6 +196,28 @@ def _parsed_modules_from_source_mapping(
 
 
 @dataclass(frozen=True)
+class _ModuleImportFromTargets(ParsedModuleFact):
+    """Resolved `from <module> import ...` target names per parsed module, cached on the parse."""
+
+    entries: tuple[tuple[str, tuple[str, ...]], ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _ModuleImportFromTargets:
+        identity = parsed_module.module_path_identity
+        entries: list[tuple[str, tuple[str, ...]]] = []
+        for statement in parsed_module.fact(ModuleImportStatements).import_froms:
+            resolved = identity.resolve_import_from_module(
+                imported_module=statement.module,
+                level=statement.level,
+            )
+            if resolved is not None:
+                entries.append(
+                    (resolved, tuple(alias.name for alias in statement.names))
+                )
+        return cls(tuple(entries))
+
+
+@dataclass(frozen=True)
 class CodemodSourceSnapshot(CodemodSelectorContext):
     """Source-index, source text, and semantic indexes for codemod execution."""
 
@@ -336,21 +360,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
 
         grouped: dict[str, list[tuple[str, tuple[str, ...]]]] = defaultdict(list)
         for other in self.parsed_modules:
-            identity = other.module_path_identity
-            for _node_index, statement in other.syntax_index.indexed_nodes_of_type(
-                ast.ImportFrom
-            ):
-                resolved = identity.resolve_import_from_module(
-                    imported_module=statement.module,
-                    level=statement.level,
-                )
-                if resolved is not None:
-                    grouped[resolved].append(
-                        (
-                            other.file_path,
-                            tuple(alias.name for alias in statement.names),
-                        )
-                    )
+            for resolved, names in other.fact(_ModuleImportFromTargets).entries:
+                grouped[resolved].append((other.file_path, names))
         return {module_name: tuple(entries) for module_name, entries in grouped.items()}
 
     def names_imported_from_module(

@@ -9,9 +9,15 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
+import gc
+import os
 from pathlib import Path
+import pickle
+import selectors
+import signal
 import sys
 import time
+import traceback
 from typing import ClassVar, Generic, Self, TextIO, TypeVar
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
@@ -2141,7 +2147,9 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         module_set,
                         self.config,
                         detector_types=detector_types,
-                        analysis_workers=self.analysis_workers,
+                        analysis_workers=(
+                            1 if len(detector_types) <= 2 else self.analysis_workers
+                        ),
                     ),
                     *carried,
                 )
@@ -2238,26 +2246,51 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                     for evidence in finding.evidence
                 )
             ]
-            reproved_local = (
-                analyze_detector_types(
-                    ParsedModuleSet.of(changed_or_created),
-                    self.config,
-                    detector_types=per_module_types,
-                    analysis_workers=self.analysis_workers,
-                )
-                if changed_or_created and per_module_types
-                else []
+            in_process_cross = tuple(
+                detector_type
+                for detector_type in cross_module_types
+                if detector_type.prefers_in_process_execution()
             )
-            reproved_cross = (
-                analyze_detector_types(
-                    scan.modules,
-                    self.config,
-                    detector_types=cross_module_types,
-                    analysis_workers=effective_workers,
-                )
-                if cross_module_types
-                else []
+            pooled_cross = tuple(
+                detector_type
+                for detector_type in cross_module_types
+                if not detector_type.prefers_in_process_execution()
             )
+            if (
+                in_process_cross
+                and (pooled_cross or (changed_or_created and per_module_types))
+                and effective_workers >= 2
+                and sys.platform.startswith("linux")
+            ):
+                reproved_local, reproved_cross = self._overlapped_exact_reproof(
+                    scan=scan,
+                    changed_or_created=changed_or_created,
+                    per_module_types=per_module_types,
+                    in_process_cross=in_process_cross,
+                    pooled_cross=pooled_cross,
+                    effective_workers=effective_workers,
+                )
+            else:
+                reproved_local = (
+                    analyze_detector_types(
+                        ParsedModuleSet.of(changed_or_created),
+                        self.config,
+                        detector_types=per_module_types,
+                        analysis_workers=self.analysis_workers,
+                    )
+                    if changed_or_created and per_module_types
+                    else []
+                )
+                reproved_cross = (
+                    analyze_detector_types(
+                        scan.modules,
+                        self.config,
+                        detector_types=cross_module_types,
+                        analysis_workers=effective_workers,
+                    )
+                    if cross_module_types
+                    else []
+                )
             return replace(
                 scan,
                 findings=self.report_scoped_findings(
@@ -2276,6 +2309,96 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             ),
             coverage=EveryDetectorCoverage(),
         )
+
+    def _overlapped_exact_reproof(
+        self,
+        *,
+        scan: CodemodWorkflowScan,
+        changed_or_created: tuple[ParsedModule, ...],
+        per_module_types: tuple[type[IssueDetector], ...],
+        in_process_cross: tuple[type[IssueDetector], ...],
+        pooled_cross: tuple[type[IssueDetector], ...],
+        effective_workers: int,
+    ) -> tuple[list[RefactorFinding], list[RefactorFinding]]:
+        """Run non-type-checker local + cross-module reproofs (including their
+        compact-family prewarms) in a forked child concurrently with stateful
+        in-process detectors (e.g. incremental mypy) in the parent."""
+
+        already_frozen = gc.get_freeze_count() > 0
+        gc.freeze()
+        reader, writer = os.pipe()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pid = os.fork()
+        if pid == 0:
+            os.close(reader)
+            gc.disable()
+            try:
+                try:
+                    local = (
+                        analyze_detector_types(
+                            ParsedModuleSet.of(changed_or_created),
+                            self.config,
+                            detector_types=per_module_types,
+                            analysis_workers=1,
+                        )
+                        if changed_or_created and per_module_types
+                        else []
+                    )
+                    pooled = (
+                        analyze_detector_types(
+                            scan.modules,
+                            self.config,
+                            detector_types=pooled_cross,
+                            analysis_workers=min(4, effective_workers),
+                        )
+                        if pooled_cross
+                        else []
+                    )
+                    payload = pickle.dumps((True, (local, pooled)))
+                except BaseException:  # noqa: BLE001
+                    payload = pickle.dumps((False, traceback.format_exc()))
+                with os.fdopen(writer, "wb") as out:
+                    out.write(payload)
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os._exit(0)
+        os.close(writer)
+        try:
+            in_process_findings = analyze_detector_types(
+                scan.modules,
+                self.config,
+                detector_types=in_process_cross,
+                analysis_workers=1,
+            )
+            chunks: list[bytes] = []
+            while chunk := os.read(reader, 1 << 20):
+                chunks.append(chunk)
+        except BaseException:
+            os.close(reader)
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+            if not already_frozen:
+                gc.unfreeze()
+            raise
+        os.close(reader)
+        _, status = os.waitpid(pid, 0)
+        if not already_frozen:
+            gc.unfreeze()
+        raw = b"".join(chunks)
+        if not raw:
+            raise RuntimeError(
+                f"exact reproof worker exited without findings (wait status {status})"
+            )
+        ok, value = pickle.loads(raw)
+        if not ok:
+            raise RuntimeError(f"exact reproof worker failed:\n{value}")
+        local_findings, pooled_findings = value
+        return local_findings, [*in_process_findings, *pooled_findings]
 
     def certified(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
         """The scan a terminal state and its report are judged on, as the
@@ -2473,6 +2596,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
 
             valid_transition_count = 0
             analyzed_rewritten_source_digests: set[str] = set()
+            reproof_branches: list[tuple[int, CodemodPlanDocumentSimulation]] = []
             for branch_number, branch in enumerate(frontier.branches, start=1):
                 simulation = branch.document_simulation
                 if not simulation.simulation.changed_file_paths:
@@ -2485,17 +2609,17 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 analyzed_rewritten_source_digests.add(rewritten_source_digest)
                 if simulation.required_after_snapshot.source_state_id in visited_source_state_ids:
                     continue
-                with self.progress.phase(
-                    f"depth {state.depth} reproof {branch_number}/{len(frontier.branches)}"
-                ) as details:
-                    projected_scan = self.projected_target_scan(
-                        active_scan,
-                        simulation,
-                        target_findings,
-                    )
-                    if not self.target_findings(projected_scan):
-                        projected_scan = self.certified(projected_scan)
-                    details.append(f"{len(projected_scan.findings)} findings")
+                reproof_branches.append((branch_number, simulation))
+            branch_scans = self._reprove_branches(
+                active_scan,
+                reproof_branches,
+                target_findings,
+                depth=state.depth,
+                total_branches=len(frontier.branches),
+            )
+            for (_branch_number, simulation), projected_scan in zip(
+                reproof_branches, branch_scans, strict=True
+            ):
                 stage = self.stage(
                     active_scan,
                     projected_scan,
@@ -2540,6 +2664,128 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             ),
             budget_prefixes=tuple(budget_prefixes),
         )
+
+    def _reprove_branches(
+        self,
+        active_scan: CodemodWorkflowScan,
+        branches: list[tuple[int, CodemodPlanDocumentSimulation]],
+        target_findings: tuple[RefactorFinding, ...],
+        *,
+        depth: int,
+        total_branches: int,
+    ) -> list[CodemodWorkflowScan]:
+        """Re-prove frontier branches, overlapping sibling branches across forked
+        workers when the runner has multiple workers available."""
+
+        if not branches:
+            return []
+        if (
+            len(branches) < 2
+            or self.effective_analysis_workers() < 2
+            or not sys.platform.startswith("linux")
+        ):
+            results: list[CodemodWorkflowScan] = []
+            for branch_number, simulation in branches:
+                with self.progress.phase(
+                    f"depth {depth} reproof {branch_number}/{total_branches}"
+                ) as details:
+                    projected = self.projected_target_scan(
+                        active_scan, simulation, target_findings
+                    )
+                    if not self.target_findings(projected):
+                        projected = self.certified(projected)
+                    details.append(f"{len(projected.findings)} findings")
+                results.append(projected)
+            return results
+
+        already_frozen = gc.get_freeze_count() > 0
+        gc.freeze()
+        children: dict[int, tuple[int, int, bytearray]] = {}
+        raw_results: list[CodemodWorkflowScan | None] = [None] * len(branches)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for index in range(1, len(branches)):
+                _branch_number, simulation = branches[index]
+                reader, writer = os.pipe()
+                pid = os.fork()
+                if pid == 0:
+                    os.close(reader)
+                    gc.disable()
+                    try:
+                        try:
+                            projected = self.projected_target_scan(
+                                active_scan, simulation, target_findings
+                            )
+                            payload = pickle.dumps(
+                                (True, (projected.findings, projected.coverage))
+                            )
+                        except BaseException:  # noqa: BLE001
+                            payload = pickle.dumps((False, traceback.format_exc()))
+                        with os.fdopen(writer, "wb") as out:
+                            out.write(payload)
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                    finally:
+                        os._exit(0)
+                os.close(writer)
+                children[reader] = (index, pid, bytearray())
+
+            first_number, first_simulation = branches[0]
+            with self.progress.phase(
+                f"depth {depth} reproof {first_number}/{total_branches}"
+            ) as details:
+                first_projected = self.projected_target_scan(
+                    active_scan, first_simulation, target_findings
+                )
+                if not self.target_findings(first_projected):
+                    first_projected = self.certified(first_projected)
+                details.append(f"{len(first_projected.findings)} findings")
+            raw_results[0] = first_projected
+
+            with selectors.DefaultSelector() as selector:
+                for fd in children:
+                    selector.register(fd, selectors.EVENT_READ)
+                while children:
+                    for sel_key, _ in selector.select():
+                        fd = sel_key.fd
+                        index, pid, buf = children[fd]
+                        chunk = os.read(fd, 1 << 20)
+                        if chunk:
+                            buf += chunk
+                            continue
+                        selector.unregister(fd)
+                        os.close(fd)
+                        del children[fd]
+                        _, status = os.waitpid(pid, 0)
+                        if not buf:
+                            raise RuntimeError(
+                                f"branch reproof worker exited without results (wait status {status})"
+                            )
+                        ok, value = pickle.loads(bytes(buf))
+                        if not ok:
+                            raise RuntimeError(f"branch reproof worker failed:\n{value}")
+                        findings, coverage = value
+                        _branch_number, simulation = branches[index]
+                        projected = ProvedWorkflowScan(
+                            proved=simulation.required_after_snapshot,
+                            findings=findings,
+                            coverage=coverage,
+                        )
+                        if not self.target_findings(projected):
+                            projected = self.certified(projected)
+                        raw_results[index] = projected
+        finally:
+            for fd, (_index, pid, _buf) in children.items():
+                os.close(fd)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(pid, 0)
+            if not already_frozen:
+                gc.unfreeze()
+        return [scan for scan in raw_results if scan is not None]
 
     def terminal_guard_report(self, scan: CodemodWorkflowScan) -> ArchitectureGuardReport:
         return (

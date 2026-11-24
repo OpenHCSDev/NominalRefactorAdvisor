@@ -31,7 +31,10 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleFact,
 )
-from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
+from nominal_refactor_advisor.module_node_index import (
+    ModuleImportStatements,
+    ModuleNodeIndex,
+)
 from nominal_refactor_advisor.codemod_import_bindings import (
     DirectModuleImportBindingIdentity,
     ModuleImportBindingIdentity,
@@ -328,7 +331,7 @@ class ModuleNameRedirect:
                             self._sorted_owner_imports(import_graph, consumer_path, scope, statement)
                         )
             retargets = _SourceModuleAliasRetargets.of(
-                parsed.fact(ModuleNodeIndex),
+                parsed,
                 source_module_name=source_module_name,
                 owners=_RedirectOwners(self, import_graph),
             )
@@ -496,7 +499,7 @@ class ModuleNameRedirect:
             for statement in scope.import_statements(parsed.module)
         }
         replacements: list[tuple[ast.ImportFrom, str]] = []
-        for statement in parsed.fact(ModuleNodeIndex).import_froms():
+        for statement in parsed.fact(ModuleImportStatements).import_froms:
             if (
                 identity.resolve_import_from_module(
                     imported_module=statement.module,
@@ -560,6 +563,8 @@ class ModuleNameRedirect:
         module is prose, and a dissolve's mention rule owns it."""
 
         source = parsed.source
+        if source_module_name not in source:
+            return ()
         geometry = SourceTextGeometry(source)
         embedded = _EmbeddedImportFrom(source_module_name)
         replacements: list[SourceTextSpanReplacement] = []
@@ -879,7 +884,7 @@ class _RunOnlyImports:
     def of(cls, parsed: ParsedModule, file_path: str, module_name: str) -> _RunOnlyImports:
         statements = tuple(
             statement
-            for statement in parsed.fact(ModuleNodeIndex).imports
+            for statement in parsed.fact(ModuleImportStatements).imports
             if isinstance(statement, ast.Import)
             and any(alias.asname is None and alias.name == module_name for alias in statement.names)
         )
@@ -1296,12 +1301,33 @@ class _SourceModuleAliasRetargets:
     @classmethod
     def of(
         cls,
-        index: ModuleNodeIndex,
+        parsed: ParsedModule,
         *,
         source_module_name: str,
         owners: _AliasOwners,
     ) -> _SourceModuleAliasRetargets:
         package, _, leaf = source_module_name.rpartition(".")
+        module_imports = parsed.fact(ModuleImportStatements).imports
+        has_candidate = any(
+            (
+                isinstance(node, ast.Import)
+                and any(
+                    alias.asname is not None and alias.name == source_module_name
+                    for alias in node.names
+                )
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and package
+                and not node.level
+                and node.module == package
+                and any(alias.name == leaf for alias in node.names)
+            )
+            for node in module_imports
+        )
+        if not has_candidate:
+            return cls(())
+        index = parsed.fact(ModuleNodeIndex)
         candidates: tuple[_ModuleObjectBinding, ...] = (
             *(
                 _ImportedModuleAlias(alias)
@@ -1386,7 +1412,7 @@ class _SourceModuleAliasRetargets:
 
     def localized_edits(
         self,
-        index: ModuleNodeIndex,
+        parsed: ParsedModule,
         *,
         file_path: str,
         source: str,
@@ -1397,6 +1423,9 @@ class _SourceModuleAliasRetargets:
         and the alias import goes, instead of the reader importing a module
         that is about to stop existing or importing itself."""
 
+        if not self.aliases:
+            return ()
+        index = parsed.fact(ModuleNodeIndex)
         local = tuple(
             binding
             for binding, owner in self.aliases
@@ -1485,6 +1514,12 @@ class _SourceModuleObjectReads:
         retargeted: frozenset[str] = frozenset(),
     ) -> _SourceModuleObjectReads:
         source_parts = tuple(source_module_name.split("."))
+        if not any(
+            True
+            for node in parsed.fact(ModuleImportStatements).imports
+            for _chain in cls._chains_of(node, identity, source_parts)
+        ):
+            return cls(file_path, (), (), frozenset(), ())
         index = parsed.fact(ModuleNodeIndex)
         cls._refuse_function_reads(index, identity, source_parts, moved_names, file_path, retargeted)
         imported = frozenset(
@@ -1855,13 +1890,13 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
             ()
             if destination_module_name is None or source_module_name is None
             else _SourceModuleAliasRetargets.of(
-                destination_index := context.parsed_module_for_source_path(
+                destination_parsed := context.parsed_module_for_source_path(
                     request.destination_path
-                ).fact(ModuleNodeIndex),
+                ),
                 source_module_name=source_module_name,
                 owners=_DestinationOwners(destination_module_name, frozenset(moved_symbol_names)),
             ).localized_edits(
-                destination_index,
+                destination_parsed,
                 file_path=request.destination_path,
                 source=context.sources_by_file_path[request.destination_path],
                 reader_module=destination_module_name,
@@ -2144,7 +2179,7 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         for source_file, parsed in FilesReachingModule(context, source_module_name):
             if source_file.file_path == source_path:
                 continue
-            for node in parsed.fact(ModuleNodeIndex).import_froms():
+            for node in parsed.fact(ModuleImportStatements).import_froms:
                 if (
                     source_file.module_path_identity.resolve_import_from_module(
                         imported_module=node.module,
@@ -4287,6 +4322,8 @@ class DataFilePathLiterals(ParsedModuleFact):
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> DataFilePathLiterals:
+        if not cls.literal.search(parsed_module.source):
+            return cls(frozenset())
         return cls(
             frozenset(
                 node.value
@@ -4940,7 +4977,7 @@ class DissolveModuleOperation(RetainedCallOperation):
             if source_file.file_path in excluded_paths:
                 continue
             identity = source_file.module_path_identity
-            for node in parsed.fact(ModuleNodeIndex).import_froms():
+            for node in parsed.fact(ModuleImportStatements).import_froms:
                 if (
                     identity.resolve_import_from_module(
                         imported_module=node.module,
@@ -4993,7 +5030,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                 for statement in scope.import_statements(parsed.module)
             }
             reads_path = _reads_dotted_path(parsed.module, source_module_name)
-            for statement in parsed.fact(ModuleNodeIndex).imports:
+            for statement in parsed.fact(ModuleImportStatements).imports:
                 if isinstance(statement, ast.Import):
                     for alias in statement.names:
                         if alias.name.startswith(f"{source_module_name}."):

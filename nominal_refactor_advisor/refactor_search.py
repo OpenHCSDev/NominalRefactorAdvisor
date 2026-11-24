@@ -407,9 +407,9 @@ class SharedSearchWorkerBudget(SearchWorkerBudget):
 
     def available(self) -> int:
         # Forking a populated search worker copies its page tables (~150ms/worker),
-        # so beyond 4 inner workers fork/teardown overhead outweighs incremental
-        # detector speedup.
-        return min(4, max(1, self.total_workers // max(1, int(self.active_plays.value))))
+        # so cap inner workers at 6 to balance fork overhead against prewarm/detector
+        # fan-out when only a few plays remain.
+        return min(6, max(1, self.total_workers // max(1, int(self.active_plays.value))))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -449,6 +449,7 @@ class RefactorSearch:
         with ScanCache.scope():
             concepts = RefactorConcept.declaration_types()
             scan.populate_concept_findings(concepts)
+            _ = scan.source_snapshot.compact_class_index
             TypeCheckerSession.seed_incremental(SourceTexts(tuple(scan.modules)))
             # The workers share this process's pages until they write to them; a
             # frozen generation keeps the collector from writing to every object

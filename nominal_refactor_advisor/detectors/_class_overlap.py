@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from abc import ABC
-from typing import ClassVar
+from collections.abc import Hashable, Mapping, MutableMapping, Sequence
+from typing import ClassVar, cast
+
+from nominal_refactor_advisor.ast_tools import CollectedFamily
 
 from nominal_refactor_advisor.refactors.class_overlap import (
     ClassOverlapFindingRecipeSynthesizer,
@@ -20,6 +23,7 @@ from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryCandidateDetector,
     CompactClassRepositoryContext,
+    CompactProjectionContextCacheKey,
     DetectorConfig,
     finding_spec_template,
 )
@@ -33,6 +37,30 @@ class ClassOverlapDetectorABC(
     """One #68 shape read off the scan's shared class-overlap verdicts."""
 
     shape: ClassVar[ClassOverlapShape]
+
+    @classmethod
+    def prebuild_in_memory_shared_context(
+        cls,
+        projections_by_family: Mapping[type[CollectedFamily], Sequence[object]],
+        shared_contexts: MutableMapping[Hashable, object],
+        config: DetectorConfig,
+    ) -> None:
+        super().prebuild_in_memory_shared_context(
+            projections_by_family, shared_contexts, config
+        )
+        builder = cls.compact_shared_context_builder
+        family = cls.module_projection_family
+        if builder is None or family not in projections_by_family:
+            return
+        context = cast(
+            CompactClassRepositoryContext,
+            shared_contexts[CompactProjectionContextCacheKey(family, builder)],
+        )
+        verdicts = context.cached(
+            ClassOverlapVerdicts,
+            lambda: ClassOverlapVerdicts(tuple(context.projections), context.class_index),
+        )
+        _ = verdicts.candidates
 
     def _candidates_from_compact_context(
         self,

@@ -31,6 +31,123 @@ _FUNCTION_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)
 _COMPREHENSION_SCOPES = (ast.ListComp, ast.SetComp, ast.DictComp, ast.GeneratorExp)
 
 
+def _collect_import_statements(
+    statements: list[ast.stmt],
+    imports: list[ast.Import | ast.ImportFrom],
+    import_froms: list[ast.ImportFrom],
+    inner_imports: list[ast.Import | ast.ImportFrom],
+    *,
+    in_inner_scope: bool = False,
+) -> None:
+    """Collect every import statement in source order by walking statement blocks only."""
+
+    for statement in statements:
+        if isinstance(statement, ast.ImportFrom):
+            imports.append(statement)
+            import_froms.append(statement)
+            if in_inner_scope:
+                inner_imports.append(statement)
+        elif isinstance(statement, ast.Import):
+            imports.append(statement)
+            if in_inner_scope:
+                inner_imports.append(statement)
+        elif isinstance(
+            statement,
+            (
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            _collect_import_statements(
+                statement.body, imports, import_froms, inner_imports, in_inner_scope=True
+            )
+        elif isinstance(statement, (ast.With, ast.AsyncWith)):
+            _collect_import_statements(
+                statement.body,
+                imports,
+                import_froms,
+                inner_imports,
+                in_inner_scope=in_inner_scope,
+            )
+        elif isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+            _collect_import_statements(
+                statement.body,
+                imports,
+                import_froms,
+                inner_imports,
+                in_inner_scope=in_inner_scope,
+            )
+            if statement.orelse:
+                _collect_import_statements(
+                    statement.orelse,
+                    imports,
+                    import_froms,
+                    inner_imports,
+                    in_inner_scope=in_inner_scope,
+                )
+        elif isinstance(statement, (ast.Try, ast.TryStar)):
+            _collect_import_statements(
+                statement.body,
+                imports,
+                import_froms,
+                inner_imports,
+                in_inner_scope=in_inner_scope,
+            )
+            for handler in statement.handlers:
+                _collect_import_statements(
+                    handler.body,
+                    imports,
+                    import_froms,
+                    inner_imports,
+                    in_inner_scope=in_inner_scope,
+                )
+            if statement.orelse:
+                _collect_import_statements(
+                    statement.orelse,
+                    imports,
+                    import_froms,
+                    inner_imports,
+                    in_inner_scope=in_inner_scope,
+                )
+            if statement.finalbody:
+                _collect_import_statements(
+                    statement.finalbody,
+                    imports,
+                    import_froms,
+                    inner_imports,
+                    in_inner_scope=in_inner_scope,
+                )
+        elif isinstance(statement, ast.Match):
+            for match_case in statement.cases:
+                _collect_import_statements(
+                    match_case.body,
+                    imports,
+                    import_froms,
+                    inner_imports,
+                    in_inner_scope=in_inner_scope,
+                )
+
+
+@dataclass(frozen=True)
+class ModuleImportStatements(ParsedModuleFact):
+    """Every `import` and `from ... import` in one module, without indexing expressions."""
+
+    imports: tuple[ast.Import | ast.ImportFrom, ...]
+    import_froms: tuple[ast.ImportFrom, ...]
+    inner_imports: tuple[ast.Import | ast.ImportFrom, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> ModuleImportStatements:
+        imports: list[ast.Import | ast.ImportFrom] = []
+        import_froms: list[ast.ImportFrom] = []
+        inner_imports: list[ast.Import | ast.ImportFrom] = []
+        _collect_import_statements(
+            parsed_module.module.body, imports, import_froms, inner_imports
+        )
+        return cls(tuple(imports), tuple(import_froms), tuple(inner_imports))
+
+
 @dataclass(frozen=True)
 class ModuleNodeIndex(ParsedModuleFact):
     """The nodes of one module that consumer passes look up, from a single walk.
@@ -354,3 +471,11 @@ class ScopedImportBindings(ParsedModuleFact):
             for name, qualified_name in names.items():
                 if qualified_name is not None:
                     yield name, qualified_name
+
+    @classmethod
+    def inner_import_aliases(cls, parsed_module: ParsedModule) -> Iterable[tuple[str, str]]:
+        """Each inner-scope import alias without indexing modules that have no inner imports."""
+
+        if not parsed_module.fact(ModuleImportStatements).inner_imports:
+            return ()
+        return parsed_module.fact(cls).aliases()
