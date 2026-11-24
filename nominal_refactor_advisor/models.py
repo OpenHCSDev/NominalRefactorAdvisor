@@ -815,6 +815,20 @@ class SiblingOverrideMetrics(DeclaredBasePickMetrics):
 
 
 @dataclass(frozen=True)
+class OwnTypeTestMetrics(DeclaredBasePickMetrics):
+    """One type-test site on a scanned class family, ready for a method-name pick when embedded."""
+
+    consumer_symbol: str
+    test_line: int
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.consumer_symbol
+
+
+@dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 
@@ -839,9 +853,7 @@ class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
             class_key_pairs=class_key_pairs,
         )
 
-    registration_sites: ClassVar[AliasProperty[int]] = AliasProperty(
-        "registration_site_count"
-    )
+    registration_sites = AliasProperty[int]("registration_site_count")
 
     @property
     def impact_delta(self) -> ImpactDelta:
@@ -854,19 +866,11 @@ class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
             registration_sites_removed=self.registration_site_count,
         )
 
-    plan_class_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "class_names"
-    )
+    plan_class_names = AliasProperty[tuple[str, ...]]("class_names")
 
-    plan_registry_name: ClassVar[AliasProperty[str | None]] = AliasProperty(
-        "registry_name"
-    )
-    plan_field_names: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "class_key_pairs"
-    )
-    plan_class_key_pairs: ClassVar[AliasProperty[tuple[str, ...]]] = AliasProperty(
-        "class_key_pairs"
-    )
+    plan_registry_name = AliasProperty[str | None]("registry_name")
+    plan_field_names = AliasProperty[tuple[str, ...]]("class_key_pairs")
+    plan_class_key_pairs = AliasProperty[tuple[str, ...]]("class_key_pairs")
 
     def semantic_authority_name_candidates(self) -> tuple[str | None, ...]:
         return (self.registry_name,)

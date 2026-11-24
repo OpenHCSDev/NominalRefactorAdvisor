@@ -55,9 +55,14 @@ from nominal_refactor_advisor.refactors.optional_ast_field import (
     OptionalAstFieldDecoderFindingRecipeSynthesizer,
     RouteOptionalAstFieldProbesOperation,
 )
+from nominal_refactor_advisor.refactors.type_test_dispatch import (
+    OwnTypeTestFindingRecipeSynthesizer,
+    PushTypeTestDispatchOperation,
+)
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
     ForwardingFacadeMetrics,
+    OwnTypeTestMetrics,
     RefactorFinding,
     SourceLocation,
 )
@@ -306,6 +311,7 @@ def _declared_class_scope(
 
 class OwnTypeTestDetector(
     JoinedRestatedFactDetector[DeclaredClassScope, TypeTestShape],
+    OwnTypeTestFindingRecipeSynthesizer,
 ):
     """A type test (`isinstance`, `issubclass`, `type(x) is`, `x is C`, a class
     pattern) on a class the scan declares."""
@@ -319,6 +325,7 @@ class OwnTypeTestDetector(
         fact="The test re-derives at the consumer which class the value is, a fact the class already is; every own class added later must find this site.",
         owner="The owner is the tested class family: a method on the base that answers the default, overridden in each tested class.",
         factoring="Move each arm's body onto its tested class as the override of one base method, keep the else as the base default, and replace the test with the call; foreign values are tested once, at the decoder that turns them into the family.",
+        operations=(PushTypeTestDispatchOperation,),
     )
     finding_spec = restated.spec(
         PatternId.OWN_TYPE_TEST,
@@ -339,6 +346,17 @@ class OwnTypeTestDetector(
             f"{_listed(f'`{name}`' for name in classes)} at "
             f"{_listed(f'line {site.lineno}' for site in sites)}."
         )
+
+    def finding_context(
+        self, sites: Sequence[TypeTestShape], context: DeclaredClassScope
+    ) -> dict[str, object]:
+        del context
+        return {
+            "metrics": OwnTypeTestMetrics(
+                consumer_symbol=sites[0].symbol,
+                test_line=sites[0].lineno,
+            )
+        }
 
 
 class StringKindDispatchDetector(
