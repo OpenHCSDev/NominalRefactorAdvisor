@@ -45,6 +45,8 @@ class LiteralExpressionEffects:
 
     @property
     def value(self) -> object:
+        if isinstance(self.node, ast.Constant):
+            return self.node.value
         return ast.literal_eval(self.node)
 
     def require_closed(self) -> None:
@@ -320,10 +322,25 @@ class FunctionExpression(OpaqueValueExpression):
 @singledispatch
 def _project_value_expression(node: ast.AST) -> CompactValueExpression:
     """External syntax dispatch derives from each projection's argument type."""
+    del node
+    return OpaqueValueExpression()
+
+
+@_project_value_expression.register
+def _project_constant_expression(node: ast.Constant) -> CompactValueExpression:
     try:
-        return LiteralKeyExpression(
-            LiteralExpressionEffects(cast(ValueExpressionNode, node)).hashable_value
-        )
+        hash(node.value)
+    except TypeError:
+        return OpaqueValueExpression()
+    return LiteralKeyExpression(cast(Hashable, node.value))
+
+
+@_project_value_expression.register
+def _project_literal_compound_expression(
+    node: ast.Tuple | ast.UnaryOp | ast.BinOp,
+) -> CompactValueExpression:
+    try:
+        return LiteralKeyExpression(LiteralExpressionEffects(node).hashable_value)
     except (ValueError, TypeError, SyntaxError, MemoryError, RecursionError):
         return OpaqueValueExpression()
 
@@ -333,18 +350,12 @@ def _project_lexical_expression(
     node: ast.Name | ast.Attribute,
 ) -> CompactValueExpression:
     reference = LexicalValueReference.from_expression(node)
-    return (
-        _project_value_expression.__wrapped__(node) if reference is None else reference
-    )
+    return OpaqueValueExpression() if reference is None else reference
 
 
 @_project_value_expression.register
 def _project_dictionary_expression(node: ast.Dict) -> CompactValueExpression:
-    return (
-        _project_value_expression.__wrapped__(node)
-        if node.keys
-        else EmptyDictionaryExpression()
-    )
+    return OpaqueValueExpression() if node.keys else EmptyDictionaryExpression()
 
 
 @_project_value_expression.register

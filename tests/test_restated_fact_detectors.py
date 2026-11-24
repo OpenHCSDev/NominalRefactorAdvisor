@@ -730,6 +730,52 @@ def test_probe_owner_query_narrows_to_transitive_imports_of_span_files(tmp_path:
     assert {Path(path).name for path in query.file_paths} == {"m.py", "owner.py", "base.py"}
 
 
+def test_requested_span_elision_keeps_exported_effects_and_preserves_span_types(
+    tmp_path: Path,
+):
+    from nominal_refactor_advisor.type_checker_session import (
+        _elide_unrequested_annotated_bodies,
+    )
+
+    owner_source = (
+        "from collections.abc import AsyncIterator\n\n\n"
+        "class Goal:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.paused_at: int | None = None\n\n"
+        "    def heavy(self) -> int:\n"
+        "        x = 1 + 2\n"
+        "        return x\n\n"
+        "    async def stream(self) -> AsyncIterator[int]:\n"
+        "        yield 1\n"
+    )
+    elided = _elide_unrequested_annotated_bodies(owner_source, ())
+    assert "self.paused_at: int | None = None" in elided
+    assert "yield 1" in elided
+    assert "x = 1 + 2" not in elided
+
+    # Line-preserving elision in a file that holds a requested span keeps exact line numbers.
+    consumer_source = (
+        "from owner import Goal\n\n\n"
+        "def helper() -> Goal:\n"
+        "    g = Goal()\n"
+        "    return g\n\n\n"
+        "def check():\n"
+        "    goal = helper()\n"
+        "    return goal.paused_at is None\n"
+    )
+    elided_consumer = _elide_unrequested_annotated_bodies(consumer_source, ((11, 11),))
+    assert elided_consumer.splitlines()[10] == "    return goal.paused_at is None"
+    assert "g = Goal()" not in elided_consumer
+
+    (finding,) = _findings(
+        tmp_path,
+        ForeignAbsenceProbeDetector,
+        {"owner": owner_source, "m": consumer_source},
+    )
+    assert "owner `owner.Goal`" in finding.summary
+    assert "owner unresolved" not in finding.summary
+
+
 # ---- legacy markers
 
 

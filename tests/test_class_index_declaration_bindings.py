@@ -11,7 +11,11 @@ from nominal_refactor_advisor.class_families.parsed_index import (
     ClassFamilyIndexPredecessor,
     build_class_family_index,
 )
-from nominal_refactor_advisor.class_index import ModuleNominalBindingAuthority
+from nominal_refactor_advisor.class_index import (
+    ModuleNominalBindingAuthority,
+    ModuleNominalBindingTimeline,
+    _module_nominal_binding_snapshots,
+)
 
 
 @pytest.fixture
@@ -89,3 +93,30 @@ def test_projection_rebinds_changed_declarations_and_reuses_unchanged_ancestors(
     }
     for symbol in ("parents.First", "parents.Second"):
         assert after.class_for(symbol) is before.class_for(symbol)
+
+
+def test_binding_timeline_matches_sequential_snapshots_including_star_imports(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a.py").write_text("class X: pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("class Y: pass\n", encoding="utf-8")
+    (tmp_path / "m.py").write_text(
+        "from a import X\n"
+        "class C1(X): pass\n"
+        "from b import *\n"
+        "class C2(X): pass\n"
+        "from a import X as Z\n"
+        "class C3(Z): pass\n",
+        encoding="utf-8",
+    )
+    (module,) = (
+        m
+        for m in parse_python_modules(tmp_path, use_parse_cache=False)
+        if m.module_name == "m"
+    )
+    authority = ModuleNominalBindingAuthority(module)
+    lines = (1, 2, 3, 4, 5, 6, 7)
+    direct = _module_nominal_binding_snapshots(authority, lines, include_final=True)
+    via_timeline = authority.snapshots_before((*lines, None))
+    assert via_timeline == direct
+    assert module.fact(ModuleNominalBindingTimeline).final_snapshot == direct[None]

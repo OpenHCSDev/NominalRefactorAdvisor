@@ -1034,6 +1034,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         CompactReportContextPromotionPredicate | None
     ] = None
     compact_report_context_requires_target_projection: ClassVar[bool] = False
+    compact_analysis_priority: ClassVar[int] = 0
 
     @classmethod
     def compact_projection_families(

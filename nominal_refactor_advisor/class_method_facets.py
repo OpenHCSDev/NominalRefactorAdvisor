@@ -219,15 +219,59 @@ class ClassMethodReceiverSteps:
         receiver_name = ClassMethodReceiverRequirements.receiver_name(method)
         if receiver_name is None:
             return cls(frozenset(), ())
-        aliases = ClassMethodReceiverRequirements.receiver_aliases(method, receiver_name)
-        members: set[str] = set()
-        calls: set[str] = set()
-        for node in ast.walk(method):
-            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name) and node.value.id in aliases:
-                members.add(node.attr)
-            elif isinstance(node, ast.Call) and (path := cls.member_path(node.func, aliases)) is not None:
-                calls.add(path)
-        return cls(frozenset(members), tuple(sorted(calls)))
+        alias_targets_by_source: dict[str, set[str]] = defaultdict(set)
+        attribute_reads: list[tuple[str, str]] = []
+        call_callees: list[ast.Attribute] = []
+        stack: list[ast.AST] = [method]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.Attribute):
+                if isinstance(node.value, ast.Name):
+                    attribute_reads.append((node.value.id, node.attr))
+            elif isinstance(node, ast.Call):
+                if isinstance(node.func, ast.Attribute):
+                    call_callees.append(node.func)
+            elif isinstance(node, ast.Assign):
+                if isinstance(node.value, ast.Name):
+                    source_targets = alias_targets_by_source[node.value.id]
+                    for target in node.targets:
+                        if isinstance(target, ast.Name):
+                            source_targets.add(target.id)
+            elif isinstance(node, ast.AnnAssign | ast.NamedExpr):
+                if isinstance(node.target, ast.Name) and isinstance(node.value, ast.Name):
+                    alias_targets_by_source[node.value.id].add(node.target.id)
+            for field_name in node._fields:
+                child = getattr(node, field_name, None)
+                if isinstance(child, ast.AST):
+                    stack.append(child)
+                elif isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, ast.AST):
+                            stack.append(item)
+        if receiver_name in alias_targets_by_source:
+            aliases_set = {receiver_name}
+            pending = deque((receiver_name,))
+            while pending:
+                source_name = pending.popleft()
+                for target_name in alias_targets_by_source.get(source_name, ()):
+                    if target_name in aliases_set:
+                        continue
+                    aliases_set.add(target_name)
+                    pending.append(target_name)
+            aliases = frozenset(aliases_set)
+        else:
+            aliases = frozenset((receiver_name,))
+        members = frozenset(attr for root, attr in attribute_reads if root in aliases)
+        calls = tuple(
+            sorted(
+                {
+                    path
+                    for callee in call_callees
+                    if (path := cls.member_path(callee, aliases)) is not None
+                }
+            )
+        )
+        return cls(members, calls)
 
     @staticmethod
     def member_path(callee: ast.expr, aliases: frozenset[str]) -> str | None:
@@ -560,8 +604,8 @@ def _compact_class_method(
     class_bound_names: frozenset[str],
     *,
     include_family_semantics: bool,
+    body: list[ast.stmt],
 ) -> CompactClassMethod:
-    body = _trim_leading_docstring(list(method.body))
     decorator_lines = tuple(
         decorator.lineno for decorator in method.decorator_list if decorator.lineno
     )
@@ -577,6 +621,7 @@ def _compact_class_method(
         if is_tiny_role
         else None
     )
+    receiver_steps = ClassMethodReceiverSteps.from_method(method)
     return CompactClassMethod(
         class_symbol=class_symbol,
         method_name=method.name,
@@ -599,12 +644,8 @@ def _compact_class_method(
             else None
         ),
         promotion_hazards=() if safety_profile is None else safety_profile.hazards,
-        receiver_member_names=(
-            ClassMethodReceiverRequirements.from_method(method).member_names
-            if is_tiny_role
-            else frozenset()
-        ),
-        receiver_steps=ClassMethodReceiverSteps.from_method(method),
+        receiver_member_names=receiver_steps.members if is_tiny_role else frozenset(),
+        receiver_steps=receiver_steps,
     )
 
 
@@ -631,16 +672,20 @@ def _compact_class_methods(
         for statement in FunctionDefinition.within(node.body):
             if method_names is not None and statement.name not in method_names:
                 continue
-            method = _compact_class_method(
-                class_symbol,
-                statement,
-                source_lines,
-                binding_snapshots[node.lineno],
-                class_bound_names,
-                include_family_semantics=establishes_nominal_family,
+            body = _trim_leading_docstring(list(statement.body))
+            if not establishes_nominal_family and len(body) > 2:
+                continue
+            methods.append(
+                _compact_class_method(
+                    class_symbol,
+                    statement,
+                    source_lines,
+                    binding_snapshots[node.lineno],
+                    class_bound_names,
+                    include_family_semantics=establishes_nominal_family,
+                    body=body,
+                )
             )
-            if establishes_nominal_family or method.statement_count <= 2:
-                methods.append(method)
     return tuple(methods)
 
 

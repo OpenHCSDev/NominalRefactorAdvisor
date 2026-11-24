@@ -1753,22 +1753,37 @@ class BoundedCompactProjectionManifest:
         )
         if group_plan.uses_process_pool:
             groups = tuple(
-                (families, selected)
-                for families, detector_types in detector_types_by_families.items()
-                if (
-                    selected := (
-                        tuple(detector_types)
-                        if detector_type_filter is None
-                        else detector_type_filter(
-                            tuple(detector_types),
-                            {
-                                family: self.deferred_projections_for_family(
-                                    family, derive_content_identity=True
+                sorted(
+                    (
+                        (families, selected)
+                        for families, detector_types in detector_types_by_families.items()
+                        if (
+                            selected := (
+                                tuple(detector_types)
+                                if detector_type_filter is None
+                                else detector_type_filter(
+                                    tuple(detector_types),
+                                    {
+                                        family: self.deferred_projections_for_family(
+                                            family, derive_content_identity=True
+                                        )
+                                        for family in families
+                                    },
                                 )
-                                for family in families
-                            },
+                            )
                         )
-                    )
+                    ),
+                    key=lambda group: (
+                        -max(
+                            cast(
+                                type[CompactModuleProjectionDetectorMixin],
+                                detector_type,
+                            ).compact_analysis_priority
+                            for detector_type in group[1]
+                        ),
+                        -len(group[1]),
+                        -len(group[0]),
+                    ),
                 )
             )
             CompactGroupWorkerState.install(CompactGroupWorkerState(self, config, groups))

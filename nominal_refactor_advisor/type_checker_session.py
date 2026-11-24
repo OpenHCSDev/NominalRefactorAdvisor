@@ -9,6 +9,7 @@ its type map, keyed by the receiver's exact source span.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import sys
@@ -17,8 +18,9 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
-from itertools import chain
 from dataclasses import dataclass
+from itertools import chain
+from pathlib import Path
 from time import perf_counter
 from typing import TYPE_CHECKING, ClassVar
 
@@ -135,6 +137,136 @@ class SourceTexts(TypeCheckerSources):
         return tuple((module.file_path, module.module_name, module.source) for module in self.modules)
 
 
+def _writes_receiver_attribute(node: ast.AST, receiver_names: frozenset[str]) -> bool:
+    match node:
+        case ast.Attribute(
+            value=ast.Name(id=root),
+            ctx=ast.Store() | ast.Del(),
+        ) if root in receiver_names:
+            return True
+    return False
+
+
+def _has_exported_body_effect(
+    fn: ast.FunctionDef | ast.AsyncFunctionDef,
+    receiver_names: frozenset[str],
+) -> bool:
+    """Whether a function body can affect types outside itself (receiver attribute
+    definitions, globals, nested classes, or `yield` making an `async def` an async
+    generator)."""
+
+    is_async = isinstance(fn, ast.AsyncFunctionDef)
+    stack: list[ast.AST] = list(fn.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Global | ast.ClassDef):
+            return True
+        if is_async and isinstance(node, ast.Yield | ast.YieldFrom):
+            return True
+        if receiver_names and _writes_receiver_attribute(node, receiver_names):
+            return True
+        for field_name in node._fields:
+            child = getattr(node, field_name, None)
+            if isinstance(child, ast.AST):
+                stack.append(child)
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, ast.AST):
+                        stack.append(item)
+    return False
+
+
+def _is_ellipsis_body(body: list[ast.stmt]) -> bool:
+    return (
+        len(body) == 1
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and body[0].value.value is Ellipsis
+    )
+
+
+def _statement_start_line(stmt: ast.stmt) -> int:
+    if isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+        if stmt.decorator_list:
+            return stmt.decorator_list[0].lineno
+    return stmt.lineno
+
+
+def _elide_unrequested_annotated_bodies(
+    text: str,
+    requested_ranges: tuple[tuple[int, int], ...],
+) -> str:
+    """Replace annotated function bodies that hold no requested span and have no
+    exported body effect with `...`, preserving line numbers when spans exist in the
+    file. Mypy reads the declared signature without type-checking unrequested bodies."""
+
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return text
+    lines = text.splitlines(keepends=True)
+    replacements: list[tuple[int, int, str]] = []
+
+    def visit_block(stmts: list[ast.stmt], in_class: bool) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, ast.ClassDef):
+                visit_block(stmt.body, True)
+                continue
+            if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+                continue
+            if stmt.returns is None or not stmt.body or _is_ellipsis_body(stmt.body):
+                continue
+            fn_start = _statement_start_line(stmt)
+            fn_end = stmt.end_lineno or stmt.body[-1].end_lineno or stmt.body[-1].lineno
+            if any(
+                start <= fn_end and end >= fn_start
+                for start, end in requested_ranges
+            ):
+                continue
+            receiver_names: frozenset[str] = frozenset()
+            if in_class:
+                positional = (*stmt.args.posonlyargs, *stmt.args.args)
+                if positional:
+                    receiver_names = frozenset((positional[0].arg,))
+            if _has_exported_body_effect(stmt, receiver_names):
+                continue
+            first = stmt.body[0]
+            first_anchor: ast.stmt | ast.expr = (
+                first.decorator_list[0]
+                if isinstance(
+                    first, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef
+                )
+                and first.decorator_list
+                else first
+            )
+            start_idx = first_anchor.lineno - 1
+            if start_idx <= stmt.lineno - 1:
+                continue
+            first_line = lines[start_idx]
+            leading = first_line[: first_anchor.col_offset]
+            if leading.strip() not in ("", "@"):
+                continue
+            indent = first_line[: len(first_line) - len(first_line.lstrip(" \t"))]
+            last = stmt.body[-1]
+            end_idx = last.end_lineno or last.lineno
+            pad = "\n" * max(0, end_idx - start_idx - 1) if requested_ranges else ""
+            replacements.append((start_idx, end_idx, f"{indent}...\n{pad}"))
+
+    visit_block(tree.body, False)
+    if not replacements:
+        return text
+    output: list[str] = []
+    cursor = 0
+    for start_idx, end_idx, replacement in sorted(replacements):
+        if start_idx < cursor:
+            continue
+        output.extend(lines[cursor:start_idx])
+        output.append(replacement)
+        cursor = end_idx
+    output.extend(lines[cursor:])
+    return "".join(output)
+
+
 class ExpressionExtractionScope(ABC):
     """Which built expressions a mypy run checks in untyped defs and exports."""
 
@@ -144,6 +276,13 @@ class ExpressionExtractionScope(ABC):
         options: Options,
         unique: Sequence[tuple[str, BuildSource]],
     ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    def prepare_sources(
+        self,
+        unique: Sequence[tuple[str, BuildSource]],
+    ) -> list[BuildSource]:
         raise NotImplementedError
 
     @abstractmethod
@@ -180,6 +319,12 @@ class AllBuiltExpressions(ExpressionExtractionScope):
     ) -> None:
         return None
 
+    def prepare_sources(
+        self,
+        unique: Sequence[tuple[str, BuildSource]],
+    ) -> list[BuildSource]:
+        return [source for _path, source in unique]
+
     def extract(
         self,
         result: BuildResult,
@@ -208,21 +353,26 @@ class AllBuiltExpressions(ExpressionExtractionScope):
 
 @dataclass(frozen=True)
 class RequestedSpanExpressions(ExpressionExtractionScope):
-    """Check untyped defs only in files holding requested spans, and export only those spans."""
+    """Check untyped defs only in files holding requested spans, elide unrequested
+    annotated function bodies so mypy skips checking them, and export only those spans."""
 
     file_paths: frozenset[str]
     coords_by_file: Mapping[str, frozenset[tuple[int, int, int, int]]]
+    line_ranges_by_file: Mapping[str, tuple[tuple[int, int], ...]]
 
     @classmethod
     def of(cls, spans: Iterable[ReceiverSpan]) -> RequestedSpanExpressions:
         grouped: defaultdict[str, set[tuple[int, int, int, int]]] = defaultdict(set)
+        ranges: defaultdict[str, set[tuple[int, int]]] = defaultdict(set)
         for span in spans:
             grouped[span.file_path].add(
                 (span.line, span.column, span.end_line, span.end_column)
             )
+            ranges[span.file_path].add((span.line, span.end_line))
         return cls(
             frozenset(grouped),
             {path: frozenset(coords) for path, coords in grouped.items()},
+            {path: tuple(sorted(line_ranges)) for path, line_ranges in ranges.items()},
         )
 
     def configure_options(
@@ -231,9 +381,34 @@ class RequestedSpanExpressions(ExpressionExtractionScope):
         unique: Sequence[tuple[str, BuildSource]],
     ) -> None:
         options.check_untyped_defs = False
+        options.ignore_errors = True
         for path, source in unique:
             if path in self.file_paths:
                 options.per_module_options[source.module] = {"check_untyped_defs": True}
+
+    def prepare_sources(
+        self,
+        unique: Sequence[tuple[str, BuildSource]],
+    ) -> list[BuildSource]:
+        build_source = importlib.import_module("mypy.modulefinder").BuildSource
+        prepared: list[BuildSource] = []
+        for path, source in unique:
+            raw = source.text
+            if raw is None:
+                try:
+                    raw = Path(path).read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    prepared.append(source)
+                    continue
+            elided = _elide_unrequested_annotated_bodies(
+                raw, self.line_ranges_by_file.get(path, ())
+            )
+            prepared.append(
+                source
+                if elided is raw
+                else build_source(source.path, source.module, text=elided)
+            )
+        return prepared
 
     def extract(
         self,
@@ -322,9 +497,10 @@ class TypeCheckerSession(ABC):
         options.preserve_asts = True
         unique, shared = TypeCheckerSession.unique_sources(sources, options)
         scope.configure_options(options, unique)
+        build_sources = scope.prepare_sources(unique)
         started = perf_counter()
         try:
-            result = build.build([source for _path, source in unique], options)
+            result = build.build(build_sources, options)
         except errors.CompileError as error:
             return UnavailableTypeChecker(
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]

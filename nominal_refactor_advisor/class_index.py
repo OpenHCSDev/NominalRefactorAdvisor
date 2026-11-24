@@ -17,6 +17,7 @@ import re
 import sys
 import typing
 from abc import ABC, abstractmethod
+from bisect import bisect_left
 from collections import defaultdict, deque
 from collections.abc import (
     Collection,
@@ -197,6 +198,8 @@ from nominal_refactor_advisor.class_creation_store import (
     NO_BINDINGS,
     CreatedClassStore,
     CreationBindings,
+    FunctionNode,
+    _functions,
 )
 from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
@@ -204,6 +207,17 @@ from nominal_refactor_advisor.semantic_algebra import DirectedGraph
 from nominal_refactor_advisor.source_geometry import (
     ClassHeaderSourceSpan as ClassHeaderSourceSpan,
 )
+
+
+@dataclass(frozen=True)
+class ModuleTopLevelFunctions(ParsedModuleFact):
+    """Top-level functions of a module, indexed once per parse for class creation checks."""
+
+    functions: Mapping[str, FunctionNode]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(_functions(parsed_module.module.body))
 
 
 class ClassRegistryFacts(NamedTuple):
@@ -241,7 +255,9 @@ class ClassRegistryFacts(NamedTuple):
         module_binding_snapshot: ModuleNominalBindingSnapshot,
         parsed_module: ParsedModule,
     ) -> ClassRegistryFacts:
-        creation = CreatedClassStore.of(node, parsed_module.module)
+        creation = CreatedClassStore.of_module_functions(
+            node, parsed_module.fact(ModuleTopLevelFunctions).functions
+        )
         return cls(
             metaclass_references=tuple(
                 module_binding_snapshot.reference_for(parts)
@@ -3363,6 +3379,19 @@ class ModuleNominalBindingAuthority:
     ) -> dict[int | None, ModuleNominalBindingSnapshot]:
         """Resolve requested declaration positions and final bindings in one pass."""
         requested_lines = tuple(dict.fromkeys(lines))
+        if (
+            not self.declared_assignment_authority_names
+            and policy is ModuleNominalBindingSnapshotPolicy.EXACT
+        ):
+            timeline = self.parsed_module.fact(ModuleNominalBindingTimeline)
+            return {
+                line: (
+                    timeline.final_snapshot
+                    if line is None
+                    else timeline.snapshot_before_line(line)
+                )
+                for line in requested_lines
+            }
         return _module_nominal_binding_snapshots(
             self,
             tuple(line for line in requested_lines if line is not None),
@@ -3896,23 +3925,46 @@ class ClassBodyModuleScope:
         return None
 
 
+def _is_zero_arg_super_call(node: ast.Call) -> bool:
+    return (
+        not node.args
+        and not node.keywords
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "super"
+    )
+
+
 def reads_class_cell_or_private_name(statement: ast.stmt) -> bool:
     """Whether a class-body statement reads the class it sits in: a zero-argument
     `super()` or `__class__` reads the class cell, and a `__name` identifier is
     mangled with the class's name."""
 
-    for node in ast.walk(statement):
-        match node:
-            case ast.Call(func=ast.Name(id="super"), args=[], keywords=[]) | ast.Name(id="__class__"):
+    stack: list[ast.AST] = [statement]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Name):
+            if node.id == "__class__" or _is_private_name(node.id):
                 return True
-            case ast.Name(id=name) | ast.Attribute(attr=name) if _is_private_name(name):
+        elif isinstance(node, ast.Attribute):
+            if _is_private_name(node.attr):
                 return True
-            case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name) if (
-                _is_private_name(name)
-            ):
+        elif isinstance(node, ast.Call):
+            if _is_zero_arg_super_call(node):
                 return True
-            case ast.arg(arg=name) if _is_private_name(name):
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            if _is_private_name(node.name):
                 return True
+        elif isinstance(node, ast.arg):
+            if _is_private_name(node.arg):
+                return True
+        for field_name in node._fields:
+            child = getattr(node, field_name, None)
+            if isinstance(child, ast.AST):
+                stack.append(child)
+            elif isinstance(child, list):
+                for item in child:
+                    if isinstance(item, ast.AST):
+                        stack.append(item)
     return False
 
 
@@ -4411,6 +4463,95 @@ class ModuleBasesStores(ParsedModuleFact):
 
 
 @dataclass(frozen=True)
+class ModuleNominalBindingTimeline(ParsedModuleFact):
+    """Exact module binding snapshots indexed by statement position, built once per parse.
+
+    `prefix_max_lines[i]` is the running maximum of `statement.lineno` over `body[:i+1]`,
+    so `bisect_left(prefix_max_lines, line)` finds the exact count of leading statements
+    whose lines are strictly less than `line` (matching the sequential `while` scan even
+    on synthetic ASTs) in O(log N) instead of rescanning the module per query.
+    """
+
+    prefix_max_lines: tuple[int, ...]
+    snapshots: tuple[ModuleNominalBindingSnapshot, ...]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        authority = ModuleNominalBindingAuthority(parsed_module)
+        bindings: dict[str, CompactNominalBinding] = {}
+        unresolved_bound_names: set[str] = set()
+        star_import_ambiguity = False
+        annotation_mode = ModuleAnnotationEvaluationMode.from_module(parsed_module.module)
+        initial = ModuleNominalBindingSnapshot(
+            bindings_by_name={},
+            annotation_mode=annotation_mode,
+            unresolved_bound_names=frozenset(),
+            star_import_ambiguity=False,
+            star_import_excluded_names=frozenset(),
+        )
+        prefix_max_lines: list[int] = []
+        snapshots: list[ModuleNominalBindingSnapshot] = [initial]
+        current_snapshot = initial
+        running_max = -1
+        for statement in parsed_module.module.body:
+            line = statement.lineno
+            if line > running_max:
+                running_max = line
+            prefix_max_lines.append(running_max)
+            changed = False
+            if isinstance(statement, ast.ImportFrom) and any(
+                alias.name == "*" for alias in statement.names
+            ):
+                if bindings or unresolved_bound_names or not star_import_ambiguity:
+                    bindings.clear()
+                    unresolved_bound_names.clear()
+                    star_import_ambiguity = True
+                    changed = True
+            else:
+                direct_bindings = authority._direct_nominal_bindings(statement, bindings)
+                bound_names = _direct_statement_bound_names(statement)
+                if bound_names or direct_bindings:
+                    deleted_names = (
+                        bound_names if isinstance(statement, ast.Delete) else frozenset()
+                    )
+                    for bound_name in bound_names:
+                        if bindings.pop(bound_name, None) is not None:
+                            changed = True
+                        if bound_name in deleted_names:
+                            if bound_name in unresolved_bound_names:
+                                unresolved_bound_names.discard(bound_name)
+                                changed = True
+                        elif bound_name not in direct_bindings:
+                            if bound_name not in unresolved_bound_names:
+                                unresolved_bound_names.add(bound_name)
+                                changed = True
+                    for bound_name, binding in direct_bindings.items():
+                        if bound_name in unresolved_bound_names:
+                            unresolved_bound_names.discard(bound_name)
+                            changed = True
+                        if bindings.get(bound_name) != binding:
+                            bindings[bound_name] = binding
+                            changed = True
+            if changed:
+                current_snapshot = ModuleNominalBindingSnapshot(
+                    bindings_by_name=dict(bindings),
+                    annotation_mode=annotation_mode,
+                    unresolved_bound_names=frozenset(unresolved_bound_names),
+                    star_import_ambiguity=star_import_ambiguity,
+                    star_import_excluded_names=frozenset(),
+                )
+            snapshots.append(current_snapshot)
+        return cls(tuple(prefix_max_lines), tuple(snapshots))
+
+    @property
+    def final_snapshot(self) -> ModuleNominalBindingSnapshot:
+        return self.snapshots[-1]
+
+    def snapshot_before_line(self, line: int) -> ModuleNominalBindingSnapshot:
+        return self.snapshots[bisect_left(self.prefix_max_lines, line)]
+
+
+@dataclass(frozen=True)
 class ClassLineBindingSnapshots(ParsedModuleFact):
     """The module's bindings where each class statement runs, keyed by its line, and its
     final bindings under None: one pass, read by the class header and by every check of
@@ -4421,13 +4562,16 @@ class ClassLineBindingSnapshots(ParsedModuleFact):
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
         return cls(
-            _module_nominal_binding_snapshots(
-                ModuleNominalBindingAuthority(parsed_module),
-                tuple(
-                    node.lineno
-                    for _qualname, node in iter_class_definitions(list(parsed_module.module.body))
-                ),
-                include_final=True,
+            ModuleNominalBindingAuthority(parsed_module).snapshots_before(
+                (
+                    *(
+                        node.lineno
+                        for _qualname, node in iter_class_definitions(
+                            list(parsed_module.module.body)
+                        )
+                    ),
+                    None,
+                )
             )
         )
 
@@ -4627,20 +4771,25 @@ def _compact_class_binding_facets(
     *,
     include_body_facets: bool,
 ) -> CompactClassBindingFacets:
-    try:
-        enum_declaration = PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
-            node,
-            identity=f"{module_name}.{qualname}",
-            qualified_reference=lambda reference, shadowed_names: (
-                _class_scope_qualified_import_name(
-                    module_binding_snapshot,
-                    {},
-                    reference,
-                    shadowed_names,
+    if include_body_facets:
+        try:
+            enum_declaration: PythonEnumDeclarationFacet = (
+                PYTHON_ENUM_BASE_AUTHORITY.declaration_from_node(
+                    node,
+                    identity=f"{module_name}.{qualname}",
+                    qualified_reference=lambda reference, shadowed_names: (
+                        _class_scope_qualified_import_name(
+                            module_binding_snapshot,
+                            {},
+                            reference,
+                            shadowed_names,
+                        )
+                    ),
                 )
-            ),
-        )
-    except ValueError:
+            )
+        except ValueError:
+            enum_declaration = NoEnumDeclaration()
+    else:
         enum_declaration = NoEnumDeclaration()
     base_references = _compact_base_references(node, module_binding_snapshot)
     return CompactClassBindingFacets(
@@ -4663,7 +4812,7 @@ def _compact_class_binding_facets(
             if include_body_facets
             else NoDataclassDeclaration()
         ),
-        enum_declaration=enum_declaration if include_body_facets else NoEnumDeclaration(),
+        enum_declaration=enum_declaration,
     )
 
 
@@ -4776,19 +4925,9 @@ def _compact_indexed_classes(
                 parsed_module,
                 node,
             ),
-            autoregister_registry_projection_names=(
-                _autoregister_registry_projection_names(node)
-                if include_body_facets
-                else ()
-            ),
-            keyed_registry_lookup_method_names=(
-                _keyed_registry_lookup_method_names(node) if include_body_facets else ()
-            ),
-            keyed_registry_reverse_lookup_method_names=(
-                _keyed_registry_reverse_lookup_method_names(node)
-                if include_body_facets
-                else ()
-            ),
+            autoregister_registry_projection_names=registry_methods[0],
+            keyed_registry_lookup_method_names=registry_methods[1],
+            keyed_registry_reverse_lookup_method_names=registry_methods[2],
             predicate_selected_methods=(
                 _compact_predicate_selected_methods(node) if include_body_facets else ()
             ),
@@ -4824,6 +4963,9 @@ def _compact_indexed_classes(
                 qualname,
                 include_body_facets=include_body_facets,
             ),
+        )
+        for registry_methods in (
+            _registry_method_names(node) if include_body_facets else ((), (), ()),
         )
     )
 
@@ -5109,18 +5251,58 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         ]
 
 
+_REGISTRY_PROJECTION_ATTRS = frozenset(("__registry__", "_registry", "registry"))
+
+
+def _registry_method_names(
+    node: ast.ClassDef,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
+    """Collect autoregister projection, keyed lookup, and reverse lookup method names
+    in one iterative walk per method instead of three separate `ast.walk` passes."""
+
+    projection_names: list[str] = []
+    lookup_names: list[str] = []
+    reverse_lookup_names: list[str] = []
+    for raw_method in FunctionDefinition.within(node.body):
+        method = cast(ast.FunctionDef | ast.AsyncFunctionDef, raw_method)
+        is_classmethod = _is_classmethod(method)
+        has_projection_attr = False
+        has_cls_registry = False
+        stack: list[ast.AST] = [method]
+        while stack:
+            subnode = stack.pop()
+            if isinstance(subnode, ast.Attribute) and subnode.attr in _REGISTRY_PROJECTION_ATTRS:
+                has_projection_attr = True
+                if is_classmethod and RegistryLookupShape.is_cls_registry_attribute(subnode):
+                    has_cls_registry = True
+                    break
+                if not is_classmethod:
+                    break
+            for field_name in subnode._fields:
+                child = getattr(subnode, field_name, None)
+                if isinstance(child, ast.AST):
+                    stack.append(child)
+                elif isinstance(child, list):
+                    for item in child:
+                        if isinstance(item, ast.AST):
+                            stack.append(item)
+        if has_projection_attr:
+            projection_names.append(method.name)
+        if has_cls_registry:
+            lookup_names.append(method.name)
+            if any(token in method.name for token in ("class", "type", "reverse")):
+                reverse_lookup_names.append(method.name)
+    return (
+        tuple(projection_names),
+        tuple(lookup_names),
+        tuple(reverse_lookup_names),
+    )
+
+
 def _autoregister_registry_projection_names(
     node: ast.ClassDef,
 ) -> tuple[str, ...]:
-    return tuple(
-        method.name
-        for method in FunctionDefinition.within(node.body)
-        if any(
-            isinstance(subnode, ast.Attribute)
-            and subnode.attr in {"__registry__", "_registry", "registry"}
-            for subnode in ast.walk(method)
-        )
-    )
+    return _registry_method_names(node)[0]
 
 
 def _method_references_cls_registry(
@@ -5130,21 +5312,11 @@ def _method_references_cls_registry(
 
 
 def _keyed_registry_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        method.name
-        for method in FunctionDefinition.within(node.body)
-        if _is_classmethod(method) and _method_references_cls_registry(method)
-    )
+    return _registry_method_names(node)[1]
 
 
 def _keyed_registry_reverse_lookup_method_names(node: ast.ClassDef) -> tuple[str, ...]:
-    return tuple(
-        method.name
-        for method in FunctionDefinition.within(node.body)
-        if _is_classmethod(method)
-        and _method_references_cls_registry(method)
-        and any(token in method.name for token in ("class", "type", "reverse"))
-    )
+    return _registry_method_names(node)[2]
 
 
 def _trim_method_docstring(
