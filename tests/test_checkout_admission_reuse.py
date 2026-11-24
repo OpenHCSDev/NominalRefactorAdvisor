@@ -164,3 +164,17 @@ def test_invalid_relative_requests_are_rejected_before_filesystem_observation(
             checkout_relative_path("../escape.py", (tmp_path,))
         with pytest.raises(CacheCheckoutPathError, match="ambiguous"):
             checkout_relative_path("source.py", (tmp_path, tmp_path))
+
+
+def test_directory_root_admits_cwd_relative_paths_without_doubling(tmp_path, monkeypatch):
+    pkg = tmp_path / "src" / "pkg"
+    pkg.mkdir(parents=True)
+    source = pkg / "comms.py"
+    source.write_text("value = 1\n")
+    monkeypatch.chdir(tmp_path)
+    roots = (Path("src/pkg"),)
+    with ScanCache.scope():
+        assert checkout_relative_path("comms.py", roots) == "0:comms.py"
+        assert checkout_relative_path(Path("src/pkg/comms.py"), roots) == "0:comms.py"
+        assert checkout_relative_path(source, roots) == "0:comms.py"
+        assert absolute_checkout_path("0:comms.py", roots) == str(source)

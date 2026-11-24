@@ -38,6 +38,7 @@ from nominal_refactor_advisor.probe_owner import (
 
 if TYPE_CHECKING:
     from mypy.build import BuildResult, State
+    from mypy.errors import ErrorInfo, Errors
     from mypy.fscache import FileSystemCache
     from mypy.modulefinder import BuildSource
     from mypy.nodes import Expression, MypyFile
@@ -940,20 +941,29 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             if name and name not in entries:
                 entries.append(name)
 
-    def _delete_memory_file(self, module_name: str, path: str) -> None:
-        self._fscache.read_cache.pop(path, None)
-        self._fscache.hash_cache.pop(path, None)
-        self._fscache.read_error_cache.pop(path, None)
-        self._fscache.stat_or_none_cache[path] = None
-        self._fscache.isfile_case_cache[path] = False
-        self._fscache.exists_case_cache[path] = False
+    @staticmethod
+    def _remove_memory_file(
+        fscache: FileSystemCache,
+        manager: FineGrainedBuildManager,
+        module_name: str,
+        path: str,
+    ) -> None:
+        fscache.read_cache.pop(path, None)
+        fscache.hash_cache.pop(path, None)
+        fscache.read_error_cache.pop(path, None)
+        fscache.stat_or_none_cache[path] = None
+        fscache.isfile_case_cache[path] = False
+        fscache.exists_case_cache[path] = False
         parent = os.path.normpath(os.path.dirname(path))
-        if parent in self._fscache.listdir_cache:
+        if parent in fscache.listdir_cache:
             name = os.path.basename(path)
-            entries = self._fscache.listdir_cache[parent]
+            entries = fscache.listdir_cache[parent]
             if name in entries:
                 entries.remove(name)
-        self._manager.manager.ast_cache.pop(module_name, None)
+        manager.manager.ast_cache.pop(module_name, None)
+
+    def _delete_memory_file(self, module_name: str, path: str) -> None:
+        self._remove_memory_file(self._fscache, self._manager, module_name, path)
 
     @classmethod
     def seeded(cls, sources: SourceTexts) -> TypeCheckerSession:
@@ -1245,6 +1255,278 @@ def _type_errors_by_state() -> dict[tuple[tuple[str, str, str], ...], TypeErrors
     return {}
 
 
+@ScanCache.cached
+def _incremental_type_errors_slot() -> list[FineGrainedTypeErrors | None]:
+    """The active fine-grained mypy error engine for this ``ScanCache.scope()``."""
+
+    return [None]
+
+
+class FineGrainedTypeErrors:
+    """In-memory fine-grained mypy error checker for repeated candidate proofs.
+
+    Mypy's ``FineGrainedBuildManager.update()`` normally re-triggers every
+    target that previously reported an error (hundreds of untouched files on a
+    real repo). Retaining errors per ``(file_path, target)`` lets each candidate
+    update recheck only the changed modules and their triggered dependents and
+    merge only the reprocessed targets in memory while keeping whole-tree
+    ``TypeErrors`` exact."""
+
+    def __init__(
+        self,
+        *,
+        manager: FineGrainedBuildManager,
+        fscache: FileSystemCache,
+        options: Options,
+        module_prefix: Callable[[dict[str, State], str], str | None],
+        hash_digest: Callable[[bytes], str],
+        text_by_module: dict[str, str],
+        path_by_module: dict[str, str],
+        errors_by_file_target: dict[str, dict[str, tuple[str, ...]]],
+        mtime: int,
+    ) -> None:
+        self._manager = manager
+        self._fscache = fscache
+        self._options = options
+        self._module_prefix = module_prefix
+        self._hash_digest = hash_digest
+        self._text_by_module = text_by_module
+        self._path_by_module = path_by_module
+        self._errors_by_file_target = errors_by_file_target
+        self._errors_by_file: dict[str, tuple[str, ...]] = {
+            path: self._flatten_targets(targets)
+            for path, targets in errors_by_file_target.items()
+            if targets
+        }
+        self._mtime = mtime
+
+    @staticmethod
+    def _flatten_targets(targets: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
+        return tuple(
+            message for messages in targets.values() for message in messages
+        )
+
+    @staticmethod
+    def _extract_errors_by_file_target(
+        errors_obj: Errors,
+    ) -> dict[str, dict[str, tuple[str, ...]]]:
+        extracted: dict[str, dict[str, tuple[str, ...]]] = {}
+        for path, infos in errors_obj.error_info_map.items():
+            visible = [info for info in infos if not info.hidden]
+            if not visible:
+                continue
+            deduped = errors_obj.remove_duplicates(errors_obj.sort_messages(visible))
+            by_target_infos: defaultdict[str, list[ErrorInfo]] = defaultdict(list)
+            for info in deduped:
+                by_target_infos[info.target or ""].append(info)
+            target_messages: dict[str, tuple[str, ...]] = {}
+            for target, target_infos in by_target_infos.items():
+                lines = errors_obj.format_messages(
+                    path, errors_obj.render_messages(path, target_infos)
+                )
+                parsed = TypeErrors._parse_error_lines(lines)
+                flat = tuple(
+                    message for msgs in parsed.values() for message in msgs
+                )
+                if flat:
+                    target_messages[target] = flat
+            if target_messages:
+                extracted[path] = target_messages
+        return extracted
+
+    def _set_file_targets(
+        self, path: str, targets: dict[str, tuple[str, ...]] | None
+    ) -> None:
+        if targets:
+            self._errors_by_file_target[path] = targets
+            self._errors_by_file[path] = self._flatten_targets(targets)
+        else:
+            self._errors_by_file_target.pop(path, None)
+            self._errors_by_file.pop(path, None)
+
+    def _delete_memory_file(self, module_name: str, path: str) -> None:
+        FineGrainedTypeChecker._remove_memory_file(
+            self._fscache, self._manager, module_name, path
+        )
+
+    def _targets_by_module(self, targets: Iterable[str]) -> dict[str, set[str]]:
+        grouped: dict[str, set[str]] = defaultdict(set)
+        graph = self._manager.graph
+        for target in targets:
+            prefix = self._module_prefix(graph, target)
+            if prefix is not None:
+                grouped[prefix].add(target)
+        return grouped
+
+    @classmethod
+    def seeded(
+        cls, sources: SourceTexts
+    ) -> tuple[FineGrainedTypeErrors, TypeErrors] | None:
+        if importlib.util.find_spec("mypy") is None:
+            raise RuntimeError(f"mypy is not installed ({TYPES_EXTRA})")
+        build = importlib.import_module("mypy.build")
+        errors = importlib.import_module("mypy.errors")
+        fscache_mod = importlib.import_module("mypy.fscache")
+        modulefinder = importlib.import_module("mypy.modulefinder")
+        update_mod = importlib.import_module("mypy.server.update")
+        util_mod = importlib.import_module("mypy.util")
+
+        options = TypeCheckerSession.options()
+        options.incremental = True
+        options.fine_grained_incremental = True
+        options.use_fine_grained_cache = False
+        options.local_partial_types = True
+        options.cache_dir = os.devnull
+        options.export_types = False
+        options.preserve_asts = True
+        options.ignore_errors = False
+        options.native_parser = False
+
+        unique, _shared = TypeCheckerSession.unique_sources(sources, options)
+        fscache: FileSystemCache = fscache_mod.FileSystemCache()
+        hash_digest: Callable[[bytes], str] = util_mod.hash_digest
+        build_source = modulefinder.BuildSource
+        text_by_module: dict[str, str] = {}
+        path_by_module: dict[str, str] = {}
+        build_sources: list[BuildSource] = []
+        mtime = 1
+        for path, source in unique:
+            text = source.text or ""
+            mtime += 1
+            FineGrainedTypeChecker._put_memory_file(
+                fscache,
+                hash_digest,
+                path,
+                text,
+                mtime,
+                register_in_dir=not os.path.exists(path),
+            )
+            text_by_module[source.module] = text
+            path_by_module[source.module] = path
+            build_sources.append(build_source(path, source.module, None))
+
+        try:
+            result = build.build(build_sources, options, fscache=fscache)
+            manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(result)
+        except errors.CompileError:
+            return None
+
+        errors_by_file_target = cls._extract_errors_by_file_target(
+            manager.manager.errors
+        )
+        module_prefix = update_mod.module_prefix
+        manager.previous_targets_with_errors = set()
+        engine = cls(
+            manager=manager,
+            fscache=fscache,
+            options=options,
+            module_prefix=module_prefix,
+            hash_digest=hash_digest,
+            text_by_module=text_by_module,
+            path_by_module=path_by_module,
+            errors_by_file_target=errors_by_file_target,
+            mtime=mtime,
+        )
+        return engine, TypeErrors(dict(engine._errors_by_file))
+
+    def errors_for(self, sources: SourceTexts) -> TypeErrors | None:
+        unique, _shared = TypeCheckerSession.unique_sources(sources, self._options)
+        next_by_module = {
+            source.module: (path, source.text or "") for path, source in unique
+        }
+        changed = [
+            (module_name, path, text)
+            for module_name, (path, text) in next_by_module.items()
+            if self._path_by_module.get(module_name) != path
+            or self._text_by_module.get(module_name) != text
+        ]
+        removed = [
+            (module_name, path)
+            for module_name, path in self._path_by_module.items()
+            if module_name not in next_by_module
+        ]
+        if not changed and not removed:
+            return TypeErrors(dict(self._errors_by_file))
+        if len(changed) + len(removed) > max(32, len(self._path_by_module) // 2):
+            return None
+
+        for module_name, path in removed:
+            self._delete_memory_file(module_name, path)
+            self._text_by_module.pop(module_name, None)
+            self._path_by_module.pop(module_name, None)
+            self._set_file_targets(path, None)
+        for module_name, path, text in changed:
+            old_path = self._path_by_module.get(module_name)
+            if old_path is not None and old_path != path:
+                self._delete_memory_file(module_name, old_path)
+                self._set_file_targets(old_path, None)
+            self._mtime += 1
+            is_new = module_name not in self._path_by_module or old_path != path
+            FineGrainedTypeChecker._put_memory_file(
+                self._fscache,
+                self._hash_digest,
+                path,
+                text,
+                self._mtime,
+                register_in_dir=is_new or not os.path.exists(path),
+            )
+            self._manager.manager.ast_cache.pop(module_name, None)
+            self._text_by_module[module_name] = text
+            self._path_by_module[module_name] = path
+
+        self._manager.previous_targets_with_errors = set()
+        self._manager.update(
+            [(module_name, path) for module_name, path, _text in changed],
+            removed,
+        )
+        if self._manager.blocking_error is not None or self._manager.stale:
+            return None
+
+        new_by_file_target = self._extract_errors_by_file_target(
+            self._manager.manager.errors
+        )
+        proc_targets_by_mod = self._targets_by_module(self._manager.processed_targets)
+        self._manager.previous_targets_with_errors = set()
+
+        whole_rechecked = {module_name for module_name, _path, _text in changed} | set(
+            self._manager.updated_modules
+        )
+        partial_rechecked = set(proc_targets_by_mod) - whole_rechecked
+
+        handled_paths: set[str] = set()
+        for module_name in whole_rechecked:
+            path = self._path_by_module.get(module_name)
+            if path is None:
+                continue
+            handled_paths.add(path)
+            self._set_file_targets(path, new_by_file_target.get(path))
+
+        for module_name in partial_rechecked:
+            path = self._path_by_module.get(module_name)
+            if path is None:
+                continue
+            handled_paths.add(path)
+            existing_targets = dict(self._errors_by_file_target.get(path, {}))
+            new_targets = new_by_file_target.get(path, {})
+            for target in proc_targets_by_mod.get(module_name, ()):
+                if target in new_targets:
+                    existing_targets[target] = new_targets[target]
+                else:
+                    existing_targets.pop(target, None)
+            for target, msgs in new_targets.items():
+                existing_targets[target] = msgs
+            self._set_file_targets(path, existing_targets)
+
+        for path, new_targets in new_by_file_target.items():
+            if path in handled_paths:
+                continue
+            existing_targets = dict(self._errors_by_file_target.get(path, {}))
+            existing_targets.update(new_targets)
+            self._set_file_targets(path, existing_targets)
+
+        return TypeErrors(dict(self._errors_by_file))
+
+
 @dataclass(frozen=True)
 class TypeErrors:
     """The errors one whole-tree build reports, by file and message: a change is
@@ -1253,19 +1535,47 @@ class TypeErrors:
 
     by_file: Mapping[str, tuple[str, ...]]
 
+    @staticmethod
+    def _parse_error_lines(lines: Iterable[str]) -> dict[str, tuple[str, ...]]:
+        found: defaultdict[str, list[str]] = defaultdict(list)
+        for line in lines:
+            path, sep, rest = line.partition(":")
+            _line, _sep, rest = rest.partition(":")
+            kind, _sep, message = rest.strip().partition(": ")
+            if sep and kind == "error":
+                found[path].append(f"{_line}: {message}")
+        return {path: tuple(messages) for path, messages in found.items()}
+
     @classmethod
     def of(cls, sources: SourceTexts) -> TypeErrors:
         """The errors of these sources' build, built once per source state in a scan.
 
-        A goal search proves one recipe against one state several times (its evaluation,
-        its simulation, its frontier), and each proof rebuilt the state it projected:
-        one concept's plan on Toad ran ten whole-tree builds, about 8 s each.
+        Inside a ``ScanCache.scope()``, an in-memory ``FineGrainedTypeErrors``
+        engine is seeded on first use and updated incrementally for subsequent
+        candidate states instead of running a cold whole-tree mypy build per
+        candidate.
         """
 
         built = _type_errors_by_state()
         state = sources.state
-        if state not in built:
-            built[state] = cls._built(sources)
+        if state in built:
+            return built[state]
+        if ScanCache.active() is not None:
+            slot = _incremental_type_errors_slot()
+            existing = slot[0]
+            if existing is not None:
+                incremental = existing.errors_for(sources)
+                if incremental is not None:
+                    built[state] = incremental
+                    return incremental
+                slot[0] = None
+            seeded = FineGrainedTypeErrors.seeded(sources)
+            if seeded is not None:
+                engine, initial = seeded
+                slot[0] = engine
+                built[state] = initial
+                return initial
+        built[state] = cls._built(sources)
         return built[state]
 
     @classmethod
@@ -1276,14 +1586,7 @@ class TypeErrors:
         options = TypeCheckerSession.options()
         unique, _shared = TypeCheckerSession.unique_sources(sources, options)
         result = build.build([source for _path, source in unique], options)
-        found: defaultdict[str, list[str]] = defaultdict(list)
-        for line in result.errors:
-            path, sep, rest = line.partition(":")
-            _line, _sep, rest = rest.partition(":")
-            kind, _sep, message = rest.strip().partition(": ")
-            if sep and kind == "error":
-                found[path].append(f"{_line}: {message}")
-        return cls({path: tuple(messages) for path, messages in found.items()})
+        return cls(cls._parse_error_lines(result.errors))
 
     def new_since(self, before: TypeErrors) -> tuple[str, ...]:
         """Each error this build reports that `before` does not, as `path:line: message`."""

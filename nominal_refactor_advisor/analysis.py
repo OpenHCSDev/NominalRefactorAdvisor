@@ -88,6 +88,7 @@ from nominal_refactor_advisor.cache_paths import (
 )
 from nominal_refactor_advisor.cache_checkout import (
     absolute_checkout_path,
+    checkout_relative_path,
     lexical_absolute_path,
 )
 from nominal_refactor_advisor.class_index import (
@@ -571,18 +572,20 @@ def _prewarm_compact_families(
             tasks.sort(key=lambda item: -len(modules[item[0]].source))
             module_tuple = tuple(modules)
             if _analysis_process_pool_mp_context() is not None:
-                global _module_family_prewarm_modules
-                previous_modules = _module_family_prewarm_modules
-                _module_family_prewarm_modules = module_tuple
-                try:
-                    collected = worker_plan.map(
-                        _collect_missing_module_families,
-                        tasks,
-                        initializer=ScanCache.initialize_worker,
-                        initargs=(),
-                    )
-                finally:
-                    _module_family_prewarm_modules = previous_modules
+                collected = _fork_map_batches(
+                    tasks,
+                    worker_plan.effective_worker_count,
+                    lambda batch: [
+                        (
+                            module_index,
+                            {
+                                family: module_tuple[module_index].family_batch(family).items
+                                for family in missing
+                            },
+                        )
+                        for module_index, missing in batch
+                    ],
+                )
             else:
                 collected = worker_plan.map(
                     _collect_missing_module_families,
@@ -3062,6 +3065,11 @@ def analyze_compact_roots_with_cache(
         type[IssueDetector], GlobalDetectorAnalysisCacheIdentity
     ] = {}
 
+    projection_source_paths = tuple(
+        checkout_relative_path(source.path, roots)
+        for source in projection_manifest.sources
+    )
+
     def projection_cache_identity(
         detector_type: type[IssueDetector],
         family_signatures: tuple[tuple[str, str, str], ...],
@@ -3069,7 +3077,8 @@ def analyze_compact_roots_with_cache(
         semantic_context_signature = hashlib.blake2s(
             repr(
                 (
-                    "compact-projection-context-v1",
+                    "compact-projection-context-v2",
+                    projection_source_paths,
                     family_signatures,
                 )
             ).encode("utf-8"),

@@ -375,3 +375,128 @@ def test_compact_root_analysis_matches_full_for_layering_violations(
     assert warm.findings == full_findings
     assert len(cold.findings) == 1
     assert "`pkg.threads.LIMIT`" in cold.findings[0].summary
+
+
+def test_compact_cache_parent_root_does_not_double_package_subdir_paths(
+    tmp_path: Path,
+) -> None:
+    """Scanning a parent root (`src`) and then its package subdir (`src/pkg`)
+    sharing the same analysis cache must not reuse the parent's global shard
+    entry and rebase `pkg/threads.py` onto `src/pkg` as `src/pkg/pkg/threads.py`."""
+
+    src_root = tmp_path / "src"
+    _write(
+        src_root,
+        {
+            "pkg/root.py": ROOT,
+            "pkg/registry.py": (
+                "class Registry:\n"
+                "    def __init__(self, root):\n"
+                "        self.root = root\n\n"
+                "    def thread_count(self):\n"
+                "        from pkg import threads\n\n"
+                "        return threads.LIMIT\n"
+            ),
+            "pkg/threads.py": (
+                "LIMIT = 3\n\n\n"
+                "class Threads:\n"
+                "    def __init__(self, root, registry):\n"
+                "        self.root = root\n"
+                "        self.registry = registry\n\n"
+                "    def states(self):\n"
+                "        return self.registry.thread_count()\n"
+            ),
+            "pkg/relations.py": (
+                "class Relations:\n"
+                "    def __init__(self, threads):\n"
+                "        self.threads = threads\n"
+            ),
+        },
+    )
+    pkg_root = src_root / "pkg"
+    detectors = (LayeringViolationDetector,)
+    config = DetectorConfig()
+    cache_dir = tmp_path / "cache" / "ast"
+    analysis_cache_dir = tmp_path / "cache" / "analysis"
+
+    parent_result = analyze_compact_roots_with_cache(
+        (src_root,),
+        config,
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detectors,
+    )
+    subdir_result = analyze_compact_roots_with_cache(
+        (pkg_root,),
+        config,
+        cache_dir=cache_dir,
+        analysis_cache_dir=analysis_cache_dir,
+        detector_types=detectors,
+    )
+    expected_path = str(pkg_root / "threads.py")
+    assert parent_result.findings[0].primary_evidence is not None
+    assert subdir_result.findings[0].primary_evidence is not None
+    assert parent_result.findings[0].primary_evidence.file_path == expected_path
+    assert subdir_result.findings[0].primary_evidence.file_path == expected_path
+    modules = _modules(pkg_root)
+    snapshot = CodemodSourceSnapshot.from_modules(modules, subdir_result.findings)
+    evaluation = LayeringViolationDetector().evaluate_recipe_for_finding(
+        subdir_result.findings[0],
+        snapshot,
+    )
+    assert evaluation.status is not None
+
+
+def test_cached_source_context_snapshot_for_filtered_findings_resolves_unlisted_modules(
+    tmp_path: Path,
+) -> None:
+    """`CodemodSourceContext.snapshot_for_findings` only pre-parses finding files;
+    operations that subsequently read `parsed_modules`, `module_set`, or
+    `ast_target_nodes_by_id` must lazily load unlisted files like `__init__.py`
+    instead of raising `ValueError: Source module .../__init__.py is unavailable`."""
+
+    from nominal_refactor_advisor.codemod_source_cache import CodemodSourceContext
+
+    root = tmp_path / "repo"
+    _write(
+        root,
+        {
+            "pkg/root.py": ROOT,
+            "pkg/registry.py": (
+                "class Registry:\n"
+                "    def __init__(self, root):\n"
+                "        self.root = root\n\n"
+                "    def thread_count(self):\n"
+                "        from pkg import threads\n\n"
+                "        return threads.LIMIT\n"
+            ),
+            "pkg/threads.py": (
+                "LIMIT = 3\n\n\n"
+                "class Threads:\n"
+                "    def __init__(self, root, registry):\n"
+                "        self.root = root\n"
+                "        self.registry = registry\n\n"
+                "    def states(self):\n"
+                "        return self.registry.thread_count()\n"
+            ),
+            "pkg/relations.py": (
+                "class Relations:\n"
+                "    def __init__(self, threads):\n"
+                "        self.threads = threads\n"
+            ),
+        },
+    )
+    modules = _modules(root)
+    findings = analyze_detector_types(
+        modules, DetectorConfig(), detector_types=(LayeringViolationDetector,)
+    )
+    context = CodemodSourceContext.from_modules(modules, findings)
+    init_path = str(root / "pkg" / "__init__.py")
+    assert init_path not in context.source_paths_for_findings(findings)
+    snapshot = context.snapshot_for_findings(findings)
+    assert snapshot.parsed_module_for_source_path(init_path).file_path == init_path
+    assert len(snapshot.parsed_modules) == len(modules)
+    evaluation = LayeringViolationDetector().evaluate_recipe_for_finding(
+        findings[0], snapshot
+    )
+    assert evaluation.status is not None

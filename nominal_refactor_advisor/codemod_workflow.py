@@ -24,6 +24,7 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.needed_input import NeededInput
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
+    DetectorAnalysisWorkerPlan,
     EvidenceLocalFindingReuseAuthority,
     EvidenceLocalPartialDetectorSelection,
     SemanticDescentGraphAnalysisSource,
@@ -79,6 +80,7 @@ from nominal_refactor_advisor.json_reports import (
 from nominal_refactor_advisor.models import FindingObligationClass, RefactorFinding
 from nominal_refactor_advisor.source_index import SourceIndex
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.stage_proof import TrajectoryScans
 
 
@@ -2067,7 +2069,17 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     def effective_analysis_workers(self) -> int:
         """Worker count for the next scan this goal runs."""
 
+        if self.analysis_workers == 0:
+            return DetectorAnalysisWorkerPlan(
+                requested_worker_count=0,
+                work_item_count=16,
+            ).effective_worker_count
         return self.analysis_workers
+
+    def _pooled_exact_reproof_workers(self, effective_workers: int) -> int:
+        """Worker count for pooled cross-module reproofs overlapped with mypy."""
+
+        return max(1, min(8, effective_workers - 1))
 
     def fresh_scan(self) -> CodemodWorkflowScan:
         scan = CodemodWorkflowScan.parsed(
@@ -2351,7 +2363,9 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                             scan.modules,
                             self.config,
                             detector_types=pooled_cross,
-                            analysis_workers=min(4, effective_workers),
+                            analysis_workers=self._pooled_exact_reproof_workers(
+                                effective_workers
+                            ),
                         )
                         if pooled_cross
                         else []
@@ -2433,20 +2447,21 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
         return self.owner_picks.applied(scoped)[0]
 
     def run(self) -> CodemodRefactorGoalReport:
-        with self.progress.phase("starting scan") as details:
-            starting_scan = self.starting_scan()
-            details.append(f"{len(starting_scan.findings)} findings")
-        if self.owner_picks is not None:
-            starting_scan = replace(
-                starting_scan,
-                findings=self.owner_picks.applied(starting_scan.findings)[0],
+        with ScanCache.scope():
+            with self.progress.phase("starting scan") as details:
+                starting_scan = self.starting_scan()
+                details.append(f"{len(starting_scan.findings)} findings")
+            if self.owner_picks is not None:
+                starting_scan = replace(
+                    starting_scan,
+                    findings=self.owner_picks.applied(starting_scan.findings)[0],
+                )
+            report = self.proved_run(starting_scan)
+            if self.owner_picks is None:
+                return report
+            return replace(
+                report, owner_picks=self.owner_picks.applied(starting_scan.findings)[1]
             )
-        report = self.proved_run(starting_scan)
-        if self.owner_picks is None:
-            return report
-        return replace(
-            report, owner_picks=self.owner_picks.applied(starting_scan.findings)[1]
-        )
 
     def proved_run(self, starting_scan: CodemodWorkflowScan) -> CodemodRefactorGoalReport:
         trajectory_proof = self.prove_trajectory(starting_scan)

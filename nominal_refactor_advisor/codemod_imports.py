@@ -528,6 +528,109 @@ class ModuleImportMutation(KeyedSourceEditCoalescence):
             bound_name_removals=bound_name_removals,
         )
 
+    @classmethod
+    def composed_sequence(
+        cls,
+        mutations: Iterable[ModuleImportMutation],
+        *,
+        rationale: str = "",
+    ) -> ModuleImportMutation | None:
+        """Compose import mutations applied sequentially to one file into one
+        equivalent mutation against the initial source state.
+
+        An addition cancelled by a later removal in the same sequence drops out
+        (for example, relocating a guarded import and then promoting it leaves a
+        single removal of the old guarded import and addition of the new runtime
+        import). Returns ``None`` when any step uses bound-name removals that
+        cannot be cancelled syntactically without resolving the original AST."""
+
+        ordered = tuple(mutations)
+        if not ordered:
+            return None
+        file_path = ordered[0].file_path
+        if any(
+            mutation.file_path != file_path or mutation.bound_name_removals
+            for mutation in ordered
+        ):
+            return None
+        net_removals: dict[tuple[ModuleImportScope, ImportFromModuleName], list[str]] = {}
+        net_additions: dict[
+            tuple[ModuleImportScope, ImportFromModuleName], list[ImportAlias]
+        ] = {}
+        direct_additions: list[RequestedImportStatement] = []
+        for mutation in ordered:
+            for removal in mutation.removals:
+                key = (removal.scope, removal.module_name)
+                added = net_additions.get(key)
+                for name in removal.names:
+                    if added is not None:
+                        cancelled = next(
+                            (
+                                index
+                                for index, alias in enumerate(added)
+                                if alias.name == name and type(alias) is ImportAlias
+                            ),
+                            None,
+                        )
+                        if cancelled is not None:
+                            added.pop(cancelled)
+                            if not added:
+                                del net_additions[key]
+                            continue
+                    removed = net_removals.setdefault(key, [])
+                    if name not in removed:
+                        removed.append(name)
+            for addition in mutation.additions:
+                if addition.module_name is None:
+                    direct_additions.append(addition)
+                    continue
+                key = (addition.scope, addition.module_name)
+                removed = net_removals.get(key)
+                for alias in addition.aliases:
+                    if (
+                        removed is not None
+                        and type(alias) is ImportAlias
+                        and alias.name in removed
+                    ):
+                        removed.remove(alias.name)
+                        if not removed:
+                            del net_removals[key]
+                        continue
+                    added = net_additions.setdefault(key, [])
+                    if alias not in added:
+                        added.append(alias)
+        from_additions = tuple(
+            RequestedImportStatement(
+                ast.ImportFrom(
+                    module=module_name.module_name or None,
+                    names=[alias.ast_alias for alias in aliases],
+                    level=module_name.level,
+                ),
+                scope=scope,
+            )
+            for (scope, module_name), aliases in net_additions.items()
+            if aliases
+        )
+        additions = cls._coalesced_additions(
+            (*from_additions, *direct_additions),
+            file_path,
+        )
+        removals = cls._coalesced_removals(
+            ImportNameRemoval(
+                module_name=module_name,
+                names=tuple(names),
+                scope=scope,
+            )
+            for (scope, module_name), names in net_removals.items()
+            if names
+        )
+        return cls(
+            file_path=file_path,
+            additions=additions,
+            removals=removals,
+            rationale=rationale or ordered[-1].rationale,
+        )
+
     @staticmethod
     def _coalesced_additions(
         additions: Iterable[RequestedImportStatement],

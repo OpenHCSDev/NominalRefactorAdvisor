@@ -11,6 +11,7 @@ from collections.abc import (
     Callable,
     Hashable,
     Iterable,
+    Iterator,
     Mapping,
 )
 from dataclasses import (
@@ -61,6 +62,86 @@ from nominal_refactor_advisor.source_index import (
 
 if TYPE_CHECKING:
     from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+
+
+class _LazyModuleNodeMapping(Mapping[str, ast.Module]):
+    """Parse modules from ``sources`` on demand while reusing pre-parsed entries."""
+
+    def __init__(
+        self,
+        sources: Mapping[str, str],
+        preparsed: Mapping[str, ast.Module] | None = None,
+    ) -> None:
+        self._sources = sources
+        self._parsed: dict[str, ast.Module] = (
+            dict(preparsed) if preparsed is not None else {}
+        )
+
+    def __getitem__(self, file_path: str) -> ast.Module:
+        module = self._parsed.get(file_path)
+        if module is not None:
+            return module
+        source = self._sources[file_path]
+        module = ast.parse(source, filename=file_path)
+        self._parsed[file_path] = module
+        return module
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._sources)
+
+    def __len__(self) -> int:
+        return len(self._sources)
+
+    def __contains__(self, file_path: object) -> bool:
+        return file_path in self._sources
+
+
+class _LazyAstTargetNodeMapping(Mapping[str, AstTargetNode]):
+    """Index AST target nodes per file on demand while reusing pre-indexed entries."""
+
+    def __init__(
+        self,
+        context: CodemodSelectorContext,
+        preindexed: Mapping[str, AstTargetNode],
+    ) -> None:
+        self._context = context
+        self._source_index = context.source_index
+        self._declaration_ids: dict[str, AstTargetDigest] = {
+            target_id: digest
+            for target_id, digest in self._source_index.target_by_id.items()
+            if digest.node_kind is not AstTargetNodeKind.MODULE
+        }
+        self._nodes: dict[str, AstTargetNode] = dict(preindexed)
+        self._indexed_files: set[str] = {
+            digest.file_path
+            for target_id in preindexed
+            if (digest := self._declaration_ids.get(target_id)) is not None
+        }
+
+    def __getitem__(self, target_id: str) -> AstTargetNode:
+        node = self._nodes.get(target_id)
+        if node is not None:
+            return node
+        digest = self._declaration_ids[target_id]
+        if digest.file_path not in self._indexed_files:
+            self._indexed_files.add(digest.file_path)
+            parsed = self._context.parsed_module_for_source_path(digest.file_path)
+            self._nodes.update(
+                AstTargetNodeIndex.from_modules(
+                    self._source_index,
+                    (parsed,),
+                ).nodes_by_target_id
+            )
+        return self._nodes[target_id]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._declaration_ids)
+
+    def __len__(self) -> int:
+        return len(self._declaration_ids)
+
+    def __contains__(self, target_id: object) -> bool:
+        return target_id in self._declaration_ids
 
 
 @dataclass(frozen=True)
@@ -164,7 +245,12 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         self,
     ) -> Mapping[str, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
         if self.ast_target_node_cache is not None:
-            return self.ast_target_node_cache
+            if (
+                self.module_node_cache is None
+                or len(self.module_node_cache) == len(self.sources_by_file_path)
+            ):
+                return self.ast_target_node_cache
+            return _LazyAstTargetNodeMapping(self, self.ast_target_node_cache)
         return AstTargetNodeIndex.from_source_mapping(
             self.source_index,
             self.sources_by_file_path,
@@ -173,7 +259,12 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
     @cached_property
     def module_nodes_by_file_path(self) -> Mapping[str, ast.Module]:
         if self.module_node_cache is not None:
-            return self.module_node_cache
+            if len(self.module_node_cache) == len(self.sources_by_file_path):
+                return self.module_node_cache
+            return _LazyModuleNodeMapping(
+                self.sources_by_file_path,
+                self.module_node_cache,
+            )
         return {
             file_path: ast.parse(source, filename=file_path)
             for file_path, source in self.sources_by_file_path.items()

@@ -425,6 +425,9 @@ class BudgetedCodemodRefactorGoalRunner(CodemodRefactorGoalRunner):
     def effective_analysis_workers(self) -> int:
         return self.worker_budget.available()
 
+    def _pooled_exact_reproof_workers(self, effective_workers: int) -> int:
+        return min(4, effective_workers)
+
 
 @dataclass(frozen=True)
 class RefactorSearch:

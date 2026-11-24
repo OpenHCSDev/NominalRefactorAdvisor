@@ -3872,9 +3872,56 @@ def in_order_edits(
     rationale: str,
 ) -> tuple[NominalSourceEdit, ...]:
     """The edits of these steps run in order, each proved on the source the
-    previous one left; any refusal refuses them all."""
+    previous one left; any refusal refuses them all.
 
-    return changed_source_edits(snapshot, in_order_states(snapshot, steps, recipe_id)[-1], rationale)
+    Files touched solely by ``ModuleImportMutation`` across all steps retain a
+    single sequentially composed ``ModuleImportMutation`` so batch composition
+    can coalesce guarded-import removals across recipes without leaving empty
+    ``if TYPE_CHECKING:`` blocks."""
+
+    states = [snapshot]
+    import_mutations_by_file: dict[str, list[ModuleImportMutation]] = {}
+    non_import_files: set[str] = set()
+    for step in steps:
+        state = states[-1]
+        recipe = RefactorRecipe(recipe_id=recipe_id).with_operation(step)
+        result = recipe.simulate(state)
+        result.preflight_report.require_clean()
+        step_edits = state.edit_batch_for_recipes((recipe,)).edits
+        for edit in step_edits:
+            if isinstance(edit, ModuleImportMutation):
+                import_mutations_by_file.setdefault(edit.file_path, []).append(edit)
+            else:
+                non_import_files.add(edit.file_path)
+        states.append(state.with_virtual_sources(result.simulation.rewritten_sources))
+
+    current = states[-1]
+    created = sorted(set(current.sources_by_file_path) - set(snapshot.sources_by_file_path))
+    if created:
+        raise NeedsInput(
+            "a step creates " + ", ".join(f"`{path}`" for path in created)
+            + " that the operation does not declare, so its source would be lost",
+            NeededInput.OPERATION,
+        )
+    edits: list[NominalSourceEdit] = []
+    for file_path, source in snapshot.sources_by_file_path.items():
+        if current.sources_by_file_path.get(file_path, source) == source:
+            continue
+        if file_path not in non_import_files and file_path in import_mutations_by_file:
+            composed = ModuleImportMutation.composed_sequence(
+                import_mutations_by_file[file_path],
+                rationale=rationale,
+            )
+            if composed is not None:
+                if composed.additions or composed.removals:
+                    edits.append(composed)
+                continue
+        edits.extend(
+            _line_difference_edits(
+                file_path, source, current.sources_by_file_path[file_path], rationale
+            )
+        )
+    return tuple(edits)
 
 
 def in_order_states(
