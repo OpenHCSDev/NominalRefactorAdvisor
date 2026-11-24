@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
 from time import perf_counter
+from types import ModuleType
 from typing import TYPE_CHECKING, ClassVar
 
 from nominal_refactor_advisor.json_reports import DataclassJsonReport
@@ -291,7 +292,7 @@ class ExpressionExtractionScope(ABC):
         result: BuildResult,
         options: Options,
         unique_paths: frozenset[str],
-    ) -> dict[ReceiverSpan, InferredReceiverType]:
+    ) -> Mapping[ReceiverSpan, InferredReceiverType]:
         raise NotImplementedError
 
     @staticmethod
@@ -299,13 +300,58 @@ class ExpressionExtractionScope(ABC):
         found: Type,
         options: Options,
         format_type_bare: object,
+        mypy_types: ModuleType | None = None,
     ) -> InferredReceiverType:
+        types = (
+            importlib.import_module("mypy.types")
+            if mypy_types is None
+            else mypy_types
+        )
         return InferredReceiverType(
             format_type_bare(found, options, verbosity=2),  # type: ignore[operator]
-            _classes_of(found),
-            _instances_only(found),
-            _families_of(found),
+            _classes_of(found, types),
+            _instances_only(found, types),
+            _families_of(found, types),
         )
+
+
+class LazyInferredTypes(Mapping[ReceiverSpan, InferredReceiverType]):
+    """Format mypy types on first lookup so unqueried spans cost zero formatting."""
+
+    def __init__(
+        self,
+        raw: dict[ReceiverSpan, Type],
+        options: Options,
+        format_type_bare: object,
+        mypy_types: ModuleType,
+    ) -> None:
+        self._raw = raw
+        self._options = options
+        self._format_type_bare = format_type_bare
+        self._mypy_types = mypy_types
+        self._formatted: dict[ReceiverSpan, InferredReceiverType] = {}
+
+    def __getitem__(self, span: ReceiverSpan) -> InferredReceiverType:
+        cached = self._formatted.get(span)
+        if cached is None:
+            raw_type = self._raw[span]
+            cached = ExpressionExtractionScope._inferred_type(
+                raw_type,
+                self._options,
+                self._format_type_bare,
+                self._mypy_types,
+            )
+            self._formatted[span] = cached
+        return cached
+
+    def __contains__(self, key: object) -> bool:
+        return key in self._raw
+
+    def __iter__(self) -> Iterator[ReceiverSpan]:
+        return iter(self._raw)
+
+    def __len__(self) -> int:
+        return len(self._raw)
 
 
 @dataclass(frozen=True)
@@ -330,10 +376,11 @@ class AllBuiltExpressions(ExpressionExtractionScope):
         result: BuildResult,
         options: Options,
         unique_paths: frozenset[str],
-    ) -> dict[ReceiverSpan, InferredReceiverType]:
+    ) -> Mapping[ReceiverSpan, InferredReceiverType]:
         format_type_bare = importlib.import_module("mypy.messages").format_type_bare
+        mypy_types = importlib.import_module("mypy.types")
         subexpressions = importlib.import_module("mypy.server.subexpr").get_subexpressions
-        inferred: dict[ReceiverSpan, InferredReceiverType] = {}
+        raw: dict[ReceiverSpan, Type] = {}
         for state in result.graph.values():
             if state.xpath not in unique_paths or state.tree is None:
                 continue
@@ -347,8 +394,8 @@ class AllBuiltExpressions(ExpressionExtractionScope):
                         expression.end_line,
                         expression.end_column,
                     )
-                    inferred[span] = self._inferred_type(found, options, format_type_bare)
-        return inferred
+                    raw[span] = found
+        return LazyInferredTypes(raw, options, format_type_bare, mypy_types)
 
 
 @dataclass(frozen=True)
@@ -415,10 +462,11 @@ class RequestedSpanExpressions(ExpressionExtractionScope):
         result: BuildResult,
         options: Options,
         unique_paths: frozenset[str],
-    ) -> dict[ReceiverSpan, InferredReceiverType]:
+    ) -> Mapping[ReceiverSpan, InferredReceiverType]:
         format_type_bare = importlib.import_module("mypy.messages").format_type_bare
+        mypy_types = importlib.import_module("mypy.types")
         subexpressions = importlib.import_module("mypy.server.subexpr").get_subexpressions
-        inferred: dict[ReceiverSpan, InferredReceiverType] = {}
+        raw: dict[ReceiverSpan, Type] = {}
         for state in result.graph.values():
             if state.xpath not in unique_paths or state.tree is None:
                 continue
@@ -437,8 +485,8 @@ class RequestedSpanExpressions(ExpressionExtractionScope):
                 found = result.types.get(expression)
                 if found is not None:
                     span = ReceiverSpan(state.xpath, *coords)
-                    inferred[span] = self._inferred_type(found, options, format_type_bare)
-        return inferred
+                    raw[span] = found
+        return LazyInferredTypes(raw, options, format_type_bare, mypy_types)
 
 
 class TypeCheckerSession(ABC):
@@ -617,22 +665,22 @@ class DeferredTypeChecker(TypeCheckerSession):
         return "not started" if self._started is None else self._started.status
 
 
-def _classes_of(found: Type) -> tuple[str, ...]:
+def _classes_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str, ...]:
     """The classes a mypy type is: the decoder at the type checker's boundary."""
 
-    types = importlib.import_module("mypy.types")
+    types = importlib.import_module("mypy.types") if mypy_types is None else mypy_types
     proper = types.get_proper_type(found)
     match proper:
         case types.Instance():
             return (proper.type.fullname,)
         case types.TypeType():
-            return _classes_of(proper.item)
+            return _classes_of(proper.item, types)
         case types.TypeVarType():
-            return _classes_of(proper.upper_bound)
+            return _classes_of(proper.upper_bound, types)
         case types.UnionType():
             return tuple(
                 chain.from_iterable(
-                    _classes_of(item)
+                    _classes_of(item, types)
                     for item in proper.items
                     if not isinstance(types.get_proper_type(item), types.NoneType)
                 )
@@ -640,12 +688,12 @@ def _classes_of(found: Type) -> tuple[str, ...]:
     return ()
 
 
-def _instances_only(found: Type) -> bool:
+def _instances_only(found: Type, mypy_types: ModuleType | None = None) -> bool:
     """Whether every value of a mypy type is an instance that is not a class. A
     class is itself an instance of `type`, `object`, its metaclass and any
     protocol it satisfies, so none of those, nor an unknown type, proves it."""
 
-    types = importlib.import_module("mypy.types")
+    types = importlib.import_module("mypy.types") if mypy_types is None else mypy_types
     proper = types.get_proper_type(found)
     match proper:
         case types.Instance():
@@ -658,17 +706,17 @@ def _instances_only(found: Type) -> bool:
         case types.TupleType() | types.TypedDictType() | types.LiteralType() | types.NoneType():
             return True
         case types.TypeVarType():
-            return _instances_only(proper.upper_bound)
+            return _instances_only(proper.upper_bound, types)
         case types.UnionType():
-            return all(_instances_only(item) for item in proper.items)
+            return all(_instances_only(item, types) for item in proper.items)
     return False
 
 
-def _families_of(found: Type) -> tuple[str, ...]:
+def _families_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str, ...]:
     """The classes `C` when every value of a mypy type is a class `C` or a subclass:
     `type[C]` for a class that is no protocol, or a union of them; otherwise none."""
 
-    types = importlib.import_module("mypy.types")
+    types = importlib.import_module("mypy.types") if mypy_types is None else mypy_types
     proper = types.get_proper_type(found)
     match proper:
         case types.TypeType():
@@ -676,7 +724,7 @@ def _families_of(found: Type) -> tuple[str, ...]:
             if isinstance(item, types.Instance) and not item.type.is_protocol:
                 return (item.type.fullname,)
         case types.UnionType():
-            families = tuple(_families_of(item) for item in proper.items)
+            families = tuple(_families_of(item, types) for item in proper.items)
             if all(families):
                 return tuple(chain.from_iterable(families))
     return ()

@@ -9,7 +9,7 @@ from collections.abc import Sequence
 from typing import ClassVar
 
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.codemod_selection_context import ResolvedClassTarget
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
@@ -308,25 +308,13 @@ class AnsweredMethod:
         receivers: list[TypedReceiver] = []
         namespaces: list[TypedReceiver] = []
         for parsed in self.snapshot.parsed_modules:
-            for node in ast.walk(parsed.module):
-                namespace = _namespace_lookup(node)
-                if namespace is not None:
-                    where = f"{parsed.file_path}:{node.lineno}"
-                    if isinstance(namespace, ast.Call):
-                        return where
-                    namespaces.append(TypedReceiver(parsed, namespace, node, where, None))
-                    continue
-                if not isinstance(node, ast.Call):
-                    continue
-                names = AttributeLookup.name_arguments(node)
-                if not names or all(isinstance(name, ast.Constant) for name in names):
-                    continue
-                where = f"{parsed.file_path}:{node.lineno}"
-                if AttributeLookup.callee_name(node.func) in AttributeLookup.NAME_LOOKUPS:
-                    return where
-                index = parsed.fact(ModuleNodeIndex)
-                for receiver in _literal_loop_values(node.args[0], index.parents) or (node.args[0],):
-                    receivers.append(TypedReceiver(parsed, receiver, node, where, None))
+            sites = parsed.fact(_DynamicAttributeLookupFact)
+            if sites.unconditional_where is not None:
+                return sites.unconditional_where
+            if sites.namespaces:
+                namespaces.extend(sites.namespaces)
+            if sites.receivers:
+                receivers.extend(sites.receivers)
         try:
             reached = self.reaching(receivers)
             classes = [
@@ -337,6 +325,53 @@ class AnsweredMethod:
             return str(error)
         found = [receiver for receiver, _binding in reached] + classes
         return found[0].where if found else None
+
+
+@dataclass(frozen=True)
+class _DynamicAttributeLookupFact(ParsedModuleFact):
+    """Dynamic attribute and namespace lookup sites collected once per module."""
+
+    unconditional_where: str | None
+    namespaces: tuple[TypedReceiver, ...]
+    receivers: tuple[TypedReceiver, ...]
+
+    @classmethod
+    def derive(cls, module: ParsedModule) -> _DynamicAttributeLookupFact:
+        syntax_index = module.syntax_index
+        namespaces: list[TypedReceiver] = []
+        receivers: list[TypedReceiver] = []
+        node_index: ModuleNodeIndex | None = None
+        for _index, subscript in syntax_index.indexed_nodes_of_type(ast.Subscript):
+            namespace = _namespace_lookup(subscript)
+            if namespace is not None:
+                where = f"{module.file_path}:{subscript.lineno}"
+                if isinstance(namespace, ast.Call):
+                    return cls(where, (), ())
+                namespaces.append(
+                    TypedReceiver(module, namespace, subscript, where, None)
+                )
+        for _index, call in syntax_index.indexed_nodes_of_type(ast.Call):
+            namespace = _namespace_lookup(call)
+            if namespace is not None:
+                where = f"{module.file_path}:{call.lineno}"
+                if isinstance(namespace, ast.Call):
+                    return cls(where, (), ())
+                namespaces.append(TypedReceiver(module, namespace, call, where, None))
+                continue
+            names = AttributeLookup.name_arguments(call)
+            if not names or all(isinstance(name, ast.Constant) for name in names):
+                continue
+            where = f"{module.file_path}:{call.lineno}"
+            callee_name = AttributeLookup.callee_name(call.func)
+            if callee_name is not None and callee_name in AttributeLookup.NAME_LOOKUPS:
+                return cls(where, (), ())
+            if node_index is None:
+                node_index = module.fact(ModuleNodeIndex)
+            for receiver in _literal_loop_values(call.args[0], node_index.parents) or (
+                call.args[0],
+            ):
+                receivers.append(TypedReceiver(module, receiver, call, where, None))
+        return cls(None, tuple(namespaces), tuple(receivers))
 
 
 @dataclass(frozen=True)

@@ -99,6 +99,7 @@ from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
 from nominal_refactor_advisor.detectors._base import (
     CompactModuleProjectionDetectorMixin,
     CompactMultiModuleProjectionDetectorMixin,
+    CompactProjectionGroupContextCacheKey,
     CompactProjectionGroups,
     DetectorConfig,
     IssueDetector,
@@ -820,8 +821,18 @@ class ForeignAbsenceProbeDetector(
         shared_contexts: MutableMapping[Hashable, object],
         config: DetectorConfig,
     ) -> None:
-        """In-memory scans type parsed module texts directly, never disk files."""
-        del projections_by_family, shared_contexts, config
+        """Build the AST-free probe query once in the parent, warming stub caches
+        before fork without reading disk source files."""
+        del config
+        families = cls.compact_projection_families()
+        if not all(family in projections_by_family for family in families):
+            return
+        key = CompactProjectionGroupContextCacheKey(ProbeOwnerQuery.of)
+        if key not in shared_contexts:
+            grouped: CompactProjectionGroups = {
+                family: projections_by_family[family] for family in families
+            }
+            shared_contexts[key] = ProbeOwnerQuery.of(grouped)
 
     def detect_with_prepared_projections(
         self,
@@ -830,12 +841,19 @@ class ForeignAbsenceProbeDetector(
         shared_contexts: Mapping[Hashable, object],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        del shared_contexts
         families = type(self).compact_projection_families()
         if not all(family in projections_by_family for family in families):
             return self.detect(modules, config)
-        grouped = {family: projections_by_family[family] for family in families}
-        query = ProbeOwnerQuery.of(grouped)
+        grouped: CompactProjectionGroups = {
+            family: projections_by_family[family] for family in families
+        }
+        key = CompactProjectionGroupContextCacheKey(ProbeOwnerQuery.of)
+        cached_query = shared_contexts.get(key)
+        query = (
+            cached_query
+            if isinstance(cached_query, ProbeOwnerQuery)
+            else ProbeOwnerQuery.of(grouped)
+        )
         return self._normalize_findings(
             self._findings_from_compact_projection_groups_context(
                 grouped,
