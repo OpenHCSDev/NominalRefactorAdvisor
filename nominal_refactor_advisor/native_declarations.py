@@ -117,8 +117,12 @@ if TYPE_CHECKING:
 NativeScalar: TypeAlias = str | int | bool | None
 NativeDictionaryKey: TypeAlias = NativeScalar | type
 NativeConstantAtom: TypeAlias = NativeScalar | types.EllipsisType
-_NATIVE_SCALAR_TYPES: frozenset[type] = frozenset(get_args(NativeScalar))
-_NATIVE_CONSTANT_ATOM_TYPES: frozenset[type] = frozenset(get_args(NativeConstantAtom))
+_NATIVE_SCALAR_TYPES: tuple[type, ...] = tuple(get_args(NativeScalar))
+_NATIVE_SCALAR_TYPE_IDS: frozenset[int] = frozenset(map(id, _NATIVE_SCALAR_TYPES))
+_NATIVE_CONSTANT_ATOM_TYPES: tuple[type, ...] = tuple(get_args(NativeConstantAtom))
+_NATIVE_CONSTANT_ATOM_TYPE_IDS: frozenset[int] = frozenset(
+    map(id, _NATIVE_CONSTANT_ATOM_TYPES)
+)
 
 
 class NativeConstantContentsABC(ABC):
@@ -130,7 +134,7 @@ class NativeConstantContentsABC(ABC):
 
     @staticmethod
     def supports_scalar(value: object) -> bool:
-        return type(value) in _NATIVE_SCALAR_TYPES
+        return id(type(value)) in _NATIVE_SCALAR_TYPE_IDS
 
     def _native_constant_value(self) -> object:
         raise ValueError("Native constant contents remain unproved")
@@ -140,7 +144,7 @@ class NativeConstantContentsABC(ABC):
         left_type = type(left)
         if left_type is not type(right):
             raise ValueError("Native constant types differ")
-        if left_type in _NATIVE_CONSTANT_ATOM_TYPES:
+        if id(left_type) in _NATIVE_CONSTANT_ATOM_TYPE_IDS:
             if left != right:
                 raise ValueError("Native constant contents differ")
             return
@@ -162,7 +166,7 @@ class NativeConstantContentsABC(ABC):
                     raise ValueError("Native constant tuple lengths differ")
                 pending.extend(zip(actual_tuple, expected_tuple, strict=True))
                 continue
-            if actual_type not in _NATIVE_CONSTANT_ATOM_TYPES:
+            if id(actual_type) not in _NATIVE_CONSTANT_ATOM_TYPE_IDS:
                 raise ValueError("Native constant requires admitted exact contents")
             if actual != expected:
                 raise ValueError("Native constant contents differ")
@@ -170,7 +174,7 @@ class NativeConstantContentsABC(ABC):
     @classmethod
     def supports_constant(cls, value: object) -> bool:
         value_type = type(value)
-        if value_type in _NATIVE_CONSTANT_ATOM_TYPES:
+        if id(value_type) in _NATIVE_CONSTANT_ATOM_TYPE_IDS:
             return True
         if value_type is not tuple:
             return False
@@ -179,7 +183,7 @@ class NativeConstantContentsABC(ABC):
         while pending:
             item = pending.pop()
             item_type = type(item)
-            if item_type in _NATIVE_CONSTANT_ATOM_TYPES:
+            if id(item_type) in _NATIVE_CONSTANT_ATOM_TYPE_IDS:
                 continue
             if item_type is not tuple:
                 return False
