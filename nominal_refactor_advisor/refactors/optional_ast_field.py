@@ -1052,7 +1052,22 @@ class KeywordNameDecoder(CollectionDecoder):
         return f"CallKeyword.decoded({subject_source}).names"
 
 
-class CaptureNameDecoder(OptionalAstFieldDecoder):
+class ExceptHandlerDecoder(OptionalAstFieldDecoder, ABC):
+    """Shared collection proof for optional fields of ``ast.ExceptHandler``."""
+
+    @classmethod
+    def collected_classes(cls) -> frozenset[str]:
+        return frozenset(("ExceptHandler",))
+
+    @classmethod
+    def collects(cls, collection, authority) -> bool:
+        if collection.attr != "handlers":
+            return False
+        owner_classes = authority.classes_of(collection.value, collection)
+        return bool(owner_classes) and owner_classes <= frozenset(("Try", "TryStar"))
+
+
+class CaptureNameDecoder(ExceptHandlerDecoder):
     """The name an except handler or capture pattern binds itself."""
 
     fields = {
@@ -1137,6 +1152,71 @@ class VariadicParameterDecoder(OptionalAstFieldDecoder):
     @classmethod
     def single(cls, subject_source: str) -> str:
         return f"variadic_parameters({subject_source})"
+
+
+class ImportAliasDecoder(OptionalAstFieldDecoder):
+    """The explicit ``as ...`` alias name an import alias declares."""
+
+    fields = {ast.alias: "asname"}
+    owners = (ast_field_decoders.alias_names,)
+    shapes = (IfPresentProbeSite, SpliceProbeSite)
+
+    @classmethod
+    def collected_classes(cls) -> frozenset[str]:
+        return frozenset(("alias",))
+
+    @classmethod
+    def collects(cls, collection, authority) -> bool:
+        if collection.attr != "names":
+            return False
+        owner_classes = authority.classes_of(collection.value, collection)
+        return bool(owner_classes) and owner_classes <= frozenset(
+            ("Import", "ImportFrom")
+        )
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"alias_names({subject_source})"
+
+
+class OptionalValueDecoder(OptionalAstFieldDecoder):
+    """The optional expression value of a ``return``, annotated assignment, or ``yield``."""
+
+    fields = {
+        ast.Return: "value",
+        ast.AnnAssign: "value",
+        ast.Yield: "value",
+    }
+    owners = (ast_field_decoders.optional_values,)
+    shapes = (IfPresentProbeSite, SpliceProbeSite)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"optional_values({subject_source})"
+
+
+class ImportModuleDecoder(OptionalAstFieldDecoder):
+    """The optional module name spelled by ``ast.ImportFrom``."""
+
+    fields = {ast.ImportFrom: "module"}
+    owners = (ast_field_decoders.import_modules,)
+    shapes = (IfPresentProbeSite, SpliceProbeSite)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"import_modules({subject_source})"
+
+
+class ExceptionTypeDecoder(ExceptHandlerDecoder):
+    """The optional exception type expression on an ``except`` handler."""
+
+    fields = {ast.ExceptHandler: "type"}
+    owners = (ast_field_decoders.exception_types,)
+    shapes = (IfPresentProbeSite, SpliceProbeSite)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"exception_types({subject_source})"
 
 
 @dataclass(frozen=True)
@@ -1487,25 +1567,37 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                             return found
         return frozenset()
 
+    def _iterated_source(
+        self, target: ast.expr, iterable: ast.expr, name: str
+    ) -> ast.expr | None:
+        match target, iterable:
+            case ast.Name(id=bound), _ if bound == name:
+                return iterable
+            case (
+                ast.Tuple(elts=[_, ast.Name(id=bound)]),
+                ast.Call(func=ast.Name(id="enumerate"), args=[inner, *_]),
+            ) if bound == name:
+                return inner
+        return None
+
     def iterated(self, name: str, at: ast.AST) -> frozenset[str]:
         """Classes proved by iterating a decoder's collection into ``name``."""
 
         for child, parent in self.ancestors(at):
             match parent:
-                case ast.For(target=ast.Name(id=target), iter=iterable) if (
-                    target == name and child is not iterable
-                ):
-                    if self.iterates_elements(iterable):
+                case ast.For(target=target, iter=iterable) if child is not iterable:
+                    source = self._iterated_source(target, iterable, name)
+                    if source is not None and self.iterates_elements(source):
                         return self.decoder.collected_classes()
                 case (
                     ast.ListComp() | ast.SetComp() | ast.GeneratorExp() | ast.DictComp()
                 ):
                     for generator in parent.generators:
-                        match generator:
-                            case ast.comprehension(
-                                target=ast.Name(id=target), iter=iterable
-                            ) if target == name and self.iterates_elements(iterable):
-                                return self.decoder.collected_classes()
+                        source = self._iterated_source(
+                            generator.target, generator.iter, name
+                        )
+                        if source is not None and self.iterates_elements(source):
+                            return self.decoder.collected_classes()
         return frozenset()
 
     def classes_of(self, subject: ast.expr, at: ast.AST) -> frozenset[str]:
@@ -2166,9 +2258,13 @@ __all__ = (
     "CaptureNameDecoder",
     "DeclareAndRouteOptionalAstFieldProbesOperation",
     "DeclaredAnnotationDecoder",
+    "ExceptionTypeDecoder",
+    "ImportAliasDecoder",
+    "ImportModuleDecoder",
     "OptionalAstFieldAuthority",
     "OptionalAstFieldDecoder",
     "OptionalAstFieldDecoderFindingRecipeSynthesizer",
+    "OptionalValueDecoder",
     "PendingDecoderMigration",
     "ProjectDecoderOwners",
     "RouteOptionalAstFieldProbesOperation",

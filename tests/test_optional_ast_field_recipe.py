@@ -14,8 +14,12 @@ from nominal_refactor_advisor.refactors.optional_ast_field import (
     KeywordNameDecoder,
     CaptureNameDecoder,
     DeclaredAnnotationDecoder,
+    ExceptionTypeDecoder,
+    ImportAliasDecoder,
+    ImportModuleDecoder,
     OptionalAstFieldAuthority,
     OptionalAstFieldDecoder,
+    OptionalValueDecoder,
     ProjectDecoderOwners,
     VariadicParameterDecoder,
 )
@@ -156,6 +160,63 @@ def test_present_guard_on_a_proved_node_loops_over_its_decoded_names() -> None:
         "    for capture_name in capture_names(node):\n"
         "        self.names.add(capture_name)\n"
         "    self.generic_visit(node)\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("decoder", "param", "field", "expected_call", "loop_var"),
+    (
+        (ImportAliasDecoder, "alias: ast.alias", "asname", "alias_names(alias)", "import_alias"),
+        (OptionalValueDecoder, "node: ast.Return", "value", "optional_values(node)", "optional_value"),
+        (OptionalValueDecoder, "node: ast.AnnAssign", "value", "optional_values(node)", "optional_value"),
+        (ImportModuleDecoder, "node: ast.ImportFrom", "module", "import_modules(node)", "import_module"),
+        (ExceptionTypeDecoder, "handler: ast.ExceptHandler", "type", "exception_types(handler)", "exception_type"),
+    ),
+)
+def test_additional_optional_ast_field_decoders_rewrite_present_guards(
+    decoder: type[OptionalAstFieldDecoder],
+    param: str,
+    field: str,
+    expected_call: str,
+    loop_var: str,
+) -> None:
+    subject = param.split(":")[0]
+    source = (
+        f"def f({param}, out):\n"
+        f"    if {subject}.{field} is not None:\n"
+        f"        out.append({subject}.{field})\n"
+    )
+    assert _rewritten(source, decoder) == (
+        f"def f({param}, out):\n"
+        f"    for {loop_var} in {expected_call}:\n"
+        f"        out.append({loop_var})\n"
+    )
+
+
+def test_iterated_enumerate_handlers_and_import_names_prove_element_class() -> None:
+    try_source = (
+        "def visit_Try(self, node: ast.Try):\n"
+        "    for index, handler in enumerate(node.handlers):\n"
+        "        if handler.type is not None:\n"
+        "            self.visit(handler.type)\n"
+    )
+    assert _rewritten(try_source, ExceptionTypeDecoder) == (
+        "def visit_Try(self, node: ast.Try):\n"
+        "    for index, handler in enumerate(node.handlers):\n"
+        "        for exception_type in exception_types(handler):\n"
+        "            self.visit(exception_type)\n"
+    )
+    import_source = (
+        "def aliases(node: ast.Import, out):\n"
+        "    for alias in node.names:\n"
+        "        if alias.asname is not None:\n"
+        "            out.append(alias.asname)\n"
+    )
+    assert _rewritten(import_source, ImportAliasDecoder) == (
+        "def aliases(node: ast.Import, out):\n"
+        "    for alias in node.names:\n"
+        "        for import_alias in alias_names(alias):\n"
+        "            out.append(import_alias)\n"
     )
 
 
@@ -361,9 +422,10 @@ def test_generated_owners_register_nothing_by_hand(tmp_path: Path) -> None:
     sources = {
         str(package / "__init__.py"): "",
         str(package / "mod.py"): (
-            "def f(k, h, a, p, fn):\n"
-            "    return (k.arg is None, h.name is None, a.vararg is None,"
-            " a.kwarg is None, p.annotation is None, fn.returns is None)\n"
+            "def f(k, h, a, p, fn, al, ret, imp):\n"
+            "    return (k.arg is None, h.name is None, h.type is None, a.vararg is None,"
+            " a.kwarg is None, p.annotation is None, fn.returns is None,"
+            " al.asname is None, ret.value is None, imp.module is None)\n"
         ),
     }
     for path, source in sources.items():
