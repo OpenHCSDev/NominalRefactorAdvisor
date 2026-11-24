@@ -88,6 +88,48 @@ def variadic_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
     return ()
 
 
+def alias_names(node: ast.alias) -> tuple[str, ...]:
+    """The explicit alias name an import alias declares: none when unaliased."""
+
+    match node:
+        case ast.alias(asname=str() as asname):
+            return (asname,)
+    return ()
+
+
+def optional_values(
+    node: ast.Return | ast.AnnAssign | ast.Yield,
+) -> tuple[ast.expr, ...]:
+    """The expression a return, annotated assignment, or yield carries: none when bare."""
+
+    match node:
+        case (
+            ast.Return(value=ast.expr() as value)
+            | ast.AnnAssign(value=ast.expr() as value)
+            | ast.Yield(value=ast.expr() as value)
+        ):
+            return (value,)
+    return ()
+
+
+def import_modules(node: ast.ImportFrom) -> tuple[str, ...]:
+    """The module name a `from ... import` spells: none for bare relative `from . import`."""
+
+    match node:
+        case ast.ImportFrom(module=str() as module):
+            return (module,)
+    return ()
+
+
+def exception_types(node: ast.ExceptHandler) -> tuple[ast.expr, ...]:
+    """The exception expression an `except` handler matches: none for a bare `except:`."""
+
+    match node:
+        case ast.ExceptHandler(type=ast.expr() as exception_type):
+            return (exception_type,)
+    return ()
+
+
 TypeParameterDefinition = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
@@ -121,12 +163,15 @@ TYPE_PARAMETERS = TypeParameterSyntax()
 
 __all__ = (
     "TYPE_PARAMETERS",
-    "AbsentTypeParameterSyntax",
     "TypeParameterDefinition",
     "TypeParameterSyntax",
     "AnnotatedParameter",
     "ParameterAnnotations",
+    "alias_names",
     "capture_names",
     "declared_annotations",
+    "exception_types",
+    "import_modules",
+    "optional_values",
     "variadic_parameters",
 )
