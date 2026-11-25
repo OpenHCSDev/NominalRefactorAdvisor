@@ -26,7 +26,10 @@ from typing import ClassVar
 
 from metaclass_registry import AutoRegisterMeta
 
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
 from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
@@ -337,9 +340,8 @@ def plain_lambda(node: ast.expr) -> bool:
     return (
         isinstance(node, ast.Lambda)
         and not node.args.posonlyargs
-        and node.args.vararg is None
+        and not variadic_parameters(node.args)
         and not node.args.kwonlyargs
-        and node.args.kwarg is None
         and not node.args.defaults
         and not any(
             isinstance(
@@ -1187,9 +1189,13 @@ class CasesFamily(Cases, Descent):
             )
         annotations_by_parameter = {
             argument.arg: (
-                None
-                if argument.annotation is None
-                else ast.unparse(argument.annotation)
+                next(
+                    (
+                        ast.unparse(declared_annotation)
+                        for declared_annotation in declared_annotations(argument)
+                    ),
+                    None,
+                )
             )
             for argument in new.args.args[1:]
         }
@@ -1399,9 +1405,13 @@ class CasesFamily(Cases, Descent):
             lambda node: segment(module, node),
         )
         returns = (
-            None
-            if function.returns is None
-            else member_type(model.root, segment(module, function.returns))
+            next(
+                (
+                    member_type(model.root, segment(module, declared_annotation))
+                    for declared_annotation in declared_annotations(function)
+                ),
+                None,
+            )
         )
         authored = authored_header(
             module,

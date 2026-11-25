@@ -926,7 +926,7 @@ class _RunOnlyImports:
                     for alias in statement.names
                     for name in (
                         runs
-                        if alias.asname is None and alias.name == module_name
+                        if not alias_names(alias) and alias.name == module_name
                         else (ast.unparse(alias),)
                     )
                 )
@@ -5418,7 +5418,13 @@ class _MovedImports:
         by_home: dict[str, list[str]] = {}
         for alias in node.names:
             by_home.setdefault(homes[alias.name], []).append(
-                alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
+                next(
+                    (
+                        f"{alias.name} as {import_alias}"
+                        for import_alias in alias_names(alias)
+                    ),
+                    alias.name,
+                )
             )
         return f"\n{' ' * node.col_offset}".join(
             f"from {home} import {', '.join(names)}" for home, names in by_home.items()

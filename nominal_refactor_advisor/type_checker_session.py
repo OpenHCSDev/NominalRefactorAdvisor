@@ -34,6 +34,7 @@ from time import perf_counter
 from types import ModuleType
 from typing import TYPE_CHECKING, ClassVar
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.json_reports import DataclassJsonReport
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -228,7 +229,7 @@ def _elide_unrequested_annotated_bodies(
                 continue
             if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
                 continue
-            if stmt.returns is None or not stmt.body or _is_ellipsis_body(stmt.body):
+            if not declared_annotations(stmt) or not stmt.body or _is_ellipsis_body(stmt.body):
                 continue
             fn_start = _statement_start_line(stmt)
             fn_end = stmt.end_lineno or stmt.body[-1].end_lineno or stmt.body[-1].lineno

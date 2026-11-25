@@ -22,7 +22,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, cast
 
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    optional_values,
+)
 from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
 from nominal_refactor_advisor.codemod_payload import (
@@ -346,7 +349,7 @@ def _has_any_return(statements: Sequence[ast.stmt]) -> bool:
 def _has_value_return(statements: Sequence[ast.stmt]) -> bool:
     for stmt in statements:
         for node in ast.walk(stmt):
-            if isinstance(node, ast.Return) and node.value is not None:
+            if isinstance(node, ast.Return) and optional_values(node):
                 return True
     return False
 
@@ -361,7 +364,7 @@ def _strip_trailing_bare_return(statements: Sequence[ast.stmt]) -> tuple[ast.stm
     if (
         statements
         and isinstance(statements[-1], ast.Return)
-        and statements[-1].value is None
+        and not optional_values(statements[-1])
     ):
         remaining = statements[:-1]
         return tuple(remaining) if remaining else (ast.Pass(),)

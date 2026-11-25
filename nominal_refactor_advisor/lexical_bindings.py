@@ -24,8 +24,10 @@ from nominal_refactor_advisor.assignment_projection import (
     AssignmentTargetNameProjection,
 )
 from nominal_refactor_advisor.ast_field_decoders import (
+    alias_names,
     capture_names,
     declared_annotations,
+    import_modules,
 )
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
@@ -247,9 +249,9 @@ class ImportAlias:
 
         if alias.name == "*":
             return StarImportAlias(alias.name)
-        if alias.asname is None:
-            return ImportAlias(alias.name)
-        return RenamedImportAlias(alias.name, alias.asname)
+        for import_alias in alias_names(alias):
+            return RenamedImportAlias(alias.name, import_alias)
+        return ImportAlias(alias.name)
 
     @property
     def source(self) -> str:
@@ -403,9 +405,9 @@ class ImportFromModuleName:
     @classmethod
     def from_node(cls, node: ast.ImportFrom) -> ImportFromModuleName:
         relative_prefix = "." * node.level
-        if node.module is None:
-            return cls(relative_prefix)
-        return cls(f"{relative_prefix}{node.module}")
+        for import_module in import_modules(node):
+            return cls(f"{relative_prefix}{import_module}")
+        return cls(relative_prefix)
 
 
 ImportContextT = TypeVar("ImportContextT")

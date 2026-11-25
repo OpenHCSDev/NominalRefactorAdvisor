@@ -5,7 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
-from nominal_refactor_advisor.ast_projection import CallKeywords
+from nominal_refactor_advisor.ast_projection import CallKeyword, CallKeywords
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassDeclarationPromotionStatement,
     _class_base_source_names,
@@ -384,7 +384,13 @@ class ReplaceFieldsWithCarrierOperation(RepositorySourceReprovedOperation):
             if (segment := geometry.segment_for_node(keyword.value)) is None:
                 return None
             parts.append(
-                f"**{segment}" if keyword.arg is None else f"{keyword.arg}={segment}"
+                next(
+                    (
+                        f"{keyword_name}={segment}"
+                        for keyword_name in CallKeyword.decoded(keyword).names
+                    ),
+                    f"**{segment}",
+                )
             )
         _, func_end = geometry.required_node_offsets(call.func)
         _, call_end = geometry.required_node_offsets(call)

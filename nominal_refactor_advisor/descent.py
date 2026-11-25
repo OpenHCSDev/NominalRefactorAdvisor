@@ -22,7 +22,10 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from functools import cached_property
 
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    optional_values,
+)
 from nominal_refactor_advisor.ast_projection import StatementValue
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import (
@@ -548,8 +551,9 @@ class PropertyIsNone(Guard):
             and StatementValue.of(body[0]).compact_value().value_is_none_literal
         ):
             return not self.negated
-        if found.returns is not None and "None" not in ast.unparse(found.returns):
-            return self.negated
+        for declared_annotation in declared_annotations(found):
+            if "None" not in ast.unparse(declared_annotation):
+                return self.negated
         raise ValueError(f"{leaf}.{self.property_name} may or may not be None")
 
 
@@ -1370,7 +1374,13 @@ def _signature(name: str, function: ast.FunctionDef, leading: list[str]) -> str:
         *leading,
         *(ast.unparse(argument) for argument in function.args.args[1:]),
     ]
-    returns = "" if function.returns is None else f" -> {ast.unparse(function.returns)}"
+    returns = next(
+        (
+            f" -> {ast.unparse(declared_annotation)}"
+            for declared_annotation in declared_annotations(function)
+        ),
+        "",
+    )
     return f"def {name}({', '.join(arguments)}){returns}:"
 
 
@@ -1413,7 +1423,7 @@ class Fold(Cases, ABC):
             for statement in holder.node.body
             if isinstance(statement, ast.AnnAssign)
         ]
-        if fields[-1] is not holder.field or holder.field.value is not None:
+        if fields[-1] is not holder.field or optional_values(holder.field):
             raise ValueError(
                 f"{holder.name}.{holder.field_name} must be its last field, with no default"
             )

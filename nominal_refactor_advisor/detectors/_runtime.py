@@ -21,6 +21,7 @@ from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
+from nominal_refactor_advisor.ast_field_decoders import exception_types
 from nominal_refactor_advisor.detectors._regex_bundle import (
     RepeatedLocalRegexBundleDetector,
 )
@@ -3171,14 +3172,14 @@ def _import_from_signature(
 
 
 def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:
-    if handler.type is None:
-        return False
-    if isinstance(handler.type, ast.Name):
-        return handler.type.id == "ImportError"
-    return isinstance(handler.type, ast.Tuple) and any(
-        isinstance(item, ast.Name) and item.id == "ImportError"
-        for item in handler.type.elts
-    )
+    for exception_type in exception_types(handler):
+        if isinstance(exception_type, ast.Name):
+            return exception_type.id == "ImportError"
+        return isinstance(exception_type, ast.Tuple) and any(
+            isinstance(item, ast.Name) and item.id == "ImportError"
+            for item in exception_type.elts
+        )
+    return False
 
 
 def _mirrored_import_fallback_candidates(

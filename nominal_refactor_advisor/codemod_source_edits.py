@@ -40,6 +40,7 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.codemod_paths import (
     SourceCreationPathAuthority as SourceCreationPathAuthority,
@@ -2001,9 +2002,13 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
 
         parentheses = self.function_parameter_parentheses(node)
         annotation_end = (
-            self.required_node_offsets(node.returns)[1]
-            if node.returns is not None
-            else parentheses.end_offset
+            next(
+                (
+                    self.required_node_offsets(declared_annotation)[1]
+                    for declared_annotation in declared_annotations(node)
+                ),
+                parentheses.end_offset,
+            )
         )
         function_end = self.required_node_offsets(node)[1]
         for token in self.tokens:

@@ -27,7 +27,10 @@ from typing import (
 from nominal_refactor_advisor.annotation_semantics import (
     NOMINAL_ANNOTATION_SOURCE_AUTHORITY,
 )
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     ExpressionReference,
@@ -421,9 +424,8 @@ class ExistingMethodOwner(OwnerCandidate):
         if (
             self.method.decorator_list
             or arguments.posonlyargs
-            or arguments.vararg is not None
+            or variadic_parameters(arguments)
             or arguments.kwonlyargs
-            or arguments.kwarg is not None
             or arguments.defaults
             or arguments.kw_defaults
             or not arguments.args

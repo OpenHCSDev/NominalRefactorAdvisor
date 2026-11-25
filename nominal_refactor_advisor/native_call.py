@@ -19,6 +19,7 @@ from typing import (
 from nominal_refactor_advisor.ast_field_decoders import (
     TYPE_PARAMETERS,
     declared_annotations,
+    variadic_parameters,
 )
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import SourceModule
@@ -403,8 +404,7 @@ class NativeMroRegistryLookupCall(NativeCallAuthority):
             or len(parameters.args) != 2
             or parameters.kwonlyargs
             or parameters.defaults
-            or parameters.vararg is not None
-            or parameters.kwarg is not None
+            or variadic_parameters(parameters)
         ):
             raise ValueError(
                 "MRO registry lookup has an unsupported parameter contract"

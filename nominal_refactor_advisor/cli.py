@@ -2990,8 +2990,8 @@ class CodemodExecutionStrategy(ABC):
         *,
         projection_requested: bool,
     ) -> None:
-        if projection_requested and not cls.allows_projected_findings:
-            parser.error("--codemod-project-findings requires --codemod-simulate")
+        if projection_requested:
+            parser.error('--codemod-project-findings requires --codemod-simulate')
 
     @classmethod
     @abstractmethod
@@ -3067,6 +3067,15 @@ class SimulateCodemodExecutionStrategy(CodemodExecutionStrategy):
         presenter.present_simulation(simulation, applied=applied)
         return 0 if simulation.is_clean else 1
 
+    @classmethod
+    def require_valid(
+        cls,
+        parser: argparse.ArgumentParser,
+        *,
+        projection_requested: bool,
+    ) -> None:
+        pass
+
 
 class ApplyCodemodExecutionStrategy(SimulateCodemodExecutionStrategy):
     """Apply a clean plan simulation through its source-revision guards."""
@@ -3082,6 +3091,16 @@ class ApplyCodemodExecutionStrategy(SimulateCodemodExecutionStrategy):
             command_type,
             CodemodApplyExecutionModeCliCommand,
         )
+
+    @classmethod
+    def require_valid(
+        cls,
+        parser: argparse.ArgumentParser,
+        *,
+        projection_requested: bool,
+    ) -> None:
+        if projection_requested:
+            parser.error('--codemod-project-findings requires --codemod-simulate')
 
 
 @dataclass(frozen=True)
