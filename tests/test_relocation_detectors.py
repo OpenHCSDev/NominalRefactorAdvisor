@@ -8,6 +8,10 @@ from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._relocations import (ConstantSubtypeAnswerDetector, LambdaFoldDetector, OwnStateBranchAnswerDetector, ThreadedAbsenceDetector, ZeroOneTupleDetector)
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.constant_subtype_answer import (
+    DeleteConstantSubtypeAnswerOperation,
+    PushConstantSubtypeAnswerOperation,
+)
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 from relocation_excerpts import (
@@ -46,7 +50,13 @@ def test_every_finding_states_fact_owner_and_prescription(detector):
     assert spec.certification.value == "certified"
     assert detector.restated.fact in spec.why
     assert detector.restated.owner in spec.why
-    assert not detector.restated.operations
+    if detector is ConstantSubtypeAnswerDetector:
+        assert detector.restated.operations == (
+            PushConstantSubtypeAnswerOperation,
+            DeleteConstantSubtypeAnswerOperation,
+        )
+    else:
+        assert not detector.restated.operations
 
 
 def test_relocation_patterns_continue_the_stable_sequence():
