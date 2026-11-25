@@ -317,6 +317,38 @@ def test_a_sole_reader_that_cannot_take_the_declaration_says_why(tmp_path: Path)
         "`Record` read back only from `pkg.a`, which cannot take them: "
         "`pkg.hub` keeps reading `Record`, so it would import `pkg.a`"
     )
+
+
+def test_sole_reader_refuses_swallowing_hub_closure_imported_by_others(tmp_path: Path):
+    """A sole reader that imports a hub class whose closure drags sibling hub
+    declarations imported by other modules (or swallows the whole hub) refuses
+    with `SoleReaderKept` instead of inverting module ownership."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/thread_identity.py": (
+                "class ThreadId:\n    pass\n\n\n"
+                "def inspect_state():\n"
+                "    from pkg.context_inspection import InspectionState\n\n"
+                "    return InspectionState\n"
+            ),
+            "pkg/context_inspection.py": (
+                "from pkg.thread_identity import ThreadId\n\n\n"
+                "class InspectionDetail:\n    owner = ThreadId\n\n\n"
+                "class InspectionState:\n    detail = InspectionDetail\n"
+            ),
+            "pkg/context_panel.py": (
+                "from pkg.context_inspection import InspectionDetail, InspectionState\n\n"
+                "USED = (InspectionDetail, InspectionState)\n"
+            ),
+        },
+    )
+    [stays] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
+    assert isinstance(stays, HubStays)
+    [(_refusal, need)] = stays.needs
+    assert isinstance(need, SoleReaderKept)
+    assert "drag" in str(need) and "pkg.context_panel" in str(need)
 @pytest.mark.parametrize(
     ("hub", "name", "owner"),
     [

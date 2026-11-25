@@ -4070,20 +4070,27 @@ class ClassBodyDeclarationKind(StrEnum):
 
     shared_receipt: OverlapReceiptKind
     is_field: bool
+    is_method: bool
 
     def __new__(
-        cls, value: str, shared_receipt: OverlapReceiptKind, is_field: bool
+        cls,
+        value: str,
+        shared_receipt: OverlapReceiptKind,
+        is_field: bool,
+        is_method: bool,
     ) -> Self:
         member = str.__new__(cls, value)
         member._value_ = value
         member.shared_receipt = shared_receipt
         member.is_field = is_field
+        member.is_method = is_method
         return member
 
-    FIELD = "field", OverlapReceiptKind.SHARED_FIELD, True
-    DEFAULTED_FIELD = "defaulted_field", OverlapReceiptKind.SHARED_VALUE, True
-    VALUE = "value", OverlapReceiptKind.SHARED_VALUE, False
-    METHOD = "method", OverlapReceiptKind.SHARED_METHOD, False
+    FIELD = "field", OverlapReceiptKind.SHARED_FIELD, True, False
+    DEFAULTED_FIELD = "defaulted_field", OverlapReceiptKind.SHARED_VALUE, True, False
+    VALUE = "value", OverlapReceiptKind.SHARED_VALUE, False, False
+    NOOP_METHOD = "noop_method", OverlapReceiptKind.SHARED_NOOP_METHOD, False, True
+    METHOD = "method", OverlapReceiptKind.SHARED_METHOD, False, True
 
 
 class AnnotatedDeclarationKind(StatementValueQuestion[ClassBodyDeclarationKind]):
@@ -4461,6 +4468,29 @@ class ClassBodyNormalForm:
         return tuple(declaration for declaration in declarations if declaration.name not in PER_CLASS_NAMES)
 
     @classmethod
+    def _is_noop_stub_method(
+        cls,
+        normalized: ast.FunctionDef | ast.AsyncFunctionDef,
+    ) -> bool:
+        """A concrete method whose body after any docstring is only `pass` or `...`
+        and that is not decorated as `@abstractmethod` supplies no implementation."""
+
+        if any(
+            _terminal_reference_name(decorator) == "abstractmethod"
+            for decorator in normalized.decorator_list
+        ):
+            return False
+        return all(
+            isinstance(stmt, ast.Pass)
+            or (
+                isinstance(stmt, ast.Expr)
+                and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value is Ellipsis
+            )
+            for stmt in normalized.body
+        )
+
+    @classmethod
     def of_method(
         cls,
         method: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -4475,8 +4505,13 @@ class ClassBodyNormalForm:
         """
 
         normalized = cls._normalized_method(method)
+        kind = (
+            ClassBodyDeclarationKind.NOOP_METHOD
+            if cls._is_noop_stub_method(normalized)
+            else ClassBodyDeclarationKind.METHOD
+        )
         return cls._of_statement(
-            ClassBodyDeclarationKind.METHOD,
+            kind,
             method.name,
             method,
             normalized,
@@ -4610,7 +4645,7 @@ class ClassBodyNormalForm:
         for free_name in free_names:
             if free_name in class_bound_names:
                 class_scope_names.append(free_name)
-                if kind is not ClassBodyDeclarationKind.METHOD:
+                if not kind.is_method:
                     continue
             if (witness := scope.witness_for(free_name)) is not None:
                 global_bindings.append(witness)

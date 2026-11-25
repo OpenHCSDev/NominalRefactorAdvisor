@@ -203,7 +203,7 @@ def _symbol_step_overrides(
             name in PER_CLASS_NAMES
             or name in abstract
             or name not in mine
-            or declaration.kind is not ClassBodyDeclarationKind.METHOD
+            or not declaration.kind.is_method
         ):
             continue
         for ancestor, decls in ancestor_decls:

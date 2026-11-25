@@ -576,9 +576,28 @@ class HiddenImportCuts:
         if source is None:
             return None
         moved = frozenset(closure.qualnames)
+        module_body = self.snapshot.module_nodes_by_file_path[source.file_path].body
+        dragged = tuple(name for name in closure.qualnames if name not in closure.roots)
+        remaining_declarations = tuple(
+            statement.name
+            for statement in module_body
+            if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement.name not in moved
+        )
+        if dragged and others:
+            raise kept(
+                f"moving `{', '.join(closure.roots)}` into `{reader}` would drag "
+                f"{len(dragged)} hub declaration(s) imported by "
+                + ", ".join(f"`{user}`" for user in others[:3])
+            )
+        if not remaining_declarations and (others or dragged):
+            raise kept(
+                f"moving `{', '.join(closure.roots)}` into `{reader}` would swallow all "
+                f"{len(moved)} declaration(s) of `{hub}`"
+            )
         staying = (
             statement
-            for statement in self.snapshot.module_nodes_by_file_path[source.file_path].body
+            for statement in module_body
             if not (isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) and statement.name in moved)
             and not isinstance(statement, ast.Import | ast.ImportFrom)
         )
