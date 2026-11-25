@@ -17,6 +17,13 @@ from nominal_refactor_advisor.detectors._hidden_import_cuts import HiddenImportC
 from nominal_refactor_advisor.hidden_imports import HiddenImportPlan
 from nominal_refactor_advisor.refactors.hidden_import_cuts import HiddenImportCuts, HubRetype, HubStays
 from nominal_refactor_advisor.scan_cache import ScanCache
+from nominal_refactor_advisor.type_checker_session import (
+    FineGrainedTypeChecker,
+    SourceTexts,
+    TypeCheckerSession,
+    TypeErrors,
+    _incremental_type_errors_slot,
+)
 
 BASE = (
     "from abc import ABC, abstractmethod\n\n\nclass Service(ABC):\n"
@@ -183,12 +190,6 @@ def test_fine_grained_type_errors_match_cold_build_across_edits_and_reverts(tmp_
     `TypeErrors._built` across clean edits, newly introduced errors, pre-existing
     errors in untouched modules, and reverts back to the baseline."""
 
-    from nominal_refactor_advisor.type_checker_session import (
-        SourceTexts,
-        TypeErrors,
-        _incremental_type_errors_slot,
-    )
-
     pkg = tmp_path / "pkg"
     pkg.mkdir(parents=True)
     (pkg / "__init__.py").write_text("")
@@ -225,3 +226,70 @@ def test_fine_grained_type_errors_match_cold_build_across_edits_and_reverts(tmp_
         assert inc_reverted.by_file == cold_initial.by_file
         assert inc_reverted.new_since(inc_initial) == ()
         assert _incremental_type_errors_slot()[0] is engine
+
+
+def test_forked_fine_grained_type_errors_keep_parent_engine_at_baseline(
+    tmp_path: Path, capsys
+):
+    """On a 16+ module corpus, speculative `TypeErrors.of` deltas run in a COW
+    child on Linux so the parent engine stays at baseline across sibling trials,
+    and stray mypy stdout/stderr is suppressed."""
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("")
+    (pkg / "base.py").write_text(
+        "class Base:\n    x: int = 1\n\n\nclass Sub(Base):\n    y: str = 'ok'\n"
+    )
+    for idx in range(15):
+        (pkg / f"m{idx}.py").write_text(
+            f"from pkg.base import Sub\n\n\ndef f{idx}(item: Sub) -> str:\n    return item.y\n"
+        )
+    target_path = pkg / "m0.py"
+    original_target = target_path.read_text()
+    broken_target = (
+        "from pkg.base import Base\n\n\ndef f0(item: Base) -> str:\n    return item.y\n"
+    )
+
+    with ScanCache.scope():
+        mods_initial = parse_python_modules(tmp_path, use_parse_cache=False)
+        st_initial = SourceTexts(tuple(mods_initial))
+        seeded_checker = TypeCheckerSession.seed_incremental(st_initial)
+        inc_initial = TypeErrors.of(st_initial)
+        engine = _incremental_type_errors_slot()[0]
+        assert engine is not None
+        if sys.platform.startswith("linux") and isinstance(
+            seeded_checker, FineGrainedTypeChecker
+        ):
+            assert engine._manager is seeded_checker._manager
+        baseline_text = engine._text_by_module["pkg.m0"]
+
+        target_path.write_text(broken_target)
+        mods_broken = parse_python_modules(tmp_path, use_parse_cache=False)
+        st_broken = SourceTexts(tuple(mods_broken))
+        inc_broken = TypeErrors.of(st_broken)
+        assert len(inc_broken.new_since(inc_initial)) == 1
+        assert _incremental_type_errors_slot()[0] is engine
+        if sys.platform.startswith("linux"):
+            assert engine._text_by_module["pkg.m0"] == baseline_text
+
+        target_path.write_text(original_target)
+        mods_reverted = parse_python_modules(tmp_path, use_parse_cache=False)
+        inc_reverted = TypeErrors.of(SourceTexts(tuple(mods_reverted)))
+        assert inc_reverted.new_since(inc_initial) == ()
+
+        # Syncing FineGrainedTypeChecker in-place updates the shared error table
+        # in lockstep instead of dropping the shared engine for a second build.
+        target_path.write_text(broken_target)
+        mods_synced_broken = parse_python_modules(tmp_path, use_parse_cache=False)
+        st_synced_broken = SourceTexts(tuple(mods_synced_broken))
+        synced = TypeCheckerSession.started(st_synced_broken)
+        assert synced is seeded_checker
+        assert _incremental_type_errors_slot()[0] is engine
+        if sys.platform.startswith("linux"):
+            assert len(TypeErrors.of(st_synced_broken).new_since(inc_initial)) == 1
+            assert TypeErrors.of(st_initial).new_since(inc_initial) == ()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""

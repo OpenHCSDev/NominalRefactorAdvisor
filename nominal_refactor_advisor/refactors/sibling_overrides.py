@@ -83,6 +83,7 @@ from nominal_refactor_advisor.refactors.class_overlap import (
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
 )
 from nominal_refactor_advisor.refactors.restated_overrides import (
     MemberDeletionCreationProof,
@@ -2032,6 +2033,7 @@ class ExtractSiblingOverrideBaseOperation(RepositorySourceReprovedOperation):
 class SiblingOverrideFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
     SiblingOverrideConcept,
 ):
     """Lift a sibling override onto its existing shared ancestor, or into a picked

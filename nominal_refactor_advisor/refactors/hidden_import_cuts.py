@@ -16,7 +16,9 @@ from __future__ import annotations
 import ast
 from abc import ABC
 from collections import defaultdict
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from functools import cached_property
 
 from nominal_refactor_advisor.audit.family import snake_case
 from nominal_refactor_advisor.codemod_module_declarations import SourceTopLevelDeclarationIndex
@@ -248,16 +250,35 @@ class HiddenImportCuts:
     snapshot: CodemodSourceSnapshot
     plan: HiddenImportPlan
     imports: ModuleImportGraph
+    _planned_by_hub: dict[str, tuple[HubPlan, ...]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def of(cls, snapshot: CodemodSourceSnapshot) -> HiddenImportCuts:
+        cached = snapshot._derived.get(cls)
+        if isinstance(cached, cls):
+            return cached
         plan = snapshot.module_set.fact(HiddenImportPlan)
         graph = snapshot.module_import_graph
         for hidden in plan.accepted:
             graph = graph.with_edges(hidden.module.module_name, hidden.targets)
-        return cls(snapshot, plan, ModuleImportGraph(graph.import_edges_by_module))
+        cuts = cls(snapshot, plan, ModuleImportGraph(graph.import_edges_by_module))
+        snapshot._derived[cls] = cuts
+        return cuts
 
-    @property
+    def plans_for_hub(self, hub: str) -> tuple[HubPlan, ...]:
+        """Cached cut/retype plans for `hub` on this snapshot."""
+
+        cached = self._planned_by_hub.get(hub)
+        if cached is not None:
+            return cached
+        refusals = self.edges_by_hub.get(hub)
+        plans = self.retyped(self.hub(hub, refusals)) if refusals else ()
+        self._planned_by_hub[hub] = plans
+        return plans
+
+    @cached_property
     def edges_by_hub(self) -> dict[str, list[ClosesCycle]]:
         hubs: dict[str, list[ClosesCycle]] = defaultdict(list)
         for refusal in self.plan.refused:
@@ -270,8 +291,8 @@ class HiddenImportCuts:
 
         plans = tuple(
             plan
-            for hub, refusals in sorted(self.edges_by_hub.items())
-            for plan in self.retyped(self.hub(hub, refusals))
+            for hub in sorted(self.edges_by_hub)
+            for plan in self.plans_for_hub(hub)
         )
         return tuple(
             sorted(
@@ -398,8 +419,12 @@ class HiddenImportCuts:
         declarations = (
             None
             if source is None
-            else SourceTopLevelDeclarationIndex(
-                source_path=source.file_path, module=self.snapshot.module_nodes_by_file_path[source.file_path]
+            else self.snapshot.retained_operation_derivation(
+                (SourceTopLevelDeclarationIndex, source.file_path),
+                lambda: SourceTopLevelDeclarationIndex(
+                    source_path=source.file_path,
+                    module=self.snapshot.module_nodes_by_file_path[source.file_path],
+                ),
             )
         )
         for name in names:
@@ -416,22 +441,37 @@ class HiddenImportCuts:
                 )
         return HubEdge(refusal, names)
 
+    @cached_property
+    def _importers_by_hub_and_name(self) -> dict[str, dict[str, set[str]]]:
+        index: dict[str, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+        for module in self.snapshot.module_set:
+            importer = module.module_name
+            identity = module.module_path_identity
+            for statement in module.module.body:
+                if not isinstance(statement, ast.ImportFrom):
+                    continue
+                target = identity.resolve_import_from_module(
+                    imported_module=statement.module, level=statement.level
+                )
+                if target is None or target == importer:
+                    continue
+                by_name = index[target]
+                for alias in statement.names:
+                    by_name[alias.name].add(importer)
+        return index
+
     def importers(self, hub: str, moved: frozenset[str]) -> tuple[str, ...]:
         """The modules importing a moved name from the hub at load time."""
 
+        by_name = self._importers_by_hub_and_name.get(hub)
+        if not by_name:
+            return ()
         return tuple(
             sorted(
                 {
-                    module.module_name
-                    for module in self.snapshot.module_set
-                    for statement in module.module.body
-                    if isinstance(statement, ast.ImportFrom)
-                    and module.module_name != hub
-                    and any(alias.name in moved for alias in statement.names)
-                    and module.module_path_identity.resolve_import_from_module(
-                        imported_module=statement.module, level=statement.level
-                    )
-                    == hub
+                    importer
+                    for name in moved
+                    for importer in by_name.get(name, ())
                 }
             )
         )
@@ -569,6 +609,49 @@ class HiddenImportCutFindingRecipeSynthesizer(
 ):
     """One relocation of the declarations the finding's hub holds too high."""
 
+    prefers_parallel_synthesis = True
+
+    @classmethod
+    def prewarm_parallel_synthesis(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: Sequence[RefactorFinding],
+    ) -> None:
+        cuts = HiddenImportCuts.of(snapshot)
+        _ = snapshot.module_import_graph.import_edges_by_module
+        has_retype = False
+        for finding in findings:
+            if finding.detector_id != cls.effective_detector_id():
+                continue
+            evidence = finding.primary_evidence
+            if evidence is None:
+                continue
+            plans = cuts.plans_for_hub(evidence.symbol)
+            if plans and isinstance(
+                next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1]),
+                HubRetype,
+            ):
+                has_retype = True
+        if has_retype:
+            _ = snapshot.type_errors
+
+    @classmethod
+    def parallel_synthesis_priority(
+        cls,
+        finding: RefactorFinding,
+        snapshot: CodemodSourceSnapshot | None = None,
+    ) -> int:
+        if snapshot is None or finding.primary_evidence is None:
+            return 0
+        cuts = HiddenImportCuts.of(snapshot)
+        plans = cuts.plans_for_hub(finding.primary_evidence.symbol)
+        if not plans:
+            return 0
+        chosen = next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1])
+        if isinstance(chosen, HubRetype):
+            return 2 + len(chosen.reads)
+        return 1 if isinstance(chosen, HubCut) else 0
+
     def evaluate_recipe_for_finding(
         self,
         finding: RefactorFinding,
@@ -579,10 +662,9 @@ class HiddenImportCutFindingRecipeSynthesizer(
             return self.rejected_evaluation("cutting a hidden cycle needs source context and its hub")
         snapshot = context.execution_snapshot()
         cuts = HiddenImportCuts.of(snapshot)
-        refusals = cuts.edges_by_hub.get(evidence.symbol)
-        if not refusals:
+        plans = cuts.plans_for_hub(evidence.symbol)
+        if not plans:
             return self.rejected_evaluation(f"`{evidence.symbol}` keeps no cycle a hidden import closes")
-        plans = cuts.retyped(cuts.hub(evidence.symbol, refusals))
         plan = next((plan for plan in plans if isinstance(plan, HubCut | HubRetype)), plans[-1])
         if isinstance(plan, HubRetype):
             operation = plan.operation()

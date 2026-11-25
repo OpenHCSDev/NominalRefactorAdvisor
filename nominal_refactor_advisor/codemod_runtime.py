@@ -443,24 +443,28 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             module_nodes_by_file_path=self.module_nodes_by_file_path,
         )
         parent = self._parent_snapshot
-        if (
-            parent is not None
-            and self._changed_from_parent
-            and "module_import_graph" in parent.__dict__
-        ):
+        if parent is not None and self._changed_from_parent:
             parent_graph = parent.module_import_graph
             if (
-                "import_edges_by_module" in parent_graph.__dict__
-                and len(parent_graph.source_index.files) == len(self.source_index.files)
+                len(parent_graph.source_index.files) == len(self.source_index.files)
                 and parent_graph.known_module_names == graph.known_module_names
             ):
-                edges = dict(parent_graph.import_edges_by_module)
+                parent_edges = parent_graph.import_edges_by_module
+                edges = dict(parent_edges)
                 sf_by_path = graph.source_file_by_path
+                edges_changed = False
                 for changed_path in self._changed_from_parent:
                     sf = sf_by_path.get(changed_path)
                     if sf is not None:
-                        edges[sf.module_name] = graph.import_edges_for_source_file(sf)
+                        updated = graph.import_edges_for_source_file(sf)
+                        if updated != parent_edges.get(sf.module_name):
+                            edges[sf.module_name] = updated
+                            edges_changed = True
                 graph.__dict__["import_edges_by_module"] = edges
+                if not edges_changed and "_reachable_by_module" in parent_graph.__dict__:
+                    graph.__dict__["_reachable_by_module"] = dict(
+                        parent_graph._reachable_by_module
+                    )
         return graph
 
     @cached_property
@@ -657,10 +661,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             class_family_index=class_family_index,
             module_node_cache=module_node_cache,
             ast_target_node_cache=source_index_artifacts.node_index.nodes_by_target_id,
-            module_import_graph_cache=SourceModuleImportGraph(
-                source_index=source_index_artifacts.source_index,
-                module_nodes_by_file_path=module_node_cache,
-            ),
+            module_import_graph_cache=None,
             _retained_product_flow_repository=retained_product_flow_repository,
             _previous_compact_class_state=previous_compact_class_state,
             _parent_snapshot=parent_snapshot,
@@ -3637,7 +3638,7 @@ class FindingRecipePlanBuilder:
                 idx,
             ),
         )
-        num_workers = min(3, len(scoped))
+        num_workers = min(4, len(scoped))
         buckets = [
             tuple(prioritized_indices[worker_idx::num_workers])
             for worker_idx in range(num_workers)
