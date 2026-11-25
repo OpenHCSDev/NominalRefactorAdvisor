@@ -28,7 +28,10 @@ from nominal_refactor_advisor.codemod_payload import (
     codemod_payload_field,
 )
 from nominal_refactor_advisor.codemod_reproof import RepositorySourceReprovedOperation
-from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit
+from nominal_refactor_advisor.codemod_source_edits import (
+    NominalSourceEdit,
+    SourceFileDeletion,
+)
 from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeEvaluation,
@@ -201,28 +204,123 @@ class CutHiddenCycleOperation(RelocationStep, RepositorySourceReprovedOperation)
     ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
         return relocation_to(snapshot, self.target, self.destination, self.moved)
 
-    def source_edits_from_snapshot(self, snapshot: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
-        relocation = self.relocation(snapshot)
-        (_, moved) = in_order_states(snapshot, (relocation,), f"cut-{self.moved[0]}")
-        freed = moved.module_set.fact(HiddenImportPlan).freed_by(snapshot.module_set.fact(HiddenImportPlan))
-        by_file: dict[str, list[str]] = defaultdict(list)
-        for hidden in freed:
-            by_file[hidden.module.file_path].append(hidden.identity)
-        return in_order_edits(
-            snapshot,
-            (
-                relocation,
-                *(
-                    PromoteHiddenImportsOperation(target=SourceRewriteTarget(file_path=path), only=tuple(identities))
-                    for path, identities in sorted(by_file.items())
-                ),
-            ),
-            f"cut-{self.moved[0]}",
-            self.rationale_text(
-                f"Move {', '.join(f'`{name}`' for name in self.moved)} to `{self.destination}` "
-                f"and import the {len(freed)} hidden import(s) that move frees at their modules' tops."
-            ),
+    def _snapshot_with_creations(
+        self, context: CodemodSelectorContext
+    ) -> CodemodSourceSnapshot:
+        snapshot = context.execution_snapshot()
+        uncreated = tuple(
+            creation
+            for creation in self.source_file_creations(context)
+            if creation.file_path not in snapshot.sources_by_file_path
         )
+        return snapshot.with_source_file_creations(uncreated) if uncreated else snapshot
+
+    @staticmethod
+    def _is_emptied_dead_husk(
+        moved: CodemodSourceSnapshot,
+        moved_plan: HiddenImportPlan,
+        source_path: str,
+        promoted_paths: frozenset[str],
+    ) -> bool:
+        """True when moving declarations out left a non-package module holding only
+        optional docstring / `from __future__` prelude with zero remaining importers."""
+        if (
+            source_path == "__init__.py"
+            or source_path.endswith("/__init__.py")
+            or source_path in promoted_paths
+        ):
+            return False
+        moved_module = moved.module_nodes_by_file_path.get(source_path)
+        if moved_module is None:
+            return False
+        for index, statement in enumerate(moved_module.body):
+            if (
+                index == 0
+                and isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            ):
+                continue
+            if (
+                isinstance(statement, ast.ImportFrom)
+                and statement.level == 0
+                and statement.module == "__future__"
+            ):
+                continue
+            return False
+        source_module = moved.module_import_graph.module_name_for_file_path(source_path)
+        if source_module is None:
+            return False
+        if any(
+            source_module in edges
+            for edges in moved.module_import_graph.import_edges_by_module.values()
+        ):
+            return False
+        return not any(
+            source_module in hidden.targets
+            for hidden in (
+                *moved_plan.accepted,
+                *(refusal.hidden for refusal in moved_plan.refused),
+            )
+        )
+
+    def _cut_outcome(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[tuple[NominalSourceEdit, ...], tuple[SourceFileDeletion, ...]]:
+        def derive() -> tuple[tuple[NominalSourceEdit, ...], tuple[SourceFileDeletion, ...]]:
+            relocation = self.relocation(snapshot)
+            (_, moved) = in_order_states(snapshot, (relocation,), f"cut-{self.moved[0]}")
+            moved_plan = moved.module_set.fact(HiddenImportPlan)
+            freed = moved_plan.freed_by(snapshot.module_set.fact(HiddenImportPlan))
+            by_file: dict[str, list[str]] = defaultdict(list)
+            for hidden in freed:
+                by_file[hidden.module.file_path].append(hidden.identity)
+            edits = in_order_edits(
+                snapshot,
+                (
+                    relocation,
+                    *(
+                        PromoteHiddenImportsOperation(
+                            target=SourceRewriteTarget(file_path=path),
+                            only=tuple(identities),
+                        )
+                        for path, identities in sorted(by_file.items())
+                    ),
+                ),
+                f"cut-{self.moved[0]}",
+                self.rationale_text(
+                    f"Move {', '.join(f'`{name}`' for name in self.moved)} to `{self.destination}` "
+                    f"and import the {len(freed)} hidden import(s) that move frees at their modules' tops."
+                ),
+            )
+            source_path = relocation.required_source_path(snapshot, relocation.operation_key())
+            if self._is_emptied_dead_husk(moved, moved_plan, source_path, frozenset(by_file)):
+                edits = tuple(edit for edit in edits if edit.file_path != source_path)
+                deletions = (
+                    SourceFileDeletion(
+                        operation_type=type(self),
+                        file_path=source_path,
+                        rationale=self.rationale_text(
+                            f"Delete emptied module {source_path!r} after moving its declarations to `{self.destination}`."
+                        ),
+                    ),
+                )
+                return (edits, deletions)
+            return (edits, ())
+
+        return snapshot.retained_operation_derivation(
+            (self, CutHiddenCycleOperation._cut_outcome),
+            derive,
+        )
+
+    def source_edits_from_snapshot(self, snapshot: CodemodSourceSnapshot) -> tuple[NominalSourceEdit, ...]:
+        return self._cut_outcome(snapshot)[0]
+
+    def source_file_deletions(
+        self, context: CodemodSelectorContext
+    ) -> tuple[SourceFileDeletion, ...]:
+        snapshot = self._snapshot_with_creations(context)
+        return self.required_reproof(lambda: self._cut_outcome(snapshot)[1])
 
 
 @dataclass(frozen=True)
@@ -536,6 +634,35 @@ class HiddenImportCuts:
                 f"no module below `{hub}` and its importers avoids the cycle, and no new one can hold it",
                 NeededInput.SOURCE_CHANGE,
             )
+        source = self.snapshot.module_import_graph.unique_source_file_for_module_name(hub)
+        if source is not None:
+            declarations = self.snapshot.retained_operation_derivation(
+                (SourceTopLevelDeclarationIndex, source.file_path),
+                lambda: SourceTopLevelDeclarationIndex(
+                    source_path=source.file_path,
+                    module=self.snapshot.module_nodes_by_file_path[source.file_path],
+                ),
+            )
+            moved = frozenset(closure.qualnames)
+            dragged = tuple(name for name in closure.qualnames if name not in closure.roots)
+            remaining = tuple(
+                name
+                for name in declarations.declarations_by_name
+                if name not in moved
+            )
+            if dragged and len(moved) > len(remaining):
+                kept_sample = (
+                    ", ".join(f"`{name}`" for name in remaining[:3])
+                    if remaining
+                    else "none"
+                )
+                raise NeedsInput(
+                    f"extracting {', '.join(f'`{root}`' for root in closure.roots)} into a new "
+                    f"module `{home}` would drag {len(dragged)} sibling declaration(s) and move "
+                    f"{len(moved)} of {len(moved) + len(remaining)} declaration(s) out of `{hub}` "
+                    f"(leaving {kept_sample}): move the cycle-closing declaration out of `{hub}` instead",
+                    NeededInput.SOURCE_CHANGE,
+                )
         return home
 
     def reader_home(

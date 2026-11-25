@@ -913,6 +913,113 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
 
+    @cached_property
+    def _all_referenced_import_modules(self) -> frozenset[str]:
+        """Every module name (including prefixes and submodule targets) named by any
+        import statement anywhere in this snapshot (top-level, guarded, or local)."""
+        referenced: set[str] = set()
+        for parsed in self.parsed_modules:
+            identity = parsed.module_path_identity
+            for statement in parsed.fact(ModuleImportStatements).imports:
+                if isinstance(statement, ast.Import):
+                    for alias in statement.names:
+                        parts = alias.name.split(".")
+                        for length in range(1, len(parts) + 1):
+                            referenced.add(".".join(parts[:length]))
+                elif isinstance(statement, ast.ImportFrom):
+                    resolved = identity.resolve_import_from_module(
+                        imported_module=statement.module,
+                        level=statement.level,
+                    )
+                    if resolved is None:
+                        continue
+                    referenced.add(resolved)
+                    for alias in statement.names:
+                        if alias.name != "*":
+                            referenced.add(f"{resolved}.{alias.name}")
+        return frozenset(referenced)
+
+    @cached_property
+    def _isolated_prelude_creation_paths(self) -> frozenset[str]:
+        """Paths newly created over `_parent_snapshot` when every change from the
+        parent is an unimported shell-prelude file (empty, docstring, and/or
+        `from __future__ import ...` only).
+
+        Any recipe that neither creates nor references another recipe's isolated
+        prelude file cannot observe its presence, so its cached derivations on its
+        own `rewrite_context(parent)` are provably identical to re-deriving them on
+        this combined rewrite snapshot."""
+        parent = self._parent_snapshot
+        changed = self._changed_from_parent
+        if parent is None or not changed:
+            return frozenset()
+        parent_sources = parent.sources_by_file_path
+        parent_referenced = parent._all_referenced_import_modules
+        graph = self.module_import_graph
+        for file_path in changed:
+            if file_path in parent_sources:
+                return frozenset()
+            module_node = self.module_nodes_by_file_path.get(file_path)
+            if module_node is None:
+                return frozenset()
+            for index, statement in enumerate(module_node.body):
+                if (
+                    index == 0
+                    and isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Constant)
+                    and isinstance(statement.value.value, str)
+                ):
+                    continue
+                if (
+                    isinstance(statement, ast.ImportFrom)
+                    and statement.level == 0
+                    and statement.module == "__future__"
+                ):
+                    continue
+                return frozenset()
+            module_name = graph.module_name_for_file_path(file_path)
+            if module_name is None or module_name in parent_referenced:
+                return frozenset()
+        return changed
+
+    def recipe_derivation_context(
+        self,
+        recipe: RefactorRecipe,
+    ) -> CodemodSourceSnapshot:
+        """The exact source context on which `recipe` derives its preflight, guards,
+        edits, deletions, and text changes.
+
+        When this snapshot differs from its parent solely by isolated prelude files
+        created by multiple recipes in a batch, reuse `recipe.rewrite_context(parent)`
+        (already cached from individual recipe synthesis/simulation) whenever the
+        extra files are disjoint from `recipe`'s creations and referenced targets and
+        `recipe` preflights cleanly on its own context."""
+        isolated = self._isolated_prelude_creation_paths
+        parent = self._parent_snapshot
+        if not isolated or parent is None:
+            return self
+        own_paths = frozenset(
+            creation.file_path for creation in recipe.source_file_creations(parent)
+        )
+        other_paths = isolated - own_paths
+        if not other_paths:
+            return self
+        referenced_paths = tuple(
+            target.file_path
+            for target in recipe.referenced_source_targets()
+            if target.file_path is not None
+        )
+        if any(
+            ref in other_paths
+            or any(other.endswith(f"/{ref}") for other in other_paths)
+            for ref in referenced_paths
+        ):
+            return self
+        candidate = recipe.rewrite_context(parent).execution_snapshot()
+        if all(report.is_clean for report in recipe.preflight_reports(candidate)):
+            return candidate
+        return self
+
     def edit_batch_for_recipes(
         self, recipes: Iterable[RefactorRecipe]
     ) -> NominalEditBatch:
@@ -923,12 +1030,13 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         edits: list[NominalSourceEdit] = []
         refused: list[CodemodOperationPreflightReport] = []
         for recipe in recipes:
+            recipe_context = self.recipe_derivation_context(recipe)
             try:
                 edits.extend(
                     edit
                     for index, operation in enumerate(recipe.operations)
                     for edit in operation.originated_edits(
-                        self,
+                        recipe_context,
                         recipe_id=recipe.recipe_id,
                         plan_item_index=index,
                     )
@@ -1491,7 +1599,11 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
         return replace(
             self,
             recipes=tuple(
-                recipe.with_declared_architecture_guards(context)
+                recipe.with_declared_architecture_guards(
+                    context.recipe_derivation_context(recipe)
+                    if isinstance(context, CodemodSourceSnapshot)
+                    else context
+                )
                 for recipe in self.recipes
             ),
         )
@@ -1524,7 +1636,9 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             tuple(
                 report
                 for recipe in self.recipes
-                for report in recipe.preflight_reports(rewrite_snapshot)
+                for report in recipe.preflight_reports(
+                    rewrite_snapshot.recipe_derivation_context(recipe)
+                )
             )
         )
 
@@ -1551,7 +1665,11 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
         return tuple(
             deletion
             for recipe in self.recipes
-            for deletion in recipe.source_file_deletions(snapshot)
+            for deletion in recipe.source_file_deletions(
+                snapshot.recipe_derivation_context(recipe)
+                if isinstance(snapshot, CodemodSourceSnapshot)
+                else snapshot
+            )
         )
 
     def text_file_changes(
@@ -1559,7 +1677,13 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
         snapshot: CodemodSelectorContext,
     ) -> tuple[TextFileChange, ...]:
         return tuple(
-            edit for recipe in self.recipes for edit in recipe.text_file_changes(snapshot)
+            edit
+            for recipe in self.recipes
+            for edit in recipe.text_file_changes(
+                snapshot.recipe_derivation_context(recipe)
+                if isinstance(snapshot, CodemodSourceSnapshot)
+                else snapshot
+            )
         )
 
     def simulate(
@@ -3753,39 +3877,40 @@ class FindingRecipePlanBuilder:
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> FindingRecipePlan:
-        evaluated_records = self._evaluate_scoped_findings(
-            self.scoped_findings(),
-            selector_context,
-        )
-        candidates = tuple(
-            FindingRecipePlanCandidate(record)
-            for record in evaluated_records
-            if record.candidate_recipes
-        )
-        batch_result = CurrentSnapshotRecipeBatchEvaluation(
-            candidates=candidates,
-            source_snapshot=(
-                selector_context.execution_snapshot()
-                if selector_context is not None
-                else None
-            ),
-            batch_projection=self,
-            frontier_budget=self.frontier_budget,
-        ).solve()
-        batch_records = iter(batch_result.records)
-        synthesis_records = tuple(
-            next(batch_records) if record.candidate_recipes else record
-            for record in evaluated_records
-        )
-        if next(batch_records, None) is not None:
-            raise RuntimeError("recipe batch record projection lost position")
-        return FindingRecipePlan(
-            document=CodemodPlanDocument(
-                recipes=batch_result.candidate_recipes,
-            ),
-            trajectory_frontier=batch_result.trajectory_frontier,
-            report=FindingRecipeSynthesisReport(synthesis_records),
-        )
+        with ScanCache.scope():
+            evaluated_records = self._evaluate_scoped_findings(
+                self.scoped_findings(),
+                selector_context,
+            )
+            candidates = tuple(
+                FindingRecipePlanCandidate(record)
+                for record in evaluated_records
+                if record.candidate_recipes
+            )
+            batch_result = CurrentSnapshotRecipeBatchEvaluation(
+                candidates=candidates,
+                source_snapshot=(
+                    selector_context.execution_snapshot()
+                    if selector_context is not None
+                    else None
+                ),
+                batch_projection=self,
+                frontier_budget=self.frontier_budget,
+            ).solve()
+            batch_records = iter(batch_result.records)
+            synthesis_records = tuple(
+                next(batch_records) if record.candidate_recipes else record
+                for record in evaluated_records
+            )
+            if next(batch_records, None) is not None:
+                raise RuntimeError("recipe batch record projection lost position")
+            return FindingRecipePlan(
+                document=CodemodPlanDocument(
+                    recipes=batch_result.candidate_recipes,
+                ),
+                trajectory_frontier=batch_result.trajectory_frontier,
+                report=FindingRecipeSynthesisReport(synthesis_records),
+            )
 
     def physical_edits_for_recipe(
         self,

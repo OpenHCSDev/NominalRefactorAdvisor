@@ -5,7 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor.refactors.source_insertion import EnsureImportOperation
+from nominal_refactor_advisor.refactors.source_insertion import (
+    CreateFileOperation,
+    EnsureImportOperation,
+)
 from nominal_refactor_advisor.codemod import (
     CodemodPlanDocument,
     CodemodPlanSequence,
@@ -220,3 +223,58 @@ def test_each_sequential_stage_retains_its_own_source_bound_batch():
         == first.simulation.rewritten_sources[PATH]
     )
     assert "second = object" in result.final_snapshot.sources_by_file_path[PATH]
+
+
+def test_isolated_prelude_creations_reuse_cached_recipe_derivations(monkeypatch):
+    """When one recipe creates an unimported empty/prelude file, another recipe
+    in the same document reuses its cached derivation on its own rewrite context
+    instead of re-deriving across every combination of created files."""
+    snapshot = CodemodSourceSnapshot.from_source_mapping(
+        {
+            "pkg/__init__.py": "",
+            PATH: SOURCE,
+        }
+    )
+    patch_recipe = recipes()[1]
+    create_a = RefactorRecipe(
+        "create-a",
+        operations=(
+            CreateFileOperation(
+                target=SourceRewriteTarget(file_path="pkg/new_a.py"),
+                source="from __future__ import annotations\n",
+            ),
+        ),
+    )
+    create_b = RefactorRecipe(
+        "create-b",
+        operations=(
+            CreateFileOperation(
+                target=SourceRewriteTarget(file_path="pkg/new_b.py"),
+                source="",
+            ),
+        ),
+    )
+    calls = []
+    original = PatchTargetOperation.source_edits_from_snapshot
+
+    def observe(operation, context):
+        calls.append(context)
+        return original(operation, context)
+
+    monkeypatch.setattr(PatchTargetOperation, "source_edits_from_snapshot", observe)
+    # Warm single-recipe simulation (as CurrentSnapshotRecipeBatchEvaluation does)
+    single = CodemodPlanDocument(recipes=(patch_recipe,)).simulate(snapshot)
+    assert single.is_clean
+    assert len(calls) == 1
+    # Now simulate two distinct batches with different isolated prelude creations
+    batch_a = CodemodPlanDocument(recipes=(patch_recipe, create_a)).simulate(snapshot)
+    batch_ab = CodemodPlanDocument(recipes=(patch_recipe, create_a, create_b)).simulate(snapshot)
+    assert batch_a.is_clean and batch_ab.is_clean
+    assert batch_a.edit_batch.compiler is batch_a.after_snapshot_projection.base_snapshot
+    assert batch_ab.edit_batch.compiler is batch_ab.after_snapshot_projection.base_snapshot
+    assert "renamed = object" in batch_ab.simulation.rewritten_sources[PATH]
+    assert "pkg/new_a.py" in batch_ab.simulation.rewritten_sources
+    assert "pkg/new_b.py" in batch_ab.simulation.rewritten_sources
+    # patch_recipe reused its cached derivation on snapshot rather than re-running
+    # on each distinct rewrite_snapshot!
+    assert len(calls) == 1
