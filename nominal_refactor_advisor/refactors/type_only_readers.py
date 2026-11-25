@@ -292,8 +292,7 @@ class AnnotationReferences:
                     *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
                     *(a for a in (arguments.vararg, arguments.kwarg) if a is not None),
                 ):
-                    if argument.annotation is not None:
-                        yield argument.annotation
+                    yield from declared_annotations(argument)
                 for declared_annotation in declared_annotations(node):
                     yield declared_annotation
             elif isinstance(node, ast.AnnAssign):

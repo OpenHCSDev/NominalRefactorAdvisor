@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -169,10 +170,10 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
                     inner_src = ast.unparse(inner)
                     add(resolved_class.file_path, start, end, inner_src)
 
-            if method.returns is not None:
+            for declared_annotation in declared_annotations(method):
                 geo = geometry(resolved_class.file_path)
-                start, end = geo.required_node_offsets(method.returns)
-                annotation_src = ast.unparse(method.returns)
+                start, end = geo.required_node_offsets(declared_annotation)
+                annotation_src = ast.unparse(declared_annotation)
                 new_annotation = self._flatten_annotation(annotation_src)
                 if new_annotation != annotation_src:
                     add(resolved_class.file_path, start, end, new_annotation)

@@ -199,6 +199,16 @@ class ClassOverlapMove(Case):
 
         return ()
 
+    @classmethod
+    def _positional_construction_receipts(cls, classes, self):
+        """Calls that bind fields by position, for a move that reorders them."""
+        receipts = []
+        for indexed_class in classes:
+            positional = self.uses.constructions_of(indexed_class, positional=True)
+            if positional:
+                receipts.append(KeywordCuredReceipt(OverlapReceiptKind.POSITIONAL_CONSTRUCTION, f'`{indexed_class.qualname}` is constructed by position or unpacking in {len(positional)} place(s); moving its fields ahead of its own would rebind them', tuple((use.location for use in positional[:4])), constructed=(indexed_class.symbol,)))
+        return tuple(receipts)
+
 
 class DeleteAndRedirect(ClassOverlapMove):
     """Delete the restating class and point its uses at the owner: its identity is gone."""
@@ -219,6 +229,10 @@ class DeleteAndRedirect(ClassOverlapMove):
         """Every use of a restating class gets an owner instance instead."""
 
         return tuple(restating)
+
+    @classmethod
+    def _positional_construction_receipts(cls, classes, self):
+        return ()
 
 
 class ComposeExisting(ClassOverlapMove):
@@ -255,6 +269,10 @@ class ComposeExisting(ClassOverlapMove):
         """Each restating class inherits the owner, and with it the owner's ancestry."""
 
         return tuple(restating)
+
+    @classmethod
+    def _positional_construction_receipts(cls, classes, self):
+        return ()
 
 
 class PromoteToSharedBase(ClassOverlapMove):
@@ -2702,23 +2720,7 @@ class ClassOverlapVerdicts(DeclaredC3):
     ) -> tuple[Receipt, ...]:
         """Calls that bind fields by position, for a move that reorders them."""
 
-        if not move.reorders_fields:
-            return ()
-        receipts = []
-        for indexed_class in classes:
-            positional = self.uses.constructions_of(indexed_class, positional=True)
-            if positional:
-                receipts.append(
-                    KeywordCuredReceipt(
-                        OverlapReceiptKind.POSITIONAL_CONSTRUCTION,
-                        f"`{indexed_class.qualname}` is constructed by position or "
-                        f"unpacking in {len(positional)} place(s); moving its fields "
-                        "ahead of its own would rebind them",
-                        tuple(use.location for use in positional[:4]),
-                        constructed=(indexed_class.symbol,),
-                    )
-                )
-        return tuple(receipts)
+        return move._positional_construction_receipts(classes, self)
 
     def family_axis_names(
         self,

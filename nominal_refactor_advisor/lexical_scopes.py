@@ -68,8 +68,6 @@ class LexicalScopeABC(ABC):
         *,
         class_namespace_visible: bool,
     ) -> LexicalNameResolution | None:
-        if self.requires_class_namespace_visibility and not class_namespace_visible:
-            return None
         if name in self.declarations.global_names:
             return LexicalNameResolution.EXTERNAL
         return self.local_resolution_for(name)
@@ -259,6 +257,18 @@ class ClassNamespaceScope(LexicalScopeABC):
             )
             for name in set().union(*snapshots)
         }
+
+    def resolve_name(
+        self,
+        name: str,
+        *,
+        class_namespace_visible: bool,
+    ) -> LexicalNameResolution | None:
+        if not class_namespace_visible:
+            return None
+        if name in self.declarations.global_names:
+            return LexicalNameResolution.EXTERNAL
+        return self.local_resolution_for(name)
 
 
 @dataclass(eq=False)

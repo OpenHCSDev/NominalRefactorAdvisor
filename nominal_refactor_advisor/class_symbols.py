@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import ClassVar
 
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
@@ -57,10 +58,8 @@ class _InnerScopeBoundNameSuperset(ParsedModuleFact):
                     *args.kwonlyargs,
                 ):
                     bound.add(arg.arg)
-                if args.vararg is not None:
-                    bound.add(args.vararg.arg)
-                if args.kwarg is not None:
-                    bound.add(args.kwarg.arg)
+                for variadic_parameter in variadic_parameters(args):
+                    bound.add(variadic_parameter.arg)
                 stack.extend(root.body)
             elif isinstance(root, ast.ClassDef):
                 stack.extend(root.body)
@@ -72,10 +71,8 @@ class _InnerScopeBoundNameSuperset(ParsedModuleFact):
                     *args.kwonlyargs,
                 ):
                     bound.add(arg.arg)
-                if args.vararg is not None:
-                    bound.add(args.vararg.arg)
-                if args.kwarg is not None:
-                    bound.add(args.kwarg.arg)
+                for variadic_parameter in variadic_parameters(args):
+                    bound.add(variadic_parameter.arg)
                 stack.append(root.body)
             else:
                 stack.extend(ast.iter_child_nodes(root))

@@ -28,7 +28,11 @@ from typing import (
     cast,
 )
 
-from nominal_refactor_advisor.ast_field_decoders import capture_names, exception_types
+from nominal_refactor_advisor.ast_field_decoders import (
+    capture_names,
+    declared_annotations,
+    exception_types,
+)
 from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
@@ -3739,7 +3743,13 @@ class _DeclarationCollector(ast.NodeVisitor):
             signature=CompactFunctionSignature.from_arguments(node.args),
             decorators=decorators,
             return_annotation_expression=(
-                None if node.returns is None else ast.unparse(node.returns)
+                next(
+                    (
+                        ast.unparse(declared_annotation)
+                        for declared_annotation in declared_annotations(node)
+                    ),
+                    None,
+                )
             ),
         )
         lexical_scopes = _unique_strings(

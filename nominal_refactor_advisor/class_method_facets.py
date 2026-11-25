@@ -19,7 +19,10 @@ from typing import (
     TypeAlias,
 )
 
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    variadic_parameters,
+)
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.class_namespace import PROMOTABLE_METHOD_DECORATOR_IDENTITIES
@@ -334,8 +337,7 @@ def _method_annotation_nodes(
         *method.args.posonlyargs,
         *method.args.args,
         *method.args.kwonlyargs,
-        *((method.args.vararg,) if method.args.vararg is not None else ()),
-        *((method.args.kwarg,) if method.args.kwarg is not None else ()),
+        *variadic_parameters(method.args),
     )
     return (
         *(

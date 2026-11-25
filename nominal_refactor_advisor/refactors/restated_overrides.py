@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from functools import partial
 from typing import ClassVar
 
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     ParsedModuleSet,
@@ -223,8 +224,11 @@ class NamespaceReads(ParsedModuleSetFact):
                 if any(
                     arg.arg == name
                     for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
-                ) or (args.vararg is not None and args.vararg.arg == name) or (
-                    args.kwarg is not None and args.kwarg.arg == name
+                ) or any(
+                    (
+                        variadic_parameter.arg == name
+                        for variadic_parameter in variadic_parameters(args)
+                    )
                 ):
                     return False
                 if any(
