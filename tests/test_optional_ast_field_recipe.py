@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 import pytest
@@ -556,8 +557,8 @@ def test_routes_fallback_ternary_and_presence_absence_probes(tmp_path: Path) -> 
 def test_refuses_presence_rewrite_when_downstream_relies_on_none_narrowing(
     tmp_path: Path,
 ) -> None:
-    """`if alias.asname is None: return; use(alias.asname)` relies on mypy narrowing
-    after the guard, and impure fallbacks cannot be eagerly evaluated."""
+    """`if alias.asname is None: ...; use(alias.asname)` with a non-terminating guard
+    relies on mypy narrowing, and impure fallbacks cannot be eagerly evaluated."""
 
     package = tmp_path / "pkg"
     package.mkdir()
@@ -569,7 +570,16 @@ def test_refuses_presence_rewrite_when_downstream_relies_on_none_narrowing(
         "def narrowed(alias: ast.alias) -> str:\n"
         "    if alias.asname is None:\n"
         "        return alias.name\n"
-        "    return alias.asname.upper()\n\n\n"
+        "    out = alias.asname.upper()\n"
+        "    if out:\n"
+        "        return out\n"
+        "    return alias.name\n\n\n"
+        "def non_terminating_narrowed(alias: ast.alias, log: list[str]) -> str:\n"
+        "    if alias.asname is None:\n"
+        "        log.append(alias.name)\n"
+        "    else:\n"
+        "        return alias.asname.upper()\n"
+        "    return alias.name\n\n\n"
         "def impure_fallback(alias: ast.alias) -> str:\n"
         "    return alias.asname if alias.asname is not None else compute_default()\n"
     )
@@ -579,7 +589,99 @@ def test_refuses_presence_rewrite_when_downstream_relies_on_none_narrowing(
         for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
         if finding.detector_id == "foreign_absence_probe"
     )
-    assert len(findings) == 2
+    # `narrowed` rewrites cleanly via EarlyExitAbsentProbeSite; `non_terminating_narrowed`
+    # and `impure_fallback` stay refused.
     snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
     plan = codemod_plan_from_findings(findings, selector_context=snapshot)
-    assert plan.document.recipes == ()
+    assert len(plan.document.recipes) == 1
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = (package / "mod.py").read_text()
+    assert "for import_alias in alias_names(alias):" in after
+    assert "if alias.asname is None:\n        log.append(alias.name)" in after
+    assert "else compute_default()" in after
+
+
+def test_routes_transforming_ternary_paired_variadic_and_local_binding_proofs(
+    tmp_path: Path,
+) -> None:
+    """Transforming fallback ternaries, paired variadic if/or probes, yield-from,
+    and local/match/not-isinstance AST class proofs route cleanly."""
+
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "mod.py").write_text(
+        "import ast\n"
+        "from collections.abc import Iterator\n\n\n"
+        "def format_return(fn: ast.FunctionDef) -> str | None:\n"
+        "    return None if fn.returns is None else ast.unparse(fn.returns)\n\n\n"
+        "def collect_variadic(node: ast.AST) -> set[str]:\n"
+        "    bound: set[str] = set()\n"
+        "    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):\n"
+        "        args = node.args\n"
+        "        if args.vararg is not None:\n"
+        "            bound.add(args.vararg.arg)\n"
+        "        if args.kwarg is not None:\n"
+        "            bound.add(args.kwarg.arg)\n"
+        "    elif isinstance(node, ast.Lambda):\n"
+        "        args = node.args\n"
+        "        if (args.vararg is not None and args.vararg.arg == 'x') or (\n"
+        "            args.kwarg is not None and args.kwarg.arg == 'x'\n"
+        "        ):\n"
+        "            bound.add('x')\n"
+        "    return bound\n\n\n"
+        "def yield_param_annotations(fn: ast.FunctionDef) -> Iterator[ast.expr]:\n"
+        "    arguments = fn.args\n"
+        "    for argument in (\n"
+        "        *arguments.posonlyargs,\n"
+        "        *arguments.args,\n"
+        "        *(a for a in (arguments.vararg, arguments.kwarg) if a is not None),\n"
+        "    ):\n"
+        "        if argument.annotation is not None:\n"
+        "            yield argument.annotation\n\n\n"
+        "def require_assigned_value(node: ast.AST) -> bool:\n"
+        "    if not isinstance(node, ast.AnnAssign) or node.value is None:\n"
+        "        return False\n"
+        "    return True\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = tuple(
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert len(plan.document.recipes) == 1
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = (package / "mod.py").read_text()
+    assert "next(" in after and "declared_annotations(fn)" in after
+    assert "for variadic_parameter in variadic_parameters(args):" in after
+    assert "any(" in after and "variadic_parameters(args)" in after
+    assert "yield from declared_annotations(argument)" in after
+    assert "not optional_values(node)" in after
+    # Execute the rewritten module to verify runtime parity!
+    ns: dict[str, object] = {}
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(after, str(package / "mod.py"), "exec"), ns)
+        fn = ast.parse("def f(a: int, *v: str, **k: bytes) -> float:\n    pass").body[0]
+        lam = ast.parse("lambda *x: x").body[0].value  # type: ignore[attr-defined]
+        ann_none = ast.parse("x: int").body[0]
+        ann_val = ast.parse("x: int = 1").body[0]
+        assert ns["format_return"](fn) == "float"  # type: ignore[operator]
+        assert ns["collect_variadic"](fn) == {"v", "k"}  # type: ignore[operator]
+        assert ns["collect_variadic"](lam) == {"x"}  # type: ignore[operator]
+        assert [ast.unparse(e) for e in ns["yield_param_annotations"](fn)] == [  # type: ignore[operator]
+            "int",
+            "str",
+            "bytes",
+        ]
+        assert ns["require_assigned_value"](ann_none) is False  # type: ignore[operator]
+        assert ns["require_assigned_value"](ann_val) is True  # type: ignore[operator]
+    finally:
+        sys.path.remove(str(tmp_path))
