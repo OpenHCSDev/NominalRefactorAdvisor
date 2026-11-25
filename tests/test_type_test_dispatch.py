@@ -627,3 +627,211 @@ def test_pushes_compound_if_and_guard_and_or_early_return(tmp_path: Path):
     assert ns["required_label"](off) == "none"  # type: ignore[operator]
     assert ns["required_label"](plain) == "none"  # type: ignore[operator]
     assert _findings(tmp_path) == []
+
+
+def test_pushes_void_early_return_and_rejects_loop_early_return(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/handles.py": (
+                "class Handle:\n"
+                "    def __init__(self) -> None:\n"
+                "        self.events: list[str] = []\n\n"
+                "    def release(self, tag: str) -> None:\n"
+                "        self.events.append(f'release:{tag}')\n\n\n"
+                "class OpenHandle(Handle):\n"
+                "    def close(self) -> None:\n"
+                "        self.events.append('close')\n\n\n"
+                "def settle_handle(handle: Handle, tag: str) -> None:\n"
+                "    if isinstance(handle, OpenHandle):\n"
+                "        handle.close()\n"
+                "        return\n"
+                "    handle.release(tag)\n\n\n"
+                "def stop_on_open(handles: list[Handle], log: list[str]) -> None:\n"
+                "    for handle in handles:\n"
+                "        if isinstance(handle, OpenHandle):\n"
+                "            handle.close()\n"
+                "            return\n"
+                "        log.append('kept')\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_fn = {f.evidence[0].symbol: f for f in findings}
+
+    # Whole-function void early-return pushes automatically.
+    settle_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["settle_handle"], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, settle_eval.executable_recipe)
+
+    # Loop-nested early return exits the whole function, not just the loop iteration, so must not push.
+    loop_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_fn["stop_on_open"], _snapshot(tmp_path)
+    )
+    assert loop_eval.recipe is None
+    assert "not a pushable dispatch shape" in loop_eval.rejection_reason
+
+    after = (tmp_path / "pkg" / "handles.py").read_text()
+    assert "handle.settle_handle(tag)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    open_h = ns["OpenHandle"]()  # type: ignore[operator]
+    plain_h = ns["Handle"]()  # type: ignore[operator]
+    ns["settle_handle"](open_h, "x")  # type: ignore[operator]
+    ns["settle_handle"](plain_h, "x")  # type: ignore[operator]
+    assert open_h.events == ["close"]
+    assert plain_h.events == ["release:x"]
+
+
+def test_pushes_loop_continue_guard_and_non_first_boolop_operand(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/commands.py": (
+                "class Command:\n"
+                "    pass\n\n\n"
+                "class SpecialCommand(Command):\n"
+                "    def __init__(self, name: str, active: bool = True) -> None:\n"
+                "        self.name = name\n"
+                "        self.active = active\n\n\n"
+                "def collect_special(commands: list[Command], out: list[str]) -> None:\n"
+                "    for cmd in commands:\n"
+                "        if not isinstance(cmd, SpecialCommand):\n"
+                "            continue\n"
+                "        out.append(cmd.name)\n\n\n"
+                "def accepts(flag: bool, cmd_type: type[Command]) -> bool:\n"
+                "    return flag or issubclass(\n"
+                "        cmd_type,\n"
+                "        SpecialCommand,\n"
+                "    )\n\n\n"
+                "def accepts_active(flag: bool, cmd: Command) -> bool:\n"
+                "    return (\n"
+                "        flag\n"
+                "        and isinstance(cmd, SpecialCommand)\n"
+                "        and cmd.active\n"
+                "    )\n"
+            ),
+        },
+    )
+    for fn_name, method_name in (
+        ("collect_special", "append_if_special"),
+        ("accepts", "is_special_command"),
+        ("accepts_active", "is_active_special"),
+    ):
+        findings = _findings(tmp_path)
+        target_finding = next(f for f in findings if f.evidence[0].symbol == fn_name)
+        unpicked = OwnTypeTestDetector().evaluate_recipe_for_finding(
+            target_finding, _snapshot(tmp_path)
+        )
+        assert unpicked.recipe is None
+        assert NeededInput.OWNER_PICK in unpicked.needs
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=target_finding.stable_id,
+                    owner=fn_name,
+                    because="command subclasses own their behavior",
+                    name=method_name,
+                    judgement="Command family dispatch method.",
+                ),
+            ),
+        )
+        picked, _ = picks.applied((target_finding,))
+        evaluation = OwnTypeTestDetector().evaluate_recipe_for_finding(
+            picked[0], _snapshot(tmp_path)
+        )
+        _apply(tmp_path, evaluation.executable_recipe)
+
+    after = (tmp_path / "pkg" / "commands.py").read_text()
+    assert "isinstance" not in after
+    assert "issubclass" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    out: list[str] = []
+    special_on = ns["SpecialCommand"]("go", True)  # type: ignore[operator]
+    special_off = ns["SpecialCommand"]("no", False)  # type: ignore[operator]
+    plain = ns["Command"]()  # type: ignore[operator]
+    ns["collect_special"]([plain, special_on, plain], out)  # type: ignore[operator]
+    assert out == ["go"]
+    assert ns["accepts"](True, ns["Command"]) is True  # type: ignore[operator]
+    assert ns["accepts"](False, ns["Command"]) is False  # type: ignore[operator]
+    assert ns["accepts"](False, ns["SpecialCommand"]) is True  # type: ignore[operator]
+    assert ns["accepts_active"](True, special_on) is True  # type: ignore[operator]
+    assert ns["accepts_active"](True, special_off) is False  # type: ignore[operator]
+    assert ns["accepts_active"](False, special_on) is False  # type: ignore[operator]
+    assert ns["accepts_active"](True, plain) is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_decodes_mypy_intersection_type_for_pushed_dispatch(tmp_path: Path):
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/detectors.py": (
+                "class Detector:\n"
+                "    pass\n\n\n"
+                "class CompactMixin:\n"
+                "    pass\n\n\n"
+                "class MultiCompactMixin(CompactMixin):\n"
+                "    pass\n\n\n"
+                "class SingleDetector(CompactMixin, Detector):\n"
+                "    pass\n\n\n"
+                "class MultiDetector(MultiCompactMixin, Detector):\n"
+                "    pass\n\n\n"
+                "def classify(detectors: list[type[Detector]]) -> list[str]:\n"
+                "    compact = [d for d in detectors if issubclass(d, CompactMixin)]\n"
+                "    out: list[str] = []\n"
+                "    for det in compact:\n"
+                "        if issubclass(det, MultiCompactMixin):\n"
+                "            out.append('multi')\n"
+                "        else:\n"
+                "            out.append('single')\n"
+                "    return out\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    inner_finding = next(
+        f for f in findings if "MultiCompactMixin" in f.summary or f.evidence[0].line > 23
+    )
+    unpicked = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        inner_finding, _snapshot(tmp_path)
+    )
+    assert unpicked.recipe is None
+    assert NeededInput.OWNER_PICK in unpicked.needs
+    assert "CompactMixin" in unpicked.rejection_reason
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=inner_finding.stable_id,
+                owner="classify",
+                because="compact mixins own single vs multi classification",
+                name="record_compact_kind",
+                judgement="Append this compact mixin's kind label to out.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((inner_finding,))
+    evaluation = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, evaluation.executable_recipe)
+
+    after = (tmp_path / "pkg" / "detectors.py").read_text()
+    assert "MultiCompactMixin" in after
+    assert "det.record_compact_kind(out)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["classify"]([ns["SingleDetector"], ns["MultiDetector"], ns["Detector"]]) == [  # type: ignore[operator]
+        "single",
+        "multi",
+    ]

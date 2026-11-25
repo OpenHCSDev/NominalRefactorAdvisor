@@ -181,6 +181,15 @@ class InferredReceiverType(ReceiverType):
     families: tuple[str, ...]
     """When every value is a class: the classes `C` of `type[C]` it is one of, each
     value being `C` or a subclass; empty when any value is not known so."""
+    conjunctions: tuple[tuple[str, ...], ...] = ()
+    """Union branches of conjunctive class bounds (`((A, B),)` for `<subclass of A and B>`)."""
+
+    def branch_conjunctions(self) -> tuple[tuple[str, ...], ...]:
+        """Union branches of conjunctive class bounds, defaulting to singleton branches."""
+
+        if self.conjunctions:
+            return self.conjunctions
+        return tuple((symbol,) for symbol in self.classes)
 
     def require_namespace_unseen(self, read: str, sees: Callable[[str], bool]) -> None:
         if self.instances:
