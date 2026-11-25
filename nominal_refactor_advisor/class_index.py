@@ -4472,8 +4472,9 @@ class ClassBodyNormalForm:
         cls,
         normalized: ast.FunctionDef | ast.AsyncFunctionDef,
     ) -> bool:
-        """A concrete method whose body after any docstring is only `pass` or `...`
-        and that is not decorated as `@abstractmethod` supplies no implementation."""
+        """A concrete method whose body after any docstring is only `pass`, `...`,
+        `return`, or `return None` and that is not decorated as `@abstractmethod`
+        supplies no implementation."""
 
         if any(
             _terminal_reference_name(decorator) == "abstractmethod"
@@ -4486,6 +4487,16 @@ class ClassBodyNormalForm:
                 isinstance(stmt, ast.Expr)
                 and isinstance(stmt.value, ast.Constant)
                 and stmt.value.value is Ellipsis
+            )
+            or (
+                isinstance(stmt, ast.Return)
+                and (
+                    stmt.value is None
+                    or (
+                        isinstance(stmt.value, ast.Constant)
+                        and stmt.value.value is None
+                    )
+                )
             )
             for stmt in normalized.body
         )

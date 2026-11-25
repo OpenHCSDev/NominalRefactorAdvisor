@@ -12,6 +12,7 @@ import pytest
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.class_references import ClassReferenceRole
 from nominal_refactor_advisor.class_index import (
+    ClassBodyDeclarationKind,
     CompactModuleClassProjectionFamily,
     build_compact_class_family_index,
     followed_reexports,
@@ -809,4 +810,37 @@ def test_block_fields_handles_partial_covering_owner() -> None:
 
     assert scan.block_fields("pkg.m.HoldA", ("a", "b")) == frozenset()
     assert scan.candidates
+
+
+def test_noop_stub_methods_include_docstring_only_and_bare_return() -> None:
+    """Docstring-only, `pass`, `...`, `return`, and `return None` concrete methods
+    all classify as `NOOP_METHOD` (`0.5`) so unrelated classes sharing one stub
+    method do not produce spurious `DuplicateClass` findings."""
+
+    source = (
+        "class Alpha:\n"
+        "    def close(self) -> None:\n"
+        '        """Docstring-only no-op."""\n'
+        "    def cancel(self) -> None:\n"
+        "        return\n"
+        "    def stop(self) -> None:\n"
+        '        """Docstring + explicit None."""\n'
+        "        return None\n"
+        "\n"
+        "class Beta:\n"
+        "    def close(self) -> None:\n"
+        "        pass\n"
+        "    def cancel(self) -> None:\n"
+        "        return\n"
+        "    def stop(self) -> None:\n"
+        "        return None\n"
+    )
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_modules((_module("pkg.m", source),))
+    )
+    scan = ClassOverlapVerdicts(projections, build_compact_class_family_index(projections))
+    for cls_name in ("pkg.m.Alpha", "pkg.m.Beta"):
+        decls = scan.bodies.declarations_of(cls_name)
+        for method_name in ("close", "cancel", "stop"):
+            assert decls[method_name].kind is ClassBodyDeclarationKind.NOOP_METHOD
 

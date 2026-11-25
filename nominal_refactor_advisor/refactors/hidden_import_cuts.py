@@ -722,6 +722,42 @@ class HiddenImportCuts:
                 f"moving `{', '.join(closure.roots)}` into `{reader}` would swallow all "
                 f"{len(moved)} declaration(s) of `{hub}`"
             )
+        if dragged and len(moved) > len(remaining_declarations):
+            raise kept(
+                f"moving `{', '.join(closure.roots)}` into `{reader}` would drag "
+                f"{len(dragged)} sibling declaration(s) and move {len(moved)} of "
+                f"{len(moved) + len(remaining_declarations)} declaration(s) out of `{hub}`"
+            )
+        moved_lines = sum(
+            (statement.end_lineno - statement.lineno + 1)
+            for statement in module_body
+            if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement.name in moved
+            and statement.end_lineno is not None
+        )
+        remaining_lines = sum(
+            (statement.end_lineno - statement.lineno + 1)
+            for statement in module_body
+            if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            and statement.name not in moved
+            and statement.end_lineno is not None
+        )
+        reader_source = self.snapshot.module_import_graph.unique_source_file_for_module_name(reader)
+        reader_lines = (
+            len(self.snapshot.sources_by_file_path[reader_source.file_path].splitlines())
+            if reader_source is not None
+            else 0
+        )
+        if moved_lines >= 60 and (
+            not remaining_declarations
+            or reader_lines >= 400
+            or moved_lines > remaining_lines
+        ):
+            raise kept(
+                f"moving `{', '.join(closure.roots)}` ({moved_lines} lines) into `{reader}` "
+                f"({reader_lines} lines) would collapse `{hub}` into a hub instead of "
+                f"extracting a shared contract/base below both"
+            )
         staying = (
             statement
             for statement in module_body
