@@ -18,6 +18,7 @@ class RefactorConcept(ABC):
     """Nominal refactor semantics inherited by executable declarations."""
 
     stage_proof: ClassVar[type[StageProof]] = RescannedStages
+    search_nice: ClassVar[int] = 15
 
     @classmethod
     def concept_key(cls) -> str:
@@ -148,6 +149,8 @@ class AutoRegisterMroOrderingConcept(AutoRegisterConcept):
 class ClassBodyCompositionConcept(ClassFamilyAuthorityConcept):
     """Declare a restated class body once, in the class that owns it."""
 
+    search_nice = 0
+
 
 class RestatedBaseConcept(ClassFamilyAuthorityConcept):
     """Drop a base another base of the same class already supplies."""
@@ -183,6 +186,8 @@ class ForeignFamilyRoutingConcept(ClassFamilyAuthorityConcept):
 class OptionalAstFieldDecoderConcept(ClassFamilyAuthorityConcept):
     """Route absence probes of an optional ast field through its boundary decoder."""
 
+    search_nice = 5
+
 
 class ForeignAdapterBindChainConcept(ClassFamilyAuthorityConcept):
     """Fold per-class bindings of foreign nodes into one declared adapter family."""
@@ -199,9 +204,13 @@ class LegacyPathErasureConcept(NominalBoundaryConcept):
 class FalseDistinctionErasureConcept(NominalBoundaryConcept):
     """Delete a distinction the code then treats identically."""
 
+    search_nice = 0
+
 
 class ForwarderInlineConcept(NominalBoundaryConcept):
     """Read the held object directly where a facade only forwarded to it."""
+
+    search_nice = 5
 
 
 class DeadModuleDissolutionConcept(NominalBoundaryConcept):

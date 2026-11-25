@@ -52,6 +52,7 @@ from nominal_refactor_advisor.owner_candidates import (
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.source_identity import PACKAGE_INIT_FILE_NAME
 from nominal_refactor_advisor.receipts import Receipt
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 class RegistrationRole(StrEnum):
@@ -310,6 +311,49 @@ class InstalledDistributionOwners:
                     )
 
 
+@ScanCache.cached
+def _registration_owners_for_key(
+    imported_top_levels: frozenset[str],
+    pyproject: Path | None,
+) -> RegistrationOwners:
+    declaration = (
+        OwnerPackagesDeclaration()
+        if pyproject is None
+        else OwnerPackagesDeclaration.declared_for(pyproject)
+    )
+    by_top_level = _distributions_by_top_level()
+    wanted = {
+        distribution
+        for top_level in imported_top_levels
+        for distribution in by_top_level.get(top_level, ())
+    }
+    declared = declaration.packages
+    found: list[InstalledDistributionOwners] = []
+    imported: set[str] = set()
+    gaps: list[str] = []
+    for distribution in sorted(wanted | set(declared)):
+        try:
+            owners = InstalledDistributionOwners.of(distribution)
+        except metadata.PackageNotFoundError:
+            if distribution in declared:
+                gaps.append(
+                    f"`{distribution}` is declared in owner-packages "
+                    "but is not installed for the interpreter running NRA "
+                    f"({declaration.premise})"
+                )
+            continue
+        found.append(owners)
+        if distribution in wanted:
+            imported.add(owners.distribution)
+    return RegistrationOwners(
+        tuple(owner for distribution in found for owner in distribution.owners),
+        tuple(f"{item.distribution} {item.version}" for item in found),
+        frozenset(imported),
+        tuple(gaps),
+        declaration,
+    )
+
+
 @dataclass(frozen=True)
 class RegistrationOwners:
     """The installed registration owners one scan may compose, and what is missing."""
@@ -328,37 +372,9 @@ class RegistrationOwners:
         imported_top_levels: Iterable[str],
         source: Path,
     ) -> RegistrationOwners:
-        declaration = OwnerPackagesDeclaration.declared_for(source)
-        by_top_level = _distributions_by_top_level()
-        wanted = {
-            distribution
-            for top_level in set(imported_top_levels)
-            for distribution in by_top_level.get(top_level, ())
-        }
-        declared = declaration.packages
-        found: list[InstalledDistributionOwners] = []
-        imported: set[str] = set()
-        gaps: list[str] = []
-        for distribution in sorted(wanted | set(declared)):
-            try:
-                owners = InstalledDistributionOwners.of(distribution)
-            except metadata.PackageNotFoundError:
-                if distribution in declared:
-                    gaps.append(
-                        f"`{distribution}` is declared in owner-packages "
-                        "but is not installed for the interpreter running NRA "
-                        f"({declaration.premise})"
-                    )
-                continue
-            found.append(owners)
-            if distribution in wanted:
-                imported.add(owners.distribution)
-        return cls(
-            tuple(owner for distribution in found for owner in distribution.owners),
-            tuple(f"{item.distribution} {item.version}" for item in found),
-            frozenset(imported),
-            tuple(gaps),
-            declaration,
+        return _registration_owners_for_key(
+            frozenset(imported_top_levels),
+            DeclaredRoot.nearest_pyproject(source),
         )
 
     @classmethod

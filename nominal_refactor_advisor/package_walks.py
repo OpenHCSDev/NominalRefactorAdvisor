@@ -68,8 +68,16 @@ class ModuleWalks(ParsedModuleFact):
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
         source = parsed_module.source
+        has_walk = "iter_modules" in source or "walk_packages" in source
+        if not has_walk and "class " not in source:
+            return cls(
+                walkers={},
+                keyword_walks={},
+                metaclasses={},
+                class_keywords={},
+            )
         walkers: dict[str, Walker] = {}
-        if "iter_modules" in source or "walk_packages" in source:
+        if has_walk:
             functions = _functions(parsed_module)
             changed = True
             while changed:

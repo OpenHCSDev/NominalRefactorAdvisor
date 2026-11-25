@@ -642,19 +642,24 @@ class ModuleSymbolTable:
 
         excluded_names = frozenset(excluded_symbol_names)
         candidates = frozenset(candidate_names)
-        retained_statements = tuple(
-            statement
-            for statement in self.module.body
-            if not excluded_names.intersection(
+        if not candidates:
+            return frozenset()
+        excluded_indices: list[int] = []
+        retained_statements: list[ast.stmt] = []
+        for stmt_idx, statement in enumerate(self.module.body):
+            if excluded_names.intersection(
                 self.bound_names_for_statement(statement)
-            )
-        )
-        retained_module = ast.Module(body=list(retained_statements), type_ignores=[])
+            ):
+                excluded_indices.append(stmt_idx)
+            else:
+                retained_statements.append(statement)
         lexical_names = ModuleLexicalDependencyProjection.from_module(
-            retained_module
-        ).referenced_names_among(
-            candidates
+            self.module
+        ).referenced_names_excluding_statements(
+            frozenset(excluded_indices),
+            candidates,
         )
+        retained_module = ast.Module(body=retained_statements, type_ignores=[])
         public_export = ModulePublicExportSourceAuthority.from_module(retained_module)
         public_export_names = frozenset(
             name

@@ -35,6 +35,7 @@ from nominal_refactor_advisor.codemod_source_edits import NominalSourceEdit, Sou
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.observation_families import ShapeFamily
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 ImportStatement = ast.Import | ast.ImportFrom
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -792,6 +793,29 @@ class CompactHiddenImportModuleSummary:
 
 
 @dataclass(frozen=True)
+class _CompactHiddenImportBaseline:
+    """Reusable full-scan state for incremental ``CompactHiddenImportPlan``."""
+
+    by_path: dict[str, HiddenImportModuleFacts]
+    known: frozenset[str]
+    sorted_mods: tuple[str, ...]
+    mod_to_idx: dict[str, int]
+    paths_by_module: dict[str, str]
+    initial_edges: dict[str, frozenset[str]]
+    initial_adj_mask: tuple[int, ...]
+    exports_by_module: dict[str, RuntimeBindings]
+    unscanned_by_module: dict[str, tuple[str, ...]]
+    initial_reach_mask: tuple[int | None, ...]
+    referenced_export_members: dict[str, frozenset[str]]
+    plan: CompactHiddenImportPlan
+
+
+@ScanCache.cached
+def _base_hidden_import_plan_slot() -> list[_CompactHiddenImportBaseline | None]:
+    return [None]
+
+
+@dataclass(frozen=True)
 class CompactHiddenImportPlan:
     """Shared compact judgment of hidden imports and cycle hubs across modules."""
 
@@ -814,65 +838,205 @@ class CompactHiddenImportPlan:
         config: object = None,
     ) -> CompactHiddenImportPlan:
         del config
+        base: _CompactHiddenImportBaseline | None = None
+        if ScanCache.active() is not None:
+            base = _base_hidden_import_plan_slot()[0]
         known = frozenset(projection.module_name for projection in projections)
-        paths_by_module = {
-            projection.module_name: projection.file_path for projection in projections
-        }
-        edges: dict[str, set[str]] = {
-            projection.module_name: set(
-                known_import_targets(projection.top_level_import_targets, known)
+        if base is not None and known == base.known and len(projections) == len(base.by_path):
+            changed = [
+                p
+                for p in projections
+                if (old_p := base.by_path.get(p.file_path)) is None
+                or (old_p is not p and old_p != p)
+            ]
+            if not changed:
+                return base.plan
+            sorted_mods = base.sorted_mods
+            mod_to_idx = base.mod_to_idx
+            paths_by_module = base.paths_by_module
+            adj_mask = list(base.initial_adj_mask)
+            exports_by_module: dict[str, RuntimeBindings] = dict(base.exports_by_module)
+            unscanned_by_module: dict[str, tuple[str, ...]] = dict(
+                base.unscanned_by_module
             )
-            for projection in projections
-        }
-        exports_by_module: dict[str, RuntimeBindings] = {
-            projection.module_name: projection.runtime_bindings()
-            for projection in projections
-        }
-        unscanned_by_module: dict[str, tuple[str, ...]] = {
-            projection.module_name: tuple(
-                sorted(
-                    imported
-                    for imported in projection.top_level_imported_modules
-                    if imported not in known
+            dirty_edge_idxs: set[int] = set()
+            dirty_bitmask = 0
+            any_structural_change = False
+            for p in changed:
+                old_p = base.by_path[p.file_path]
+                mod = p.module_name
+                mod_idx = mod_to_idx[mod]
+                new_edges = frozenset(
+                    known_import_targets(p.top_level_import_targets, known)
                 )
+                if new_edges != base.initial_edges.get(mod):
+                    mask = 0
+                    for target in new_edges:
+                        mask |= 1 << mod_to_idx[target]
+                    adj_mask[mod_idx] = mask
+                    dirty_edge_idxs.add(mod_idx)
+                    dirty_bitmask |= 1 << mod_idx
+                    any_structural_change = True
+                new_unscanned = tuple(
+                    sorted(
+                        imported
+                        for imported in p.top_level_imported_modules
+                        if imported not in known
+                    )
+                )
+                if new_unscanned != base.unscanned_by_module.get(mod, ()):
+                    unscanned_by_module[mod] = new_unscanned
+                    any_structural_change = True
+                new_scope = p.runtime_bindings()
+                old_scope = base.exports_by_module[mod]
+                exports_by_module[mod] = new_scope
+                if not any_structural_change:
+                    if p.hidden != old_p.hidden:
+                        any_structural_change = True
+                    elif p.hidden and new_scope != old_scope:
+                        any_structural_change = True
+                    else:
+                        ref_members = base.referenced_export_members.get(mod)
+                        if ref_members and any(
+                            new_scope.binds(member) != old_scope.binds(member)
+                            for member in ref_members
+                        ):
+                            any_structural_change = True
+            if not any_structural_change:
+                return base.plan
+            if not dirty_edge_idxs:
+                reach_mask: list[int | None] = list(base.initial_reach_mask)
+            else:
+                reach_mask = [
+                    m
+                    if m is not None
+                    and idx not in dirty_edge_idxs
+                    and not (m & dirty_bitmask)
+                    else None
+                    for idx, m in enumerate(base.initial_reach_mask)
+                ]
+            populated_reach = [
+                idx for idx, m in enumerate(reach_mask) if m is not None
+            ]
+            record_initial = False
+            initial_edges: dict[str, frozenset[str]] = {}
+            initial_adj_mask: tuple[int, ...] = ()
+            initial_reach_mask: list[int | None] = []
+        else:
+            sorted_mods = tuple(sorted(known))
+            mod_to_idx = {mod: idx for idx, mod in enumerate(sorted_mods)}
+            n_mods = len(sorted_mods)
+            paths_by_module = {
+                projection.module_name: projection.file_path
+                for projection in projections
+            }
+            initial_edges = {
+                projection.module_name: frozenset(
+                    known_import_targets(projection.top_level_import_targets, known)
+                )
+                for projection in projections
+            }
+            adj_mask = [0] * n_mods
+            for mod, targets in initial_edges.items():
+                mask = 0
+                for target in targets:
+                    mask |= 1 << mod_to_idx[target]
+                adj_mask[mod_to_idx[mod]] = mask
+            initial_adj_mask = tuple(adj_mask)
+            exports_by_module = {
+                projection.module_name: projection.runtime_bindings()
+                for projection in projections
+            }
+            unscanned_by_module = {
+                projection.module_name: tuple(
+                    sorted(
+                        imported
+                        for imported in projection.top_level_imported_modules
+                        if imported not in known
+                    )
+                )
+                for projection in projections
+            }
+            reach_mask = [None] * n_mods
+            populated_reach = []
+            record_initial = (
+                ScanCache.active() is not None
+                and base is None
+                and len(projections) >= 20
             )
-            for projection in projections
-        }
-        reachable_cache: dict[str, frozenset[str]] = {}
+            initial_reach_mask = [None] * n_mods if record_initial else []
 
-        def reachable_from(start_module: str) -> frozenset[str]:
-            cached = reachable_cache.get(start_module)
+        unscanned_mask_by_top: dict[str, int] = {}
+        for mod, unscanned in unscanned_by_module.items():
+            if not unscanned:
+                continue
+            mod_bit = 1 << mod_to_idx[mod]
+            for imp in unscanned:
+                top = imp.partition(".")[0]
+                unscanned_mask_by_top[top] = unscanned_mask_by_top.get(top, 0) | mod_bit
+
+        mutated_mask = 0
+
+        def reachable_mask(start_idx: int) -> int:
+            cached = reach_mask[start_idx]
             if cached is not None:
                 return cached
-            visited: set[str] = set()
-            reached: set[str] = set()
-            stack = [start_module]
+            visited = 0
+            reached = 0
+            stack = [start_idx]
             while stack:
-                current = stack.pop()
-                if current in visited:
+                cur = stack.pop()
+                cur_bit = 1 << cur
+                if visited & cur_bit:
                     continue
-                visited.add(current)
-                for imported_module in edges.get(current, ()):
-                    reached.add(imported_module)
-                    stack.append(imported_module)
-            result = frozenset(reached)
-            reachable_cache[start_module] = result
-            return result
+                visited |= cur_bit
+                if cur != start_idx:
+                    cur_cached = reach_mask[cur]
+                    if cur_cached is not None:
+                        reached |= cur_cached
+                        continue
+                nbrs = adj_mask[cur]
+                reached |= nbrs
+                rem = nbrs & ~visited
+                while rem:
+                    lsb = rem & -rem
+                    stack.append(lsb.bit_length() - 1)
+                    rem ^= lsb
+            reach_mask[start_idx] = reached
+            populated_reach.append(start_idx)
+            if record_initial and (
+                not mutated_mask
+                or (
+                    not (mutated_mask & (1 << start_idx))
+                    and not (reached & mutated_mask)
+                )
+            ):
+                initial_reach_mask[start_idx] = reached
+            return reached
 
-        def reaching_back(importing_module: str, imported_module: str) -> str | None:
+        def reachable_from(start_module: str) -> frozenset[str]:
+            m_idx = mod_to_idx.get(start_module)
+            if m_idx is None:
+                return frozenset()
+            mask = reachable_mask(m_idx)
+            names: list[str] = []
+            rem = mask
+            while rem:
+                lsb = rem & -rem
+                names.append(sorted_mods[lsb.bit_length() - 1])
+                rem ^= lsb
+            return frozenset(names)
+
+        def reaching_back(importing_module: str, importing_bit: int, imported_module: str) -> str | None:
             if importing_module == imported_module:
                 return None
             triggered = known_import_targets((imported_module,), known) - {
                 importing_module
             }
-            return next(
-                (
-                    target
-                    for target in sorted(triggered)
-                    if importing_module in reachable_from(target)
-                ),
-                None,
-            )
+            for target in sorted(triggered):
+                if reachable_mask(mod_to_idx[target]) & importing_bit:
+                    return target
+            return None
 
         def exports_has(module_name: str, member: str) -> bool:
             scope = exports_by_module.get(module_name)
@@ -882,8 +1046,11 @@ class CompactHiddenImportPlan:
 
         module_summaries: list[CompactHiddenImportModuleSummary] = []
         hub_readers: dict[str, set[str]] = defaultdict(set)
+        referenced_exports: dict[str, set[str]] = defaultdict(set)
 
         for projection in sorted(projections, key=lambda item: item.file_path):
+            if not projection.hidden:
+                continue
             active = [
                 (hidden, targets)
                 for hidden in projection.hidden
@@ -894,11 +1061,20 @@ class CompactHiddenImportPlan:
             ]
             if not active:
                 continue
-            scope = exports_by_module[projection.module_name]
+            mod = projection.module_name
+            mod_idx = mod_to_idx[mod]
+            mod_bit = 1 << mod_idx
+            importing_top = mod.partition(".")[0]
+            top_unscanned_mask = unscanned_mask_by_top.get(importing_top, 0)
+            scope = exports_by_module[mod]
             accepted_lines: list[int] = []
             cycle_reaching: list[str] = []
             unpromotable_count = 0
             for hidden, targets in active:
+                if record_initial:
+                    for binding in hidden.bindings:
+                        if binding.member is not None and binding.module in known:
+                            referenced_exports[binding.module].add(binding.member)
                 if any(
                     binding.member is not None
                     and not exports_has(binding.module, binding.member)
@@ -919,7 +1095,7 @@ class CompactHiddenImportPlan:
                     (
                         back
                         for target in sorted(targets)
-                        if (back := reaching_back(projection.module_name, target))
+                        if (back := reaching_back(mod, mod_bit, target))
                         is not None
                     ),
                     None,
@@ -931,31 +1107,51 @@ class CompactHiddenImportPlan:
                         if hidden.is_import_from and hidden.bindings
                         else None
                     )
-                    hub_readers[hub or reaching].add(projection.module_name)
+                    hub_readers[hub or reaching].add(mod)
                     continue
-                if (
-                    unscanned_same_package_bridge(
-                        projection.module_name,
-                        targets,
-                        known,
-                        reachable_from,
-                        unscanned_by_module,
-                    )
-                    is not None
-                ):
-                    unpromotable_count += 1
-                    continue
+                if top_unscanned_mask:
+                    loaded_mask = 0
+                    for target in targets:
+                        t_idx = mod_to_idx[target]
+                        loaded_mask |= (1 << t_idx) | reachable_mask(t_idx)
+                    loaded_mask &= ~mod_bit
+                    if (
+                        loaded_mask & top_unscanned_mask
+                        and unscanned_same_package_bridge(
+                            mod,
+                            targets,
+                            known,
+                            reachable_from,
+                            unscanned_by_module,
+                        )
+                        is not None
+                    ):
+                        unpromotable_count += 1
+                        continue
                 accepted_lines.append(hidden.lineno)
-                current_edges = edges.setdefault(projection.module_name, set())
-                if not targets <= current_edges:
-                    current_edges.update(targets)
-                    reachable_cache.clear()
+                target_mask = 0
+                for target in targets:
+                    target_mask |= 1 << mod_to_idx[target]
+                new_bits = target_mask & ~adj_mask[mod_idx]
+                if new_bits:
+                    added_mask = new_bits
+                    rem = new_bits
+                    while rem:
+                        lsb = rem & -rem
+                        added_mask |= reachable_mask(lsb.bit_length() - 1)
+                        rem ^= lsb
+                    adj_mask[mod_idx] |= new_bits
+                    mutated_mask |= mod_bit
+                    for k in populated_reach:
+                        rk = reach_mask[k]
+                        if rk is not None and (k == mod_idx or (rk & mod_bit)):
+                            reach_mask[k] = rk | added_mask
                 scope = scope.with_promoted(hidden.bindings)
             if accepted_lines:
                 module_summaries.append(
                     CompactHiddenImportModuleSummary(
                         file_path=projection.file_path,
-                        module_name=projection.module_name,
+                        module_name=mod,
                         first_accepted_line=accepted_lines[0],
                         accepted_count=len(accepted_lines),
                         cycle_reaching=tuple(cycle_reaching),
@@ -963,13 +1159,34 @@ class CompactHiddenImportPlan:
                     )
                 )
 
-        return cls(
+        built = cls(
             module_summaries=tuple(module_summaries),
             hub_readers={
                 hub: tuple(sorted(readers)) for hub, readers in hub_readers.items()
             },
             paths_by_module=paths_by_module,
         )
+        if record_initial:
+            slot = _base_hidden_import_plan_slot()
+            if slot[0] is None:
+                slot[0] = _CompactHiddenImportBaseline(
+                    by_path={p.file_path: p for p in projections},
+                    known=known,
+                    sorted_mods=sorted_mods,
+                    mod_to_idx=mod_to_idx,
+                    paths_by_module=paths_by_module,
+                    initial_edges=initial_edges,
+                    initial_adj_mask=initial_adj_mask,
+                    exports_by_module=exports_by_module,
+                    unscanned_by_module=unscanned_by_module,
+                    initial_reach_mask=tuple(initial_reach_mask),
+                    referenced_export_members={
+                        mod: frozenset(members)
+                        for mod, members in referenced_exports.items()
+                    },
+                    plan=built,
+                )
+        return built
 
 
 __all__ = (

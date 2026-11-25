@@ -4821,6 +4821,8 @@ class ModuleBasesStores(ParsedModuleFact):
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> Self:
+        if "__bases__" not in parsed_module.source:
+            return cls(())
         found = []
         for node in ast.walk(parsed_module.module):
             match node:
@@ -5197,6 +5199,9 @@ def _compact_class_binding_facets(
     )
 
 
+_CLASS_BODY_IDENT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
 @ScanCache.cached
 def _cached_class_body_digests() -> dict[
     tuple[str, str, tuple[object, ...]],
@@ -5208,16 +5213,95 @@ def _cached_class_body_digests() -> dict[
     return {}
 
 
-def _binding_snapshot_key(snapshot: ModuleNominalBindingSnapshot) -> tuple[object, ...]:
+@ScanCache.cached
+def _base_modules_for_class_digests() -> dict[str, ParsedModule]:
+    """Baseline parsed modules whose already-collected ``body_declarations`` can
+    seed ``_cached_class_body_digests`` lazily on the first edit to a file."""
+
+    return {}
+
+
+@ScanCache.cached
+def _seeded_class_digest_paths() -> set[str]:
+    return set()
+
+
+def register_base_modules_for_class_digests(modules: Iterable[ParsedModule]) -> None:
+    """Register baseline scan modules so edited copies reuse unchanged class digests."""
+
+    if ScanCache.active() is None:
+        return
+    registry = _base_modules_for_class_digests()
+    if registry:
+        return
+    for module in modules:
+        registry[module.file_path] = module
+
+
+def _seed_class_body_digests_from_baseline(
+    file_path: str,
+    cache: dict[
+        tuple[str, str, tuple[object, ...]],
+        tuple[int, tuple[ClassBodyDeclarationDigest, ...]],
+    ],
+) -> None:
+    seeded = _seeded_class_digest_paths()
+    if file_path in seeded:
+        return
+    seeded.add(file_path)
+    base_module = _base_modules_for_class_digests().get(file_path)
+    if base_module is None or not base_module.has_family_batch(
+        CompactModuleClassProjectionFamily
+    ):
+        return
+    items = base_module.family_batch(CompactModuleClassProjectionFamily).items
+    if not items:
+        return
+    base_proj = items[0]
+    if not isinstance(base_proj, CompactModuleClassProjection) or not base_proj.classes:
+        return
+    source_lines = base_module.source_segments.lines
+    lines = tuple(c.line for c in base_proj.classes if c.end_line is not None)
+    if not lines:
+        return
+    scopes = ClassBodyModuleScope.for_lines(base_module, lines)
+    for cls_rec in base_proj.classes:
+        if cls_rec.end_line is None:
+            continue
+        scope = scopes.get(cls_rec.line)
+        if scope is None:
+            continue
+        class_src = "".join(source_lines[cls_rec.line - 1 : cls_rec.end_line])
+        names = tuple(sorted(set(_CLASS_BODY_IDENT_RE.findall(class_src))))
+        scope_key = (
+            scope.module_name,
+            _binding_snapshot_slice_key(scope.declaration, names),
+            _binding_snapshot_slice_key(scope.final, names),
+            None
+            if scope.star_blind_declaration is None
+            else _binding_snapshot_slice_key(scope.star_blind_declaration, names),
+            None
+            if scope.star_blind_final is None
+            else _binding_snapshot_slice_key(scope.star_blind_final, names),
+        )
+        key = (scope.module_name, class_src, scope_key)
+        cache.setdefault(key, (cls_rec.line, cls_rec.body_declarations))
+
+
+def _binding_snapshot_slice_key(
+    snapshot: ModuleNominalBindingSnapshot,
+    names: tuple[str, ...],
+) -> tuple[object, ...]:
+    bindings = snapshot.bindings_by_name
+    unresolved = snapshot.unresolved_bound_names
     return (
         tuple(
-            sorted(
-                (name, binding.qualified_name)
-                for name, binding in snapshot.bindings_by_name.items()
-            )
+            (name, bindings[name].qualified_name)
+            for name in names
+            if name in bindings
         ),
+        tuple(name for name in names if name in unresolved),
         snapshot.annotation_mode,
-        snapshot.unresolved_bound_names,
         snapshot.star_import_ambiguity,
         snapshot.star_import_excluded_names,
     )
@@ -5236,22 +5320,21 @@ def _class_body_digests_for_node(
         | None
     ),
 ) -> tuple[ClassBodyDeclarationDigest, ...]:
+    del scope_keys
     if cache is not None and node.end_lineno is not None:
-        scope_key = scope_keys.get(id(scope))
-        if scope_key is None:
-            scope_key = (
-                scope.module_name,
-                _binding_snapshot_key(scope.declaration),
-                _binding_snapshot_key(scope.final),
-                None
-                if scope.star_blind_declaration is None
-                else _binding_snapshot_key(scope.star_blind_declaration),
-                None
-                if scope.star_blind_final is None
-                else _binding_snapshot_key(scope.star_blind_final),
-            )
-            scope_keys[id(scope)] = scope_key
         class_src = "".join(source_lines[node.lineno - 1 : node.end_lineno])
+        names = tuple(sorted(set(_CLASS_BODY_IDENT_RE.findall(class_src))))
+        scope_key = (
+            scope.module_name,
+            _binding_snapshot_slice_key(scope.declaration, names),
+            _binding_snapshot_slice_key(scope.final, names),
+            None
+            if scope.star_blind_declaration is None
+            else _binding_snapshot_slice_key(scope.star_blind_declaration, names),
+            None
+            if scope.star_blind_final is None
+            else _binding_snapshot_slice_key(scope.star_blind_final, names),
+        )
         key = (scope.module_name, class_src, scope_key)
         cached = cache.get(key)
         if cached is not None:
@@ -5288,6 +5371,8 @@ def _compact_indexed_classes(
         if include_body_facets and ScanCache.active() is not None
         else None
     )
+    if body_cache is not None:
+        _seed_class_body_digests_from_baseline(file_path, body_cache)
     body_scope_keys: dict[int, tuple[object, ...]] = {}
     star_snapshots = (
         _module_nominal_binding_snapshots(
@@ -5510,6 +5595,114 @@ def _interned_settled_projections() -> dict[
     return {}
 
 
+@ScanCache.cached
+def _base_field_decl_settlement_slot() -> list[
+    tuple[
+        dict[str, CompactModuleClassHeader],
+        dict[int, CompactModuleClassHeader],
+        FieldDeclarationIndex,
+        frozenset[str],
+        frozenset[str],
+    ]
+    | None
+]:
+    return [None]
+
+
+def _field_role_class_signature(
+    indexed_class: CompactIndexedClass,
+) -> tuple[object, ...]:
+    return (
+        indexed_class.symbol,
+        "__new__" in indexed_class.member_binding_names,
+        "__call__" in indexed_class.member_binding_names,
+        indexed_class.base_references_are_complete,
+        indexed_class.registry_facts.base_references,
+        indexed_class.registry_facts.metaclass_references,
+    )
+
+
+def _try_incremental_field_declaration_settlement(
+    projections: tuple[ClassProjectionT, ...],
+) -> tuple[ClassProjectionT, ...] | None:
+    slot = _base_field_decl_settlement_slot()
+    base_entry = slot[0]
+    if base_entry is None:
+        return None
+    base_by_path, settled_by_raw_id, base_index, touched_modules, touched_symbols = (
+        base_entry
+    )
+    if len(projections) != len(base_by_path):
+        return None
+    changed: list[tuple[ClassProjectionT, CompactModuleClassHeader]] = []
+    for projection in projections:
+        old_projection = base_by_path.get(projection.file_path)
+        if old_projection is None or old_projection.module_name != projection.module_name:
+            return None
+        if old_projection is not projection:
+            changed.append((projection, old_projection))
+    if not changed:
+        result_unchanged: list[ClassProjectionT] = []
+        changed_any = False
+        for projection in projections:
+            settled = cast(ClassProjectionT, settled_by_raw_id[id(projection)])
+            if settled is not projection:
+                changed_any = True
+            result_unchanged.append(settled)
+        return tuple(result_unchanged) if changed_any else projections
+    if len(changed) > 64:
+        return None
+    changed_module_names: set[str] = set()
+    for projection, old_projection in changed:
+        changed_module_names.add(projection.module_name)
+        if projection.field_declaration_wrappers != old_projection.field_declaration_wrappers:
+            return None
+        mod_touched = projection.module_name in touched_modules
+        if mod_touched and projection.import_aliases != old_projection.import_aliases:
+            return None
+        old_sigs = {c.symbol: _field_role_class_signature(c) for c in old_projection.classes}
+        new_sigs = {c.symbol: _field_role_class_signature(c) for c in projection.classes}
+        for sym in old_sigs.keys() | new_sigs.keys():
+            if old_sigs.get(sym) != new_sigs.get(sym) and sym in touched_symbols:
+                return None
+    for projection, _old_projection in changed:
+        if not projection.has_unsettled_field_declarations:
+            continue
+        for indexed_class in projection.classes:
+            for member in indexed_class.dataclass_declaration.fields:
+                call = member.declaration_call
+                if call is not None:
+                    callee_mod = call.callee.rpartition(".")[0]
+                    if callee_mod in changed_module_names:
+                        return None
+    result: list[ClassProjectionT] = []
+    changed_any = False
+    for projection in projections:
+        cached_settled = settled_by_raw_id.get(id(projection))
+        if cached_settled is not None:
+            settled_proj = cast(ClassProjectionT, cached_settled)
+            if settled_proj is not projection:
+                changed_any = True
+            result.append(settled_proj)
+            continue
+        if not projection.has_unsettled_field_declarations:
+            result.append(projection)
+            continue
+        settled_classes = tuple(
+            indexed_class.with_settled_field_declarations(base_index)
+            for indexed_class in projection.classes
+        )
+        if all(
+            settled is original
+            for settled, original in zip(settled_classes, projection.classes)
+        ):
+            result.append(projection)
+        else:
+            changed_any = True
+            result.append(replace(projection, classes=settled_classes))
+    return tuple(result) if changed_any else projections
+
+
 def field_declaration_settled_projections(
     projections: tuple[ClassProjectionT, ...],
 ) -> tuple[ClassProjectionT, ...]:
@@ -5518,6 +5711,10 @@ def field_declaration_settled_projections(
 
     if not any(projection.has_unsettled_field_declarations for projection in projections):
         return projections
+    if ScanCache.active() is not None:
+        incremental = _try_incremental_field_declaration_settlement(projections)
+        if incremental is not None:
+            return incremental
     index = FieldDeclarationIndex.of_projections(projections)
     cache = (
         _interned_settled_projections() if ScanCache.active() is not None else None
@@ -5557,7 +5754,54 @@ def field_declaration_settled_projections(
         if cache is not None:
             cache[id(projection)] = (projection, roles, settled_proj)
         result.append(settled_proj)
-    return tuple(result) if changed_any else projections
+    settled_tuple = tuple(result) if changed_any else projections
+    if ScanCache.active() is not None:
+        slot = _base_field_decl_settlement_slot()
+        if slot[0] is None:
+            queried_callees = {
+                member.declaration_call.callee
+                for projection in projections
+                if projection.has_unsettled_field_declarations
+                for indexed_class in projection.classes
+                for member in indexed_class.dataclass_declaration.fields
+                if member.declaration_call is not None
+            }
+            touched_symbols: set[str] = (
+                queried_callees
+                | set(index.built)
+                | set(index.kept_metaclasses)
+            )
+            touched_modules: set[str] = {
+                sym.rpartition(".")[0] for sym in touched_symbols if "." in sym
+            }
+            if "classes" in index.__dict__:
+                lookups = index.classes.exposure.__dict__.get(
+                    "_lazy_module_declaration_lookups", ()
+                )
+                touched_modules.update(lookups)
+                scanned = index.classes.scanned
+                for sym in tuple(index.built) + tuple(index.kept_metaclasses):
+                    decl = scanned.get(sym)
+                    if decl is not None:
+                        touched_modules.add(decl.module_name)
+                        for ref in (
+                            *decl.registry_facts.base_references,
+                            *decl.registry_facts.metaclass_references,
+                        ):
+                            qname = ref.settled_qualified_name(
+                                index.classes, decl.module_name
+                            )
+                            if qname and "." in qname:
+                                touched_symbols.add(qname)
+                                touched_modules.add(qname.rpartition(".")[0])
+            slot[0] = (
+                {p.file_path: p for p in projections},
+                {id(raw): settled for raw, settled in zip(projections, settled_tuple)},
+                index,
+                frozenset(touched_modules),
+                frozenset(touched_symbols),
+            )
+    return settled_tuple
 
 
 class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProjection]):
@@ -5661,6 +5905,24 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
 
         return repository_settled_projections(
             tuple(cls._required_module_projection(module) for module in parsed_modules)
+        )
+
+    @classmethod
+    @ScanCache.scope()
+    def collect_overlap_modules(
+        cls,
+        parsed_modules: Iterable[ParsedModule],
+    ) -> tuple[CompactModuleClassProjection, ...]:
+        """Collect overlap-sufficient projections: reuse already-cached full module
+        projections and derive only overlap facets for uncached virtual modules."""
+
+        return repository_settled_projections(
+            tuple(
+                cls._required_module_projection(module)
+                if module.has_family_batch(cls)
+                else module.fact(ModuleClassOverlapProjection).projection
+                for module in parsed_modules
+            )
         )
 
     @classmethod
@@ -5807,6 +6069,50 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         ]
 
 
+@dataclass(frozen=True)
+class ModuleClassOverlapProjection(ParsedModuleFact):
+    """Lightweight class projection holding only the facets `ClassOverlapVerdicts`
+    and `CompactClassFamilyIndex` read (header + class references + field order
+    summaries + script scopes), avoiding unrelated syntax/method facets on
+    temporary virtual snapshots."""
+
+    projection: CompactModuleClassProjection
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        declarations = CompactModuleClassHeader.from_module(parsed_module)
+        return cls(
+            CompactModuleClassProjection(
+                **{
+                    declaration.name: getattr(declarations, declaration.name)
+                    for declaration in fields(CompactModuleClassHeader)
+                },
+                class_references=_compact_class_references(parsed_module),
+                field_order_summaries=FunctionOrderSummary.of_syntax_index(
+                    parsed_module.module_name,
+                    parsed_module.syntax_index,
+                    module_import_aliases(parsed_module),
+                ),
+                script_scopes=tuple(
+                    _compact_script_scope(source)
+                    for source in parsed_module.fact(EmbeddedSources).sources
+                ),
+            )
+        )
+
+
+@dataclass(frozen=True)
+class ModuleClassTypingProjection(ParsedModuleFact):
+    """Lightweight class projection holding only the header + return-typing
+    facets read by `DeclaredReceiverTyping` and `CompactClassFamilyIndex`."""
+
+    projection: CompactModuleClassProjection
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> Self:
+        return cls(CompactModuleClassProjectionFamily.collect_stub(parsed_module))
+
+
 _REGISTRY_PROJECTION_ATTRS = frozenset(("__registry__", "_registry", "registry"))
 
 
@@ -5946,37 +6252,6 @@ def _compact_repeated_keyed_family_roots(
     return tuple(roots)
 
 
-def _classmethod_receiver_class(
-    node: ast.AST,
-    scope: LexicalSyntaxScope,
-    nodes: Sequence[ast.AST],
-    parent_indices: Sequence[int],
-    module_bound_names: frozenset[str],
-) -> tuple[str, ...] | None:
-    """The class a `@classmethod`'s receiver parameter denotes, read directly in
-    that method: its class-name path, which resolves like a module-level name."""
-
-    if not isinstance(node, ast.Name) or not scope.function_node_indices:
-        return None
-    function_index = scope.function_node_indices[-1]
-    function = nodes[function_index]
-    if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-        return None
-    if not isinstance(nodes[parent_indices[function_index]], ast.ClassDef):
-        return None
-    if "classmethod" in module_bound_names or not any(
-        isinstance(decorator, ast.Name) and decorator.id == "classmethod"
-        for decorator in function.decorator_list
-    ):
-        return None
-    positional = (*function.args.posonlyargs, *function.args.args)
-    if not positional or positional[0].arg != node.id:
-        return None
-    if not scope.class_names or scope.class_names[0] not in module_bound_names:
-        return None
-    return scope.class_names
-
-
 def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
     """The keywords one call passes as `x.<same name>`, for the value `x` that
     supplies the most of them."""
@@ -6013,101 +6288,186 @@ def _compact_class_references(
         parsed_module.module.body
     )
     import_aliases = module_import_aliases(parsed_module)
-    locals_by_function_index = {
-        function_index: LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
-        | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
-        for function_index in {
-            index
-            for scope in syntax_index.scopes
-            for index in scope.function_node_indices
-        }
-        if isinstance(
-            function := syntax_index.depth_first_nodes[function_index],
-            (ast.FunctionDef, ast.AsyncFunctionDef),
-        )
-    }
     nodes = syntax_index.depth_first_nodes
     parent_indices = syntax_index.parent_indices
+    scopes = syntax_index.scopes
+    scope_ids = syntax_index.scope_ids
+
+    function_indices = {
+        index
+        for scope in scopes
+        for index in scope.function_node_indices
+    }
+    locals_by_function_index: dict[int, frozenset[str]] = {}
+    classmethod_param_by_func_index: dict[int, str] = {}
+    can_have_classmethod = "classmethod" not in module_bound_names
+    for function_index in function_indices:
+        function = nodes[function_index]
+        if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            locals_by_function_index[function_index] = (
+                LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(function.body)
+                | LEXICAL_SCOPE_BINDING_AUTHORITY.argument_names(function)
+            )
+            if (
+                can_have_classmethod
+                and isinstance(nodes[parent_indices[function_index]], ast.ClassDef)
+                and any(
+                    type(decorator) is ast.Name and decorator.id == "classmethod"
+                    for decorator in function.decorator_list
+                )
+            ):
+                positional = (*function.args.posonlyargs, *function.args.args)
+                if positional:
+                    classmethod_param_by_func_index[function_index] = positional[0].arg
+
+    classmethod_param_names = frozenset(classmethod_param_by_func_index.values())
+    empty_frozenset: frozenset[str] = frozenset()
+    scope_locals = [
+        empty_frozenset.union(
+            *(locals_by_function_index.get(fi, empty_frozenset) for fi in sc.function_node_indices)
+        )
+        if sc.function_node_indices
+        else empty_frozenset
+        for sc in scopes
+    ]
+
     references: dict[
         tuple[str, tuple[str, ...], ClassReferenceRole, tuple[str, ...]],
         tuple[int, int, bool, tuple[str, ...]],
     ] = {}
 
-    def module_level_chain(expression: ast.expr | None, scope) -> tuple[str, ...]:
+    def module_level_chain(
+        expression: ast.expr | None, shadowed: frozenset[str]
+    ) -> tuple[str, ...]:
         """The name chain `expression` spells, when its root is bound at module
         level and no enclosing function rebinds it."""
 
         parts = None if expression is None else ExpressionReference.decoded(expression).attribute_chain
-        if parts is None or parts[0] not in module_bound_names or any(
-            parts[0] in locals_by_function_index.get(function_index, ())
-            for function_index in scope.function_node_indices
-        ):
+        if parts is None or parts[0] not in module_bound_names or parts[0] in shadowed:
             return ()
         return parts
 
-    for node_type in (ast.Name, ast.Attribute):
-        for node_index in syntax_index.node_indices_by_type.get(node_type, ()):
-            node = nodes[node_index]
-            if not isinstance(getattr(node, "ctx", None), ast.Load):
+    def record_reference(
+        node_index: int,
+        node: ast.Name | ast.Attribute,
+        parent_index: int,
+        parent: ast.AST | None,
+        scope: LexicalSyntaxScope,
+        shadowed: frozenset[str],
+        parts: tuple[str, ...],
+    ) -> None:
+        grandparent_index = parent_indices[parent_index] if parent is not None else -1
+        grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
+        role = ClassReferenceRole.of_reference(
+            node, parent, grandparent, import_aliases, reads_as_type(node_index, nodes, parent_indices)
+        )
+        tested = module_level_chain(subclass_test_subject(node, parent, grandparent), shadowed)
+        key = (".".join(scope.names), parts, role, tested)
+        positional, unpacked = (
+            (
+                len(parent.args),
+                any(isinstance(argument, ast.Starred) for argument in parent.args)
+                or bool(CallKeywords.of(parent.keywords).splats),
+            )
+            if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+            else (0, False)
+        )
+        copied = (
+            _copied_keyword_fields(parent)
+            if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
+            else ()
+        )
+        line, seen_positional, seen_unpacked, seen_copied = references.get(
+            key, (node.lineno, 0, False, ())
+        )
+        references[key] = (
+            min(line, node.lineno),
+            max(seen_positional, positional),
+            seen_unpacked or unpacked,
+            max(seen_copied, copied, key=lambda names: (len(names), names)),
+        )
+
+    for node_index in syntax_index.node_indices_by_type.get(ast.Name, ()):
+        node = nodes[node_index]
+        if type(node.ctx) is not ast.Load:  # type: ignore[union-attr]
+            continue
+        name_id = node.id  # type: ignore[union-attr]
+        in_mod = name_id in module_bound_names
+        if not in_mod and name_id not in classmethod_param_names:
+            continue
+        parent_index = parent_indices[node_index]
+        parent = nodes[parent_index] if parent_index >= 0 else None
+        if type(parent) is ast.Attribute and parent.value is node:
+            continue
+        scope_id = scope_ids[node_index]
+        scope = scopes[scope_id]
+        shadowed = scope_locals[scope_id]
+        if (
+            classmethod_param_by_func_index
+            and scope.function_node_indices
+            and classmethod_param_by_func_index.get(scope.function_node_indices[-1]) == name_id
+            and scope.class_names
+            and scope.class_names[0] in module_bound_names
+        ):
+            parts: tuple[str, ...] = scope.class_names
+        else:
+            if not in_mod or name_id in shadowed:
+                continue
+            parts = (name_id,)
+        record_reference(
+            node_index, node, parent_index, parent, scope, shadowed, parts  # type: ignore[arg-type]
+        )
+
+    for node_index in syntax_index.node_indices_by_type.get(ast.Attribute, ()):
+        node = nodes[node_index]
+        if type(node.ctx) is not ast.Load:  # type: ignore[union-attr]
+            continue
+        root = node.value  # type: ignore[union-attr]
+        root_type = type(root)
+        if root_type is ast.Name:
+            root_id = root.id
+            if root_id not in module_bound_names:
                 continue
             parent_index = parent_indices[node_index]
             parent = nodes[parent_index] if parent_index >= 0 else None
-            if isinstance(parent, ast.Attribute) and parent.value is node:
+            if type(parent) is ast.Attribute and parent.value is node:
                 continue
-            scope = syntax_index.scopes[syntax_index.scope_ids[node_index]]
-            receiver_class = _classmethod_receiver_class(
-                node, scope, nodes, parent_indices, module_bound_names
-            )
-            if receiver_class is not None:
-                parts = receiver_class
-            elif isinstance(node, ast.Name):
-                if node.id not in module_bound_names:
-                    continue
-                if any(
-                    node.id in locals_by_function_index.get(function_index, ())
-                    for function_index in scope.function_node_indices
-                ):
-                    continue
-                parts = (node.id,)
-            else:
-                parts = ExpressionReference.decoded(node).attribute_chain
-                if parts is None or parts[0] not in module_bound_names:
-                    continue
-                if any(
-                    parts[0] in locals_by_function_index.get(function_index, ())
-                    for function_index in scope.function_node_indices
-                ):
-                    continue
-            grandparent_index = parent_indices[parent_index] if parent is not None else -1
-            grandparent = nodes[grandparent_index] if grandparent_index >= 0 else None
-            role = ClassReferenceRole.of_reference(
-                node, parent, grandparent, import_aliases, reads_as_type(node_index, nodes, parent_indices)
-            )
-            tested = module_level_chain(subclass_test_subject(node, parent, grandparent), scope)
-            key = (".".join(scope.names), parts, role, tested)
-            positional, unpacked = (
-                (
-                    len(parent.args),
-                    any(isinstance(argument, ast.Starred) for argument in parent.args)
-                    or bool(CallKeywords.of(parent.keywords).splats),
-                )
-                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
-                else (0, False)
-            )
-            copied = (
-                _copied_keyword_fields(parent)
-                if role is ClassReferenceRole.CONSTRUCTION and isinstance(parent, ast.Call)
-                else ()
-            )
-            line, seen_positional, seen_unpacked, seen_copied = references.get(
-                key, (node.lineno, 0, False, ())
-            )
-            references[key] = (
-                min(line, node.lineno),
-                max(seen_positional, positional),
-                seen_unpacked or unpacked,
-                max(seen_copied, copied, key=lambda names: (len(names), names)),
-            )
+            scope_id = scope_ids[node_index]
+            shadowed = scope_locals[scope_id]
+            if root_id in shadowed:
+                continue
+            parts = (root_id, node.attr)  # type: ignore[union-attr]
+        elif root_type is ast.Attribute or root_type is ast.Subscript:
+            parent_index = parent_indices[node_index]
+            parent = nodes[parent_index] if parent_index >= 0 else None
+            if type(parent) is ast.Attribute and parent.value is node:
+                continue
+            rev_attrs: list[str] = [node.attr]  # type: ignore[union-attr]
+            while True:
+                if root_type is ast.Attribute:
+                    rev_attrs.append(root.attr)
+                    root = root.value
+                    root_type = type(root)
+                elif root_type is ast.Subscript:
+                    root = root.value
+                    root_type = type(root)
+                else:
+                    break
+            if root_type is not ast.Name or root.id not in module_bound_names:
+                continue
+            scope_id = scope_ids[node_index]
+            shadowed = scope_locals[scope_id]
+            if root.id in shadowed:
+                continue
+            rev_attrs.append(root.id)
+            rev_attrs.reverse()
+            parts = tuple(rev_attrs)
+        else:
+            continue
+        record_reference(
+            node_index, node, parent_index, parent, scopes[scope_id], shadowed, parts  # type: ignore[arg-type]
+        )
+
     return tuple(
         CompactClassReference(consumer, parts, role, *facts, tested_subclass=tested)
         for (consumer, parts, role, tested), facts in sorted(
@@ -6681,6 +7041,8 @@ class FieldDeclarationIndex:
     _projections: tuple[CompactModuleClassHeader, ...]
     built: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
     """`builds_own_instance`, remembered per class symbol."""
+    kept_metaclasses: dict[str, bool] = field(default_factory=dict, compare=False, repr=False)
+    """`keeps_type_call`, remembered per metaclass symbol."""
 
     @cached_property
     def classes(self) -> RegisteringMetaclassAuthority[CompactIndexedClass]:
@@ -6764,7 +7126,10 @@ class FieldDeclarationIndex:
         metaclass = self.classes.declaration_for(reference, module_name)
         if metaclass is None or metaclass.symbol in pending:
             return False
-        return (
+        cached = self.kept_metaclasses.get(metaclass.symbol)
+        if cached is not None:
+            return cached
+        kept = (
             "__call__" not in metaclass.member_binding_names
             and metaclass.base_references_are_complete
             and all(
@@ -6772,6 +7137,8 @@ class FieldDeclarationIndex:
                 for base in metaclass.registry_facts.base_references
             )
         )
+        self.kept_metaclasses[metaclass.symbol] = kept
+        return kept
 
     @cached_property
     def signatures(self) -> Mapping[str, FieldDeclarationSignature]:
@@ -7872,7 +8239,7 @@ def followed_reexports(
 @ScanCache.cached
 def _compact_class_family_index_by_projection_ids() -> dict[
     tuple[int, ...],
-    tuple[tuple[CompactModuleClassHeader, ...], CompactClassFamilyIndex],
+    tuple[tuple[CompactModuleClassHeader, ...], frozenset[int], CompactClassFamilyIndex],
 ]:
     """Share built or projected ``CompactClassFamilyIndex`` instances across
     equivalent projection tuples during a ``ScanCache.scope()``."""
@@ -7887,7 +8254,11 @@ def _remember_compact_class_family_index(
     if ScanCache.active() is None:
         return
     key = tuple(id(projection) for projection in projections)
-    _compact_class_family_index_by_projection_ids()[key] = (projections, index)
+    _compact_class_family_index_by_projection_ids()[key] = (
+        projections,
+        frozenset(key),
+        index,
+    )
 
 
 def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:
@@ -7895,10 +8266,30 @@ def build_compact_class_family_index(projections: Sequence[CompactModuleClassHea
     projection sequence that holds its views."""
 
     if ScanCache.active() is not None:
+        cache = _compact_class_family_index_by_projection_ids()
         key = tuple(id(projection) for projection in projections)
-        cached = _compact_class_family_index_by_projection_ids().get(key)
+        cached = cache.get(key)
         if cached is not None:
-            return cached[1]
+            return cached[2]
+        if cache:
+            best_diff = 65
+            best_entry: tuple[tuple[CompactModuleClassHeader, ...], CompactClassFamilyIndex] | None = None
+            key_len = len(key)
+            for base_projs, base_ids, base_index in cache.values():
+                if abs(key_len - len(base_projs)) > 64:
+                    continue
+                diff_count = sum(1 for item_id in key if item_id not in base_ids)
+                if diff_count < best_diff:
+                    best_diff = diff_count
+                    best_entry = (base_projs, base_index)
+                    if diff_count == 0:
+                        break
+            if best_entry is not None:
+                base_projs, base_index = best_entry
+                proj_tuple = (
+                    projections if isinstance(projections, tuple) else tuple(projections)
+                )
+                return base_index.projected(base_projs, proj_tuple)
     built = SequenceViews.of(projections).view(_built_class_family_index)
     if ScanCache.active() is not None:
         proj_tuple = projections if isinstance(projections, tuple) else tuple(projections)

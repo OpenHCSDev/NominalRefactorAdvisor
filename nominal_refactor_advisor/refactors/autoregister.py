@@ -53,6 +53,7 @@ from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
     codemod_payload_field,
 )
+from nominal_refactor_advisor.semantic_match import loaded_concrete_nominal_descendants
 from nominal_refactor_advisor.codemod_preflight import CodemodOperationPreflightReport
 from nominal_refactor_advisor.codemod_reproof import (
     RepositorySourceReprovedOperation,
@@ -1444,6 +1445,14 @@ class RegistrationSemanticMirrorRecipeStrategy(
     """Route class-family semantic mirrors through AutoRegisterMeta recipes."""
 
     metric_type = RegistrationMetrics
+
+    @classmethod
+    def possible_declaration_types(cls) -> tuple[type[object], ...] | None:
+        return (
+            cls,
+            ManualClassRegistrationFindingRecipeSynthesizer,
+            *loaded_concrete_nominal_descendants(RegistrationSemanticMirrorRecipeBuilder),
+        )
 
     def evaluate_recipe_for_finding(
         self,

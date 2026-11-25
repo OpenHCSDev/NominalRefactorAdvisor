@@ -9,7 +9,8 @@ detector over the whole tree.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from collections.abc import Callable
+from typing import ClassVar, Generic, TypeVar
 
 ScanT = TypeVar("ScanT")
 ChangeT = TypeVar("ChangeT")
@@ -32,6 +33,8 @@ class TrajectoryScans(ABC, Generic[ScanT]):
 class StageProof(ABC):
     """What proves each stage of a concept's trajectory and its terminal state."""
 
+    prewarms_full_rescan: ClassVar[bool] = False
+
     @classmethod
     @abstractmethod
     def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
@@ -46,6 +49,18 @@ class StageProof(ABC):
         raise NotImplementedError
 
     @classmethod
+    def reprove_complete_branch(
+        cls,
+        scans: TrajectoryScans[ScanT],
+        unproved: Callable[[], ScanT],
+        projected: Callable[[], ScanT],
+    ) -> ScanT:
+        """Re-prove a lone branch whose plan covers every current target."""
+
+        del scans, unproved
+        return projected()
+
+    @classmethod
     def unjustified(cls, increased: tuple[ChangeT, ...]) -> tuple[ChangeT, ...]:
         """The finding classes a terminal state grew that its stages answer for:
         every one, since a stage may have written what a new finding cites."""
@@ -57,6 +72,8 @@ class RescannedStages(StageProof):
     """A terminal is rescanned by every detector: the stages' edits may change
     any fact any detector reads."""
 
+    prewarms_full_rescan: ClassVar[bool] = True
+
     @classmethod
     def carried_detector_ids(cls, per_module: frozenset[str]) -> frozenset[str]:
         return frozenset()
@@ -64,6 +81,19 @@ class RescannedStages(StageProof):
     @classmethod
     def certified(cls, scans: TrajectoryScans[ScanT], scan: ScanT) -> ScanT:
         return scans.exact_scan(scan)
+
+    @classmethod
+    def reprove_complete_branch(
+        cls,
+        scans: TrajectoryScans[ScanT],
+        unproved: Callable[[], ScanT],
+        projected: Callable[[], ScanT],
+    ) -> ScanT:
+        """Skip a separate target-only pass when the terminal scan already runs
+        every detector over the projected tree."""
+
+        del projected
+        return scans.exact_scan(unproved())
 
 
 class OperationCertifiedStages(StageProof):

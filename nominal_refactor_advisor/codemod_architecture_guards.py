@@ -108,6 +108,12 @@ class ArchitectureGuardConstraint(
             message=message,
         )
 
+    def may_match_source(self, source: str) -> bool:
+        """Fast sound substring check: False only when `matches` is provably empty."""
+
+        del source
+        return True
+
     @abstractmethod
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         """Return every source node violating this declared constraint."""
@@ -123,6 +129,9 @@ class ForbiddenNameArchitectureGuardConstraint(
     """Shared declared source names for call and attribute constraints."""
 
     names: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
+
+    def may_match_source(self, source: str) -> bool:
+        return any(name.rsplit(".", 1)[-1] in source for name in self.names)
 
 
 @dataclass(frozen=True)
@@ -360,6 +369,25 @@ class ForbiddenDispatchArchitectureGuardConstraint(ArchitectureGuardConstraint):
     constraint_key_value: ClassVar[str] = "forbidden_dispatch"
     subjects: tuple[str, ...] = codemod_payload_field(StringArrayPayloadValueCodec())
 
+    @cached_property
+    def _required_tokens_per_subject(self) -> tuple[tuple[str, ...], ...]:
+        per_subject: list[tuple[str, ...]] = []
+        for subject in self.subjects:
+            tokens: list[str] = []
+            for node in ast.walk(ast.parse(subject, mode="eval").body):
+                if isinstance(node, ast.Name):
+                    tokens.append(node.id)
+                elif isinstance(node, ast.Attribute):
+                    tokens.append(node.attr)
+            per_subject.append(tuple(dict.fromkeys(tokens)))
+        return tuple(per_subject)
+
+    def may_match_source(self, source: str) -> bool:
+        return any(
+            all(token in source for token in tokens)
+            for tokens in self._required_tokens_per_subject
+        )
+
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         collector = _ForbiddenDispatchCollector(self)
         collector.visit(module)
@@ -443,6 +471,9 @@ class ArchitectureGuardRule(CodemodPayloadRecord):
             scopes=tuple(scope.resolve(source_index) for scope in self.scopes),
         )
 
+    def may_match_source(self, source: str) -> bool:
+        return any(constraint.may_match_source(source) for constraint in self.constraints)
+
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         return tuple(
             match
@@ -467,6 +498,9 @@ class ArchitectureGuardRuleResolution:
         return not self.scopes or any(
             scope.includes_target(file_path, target_qualname) for scope in self.scopes
         )
+
+    def may_match_source(self, source: str) -> bool:
+        return self.rule.may_match_source(source)
 
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         return self.rule.matches(module)
@@ -576,8 +610,15 @@ class ArchitectureGuardSuite:
         self,
         source_index: SourceIndex,
         source_by_path: Mapping[str, str],
+        *,
+        module_nodes_by_file_path: Mapping[str, ast.Module] | None = None,
     ) -> ArchitectureGuardReport:
-        return evaluate_architecture_guards(source_index, source_by_path, self.rules)
+        return evaluate_architecture_guards(
+            source_index,
+            source_by_path,
+            self.rules,
+            module_nodes_by_file_path=module_nodes_by_file_path,
+        )
 
     def clean_report(self) -> ArchitectureGuardReport:
         """Return the canonical clean report for this suite without source work."""
@@ -612,10 +653,14 @@ def evaluate_architecture_guards(
     source_index: SourceIndex,
     source_by_path: Mapping[str, str],
     rules: Iterable[ArchitectureGuardRule],
+    *,
+    module_nodes_by_file_path: Mapping[str, ast.Module] | None = None,
 ) -> ArchitectureGuardReport:
     """Evaluate caller-supplied codemod invariants over current source text."""
 
     rule_tuple = tuple(rules)
+    if not rule_tuple:
+        return ArchitectureGuardReport(rules=rule_tuple, violations=())
     resolved_rules = tuple(rule.resolve(source_index) for rule in rule_tuple)
     violations: list[ArchitectureGuardViolation] = []
     for file_path, source in source_by_path.items():
@@ -623,10 +668,17 @@ def evaluate_architecture_guards(
             resolution
             for resolution in resolved_rules
             if resolution.applies_to_file(file_path)
+            and resolution.may_match_source(source)
         )
         if not active_rules:
             continue
-        module = ast.parse(source, filename=file_path)
+        module = (
+            module_nodes_by_file_path.get(file_path)
+            if module_nodes_by_file_path is not None
+            else None
+        )
+        if module is None:
+            module = ast.parse(source, filename=file_path)
         for resolution in active_rules:
             for match in resolution.matches(module):
                 location = SourceLocation(file_path, match.node.lineno, match.symbol)

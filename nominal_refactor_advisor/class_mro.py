@@ -36,13 +36,11 @@ class NativeMroBase(StrEnum):
 
     @classmethod
     def for_qualified_name(cls, qualified_name: str) -> NativeMroBase | None:
-        return next((member for member in cls if member.value == qualified_name), None)
+        return _NATIVE_MRO_BASE_BY_NAME.get(qualified_name)
 
     @classmethod
     def for_python_type(cls, python_type: type) -> NativeMroBase | None:
-        return next(
-            (member for member in cls if member.python_type is python_type), None
-        )
+        return _NATIVE_MRO_BASE_BY_TYPE.get(python_type)
 
 
 NAMESPACE_READ_NATIVES: tuple[type, ...] = (Generic,)
@@ -51,12 +49,24 @@ namespace (`vars()`) names every member it binds, and its only base is
 `object`. `Generic`'s creation hook reads just the type parameters its
 subclass's `__orig_bases__` name, which a base declaring none leaves as they were."""
 
+_NATIVE_MRO_BASE_BY_NAME: dict[str, NativeMroBase] = {
+    member.value: member for member in NativeMroBase
+}
+_NATIVE_MRO_BASE_BY_TYPE: dict[type, NativeMroBase] = {
+    member.python_type: member for member in NativeMroBase
+}
+_NAMESPACE_READ_NATIVE_BY_NAME: dict[str, type] = {
+    f"{native.__module__}.{native.__qualname__}": native
+    for native in NAMESPACE_READ_NATIVES
+}
+_NATIVE_ROOT_TYPE_BY_NAME: dict[str, type] = {
+    **{name: member.python_type for name, member in _NATIVE_MRO_BASE_BY_NAME.items()},
+    **_NAMESPACE_READ_NATIVE_BY_NAME,
+}
+
 
 def namespace_read_native(qualified_name: str) -> type | None:
-    return next(
-        (native for native in NAMESPACE_READ_NATIVES if f"{native.__module__}.{native.__qualname__}" == qualified_name),
-        None,
-    )
+    return _NAMESPACE_READ_NATIVE_BY_NAME.get(qualified_name)
 
 
 @dataclass(frozen=True)
@@ -71,7 +81,7 @@ class NativeStandIn:
     @staticmethod
     @cache
     def for_qualified_name(qualified_name: str) -> NativeStandIn | None:
-        native = namespace_read_native(qualified_name)
+        native = _NAMESPACE_READ_NATIVE_BY_NAME.get(qualified_name)
         if native is None:
             return None
         return NativeStandIn(type(qualified_name, (), {}), native_declared_names(native))
@@ -91,8 +101,7 @@ def native_root_type(qualified_name: str) -> type | None:
     """The native class a terminal base names: a `NativeMroBase` root or a
     namespace-read native."""
 
-    native = NativeMroBase.for_qualified_name(qualified_name)
-    return native.python_type if native is not None else namespace_read_native(qualified_name)
+    return _NATIVE_ROOT_TYPE_BY_NAME.get(qualified_name)
 
 
 def native_declared_names(native: type) -> frozenset[str]:

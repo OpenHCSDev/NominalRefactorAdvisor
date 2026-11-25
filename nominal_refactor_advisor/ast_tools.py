@@ -838,11 +838,17 @@ class ParsedModule(SourceFileIdentity):
         return NativePythonCompilation(self.source, self.file_path)
 
     @cached_property
+    def source_signature(self) -> str:
+        """Exact UTF-8 source signature, computed once per parsed module."""
+
+        return python_source_cache_signature(self.source)
+
+    @cached_property
     def collected_family_cache(self) -> CollectedFamilyCacheContext:
-        return CollectedFamilyCacheContext.from_source(
+        return CollectedFamilyCacheContext(
             path=self.path,
             module_name=self.module_name,
-            source=self.source,
+            source_signature=self.source_signature,
             family_cache_dir=self.family_cache_dir,
         )
 
@@ -900,14 +906,18 @@ class ParsedModule(SourceFileIdentity):
         self,
         family: type[CollectedFamily[ShapeItemT]],
         items: tuple[ShapeItemT, ...],
+        content_signature: str | None = None,
     ) -> None:
         """Retain an already-collected default family batch on this parse."""
 
         key = (family, "")
         if key not in self._family_batches:
-            self._family_batches[key] = CollectedFamilyBatch(
-                items, self.collected_family_cache.store_items(family, items, "")
+            signature = (
+                self.collected_family_cache.store_items(family, items, "")
+                if content_signature is None
+                else content_signature
             )
+            self._family_batches[key] = CollectedFamilyBatch(items, signature)
 
     def family_batch(
         self,
@@ -994,13 +1004,13 @@ class ParsedModule(SourceFileIdentity):
 
         return PythonModulePathIdentity(path=self.path, import_name=self.module_name)
 
-    def with_source(self, source: str) -> ParsedModule:
+    def with_source(self, source: str, *, persist_cache: bool = True) -> ParsedModule:
         """Parse replacement source while preserving this module's identity."""
 
         return SourceModule.from_path_identity(
             self.module_path_identity,
             source,
-            family_cache_dir=self.family_cache_dir,
+            family_cache_dir=self.family_cache_dir if persist_cache else None,
         ).parse()
 
 
@@ -1330,7 +1340,7 @@ class ParsedModuleSourceProjection:
         ]
         if source == module.source:
             return module
-        return module.with_source(source)
+        return module.with_source(source, persist_cache=False)
 
     @cached_property
     def created_modules(self) -> tuple[ParsedModule, ...]:
@@ -2186,11 +2196,19 @@ def _is_direct_registered_descendant(
 
 
 class RegisteredTypeLineage:
+    def __init__(self) -> None:
+        self._ordered_cache: dict[tuple[type, int, int], tuple[type, ...]] = {}
+        self._direct_cache: dict[tuple[type, type, int, int], tuple[type, ...]] = {}
+
     def ordered_registered_types(
         self,
         root: type[_TRegisteredType],
     ) -> tuple[type[_TRegisteredType], ...]:
         registry = root.__registry__
+        cache_key = (root, id(registry), len(registry))
+        cached = self._ordered_cache.get(cache_key)
+        if cached is not None:
+            return cast(tuple[type[_TRegisteredType], ...], cached)
         seen: set[type[_TRegisteredType]] = set()
         ordered: list[type[_TRegisteredType]] = []
         for registered_type in sorted(
@@ -2202,12 +2220,19 @@ class RegisteredTypeLineage:
                 continue
             seen.add(registered_class)
             ordered.append(registered_class)
-        return tuple(ordered)
+        result = tuple(ordered)
+        self._ordered_cache[cache_key] = result
+        return result
 
     def direct_registered_types(
         self, root: type[_TRegisteredType], *, registry_base: type
     ) -> tuple[type[_TRegisteredType], ...]:
-        return tuple(
+        registry = root.__registry__
+        cache_key = (root, registry_base, id(registry), len(registry))
+        cached = self._direct_cache.get(cache_key)
+        if cached is not None:
+            return cast(tuple[type[_TRegisteredType], ...], cached)
+        result = tuple(
             (
                 registered_type
                 for registered_type in self.ordered_registered_types(root)
@@ -2216,6 +2241,8 @@ class RegisteredTypeLineage:
                 )
             )
         )
+        self._direct_cache[cache_key] = result
+        return result
 
 
 REGISTERED_TYPE_LINEAGE = RegisteredTypeLineage()

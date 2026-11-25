@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import ast
 import math
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, replace
@@ -63,6 +63,7 @@ from nominal_refactor_advisor.class_index import (
     ClassBodyDeclarationKind,
     ClassCreationOrderProof,
     CompactClassFamilyIndex,
+    CompactDataclassDeclaration,
     CompactClassReferenceResolver,
     CompactIndexedClass,
     CompactModuleClassProjection,
@@ -378,6 +379,21 @@ class ClassUse:
         )
 
 
+@ScanCache.cached
+def _base_class_use_index_slot() -> list[
+    tuple[
+        tuple[CompactModuleClassProjection, ...],
+        ClassUseIndex,
+        frozenset[str],
+    ]
+    | None
+]:
+    """One baseline ``ClassUseIndex`` plus the set of modules whose aliases can
+    participate in re-export chains, for O(changed) projection."""
+
+    return [None]
+
+
 @dataclass(frozen=True)
 class ClassUseIndex:
     """Which consumers use each scanned class, and how.
@@ -400,7 +416,101 @@ class ClassUseIndex:
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> ClassUseIndex:
-        proj_tuple = tuple(projections)
+        proj_tuple = projections if isinstance(projections, tuple) else tuple(projections)
+        if ScanCache.active() is not None:
+            slot = _base_class_use_index_slot()
+            base_entry = slot[0]
+            if base_entry is not None:
+                base_projs, base_index, base_reexport_modules = base_entry
+                base_by_path = {p.file_path: p for p in base_projs}
+                cur_by_path = {p.file_path: p for p in proj_tuple}
+                changed = tuple(
+                    p for p in proj_tuple if base_by_path.get(p.file_path) is not p
+                )
+                removed = tuple(
+                    p for path, p in base_by_path.items() if path not in cur_by_path
+                )
+                if len(changed) + len(removed) <= 64:
+                    old_changed = tuple(
+                        base_by_path[p.file_path]
+                        for p in changed
+                        if p.file_path in base_by_path
+                    )
+                    aliases_identical = all(
+                        (old_p := base_by_path.get(p.file_path)) is not None
+                        and old_p.import_aliases == p.import_aliases
+                        and old_p.script_scopes == p.script_scopes
+                        for p in changed
+                    ) and not removed
+                    if aliases_identical:
+                        resolver = replace(
+                            base_index.resolver,
+                            known_symbols=class_index.classes_by_symbol,
+                            unique_symbols_by_name=class_index.unique_symbols_by_name,
+                            unique_symbols_by_suffix=class_index.unique_symbols_by_suffix,
+                        )
+                        built_inc = cls(
+                            resolver,
+                            proj_tuple,
+                            base_index.extra_part_names_by_tail,
+                        )
+                        projected_parts = cls._project_part_index(
+                            base_index, proj_tuple, changed, old_changed, removed
+                        )
+                        if projected_parts is not None:
+                            built_inc.__dict__["_projections_by_part"] = projected_parts
+                        return built_inc
+                    # Check if any changed/removed module changes a renamed alias or
+                    # touches a module referenced as a re-export chain source.
+                    def _has_renamed_alias(p: CompactModuleClassProjection) -> bool:
+                        for local_name, target in p.import_aliases:
+                            if local_name != target.rpartition(".")[2]:
+                                return True
+                        for script in p.script_scopes:
+                            for local_name, target in script.import_aliases:
+                                if local_name != target.rpartition(".")[2]:
+                                    return True
+                        return False
+
+                    touched_modules = {
+                        p.module_name for p in (*changed, *old_changed, *removed)
+                    }
+                    if (
+                        touched_modules.isdisjoint(base_reexport_modules)
+                        and not any(_has_renamed_alias(p) for p in (*changed, *old_changed, *removed))
+                    ):
+                        updated_aliases = dict(
+                            base_index.resolver.import_aliases_by_module_name
+                        )
+                        for p in (*old_changed, *removed):
+                            updated_aliases.pop(p.module_name, None)
+                            for script in p.script_scopes:
+                                updated_aliases.pop(script.module_name, None)
+                        for p in changed:
+                            updated_aliases[p.module_name] = dict(p.import_aliases)
+                            for script in p.script_scopes:
+                                updated_aliases[script.module_name] = dict(
+                                    script.import_aliases
+                                )
+                        resolver = replace(
+                            base_index.resolver,
+                            known_symbols=class_index.classes_by_symbol,
+                            unique_symbols_by_name=class_index.unique_symbols_by_name,
+                            unique_symbols_by_suffix=class_index.unique_symbols_by_suffix,
+                            import_aliases_by_module_name=updated_aliases,
+                        )
+                        built_inc = cls(
+                            resolver,
+                            proj_tuple,
+                            base_index.extra_part_names_by_tail,
+                        )
+                        projected_parts = cls._project_part_index(
+                            base_index, proj_tuple, changed, old_changed, removed
+                        )
+                        if projected_parts is not None:
+                            built_inc.__dict__["_projections_by_part"] = projected_parts
+                        return built_inc
+
         scoped = CompactClassReferenceResolver.from_index(proj_tuple, class_index)
         script_aliases = {
             script.module_name: dict(script.import_aliases)
@@ -421,18 +531,24 @@ class ClassUseIndex:
         import_aliases_by_module = resolver.import_aliases_by_module_name
         reexport_tail: dict[str, str] = {}
         extra_by_tail: dict[str, list[str]] = defaultdict(list)
-        for aliases in import_aliases_by_module.values():
+        reexport_modules: set[str] = set()
+        for module_name, aliases in import_aliases_by_module.items():
             for local_name, alias_target in aliases.items():
                 tail = reexport_tail.get(alias_target)
                 if tail is None:
-                    tail = followed_reexports(
+                    resolved = followed_reexports(
                         alias_target,
                         import_aliases_by_module,
-                    ).rpartition(".")[2]
+                    )
+                    if resolved != alias_target:
+                        reexport_modules.add(alias_target.rpartition(".")[0])
+                        reexport_modules.add(module_name)
+                    tail = resolved.rpartition(".")[2]
                     reexport_tail[alias_target] = tail
                 if tail != local_name:
                     extra_by_tail[tail].append(local_name)
-        return cls(
+                    reexport_modules.add(module_name)
+        built = cls(
             resolver,
             proj_tuple,
             {
@@ -440,13 +556,65 @@ class ClassUseIndex:
                 for tail, names in extra_by_tail.items()
             },
         )
+        if ScanCache.active() is not None:
+            slot = _base_class_use_index_slot()
+            if slot[0] is None:
+                slot[0] = (proj_tuple, built, frozenset(reexport_modules))
+        return built
+
+    @cached_property
+    def _projections_by_part(
+        self,
+    ) -> Mapping[str, tuple[CompactModuleClassProjection, ...]]:
+        by_part: dict[str, list[CompactModuleClassProjection]] = defaultdict(list)
+        for projection in self.projections:
+            for part in projection.references_by_part:
+                by_part[part].append(projection)
+        return {part: tuple(projs) for part, projs in by_part.items()}
+
+    @staticmethod
+    def _project_part_index(
+        base_index: ClassUseIndex,
+        proj_tuple: tuple[CompactModuleClassProjection, ...],
+        changed: tuple[CompactModuleClassProjection, ...],
+        old_changed: tuple[CompactModuleClassProjection, ...],
+        removed: tuple[CompactModuleClassProjection, ...],
+    ) -> dict[str, tuple[CompactModuleClassProjection, ...]] | None:
+        base_by_part = base_index.__dict__.get("_projections_by_part")
+        if base_by_part is None:
+            return None
+        if not changed and not removed:
+            return base_by_part
+        old_by_path = {p.file_path: p for p in (*old_changed, *removed)}
+        new_by_path = {p.file_path: p for p in changed}
+        order_by_path = {p.file_path: idx for idx, p in enumerate(proj_tuple)}
+        touched_parts: set[str] = set()
+        for p in (*old_changed, *removed, *changed):
+            touched_parts.update(p.references_by_part)
+        if not touched_parts:
+            return base_by_part
+        updated = dict(base_by_part)
+        for part in touched_parts:
+            cur_list = [
+                p for p in updated.get(part, ()) if p.file_path not in old_by_path
+            ]
+            for p in changed:
+                if part in p.references_by_part:
+                    cur_list.append(p)
+            if cur_list:
+                cur_list.sort(key=lambda p: order_by_path[p.file_path])
+                updated[part] = tuple(cur_list)
+            else:
+                updated.pop(part, None)
+        return updated
 
     def _candidate_references(
         self, terminal_name: str
     ) -> Iterator[tuple[str, str, CompactClassReference]]:
         extra_names = self.extra_part_names_by_tail.get(terminal_name, ())
+        by_part_index = self._projections_by_part
         if not extra_names:
-            for projection in self.projections:
+            for projection in by_part_index.get(terminal_name, ()):
                 entries = projection.references_by_part.get(terminal_name)
                 if entries:
                     file_path = projection.file_path
@@ -454,7 +622,20 @@ class ClassUseIndex:
                         yield file_path, scope_name, reference
             return
         wanted_names = (terminal_name, *extra_names)
-        for projection in self.projections:
+        candidate_projs: dict[int, CompactModuleClassProjection] = {}
+        for name in wanted_names:
+            for projection in by_part_index.get(name, ()):
+                candidate_projs[id(projection)] = projection
+        if not candidate_projs:
+            return
+        if len(candidate_projs) > 1:
+            order_by_id = {id(p): i for i, p in enumerate(self.projections)}
+            ordered_projs = sorted(
+                candidate_projs.values(), key=lambda p: order_by_id[id(p)]
+            )
+        else:
+            ordered_projs = list(candidate_projs.values())
+        for projection in ordered_projs:
             by_part = projection.references_by_part
             matched: list[tuple[str, CompactClassReference]] = []
             for name in wanted_names:
@@ -809,13 +990,19 @@ class ClassOverlapMetrics(FindingMetrics, ScoredByReceipts):
 
 
 @ScanCache.cached
-def _base_class_overlap_verdicts_slot() -> list[
-    tuple[ClassOverlapVerdicts, tuple[tuple[str, str, bool], ...]] | None
+def _base_class_overlap_verdicts_slots() -> dict[
+    bool,
+    tuple[
+        ClassOverlapVerdicts,
+        tuple[tuple[str, str, bool], ...],
+        dict[tuple[str, str], tuple[bool, tuple[ClassOverlapCandidate, ...]]],
+    ],
 ]:
-    """One baseline full-scan ``ClassOverlapVerdicts`` and its candidate pairs
-    for incremental projection across small source edits in a ``ScanCache.scope()``."""
+    """Baseline full-scan ``ClassOverlapVerdicts`` and candidate pairs keyed by
+    whether field declarations are settled, so settled detector scans and
+    unsettled snapshot verdicts each project incrementally without colliding."""
 
-    return [None]
+    return {}
 
 
 @dataclass(frozen=True)
@@ -827,10 +1014,18 @@ class ClassOverlapVerdicts(DeclaredC3):
     class_index: CompactClassFamilyIndex
 
     @cached_property
+    def _is_settled_projections(self) -> bool:
+        return not any(
+            p.has_unsettled_field_declarations for p in self.projections
+        )
+
+    @cached_property
     def bodies(self) -> ClassBodyIndex:
         index = ClassBodyIndex.from_projections(self.projections)
         if ScanCache.active() is not None:
-            base_entry = _base_class_overlap_verdicts_slot()[0]
+            base_entry = _base_class_overlap_verdicts_slots().get(
+                self._is_settled_projections
+            )
             if base_entry is not None:
                 base_verdicts = base_entry[0]
                 if base_verdicts is not self and "holders" in base_verdicts.bodies.__dict__:
@@ -896,28 +1091,31 @@ class ClassOverlapVerdicts(DeclaredC3):
             base_holders
         )
         touched_idents: dict[ClassBodyDeclarationIdentity, list[str]] = {}
-        for sym in old_symbols:
-            if sym not in base_verdicts.bodies.classes_by_symbol:
+        for sym in old_symbols | new_symbols:
+            old_idents: set[ClassBodyDeclarationIdentity] = set()
+            if sym in old_symbols and sym in base_verdicts.bodies.classes_by_symbol:
+                for decl in base_verdicts.bodies.declarations_of(sym).values():
+                    old_idents.update(decl.identities)
+            new_idents: set[ClassBodyDeclarationIdentity] = set()
+            if sym in new_symbols and sym in index.classes_by_symbol:
+                for decl in index.declarations_of(sym).values():
+                    new_idents.update(decl.identities)
+            if old_idents == new_idents:
                 continue
-            for decl in base_verdicts.bodies.declarations_of(sym).values():
-                for ident in decl.identities:
-                    bucket = touched_idents.get(ident)
-                    if bucket is None:
-                        bucket = list(holders_dict.get(ident, ()))
-                        touched_idents[ident] = bucket
-                    if sym in bucket:
-                        bucket.remove(sym)
-        for sym in new_symbols:
-            if sym not in index.classes_by_symbol:
-                continue
-            for decl in index.declarations_of(sym).values():
-                for ident in decl.identities:
-                    bucket = touched_idents.get(ident)
-                    if bucket is None:
-                        bucket = list(holders_dict.get(ident, ()))
-                        touched_idents[ident] = bucket
-                    if sym not in bucket:
-                        bucket.append(sym)
+            for ident in old_idents - new_idents:
+                bucket = touched_idents.get(ident)
+                if bucket is None:
+                    bucket = list(holders_dict.get(ident, ()))
+                    touched_idents[ident] = bucket
+                if sym in bucket:
+                    bucket.remove(sym)
+            for ident in new_idents - old_idents:
+                bucket = touched_idents.get(ident)
+                if bucket is None:
+                    bucket = list(holders_dict.get(ident, ()))
+                    touched_idents[ident] = bucket
+                if sym not in bucket:
+                    bucket.append(sym)
         limit = index.holder_limit
         any_crossed_limit = False
         for ident, bucket in touched_idents.items():
@@ -982,17 +1180,18 @@ class ClassOverlapVerdicts(DeclaredC3):
         those are too few, on the declarations they have through their MROs."""
 
         if ScanCache.active() is not None:
-            slot = _base_class_overlap_verdicts_slot()
-            base_entry = slot[0]
+            slots = _base_class_overlap_verdicts_slots()
+            settled_key = self._is_settled_projections
+            base_entry = slots.get(settled_key)
             if base_entry is None:
-                candidates, pairs = self._judged_with_pairs(
+                candidates, pairs, by_pair = self._judged_with_pairs(
                     self.bodies.overlaps,
                     self._inheriting_pairs_of(self.bodies.classes_by_symbol),
                 )
-                slot[0] = (self, pairs)
+                slots[settled_key] = (self, pairs, by_pair)
                 return candidates
-            base_verdicts, base_pairs = base_entry
-            projected = self._projected_candidates(base_verdicts, base_pairs)
+            base_verdicts, base_pairs, base_by_pair = base_entry
+            projected = self._projected_candidates(base_verdicts, base_pairs, base_by_pair)
             if projected is not None:
                 return projected
         return self.judged(
@@ -1004,20 +1203,26 @@ class ClassOverlapVerdicts(DeclaredC3):
         self,
         overlaps: Iterable[ClassBodyOverlap],
         inheriting_pairs: frozenset[tuple[str, str]],
-    ) -> tuple[tuple[ClassOverlapCandidate, ...], tuple[tuple[str, str, bool], ...]]:
-        """Run ``judged`` while recording each surviving pair and whether it came
-        from direct own-body overlap or inherited overlap."""
+    ) -> tuple[
+        tuple[ClassOverlapCandidate, ...],
+        tuple[tuple[str, str, bool], ...],
+        dict[tuple[str, str], tuple[bool, tuple[ClassOverlapCandidate, ...]]],
+    ]:
+        """Run ``judged`` while recording each surviving pair and its verdicts."""
 
         candidates: list[ClassOverlapCandidate] = []
         judged_direct: set[tuple[str, str]] = set()
         recorded_pairs: list[tuple[str, str, bool]] = []
+        by_pair: dict[tuple[str, str], tuple[bool, tuple[ClassOverlapCandidate, ...]]] = {}
         for overlap in overlaps:
             candidate = self.verdict(overlap)
             if candidate is not None:
-                candidates.extend(candidate.rungs)
+                rungs = candidate.rungs
+                candidates.extend(rungs)
                 pair = (overlap.first.symbol, overlap.second.symbol)
                 judged_direct.add(pair)
                 recorded_pairs.append((pair[0], pair[1], True))
+                by_pair[pair] = (True, rungs)
         floor_declarations = REPORTED.declarations
         for first, second in sorted(inheriting_pairs - judged_direct):
             first_resolved = self.resolved_declarations(first)
@@ -1060,14 +1265,17 @@ class ClassOverlapVerdicts(DeclaredC3):
                 and not self._restated_through_an_ancestor(overlap)
                 and (candidate := self.verdict(overlap)) is not None
             ):
-                candidates.extend(candidate.rungs)
+                rungs = candidate.rungs
+                candidates.extend(rungs)
                 recorded_pairs.append((first, second, False))
-        return tuple(candidates), tuple(recorded_pairs)
+                by_pair[(first, second)] = (False, rungs)
+        return tuple(candidates), tuple(recorded_pairs), by_pair
 
     def _projected_candidates(
         self,
         base_verdicts: ClassOverlapVerdicts,
         base_pairs: tuple[tuple[str, str, bool], ...],
+        base_by_pair: Mapping[tuple[str, str], tuple[bool, tuple[ClassOverlapCandidate, ...]]],
     ) -> tuple[ClassOverlapCandidate, ...] | None:
         """Exact incremental projection of ``candidates`` from ``base_verdicts``."""
 
@@ -1087,29 +1295,387 @@ class ClassOverlapVerdicts(DeclaredC3):
             c.symbol for p in (*old_changed, *removed_projs) for c in p.classes
         }
         new_symbols = {c.symbol for p in changed_projs for c in p.classes}
-        direct_changed = old_symbols | new_symbols
         classes = bodies.classes_by_symbol
+        base_bodies = base_verdicts.bodies
         base_index = base_verdicts.class_index
         cur_index = self.class_index
+
+        def _class_semantics_equal(sym: str) -> bool:
+            old_cls = base_index.class_for(sym)
+            cur_cls = cur_index.class_for(sym)
+            if old_cls is None or cur_cls is None:
+                return False
+            if old_cls == cur_cls:
+                return True
+            if (
+                old_cls.resolved_base_symbols != cur_cls.resolved_base_symbols
+                or old_cls.base_references != cur_cls.base_references
+                or old_cls.direct_base_count != cur_cls.direct_base_count
+                or old_cls.base_references_are_complete != cur_cls.base_references_are_complete
+                or old_cls.mro_bases_are_static != cur_cls.mro_bases_are_static
+                or old_cls.metaclass_names != cur_cls.metaclass_names
+                or old_cls.class_keyword_names != cur_cls.class_keyword_names
+                or old_cls.class_header_is_reconstructible != cur_cls.class_header_is_reconstructible
+                or old_cls.declares_autoregister_meta != cur_cls.declares_autoregister_meta
+                or old_cls.is_final != cur_cls.is_final
+                or old_cls.is_abstract != cur_cls.is_abstract
+                or old_cls.abstract_method_names != cur_cls.abstract_method_names
+                or old_cls.method_names != cur_cls.method_names
+                or old_cls.type_parameter_names != cur_cls.type_parameter_names
+                or old_cls.enum_declaration != cur_cls.enum_declaration
+                or old_cls.base_argument_sources != cur_cls.base_argument_sources
+                or old_cls.declared_base_names != cur_cls.declared_base_names
+                or old_cls.registry_facts != cur_cls.registry_facts
+                or old_cls.star_resolution != cur_cls.star_resolution
+                or old_cls.class_decorators_are_promotion_safe
+                != cur_cls.class_decorators_are_promotion_safe
+            ):
+                return False
+            old_dc = old_cls.dataclass_declaration
+            cur_dc = cur_cls.dataclass_declaration
+            if type(old_dc) is not type(cur_dc):
+                return False
+            if isinstance(old_dc, CompactDataclassDeclaration) and isinstance(
+                cur_dc, CompactDataclassDeclaration
+            ):
+                if (
+                    old_dc.runtime_declaration != cur_dc.runtime_declaration
+                    or len(old_dc.failures) != len(cur_dc.failures)
+                    or any(
+                        a.violation != b.violation
+                        for a, b in zip(old_dc.failures, cur_dc.failures, strict=True)
+                    )
+                    or old_dc.frozenness != cur_dc.frozenness
+                    or len(old_dc.fields) != len(cur_dc.fields)
+                    or any(
+                        (a.name, a.role, a.binding, a.declaration_call)
+                        != (b.name, b.role, b.binding, b.declaration_call)
+                        for a, b in zip(old_dc.fields, cur_dc.fields, strict=True)
+                    )
+                ):
+                    return False
+            old_in = sym in base_bodies.classes_by_symbol
+            cur_in = sym in classes
+            if old_in != cur_in:
+                return False
+            if old_in:
+                old_decls = base_bodies.declarations_of(sym)
+                cur_decls = bodies.declarations_of(sym)
+                if old_decls.keys() != cur_decls.keys():
+                    return False
+                for name, old_d in old_decls.items():
+                    cur_d = cur_decls[name]
+                    if (
+                        not old_d.same_declaration_as(cur_d)
+                        or old_d.identities != cur_d.identities
+                        or old_d.kind is not cur_d.kind
+                    ):
+                        return False
+            return True
+
+        direct_changed: set[str] = set()
+        line_only_changed: set[str] = set()
+        for sym in old_symbols | new_symbols:
+            if sym not in old_symbols or sym not in new_symbols:
+                direct_changed.add(sym)
+            elif not _class_semantics_equal(sym):
+                direct_changed.add(sym)
+            elif base_index.class_for(sym) != cur_index.class_for(sym):
+                line_only_changed.add(sym)
 
         mro_changed: set[str] = set(direct_changed)
         for sym in direct_changed:
             mro_changed.update(base_index.descendant_symbols(sym))
             mro_changed.update(cur_index.descendant_symbols(sym))
 
-        sibling_changed: set[str] = set(mro_changed)
+        # Only track exact sibling-dependent effects instead of invalidating all
+        # children of hub bases like DeclaredFamily/ABC:
+        # 1. sole_shared_base changes only when a base's child count crosses <=2.
+        # 2. existing_owner changes when a base gains its first or loses its last child.
+        # 3. family_axis_names changes only for sibling pairs sharing a base AND a
+        #    member name whose direct declaration on a child of that base changed.
         affected_bases: set[str] = set()
         for sym in mro_changed:
             if (old_cls := base_index.class_for(sym)) is not None:
                 affected_bases.update(old_cls.resolved_base_symbols)
             if (cur_cls := cur_index.class_for(sym)) is not None:
                 affected_bases.update(cur_cls.resolved_base_symbols)
+
+        sole_base_changed: set[str] = set()
+        owner_identities_changed: set[tuple[str, ...]] = set(changed_identities)
         for base_sym in affected_bases:
-            sibling_changed.update(base_index.children_by_symbol.get(base_sym, ()))
-            sibling_changed.update(cur_index.children_by_symbol.get(base_sym, ()))
+            old_children = base_index.children_by_symbol.get(base_sym, ())
+            cur_children = cur_index.children_by_symbol.get(base_sym, ())
+            if old_children != cur_children:
+                if len(old_children) <= 2 or len(cur_children) <= 2:
+                    sole_base_changed.update(old_children)
+                    sole_base_changed.update(cur_children)
+                if bool(old_children) != bool(cur_children):
+                    for sym in (base_sym, *cur_index.ancestor_symbols(base_sym)):
+                        if sym in classes:
+                            for decl in bodies.declarations_of(sym).values():
+                                owner_identities_changed.update(decl.identities)
+                    for sym in (base_sym, *base_index.ancestor_symbols(base_sym)):
+                        if sym in base_verdicts.bodies.classes_by_symbol:
+                            for decl in base_verdicts.bodies.declarations_of(sym).values():
+                                owner_identities_changed.update(decl.identities)
+
+        changed_axis_names_by_base: dict[str, set[str]] = {}
+        base_bodies = base_verdicts.bodies
+        for sym in direct_changed:
+            old_cls = base_index.class_for(sym)
+            cur_cls = cur_index.class_for(sym)
+            old_bases = set(old_cls.resolved_base_symbols) if old_cls is not None else set()
+            cur_bases = set(cur_cls.resolved_base_symbols) if cur_cls is not None else set()
+            old_decls = (
+                base_bodies.declarations_of(sym)
+                if sym in base_bodies.classes_by_symbol
+                else {}
+            )
+            cur_decls = bodies.declarations_of(sym) if sym in classes else {}
+            all_names = set(old_decls) | set(cur_decls)
+            for base_sym in old_bases ^ cur_bases:
+                if all_names:
+                    changed_axis_names_by_base.setdefault(base_sym, set()).update(all_names)
+            shared_bases = old_bases & cur_bases
+            if shared_bases:
+                diff_names = {
+                    name
+                    for name in all_names
+                    if (old_d := old_decls.get(name)) is None
+                    or (cur_d := cur_decls.get(name)) is None
+                    or not old_d.same_declaration_as(cur_d)
+                }
+                if diff_names:
+                    for base_sym in shared_bases:
+                        changed_axis_names_by_base.setdefault(base_sym, set()).update(
+                            diff_names
+                        )
+
+        # Track every class whose ClassUseIndex, FieldOrderReads, or import
+        # graph context could have changed across the edited/removed modules.
+        old_by_path = {p.file_path: p for p in (*old_changed, *removed_projs)}
+        new_by_path = {p.file_path: p for p in changed_projs}
+        graph_changed_modules: set[str] = set()
+        order_changed = False
+        dirty_order_classes: set[str] = set()
+        changed_ref_names: set[str] = set()
+        base_aliases = base_verdicts.import_aliases_by_module
+        cur_aliases = self.import_aliases_by_module
+        all_module_names = frozenset(base_aliases) | frozenset(cur_aliases)
+
+        def _scanned_imports_of(aliases: Iterable[tuple[str, str]], own_mod: str) -> frozenset[str]:
+            found: set[str] = set()
+            for _local, target in aliases:
+                parts = target.split(".")
+                for length in range(1, len(parts) + 1):
+                    cand = ".".join(parts[:length])
+                    if cand in all_module_names and cand != own_mod:
+                        found.add(cand)
+            return frozenset(found)
+
+        def _record_ref_names(refs: Iterable[CompactClassReference]) -> None:
+            for ref in refs:
+                changed_ref_names.update(ref.reference_parts)
+                if ref.tested_subclass:
+                    changed_ref_names.update(ref.tested_subclass)
+
+        for path in old_by_path.keys() | new_by_path.keys():
+            old_p = old_by_path.get(path)
+            new_p = new_by_path.get(path)
+            if old_p is None or new_p is None:
+                p = new_p if new_p is not None else old_p
+                assert p is not None
+                graph_changed_modules.add(p.module_name)
+                if p.field_order_summaries:
+                    order_changed = True
+                _record_ref_names(p.class_references)
+                for script in p.script_scopes:
+                    _record_ref_names(script.class_references)
+                for local_name, target in p.import_aliases:
+                    changed_ref_names.add(local_name)
+                    changed_ref_names.add(target.rpartition(".")[2])
+                continue
+            if old_p.import_aliases != new_p.import_aliases:
+                if _scanned_imports_of(old_p.import_aliases, old_p.module_name) != _scanned_imports_of(
+                    new_p.import_aliases, new_p.module_name
+                ):
+                    graph_changed_modules.add(new_p.module_name)
+                old_alias_map = dict(old_p.import_aliases)
+                new_alias_map = dict(new_p.import_aliases)
+                changed_local_names: set[str] = set()
+                for local_name in old_alias_map.keys() | new_alias_map.keys():
+                    old_t = old_alias_map.get(local_name)
+                    new_t = new_alias_map.get(local_name)
+                    if old_t != new_t:
+                        changed_local_names.add(local_name)
+                        changed_ref_names.add(local_name)
+                        if old_t is not None:
+                            changed_ref_names.add(old_t.rpartition(".")[2])
+                            changed_ref_names.add(
+                                followed_reexports(old_t, base_aliases).rpartition(".")[2]
+                            )
+                        if new_t is not None:
+                            changed_ref_names.add(new_t.rpartition(".")[2])
+                            changed_ref_names.add(
+                                followed_reexports(new_t, cur_aliases).rpartition(".")[2]
+                            )
+                # Only references whose leading name changed alias, or references
+                # added/removed in this module, can change ClassUseIndex resolution.
+                if old_p.class_references != new_p.class_references:
+                    old_counts = Counter(old_p.class_references)
+                    new_counts = Counter(new_p.class_references)
+                    _record_ref_names((old_counts - new_counts).elements())
+                    _record_ref_names((new_counts - old_counts).elements())
+                if changed_local_names:
+                    for ref in (*old_p.class_references, *new_p.class_references):
+                        if (ref.reference_parts and ref.reference_parts[0] in changed_local_names) or (
+                            ref.tested_subclass and ref.tested_subclass[0] in changed_local_names
+                        ):
+                            changed_ref_names.update(ref.reference_parts)
+                            if ref.tested_subclass:
+                                changed_ref_names.update(ref.tested_subclass)
+            elif old_p.class_references != new_p.class_references:
+                old_counts = Counter(old_p.class_references)
+                new_counts = Counter(new_p.class_references)
+                _record_ref_names((old_counts - new_counts).elements())
+                _record_ref_names((new_counts - old_counts).elements())
+            if old_p.script_scopes != new_p.script_scopes:
+                graph_changed_modules.add(new_p.module_name)
+                for script in (*old_p.script_scopes, *new_p.script_scopes):
+                    _record_ref_names(script.class_references)
+                    for local_name, target in script.import_aliases:
+                        changed_ref_names.add(local_name)
+                        changed_ref_names.add(target.rpartition(".")[2])
+            if old_p.field_order_summaries != new_p.field_order_summaries:
+                old_active = {
+                    summary.symbol: summary
+                    for summary in old_p.field_order_summaries
+                    if summary.reads or summary.handed
+                }
+                new_active = {
+                    summary.symbol: summary
+                    for summary in new_p.field_order_summaries
+                    if summary.reads or summary.handed
+                }
+                if old_active != new_active:
+                    changed_order_syms: list[tuple[str, FunctionOrderSummary | None, FunctionOrderSummary | None]] = []
+                    for sym in old_active.keys() | new_active.keys():
+                        os_ = old_active.get(sym)
+                        ns_ = new_active.get(sym)
+                        if os_ != ns_:
+                            changed_order_syms.append((sym, os_, ns_))
+                    for sym, os_, ns_ in changed_order_syms:
+                        if os_ is not None and ns_ is not None and replace(os_, line=0) == replace(ns_, line=0):
+                            if ns_.class_symbol is None:
+                                # Top-level functions never contribute their line number to
+                                # `FieldOrderReads.first_read` (only the class method's line
+                                # appears in its message).
+                                continue
+                            if base_verdicts.field_order_reads.first_read(ns_.class_symbol) is not None:
+                                dirty_order_classes.add(ns_.class_symbol)
+                            continue
+                        cls_sym = (ns_.class_symbol if ns_ is not None else None) or (
+                            os_.class_symbol if os_ is not None else None
+                        )
+                        if cls_sym is None:
+                            # A top-level function only affects `FieldOrderReads` when some
+                            # function hands a parameter to it by qualified callee name.
+                            referenced_externally = any(
+                                any(h.callee == sym for h in other_summary.handed)
+                                for other_summary in base_verdicts.field_order_reads.by_symbol.values()
+                            ) or any(
+                                any(h.callee == sym for h in s.handed)
+                                for p_ch in changed_projs
+                                for s in p_ch.field_order_summaries
+                            )
+                            if referenced_externally:
+                                order_changed = True
+                                break
+                            continue
+                        # If a class method summary changed, it affects only `cls_sym`
+                        # and its descendants unless another class hands a parameter to
+                        # it by qualified callee name or receiver method name.
+                        method_name = ns_.name if ns_ is not None else os_.name  # type: ignore[union-attr]
+                        referenced_externally = False
+                        for other_summary in base_verdicts.field_order_reads.by_symbol.values():
+                            if other_summary.class_symbol == cls_sym:
+                                continue
+                            if any(
+                                h.callee == sym or h.receiver_method == method_name
+                                for h in other_summary.handed
+                            ):
+                                referenced_externally = True
+                                break
+                        if referenced_externally:
+                            order_changed = True
+                            break
+                        dirty_order_classes.add(cls_sym)
+
+        # Expand renamed-alias parts back to their target tails so renamed
+        # references (`from m import Foo as Bar`) invalidate `Foo`.
+        if changed_ref_names:
+            for tail, extras in base_verdicts.uses.extra_part_names_by_tail.items():
+                if not changed_ref_names.isdisjoint(extras):
+                    changed_ref_names.add(tail)
+            for p in changed_projs:
+                for local_name, target in p.import_aliases:
+                    tail = target.rpartition(".")[2]
+                    if local_name != tail and local_name in changed_ref_names:
+                        changed_ref_names.add(tail)
+
+        dirty_symbols: set[str] = (
+            set(mro_changed) | sole_base_changed | dirty_order_classes | line_only_changed
+        )
+        for sym in dirty_order_classes:
+            dirty_symbols.update(base_index.descendant_symbols(sym))
+            dirty_symbols.update(cur_index.descendant_symbols(sym))
+        for name in changed_ref_names:
+            dirty_symbols.update(base_index.symbols_by_simple_name.get(name, ()))
+            dirty_symbols.update(cur_index.symbols_by_simple_name.get(name, ()))
+
+        graph_affected_cache: dict[str, bool] = {}
+        graph_topology_changed = False
+        changed_reach_targets: frozenset[str] = frozenset()
+        if graph_changed_modules:
+            base_mi = base_verdicts.module_imports
+            cur_mi = self.module_imports
+            if (
+                base_mi.package_modules != cur_mi.package_modules
+                or base_mi.imports.keys() != cur_mi.imports.keys()
+            ):
+                graph_topology_changed = True
+            else:
+                reach_diffs: set[str] = set()
+                for mod in graph_changed_modules:
+                    diff = base_mi.reachable(mod) ^ cur_mi.reachable(mod)
+                    if diff:
+                        reach_diffs.update(diff)
+                changed_reach_targets = frozenset(reach_diffs)
+
+        def _module_sees_graph_change(module_name: str) -> bool:
+            if not graph_changed_modules:
+                return False
+            if module_name in graph_changed_modules:
+                return True
+            if graph_topology_changed:
+                return True
+            if not changed_reach_targets:
+                return False
+            cached_hit = graph_affected_cache.get(module_name)
+            if cached_hit is None:
+                base_reach = base_verdicts.module_imports.reachable(module_name)
+                cur_reach = self.module_imports.reachable(module_name)
+                cached_hit = (
+                    module_name in changed_reach_targets
+                    or base_reach != cur_reach
+                    or not cur_reach.isdisjoint(changed_reach_targets)
+                )
+                graph_affected_cache[module_name] = cached_hit
+            return cached_hit
 
         live_mro = frozenset(sym for sym in mro_changed if sym in classes)
-        live_affected = frozenset(sym for sym in sibling_changed if sym in classes)
+        live_affected = frozenset(sym for sym in (mro_changed | sole_base_changed) if sym in classes)
 
         holders = bodies.holders
         limit = bodies.holder_limit
@@ -1117,27 +1683,85 @@ class ClassOverlapVerdicts(DeclaredC3):
         for ident in changed_identities:
             group = holders.get(ident, ())
             if 2 <= len(group) <= limit:
-                direct_pairs.update(combinations(sorted(group), 2))
+                for sym in group:
+                    if sym in new_symbols or sym in live_affected:
+                        for other in group:
+                            if other != sym:
+                                direct_pairs.add(
+                                    (sym, other) if sym < other else (other, sym)
+                                )
         for sym in live_affected:
             for decl in bodies.declarations_of(sym).values():
                 for ident in decl.identities:
                     group = holders.get(ident, ())
                     if 2 <= len(group) <= limit:
-                        direct_pairs.update(combinations(sorted(group), 2))
+                        for other in group:
+                            if other != sym:
+                                direct_pairs.add(
+                                    (sym, other) if sym < other else (other, sym)
+                                )
+        # Any unchanged sibling pair sharing a base whose axis-name declarations
+        # changed may flip from filtered-out to reported (or vice versa).
+        axis_dirty_pairs: set[tuple[str, str]] = set()
+        for base_sym, changed_names in changed_axis_names_by_base.items():
+            children = [
+                child
+                for child in cur_index.children_by_symbol.get(base_sym, ())
+                if child in classes
+            ]
+            by_name: dict[str, list[str]] = {}
+            for child in children:
+                child_decls = bodies.declarations_of(child)
+                for name in changed_names:
+                    if name in child_decls:
+                        by_name.setdefault(name, []).append(child)
+            for members in by_name.values():
+                if len(members) < 2:
+                    continue
+                for i, first_sym in enumerate(members):
+                    for second_sym in members[i + 1 :]:
+                        pair = (
+                            (first_sym, second_sym)
+                            if first_sym < second_sym
+                            else (second_sym, first_sym)
+                        )
+                        axis_dirty_pairs.add(pair)
+                        first_decls = bodies.declarations_of(first_sym)
+                        second_decls = bodies.declarations_of(second_sym)
+                        if any(
+                            ident in holders
+                            and len(holders[ident]) <= limit
+                            and first_sym in holders[ident]
+                            and second_sym in holders[ident]
+                            for shared_name in first_decls.keys() & second_decls.keys()
+                            for ident in first_decls[shared_name].identities
+                        ):
+                            direct_pairs.add(pair)
 
-        inheriting_seeds = set(live_affected)
-        if live_mro:
-            inheriting_seeds.update(self._inheritors_pairing_with(live_mro))
-        for ident in changed_identities:
-            group = holders.get(ident, ())
-            if len(group) <= limit:
-                for owner in group:
-                    for desc in cur_index.descendant_symbols(owner):
-                        if desc in classes:
-                            inheriting_seeds.add(desc)
-        inh_pairs: set[tuple[str, str]] = set(
-            self._inheriting_pairs_of(inheriting_seeds)
-        )
+        # Any new or changed inheriting pair (holder, inheritor) must touch
+        # live_affected on either side: either `inheritor in live_affected`
+        # (recomputed via _inheriting_pairs_of), or `holder in live_affected`
+        # paired with descendants of co-holders of its own declaration identities.
+        inh_pairs: set[tuple[str, str]] = set(self._inheriting_pairs_of(live_affected))
+        for holder in live_affected:
+            holder_family = {
+                holder,
+                *cur_index.ancestor_symbols(holder),
+                *cur_index.descendant_symbols(holder),
+            }
+            for decl in bodies.declarations_of(holder).values():
+                for ident in decl.identities:
+                    group = holders.get(ident, ())
+                    if len(group) > limit:
+                        continue
+                    for owner in group:
+                        if owner == holder:
+                            continue
+                        for desc in cur_index.descendant_symbols(owner):
+                            if desc in classes and desc not in holder_family:
+                                inh_pairs.add(
+                                    (holder, desc) if holder < desc else (desc, holder)
+                                )
 
         for first, second, was_direct in base_pairs:
             if first not in classes or second not in classes:
@@ -1160,8 +1784,163 @@ class ClassOverlapVerdicts(DeclaredC3):
             else:
                 inh_pairs.add(pair)
 
-        overlaps = tuple(bodies.overlap(a, b) for a, b in sorted(direct_pairs))
-        return self.judged(overlaps, frozenset(inh_pairs))
+        def _can_reuse_cached(
+            first: str,
+            second: str,
+            rungs: tuple[ClassOverlapCandidate, ...],
+        ) -> bool:
+            if (
+                first in dirty_symbols
+                or second in dirty_symbols
+                or (first, second) in axis_dirty_pairs
+            ):
+                return False
+            first_decls = bodies.declarations_of(first)
+            second_decls = bodies.declarations_of(second)
+            for shared in rungs[0].overlap.shared:
+                if (
+                    shared.first_owner.symbol in dirty_symbols
+                    or shared.second_owner.symbol in dirty_symbols
+                ):
+                    return False
+                if owner_identities_changed:
+                    owner1_decls = (
+                        first_decls
+                        if shared.first_owner.symbol == first
+                        else bodies.declarations_of(shared.first_owner.symbol)
+                    )
+                    owner2_decls = (
+                        second_decls
+                        if shared.second_owner.symbol == second
+                        else bodies.declarations_of(shared.second_owner.symbol)
+                    )
+                    d1 = owner1_decls.get(shared.name)
+                    d2 = owner2_decls.get(shared.name)
+                    if (d1 is not None and not owner_identities_changed.isdisjoint(d1.identities)) or (
+                        d2 is not None and not owner_identities_changed.isdisjoint(d2.identities)
+                    ):
+                        return False
+            for rung in rungs:
+                if (
+                    rung.owner.symbol in dirty_symbols
+                    or rung.owner.symbol not in classes
+                    or rung.restating.symbol in dirty_symbols
+                    or rung.restating.symbol not in classes
+                ):
+                    return False
+                if rung.co_restating is not None and (
+                    rung.co_restating.symbol in dirty_symbols
+                    or rung.co_restating.symbol not in classes
+                ):
+                    return False
+                if rung.move is ExtractMixin or rung.owner_candidates:
+                    if order_changed:
+                        return False
+                    if graph_changed_modules and (
+                        _module_sees_graph_change(rung.owner.module_name)
+                        or _module_sees_graph_change(rung.restating.module_name)
+                        or (
+                            rung.co_restating is not None
+                            and _module_sees_graph_change(rung.co_restating.module_name)
+                        )
+                    ):
+                        return False
+                    for owner_cand in rung.owner_candidates:
+                        if not dirty_symbols.isdisjoint(owner_cand.composers):
+                            return False
+                        if not dirty_symbols.isdisjoint(owner_cand.subject):
+                            return False
+                        if graph_changed_modules:
+                            for sym in (*owner_cand.composers, *owner_cand.subject):
+                                indexed = cur_index.class_for(sym)
+                                if indexed is not None and _module_sees_graph_change(
+                                    indexed.module_name
+                                ):
+                                    return False
+            return True
+
+        base_direct_set = {
+            (first, second) for first, second, was_direct in base_pairs if was_direct
+        }
+        base_inh_set = {
+            (first, second) for first, second, was_direct in base_pairs if not was_direct
+        }
+        candidates: list[ClassOverlapCandidate] = []
+        judged: set[tuple[str, str]] = set()
+        for first, second in sorted(direct_pairs):
+            cached = base_by_pair.get((first, second))
+            if cached is None:
+                if (
+                    (first, second) in base_direct_set
+                    and first not in mro_changed
+                    and second not in mro_changed
+                    and (first, second) not in axis_dirty_pairs
+                ):
+                    continue
+            elif cached[0] and _can_reuse_cached(first, second, cached[1]):
+                candidates.extend(cached[1])
+                judged.add((first, second))
+                continue
+            candidate = self.verdict(bodies.overlap(first, second))
+            if candidate is not None:
+                candidates.extend(candidate.rungs)
+                judged.add((first, second))
+        floor_declarations = REPORTED.declarations
+        for first, second in sorted(inh_pairs - judged):
+            cached = base_by_pair.get((first, second))
+            if cached is None:
+                if (
+                    (first, second) in base_inh_set
+                    and first not in mro_changed
+                    and second not in mro_changed
+                    and (first, second) not in axis_dirty_pairs
+                ):
+                    continue
+            elif not cached[0] and _can_reuse_cached(first, second, cached[1]):
+                candidates.extend(cached[1])
+                continue
+            first_resolved = self.resolved_declarations(first)
+            second_resolved = self.resolved_declarations(second)
+            shared_names = first_resolved.keys() & second_resolved.keys()
+            if not shared_names:
+                continue
+            first_own = bodies.declarations_of(first)
+            second_own = bodies.declarations_of(second)
+            if (
+                len(shared_names) < floor_declarations
+                and not (first_own.keys() <= shared_names)
+                and not (second_own.keys() <= shared_names)
+            ):
+                continue
+            has_candidate_inherited = False
+            for name in shared_names:
+                first_owner = first_resolved[name].owner.symbol
+                second_owner = second_resolved[name].owner.symbol
+                if first_owner == second_owner:
+                    continue
+                if first_owner != first and second_owner != second:
+                    continue
+                if first_owner == first and second_owner == second:
+                    continue
+                has_candidate_inherited = True
+                break
+            if not has_candidate_inherited:
+                continue
+            overlap = bodies.overlap(first, second).with_inherited(
+                first_resolved, second_resolved
+            )
+            if (
+                overlap.inherited
+                and (
+                    overlap.first_is_contained
+                    or overlap.second_is_contained
+                    or len(overlap.shared) >= floor_declarations
+                )
+                and not self._restated_through_an_ancestor(overlap)
+                and (candidate := self.verdict(overlap)) is not None
+            ):
+                candidates.extend(candidate.rungs)
+        return tuple(candidates)
 
     def candidates_touching(self, symbols: frozenset[str]) -> tuple[ClassOverlapCandidate, ...]:
         """The verdicts `candidates` holds whose owner or restating classes include
@@ -1703,6 +2482,58 @@ class ClassOverlapVerdicts(DeclaredC3):
 
     @cached_property
     def module_imports(self) -> ModuleImportGraph:
+        if ScanCache.active() is not None:
+            slots = _base_class_overlap_verdicts_slots()
+            base_entry = slots.get(self._is_settled_projections) or next(
+                iter(slots.values()), None
+            )
+            if base_entry is not None:
+                base_verdicts = base_entry[0]
+                if (
+                    base_verdicts is not self
+                    and "module_imports" in base_verdicts.__dict__
+                ):
+                    base_mi = base_verdicts.module_imports
+                    base_by_mod = {
+                        p.module_name: p for p in base_verdicts.projections
+                    }
+                    if len(self.projections) == len(base_by_mod) and all(
+                        p.module_name in base_by_mod for p in self.projections
+                    ):
+                        changed = [
+                            p
+                            for p in self.projections
+                            if (old_p := base_by_mod[p.module_name]) is not p
+                            and old_p.import_aliases is not p.import_aliases
+                            and old_p.import_aliases != p.import_aliases
+                        ]
+                        if not changed:
+                            return base_mi
+                        modules = frozenset(base_mi.imports)
+                        new_imports = dict(base_mi.imports)
+                        dirty: set[str] = set()
+                        for p in changed:
+                            mod = p.module_name
+                            targets: set[str] = set()
+                            for target in dict(p.import_aliases).values():
+                                parts = target.split(".")
+                                for length in range(1, len(parts) + 1):
+                                    cand = ".".join(parts[:length])
+                                    if cand in modules and cand != mod:
+                                        targets.add(cand)
+                            frozen = frozenset(targets)
+                            if frozen != base_mi.imports[mod]:
+                                new_imports[mod] = frozen
+                                dirty.add(mod)
+                        if not dirty:
+                            return base_mi
+                        graph = ModuleImportGraph(new_imports)
+                        graph._reachable.update(
+                            (k, v)
+                            for k, v in base_mi._reachable.items()
+                            if v.isdisjoint(dirty)
+                        )
+                        return graph
         return ModuleImportGraph.from_aliases(
             {
                 module_name: tuple(aliases.values())

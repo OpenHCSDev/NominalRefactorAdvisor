@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import weakref
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Iterator
 from contextlib import (
@@ -246,6 +247,8 @@ class ModuleLexicalDependencyProjection:
     stringized_annotations: tuple[StringizedAnnotationSurface, ...]
     annotation_count: int
     name_bindings: tuple[ModuleNameReferenceSurface, ...] = ()
+    name_surface_stmt_indices: tuple[int, ...] = ()
+    stringized_stmt_indices: tuple[int, ...] = ()
 
     def names_for_use(self, use: DeclarationDependencyUse) -> frozenset[str]:
         return frozenset(
@@ -294,14 +297,21 @@ class ModuleLexicalDependencyProjection:
         cls,
         module: ast.Module,
     ) -> ModuleLexicalDependencyProjection:
+        cached = _MODULE_LEXICAL_DEPENDENCY_CACHE.get(module)
+        if cached is not None:
+            return cached
         collector = _DeclarationDependencyCollector()
         collector.visit(module)
-        return cls(
+        projection = cls(
             name_surfaces=tuple(collector.name_surfaces),
             stringized_annotations=tuple(collector.stringized_annotation_surfaces),
             annotation_count=collector.annotation_count,
             name_bindings=tuple(collector.name_bindings),
+            name_surface_stmt_indices=tuple(collector.name_surface_stmt_indices),
+            stringized_stmt_indices=tuple(collector.stringized_stmt_indices),
         )
+        _MODULE_LEXICAL_DEPENDENCY_CACHE[module] = projection
+        return projection
 
     @property
     def external_name_references(self) -> tuple[ast.Name, ...]:
@@ -353,6 +363,55 @@ class ModuleLexicalDependencyProjection:
             )
         )
         return direct_names | deferred_names
+
+    def referenced_names_excluding_statements(
+        self,
+        excluded_stmt_indices: frozenset[int],
+        names: Iterable[str],
+    ) -> frozenset[str]:
+        """Project candidate module references outside excluded top-level statements."""
+
+        if not excluded_stmt_indices:
+            return self.referenced_names_among(names)
+        candidates = frozenset(names)
+        if not candidates:
+            return frozenset()
+        direct_names = frozenset(
+            surface.reference.id
+            for surface, stmt_idx in zip(
+                self.name_surfaces, self.name_surface_stmt_indices
+            )
+            if stmt_idx not in excluded_stmt_indices
+            and surface.use.is_direct_source
+            and surface.reference.id in candidates
+        )
+        remaining = candidates - direct_names
+        if not remaining or not self.stringized_annotations:
+            return direct_names
+        retained_stringized = tuple(
+            surface
+            for surface, stmt_idx in zip(
+                self.stringized_annotations, self.stringized_stmt_indices
+            )
+            if stmt_idx not in excluded_stmt_indices
+        )
+        if not retained_stringized:
+            return direct_names
+        deferred_names = frozenset(
+            name
+            for name in remaining
+            if any(
+                surface.reference_count(name)
+                and surface.resolves_module_name(name, None)
+                for surface in retained_stringized
+            )
+        )
+        return direct_names | deferred_names
+
+
+_MODULE_LEXICAL_DEPENDENCY_CACHE: weakref.WeakKeyDictionary[
+    ast.Module, ModuleLexicalDependencyProjection
+] = weakref.WeakKeyDictionary()
 
 
 @dataclass(frozen=True)
@@ -500,13 +559,19 @@ class _DeclarationDependencyCollector(
         self.use = DeclarationDependencyUse.EXECUTION
         self.binding_phase = ModuleBindingResolutionPhase.SOURCE_POSITION
         self.annotation_count = 0
+        self._current_stmt_idx = -1
         self.name_surfaces: list[ModuleNameReferenceSurface] = []
+        self.name_surface_stmt_indices: list[int] = []
         self.name_bindings: list[ModuleNameReferenceSurface] = []
         self.stringized_annotation_surfaces: list[StringizedAnnotationSurface] = []
+        self.stringized_stmt_indices: list[int] = []
 
     def visit_Module(self, node: ast.Module) -> None:
         with self._scope(ModuleNamespaceScope(node)):
-            self.generic_visit(node)
+            for stmt_idx, stmt in enumerate(node.body):
+                self._current_stmt_idx = stmt_idx
+                self.visit(stmt)
+            self._current_stmt_idx = -1
 
     def visit_Name(self, node: ast.Name) -> None:
         if isinstance(node.ctx, ast.Store):
@@ -535,6 +600,7 @@ class _DeclarationDependencyCollector(
         self.name_bindings.append(surface)
         if resolution.is_external_candidate:
             self.name_surfaces.append(surface)
+            self.name_surface_stmt_indices.append(self._current_stmt_idx)
 
     def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
         self._visit_function(node)
@@ -657,6 +723,10 @@ class _DeclarationDependencyCollector(
             owner_classes=self.owner_classes,
         )
         self.stringized_annotation_surfaces.extend(stringized_surfaces)
+        if stringized_surfaces:
+            self.stringized_stmt_indices.extend(
+                (self._current_stmt_idx,) * len(stringized_surfaces)
+            )
         with self._dependency_use(DeclarationDependencyUse.EVALUATED_ANNOTATION):
             self.visit(expression)
             for surface in stringized_surfaces:

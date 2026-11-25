@@ -79,6 +79,7 @@ from nominal_refactor_advisor.factorization import (
     factorization_axis_catalog_certificate,
 )
 from nominal_refactor_advisor.native_syntax import NativePythonSyntaxIndex
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.semantic_algebra import (
     FiniteAxisSystem,
     ObjectFamilyShape,
@@ -2250,6 +2251,22 @@ class _MethodFamilyMethodGroupProfile(ResidueHookNamesCarrier):
 
 
 @dataclass(frozen=True)
+class _MethodFamilyPlanBaseline:
+    """Reusable full-scan state for incremental ``_MethodFamilyMethodPlan``."""
+
+    by_path: dict[str, CompactModuleClassProjection]
+    methods_by_class: dict[str, dict[str, CompactClassMethod]]
+    class_symbols_by_base: dict[tuple[str, str], tuple[str, ...]]
+    plans_by_base: dict[tuple[str, str], tuple[_MethodFamilyMethodPlan, ...]]
+    all_plans: tuple[_MethodFamilyMethodPlan, ...]
+
+
+@ScanCache.cached
+def _base_method_family_plan_slot() -> list[_MethodFamilyPlanBaseline | None]:
+    return [None]
+
+
+@dataclass(frozen=True)
 class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
     base_symbol: str
     method_name: str
@@ -2372,11 +2389,98 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
         projections: Sequence[CompactModuleClassProjection],
         class_index: CompactClassFamilyIndex,
     ) -> tuple[_MethodFamilyMethodPlan, ...]:
-        methods_by_class: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
+        base: _MethodFamilyPlanBaseline | None = None
+        if ScanCache.active() is not None:
+            base = _base_method_family_plan_slot()[0]
+        if base is not None and len(projections) == len(base.by_path):
+            changed = [
+                p
+                for p in projections
+                if (old_p := base.by_path.get(p.file_path)) is None
+                or (old_p is not p and old_p != p)
+            ]
+            if not changed:
+                return base.all_plans
+            if len(changed) <= 64:
+                methods_by_class: dict[str, dict[str, CompactClassMethod]] = dict(
+                    base.methods_by_class
+                )
+                dirty_class_symbols: set[str] = set()
+                for p in changed:
+                    old_p = base.by_path.get(p.file_path)
+                    old_classes = (
+                        {c.symbol: c for c in old_p.classes}
+                        if old_p is not None
+                        else {}
+                    )
+                    new_classes = {c.symbol: c for c in p.classes}
+                    for sym in old_classes.keys() | new_classes.keys():
+                        if old_classes.get(sym) != new_classes.get(sym):
+                            dirty_class_symbols.add(sym)
+                    old_methods: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
+                    if old_p is not None:
+                        for m in old_p.class_methods:
+                            old_methods[m.class_symbol][m.method_name] = m
+                    new_methods: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
+                    for m in p.class_methods:
+                        new_methods[m.class_symbol][m.method_name] = m
+                    for sym in old_methods.keys() | new_methods.keys():
+                        new_m = new_methods.get(sym)
+                        if old_methods.get(sym) != new_m:
+                            dirty_class_symbols.add(sym)
+                            if new_m:
+                                methods_by_class[sym] = new_m
+                            else:
+                                methods_by_class.pop(sym, None)
+                method_plans: list[_MethodFamilyMethodPlan] = []
+                for (base_symbol, base_name), indexed_classes in cls._classes_by_base(
+                    class_index
+                ).items():
+                    if len(indexed_classes) < 2:
+                        continue
+                    base_key = (base_symbol, base_name)
+                    cur_symbols = tuple(c.symbol for c in indexed_classes)
+                    if (
+                        base.class_symbols_by_base.get(base_key) == cur_symbols
+                        and all(sym not in dirty_class_symbols for sym in cur_symbols)
+                    ):
+                        cached_plans = base.plans_by_base.get(base_key)
+                        if cached_plans:
+                            method_plans.extend(cached_plans)
+                        continue
+                    class_methods_by_name: dict[
+                        str, list[tuple[CompactIndexedClass, CompactClassMethod]]
+                    ] = defaultdict(list)
+                    for indexed_class in indexed_classes:
+                        for method_name, method in methods_by_class.get(
+                            indexed_class.symbol, {}
+                        ).items():
+                            class_methods_by_name[method_name].append(
+                                (indexed_class, method)
+                            )
+                    for method_name in sorted(class_methods_by_name):
+                        method_plan = cls.from_class_methods(
+                            base_symbol,
+                            base_name,
+                            method_name,
+                            tuple(class_methods_by_name[method_name]),
+                        )
+                        if method_plan is not None:
+                            method_plans.append(method_plan)
+                return cls.most_specific(method_plans, class_index)
+
+        methods_by_class = defaultdict(dict)
         for projection in projections:
             for method in projection.class_methods:
                 methods_by_class[method.class_symbol][method.method_name] = method
-        method_plans: list[_MethodFamilyMethodPlan] = []
+        record_baseline = (
+            ScanCache.active() is not None
+            and base is None
+            and len(projections) >= 20
+        )
+        class_symbols_by_base: dict[tuple[str, str], tuple[str, ...]] = {}
+        plans_by_base: dict[tuple[str, str], tuple[_MethodFamilyMethodPlan, ...]] = {}
+        method_plans = []
         for (base_symbol, base_name), indexed_classes in cls._classes_by_base(
             class_index
         ).items():
@@ -2385,14 +2489,13 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
             # One pass over the family, in its order: each method name gets
             # the (class, method) pairs that declare it, without rescanning
             # every class once per name.
-            class_methods_by_name: dict[
-                str, list[tuple[CompactIndexedClass, CompactClassMethod]]
-            ] = defaultdict(list)
+            class_methods_by_name = defaultdict(list)
             for indexed_class in indexed_classes:
                 for method_name, method in methods_by_class.get(
                     indexed_class.symbol, {}
                 ).items():
                     class_methods_by_name[method_name].append((indexed_class, method))
+            base_plans: list[_MethodFamilyMethodPlan] = []
             for method_name in sorted(class_methods_by_name):
                 method_plan = cls.from_class_methods(
                     base_symbol,
@@ -2401,8 +2504,27 @@ class _MethodFamilyMethodPlan(ClassFamilyWitnessCarrier):
                     tuple(class_methods_by_name[method_name]),
                 )
                 if method_plan is not None:
+                    base_plans.append(method_plan)
                     method_plans.append(method_plan)
-        return cls.most_specific(method_plans, class_index)
+            if record_baseline:
+                base_key = (base_symbol, base_name)
+                class_symbols_by_base[base_key] = tuple(
+                    c.symbol for c in indexed_classes
+                )
+                if base_plans:
+                    plans_by_base[base_key] = tuple(base_plans)
+        result = cls.most_specific(method_plans, class_index)
+        if record_baseline:
+            slot = _base_method_family_plan_slot()
+            if slot[0] is None:
+                slot[0] = _MethodFamilyPlanBaseline(
+                    by_path={p.file_path: p for p in projections},
+                    methods_by_class=dict(methods_by_class),
+                    class_symbols_by_base=class_symbols_by_base,
+                    plans_by_base=plans_by_base,
+                    all_plans=result,
+                )
+        return result
 
     @property
     def residue_kinds(self) -> tuple[CompactMethodSemanticCoordinateKind, ...]:

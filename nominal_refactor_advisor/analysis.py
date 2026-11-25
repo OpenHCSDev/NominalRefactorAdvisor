@@ -326,10 +326,21 @@ class DetectorAnalysisWorkerPlan:
         initargs: tuple[object, ...] = (),
     ) -> list[WorkResultT]:
         """Run independent preparation tasks under this plan's worker budget."""
-        if not self.uses_process_pool:
-            return [function(item) for item in items]
+        item_list = list(items)
+        if not self.uses_process_pool or len(item_list) <= 1:
+            return [function(item) for item in item_list]
+        if (
+            _analysis_process_pool_mp_context() is not None
+            and initializer is ScanCache.initialize_worker
+            and not initargs
+        ):
+            return _fork_map_batches(
+                item_list,
+                self.effective_worker_count,
+                lambda batch: [function(item) for item in batch],
+            )
         with self.pool(initializer, initargs) as executor:
-            return list(executor.map(function, items, chunksize=1))
+            return list(executor.map(function, item_list, chunksize=1))
 
     @contextmanager
     def pool(
@@ -340,8 +351,9 @@ class DetectorAnalysisWorkerPlan:
         each of them and dirty those pages, so the tree is frozen out of its reach
         while the pool runs."""
 
-        already_frozen = gc.get_freeze_count() > 0
-        gc.freeze()
+        froze_here = gc.isenabled() and gc.get_freeze_count() == 0
+        if froze_here:
+            gc.freeze()
         try:
             with ProcessPoolExecutor(
                 max_workers=self.effective_worker_count,
@@ -351,7 +363,7 @@ class DetectorAnalysisWorkerPlan:
             ) as executor:
                 yield executor
         finally:
-            if not already_frozen:
+            if froze_here:
                 gc.unfreeze()
 
     @property
@@ -442,12 +454,15 @@ def _initialize_module_family_prewarm_worker(
 
 def _collect_missing_module_families(
     task: tuple[int, tuple[type[CollectedFamily], ...]],
-) -> tuple[int, dict[type[CollectedFamily], tuple[object, ...]]]:
+) -> tuple[int, dict[type[CollectedFamily], tuple[tuple[object, ...], str]]]:
     module_index, families = task
     module = _module_family_prewarm_modules[module_index]
     return (
         module_index,
-        {family: module.family_batch(family).items for family in families},
+        {
+            family: ((b := module.family_batch(family)).items, b.content_signature)
+            for family in families
+        },
     )
 
 
@@ -463,8 +478,9 @@ def _fork_map_batches(
     if w <= 1:
         return run_batch(tuple(items))
     batches = tuple(tuple(items[offset::w]) for offset in range(w))
-    already_frozen = gc.get_freeze_count() > 0
-    gc.freeze()
+    froze_here = gc.isenabled() and gc.get_freeze_count() == 0
+    if froze_here:
+        gc.freeze()
     children: dict[int, tuple[int, int, bytearray]] = {}
     results_by_offset: list[list[WorkResultT] | None] = [None] * w
     try:
@@ -478,7 +494,8 @@ def _fork_map_batches(
                 for open_fd in children:
                     os.close(open_fd)
                 gc.disable()
-                ScanCache.initialize_worker()
+                if ScanCache.active() is None:
+                    ScanCache.initialize_worker()
                 try:
                     try:
                         payload = pickle.dumps((True, run_batch(batches[offset])))
@@ -534,7 +551,7 @@ def _fork_map_batches(
                 pass
         raise
     finally:
-        if not already_frozen:
+        if froze_here:
             gc.unfreeze()
 
     ordered: list[WorkResultT] = [cast(WorkResultT, None)] * len(items)
@@ -565,21 +582,30 @@ def _prewarm_compact_families(
     worker_plan = DetectorAnalysisWorkerPlan(
         requested_worker_count=analysis_workers,
         work_item_count=len(tasks),
-        minimum_auto_work_items=4,
+        minimum_auto_work_items=6,
     )
     with suspend_cyclic_gc():
-        if worker_plan.uses_process_pool:
+        if worker_plan.uses_process_pool and len(tasks) >= 6:
             tasks.sort(key=lambda item: -len(modules[item[0]].source))
             module_tuple = tuple(modules)
             if _analysis_process_pool_mp_context() is not None:
+                fork_workers = min(
+                    worker_plan.effective_worker_count,
+                    max(1, len(tasks) // 3)
+                    if len(tasks) < 32
+                    else max(1, len(tasks) // 16),
+                )
                 collected = _fork_map_batches(
                     tasks,
-                    worker_plan.effective_worker_count,
+                    fork_workers,
                     lambda batch: [
                         (
                             module_index,
                             {
-                                family: module_tuple[module_index].family_batch(family).items
+                                family: (
+                                    (b := module_tuple[module_index].family_batch(family)).items,
+                                    b.content_signature,
+                                )
                                 for family in missing
                             },
                         )
@@ -595,13 +621,116 @@ def _prewarm_compact_families(
                 )
             for module_index, items_by_family in collected:
                 module = modules[module_index]
-                for family, items in items_by_family.items():
-                    module.install_family_batch(family, items)
+                for family, (items, sig) in items_by_family.items():
+                    module.install_family_batch(family, items, sig)
             return
         for module_index, missing in tasks:
             module = modules[module_index]
             for family in missing:
                 module.family_batch(family)
+
+
+def prewarm_compact_families_and_analyze_per_module(
+    modules: ParsedModuleSet,
+    config: DetectorConfig,
+    *,
+    per_module_types: tuple[type[IssueDetector], ...],
+    families: tuple[type[CollectedFamily], ...],
+    analysis_workers: int,
+) -> list[RefactorFinding]:
+    """Collect missing compact families and run per-module detectors over
+    ``modules`` in a single fork fan-out when multiple workers are available."""
+
+    if not modules:
+        return []
+    module_tuple = tuple(modules)
+    total_bytes = sum(len(module.source) for module in module_tuple)
+    if (
+        len(module_tuple) >= 2
+        and total_bytes >= 60_000
+        and analysis_workers >= 2
+        and _analysis_process_pool_mp_context() is not None
+    ):
+        indices = sorted(
+            range(len(module_tuple)),
+            key=lambda idx: -len(module_tuple[idx].source),
+        )
+        fork_workers = min(analysis_workers, 3, len(indices))
+        bins: list[list[int]] = [[] for _ in range(fork_workers)]
+        loads = [0] * fork_workers
+        for idx in indices:
+            lightest = min(range(fork_workers), key=loads.__getitem__)
+            bins[lightest].append(idx)
+            loads[lightest] += len(module_tuple[idx].source)
+        packed_bins = tuple(tuple(bucket) for bucket in bins if bucket)
+
+        def _work_bins(
+            bin_slice: tuple[tuple[int, ...], ...],
+        ) -> list[
+            tuple[
+                list[
+                    tuple[
+                        int,
+                        dict[type[CollectedFamily], tuple[tuple[object, ...], str]],
+                    ]
+                ],
+                list[RefactorFinding],
+            ]
+        ]:
+            batch_indices = [idx for bucket in bin_slice for idx in bucket]
+            collected_list: list[
+                tuple[
+                    int,
+                    dict[type[CollectedFamily], tuple[tuple[object, ...], str]],
+                ]
+            ] = []
+            batch_modules: list[ParsedModule] = []
+            for module_index in batch_indices:
+                module = module_tuple[module_index]
+                batch_modules.append(module)
+                collected: dict[
+                    type[CollectedFamily], tuple[tuple[object, ...], str]
+                ] = {}
+                for family in families:
+                    if not module.has_family_batch(family):
+                        batch_obj = module.family_batch(family)
+                        collected[family] = (
+                            batch_obj.items,
+                            batch_obj.content_signature,
+                        )
+                collected_list.append((module_index, collected))
+            local_findings = (
+                analyze_detector_types(
+                    ParsedModuleSet.of(tuple(batch_modules)),
+                    config,
+                    detector_types=per_module_types,
+                    analysis_workers=1,
+                )
+                if per_module_types and batch_modules
+                else []
+            )
+            return [(collected_list, local_findings)]
+
+        with suspend_cyclic_gc():
+            results = _fork_map_batches(packed_bins, len(packed_bins), _work_bins)
+        all_local: list[RefactorFinding] = []
+        for collected_list, local_findings in results:
+            for module_index, items_by_family in collected_list:
+                module = modules[module_index]
+                for family, (items, sig) in items_by_family.items():
+                    module.install_family_batch(family, items, sig)
+            all_local.extend(local_findings)
+        return all_local
+
+    _prewarm_compact_families(modules, families, analysis_workers)
+    if not per_module_types:
+        return []
+    return analyze_detector_types(
+        modules,
+        config,
+        detector_types=per_module_types,
+        analysis_workers=1,
+    )
 
 
 @dataclass(frozen=True)
@@ -638,19 +767,66 @@ class DetectorAnalysisWorkerState(DetectorWorkerContext):
                 for family in detector_type.compact_projection_families()
             )
         )
-        _prewarm_compact_families(modules, families, analysis_workers)
-        with suspend_cyclic_gc():
-            projections_by_family: dict[type[CollectedFamily], Sequence[object]] = {
-                family: _PreparedProjectionSequence(
-                    tuple(
-                        projection
-                        for module in modules
-                        for projection in collect_family_items(module, family)
-                    )
-                )
-                for family in families
+        class_projection_fact: type[object] | None = None
+        if CompactModuleClassProjectionFamily in families:
+            class_users = tuple(
+                detector_type
+                for detector_type in compact_detectors
+                if CompactModuleClassProjectionFamily
+                in detector_type.compact_projection_families()
+            )
+            requested_facts = {
+                detector_type.compact_class_projection_fact
+                for detector_type in class_users
             }
-            if CompactModuleClassProjectionFamily in projections_by_family:
+            if len(requested_facts) == 1:
+                class_projection_fact = next(iter(requested_facts))
+        prewarm_families = (
+            tuple(
+                family
+                for family in families
+                if family is not CompactModuleClassProjectionFamily
+            )
+            if class_projection_fact is not None
+            else families
+        )
+        if prewarm_families:
+            _prewarm_compact_families(modules, prewarm_families, analysis_workers)
+        with suspend_cyclic_gc():
+            projections_by_family: dict[type[CollectedFamily], Sequence[object]] = {}
+            for family in families:
+                if (
+                    family is CompactModuleClassProjectionFamily
+                    and class_projection_fact is not None
+                ):
+                    projections_by_family[family] = _PreparedProjectionSequence(
+                        tuple(
+                            CompactModuleClassProjectionFamily._required_module_projection(
+                                module
+                            )
+                            if module.has_family_batch(CompactModuleClassProjectionFamily)
+                            else module.fact(class_projection_fact).projection  # type: ignore[arg-type,attr-defined]
+                            for module in modules
+                        )
+                    )
+                else:
+                    projections_by_family[family] = _PreparedProjectionSequence(
+                        tuple(
+                            projection
+                            for module in modules
+                            for projection in collect_family_items(module, family)
+                        )
+                    )
+            if (
+                CompactModuleClassProjectionFamily in projections_by_family
+                and not any(
+                    not issubclass(detector_type, CompactMultiModuleProjectionDetectorMixin)
+                    and detector_type.compact_shared_context_builder is not None
+                    and detector_type.module_projection_family
+                    is CompactModuleClassProjectionFamily
+                    for detector_type in compact_detectors
+                )
+            ):
                 build_compact_class_family_index(
                     cast(
                         Sequence[CompactModuleClassProjection],
@@ -878,9 +1054,18 @@ class DetectorTypeShardRunner:
     ) -> list[list[RefactorFinding]]:
         if _analysis_process_pool_mp_context() is not None:
             worker_state = self.worker_state
+            effective_workers = worker_plan.effective_worker_count
+            if ScanCache.active() is not None and len(detector_types) <= 80:
+                # In incremental reproofs (~60 cross detectors after prepared()),
+                # each detector runs in milliseconds while each 500 MB fork+exit
+                # costs ~0.25s; running in-process beats multi-worker forking.
+                return [
+                    worker_state.detect_with(detector_type)
+                    for detector_type in detector_types
+                ]
             return _fork_map_batches(
                 detector_types,
-                worker_plan.effective_worker_count,
+                effective_workers,
                 lambda batch: [
                     worker_state.detect_with(detector_type) for detector_type in batch
                 ],
@@ -927,18 +1112,121 @@ class DetectorTypeShardRunner:
             return pooled_results, in_process_results
 
         if _analysis_process_pool_mp_context() is not None:
-            global detector_analysis_worker_state
-            previous_state = detector_analysis_worker_state
-            detector_analysis_worker_state = self.worker_state
-            try:
-                with worker_plan.pool(ScanCache.initialize_worker, ()) as executor:
-                    return run_with(executor)
-            finally:
-                detector_analysis_worker_state = previous_state
+            return self._fork_concurrent_findings(
+                pooled_types, in_process_types, worker_count
+            )
         with worker_plan.pool(
             initialize_detector_analysis_worker, (self.worker_state,)
         ) as executor:
             return run_with(executor)
+
+    def _fork_concurrent_findings(
+        self,
+        pooled_types: tuple[type[IssueDetector], ...],
+        in_process_types: tuple[type[IssueDetector], ...],
+        worker_count: int,
+    ) -> tuple[list[list[RefactorFinding]], list[list[RefactorFinding]]]:
+        """Run pooled detectors across zero-copy forked children while stateful
+        in-process detectors run concurrently in the parent."""
+
+        w = min(max(1, worker_count), len(pooled_types))
+        batches = tuple(pooled_types[offset::w] for offset in range(w))
+        worker_state = self.worker_state
+        froze_here = gc.isenabled() and gc.get_freeze_count() == 0
+        if froze_here:
+            gc.freeze()
+        children: dict[int, tuple[int, int, bytearray]] = {}
+        results_by_offset: list[list[list[RefactorFinding]] | None] = [None] * w
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for offset in range(w):
+                reader, writer = os.pipe()
+                pid = os.fork()
+                if pid == 0:
+                    os.close(reader)
+                    for open_fd in children:
+                        os.close(open_fd)
+                    gc.disable()
+                    if ScanCache.active() is None:
+                        ScanCache.initialize_worker()
+                    try:
+                        try:
+                            payload = pickle.dumps(
+                                (
+                                    True,
+                                    [
+                                        worker_state.detect_with(detector_type)
+                                        for detector_type in batches[offset]
+                                    ],
+                                )
+                            )
+                        except BaseException:  # noqa: BLE001
+                            payload = pickle.dumps((False, traceback.format_exc()))
+                        with os.fdopen(writer, "wb") as out:
+                            out.write(payload)
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                    finally:
+                        os._exit(0)
+                os.close(writer)
+                children[reader] = (offset, pid, bytearray())
+
+            in_process_results = [
+                worker_state.detect_with(detector_type)
+                for detector_type in in_process_types
+            ]
+
+            with selectors.DefaultSelector() as selector:
+                for fd in children:
+                    selector.register(fd, selectors.EVENT_READ)
+                while children:
+                    for sel_key, _ in selector.select():
+                        fd = sel_key.fd
+                        offset, pid, buf = children[fd]
+                        chunk = os.read(fd, 1 << 20)
+                        if chunk:
+                            buf += chunk
+                            continue
+                        selector.unregister(fd)
+                        os.close(fd)
+                        del children[fd]
+                        _, status = os.waitpid(pid, 0)
+                        if not buf:
+                            raise RuntimeError(
+                                f"forked concurrent analysis worker exited without result (wait status {status})"
+                            )
+                        ok, value = pickle.loads(bytes(buf))
+                        if not ok:
+                            raise RuntimeError(
+                                f"forked concurrent analysis worker failed:\n{value}"
+                            )
+                        results_by_offset[offset] = value
+        except BaseException:
+            for fd, (_offset, pid, _buf) in list(children.items()):
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                try:
+                    os.waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
+            raise
+        finally:
+            if froze_here:
+                gc.unfreeze()
+
+        pooled_results: list[list[RefactorFinding]] = [[] for _ in pooled_types]
+        for offset, batch_results in enumerate(results_by_offset):
+            assert batch_results is not None
+            for batch_index, findings in enumerate(batch_results):
+                pooled_results[offset + batch_index * w] = findings
+        return pooled_results, in_process_results
 
     def sorted_findings(self) -> list[RefactorFinding]:
         return SortedFindingsAuthority.sort(
@@ -4279,6 +4567,12 @@ class IncrementalAnalysisCacheResolver:
                 config=self._config,
             )
             tasks = tuple(enumerate(detector_types_by_module))
+            if _analysis_process_pool_mp_context() is not None:
+                return _fork_map_batches(
+                    tasks,
+                    worker_plan.effective_worker_count,
+                    lambda batch: [state.detect_task(task) for task in batch],
+                )
             with worker_plan.pool(
                 initialize_per_module_detector_shard_worker, (state,)
             ) as executor:

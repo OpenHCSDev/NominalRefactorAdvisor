@@ -32,6 +32,9 @@ class SourceModuleImportGraph:
     source_index: SourceIndex
     module_nodes_by_file_path: Mapping[str, ast.Module] = field(default_factory=dict)
     imported_modules_by_module: Mapping[str, frozenset[str]] | None = None
+    _known_targets_cache: dict[str, frozenset[str]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     @classmethod
     def of_modules(cls, modules: Iterable[ParsedModule]) -> SourceModuleImportGraph:
@@ -161,13 +164,20 @@ class SourceModuleImportGraph:
         first executes `a/__init__.py` then `a/b/__init__.py`, so each ancestor
         package is an implicit import target whose cycle must be checked."""
 
+        cached = self._known_targets_cache.get(module_name)
+        if cached is not None:
+            return cached
+        known = self.known_module_names
         targets: set[str] = set()
         parts = module_name.split(".")
-        for depth in range(1, len(parts) + 1):
-            prefix = ".".join(parts[:depth])
-            if prefix in self.known_module_names:
+        prefix = ""
+        for part in parts:
+            prefix = part if not prefix else f"{prefix}.{part}"
+            if prefix in known:
                 targets.add(prefix)
-        return frozenset(targets)
+        result = frozenset(targets)
+        self._known_targets_cache[module_name] = result
+        return result
 
     def import_would_create_cycle(
         self,

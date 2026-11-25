@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import lru_cache, wraps
+import os
 from typing import ClassVar, ParamSpec, TypeVar, cast
 
 P = ParamSpec("P")
@@ -27,9 +28,51 @@ class ScanCache:
     _functions: dict[Callable[..., object], Callable[..., object]] = field(
         default_factory=dict, init=False, repr=False
     )
+    _deferred_reaps: dict[int, list[int]] = field(
+        default_factory=dict, init=False, repr=False
+    )
     _active: ClassVar[ContextVar[ScanCache | None]] = ContextVar(
         "nra_scan_cache", default=None
     )
+
+    @classmethod
+    def defer_child_reap(cls, pid: int) -> None:
+        """Reap ``pid`` without blocking the critical path when a scope is active.
+
+        Tries a non-blocking ``WNOHANG`` reap first; if the child is still
+        tearing down its address space, queues it to be reaped when the active
+        ``ScanCache`` scope or forked worker exits. Falls back to blocking
+        ``waitpid`` outside an active scope.
+        """
+        try:
+            reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+            if reaped_pid == pid:
+                return
+        except ChildProcessError:
+            return
+        active = cls._active.get()
+        if active is None:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
+            return
+        active._deferred_reaps.setdefault(os.getpid(), []).append(pid)
+
+    @classmethod
+    def reap_deferred_children(cls) -> None:
+        """Blocking-reap any children queued by ``os.getpid()`` in the active scope."""
+        active = cls._active.get()
+        if active is None:
+            return
+        pids = active._deferred_reaps.pop(os.getpid(), None)
+        if not pids:
+            return
+        for pid in pids:
+            try:
+                os.waitpid(pid, 0)
+            except ChildProcessError:
+                pass
 
     def memoized(self, function: Callable[P, T]) -> Callable[P, T]:
         if function not in self._functions:
@@ -59,6 +102,7 @@ class ScanCache:
         try:
             yield
         finally:
+            cls.reap_deferred_children()
             cls._active.reset(token)
 
     @classmethod

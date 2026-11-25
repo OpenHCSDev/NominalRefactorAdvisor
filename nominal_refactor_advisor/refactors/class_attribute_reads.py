@@ -36,6 +36,8 @@ class BaseListReads(ParsedModuleSetFact):
     def derive(cls, modules: ParsedModuleSet) -> BaseListReads:
         found: list[tuple[ParsedModule, ast.expr, ast.AST | None]] = []
         for module in modules:
+            if not any(attribute in module.source for attribute in BASES_ATTRIBUTES):
+                continue
             reads = tuple(cls.found(module.module))
             if not reads:
                 continue

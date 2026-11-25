@@ -97,6 +97,12 @@ class SemanticMirrorFindingRecipeStrategy(ABC, metaclass=AutoRegisterMeta):
         strategy_type = mro_registry_value(cls.__registry__, type(metrics))
         return strategy_type() if strategy_type is not None else None
 
+    @classmethod
+    def possible_declaration_types(cls) -> tuple[type[object], ...] | None:
+        """Finite superset of evaluation declaration types this strategy can return."""
+
+        return None
+
     @abstractmethod
     def action_keys_for_finding(
         self,
@@ -386,6 +392,13 @@ class MappingSemanticMirrorRecipeStrategy(SemanticMirrorFindingRecipeStrategy):
     """Represent mapping/schema semantic mirrors as first-class DSL targets."""
 
     metric_type = MappingMetrics
+
+    @classmethod
+    def possible_declaration_types(cls) -> tuple[type[object], ...] | None:
+        return (
+            cls,
+            *loaded_concrete_nominal_descendants(MappingSemanticMirrorRecipeBuilder),
+        )
 
     def evaluate_recipe_for_finding(
         self,

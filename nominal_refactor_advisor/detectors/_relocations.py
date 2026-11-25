@@ -12,7 +12,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from operator import attrgetter
 from typing import Generic, TypeVar
@@ -106,13 +106,28 @@ class MemberFamilies:
 
     class_index: CompactClassFamilyIndex
     shapes: dict[str, ClassShape]
+    _open_cache: dict[str, bool] = field(default_factory=dict, init=False, repr=False, compare=False)
+    _creates_classes_cache: dict[str, bool] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _family_cache: dict[tuple[str, str], str] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
+    _computed_by_member_cache: dict[str, dict[str, list[str]]] = field(
+        default_factory=dict, init=False, repr=False, compare=False
+    )
 
     def is_open(self, symbol: str) -> bool:
+        cached = self._open_cache.get(symbol)
+        if cached is not None:
+            return cached
         classes = self.class_index.classes_by_symbol
-        return symbol not in classes or not all(
+        result = symbol not in classes or not all(
             classes[lineage].base_references_are_complete
             for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
         )
+        self._open_cache[symbol] = result
+        return result
 
     def creates_classes(self, symbol: str) -> bool:
         """Whether `symbol` is a metaclass: its lineage has a base naming one Python provides.
@@ -121,13 +136,18 @@ class MemberFamilies:
         and no declaration names which one.
         """
 
+        cached = self._creates_classes_cache.get(symbol)
+        if cached is not None:
+            return cached
         classes = self.class_index.classes_by_symbol
-        return any(
+        result = any(
             reference.builtin_qualified_name in NATIVE_METACLASS_BASES
             for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
             if lineage in classes
             for reference in classes[lineage].base_references
         )
+        self._creates_classes_cache[symbol] = result
+        return result
 
     def declares(self, symbol: str, member: str) -> bool:
         return symbol in self.shapes and member in self.shapes[symbol].declared
@@ -135,23 +155,51 @@ class MemberFamilies:
     def family(self, symbol: str, member: str) -> str:
         """The topmost declarations of `member` above `symbol`, as one key."""
 
+        key = (symbol, member)
+        cached = self._family_cache.get(key)
+        if cached is not None:
+            return cached
         if self.is_open(symbol):
-            return f"open {symbol}"
-        declaring = [
-            lineage
-            for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
-            if self.declares(lineage, member)
-        ]
-        return ", ".join(
-            sorted(
+            result = f"open {symbol}"
+        else:
+            declaring = [
                 lineage
-                for lineage in declaring
-                if not any(
-                    self.declares(ancestor, member)
-                    for ancestor in self.class_index.ancestor_symbols(lineage)
+                for lineage in (symbol, *self.class_index.ancestor_symbols(symbol))
+                if self.declares(lineage, member)
+            ]
+            if len(declaring) <= 1:
+                result = declaring[0] if declaring else ""
+            else:
+                result = ", ".join(
+                    sorted(
+                        lineage
+                        for lineage in declaring
+                        if not any(
+                            self.declares(ancestor, member)
+                            for ancestor in self.class_index.ancestor_symbols(lineage)
+                        )
+                    )
                 )
-            )
-        )
+        self._family_cache[key] = result
+        return result
+
+    @cached_property
+    def _computed_symbols_by_member(self) -> dict[str, list[str]]:
+        by_member: dict[str, list[str]] = defaultdict(list)
+        for symbol, shape in self.shapes.items():
+            for member in shape.computed:
+                by_member[member].append(symbol)
+        return dict(by_member)
+
+    def computed_in_family(self, family: str, member: str) -> list[str]:
+        by_family = self._computed_by_member_cache.get(member)
+        if by_family is None:
+            grouped: dict[str, list[str]] = defaultdict(list)
+            for symbol in self._computed_symbols_by_member.get(member, ()):
+                grouped[self.family(symbol, member)].append(symbol)
+            by_family = dict(grouped)
+            self._computed_by_member_cache[member] = by_family
+        return by_family.get(family, [])
 
     @cached_property
     def computed_by_family(self) -> dict[tuple[str, str], list[str]]:
@@ -312,7 +360,7 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
     ) -> list[str]:
         member = sites[0].group
         family = context.families.family(sites[0].detail[0], member)
-        return context.families.computed_by_family.get((family, member), [])
+        return context.families.computed_in_family(family, member)
 
     def admits(self, sites: Sequence[RestatingSite], context: RelocationIndex) -> bool:
         return (

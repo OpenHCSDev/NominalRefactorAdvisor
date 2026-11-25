@@ -7,6 +7,7 @@ from collections.abc import (
 from enum import StrEnum
 from typing import ClassVar
 
+from nominal_refactor_advisor.analysis import ScanCache
 from nominal_refactor_advisor.native_compilation import NativePythonCompilation
 from nominal_refactor_advisor.needed_input import NeededInput
 
@@ -52,7 +53,20 @@ class CodemodSourceDependencyScope(StrEnum):
         )
 
 
+@ScanCache.cached
+def _validated_ast_span_sources() -> set[tuple[str, str]]:
+    return set()
+
+
 def _validate_ast_span_source(source: str, file_path: str) -> None:
+    if ScanCache.active() is not None:
+        cache = _validated_ast_span_sources()
+        key = (file_path, source)
+        if key in cache:
+            return
+        NativePythonCompilation(source, file_path).compile()
+        cache.add(key)
+        return
     NativePythonCompilation(source, file_path).compile()
 
 

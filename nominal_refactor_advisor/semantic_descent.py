@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import heapq
 import os
 import pickle
 import re
@@ -4468,12 +4469,103 @@ class CompactSemanticDescentResolution:
 
 
 @dataclass(frozen=True)
+class _CompactSemanticDescentBaseline:
+    """Settled baseline for incremental semantic-descent updates within one scan scope."""
+
+    class_by_path: Mapping[str, CompactModuleClassProjection]
+    sem_by_path: Mapping[str, CompactSemanticModuleProjection]
+    class_index: CompactClassFamilyIndex
+    supplements_by_symbol: Mapping[str, SemanticClassSupplement]
+    inventory: SemanticAuthorityInventory
+    authority_by_id: Mapping[str, SemanticAuthority]
+    facts_by_authority_id: Mapping[str, tuple[SemanticFact, ...]]
+    authority_catalog: SemanticAuthorityCatalog
+    fact_authority_index: SemanticFactAuthorityIndex
+    fact_token_index: SemanticFactTokenIndex
+    fact_specificity_index: SemanticFactSpecificityIndex
+    fact_name_authority_ids: Mapping[tuple[SemanticFactKind, str], frozenset[str]]
+    resolved_projections_by_path: Mapping[str, tuple[PresentationProjection, ...]]
+    resolved_projections: tuple[PresentationProjection, ...]
+    modules_with_refs: frozenset[str]
+    resolved_syms_by_path: Mapping[str, frozenset[str]]
+    importers_by_target_module: Mapping[str, frozenset[str]]
+    star_import_paths: frozenset[str]
+    reused_fact_names: frozenset[tuple[SemanticFactKind, str]]
+    all_relations: tuple[SemanticAuthorityProjectionRelation, ...]
+    resolution: CompactSemanticDescentResolution
+    proj_by_id: Mapping[str, PresentationProjection]
+    projs_by_token: Mapping[str, tuple[PresentationProjection, ...]]
+    projs_by_class_symbol: Mapping[str, tuple[PresentationProjection, ...]]
+    projs_by_owner_construction_name: Mapping[str, tuple[PresentationProjection, ...]]
+    projs_by_lineage_class_symbol: Mapping[str, tuple[PresentationProjection, ...]]
+
+
+@ScanCache.cached
+def _base_semantic_descent_slot() -> list[_CompactSemanticDescentBaseline | None]:
+    return [None]
+
+
+def _module_has_unresolved_projection_refs(
+    module_projection: CompactSemanticModuleProjection,
+) -> bool:
+    for projection in module_projection.projections:
+        if projection.class_reference_parts or projection.mapping_read_constructors:
+            return True
+        if any(pair.value_class_reference_parts for pair in projection.key_value_pairs):
+            return True
+    return False
+
+
+@dataclass(frozen=True)
 class CompactSemanticDescentRepository:
     """Nominal owner of an AST-free repository semantic-descent derivation."""
 
     semantic_projections: Sequence[CompactSemanticModuleProjection]
     class_projections: Sequence[CompactModuleClassProjection]
     class_index: CompactClassFamilyIndex
+
+    @cached_property
+    def _baseline_delta(
+        self,
+    ) -> tuple[
+        _CompactSemanticDescentBaseline,
+        frozenset[str],
+        frozenset[str],
+    ] | None:
+        if ScanCache.active() is None:
+            return None
+        base = _base_semantic_descent_slot()[0]
+        if base is None:
+            return None
+        if len(self.class_projections) < 20:
+            return None
+        cur_class_by_path = {p.file_path: p for p in self.class_projections}
+        cur_sem_by_path = {p.file_path: p for p in self.semantic_projections}
+        changed_class_paths = {
+            path
+            for path, proj in cur_class_by_path.items()
+            if base.class_by_path.get(path) is not proj
+        } | (set(base.class_by_path) - set(cur_class_by_path))
+        changed_sem_paths = {
+            path
+            for path, proj in cur_sem_by_path.items()
+            if base.sem_by_path.get(path) is not proj
+        } | (set(base.sem_by_path) - set(cur_sem_by_path))
+        if len(changed_class_paths | changed_sem_paths) > max(
+            32, len(self.class_projections) // 4
+        ):
+            return None
+        return (
+            base,
+            frozenset(changed_class_paths),
+            frozenset(changed_sem_paths),
+        )
+
+    @cached_property
+    def _supplements_by_symbol(self) -> dict[str, SemanticClassSupplement]:
+        return {
+            supplement.class_symbol: supplement for supplement in self.supplements
+        }
 
     @classmethod
     def from_projection_groups(
@@ -4492,6 +4584,34 @@ class CompactSemanticDescentRepository:
             CompactModuleClassProjectionFamily.modules_in(projections_by_family),
             class_index=class_index,
         )
+
+    @classmethod
+    def from_projection_groups_with_index(
+        cls,
+        projections_by_family: dict[
+            type[CollectedFamily],
+            Sequence[object],
+        ],
+    ) -> CompactSemanticDescentRepository:
+        """Build one shared semantic-descent repository anchored by the scan's class index."""
+
+        repo = cls.from_projection_groups(
+            projections_by_family,
+            class_index=CompactClassFamilyIndex.from_projection_groups(
+                projections_by_family
+            ),
+        )
+        if ScanCache.active() is not None and _base_semantic_descent_slot()[0] is None:
+            _ = repo.resolve()
+        else:
+            _ = repo.authority_catalog
+        return repo
+
+    @classmethod
+    def require(cls, context: object | None) -> CompactSemanticDescentRepository:
+        if not isinstance(context, cls):
+            raise TypeError("compact semantic-descent repository context is unavailable")
+        return context
 
     @classmethod
     def from_projections(
@@ -4527,13 +4647,162 @@ class CompactSemanticDescentRepository:
         )
 
     @cached_property
-    def authority_catalog(self) -> SemanticAuthorityCatalog:
+    def authority_catalog(self) -> SemanticAuthorityInventory:
+        delta = self._baseline_delta
+        if delta is not None:
+            base, changed_class_paths, changed_sem_paths = delta
+            if not changed_class_paths and not changed_sem_paths:
+                return base.inventory
+            cur_class_by_path = {p.file_path: p for p in self.class_projections}
+            cur_sem_by_path = {p.file_path: p for p in self.semantic_projections}
+            direct_changed_symbols: set[str] = set()
+            for path in changed_class_paths:
+                old_p = base.class_by_path.get(path)
+                cur_p = cur_class_by_path.get(path)
+                old_by_sym = (
+                    {c.symbol: c for c in old_p.classes} if old_p is not None else {}
+                )
+                cur_by_sym = (
+                    {c.symbol: c for c in cur_p.classes} if cur_p is not None else {}
+                )
+                for sym in old_by_sym.keys() | cur_by_sym.keys():
+                    if old_by_sym.get(sym) != cur_by_sym.get(sym):
+                        direct_changed_symbols.add(sym)
+            for path in changed_sem_paths:
+                old_s = base.sem_by_path.get(path)
+                cur_s = cur_sem_by_path.get(path)
+                old_sup = (
+                    {s.class_symbol: s for s in old_s.class_supplements}
+                    if old_s is not None
+                    else {}
+                )
+                cur_sup = (
+                    {s.class_symbol: s for s in cur_s.class_supplements}
+                    if cur_s is not None
+                    else {}
+                )
+                for sym in old_sup.keys() | cur_sup.keys():
+                    if old_sup.get(sym) != cur_sup.get(sym):
+                        direct_changed_symbols.add(sym)
+            if not direct_changed_symbols:
+                return base.inventory
+            affected_symbols: set[str] = set(direct_changed_symbols)
+            for sym in direct_changed_symbols:
+                affected_symbols.update(base.class_index.ancestor_symbols(sym))
+                affected_symbols.update(self.class_index.ancestor_symbols(sym))
+            context = CompactSemanticAuthorityBuildContext(
+                self.class_index,
+                self._supplements_by_symbol,
+            )
+            provider = SemanticAuthorityProvider()
+            actually_changed: dict[
+                str, tuple[SemanticAuthority | None, tuple[SemanticFact, ...]]
+            ] = {}
+            for sym in affected_symbols:
+                indexed_class = self.class_index.classes_by_symbol.get(sym)
+                if indexed_class is None:
+                    new_auth: SemanticAuthority | None = None
+                    new_facts: tuple[SemanticFact, ...] = ()
+                else:
+                    declaration = context.declaration_for(indexed_class)
+                    provider_result = provider.provide(declaration)
+                    if provider_result is None:
+                        new_auth = None
+                        new_facts = ()
+                    else:
+                        new_auth = SemanticAuthority(
+                            authority_id=indexed_class.symbol,
+                            kind=provider_result.kind,
+                            name=indexed_class.simple_name,
+                            location=SourceLocation(
+                                indexed_class.file_path,
+                                indexed_class.line,
+                                indexed_class.qualname,
+                            ),
+                            fact_ids=tuple(
+                                fact.fact_id for fact in provider_result.facts
+                            ),
+                        )
+                        new_facts = tuple(
+                            sorted(
+                                provider_result.facts,
+                                key=lambda fact: (fact.name, fact.fact_id),
+                            )
+                        )
+                if (
+                    new_auth != base.authority_by_id.get(sym)
+                    or new_facts != base.facts_by_authority_id.get(sym, ())
+                ):
+                    actually_changed[sym] = (new_auth, new_facts)
+            if not actually_changed:
+                return base.inventory
+            changed_aids = frozenset(actually_changed)
+            new_auths_sorted = sorted(
+                (auth for auth, _ in actually_changed.values() if auth is not None),
+                key=lambda item: item.authority_id,
+            )
+            merged_auths = tuple(
+                heapq.merge(
+                    (
+                        a
+                        for a in base.inventory.authorities
+                        if a.authority_id not in changed_aids
+                    ),
+                    new_auths_sorted,
+                    key=lambda item: item.authority_id,
+                )
+            )
+            new_facts_sorted = sorted(
+                (fact for _, flist in actually_changed.values() for fact in flist),
+                key=lambda item: item.fact_id,
+            )
+            merged_facts = tuple(
+                heapq.merge(
+                    (
+                        f
+                        for f in base.inventory.facts
+                        if f.authority_id not in changed_aids
+                    ),
+                    new_facts_sorted,
+                    key=lambda item: item.fact_id,
+                )
+            )
+            touched_fact_keys: set[tuple[SemanticFactKind, str]] = set()
+            new_aids_by_fact_key: dict[tuple[SemanticFactKind, str], set[str]] = {}
+            for aid, (_new_auth, new_flist) in actually_changed.items():
+                for f in base.facts_by_authority_id.get(aid, ()):
+                    touched_fact_keys.add((f.kind, f.name))
+                for f in new_flist:
+                    key = (f.kind, f.name)
+                    touched_fact_keys.add(key)
+                    new_aids_by_fact_key.setdefault(key, set()).add(aid)
+            cur_reused_mut = set(base.reused_fact_names)
+            reused_affected_aids: set[str] = set()
+            for key in touched_fact_keys:
+                aids_for_key = (
+                    base.fact_name_authority_ids.get(key, _EMPTY_STRING_FROZENSET)
+                    - changed_aids
+                ) | new_aids_by_fact_key.get(key, _EMPTY_STRING_FROZENSET)
+                is_reused = len(aids_for_key) >= 2
+                was_reused = key in cur_reused_mut
+                if is_reused != was_reused:
+                    if is_reused:
+                        cur_reused_mut.add(key)
+                    else:
+                        cur_reused_mut.discard(key)
+                    reused_affected_aids.update(aids_for_key)
+            self.__dict__["_incremental_authority_delta"] = (
+                actually_changed,
+                frozenset(cur_reused_mut),
+                frozenset(reused_affected_aids),
+            )
+            return SemanticAuthorityInventory(
+                authorities=merged_auths,
+                facts=merged_facts,
+            )
         return SemanticAuthorityBuilder.from_compact_class_index(
             self.class_index,
-            {
-                supplement.class_symbol: supplement
-                for supplement in self.supplements
-            },
+            self._supplements_by_symbol,
         ).build()
 
     def resolved_class_symbols(
@@ -4627,19 +4896,496 @@ class CompactSemanticDescentRepository:
         )
 
     @cached_property
+    def _resolved_projections_by_path(
+        self,
+    ) -> dict[str, tuple[PresentationProjection, ...]]:
+        delta = self._baseline_delta
+        if delta is not None:
+            base, changed_class_paths, changed_sem_paths = delta
+            if not changed_class_paths and not changed_sem_paths:
+                return dict(base.resolved_projections_by_path)
+            cur_class_by_path = {p.file_path: p for p in self.class_projections}
+            changed_export_modules: set[str] = set()
+            direct_changed_syms: set[str] = set()
+            for path in changed_class_paths:
+                old_p = base.class_by_path.get(path)
+                cur_p = cur_class_by_path.get(path)
+                if old_p is None or cur_p is None:
+                    if old_p is not None:
+                        changed_export_modules.add(old_p.module_name)
+                        direct_changed_syms.update(c.symbol for c in old_p.classes)
+                    if cur_p is not None:
+                        changed_export_modules.add(cur_p.module_name)
+                        direct_changed_syms.update(c.symbol for c in cur_p.classes)
+                    continue
+                if (
+                    old_p.import_aliases != cur_p.import_aliases
+                    or old_p.star_import_origins != cur_p.star_import_origins
+                    or old_p.classes != cur_p.classes
+                ):
+                    changed_export_modules.add(cur_p.module_name)
+                    direct_changed_syms.update(c.symbol for c in old_p.classes)
+                    direct_changed_syms.update(c.symbol for c in cur_p.classes)
+            affected_syms: set[str] = set(direct_changed_syms)
+            for sym in direct_changed_syms:
+                affected_syms.update(base.class_index.descendant_symbols(sym))
+                affected_syms.update(self.class_index.descendant_symbols(sym))
+            affected_modules: set[str] = set(changed_export_modules)
+            frontier = list(changed_export_modules)
+            importers = base.importers_by_target_module
+            while frontier:
+                mod_name = frontier.pop()
+                for importer in importers.get(mod_name, ()):
+                    if importer not in affected_modules:
+                        affected_modules.add(importer)
+                        frontier.append(importer)
+            resolved_by_path: dict[str, tuple[PresentationProjection, ...]] = {}
+            changed_paths = changed_class_paths | changed_sem_paths
+            for module_projection in self.semantic_projections:
+                path = module_projection.file_path
+                if (
+                    path not in changed_paths
+                    and path in base.resolved_projections_by_path
+                    and (
+                        path not in base.modules_with_refs
+                        or (
+                            path not in base.star_import_paths
+                            and module_projection.module_name not in affected_modules
+                            and base.resolved_syms_by_path.get(path, frozenset()).isdisjoint(
+                                affected_syms
+                            )
+                        )
+                    )
+                ):
+                    resolved_by_path[path] = base.resolved_projections_by_path[path]
+                else:
+                    resolved_by_path[path] = tuple(
+                        self.resolved_projection(module_projection, projection)
+                        for projection in module_projection.projections
+                    )
+            return resolved_by_path
+        return {
+            module_projection.file_path: tuple(
+                self.resolved_projection(module_projection, projection)
+                for projection in module_projection.projections
+            )
+            for module_projection in self.semantic_projections
+        }
+
+    @cached_property
     def resolved_projections(self) -> tuple[PresentationProjection, ...]:
+        delta = self._baseline_delta
+        if delta is not None:
+            base, changed_class_paths, changed_sem_paths = delta
+            if not changed_class_paths and not changed_sem_paths:
+                return base.resolved_projections
+            cur_by_path = self._resolved_projections_by_path
+            base_by_path = base.resolved_projections_by_path
+            if all(
+                all(p.location.file_path == path for p in projs)
+                for path, projs in cur_by_path.items()
+                if projs is not base_by_path.get(path)
+            ):
+                ordered: list[PresentationProjection] = []
+                for path in sorted(cur_by_path):
+                    projs = cur_by_path[path]
+                    if projs is base_by_path.get(path):
+                        ordered.extend(projs)
+                    else:
+                        ordered.extend(
+                            sorted(
+                                projs,
+                                key=lambda item: (
+                                    item.location.file_path,
+                                    item.location.line,
+                                    item.label,
+                                ),
+                            )
+                        )
+                return tuple(ordered)
         return sorted_tuple(
             (
-                self.resolved_projection(module_projection, projection)
-                for module_projection in self.semantic_projections
-                for projection in module_projection.projections
+                projection
+                for projections in self._resolved_projections_by_path.values()
+                for projection in projections
             ),
             key=lambda item: (item.location.file_path, item.location.line, item.label),
+        )
+
+    def _incremental_resolve(
+        self,
+        base: _CompactSemanticDescentBaseline,
+        changed_class_paths: frozenset[str],
+        changed_sem_paths: frozenset[str],
+    ) -> CompactSemanticDescentResolution:
+        if not changed_class_paths and not changed_sem_paths:
+            return base.resolution
+        inventory = self.authority_catalog
+        resolved_projs = self.resolved_projections
+        resolver = SemanticMirrorResolver(
+            inventory.authorities,
+            inventory.facts,
+            resolved_projs,
+            self.class_index,
+            self.supplements,
+        )
+        inc_delta = self.__dict__.get("_incremental_authority_delta")
+        if inventory is base.inventory:
+            resolver.__dict__["authority_catalog"] = base.authority_catalog
+            resolver.__dict__["fact_authority_index"] = base.fact_authority_index
+            resolver.__dict__["fact_token_index"] = base.fact_token_index
+            resolver.__dict__["fact_specificity_index"] = base.fact_specificity_index
+            cur_auth_by_id: Mapping[str, SemanticAuthority] = base.authority_by_id
+            cur_facts_tuple_by_aid: Mapping[str, tuple[SemanticFact, ...]] = (
+                base.facts_by_authority_id
+            )
+            changed_aids: set[str] = set()
+        elif inc_delta is not None:
+            actually_changed, cur_reused_fact_names, reused_affected_aids = inc_delta
+            cur_auth_mut = dict(base.authority_by_id)
+            cur_facts_mut = dict(base.facts_by_authority_id)
+            for aid, (new_auth, new_flist) in actually_changed.items():
+                if new_auth is None:
+                    cur_auth_mut.pop(aid, None)
+                else:
+                    cur_auth_mut[aid] = new_auth
+                if new_flist:
+                    cur_facts_mut[aid] = new_flist
+                else:
+                    cur_facts_mut.pop(aid, None)
+            resolver.authority_catalog.__dict__["by_id"] = cur_auth_mut
+            resolver.fact_authority_index.__dict__["by_authority_id"] = cur_facts_mut
+            cur_fact_by_id = dict(base.fact_authority_index.by_id)
+            for aid, (_new_auth, new_flist) in actually_changed.items():
+                for old_f in base.facts_by_authority_id.get(aid, ()):
+                    cur_fact_by_id.pop(old_f.fact_id, None)
+                for new_f in new_flist:
+                    cur_fact_by_id[new_f.fact_id] = new_f
+            resolver.fact_authority_index.__dict__["by_id"] = cur_fact_by_id
+            resolver.fact_specificity_index.__dict__["reused_fact_names"] = (
+                cur_reused_fact_names
+            )
+            cur_auth_by_id = cur_auth_mut
+            cur_facts_tuple_by_aid = cur_facts_mut
+            changed_aids = set(actually_changed) | set(reused_affected_aids)
+        else:
+            cur_auth_by_id = {a.authority_id: a for a in inventory.authorities}
+            cur_facts_by_aid: dict[str, list[SemanticFact]] = {}
+            for fact in inventory.facts:
+                cur_facts_by_aid.setdefault(fact.authority_id, []).append(fact)
+            cur_facts_tuple_by_aid = {
+                aid: tuple(
+                    sorted(flist, key=lambda fact: (fact.name, fact.fact_id))
+                )
+                for aid, flist in cur_facts_by_aid.items()
+            }
+            changed_aids = set(cur_auth_by_id.keys() ^ base.authority_by_id.keys())
+            for aid in cur_auth_by_id.keys() & base.authority_by_id.keys():
+                if (
+                    cur_auth_by_id[aid] != base.authority_by_id[aid]
+                    or cur_facts_tuple_by_aid.get(aid, ())
+                    != base.facts_by_authority_id.get(aid, ())
+                ):
+                    changed_aids.add(aid)
+
+        cur_class_by_path = {p.file_path: p for p in self.class_projections}
+        cur_sem_by_path = {p.file_path: p for p in self.semantic_projections}
+        direct_changed_symbols: set[str] = set()
+        changed_constructed_types: set[str] = set()
+        for path in changed_class_paths:
+            old_p = base.class_by_path.get(path)
+            cur_p = cur_class_by_path.get(path)
+            old_by_sym = (
+                {c.symbol: c for c in old_p.classes} if old_p is not None else {}
+            )
+            cur_by_sym = (
+                {c.symbol: c for c in cur_p.classes} if cur_p is not None else {}
+            )
+            for sym in old_by_sym.keys() | cur_by_sym.keys():
+                if old_by_sym.get(sym) != cur_by_sym.get(sym):
+                    direct_changed_symbols.add(sym)
+        for path in changed_sem_paths:
+            old_s = base.sem_by_path.get(path)
+            cur_s = cur_sem_by_path.get(path)
+            old_sup = (
+                {s.class_symbol: s for s in old_s.class_supplements}
+                if old_s is not None
+                else {}
+            )
+            cur_sup = (
+                {s.class_symbol: s for s in cur_s.class_supplements}
+                if cur_s is not None
+                else {}
+            )
+            for sym in old_sup.keys() | cur_sup.keys():
+                if old_sup.get(sym) != cur_sup.get(sym):
+                    direct_changed_symbols.add(sym)
+                    if (os_item := old_sup.get(sym)) is not None:
+                        changed_constructed_types.update(os_item.constructed_type_names)
+                    if (cs_item := cur_sup.get(sym)) is not None:
+                        changed_constructed_types.update(cs_item.constructed_type_names)
+
+        hierarchy_changed_symbols: set[str] = set(direct_changed_symbols)
+        for sym in direct_changed_symbols:
+            hierarchy_changed_symbols.update(base.class_index.ancestor_symbols(sym))
+            hierarchy_changed_symbols.update(base.class_index.descendant_symbols(sym))
+            hierarchy_changed_symbols.update(self.class_index.ancestor_symbols(sym))
+            hierarchy_changed_symbols.update(self.class_index.descendant_symbols(sym))
+        for sym in hierarchy_changed_symbols:
+            if sym in cur_auth_by_id or sym in base.authority_by_id:
+                changed_aids.add(sym)
+        if changed_constructed_types:
+            for aid, auth in cur_auth_by_id.items():
+                if auth.name in changed_constructed_types:
+                    changed_aids.add(aid)
+
+        if inventory is not base.inventory and inc_delta is None:
+            reused_diff = (
+                resolver.fact_specificity_index.reused_fact_names
+                ^ base.reused_fact_names
+            )
+            if reused_diff:
+                for fact in inventory.facts:
+                    if (fact.kind, fact.name) in reused_diff:
+                        changed_aids.add(fact.authority_id)
+
+        changed_dataclass_names = frozenset(
+            a.name
+            for aid in changed_aids
+            if (
+                (a := cur_auth_by_id.get(aid) or base.authority_by_id.get(aid))
+                is not None
+                and a.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
+            )
+        )
+        cur_resolved_by_path = self._resolved_projections_by_path
+        base_resolved_by_path = base.resolved_projections_by_path
+        dirty_proj_ids: set[str] = set()
+        dirty_projs: list[PresentationProjection] = []
+        removed_proj_ids: set[str] = set()
+        lineage = resolver.projection_class_symbol_lineage
+        for path, cur_p in cur_resolved_by_path.items():
+            base_p = base_resolved_by_path.get(path)
+            if cur_p is base_p:
+                continue
+            cur_ids_in_path: set[str] = set()
+            for proj in cur_p:
+                pid = proj.projection_id
+                cur_ids_in_path.add(pid)
+                if (
+                    base.proj_by_id.get(pid) != proj
+                    or (
+                        hierarchy_changed_symbols
+                        and (cls_sym := lineage.class_symbol_for_projection(proj))
+                        is not None
+                        and cls_sym in hierarchy_changed_symbols
+                    )
+                    or (
+                        changed_dataclass_names
+                        and any(
+                            c.type_name in changed_dataclass_names
+                            for c in proj.owner_constructions
+                        )
+                    )
+                ):
+                    dirty_proj_ids.add(pid)
+                    dirty_projs.append(proj)
+            if base_p is not None:
+                for p in base_p:
+                    if p.projection_id not in cur_ids_in_path:
+                        removed_proj_ids.add(p.projection_id)
+        for path, base_p in base_resolved_by_path.items():
+            if path not in cur_resolved_by_path:
+                for p in base_p:
+                    removed_proj_ids.add(p.projection_id)
+        if hierarchy_changed_symbols:
+            for sym in hierarchy_changed_symbols:
+                for proj in base.projs_by_lineage_class_symbol.get(sym, ()):
+                    pid = proj.projection_id
+                    if (
+                        pid not in dirty_proj_ids
+                        and pid not in removed_proj_ids
+                        and cur_resolved_by_path.get(proj.location.file_path)
+                        is base_resolved_by_path.get(proj.location.file_path)
+                    ):
+                        dirty_proj_ids.add(pid)
+                        dirty_projs.append(proj)
+        if changed_dataclass_names:
+            for cname in changed_dataclass_names:
+                for proj in base.projs_by_owner_construction_name.get(cname, ()):
+                    pid = proj.projection_id
+                    if (
+                        pid not in dirty_proj_ids
+                        and pid not in removed_proj_ids
+                        and cur_resolved_by_path.get(proj.location.file_path)
+                        is base_resolved_by_path.get(proj.location.file_path)
+                    ):
+                        dirty_proj_ids.add(pid)
+                        dirty_projs.append(proj)
+
+        classifications: list[SemanticAuthorityProjectionResolution] = [
+            SemanticAuthorityProjectionResolution(
+                relations=tuple(
+                    rel
+                    for rel in base.all_relations
+                    if rel.projection_id not in dirty_proj_ids
+                    and rel.projection_id not in removed_proj_ids
+                    and rel.authority_id not in changed_aids
+                    and rel.authority_id in cur_auth_by_id
+                )
+            )
+        ]
+        if dirty_projs and inventory is not base.inventory and inc_delta is not None:
+            actually_changed_tok = inc_delta[0]
+            touched_tokens: set[str] = set()
+            new_by_token: dict[str, list[SemanticFact]] = {}
+            for aid, (_new_auth, new_flist) in actually_changed_tok.items():
+                for f in base.facts_by_authority_id.get(aid, ()):
+                    touched_tokens.update(f.normalized_aliases)
+                for f in new_flist:
+                    for alias in f.normalized_aliases:
+                        touched_tokens.add(alias)
+                        new_by_token.setdefault(alias, []).append(f)
+            if touched_tokens:
+                patched_by_token = dict(base.fact_token_index.by_token)
+                changed_tok_aids = frozenset(actually_changed_tok)
+                for tok in touched_tokens:
+                    kept = [
+                        f
+                        for f in patched_by_token.get(tok, ())
+                        if f.authority_id not in changed_tok_aids
+                    ]
+                    if (added_f := new_by_token.get(tok)) is not None:
+                        kept.extend(added_f)
+                    if kept:
+                        kept.sort(key=lambda item: (item.authority_id, item.fact_id))
+                        patched_by_token[tok] = tuple(kept)
+                    else:
+                        patched_by_token.pop(tok, None)
+                resolver.fact_token_index.__dict__["by_token"] = patched_by_token
+            else:
+                resolver.fact_token_index.__dict__["by_token"] = (
+                    base.fact_token_index.by_token
+                )
+        for projection in dirty_projs:
+            for authority_id, matches in resolver._matches_by_authority(
+                projection
+            ).items():
+                classifications.append(
+                    resolver._resolution_for(
+                        projection,
+                        resolver.authority_catalog.authority(authority_id),
+                        resolver.fact_authority_index.facts_for_authority(authority_id),
+                        matches,
+                    )
+                )
+
+        live_changed_aids = frozenset(aid for aid in changed_aids if aid in cur_auth_by_id)
+        if live_changed_aids:
+            changed_by_token: dict[str, list[SemanticFact]] = {}
+            for aid in live_changed_aids:
+                for fact in cur_facts_tuple_by_aid.get(aid, ()):
+                    for token_val in fact.normalized_aliases:
+                        changed_by_token.setdefault(token_val, []).append(fact)
+            changed_token_map = {
+                tok: tuple(flist) for tok, flist in changed_by_token.items()
+            }
+            candidate_clean_by_id: dict[str, PresentationProjection] = {}
+            for tok in changed_token_map:
+                for proj in base.projs_by_token.get(tok, ()):
+                    pid = proj.projection_id
+                    if pid not in dirty_proj_ids and pid not in removed_proj_ids:
+                        candidate_clean_by_id[pid] = proj
+            for aid in live_changed_aids:
+                for sym in (aid, *self.class_index.descendant_symbols(aid)):
+                    for proj in base.projs_by_class_symbol.get(sym, ()):
+                        pid = proj.projection_id
+                        if pid not in dirty_proj_ids and pid not in removed_proj_ids:
+                            candidate_clean_by_id[pid] = proj
+            for projection in candidate_clean_by_id.values():
+                matches_by_authority: FactMatchesByAuthority = {}
+                constructed_dc_ids: frozenset[str] | None = None
+                for token in projection.tokens:
+                    raw_refs = changed_token_map.get(token.value)
+                    if not raw_refs:
+                        continue
+                    refs = (
+                        resolver._qualified_candidate_refs_for_token(token, raw_refs)
+                        if token.kind.is_qualified_attribute
+                        else raw_refs
+                    )
+                    for ref in refs:
+                        if token.role is PresentationTokenRole.CALL_KEYWORD_NAME:
+                            if constructed_dc_ids is None:
+                                constructed_dc_ids = (
+                                    resolver.dataclass_descent.constructed_dataclass_authority_ids(
+                                        projection
+                                    )
+                                )
+                            if ref.authority_id not in constructed_dc_ids:
+                                continue
+                        if not resolver.policy_catalog.policy_for_authority_id(
+                            ref.authority_id
+                        ).token_names_fact(token, ref):
+                            continue
+                        matches_by_authority.setdefault(
+                            ref.authority_id, {}
+                        ).setdefault(ref.fact_id, set()).add(token.value)
+                if projection.class_symbols:
+                    for match in ProjectionClassSymbolFactMatcher(
+                        projection,
+                        resolver.class_index,
+                        resolver.authority_catalog,
+                        resolver.fact_authority_index,
+                    ).matches():
+                        if match.authority_id in live_changed_aids:
+                            matches_by_authority.setdefault(
+                                match.authority_id, {}
+                            ).setdefault(match.fact_id, set()).add(match.token_value)
+                for authority_id, matches in matches_by_authority.items():
+                    if resolver._matches_can_form_mirror(authority_id, matches):
+                        classifications.append(
+                            resolver._resolution_for(
+                                projection,
+                                resolver.authority_catalog.authority(authority_id),
+                                resolver.fact_authority_index.facts_for_authority(
+                                    authority_id
+                                ),
+                                matches,
+                            )
+                        )
+
+        relation_resolution = SemanticAuthorityProjectionResolution.combine(
+            classifications
+        )
+        graph_space = SemanticDescentGraphSpace(
+            resolver.authorities,
+            resolver.facts,
+            resolver.projections,
+        )
+        graph_space.__dict__["authority_catalog"] = resolver.authority_catalog
+        graph_space.__dict__["fact_authority_index"] = resolver.fact_authority_index
+        cur_proj_by_id = dict(base.proj_by_id)
+        for pid in removed_proj_ids:
+            cur_proj_by_id.pop(pid, None)
+        for path, cur_p in cur_resolved_by_path.items():
+            if cur_p is not base_resolved_by_path.get(path):
+                for proj in cur_p:
+                    cur_proj_by_id[proj.projection_id] = proj
+        proj_catalog = PresentationProjectionCatalog(resolver.projections)
+        proj_catalog.__dict__["by_id"] = cur_proj_by_id
+        graph_space.__dict__["projection_catalog"] = proj_catalog
+        return CompactSemanticDescentResolution(
+            graph_space=graph_space,
+            relation_resolution=relation_resolution,
         )
 
     def resolve(self) -> CompactSemanticDescentResolution:
         """Resolve mirror relations without retaining matching-only caches."""
 
+        delta = self._baseline_delta
+        if delta is not None:
+            return self._incremental_resolve(*delta)
         resolver = SemanticMirrorResolver(
             self.authority_catalog.authorities,
             self.authority_catalog.facts,
@@ -4648,7 +5394,7 @@ class CompactSemanticDescentRepository:
             self.supplements,
         )
         relation_resolution = resolver.resolve()
-        return CompactSemanticDescentResolution(
+        resolution = CompactSemanticDescentResolution(
             graph_space=SemanticDescentGraphSpace(
                 resolver.authorities,
                 resolver.facts,
@@ -4656,6 +5402,124 @@ class CompactSemanticDescentRepository:
             ),
             relation_resolution=relation_resolution,
         )
+        if ScanCache.active() is not None and len(self.class_projections) >= 20:
+            slot = _base_semantic_descent_slot()
+            if slot[0] is None:
+                _ = resolver.authority_catalog.by_id
+                _ = resolver.fact_authority_index.by_authority_id
+                _ = resolver.fact_authority_index.by_id
+                _ = resolver.fact_token_index.by_token
+                _ = resolver.fact_specificity_index.reused_fact_names
+                fact_name_authority_ids = (
+                    resolver.fact_specificity_index.authority_ids_by_fact_name
+                )
+                resolved_by_path = {
+                    path: tuple(
+                        sorted(
+                            projs_in_path,
+                            key=lambda item: (
+                                item.location.file_path,
+                                item.location.line,
+                                item.label,
+                            ),
+                        )
+                    )
+                    for path, projs_in_path in self._resolved_projections_by_path.items()
+                }
+                resolved_syms_by_path: dict[str, frozenset[str]] = {}
+                for path, projs_in_path in resolved_by_path.items():
+                    syms: set[str] = set()
+                    for proj in projs_in_path:
+                        syms.update(proj.class_symbols)
+                        for pair in proj.key_value_pairs:
+                            syms.update(pair.value_class_symbols)
+                    if syms:
+                        resolved_syms_by_path[path] = frozenset(syms)
+                importers_mut: dict[str, set[str]] = {}
+                star_paths: set[str] = set()
+                for proj in self.class_projections:
+                    if proj.star_import_origins:
+                        star_paths.add(proj.file_path)
+                    importer_mod = proj.module_name
+                    for _local_name, target in proj.import_aliases:
+                        importers_mut.setdefault(target, set()).add(importer_mod)
+                        parent_mod = target.rpartition(".")[0]
+                        if parent_mod:
+                            importers_mut.setdefault(parent_mod, set()).add(importer_mod)
+                base_lineage = resolver.projection_class_symbol_lineage
+                proj_by_id: dict[str, PresentationProjection] = {}
+                projs_by_token_mut: dict[str, list[PresentationProjection]] = {}
+                projs_by_class_symbol_mut: dict[str, list[PresentationProjection]] = {}
+                projs_by_owner_construction_mut: dict[
+                    str, list[PresentationProjection]
+                ] = {}
+                projs_by_lineage_mut: dict[str, list[PresentationProjection]] = {}
+                for proj in resolver.projections:
+                    proj_by_id[proj.projection_id] = proj
+                    seen_toks: set[str] = set()
+                    for tok in proj.tokens:
+                        tv = tok.value
+                        if tv not in seen_toks:
+                            seen_toks.add(tv)
+                            projs_by_token_mut.setdefault(tv, []).append(proj)
+                    for sym in proj.class_symbols:
+                        projs_by_class_symbol_mut.setdefault(sym, []).append(proj)
+                    seen_cnames: set[str] = set()
+                    for cons in proj.owner_constructions:
+                        cn = cons.type_name
+                        if cn not in seen_cnames:
+                            seen_cnames.add(cn)
+                            projs_by_owner_construction_mut.setdefault(cn, []).append(
+                                proj
+                            )
+                    cls_sym = base_lineage.class_symbol_for_projection(proj)
+                    if cls_sym is not None:
+                        projs_by_lineage_mut.setdefault(cls_sym, []).append(proj)
+                slot[0] = _CompactSemanticDescentBaseline(
+                    class_by_path={p.file_path: p for p in self.class_projections},
+                    sem_by_path={p.file_path: p for p in self.semantic_projections},
+                    class_index=self.class_index,
+                    supplements_by_symbol=dict(self._supplements_by_symbol),
+                    inventory=self.authority_catalog,
+                    authority_by_id=resolver.authority_catalog.by_id,
+                    facts_by_authority_id=resolver.fact_authority_index.by_authority_id,
+                    authority_catalog=resolver.authority_catalog,
+                    fact_authority_index=resolver.fact_authority_index,
+                    fact_token_index=resolver.fact_token_index,
+                    fact_specificity_index=resolver.fact_specificity_index,
+                    fact_name_authority_ids=fact_name_authority_ids,
+                    resolved_projections_by_path=resolved_by_path,
+                    resolved_projections=resolver.projections,
+                    modules_with_refs=frozenset(
+                        mp.file_path
+                        for mp in self.semantic_projections
+                        if _module_has_unresolved_projection_refs(mp)
+                    ),
+                    resolved_syms_by_path=resolved_syms_by_path,
+                    importers_by_target_module={
+                        mod: frozenset(imps) for mod, imps in importers_mut.items()
+                    },
+                    star_import_paths=frozenset(star_paths),
+                    reused_fact_names=resolver.fact_specificity_index.reused_fact_names,
+                    all_relations=relation_resolution.relations,
+                    resolution=resolution,
+                    proj_by_id=proj_by_id,
+                    projs_by_token={
+                        tok: tuple(plist) for tok, plist in projs_by_token_mut.items()
+                    },
+                    projs_by_class_symbol={
+                        sym: tuple(plist)
+                        for sym, plist in projs_by_class_symbol_mut.items()
+                    },
+                    projs_by_owner_construction_name={
+                        cn: tuple(plist)
+                        for cn, plist in projs_by_owner_construction_mut.items()
+                    },
+                    projs_by_lineage_class_symbol={
+                        sym: tuple(plist) for sym, plist in projs_by_lineage_mut.items()
+                    },
+                )
+        return resolution
 
     def graph(self) -> SemanticDescentGraph:
         return self.resolve().graph()

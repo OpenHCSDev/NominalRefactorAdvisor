@@ -120,6 +120,21 @@ class SemanticProjectionDetector(
         CompactSemanticModuleProjectionFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_shared_group_context_builder = staticmethod(
+        CompactSemanticDescentRepository.from_projection_groups_with_index
+    )
+
+    @staticmethod
+    def _semantic_repository(
+        projections_by_family: CompactProjectionGroups,
+        context: object | None,
+    ) -> CompactSemanticDescentRepository:
+        if isinstance(context, CompactSemanticDescentRepository):
+            return context
+        return CompactSemanticDescentRepository.from_projection_groups(
+            projections_by_family,
+            class_index=CompactClassFamilyIndex.require(context),
+        )
 
     @classmethod
     def context_signature(
@@ -185,10 +200,7 @@ class SemanticMirrorWithoutDescentDetector(
     ) -> CompactFindingStream:
         del config
         return self._finding_stream_from_repository(
-            CompactSemanticDescentRepository.from_projection_groups(
-                projections_by_family,
-                class_index=CompactClassFamilyIndex.require(context),
-            )
+            self._semantic_repository(projections_by_family, context)
         )
 
     def _finding_stream_from_repository(
@@ -335,9 +347,7 @@ class UnmodeledRecordShapeDetector(SemanticProjectionDetector):
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         del config
-        repository = CompactSemanticDescentRepository.from_projection_groups(
-            projections_by_family, class_index=CompactClassFamilyIndex.require(context)
-        )
+        repository = self._semantic_repository(projections_by_family, context)
         fields_by_owner: dict[str, set[str]] = defaultdict(set)
         for fact in repository.authority_catalog.facts:
             fields_by_owner[fact.authority_id].add(fact.name)
@@ -346,15 +356,30 @@ class UnmodeledRecordShapeDetector(SemanticProjectionDetector):
             for authority in repository.authority_catalog.authorities
             if authority.kind is SemanticAuthorityKind.DATACLASS_SCHEMA
         )
+        schemas_by_field: dict[str, list[set[str]]] = defaultdict(list)
+        for schema_fields in schemas:
+            for field_name in schema_fields:
+                schemas_by_field[field_name].append(schema_fields)
         groups = defaultdict(list)
+        key_modeled_cache: dict[tuple[str, ...], bool] = {}
         for module in repository.semantic_projections:
             for projection in module.projections:
                 if projection.kind is not PresentationProjectionKind.MAPPING_READ:
                     continue
                 keys = projection.normalized_tokens
-                if len(keys) >= 3 and not any(
-                    set(keys) <= fields for fields in schemas
-                ):
+                if len(keys) < 3:
+                    continue
+                modeled = key_modeled_cache.get(keys)
+                if modeled is None:
+                    rarest = min(keys, key=lambda k: len(schemas_by_field.get(k, ())))
+                    candidates = schemas_by_field.get(rarest)
+                    if not candidates:
+                        modeled = False
+                    else:
+                        key_set = set(keys)
+                        modeled = any(key_set <= fields for fields in candidates)
+                    key_modeled_cache[keys] = modeled
+                if not modeled:
                     groups[keys].append(projection.location)
         return [
             self.build_finding(

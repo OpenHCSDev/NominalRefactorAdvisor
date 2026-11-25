@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import ast
 import difflib
+import gc
 import hashlib
 import os
+import pickle
+import selectors
+import signal
 import stat
+import sys
 import tempfile
+import traceback
 import weakref
 from abc import (
     ABC,
@@ -52,6 +58,7 @@ from nominal_refactor_advisor.restated_fact_observations import (
     ModuleReferenceFamily,
     ReferenceIndex,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
 from nominal_refactor_advisor.class_families.parsed_index import ClassFamilyIndex
 from nominal_refactor_advisor.class_index import (
@@ -291,7 +298,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             self.__dict__.get("product_flow_repository")
             or self._retained_product_flow_repository
         )
-        return type(self)._from_modules_with_indexes(
+        snapshot = type(self)._from_modules_with_indexes(
             self.parsed_modules,
             self.required_class_family_index,
             SourceIndexBuildArtifacts(
@@ -301,7 +308,22 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             retained_product_flow_repository=existing_product_flow,
             text_files=self.text_files,
             previous_compact_class_state=self._compact_class_predecessor(),
+            parent_snapshot=self._parent_snapshot,
+            changed_from_parent=self._changed_from_parent,
         )
+        if "compact_class_projections" in self.__dict__:
+            snapshot.__dict__["compact_class_projections"] = self.__dict__[
+                "compact_class_projections"
+            ]
+        if "compact_class_index" in self.__dict__:
+            snapshot.__dict__["compact_class_index"] = self.__dict__[
+                "compact_class_index"
+            ]
+        if "_import_from_names_by_target_module" in self.__dict__:
+            snapshot.__dict__["_import_from_names_by_target_module"] = self.__dict__[
+                "_import_from_names_by_target_module"
+            ]
+        return snapshot
 
     def with_text_files(self, text_files: Mapping[str, FileText]) -> CodemodSourceSnapshot:
         """This state with `text_files` as the plan's rewritten files outside the index."""
@@ -329,12 +351,24 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         repr=False,
         compare=False,
     )
+    _parent_snapshot: CodemodSourceSnapshot | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
+    _changed_from_parent: frozenset[str] = field(
+        default=frozenset(),
+        repr=False,
+        compare=False,
+    )
 
     def _compact_class_predecessor(
         self,
     ) -> tuple[tuple[CompactModuleClassProjection, ...], CompactClassFamilyIndex] | None:
         if "compact_class_index" in self.__dict__:
             return (self.compact_class_projections, self.compact_class_index)
+        if "overlap_class_index" in self.__dict__:
+            return (self.overlap_class_projections, self.overlap_class_index)
         return self._previous_compact_class_state
 
     module_binding_proof = AliasProperty[RepositoryModuleBindingProof]("product_flow_repository")
@@ -401,6 +435,35 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
     @cached_property
+    def module_import_graph(self) -> SourceModuleImportGraph:
+        if self.module_import_graph_cache is not None:
+            return self.module_import_graph_cache
+        graph = SourceModuleImportGraph(
+            source_index=self.source_index,
+            module_nodes_by_file_path=self.module_nodes_by_file_path,
+        )
+        parent = self._parent_snapshot
+        if (
+            parent is not None
+            and self._changed_from_parent
+            and "module_import_graph" in parent.__dict__
+        ):
+            parent_graph = parent.module_import_graph
+            if (
+                "import_edges_by_module" in parent_graph.__dict__
+                and len(parent_graph.source_index.files) == len(self.source_index.files)
+                and parent_graph.known_module_names == graph.known_module_names
+            ):
+                edges = dict(parent_graph.import_edges_by_module)
+                sf_by_path = graph.source_file_by_path
+                for changed_path in self._changed_from_parent:
+                    sf = sf_by_path.get(changed_path)
+                    if sf is not None:
+                        edges[sf.module_name] = graph.import_edges_for_source_file(sf)
+                graph.__dict__["import_edges_by_module"] = edges
+        return graph
+
+    @cached_property
     def reference_index(self) -> ReferenceIndex:
         """Every scanned module's identifier references, indexed once per snapshot."""
 
@@ -413,10 +476,33 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         )
 
     @cached_property
+    def overlap_class_projections(self) -> tuple[CompactModuleClassProjection, ...]:
+        """Overlap-sufficient compact class projections (skips unrelated syntax/method
+        facets on virtual modules that have not already collected the full family)."""
+
+        if "compact_class_projections" in self.__dict__:
+            return self.compact_class_projections
+        return tuple(
+            CompactModuleClassProjectionFamily.collect_overlap_modules(self.parsed_modules)
+        )
+
+    @cached_property
+    def overlap_class_index(self) -> CompactClassFamilyIndex:
+        if "compact_class_index" in self.__dict__:
+            return self.compact_class_index
+        previous = self._previous_compact_class_state
+        if previous is not None:
+            previous_projections, previous_index = previous
+            return previous_index.projected(
+                previous_projections, self.overlap_class_projections
+            )
+        return build_compact_class_family_index(self.overlap_class_projections)
+
+    @cached_property
     def class_overlap_verdicts(self) -> ClassOverlapVerdicts:
         """The scan's class-overlap verdicts, re-derived from this source state."""
 
-        return ClassOverlapVerdicts(self.compact_class_projections, self.compact_class_index)
+        return ClassOverlapVerdicts(self.overlap_class_projections, self.overlap_class_index)
 
     @cached_property
     def declared_receiver_typing(self) -> DeclaredReceiverTyping:
@@ -557,6 +643,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         previous_compact_class_state: (
             tuple[tuple[CompactModuleClassProjection, ...], CompactClassFamilyIndex] | None
         ) = None,
+        parent_snapshot: CodemodSourceSnapshot | None = None,
+        changed_from_parent: frozenset[str] = frozenset(),
     ) -> CodemodSourceSnapshot:
         """Build from source and semantic indexes proved for that exact source."""
 
@@ -575,6 +663,8 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
             _retained_product_flow_repository=retained_product_flow_repository,
             _previous_compact_class_state=previous_compact_class_state,
+            _parent_snapshot=parent_snapshot,
+            _changed_from_parent=changed_from_parent,
             text_files={} if text_files is None else text_files,
         )
         snapshot._parsed_modules_by_file_path.update(
@@ -622,6 +712,10 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             ),
             text_files=self.text_files,
             previous_compact_class_state=self._compact_class_predecessor(),
+            parent_snapshot=self,
+            changed_from_parent=frozenset(
+                module.file_path for module in projection.changed_modules
+            ),
         )
 
     @cached_property
@@ -724,6 +818,20 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         modules.with_fact(self.required_class_family_index)
         return modules
 
+    @cached_property
+    def source_signatures_by_file_path(self) -> Mapping[str, str]:
+        """Exact source signatures for this snapshot, reusing parsed modules."""
+
+        cached = self._parsed_modules_by_file_path
+        return {
+            file_path: (
+                parsed.source_signature
+                if (parsed := cached.get(file_path)) is not None
+                else CodemodSourceRevision.hash_source(source)
+            )
+            for file_path, source in self.sources_by_file_path.items()
+        }
+
     def simulate_rewrites(
         self,
         rewrites: Iterable[PlannedSourceRewrite],
@@ -735,6 +843,7 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
             rewrites,
             self.sources_by_file_path,
             backend=backend,
+            known_hashes=self.source_signatures_by_file_path,
         )
 
     def preflight_document(
@@ -747,7 +856,11 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         self,
         guard_suite: ArchitectureGuardSuite,
     ) -> ArchitectureGuardReport:
-        return guard_suite.evaluate(self.source_index, self.sources_by_file_path)
+        return guard_suite.evaluate(
+            self.source_index,
+            self.sources_by_file_path,
+            module_nodes_by_file_path=self.module_nodes_by_file_path,
+        )
 
     def plan_from_findings(
         self,
@@ -1072,6 +1185,18 @@ class RefactorRecipe(SourceRewriteReferences):
             self,
             operations=(*self.operations, resolved_operation),
         )
+
+    def with_proved_operation(
+        self,
+        operation: RefactorRecipeOperation,
+        context: CodemodSelectorContext,
+    ) -> RefactorRecipe:
+        """Append one exact operation under the recipe rationale policy and
+        prove its source edits once under that resolved rationale."""
+
+        recipe = self.with_operation(operation)
+        recipe.operations[-1].source_edits(context)
+        return recipe
 
     def source_rewrite_batch(
         self,
@@ -1942,6 +2067,15 @@ class CodemodSimulationReport(DataclassJsonReport):
             base_revisions=CodemodSourceRevision.capture(
                 {**snapshot.sources_by_file_path, **self.text_file_sources_before},
                 required_paths=self.changed_file_paths,
+                known_hashes=(
+                    snapshot.source_signatures_by_file_path
+                    if not self.text_file_sources_before
+                    else {
+                        path: sig
+                        for path, sig in snapshot.source_signatures_by_file_path.items()
+                        if path not in self.text_file_sources_before
+                    }
+                ),
             ),
         )
 
@@ -2045,12 +2179,51 @@ class CodemodAfterSnapshotProjection:
     text_file_rewrites: tuple[TextFileRewrite, ...] = ()
 
     @cached_property
+    def source_state_id(self) -> str:
+        if (
+            not self.deleted_file_paths
+            and not self.text_file_rewrites
+            and all(
+                path in self.base_snapshot.sources_by_file_path
+                for path in self.source_overlay_by_file_path
+            )
+        ):
+            source_files_by_path = {
+                source_file.file_path: source_file
+                for source_file in self.base_snapshot.source_index.files
+            }
+            sources = self.base_snapshot.sources_by_file_path
+            overlay = self.source_overlay_by_file_path
+            text_files = self.base_snapshot.text_files
+            return hashlib.blake2s(
+                "\0".join(
+                    (
+                        *(
+                            f"{file_path}\0{source_files_by_path[file_path].module_name}\0"
+                            f"{int(source_files_by_path[file_path].is_package_init)}\0"
+                            f"{overlay.get(file_path, sources[file_path])}"
+                            for file_path in sorted(sources)
+                        ),
+                        *(
+                            f"text\0{file_path}\0{text_files[file_path].identity}"
+                            for file_path in sorted(text_files)
+                        ),
+                    )
+                ).encode("utf-8"),
+                digest_size=16,
+            ).hexdigest()
+        return self.snapshot.source_state_id
+
+    @cached_property
     def snapshot(self) -> CodemodSourceSnapshot:
-        return (
+        result = (
             self.base_snapshot.with_virtual_sources(self.source_overlay_by_file_path)
             .without_source_paths(self.deleted_file_paths)
             .with_text_file_rewrites(self.text_file_rewrites)
         )
+        if "source_state_id" in self.__dict__:
+            result.__dict__["source_state_id"] = self.__dict__["source_state_id"]
+        return result
 
 
 @dataclass(frozen=True)
@@ -3265,12 +3438,46 @@ class DelegatedRecipeDeclaration(ABC):
             finding, context
         ).required_evaluation_declaration_type
 
+    @classmethod
+    def possible_declaration_types(
+        cls,
+        finding: RefactorFinding,
+    ) -> tuple[type[object], ...] | None:
+        """Finite superset of evaluation declaration types this evaluator can return."""
+
+        del finding
+        return None
+
 
 class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
     """Declaration-owned proof evaluation for one detector finding.
 
     It runs on findings after they are cached, so it is answer-free: editing a
     recipe never re-keys a detector's cached findings."""
+
+    prefers_parallel_synthesis: ClassVar[bool] = False
+
+    @classmethod
+    def parallel_synthesis_priority(
+        cls,
+        finding: RefactorFinding,
+        snapshot: CodemodSourceSnapshot | None = None,
+    ) -> int:
+        """Heavier findings get higher priority so round-robin bucketing spreads
+        expensive evaluations across different workers."""
+
+        del finding, snapshot
+        return 0
+
+    @classmethod
+    def prewarm_parallel_synthesis(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: Sequence[RefactorFinding],
+    ) -> None:
+        """Populate shared snapshot derivations before forking synthesis workers."""
+
+        del snapshot, findings
 
     @classmethod
     def detector_declaration_type(cls) -> type[IssueDetector]:
@@ -3372,17 +3579,182 @@ class FindingRecipePlanBuilder:
         compare=False,
     )
 
+    def _evaluate_scoped_findings(
+        self,
+        scoped: tuple[RefactorFinding, ...],
+        selector_context: CodemodSelectorContext | None,
+    ) -> tuple[FindingRecipeSynthesisRecord, ...]:
+        if (
+            not sys.platform.startswith("linux")
+            or selector_context is None
+            or len(scoped) < 4
+        ):
+            return tuple(
+                FindingRecipeSynthesisAttempt(
+                    finding=finding,
+                    selector_context=selector_context,
+                ).evaluate()
+                for finding in scoped
+            )
+        detector_ids = {finding.detector_id for finding in scoped}
+        detector_by_id = {
+            det_id: det
+            for det_id in detector_ids
+            if (det := IssueDetector.registered_detector_type_for_id(det_id)) is not None
+            and issubclass(det, FindingRecipeEvaluator)
+        }
+        wants_parallel = any(
+            det.prefers_parallel_synthesis for det in detector_by_id.values()
+        )
+        if not wants_parallel:
+            return tuple(
+                FindingRecipeSynthesisAttempt(
+                    finding=finding,
+                    selector_context=selector_context,
+                ).evaluate()
+                for finding in scoped
+            )
+        snapshot = selector_context.execution_snapshot()
+        if snapshot._parent_snapshot is not None:
+            return tuple(
+                FindingRecipeSynthesisAttempt(
+                    finding=finding,
+                    selector_context=selector_context,
+                ).evaluate()
+                for finding in scoped
+            )
+        for det in detector_by_id.values():
+            det.prewarm_parallel_synthesis(snapshot, scoped)
+        initial_keys = frozenset(snapshot._operation_derivations.keys())
+        prioritized_indices = sorted(
+            range(len(scoped)),
+            key=lambda idx: (
+                -(
+                    det.parallel_synthesis_priority(scoped[idx], snapshot)
+                    if (det := detector_by_id.get(scoped[idx].detector_id)) is not None
+                    else 0
+                ),
+                idx,
+            ),
+        )
+        num_workers = min(3, len(scoped))
+        buckets = [
+            tuple(prioritized_indices[worker_idx::num_workers])
+            for worker_idx in range(num_workers)
+        ]
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        children: dict[int, tuple[int, bytearray]] = {}
+        ordered_records: list[FindingRecipeSynthesisRecord | None] = [None] * len(scoped)
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            for bucket in buckets[1:]:
+                reader, writer = os.pipe()
+                pid = os.fork()
+                if pid == 0:
+                    os.close(reader)
+                    for fd in list(children):
+                        os.close(fd)
+                    gc.disable()
+                    try:
+                        try:
+                            child_records = tuple(
+                                (
+                                    idx,
+                                    FindingRecipeSynthesisAttempt(
+                                        finding=scoped[idx],
+                                        selector_context=snapshot,
+                                    ).evaluate(),
+                                )
+                                for idx in bucket
+                            )
+                            child_derivs: dict[Hashable, object] = {}
+                            for key, value in snapshot._operation_derivations.items():
+                                if key in initial_keys:
+                                    continue
+                                if (
+                                    isinstance(value, tuple)
+                                    and value
+                                    and all(
+                                        isinstance(item, (NominalSourceEdit, TextFileChange))
+                                        for item in value
+                                    )
+                                ) or (
+                                    isinstance(value, tuple)
+                                    and len(value) == 4
+                                    and isinstance(value[0], bool)
+                                    and isinstance(value[2], frozenset)
+                                ):
+                                    child_derivs[key] = value
+                            payload = pickle.dumps((True, (child_records, child_derivs)))
+                        except BaseException:  # noqa: BLE001
+                            payload = pickle.dumps((False, traceback.format_exc()))
+                        with os.fdopen(writer, "wb") as out:
+                            out.write(payload)
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                    finally:
+                        os._exit(0)
+                os.close(writer)
+                children[reader] = (pid, bytearray())
+
+            for idx in buckets[0]:
+                ordered_records[idx] = FindingRecipeSynthesisAttempt(
+                    finding=scoped[idx],
+                    selector_context=snapshot,
+                ).evaluate()
+
+            with selectors.DefaultSelector() as selector:
+                for fd in children:
+                    selector.register(fd, selectors.EVENT_READ)
+                while children:
+                    for key, _ in selector.select():
+                        fd = key.fd
+                        pid, buf = children[fd]
+                        chunk = os.read(fd, 1 << 20)
+                        if chunk:
+                            buf += chunk
+                            continue
+                        selector.unregister(fd)
+                        os.close(fd)
+                        del children[fd]
+                        ScanCache.defer_child_reap(pid)
+                        if not buf:
+                            raise RuntimeError(
+                                "parallel recipe synthesis worker exited without result"
+                            )
+                        ok, payload_val = pickle.loads(bytes(buf))
+                        if not ok:
+                            raise RuntimeError(
+                                f"parallel recipe synthesis worker failed:\n{payload_val}"
+                            )
+                        child_records, child_derivs = payload_val
+                        for idx, record in child_records:
+                            ordered_records[idx] = record
+                        for deriv_key, deriv_val in child_derivs.items():
+                            snapshot._operation_derivations.setdefault(deriv_key, deriv_val)
+        finally:
+            for fd, (pid, _buf) in children.items():
+                os.close(fd)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(pid, 0)
+            if gc_was_enabled:
+                gc.enable()
+        return tuple(cast(FindingRecipeSynthesisRecord, rec) for rec in ordered_records)
+
     def plan(
         self,
         *,
         selector_context: CodemodSelectorContext | None = None,
     ) -> FindingRecipePlan:
-        evaluated_records = tuple(
-            FindingRecipeSynthesisAttempt(
-                finding=finding,
-                selector_context=selector_context,
-            ).evaluate()
-            for finding in self.scoped_findings()
+        evaluated_records = self._evaluate_scoped_findings(
+            self.scoped_findings(),
+            selector_context,
         )
         candidates = tuple(
             FindingRecipePlanCandidate(record)
@@ -4347,6 +4719,7 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
     """Validate and simulate source-index anchored rewrite batches."""
 
     backend: CodemodBackend
+    known_hashes: Mapping[str, str] | None = None
 
     def simulate(
         self,
@@ -4397,7 +4770,10 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
                 validated_file_paths=tuple(sorted(changed_sources)),
                 parse_valid=True,
             ),
-            base_revisions=CodemodSourceRevision.capture(self.sources_by_file_path),
+            base_revisions=CodemodSourceRevision.capture(
+                self.sources_by_file_path,
+                known_hashes=self.known_hashes,
+            ),
         )
 
     def apply_resolved_rewrite(
@@ -4435,6 +4811,7 @@ def simulate_planned_rewrites(
     source_by_path: Mapping[str, str],
     *,
     backend: CodemodBackend | None = None,
+    known_hashes: Mapping[str, str] | None = None,
 ) -> CodemodSimulationReport:
     """Simulate source-index target replacements over in-memory source text."""
 
@@ -4442,4 +4819,5 @@ def simulate_planned_rewrites(
         source_index=source_index,
         sources_by_file_path=source_by_path,
         backend=backend or CodemodBackend.AST_SPAN,
+        known_hashes=known_hashes,
     ).simulate(rewrites)

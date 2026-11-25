@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.installed_owners import (
     InstalledOwner,
     RegistrationOwners,
@@ -75,7 +76,11 @@ class HandRolledRegistrationDetector(
             if not roles:
                 continue
             scope = context.cached(
-                (RegistrationOwners, indexed_class.module_name, indexed_class.file_path),
+                (
+                    RegistrationOwners,
+                    indexed_class.module_name.split(".")[0],
+                    DeclaredRoot.nearest_pyproject(Path(indexed_class.file_path)),
+                ),
                 lambda: RegistrationOwners.for_package(
                     context.projections,
                     indexed_class.module_name,

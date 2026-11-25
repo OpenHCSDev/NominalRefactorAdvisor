@@ -42,6 +42,7 @@ from nominal_refactor_advisor.ast_tools import (
 )
 from nominal_refactor_advisor.class_symbols import iter_class_definitions
 from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.observation_shapes import AssertedSubject, RestatingSite
 from nominal_refactor_advisor.package_walks import WALKS_RECURSIVELY
@@ -1239,6 +1240,11 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         ]
 
 
+_LEGACY_WORD_RE = re.compile(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])")
+_LEGACY_PROSE_WORD_RE = re.compile(r"[a-z]+")
+_LEGACY_BACKCOMPAT_RE = re.compile(r"backwards?[ -]compatib")
+
+
 class LegacyWord(StrEnum):
     """Words with which a path declares itself the old one, kept for an old caller."""
 
@@ -1252,30 +1258,30 @@ class LegacyWord(StrEnum):
 
     @classmethod
     def words(cls, identifier: str) -> list[str]:
-        return [
-            word.lower()
-            for word in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+(?![a-z])", identifier)
-        ]
+        return [word.lower() for word in _LEGACY_WORD_RE.findall(identifier)]
 
     @classmethod
     def spellings(cls) -> frozenset[str]:
         """The member values: a word is one of them by value, which Python 3.11 cannot test
         with ``str in EnumType``."""
 
-        return frozenset(member.value for member in cls)
+        return _LEGACY_WORD_SPELLINGS
 
     @classmethod
     def in_identifier(cls, identifier: str) -> bool:
         """Whether a snake_case or CamelCase identifier has one of these as a word."""
 
-        return any(word in cls.spellings() for word in cls.words(identifier))
+        lowered = identifier.lower()
+        if not any(word in lowered for word in _LEGACY_WORD_SPELLINGS):
+            return False
+        return any(word in _LEGACY_WORD_SPELLINGS for word in cls.words(identifier))
 
     @classmethod
     def stem(cls, identifier: str) -> str:
         """The identifier without these words: what the old path is the old form of."""
 
         return "".join(
-            word for word in cls.words(identifier) if word not in cls.spellings()
+            word for word in cls.words(identifier) if word not in _LEGACY_WORD_SPELLINGS
         )
 
     @classmethod
@@ -1283,9 +1289,15 @@ class LegacyWord(StrEnum):
         """Whether prose says the path is old: one of these as a whole word, or an old-caller phrase."""
 
         lowered = text.lower()
+        if not any(word in lowered for word in _LEGACY_SOURCE_MARKERS):
+            return False
         return any(
-            word in cls.spellings() for word in re.findall(r"[a-z]+", lowered)
-        ) or bool(re.search(r"backwards?[ -]compatib", lowered))
+            word in _LEGACY_WORD_SPELLINGS for word in _LEGACY_PROSE_WORD_RE.findall(lowered)
+        ) or bool(_LEGACY_BACKCOMPAT_RE.search(lowered))
+
+
+_LEGACY_WORD_SPELLINGS: frozenset[str] = frozenset(member.value for member in LegacyWord)
+_LEGACY_SOURCE_MARKERS: frozenset[str] = _LEGACY_WORD_SPELLINGS | frozenset(("compatib",))
 
 
 class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
@@ -1302,6 +1314,9 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[RestatingSite]:
+        source_lower = parsed_module.source.lower()
+        if not any(marker in source_lower for marker in _LEGACY_SOURCE_MARKERS):
+            return
         index = parsed_module.syntax_index
         for node_type in (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef):
             for node_index, node in index.indexed_nodes_of_type(node_type):
@@ -1413,10 +1428,11 @@ class LegacyMarkerSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
     def has_replacement(name: str, siblings: set[str]) -> bool:
         """Whether `name` has a marker word and a sibling of the same stem without one."""
 
+        if not LegacyWord.in_identifier(name):
+            return False
         stem = LegacyWord.stem(name)
         return (
-            LegacyWord.in_identifier(name)
-            and bool(stem)
+            bool(stem)
             and any(
                 sibling != name
                 and not LegacyWord.in_identifier(sibling)
@@ -1751,6 +1767,53 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
         return False
 
 
+@ScanCache.cached
+def _nearest_pyproject_for_dir(directory: Path) -> Path | None:
+    return DeclaredRoot.nearest_pyproject(directory)
+
+
+@ScanCache.cached
+def _pyproject_entry_point_modules(pyproject: Path) -> frozenset[str]:
+    project = tomllib.loads(pyproject.read_text()).get("project", {})
+    targets = [
+        target
+        for table in ProjectEntryPoints.SCRIPT_TABLES
+        for target in project.get(table, {}).values()
+    ]
+    targets += [
+        target
+        for group in project.get("entry-points", {}).values()
+        for target in group.values()
+    ]
+    return frozenset(target.partition(":")[0].strip() for target in targets)
+
+
+@ScanCache.cached
+def _test_collection_for_dir(directory: Path) -> TestCollection:
+    for candidate in (directory, *directory.parents):
+        options = TestCollection.options_in(candidate)
+        if options is not None:
+            return TestCollection(
+                candidate,
+                TestCollection.listed(options.get("testpaths")),
+                TestCollection.listed(options.get("python_files"))
+                or TestCollection.DEFAULT_FILES,
+            )
+    return TestCollection(None, (), TestCollection.DEFAULT_FILES)
+
+
+@dataclass(frozen=True)
+class _ReferenceIndexBaseline:
+    by_path: dict[str, ModuleReferenceFacts]
+    uses_by_name: dict[str, tuple[tuple[str, int], ...]]
+    index: ReferenceIndex
+
+
+@ScanCache.cached
+def _base_reference_index_slot() -> list[_ReferenceIndexBaseline | None]:
+    return [None]
+
+
 @dataclass(frozen=True)
 class ProjectEntryPoints:
     """Module names a project declares as entry points in its pyproject.toml."""
@@ -1761,12 +1824,23 @@ class ProjectEntryPoints:
 
     @classmethod
     def declared_for(cls, source_paths: Iterable[Path]) -> ProjectEntryPoints:
+        if ScanCache.active() is not None:
+            parent_dirs = {source_path.parent for source_path in source_paths}
+            pyprojects = {
+                pyproject
+                for directory in parent_dirs
+                if (pyproject := _nearest_pyproject_for_dir(directory)) is not None
+            }
+            names: set[str] = set()
+            for pyproject in sorted(pyprojects):
+                names.update(_pyproject_entry_point_modules(pyproject))
+            return cls(frozenset(names))
         pyprojects = {
             pyproject
             for source_path in source_paths
             if (pyproject := DeclaredRoot.nearest_pyproject(source_path)) is not None
         }
-        names: set[str] = set()
+        names = set()
         for pyproject in sorted(pyprojects):
             project = tomllib.loads(pyproject.read_text()).get("project", {})
             targets = [
@@ -1801,6 +1875,8 @@ class TestCollection:
         `pyproject.toml` with `[tool.pytest.ini_options]`, `tox.ini` with `[pytest]` or
         `setup.cfg` with `[tool:pytest]` is the root, and its options apply."""
 
+        if ScanCache.active() is not None:
+            return _test_collection_for_dir(path.parent)
         for directory in path.parents:
             options = cls.options_in(directory)
             if options is not None:
@@ -1910,13 +1986,13 @@ class UnreachedModules:
                 if not module.is_package_entry_file
                 and not module.runs_as_script
                 and module.module_name not in entry_points.module_names
-                and not collected(module.file_path)
-                and not reached_by_path(module.file_path)
                 and not reached_by[module.module_name] - {module.module_name}
                 and not any(walk.walks(module.module_name) for walk in walks)
                 and not any(
                     module.module_name.startswith(f"{package}.") for package in listable
                 )
+                and not collected(module.file_path)
+                and not reached_by_path(module.file_path)
             )
         )
 
@@ -1929,11 +2005,78 @@ class ReferenceIndex:
 
     @classmethod
     def from_facts(cls, facts: Sequence[ModuleReferenceFacts]) -> ReferenceIndex:
+        if ScanCache.active() is not None:
+            slot = _base_reference_index_slot()
+            base = slot[0]
+            if base is not None:
+                base_by_path = base.by_path
+                changed_mods: list[ModuleReferenceFacts] = []
+                cur_paths: set[str] = set()
+                for mod in facts:
+                    cur_paths.add(mod.file_path)
+                    old_mod = base_by_path.get(mod.file_path)
+                    if old_mod is mod or (
+                        old_mod is not None and old_mod.referenced == mod.referenced
+                    ):
+                        continue
+                    changed_mods.append(mod)
+                removed_paths = (
+                    frozenset()
+                    if len(cur_paths) == len(base_by_path)
+                    and not any(m.file_path not in base_by_path for m in changed_mods)
+                    else frozenset(p for p in base_by_path if p not in cur_paths)
+                )
+                if not changed_mods and not removed_paths:
+                    return base.index
+                if len(changed_mods) + len(removed_paths) <= 64:
+                    dirty_paths = removed_paths | frozenset(
+                        m.file_path for m in changed_mods
+                    )
+                    affected_names: set[str] = set()
+                    new_by_name: dict[str, list[tuple[str, int]]] = defaultdict(list)
+                    for path in removed_paths:
+                        for name, _line in base_by_path[path].referenced:
+                            affected_names.add(name)
+                    for mod in changed_mods:
+                        old_mod = base_by_path.get(mod.file_path)
+                        if old_mod is not None:
+                            for name, _line in old_mod.referenced:
+                                affected_names.add(name)
+                        for name, line in mod.referenced:
+                            affected_names.add(name)
+                            new_by_name[name].append((mod.file_path, line))
+                    path_order = {mod.file_path: idx for idx, mod in enumerate(facts)}
+                    uses_map = dict(base.uses_by_name)
+                    for name in affected_names:
+                        kept = [
+                            entry
+                            for entry in base.uses_by_name.get(name, ())
+                            if entry[0] not in dirty_paths
+                        ]
+                        added = new_by_name.get(name)
+                        if added:
+                            kept.extend(added)
+                            kept.sort(key=lambda entry: path_order[entry[0]])
+                        if kept:
+                            uses_map[name] = tuple(kept)
+                        else:
+                            uses_map.pop(name, None)
+                    return cls(uses_map)
         uses: dict[str, list[tuple[str, int]]] = defaultdict(list)
         for module in facts:
             for name, line in module.referenced:
                 uses[name].append((module.file_path, line))
-        return cls({name: tuple(found) for name, found in uses.items()})
+        uses_map = {name: tuple(found) for name, found in uses.items()}
+        built = cls(uses_map)
+        if ScanCache.active() is not None and len(facts) >= 20:
+            slot = _base_reference_index_slot()
+            if slot[0] is None:
+                slot[0] = _ReferenceIndexBaseline(
+                    by_path={m.file_path: m for m in facts},
+                    uses_by_name=uses_map,
+                    index=built,
+                )
+        return built
 
     def consumers_of(
         self, name: str, declared_at: tuple[str, int]

@@ -2013,15 +2013,13 @@ class OwnTypeTestFindingRecipeSynthesizer(
             docstring=docstring,
         )
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=proof.rationale(),
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 __all__ = (

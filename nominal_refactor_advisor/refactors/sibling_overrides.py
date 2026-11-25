@@ -14,15 +14,19 @@ import ast
 import keyword as keyword_module
 from abc import ABC, abstractmethod
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from nominal_refactor_advisor.ast_field_decoders import alias_names
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet, ParsedModuleSetFact
 from nominal_refactor_advisor.class_body import ClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
     PER_CLASS_NAMES,
     ClassBodyDeclarationKind,
+    CompactClassFamilyIndex,
     CompactIndexedClass,
+    CompactModuleClassProjection,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.class_references import ClassReferenceRole
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
@@ -270,44 +274,81 @@ def _home_for(
     return None
 
 
-def sibling_override_candidates(
-    verdicts: ClassOverlapVerdicts,
-) -> tuple[SiblingOverrideCandidate, ...]:
-    """Every inherited member overridden identically by two or more independent siblings."""
+@ScanCache.cached
+def _base_sibling_override_slots() -> dict[
+    bool,
+    tuple[
+        tuple[CompactModuleClassProjection, ...],
+        CompactClassFamilyIndex,
+        dict[str, tuple[tuple[str, str, Override], ...]],
+        dict[str, tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideCandidate], ...]],
+    ],
+]:
+    return {}
 
+
+def _symbol_overrides(
+    verdicts: ClassOverlapVerdicts,
+    symbol: str,
+) -> tuple[tuple[str, str, Override], ...]:
     index, bodies = verdicts.class_index, verdicts.bodies
-    overriding: defaultdict[tuple[str, str], list[Override]] = defaultdict(list)
-    for symbol in bodies.declarations_by_symbol:
-        ancestors = tuple(
-            ancestor
-            for ancestor in index.ancestor_symbols(symbol)
-            if ancestor in bodies.declarations_by_symbol
-        )
-        if not ancestors:
+    own_decls = bodies.declarations_of(symbol)
+    if not own_decls:
+        return ()
+    ancestors = tuple(
+        ancestor
+        for ancestor in index.ancestor_symbols(symbol)
+        if ancestor in bodies.declarations_by_symbol
+    )
+    if not ancestors:
+        return ()
+    ancestor_decls = tuple(
+        (ancestor, bodies.declarations_of(ancestor)) for ancestor in ancestors
+    )
+    candidates: list[tuple[str, ClassBodyDeclaration, list[str]]] = []
+    for name, mine in own_decls.items():
+        if (
+            name in PER_CLASS_NAMES
+            or mine.declaration.reads_its_class
+            or mine.kind.is_field
+        ):
             continue
-        try:
-            order: tuple[str, ...] | None = verdicts.linearized(symbol)
-        except NeedsInput:
-            order = None
-        for name, mine in bodies.declarations_of(symbol).items():
-            if (
-                name in PER_CLASS_NAMES
-                or mine.declaration.reads_its_class
-                or mine.kind.is_field
-            ):
-                continue
-            if order is not None and _restates_next_binder(verdicts, order, name, mine):
-                continue
-            for ancestor in ancestors:
-                theirs = bodies.declarations_of(ancestor).get(name)
-                if theirs is not None and not theirs.declaration.reads_its_class:
-                    overriding[(ancestor, name)].append(
-                        Override(symbol, mine, order is not None)
-                    )
-    nearest: dict[tuple[str, frozenset[str]], SiblingOverrideCandidate] = {}
-    for (declaring, name), overrides in overriding.items():
-        declaring_class = index.classes_by_symbol[declaring]
-        theirs = bodies.declarations_of(declaring)[name]
+        matched_ancestors = [
+            ancestor
+            for ancestor, decls in ancestor_decls
+            if (theirs := decls.get(name)) is not None
+            and not theirs.declaration.reads_its_class
+        ]
+        if matched_ancestors:
+            candidates.append((name, mine, matched_ancestors))
+    if not candidates:
+        return ()
+    try:
+        order: tuple[str, ...] | None = verdicts.linearized(symbol)
+    except NeedsInput:
+        order = None
+    emitted: list[tuple[str, str, Override]] = []
+    ordered = order is not None
+    for name, mine, matched_ancestors in candidates:
+        if order is not None and _restates_next_binder(verdicts, order, name, mine):
+            continue
+        override = Override(symbol, mine, ordered)
+        for ancestor in matched_ancestors:
+            emitted.append((ancestor, name, override))
+    return tuple(emitted)
+
+
+def _candidates_for_declaring(
+    verdicts: ClassOverlapVerdicts,
+    declaring: str,
+    by_name: dict[str, list[Override]],
+) -> tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideCandidate], ...]:
+    index, bodies = verdicts.class_index, verdicts.bodies
+    declaring_class = index.classes_by_symbol[declaring]
+    declaring_decls = bodies.declarations_of(declaring)
+    emitted: list[tuple[tuple[str, frozenset[str]], SiblingOverrideCandidate]] = []
+    for name, overrides in by_name.items():
+        theirs = declaring_decls[name]
         unanswered = (
             name in declaring_class.abstract_method_names
             or theirs.kind is ClassBodyDeclarationKind.FIELD
@@ -323,38 +364,57 @@ def sibling_override_candidates(
                 and answer[0].declaration.kind is not ClassBodyDeclarationKind.METHOD
             ):
                 continue
-            key = (name, answering)
-            held = nearest.get(key)
-            # Several ancestors can declare the member: the answer belongs beneath the
-            # nearest one, which every other one is an ancestor of.
-            if held is None or held.declaring.symbol in index.ancestor_symbols(
-                declaring
-            ):
-                nearest[key] = SiblingOverrideCandidate(
-                    home=None if home is None else index.classes_by_symbol[home],
-                    declaring=declaring_class,
-                    name=name,
-                    answering=tuple(
-                        sorted(
-                            (
+            emitted.append(
+                (
+                    (name, answering),
+                    SiblingOverrideCandidate(
+                        home=None if home is None else index.classes_by_symbol[home],
+                        declaring=declaring_class,
+                        name=name,
+                        answering=tuple(
+                            sorted(
                                 (
-                                    index.classes_by_symbol[override.symbol],
-                                    override.declaration.declaration.line,
-                                )
+                                    (
+                                        index.classes_by_symbol[override.symbol],
+                                        override.declaration.declaration.line,
+                                    )
+                                    for override in answer
+                                ),
+                                key=lambda found: (found[0].file_path, found[1]),
+                            )
+                        ),
+                        answering_otherwise=len(overrides) - len(answer),
+                        unordered=tuple(
+                            sorted(
+                                index.classes_by_symbol[override.symbol].qualname
                                 for override in answer
-                            ),
-                            key=lambda found: (found[0].file_path, found[1]),
-                        )
-                    ),
-                    answering_otherwise=len(overrides) - len(answer),
-                    unordered=tuple(
-                        sorted(
-                            index.classes_by_symbol[override.symbol].qualname
-                            for override in answer
-                            if not override.ordered
-                        )
+                                if not override.ordered
+                            )
+                        ),
                     ),
                 )
+            )
+    return tuple(emitted)
+
+
+def _merge_nearest_sibling_candidates(
+    index: CompactClassFamilyIndex,
+    candidates_by_declaring: dict[
+        str, tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideCandidate], ...]
+    ],
+) -> tuple[SiblingOverrideCandidate, ...]:
+    nearest: dict[tuple[str, frozenset[str]], SiblingOverrideCandidate] = {}
+    for declaring, entries in candidates_by_declaring.items():
+        declaring_ancestors: tuple[str, ...] | None = None
+        for key, candidate in entries:
+            held = nearest.get(key)
+            if held is None:
+                nearest[key] = candidate
+            else:
+                if declaring_ancestors is None:
+                    declaring_ancestors = index.ancestor_symbols(declaring)
+                if held.declaring.symbol in declaring_ancestors:
+                    nearest[key] = candidate
     return tuple(
         sorted(
             nearest.values(),
@@ -365,6 +425,183 @@ def sibling_override_candidates(
             ),
         )
     )
+
+
+def sibling_override_candidates(
+    verdicts: ClassOverlapVerdicts,
+) -> tuple[SiblingOverrideCandidate, ...]:
+    """Every inherited member overridden identically by two or more independent siblings."""
+
+    index, bodies = verdicts.class_index, verdicts.bodies
+    settled_key = not any(
+        p.has_unsettled_field_declarations for p in verdicts.projections
+    )
+    if ScanCache.active() is not None:
+        slots = _base_sibling_override_slots()
+        base_entry = slots.get(settled_key)
+        if base_entry is not None:
+            (
+                base_projs,
+                base_index,
+                base_overrides_by_symbol,
+                base_candidates_by_declaring,
+            ) = base_entry
+            base_by_path = {p.file_path: p for p in base_projs}
+            cur_projs = tuple(verdicts.projections)
+            cur_by_path = {p.file_path: p for p in cur_projs}
+            changed = tuple(
+                p for p in cur_projs if base_by_path.get(p.file_path) is not p
+            )
+            removed = tuple(
+                p for path, p in base_by_path.items() if path not in cur_by_path
+            )
+            if len(changed) + len(removed) <= 64:
+                old_by_sym = {
+                    c.symbol: c
+                    for p in (
+                        *(
+                            base_by_path[p.file_path]
+                            for p in changed
+                            if p.file_path in base_by_path
+                        ),
+                        *removed,
+                    )
+                    for c in p.classes
+                }
+                new_by_sym = {c.symbol: c for p in changed for c in p.classes}
+
+                def _so_sig(c: CompactIndexedClass) -> tuple[object, ...]:
+                    return (
+                        c.base_references,
+                        c.base_references_are_complete,
+                        c.resolved_base_symbols,
+                        c.declared_base_names,
+                        c.mro_bases_are_static,
+                        c.star_resolution,
+                        c.abstract_method_names,
+                        c.metaclass_names,
+                        tuple(
+                            (
+                                d.kind,
+                                d.name,
+                                d.digest,
+                                d.bindings,
+                                d.deferred,
+                                d.unbound,
+                                d.field_declaration,
+                                d.reads_its_class,
+                            )
+                            for d in c.body_declarations
+                        ),
+                    )
+
+                semantically_changed: set[str] = set()
+                line_shifted_syms: dict[str, CompactIndexedClass] = {}
+                for sym in old_by_sym.keys() | new_by_sym.keys():
+                    old_c = old_by_sym.get(sym)
+                    new_c = new_by_sym.get(sym)
+                    if old_c is None or new_c is None or _so_sig(old_c) != _so_sig(new_c):
+                        semantically_changed.add(sym)
+                    elif old_c.line != new_c.line or any(
+                        od.line != nd.line
+                        for od, nd in zip(old_c.body_declarations, new_c.body_declarations)
+                    ):
+                        line_shifted_syms[sym] = new_c
+                affected_symbols: set[str] = set(semantically_changed)
+                for sym in semantically_changed:
+                    affected_symbols.update(base_index.descendant_symbols(sym))
+                    affected_symbols.update(index.descendant_symbols(sym))
+                affected_declarers: set[str] = set(affected_symbols)
+                for sym in affected_symbols:
+                    affected_declarers.update(base_index.ancestor_symbols(sym))
+                    affected_declarers.update(index.ancestor_symbols(sym))
+                for sym in line_shifted_syms:
+                    if sym in base_overrides_by_symbol:
+                        affected_symbols.add(sym)
+                        for anc, _name, _ov in base_overrides_by_symbol[sym]:
+                            affected_declarers.add(anc)
+                candidates_by_declaring: dict[
+                    str,
+                    tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideCandidate], ...],
+                ] = {}
+                for decl, entries in base_candidates_by_declaring.items():
+                    if decl not in bodies.declarations_by_symbol or decl in affected_declarers:
+                        continue
+                    if decl in line_shifted_syms:
+                        new_decl = line_shifted_syms[decl]
+                        entries = tuple(
+                            (key, replace(cand, declaring=new_decl))
+                            for key, cand in entries
+                        )
+                    elif any(
+                        cand.home is not None and cand.home.symbol in line_shifted_syms
+                        for _key, cand in entries
+                    ):
+                        entries = tuple(
+                            (
+                                key,
+                                (
+                                    replace(cand, home=line_shifted_syms[cand.home.symbol])
+                                    if cand.home is not None
+                                    and cand.home.symbol in line_shifted_syms
+                                    else cand
+                                ),
+                            )
+                            for key, cand in entries
+                        )
+                    candidates_by_declaring[decl] = entries
+                # Gather overrides for affected_declarers only, reusing cached
+                # per-symbol overrides for unchanged descendants.
+                relevant_descendants: set[str] = set()
+                for decl in affected_declarers:
+                    if decl in bodies.declarations_by_symbol:
+                        relevant_descendants.update(index.descendant_symbols(decl))
+                overriding_by_decl: defaultdict[str, defaultdict[str, list[Override]]] = (
+                    defaultdict(lambda: defaultdict(list))
+                )
+                for sym in relevant_descendants:
+                    if sym not in bodies.declarations_by_symbol:
+                        continue
+                    if sym in affected_symbols:
+                        sym_overrides = _symbol_overrides(verdicts, sym)
+                    else:
+                        sym_overrides = base_overrides_by_symbol.get(sym, ())
+                    for ancestor, name, ov in sym_overrides:
+                        if ancestor in affected_declarers:
+                            overriding_by_decl[ancestor][name].append(ov)
+                for decl, by_name in overriding_by_decl.items():
+                    entries = _candidates_for_declaring(verdicts, decl, by_name)
+                    if entries:
+                        candidates_by_declaring[decl] = entries
+                return _merge_nearest_sibling_candidates(index, candidates_by_declaring)
+
+    overrides_by_symbol: dict[str, tuple[tuple[str, str, Override], ...]] = {}
+    overriding_by_decl: defaultdict[str, defaultdict[str, list[Override]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for symbol in bodies.declarations_by_symbol:
+        sym_overrides = _symbol_overrides(verdicts, symbol)
+        if sym_overrides:
+            overrides_by_symbol[symbol] = sym_overrides
+            for ancestor, name, ov in sym_overrides:
+                overriding_by_decl[ancestor][name].append(ov)
+    candidates_by_declaring: dict[
+        str, tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideCandidate], ...]
+    ] = {}
+    for declaring, by_name in overriding_by_decl.items():
+        entries = _candidates_for_declaring(verdicts, declaring, by_name)
+        if entries:
+            candidates_by_declaring[declaring] = entries
+    if ScanCache.active() is not None:
+        slots = _base_sibling_override_slots()
+        if settled_key not in slots:
+            slots[settled_key] = (
+                tuple(verdicts.projections),
+                index,
+                overrides_by_symbol,
+                candidates_by_declaring,
+            )
+    return _merge_nearest_sibling_candidates(index, candidates_by_declaring)
 
 
 def _is_property_statement(statement: ast.stmt) -> bool:
@@ -972,20 +1209,41 @@ def _creation_keywords_for_intermediate(
     return ()
 
 
+@dataclass(frozen=True)
+class DirectSubclassReadIndex(ParsedModuleSetFact):
+    """First `X.__subclasses__` attribute read per simple class name across the module set."""
+
+    first_read_by_name: dict[str, tuple[str, int]]
+
+    @classmethod
+    def derive(cls, modules: ParsedModuleSet) -> DirectSubclassReadIndex:
+        first_read: dict[str, tuple[str, int]] = {}
+        for parsed_module in modules:
+            if "__subclasses__" not in parsed_module.source:
+                continue
+            for node in ast.walk(parsed_module.module):
+                match node:
+                    case ast.Attribute(attr="__subclasses__", value=value):
+                        name = ast.unparse(value).rsplit(".", 1)[-1]
+                        first_read.setdefault(
+                            name, (parsed_module.file_path, node.lineno)
+                        )
+        return cls(first_read)
+
+
 def _require_no_direct_subclass_reads(
     snapshot: CodemodSourceSnapshot, parent_simple_name: str
 ) -> None:
-    for path, module in snapshot.module_nodes_by_file_path.items():
-        for node in ast.walk(module):
-            match node:
-                case ast.Attribute(attr="__subclasses__", value=value) if (
-                    ast.unparse(value).rsplit(".", 1)[-1] == parent_simple_name
-                ):
-                    raise NeedsInput(
-                        f"`{parent_simple_name}.__subclasses__()` is read at "
-                        f"{path}:{node.lineno}, and rebasing the siblings moves them out of it",
-                        NeededInput.SOURCE_CHANGE,
-                    )
+    found = snapshot.module_set.fact(DirectSubclassReadIndex).first_read_by_name.get(
+        parent_simple_name
+    )
+    if found is not None:
+        path, lineno = found
+        raise NeedsInput(
+            f"`{parent_simple_name}.__subclasses__()` is read at "
+            f"{path}:{lineno}, and rebasing the siblings moves them out of it",
+            NeededInput.SOURCE_CHANGE,
+        )
 
 
 class SiblingBaseRebase(ABC):
@@ -1813,18 +2071,16 @@ class SiblingOverrideFindingRecipeSynthesizer(
             member_name=candidate.name,
         )
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=(
                     f"Every sibling overrides `{candidate.declaring.qualname}.{candidate.name}` "
                     f"identically; `{candidate.home.qualname}` already exists to hold it once."
                 ),
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
     def _evaluate_intermediate_base_recipe(
         self,
@@ -1867,18 +2123,16 @@ class SiblingOverrideFindingRecipeSynthesizer(
             docstring=base_pick.judgement,
         )
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=(
                     f"Declares `{base_pick.name}` beneath `{candidate.declaring.qualname}` "
                     f"to hold `{candidate.name}` once for these siblings."
                 ),
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 __all__ = (

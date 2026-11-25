@@ -796,6 +796,19 @@ class SourceIndexBuildArtifacts:
         )
 
 
+_COMPOUND_TOP_LEVEL_STATEMENTS = (
+    ast.If,
+    ast.For,
+    ast.AsyncFor,
+    ast.While,
+    ast.With,
+    ast.AsyncWith,
+    ast.Try,
+    ast.TryStar,
+    ast.Match,
+)
+
+
 def iter_statement_definition_nodes(
     statements: Iterable[ast.stmt],
 ) -> Iterable[ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -804,10 +817,18 @@ def iter_statement_definition_nodes(
     for statement in statements:
         if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
             yield statement
-            continue
-        for child in ast.iter_child_nodes(statement):
-            if isinstance(child, ast.stmt):
-                yield from iter_statement_definition_nodes((child,))
+        elif isinstance(statement, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+            yield from iter_statement_definition_nodes(statement.body)
+            if statement.orelse:
+                yield from iter_statement_definition_nodes(statement.orelse)
+        elif isinstance(statement, (ast.With, ast.AsyncWith)):
+            yield from iter_statement_definition_nodes(statement.body)
+        elif isinstance(statement, (ast.Try, ast.TryStar)):
+            yield from iter_statement_definition_nodes(statement.body)
+            if statement.orelse:
+                yield from iter_statement_definition_nodes(statement.orelse)
+            if statement.finalbody:
+                yield from iter_statement_definition_nodes(statement.finalbody)
 
 
 class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
@@ -819,6 +840,13 @@ class _AstTargetDigestVisitor(ClassFunctionStackNodeVisitor):
         self.target_node_index = UniqueIdentityIndexAuthority[
             str, AstTargetDigest, AstTargetNode
         ]()
+
+    def visit_Module(self, node: ast.Module) -> None:
+        for statement in node.body:
+            if isinstance(statement, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                self.visit(statement)
+            elif isinstance(statement, _COMPOUND_TOP_LEVEL_STATEMENTS):
+                self.generic_visit(statement)
 
     def traverse_statements(self, body: list[ast.stmt]) -> None:
         for node in iter_statement_definition_nodes(body):

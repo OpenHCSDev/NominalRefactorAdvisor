@@ -7,6 +7,7 @@ from collections.abc import Hashable, Mapping, MutableMapping, Sequence
 from typing import ClassVar, cast
 
 from nominal_refactor_advisor.ast_tools import CollectedFamily
+from nominal_refactor_advisor.class_index import ModuleClassOverlapProjection
 
 from nominal_refactor_advisor.refactors.class_overlap import (
     ClassOverlapFindingRecipeSynthesizer,
@@ -37,6 +38,7 @@ class ClassOverlapDetectorABC(
     """One #68 shape read off the scan's shared class-overlap verdicts."""
 
     shape: ClassVar[ClassOverlapShape]
+    compact_class_projection_fact = ModuleClassOverlapProjection
 
     @classmethod
     def prebuild_in_memory_shared_context(

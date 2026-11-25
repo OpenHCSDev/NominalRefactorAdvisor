@@ -71,20 +71,33 @@ def inherited_restatements(verdicts: ClassOverlapVerdicts, symbol: str) -> tuple
     annotated declaration is not one either, since `__annotations__`, like
     `__slots__`, is read from each class's own body."""
 
-    if symbol not in verdicts.bodies.declarations_by_symbol:
+    decls_by_symbol = verdicts.bodies.declarations_by_symbol
+    mine_by_name = decls_by_symbol.get(symbol)
+    if not mine_by_name:
+        return ()
+    indexed = verdicts.class_index.class_for(symbol)
+    if indexed is None or not indexed.base_references:
+        return ()
+    eligible = [
+        (name, mine)
+        for name, mine in mine_by_name.items()
+        if name not in PER_CLASS_NAMES and not mine.declaration.reads_its_class and not mine.kind.is_field
+    ]
+    if not eligible:
         return ()
     try:
         order = verdicts.linearized(symbol)
     except NeedsInput:
         return ()
+    ancestors = order[1:]
+    if not ancestors:
+        return ()
     found: list[tuple[str, str]] = []
-    for name, mine in verdicts.bodies.declarations_of(symbol).items():
-        if name in PER_CLASS_NAMES or mine.declaration.reads_its_class or mine.kind.is_field:
-            continue
-        inherited = next_binder(verdicts, order[1:], name)
+    for name, mine in eligible:
+        inherited = next_binder(verdicts, ancestors, name)
         if inherited is None:
             continue
-        theirs = verdicts.bodies.declarations_of(inherited)[name]
+        theirs = decls_by_symbol[inherited][name]
         if not theirs.declaration.reads_its_class and mine.same_declaration_as(theirs):
             found.append((name, inherited))
     return tuple(found)
@@ -95,15 +108,20 @@ def next_binder(verdicts: ClassOverlapVerdicts, order: tuple[str, ...], name: st
     when a native or unscanned class comes first, since its namespace is not
     the class-body index's."""
 
+    classes_by_symbol = verdicts.class_index.classes_by_symbol
+    decls_by_symbol = verdicts.bodies.declarations_by_symbol
     for symbol in order:
         native = native_root_type(symbol)
         if native is not None:
             if name in vars(native):
                 return None
             continue
-        if verdicts.class_index.class_for(symbol) is None or symbol not in verdicts.bodies.declarations_by_symbol:
+        if symbol not in classes_by_symbol:
             return None
-        if name in verdicts.bodies.declarations_of(symbol):
+        decls = decls_by_symbol.get(symbol)
+        if decls is None:
+            return None
+        if name in decls:
             return symbol
     return None
 
@@ -124,7 +142,9 @@ class NamespaceReads(ParsedModuleSetFact):
     def derive(cls, modules: ParsedModuleSet) -> NamespaceReads:
         found: list[tuple[ParsedModule, ast.expr, ast.AST | None, ast.AST | None]] = []
         for module in modules:
-            reads = tuple(cls.found(module.module))
+            if "__dict__" not in module.source and "vars" not in module.source:
+                continue
+            reads = tuple(cls.found_in_module(module))
             if not reads:
                 continue
             imported_modules = cls.imported_module_names(module.module)
@@ -279,6 +299,34 @@ class NamespaceReads(ParsedModuleSetFact):
         return ()
 
     @staticmethod
+    def found_in_module(module: ParsedModule) -> Iterator[ast.expr]:
+        index = module.syntax_index
+        if "__dict__" in module.source:
+            for _idx, node in index.indexed_nodes_of_type(ast.Attribute):
+                if node.attr != "__dict__" or not isinstance(node.ctx, ast.Load):
+                    continue
+                if isinstance(node.value, ast.Name) and node.value.id == "self":
+                    continue
+                if NamespaceReads.names_a_module(node.value):
+                    continue
+                yield node
+        if "vars" in module.source:
+            for _idx, node in index.indexed_nodes_of_type(ast.Call):
+                if (
+                    not isinstance(node.func, ast.Name)
+                    or node.func.id != "vars"
+                    or len(node.args) != 1
+                    or node.keywords
+                ):
+                    continue
+                receiver = node.args[0]
+                if isinstance(receiver, ast.Name) and receiver.id == "self":
+                    continue
+                if NamespaceReads.names_a_module(receiver):
+                    continue
+                yield node
+
+    @staticmethod
     def found(tree: ast.AST) -> Iterator[ast.expr]:
         for node in ast.walk(tree):
             match node:
@@ -315,18 +363,19 @@ class AnnotationNames(ParsedModuleSetFact):
     def derive(cls, modules: ParsedModuleSet) -> AnnotationNames:
         names: set[str] = set()
         for module in modules:
-            for node in ast.walk(module.module):
-                annotations: list[ast.expr | None] = []
-                match node:
-                    case ast.AnnAssign(annotation=annotation):
-                        annotations.append(annotation)
-                    case ast.arg(annotation=annotation):
-                        annotations.append(annotation)
-                    case ast.FunctionDef(returns=returns) | ast.AsyncFunctionDef(returns=returns):
-                        annotations.append(returns)
-                for annotation in annotations:
-                    if annotation is not None:
-                        names.update(cls.spelled(annotation))
+            index = module.syntax_index
+            for _idx, node in index.indexed_nodes_of_type(ast.AnnAssign):
+                if node.annotation is not None:
+                    names.update(cls.spelled(node.annotation))
+            for _idx, node in index.indexed_nodes_of_type(ast.arg):
+                if node.annotation is not None:
+                    names.update(cls.spelled(node.annotation))
+            for _idx, node in index.indexed_nodes_of_type(ast.FunctionDef):
+                if node.returns is not None:
+                    names.update(cls.spelled(node.returns))
+            for _idx, node in index.indexed_nodes_of_type(ast.AsyncFunctionDef):
+                if node.returns is not None:
+                    names.update(cls.spelled(node.returns))
         return cls(frozenset(names))
 
     @classmethod
@@ -518,22 +567,25 @@ class AttributeWriteIndex(ParsedModuleSetFact):
         writes: dict[str, list[tuple[str, ast.ClassDef | None, ast.expr | None]]] = {}
         for scanned in modules:
             file_path = scanned.file_path
-            for node in ast.walk(scanned.module):
+            index = scanned.syntax_index
+            for _idx, node in index.indexed_nodes_of_type(ast.Assign):
+                value = node.value
+                for target in node.targets:
+                    if isinstance(target, ast.Attribute):
+                        owner = cls.enclosing_class(scanned, target)
+                        is_self = (
+                            owner is not None
+                            and isinstance(target.value, ast.Name)
+                            and target.value.id == "self"
+                        )
+                        writes.setdefault(target.attr, []).append(
+                            (file_path, owner, value if is_self else None)
+                        )
+            for _idx, node in index.indexed_nodes_of_type(ast.AugAssign):
+                if isinstance(node.target, ast.Attribute):
+                    writes.setdefault(node.target.attr, []).append((file_path, None, None))
+            for _idx, node in index.indexed_nodes_of_type(ast.Call):
                 match node:
-                    case ast.Assign(targets=targets, value=value):
-                        for target in targets:
-                            if isinstance(target, ast.Attribute):
-                                owner = cls.enclosing_class(scanned, target)
-                                is_self = (
-                                    owner is not None
-                                    and isinstance(target.value, ast.Name)
-                                    and target.value.id == "self"
-                                )
-                                writes.setdefault(target.attr, []).append(
-                                    (file_path, owner, value if is_self else None)
-                                )
-                    case ast.AugAssign(target=ast.Attribute(attr=name)):
-                        writes.setdefault(name, []).append((file_path, None, None))
                     case ast.Call(
                         func=ast.Name(id="setattr"),
                         args=[_, ast.Constant(value=str() as name), *_],
@@ -976,15 +1028,13 @@ class RestatedOverrideFindingRecipeSynthesizer(
             return self.rejected_evaluation(f"`{evidence.symbol}` left the source")
         operation = DeleteRestatedOverridesOperation(target=source_rewrite_target(indexed))
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason="The class inherits the same declaration: every lookup reaches an identical copy.",
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 __all__ = (

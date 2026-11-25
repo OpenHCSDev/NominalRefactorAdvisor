@@ -1641,18 +1641,34 @@ class ProjectDecoderOwners:
     def pending(self) -> tuple[type[OptionalAstFieldDecoder], ...]:
         """Decoders the package probes whose owners only generation can supply."""
 
-        probed = {
-            node.left.attr
-            for parsed in self.snapshot.parsed_modules
-            if parsed.module_name.partition(".")[0] == self.root
-            for node in ast.walk(parsed.module)
-            if _none_probe(node)
-        }
-        return tuple(
+        missing_decoders = tuple(
             decoder
             for decoder in OptionalAstFieldDecoder.__registry__.values()
             if not all(name in self.declared for name in decoder.owner_names())
-            and probed & decoder.field_names()
+        )
+        if not missing_decoders:
+            return ()
+        needed_fields = frozenset(
+            field_name
+            for decoder in missing_decoders
+            for field_name in decoder.field_names()
+        )
+        probed: set[str] = set()
+        for parsed in self.snapshot.parsed_modules:
+            if parsed.module_name.partition(".")[0] != self.root:
+                continue
+            source = parsed.source
+            if "None" not in source or not any(
+                field_name in source for field_name in needed_fields
+            ):
+                continue
+            for _, node in parsed.syntax_index.indexed_nodes_of_type(ast.Compare):
+                if _none_probe(node) and node.left.attr in needed_fields:
+                    probed.add(node.left.attr)
+        return tuple(
+            decoder
+            for decoder in missing_decoders
+            if probed & decoder.field_names()
         )
 
     def generated_path(self) -> str:
@@ -2252,6 +2268,16 @@ class PendingDecoderMigration:
         in place. That state is needed only here, so the migration, which its
         source state holds, does not keep it."""
 
+        pending_with_fields = tuple(
+            (decoder, decoder.field_names()) for decoder in self.owners.pending
+        )
+        if not pending_with_fields:
+            return ()
+        all_fields = frozenset(
+            field_name
+            for _decoder, fields in pending_with_fields
+            for field_name in fields
+        )
         snapshot = self.owners.snapshot.with_virtual_sources(
             {self.owners.generated_path(): self.owners.generated_source()}
         )
@@ -2261,12 +2287,26 @@ class PendingDecoderMigration:
         ):
             if parsed.module_name.partition(".")[0] != self.owners.root:
                 continue
+            source = parsed.source
+            if "None" not in source or not any(
+                field_name in source for field_name in all_fields
+            ):
+                continue
+            if not any(
+                _none_probe(node) and node.left.attr in all_fields
+                for _, node in parsed.syntax_index.indexed_nodes_of_type(ast.Compare)
+            ):
+                continue
             for qualname, function in _functions(parsed.module):
-                for decoder in self.owners.pending:
-                    if any(
-                        _none_probe(node) and node.left.attr in decoder.field_names()
-                        for node in ast.walk(function)
-                    ):
+                fn_attrs = {
+                    node.left.attr
+                    for node in ast.walk(function)
+                    if _none_probe(node) and node.left.attr in all_fields
+                }
+                if not fn_attrs:
+                    continue
+                for decoder, fields in pending_with_fields:
+                    if fn_attrs & fields:
                         found.append(
                             RoutedConsumer.attempt(
                                 snapshot, str(parsed.path), qualname, decoder
