@@ -227,20 +227,6 @@ class NativePythonSyntaxIndex:
             None,
         )
 
-    def class_qualified_function_name(self, node: Node) -> str:
-        """Return the legacy class-qualified name for one function node."""
-
-        return ".".join(
-            (
-                *(
-                    self.declared_name(scope)
-                    for scope in self.named_scope_nodes(node)
-                    if scope.type == "class_definition"
-                ),
-                self.declared_name(node),
-            )
-        )
-
     def fully_qualified_function_name(self, node: Node) -> str:
         """Return the class/function-qualified source-index name for a function."""
 

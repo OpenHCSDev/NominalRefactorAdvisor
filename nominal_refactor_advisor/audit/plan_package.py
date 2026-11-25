@@ -90,7 +90,7 @@ class PlanPackage:
     documents: tuple[Document, ...]
 
     @classmethod
-    def load(cls, root: Path) -> "PlanPackage":
+    def load(cls, root: Path) -> PlanPackage:
         def document(path: Path) -> Document:
             kind = next((kind for kind in DOCUMENT_KINDS if kind.claims(path.name)), Document)
             return kind(path.name, path.read_text())

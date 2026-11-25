@@ -25,9 +25,14 @@ a store NRA cannot read is not claimed.
 from __future__ import annotations
 
 import ast
+from abc import ABC, abstractmethod
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from typing import ClassVar, TypeAlias
+
+from metaclass_registry import AutoRegisterMeta
+
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 FunctionNode: TypeAlias = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -60,8 +65,7 @@ AUTO_REGISTER_META = "metaclass_registry.core.AutoRegisterMeta"
 def _functions(statements: list[ast.stmt]) -> dict[str, FunctionNode]:
     return {
         statement.name: statement
-        for statement in statements
-        if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+        for statement in FunctionDefinition.within(statements)
     }
 
 
@@ -83,6 +87,35 @@ def _parameters(function: FunctionNode) -> list[str]:
 class _Callee:
     function: FunctionNode
     binds_receiver: bool
+
+
+class CreatedClassStoreCallStoresDispatchCase(ABC, metaclass=AutoRegisterMeta):
+    __registry__: ClassVar[dict[object, type[CreatedClassStoreCallStoresDispatchCase]]] = {}
+    __registry_key__ = "case"
+    __skip_if_no_key__ = True
+    case: ClassVar[object] = None
+
+    @abstractmethod
+    def apply(_dispatch_strategy, self, call, tracked):
+        raise NotImplementedError
+
+
+class SetdefaultCreatedClassStoreCallStoresDispatchCase(CreatedClassStoreCallStoresDispatchCase):
+    case = 'setdefault'
+
+    def apply(_dispatch_strategy, self, call, tracked):
+        return len(call.args) >= 2 and self._is_tracked(call.args[-1], tracked)
+
+
+class SetitemCreatedClassStoreCallStoresDispatchCase(SetdefaultCreatedClassStoreCallStoresDispatchCase):
+    case = '__setitem__'
+
+
+class UpdateCreatedClassStoreCallStoresDispatchCase(CreatedClassStoreCallStoresDispatchCase):
+    case = 'update'
+
+    def apply(_dispatch_strategy, self, call, tracked):
+        return any((isinstance(argument, ast.Dict) and any((self._is_tracked(value, tracked) for value in argument.values)) for argument in call.args)) or any((self._is_tracked(keyword.value, tracked) for keyword in call.keywords))
 
 
 @dataclass(frozen=True)
@@ -276,18 +309,10 @@ class CreatedClassStore:
     def _call_stores(self, call: ast.Call, tracked: frozenset[str]) -> bool:
         if not isinstance(call.func, ast.Attribute):
             return False
-        match call.func.attr:
-            case "setdefault" | "__setitem__":
-                return len(call.args) >= 2 and self._is_tracked(call.args[-1], tracked)
-            case "update":
-                return any(
-                    isinstance(argument, ast.Dict)
-                    and any(self._is_tracked(value, tracked) for value in argument.values)
-                    for argument in call.args
-                ) or any(
-                    self._is_tracked(keyword.value, tracked) for keyword in call.keywords
-                )
-        return False
+        _dispatch_case_type = CreatedClassStoreCallStoresDispatchCase.__registry__.get(call.func.attr)
+        if _dispatch_case_type is None:
+            return False
+        return _dispatch_case_type().apply(self, call, tracked)
 
     def _callee(self, func: ast.expr, receiver: str | None) -> _Callee | None:
         match func:

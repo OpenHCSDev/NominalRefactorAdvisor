@@ -26,6 +26,7 @@ from nominal_refactor_advisor.detectors._regex_bundle import (
 )
 
 from nominal_refactor_advisor.class_syntax_facets import CompactExactTypeGuard
+from nominal_refactor_advisor.foreign_family import AssignmentStatement
 from nominal_refactor_advisor.lexical_bindings import ImportBoundNameProjection
 from nominal_refactor_advisor.ast_tools import (
     BuiltinCall,
@@ -303,14 +304,11 @@ class FormalBoundaryStringRegistryAuthority:
         for statement in statements:
             assignment_targets: tuple[ast.AST, ...]
             assignment_value: ast.AST | None
-            if isinstance(statement, ast.Assign):
-                assignment_targets = tuple(statement.targets)
-                assignment_value = statement.value
-            elif isinstance(statement, ast.AnnAssign):
-                assignment_targets = (statement.target,)
-                assignment_value = statement.value
-            else:
+            assignment_statement = AssignmentStatement.decoded(statement)
+            if assignment_statement is None:
                 continue
+            assignment_targets = assignment_statement.targets
+            assignment_value = assignment_statement.value
             if assignment_value is None:
                 continue
             value = _constant_string(assignment_value)
@@ -943,14 +941,11 @@ class GeneratedBoundarySemanticConstantAuthority:
         for statement in statements:
             assignment_targets: tuple[ast.AST, ...]
             assignment_value: ast.AST | None
-            if isinstance(statement, ast.Assign):
-                assignment_targets = tuple(statement.targets)
-                assignment_value = statement.value
-            elif isinstance(statement, ast.AnnAssign):
-                assignment_targets = (statement.target,)
-                assignment_value = statement.value
-            else:
+            assignment_statement = AssignmentStatement.decoded(statement)
+            if assignment_statement is None:
                 continue
+            assignment_targets = assignment_statement.targets
+            assignment_value = assignment_statement.value
             if assignment_value is None:
                 continue
             value = _constant_string(assignment_value)
@@ -1942,8 +1937,8 @@ class ManualConcreteSubclassRosterDetector(
             )
         )
         guard_summary = (
-            f" guarded by `{roster_candidate.guard_summary}`"
-            if roster_candidate.guard_summary
+            f" guarded by `{roster_candidate.registration_site.guard_summary}`"
+            if roster_candidate.registration_site.guard_summary
             else ""
         )
         concrete_preview = ", ".join(roster_candidate.concrete_class_names[:3])

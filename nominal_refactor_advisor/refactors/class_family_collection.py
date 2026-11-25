@@ -567,7 +567,7 @@ class ClassFamilyCollectionSite:
         _authority_id, authority_digest, authority_node = (
             context.target_node_for_rewrite_target(authority_reference)
         )
-        if not authority_digest.is_class or not isinstance(
+        if not authority_digest.node_kind.is_class or not isinstance(
             authority_node, ast.ClassDef
         ):
             raise ValueError("Class-family collection authority must be a class")
@@ -576,10 +576,10 @@ class ClassFamilyCollectionSite:
         projection_id = projection_reference.required_target_id(context.source_index)
         projection_module = context.source_index.target_by_id[projection_id]
         holder_node = context.ast_target_nodes_by_id.get(projection_id)
-        if projection_module.is_module:
+        if projection_module.node_kind.is_module:
             holder_node = None
         elif not (
-            projection_module.is_class
+            projection_module.node_kind.is_class
             and "." not in projection_module.qualname
             and isinstance(holder_node, ast.ClassDef)
         ):

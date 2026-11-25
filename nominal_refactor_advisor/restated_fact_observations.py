@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import ClassVar, TypeVar
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias,
     ImportBoundNameProjection,
@@ -594,15 +595,7 @@ class NominalFallbackProbe(AttributeProbeExemption):
         return False
 
 
-EXEMPTIONS: tuple[type[AttributeProbeExemption], ...] = (
-    CallableMetadataProbe,
-    StdlibObjectProbe,
-    DunderProtocolProbe,
-    ModuleObjectProbe,
-    InitializationGuardProbe,
-    LambdaAssignmentProbe,
-    NominalFallbackProbe,
-)
+EXEMPTIONS: tuple[type[AttributeProbeExemption], ...] = tuple(AttributeProbeExemption.__subclasses__())
 
 
 def is_dunder(name: str) -> bool:
@@ -654,9 +647,7 @@ class AttributeStores:
             symbol = f"{parsed_module.module_name}.{qualname}"
             symbol_order.append(symbol)
             names_by_symbol[symbol] = set()
-            for method in class_node.body:
-                if not isinstance(method, ast.FunctionDef | ast.AsyncFunctionDef):
-                    continue
+            for method in FunctionDefinition.within(class_node.body):
                 arguments = [*method.args.posonlyargs, *method.args.args]
                 if not arguments:
                     continue
@@ -1739,9 +1730,8 @@ class ModuleReferenceFamily(ShapeFamily[ModuleReferenceFacts]):
         """A package walk declared directly in a class header (`discovery_package=...`)."""
 
         keywords = {
-            keyword.arg: keyword.value
-            for keyword in class_node.keywords
-            if keyword.arg is not None
+            keyword.name: keyword.value
+            for keyword in CallKeywords.of(class_node.keywords).named
         }
         package_expr = keywords.get("discovery_package")
         if package_expr is None:

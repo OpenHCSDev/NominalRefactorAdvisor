@@ -4254,7 +4254,7 @@ def _enum_subset_operation(
     projection_target = next(
         target
         for target in snapshot.source_index.ast_targets
-        if target.is_module and target.file_path == projection_path.as_posix()
+        if target.node_kind.is_module and target.file_path == projection_path.as_posix()
     )
     return DeriveEnumSubsetOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
@@ -4693,7 +4693,7 @@ def _class_family_collection_operation(
     projection_target = next(
         target
         for target in snapshot.source_index.ast_targets
-        if target.is_module and target.file_path == projection_path.as_posix()
+        if target.node_kind.is_module and target.file_path == projection_path.as_posix()
     )
     return DeriveClassFamilyCollectionOperation(
         target=SourceRewriteTarget(target_id=authority_target.target_id),
@@ -5655,7 +5655,7 @@ def test_semantic_mirror_enum_subset_recipe_resolves_absolute_finding_paths(
     assert json_report_object(operation)["projection_target"]["target_id"] == next(
         target.target_id
         for target in snapshot.source_index.ast_targets
-        if target.is_module and target.file_path == "pkg/codemod.py"
+        if target.node_kind.is_module and target.file_path == "pkg/codemod.py"
     )
 
 

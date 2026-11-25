@@ -6047,8 +6047,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 CompactAnnotatedFunctionReturn(
                     node.name, node.lineno, ast.unparse(returns)
                 )
-                for node in parsed_module.module.body
-                if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                for node in FunctionDefinition.within(parsed_module.module.body)
                 for returns in declared_annotations(node)
             ),
         )
@@ -6095,8 +6094,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     CompactAnnotatedFunctionReturn(
                         node.name, node.lineno, ast.unparse(returns)
                     )
-                    for node in parsed_module.module.body
-                    if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+                    for node in FunctionDefinition.within(parsed_module.module.body)
                     for returns in declared_annotations(node)
                 ),
                 exact_type_guards=syntax_facets.exact_type_guards,
@@ -7636,9 +7634,7 @@ def _compact_callable_member_declarations(
 
     declarations: list[CompactCallableMemberDeclaration] = []
     property_names: set[str] = set()
-    for statement in node.body:
-        if not isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef):
-            continue
+    for statement in FunctionDefinition.within(node.body):
         if module_binding_snapshot.decorated_by(
             statement, (OVERLOAD_DECORATOR,)
         ) or _redefines_property(statement, property_names):

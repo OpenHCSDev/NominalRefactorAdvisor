@@ -14,13 +14,13 @@ from dataclasses import (
 from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from nominal_refactor_advisor.codemod_import_scopes import (
     ImportStatement,
     ModuleImportScope,
     TypeCheckingGuardProjection,
 )
+from nominal_refactor_advisor.codemod_selection_context import CodemodSelectorContext
 from nominal_refactor_advisor.codemod_source_edits import (
     KeyedSourceEditCoalescence,
     PhysicalSourceEdit,
@@ -40,12 +40,6 @@ from nominal_refactor_advisor.lexical_bindings import (
     ImportDeclarationABC,
     ImportFromModuleName as ImportFromModuleName,
 )
-
-if TYPE_CHECKING:
-    from nominal_refactor_advisor.codemod_selection_context import (
-        CodemodSelectorContext,
-    )
-
 
 class ImportBlockInsertionPointABC(ABC):
     """Shared insertion geometry for one contiguous Python import block."""

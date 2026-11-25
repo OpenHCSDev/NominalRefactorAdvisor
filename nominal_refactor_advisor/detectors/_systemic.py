@@ -20,6 +20,7 @@ from nominal_refactor_advisor.class_syntax_facets import (
     CompactNamedProjectionSurface,
     CompactSortedKeyCall,
 )
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.refactors.autoregister import (
     AutoRegisterExplicitPriorityOrderingFindingRecipeSynthesizer,
     InheritedAutoRegisterConfigBoilerplateFindingRecipeSynthesizer,
@@ -851,9 +852,7 @@ def _projection_property_family_candidates(
         node for node in module.syntax_index.breadth_first_nodes if isinstance(node, ast.ClassDef)
     ):
         properties: list[tuple[ast.FunctionDef | ast.AsyncFunctionDef, str]] = []
-        for statement in class_node.body:
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for statement in FunctionDefinition.within(class_node.body):
             if not any(
                 (
                     ExpressionReference.decoded(decorator).terminal_name == "property"
@@ -1714,8 +1713,8 @@ class ParallelKeyedTableAndFamilyDetector(
     ) -> RefactorFinding:
         shape_clause = (
             ""
-            if table_candidate.value_shape_name is None
-            else f" of `{table_candidate.value_shape_name}` records"
+            if table_candidate.table.value_shape_name is None
+            else f" of `{table_candidate.table.value_shape_name}` records"
         )
         return self.build_finding(
             (

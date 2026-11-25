@@ -33,6 +33,7 @@ from importlib import import_module
 
 from metaclass_registry.core import AutoRegisterMeta
 
+from nominal_refactor_advisor.ast_field_decoders import optional_values
 from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
 from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
@@ -511,7 +512,7 @@ class ClassCreationProof:
                 )
             if isinstance(statement, ast.ClassDef):
                 names = frozenset((statement.name,))
-            if isinstance(statement, ast.AnnAssign) and statement.value is None:
+            if isinstance(statement, ast.AnnAssign) and not optional_values(statement):
                 continue
             for name in names:
                 if not (composed and symbol == self.walk.composer and name in self.walk.deleted):

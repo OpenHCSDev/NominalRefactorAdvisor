@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar, NamedTuple
 
+from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod as AnsweredMethod,
     ClassBinding as ClassBinding,
@@ -528,9 +529,7 @@ class DestinationInstanceMethod(DestinationMember):
         )
 
     def argument(self, call: MethodCall) -> PassedArgument:
-        if any(isinstance(each, ast.Starred) for each in call.call.args) or any(
-            keyword.arg is None for keyword in call.call.keywords
-        ):
+        if any(isinstance(each, ast.Starred) for each in call.call.args) or CallKeywords.of(call.call.keywords).splats:
             raise ValueError(f"{call.where} unpacks arguments into {self.moved.name!r}")
         keyword = next(
             (each for each in call.call.keywords if each.arg == self.parameter.arg), None,

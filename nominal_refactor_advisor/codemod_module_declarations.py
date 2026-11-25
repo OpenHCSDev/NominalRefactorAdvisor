@@ -18,6 +18,7 @@ from nominal_refactor_advisor.assignment_projection import (
     AssignmentStatementNameProjection,
     SingleAssignmentAndValueNameProjection,
 )
+from nominal_refactor_advisor.ast_field_decoders import optional_values
 from nominal_refactor_advisor.ast_tools import (
     ParsedModule,
     REGISTERED_TYPE_LINEAGE,
@@ -895,7 +896,7 @@ class AnnotatedSourceTopLevelDeclaration(SourceTopLevelDeclaration):
     ) -> SourceTopLevelDeclaration | None:
         if not (
             isinstance(statement, ast.AnnAssign)
-            and statement.value is None
+            and not optional_values(statement)
             and isinstance(statement.target, ast.Name)
         ):
             return None

@@ -243,7 +243,7 @@ class AuthorityClaimSourceIndexResolver:
         return tuple(
             target
             for target in indexed_candidates.values()
-            if not target.is_module
+            if not target.node_kind.is_module
             and claim.matches_source_identity(
                 authority_id=target.target_id,
                 name=target.name,

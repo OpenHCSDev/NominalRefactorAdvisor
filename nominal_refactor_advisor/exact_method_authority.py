@@ -259,10 +259,6 @@ class ExactLeafMethodAncestorPromotionComponent(ExactMethodOrbitComponent):
     def authority_name(self) -> str:
         return self.authority.qualname
 
-    @property
-    def authority_line(self) -> int:
-        return self.authority.line
-
     @cached_property
     def compression_certificate(self) -> CompressionCertificate:
         return ExistingAuthorityMethodPromotionCompressionProfile(
@@ -275,7 +271,7 @@ class ExactLeafMethodAncestorPromotionComponent(ExactMethodOrbitComponent):
         return (
             SourceLocation(
                 self.file_path,
-                self.authority_line,
+                self.authority.line,
                 self.authority_symbol,
             ),
             *(

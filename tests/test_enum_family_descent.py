@@ -95,7 +95,7 @@ def _target(snapshot: CodemodSourceSnapshot, symbol: str) -> SourceRewriteTarget
     (target,) = (
         target
         for target in snapshot.source_index.targets_matching_repository_symbol(symbol)
-        if target.is_class
+        if target.node_kind.is_class
     )
     return SourceRewriteTarget(target_id=target.target_id)
 

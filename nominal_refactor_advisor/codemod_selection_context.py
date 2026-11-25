@@ -456,7 +456,7 @@ class ResolvedClassTarget:
         _target_id, target, node = context.target_node_for_rewrite_target(
             target_reference
         )
-        if not target.is_class or not isinstance(node, ast.ClassDef):
+        if not target.node_kind.is_class or not isinstance(node, ast.ClassDef):
             raise ValueError("Source rewrite target must identify one class")
         return cls(target=target, node=node)
 
@@ -536,7 +536,7 @@ class ClassDirectDeclarationIndex:
         declarations_by_target_id: dict[str, Mapping[str, str]] = {}
         nodes_by_target_id = context.ast_target_nodes_by_id
         for target in targets_by_file[file_path]:
-            if not target.is_class:
+            if not target.node_kind.is_class:
                 continue
             node = nodes_by_target_id.get(target.target_id)
             if not isinstance(node, ast.ClassDef):

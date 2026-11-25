@@ -123,7 +123,7 @@ class SourceRewriteTarget(
         matching_target_ids = [
             target.target_id
             for target in source_index.targets_by_file[file_path]
-            if target.is_module
+            if target.node_kind.is_module
             and (eligible_target_ids is None or target.target_id in eligible_target_ids)
         ]
         if len(matching_target_ids) != 1:

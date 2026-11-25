@@ -499,9 +499,6 @@ class ArchitectureGuardRuleResolution:
             scope.includes_target(file_path, target_qualname) for scope in self.scopes
         )
 
-    def may_match_source(self, source: str) -> bool:
-        return self.rule.may_match_source(source)
-
     def matches(self, module: ast.Module) -> tuple[ArchitectureGuardMatch, ...]:
         return self.rule.matches(module)
 
@@ -668,7 +665,7 @@ def evaluate_architecture_guards(
             resolution
             for resolution in resolved_rules
             if resolution.applies_to_file(file_path)
-            and resolution.may_match_source(source)
+            and resolution.rule.may_match_source(source)
         )
         if not active_rules:
             continue

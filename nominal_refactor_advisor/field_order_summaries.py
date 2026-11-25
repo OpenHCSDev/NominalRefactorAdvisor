@@ -19,6 +19,7 @@ import ast
 from collections.abc import Iterable, Mapping
 from dataclasses import astuple, dataclass, fields
 
+from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.ast_tools import ModuleSyntaxIndex
 
 READERS: frozenset[str] = frozenset(
@@ -212,10 +213,9 @@ class FunctionOrderSummary:
                 for index, argument in enumerate(node.args)
                 if isinstance(argument, ast.Name) and argument.id in parameters
             ] + [
-                (None, keyword.arg, keyword.value.id)
-                for keyword in node.keywords
-                if keyword.arg is not None
-                and isinstance(keyword.value, ast.Name)
+                (None, keyword.name, keyword.value.id)
+                for keyword in CallKeywords.of(node.keywords).named
+                if isinstance(keyword.value, ast.Name)
                 and keyword.value.id in parameters
             ]
             if not arguments:

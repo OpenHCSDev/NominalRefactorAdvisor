@@ -34,6 +34,7 @@ from typing import cast
 from nominal_refactor_advisor.assignment_projection import (
     SingleAssignmentAndValueNameProjection,
 )
+from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.class_families.parsed_index import IndexedClass
 from nominal_refactor_advisor.codemod_authority_claims import AstTargetAuthorityClaim
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot, RefactorRecipe
@@ -166,10 +167,11 @@ class SubsetFamilyBase:
             )
         authority_node = site.authority.node
         creation_keywords = tuple(
-            keyword.arg
-            for keyword in authority_node.keywords
-            if keyword.arg is not None
-            and isinstance(keyword.value, ast.Constant)
+            keyword.name
+            for keyword in CallKeywords.of(
+                authority_node.keywords
+            ).named
+            if isinstance(keyword.value, ast.Constant)
             and keyword.value.value is None
         )
         if proof.authority_declaration.declares_autoregister_meta and not creation_keywords:

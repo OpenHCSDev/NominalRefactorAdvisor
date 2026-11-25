@@ -9,6 +9,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_field_decoders import alias_names
 from nominal_refactor_advisor.ast_tools import (
     AstParentIndex,
     ParsedModule,
@@ -310,7 +311,7 @@ class ModuleNodeIndex(ParsedModuleFact):
             site
             for site in sites
             if isinstance(site, ast.Import)
-            and any(alias.asname is None and alias.name.split(".")[0] == name for alias in site.names)
+            and any(not alias_names(alias) and alias.name.split(".")[0] == name for alias in site.names)
         ]
         return len(sites) - len(heads) + bool(heads)
 

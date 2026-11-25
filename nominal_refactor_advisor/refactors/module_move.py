@@ -22,6 +22,7 @@ from itertools import product
 from pathlib import Path, PurePosixPath
 from typing import ClassVar, cast
 
+from nominal_refactor_advisor.ast_field_decoders import alias_names
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.declared_family import ForeignAdapter
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -908,7 +909,7 @@ class _RunOnlyImports:
             statement
             for statement in parsed.fact(ModuleImportStatements).imports
             if isinstance(statement, ast.Import)
-            and any(alias.asname is None and alias.name == module_name for alias in statement.names)
+            and any(not alias_names(alias) and alias.name == module_name for alias in statement.names)
         )
         if not statements or _reads_dotted_path(parsed.module, module_name):
             return cls(file_path, ())
@@ -1334,7 +1335,7 @@ class _SourceModuleAliasRetargets:
             (
                 isinstance(node, ast.Import)
                 and any(
-                    alias.asname is not None and alias.name == source_module_name
+                    bool(alias_names(alias)) and alias.name == source_module_name
                     for alias in node.names
                 )
             )
@@ -5205,7 +5206,7 @@ class DissolveModuleOperation(RetainedCallOperation):
                                 f"{source_file.file_path!r}:{statement.lineno} imports "
                                 f"a submodule of {source_module_name!r}"
                             )
-                        if alias.asname is not None or alias.name != source_module_name:
+                        if alias_names(alias) or alias.name != source_module_name:
                             continue
                         if reads_path:
                             raise ValueError(

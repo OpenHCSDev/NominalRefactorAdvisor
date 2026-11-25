@@ -8,10 +8,7 @@ from collections.abc import Hashable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
-from typing import (
-    TYPE_CHECKING,
-    TypeAlias,
-)
+from typing import TypeAlias
 
 from nominal_refactor_advisor.ast_projection import StatementValue
 from nominal_refactor_advisor.ast_projection import ExpressionReference
@@ -29,7 +26,11 @@ from nominal_refactor_advisor.collection_algebra import UniqueIdentityIndexAutho
 from nominal_refactor_advisor.descriptor_algebra import CollectionAttributeProjection
 from nominal_refactor_advisor.lexical_bindings import LEXICAL_SCOPE_BINDING_AUTHORITY
 from nominal_refactor_advisor.name_algebra import CLASS_NAME_ALGEBRA
-from nominal_refactor_advisor.captured_reference import NamespaceContentsABC
+from nominal_refactor_advisor.captured_reference import (
+    CapturedReferenceResolution,
+    NamespaceContentsABC,
+)
+from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
 from nominal_refactor_advisor.registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     REGISTRY_ATTRIBUTE_NAME,
@@ -60,11 +61,6 @@ def _assignment_target(statement: RegistryAssignment) -> ast.expr:
 
 def _assignment_value(statement: RegistryAssignment) -> ast.AST | None:
     return statement.value
-
-
-if TYPE_CHECKING:
-    from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
-    from nominal_refactor_advisor.captured_reference import CapturedReferenceResolution
 
 
 @dataclass(frozen=True)
@@ -808,12 +804,8 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         )
 
     @property
-    def authority_node(self) -> ast.ClassDef:
-        return self.authority.node
-
-    @property
     def authority_name(self) -> str:
-        return self.authority_node.name
+        return self.authority.node.name
 
     @property
     def assignment_name(self) -> str:
@@ -823,10 +815,6 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
         if assignment_name is None:
             raise ValueError("Instance-view assignment target is not a name")
         return assignment_name
-
-    @property
-    def registry_key_attribute(self) -> str:
-        return self.authority.key_attribute
 
     def require_complete(self, class_graph: DirectModuleClassGraph) -> None:
         if self.authority.declares_registry:
@@ -862,7 +850,7 @@ class AutoRegisterInstanceViewComponent(RegistryEntries):
                 )
                 or _class_declares_non_null_name(
                     node,
-                    self.registry_key_attribute,
+                    self.authority.key_attribute,
                 )
             )
         )
