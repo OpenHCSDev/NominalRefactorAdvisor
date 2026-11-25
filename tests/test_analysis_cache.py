@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import pickle
 import sys
-from time import sleep
+from time import monotonic, sleep
 import weakref
 
 import pytest
@@ -1549,6 +1549,40 @@ def test_analysis_cache_rebuild_lease_waits_for_exact_cache_entry(
             cache.store(identity, [])
 
     assert future.result(timeout=1.0) == (False, Hit)
+
+
+def test_analysis_cache_rebuild_lease_recovers_immediately_when_holder_process_dies(
+    tmp_path: Path,
+) -> None:
+    package_root = tmp_path / "pkg"
+    package_root.mkdir()
+    (package_root / "mod.py").write_text("VALUE = 1\n", encoding="utf-8", newline="")
+    identity = AnalysisCacheIdentity.from_roots((package_root,), DetectorConfig())
+    first_token = identity.cache_token
+    assert "cache_token" in identity.__dict__
+    assert identity.cache_token is first_token
+    cache = AnalysisFindingCache(tmp_path / ".nra-cache" / "analysis")
+
+    reader, writer = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(reader)
+        lease = cache.rebuild_lease(identity)
+        os.write(writer, b"1" if lease.owns_rebuild else b"0")
+        os.close(writer)
+        # Die abruptly without releasing lease (__exit__ never runs).
+        os._exit(1)
+    os.close(writer)
+    acquired = os.read(reader, 1)
+    os.close(reader)
+    os.waitpid(pid, 0)
+    assert acquired == b"1"
+
+    started = monotonic()
+    with cache.rebuild_lease(identity, poll_interval_seconds=0.01) as recovered:
+        elapsed = monotonic() - started
+        assert recovered.owns_rebuild
+    assert elapsed < 0.5
 
 
 def test_analysis_cache_rejects_malformed_finding_evidence(
