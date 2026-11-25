@@ -57,6 +57,7 @@ from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteModule,
 )
 from nominal_refactor_advisor.observation_shapes import RestatingSite
+from nominal_refactor_advisor.scan_cache import ScanCache
 
 
 @dataclass(frozen=True)
@@ -701,8 +702,83 @@ class ClassNameOwners:
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> ClassNameOwners:
         loaded = {module.module_name: module for module in modules}
-        owners = cls(dict(loaded), frozenset(loaded))
-        tried: set[str] = set()
+        scanned = frozenset(loaded)
+        scanned_roots = frozenset(name.partition(".")[0] for name in scanned)
+        base_owners: ClassNameOwners | None = None
+        if ScanCache.active() is not None:
+            base_entry = _base_declared_identities_slot()[0]
+            if base_entry is not None:
+                base_owners = base_entry.identities.class_names
+        if base_owners is not None and base_owners.scanned == scanned:
+            changed_mods = {
+                name
+                for name, mod in loaded.items()
+                if (old := base_owners.modules.get(name)) is not mod and old != mod
+            }
+            if len(changed_mods) <= 64:
+                for mod_name, inst_mod in base_owners.modules.items():
+                    if mod_name not in scanned:
+                        loaded[mod_name] = inst_mod
+                classes_cache: dict[str, DeclaredClass] = {
+                    qual: decl
+                    for qual, decl in base_owners.classes.items()
+                    if qual.rpartition(".")[0] not in changed_mods
+                }
+                imports_cache: dict[str, dict[str, str]] = dict(base_owners.imports)
+                for mod_name in changed_mods:
+                    mod = loaded[mod_name]
+                    for declared in mod.classes:
+                        if declared.top_level and declared.name not in mod.rebound:
+                            classes_cache[f"{mod_name}.{declared.name}"] = declared
+                    imports_cache[mod_name] = dict(mod.imports)
+                owners = cls(dict(loaded), scanned)
+                owners.__dict__["scanned_roots"] = scanned_roots
+                owners.__dict__["classes"] = classes_cache
+                owners.__dict__["imports"] = imports_cache
+                # Check if any changed module introduces an unloaded external module.
+                tried: set[str] = set(loaded) - scanned
+                extra_missing: set[str] = set()
+                for mod_name in changed_mods:
+                    mod = loaded[mod_name]
+                    for declared in mod.classes:
+                        if declared.top_level and declared.name not in mod.rebound:
+                            for origin in (*declared.decorators, *declared.origins):
+                                if (
+                                    origin
+                                    and not owners.standard(origin)
+                                    and owners.canonical(origin) is None
+                                ):
+                                    miss = owners.missing_module(origin)
+                                    if miss is not None and miss not in tried:
+                                        extra_missing.add(miss)
+                    mod_imports = imports_cache[mod_name]
+                    for bound in mod.names.typed:
+                        qualified = mod_imports.get(bound)
+                        if (
+                            qualified is not None
+                            and qualified.partition(".")[0] not in scanned_roots
+                            and not owners.standard(qualified)
+                            and owners.canonical(qualified) is None
+                        ):
+                            miss = owners.missing_module(qualified)
+                            if miss is not None and miss not in tried:
+                                extra_missing.add(miss)
+                if not extra_missing:
+                    return owners
+        classes_cache = {
+            f"{module.module_name}.{declared.name}": declared
+            for module in loaded.values()
+            for declared in module.classes
+            if declared.top_level and declared.name not in module.rebound
+        }
+        imports_cache = {
+            name: dict(module.imports) for name, module in loaded.items()
+        }
+        owners = cls(dict(loaded), scanned)
+        owners.__dict__["scanned_roots"] = scanned_roots
+        owners.__dict__["classes"] = classes_cache
+        owners.__dict__["imports"] = imports_cache
+        tried = set()
         for _round in range(cls.MAX_REEXPORTS):
             missing = {
                 module
@@ -714,11 +790,21 @@ class ClassNameOwners:
                 break
             reading = sorted(missing)[: cls.MAX_INSTALLED - len(tried)]
             tried.update(reading)
+            added = False
             for module_name in reading:
                 found = DeclaredIdentityFamily.installed(module_name)
                 if found is not None:
                     loaded[module_name] = found
-            owners = cls(dict(loaded), owners.scanned)
+                    for declared in found.classes:
+                        if declared.top_level and declared.name not in found.rebound:
+                            classes_cache[f"{found.module_name}.{declared.name}"] = declared
+                    imports_cache[module_name] = dict(found.imports)
+                    added = True
+            if added:
+                owners = cls(dict(loaded), scanned)
+                owners.__dict__["scanned_roots"] = scanned_roots
+                owners.__dict__["classes"] = classes_cache
+                owners.__dict__["imports"] = imports_cache
         return owners
 
     @cached_property
@@ -823,15 +909,27 @@ class ClassNameOwners:
     def canonical(self, qualified: str) -> str | None:
         """The class a qualified name reaches through re-exports, if any."""
 
+        cache: dict[str, str | None] | None = self.__dict__.get("_canonical_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_canonical_cache"] = cache
+        sentinel = _MISSING_CACHE_ENTRY
+        cached = cache.get(qualified, sentinel)
+        if cached is not sentinel:
+            return cached  # type: ignore[return-value]
+        current = qualified
+        result: str | None = None
         for _hop in range(self.MAX_REEXPORTS):
-            if qualified in self.classes:
-                return qualified
-            module, _dot, name = qualified.rpartition(".")
+            if current in self.classes:
+                result = current
+                break
+            module, _dot, name = current.rpartition(".")
             reexported = self.imports.get(module, {}).get(name)
             if reexported is None:
-                return None
-            qualified = reexported
-        return None
+                break
+            current = reexported
+        cache[qualified] = result
+        return result
 
     def standard(self, qualified: str) -> bool:
         root = qualified.partition(".")[0]
@@ -840,19 +938,34 @@ class ClassNameOwners:
     def keeps_name(
         self, qualified: str, visiting: frozenset[str] = frozenset()
     ) -> bool:
+        cache: dict[str, bool] | None = self.__dict__.get("_keeps_name_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_keeps_name_cache"] = cache
+        cached = cache.get(qualified)
+        if cached is not None:
+            return cached
         declared = self.classes.get(qualified)
         if declared is None or qualified in visiting or qualified in self.renamed:
             return False
         if declared.writes_name:
+            if not visiting:
+                cache[qualified] = False
             return False
         if not all(self.standard(decorator) for decorator in declared.decorators):
+            if not visiting:
+                cache[qualified] = False
             return False
+        next_visiting = visiting | {qualified}
         for origin in declared.origins:
             if self.standard(origin):
                 continue
             owner = self.canonical(origin)
-            if owner is None or not self.keeps_name(owner, visiting | {qualified}):
+            if owner is None or not self.keeps_name(owner, next_visiting):
+                if not visiting:
+                    cache[qualified] = False
                 return False
+        cache[qualified] = True
         return True
 
     def derived_spellings(self) -> Iterator[tuple[str, str, SourceLocation]]:
@@ -863,16 +976,24 @@ class ClassNameOwners:
         `None` declares no member.
         """
 
+        rules_by_dir: dict[str, tuple[DerivedSpelling, ...]] = {}
         for qualified, declared in self.classes.items():
             module_name = qualified.rpartition(".")[0]
             if module_name not in self.scanned:
                 continue
             module = self.modules[module_name]
+            parent_dir = module.file_path.rpartition("/")[0]
+            rules = rules_by_dir.get(parent_dir)
+            if rules is None:
+                rules = DeclaredRoot.derived_spellings_for(Path(module.file_path))
+                rules_by_dir[parent_dir] = rules
+            if not rules:
+                continue
             written = {
                 *(name for name, _value in (*declared.keywords, *declared.constants)),
                 *declared.unnamed_keywords,
             }
-            for derived in DeclaredRoot.derived_spellings_for(Path(module.file_path)):
+            for derived in rules:
                 if derived.spelling in written:
                     continue
                 for affix in self.member_affix(qualified, derived):
@@ -885,11 +1006,20 @@ class ClassNameOwners:
     def parents(self, qualified: str) -> tuple[str, ...]:
         """The classes a class's bases resolve to, in order."""
 
-        return tuple(
+        cache = self.__dict__.get("_parents_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_parents_cache"] = cache
+        cached = cache.get(qualified)
+        if cached is not None:
+            return cached
+        result = tuple(
             found
             for origin in self.classes[qualified].origins
             if origin and (found := self.canonical(origin)) is not None
         )
+        cache[qualified] = result
+        return result
 
     def is_root(self, qualified: str, derived: DerivedSpelling) -> bool:
         """A root of `derived`'s mechanism: it inherits the mechanism directly, or
@@ -997,7 +1127,31 @@ class ClassNameOwners:
     string, and `__new__`, which decides the member's value."""
 
     def is_enum(self, qualified: str) -> bool:
-        return self.reaches(qualified, self.ENUMS)
+        return self._is_enum_cached(qualified, frozenset())
+
+    def _is_enum_cached(self, qualified: str, visiting: frozenset[str]) -> bool:
+        cache: dict[str, bool] | None = self.__dict__.get("_is_enum_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_is_enum_cache"] = cache
+        cached = cache.get(qualified)
+        if cached is not None:
+            return cached
+        declared = self.classes.get(qualified)
+        if declared is None or qualified in visiting:
+            return False
+        next_visiting = visiting | {qualified}
+        for origin in declared.origins:
+            if origin in self.ENUMS:
+                cache[qualified] = True
+                return True
+            found = self.canonical(origin)
+            if found is not None and self._is_enum_cached(found, next_visiting):
+                cache[qualified] = True
+                return True
+        if not visiting:
+            cache[qualified] = False
+        return False
 
     def answers_as_string(
         self, qualified: str, visiting: frozenset[str] = frozenset()
@@ -1111,6 +1265,9 @@ class ClassNameOwners:
         return False
 
 
+_MISSING_CACHE_ENTRY: object = object()
+
+
 class IdentitySpelling(ABC):
     """How a literal in one kind of position spells an identity.
 
@@ -1122,6 +1279,7 @@ class IdentitySpelling(ABC):
     tag: ClassVar[str]
     rewrite_kind: ClassVar[type[IdentitySpelling]]
     """The rewrite a rewritable site of this position belongs to, one recipe per scan."""
+    _positions_cache: ClassVar[dict[str, type[IdentitySpelling]] | None] = None
 
     @classmethod
     def detail(cls, *values: str) -> tuple[str, ...]:
@@ -1143,7 +1301,12 @@ class IdentitySpelling(ABC):
 
     @classmethod
     def positions(cls) -> dict[str, type[IdentitySpelling]]:
-        return {position.tag: position for position in cls.__subclasses__()}
+        cached = cls._positions_cache
+        subclasses = cls.__subclasses__()
+        if cached is None or len(cached) != len(subclasses):
+            cached = {position.tag: position for position in subclasses}
+            cls._positions_cache = cached
+        return cached
 
     @classmethod
     @abstractmethod
@@ -1486,11 +1649,19 @@ class MemberSpellings:
     slotted: bool
     declared_at: tuple[SourceLocation, ...]
 
-    @property
+    @cached_property
     def members(self) -> tuple[tuple[str, SourceLocation], ...]:
         """Every family's explicit values with their classes."""
 
         return tuple(member for _base, group in self.families for member in group)
+
+    @cached_property
+    def member_set(self) -> frozenset[tuple[str, SourceLocation]]:
+        return frozenset(self.members)
+
+    @cached_property
+    def member_values(self) -> frozenset[str]:
+        return frozenset(value for value, _location in self.members)
 
     def families_spelling(
         self, literals: Iterable[str]
@@ -1552,6 +1723,41 @@ class MemberSpellings:
 
 
 @dataclass(frozen=True)
+class _DeclaredIdentitiesBaseline:
+    by_path: dict[str, ModuleDeclarations]
+    identities: DeclaredIdentities
+    path_order: dict[str, int]
+    paths_by_class_name: dict[str, tuple[str, ...]]
+
+
+@ScanCache.cached
+def _base_declared_identities_slot() -> list[_DeclaredIdentitiesBaseline | None]:
+    return [None]
+
+
+def _build_declared_identities_baseline(
+    modules: Sequence[ModuleDeclarations], identities: DeclaredIdentities
+) -> _DeclaredIdentitiesBaseline:
+    by_path: dict[str, ModuleDeclarations] = {}
+    path_order: dict[str, int] = {}
+    paths_by_name: dict[str, list[str]] = defaultdict(list)
+    for idx, mod in enumerate(modules):
+        by_path[mod.file_path] = mod
+        path_order[mod.file_path] = idx
+        seen_in_mod: set[str] = set()
+        for declared in mod.classes:
+            if declared.name not in seen_in_mod:
+                seen_in_mod.add(declared.name)
+                paths_by_name[declared.name].append(mod.file_path)
+    return _DeclaredIdentitiesBaseline(
+        by_path=by_path,
+        identities=identities,
+        path_order=path_order,
+        paths_by_class_name={k: tuple(v) for k, v in paths_by_name.items()},
+    )
+
+
+@dataclass(frozen=True)
 class DeclaredIdentities:
     """Every identity the scan declares: classes, modules, member spellings, lookups and enum values.
 
@@ -1586,6 +1792,41 @@ class DeclaredIdentities:
     @classmethod
     def from_modules(cls, modules: Iterable[ModuleDeclarations]) -> DeclaredIdentities:
         modules = tuple(modules)
+        base_entry: _DeclaredIdentitiesBaseline | None = None
+        if ScanCache.active() is not None:
+            slot = _base_declared_identities_slot()
+            base_entry = slot[0]
+            if base_entry is not None:
+                base_by_path = base_entry.by_path
+                base_identities = base_entry.identities
+                changed_mods: list[ModuleDeclarations] = []
+                cur_paths: set[str] = set()
+                for m in modules:
+                    cur_paths.add(m.file_path)
+                    old_m = base_by_path.get(m.file_path)
+                    if old_m is m:
+                        continue
+                    if (
+                        old_m is not None
+                        and old_m.module_name == m.module_name
+                        and old_m.classes == m.classes
+                        and old_m.imports == m.imports
+                        and old_m.renamed == m.renamed
+                    ):
+                        continue
+                    changed_mods.append(m)
+                removed_paths = (
+                    frozenset()
+                    if len(cur_paths) == len(base_by_path)
+                    and not any(m.file_path not in base_by_path for m in changed_mods)
+                    else frozenset(p for p in base_by_path if p not in cur_paths)
+                )
+                if not changed_mods and not removed_paths:
+                    return base_identities
+                if len(changed_mods) + len(removed_paths) <= 64:
+                    return cls._incremental_from_modules(
+                        modules, base_entry, changed_mods, removed_paths
+                    )
         class_names = ClassNameOwners.from_modules(modules)
         classes: dict[str, list[SourceLocation]] = defaultdict(list)
         module_locations: dict[str, SourceLocation] = {}
@@ -1649,7 +1890,7 @@ class DeclaredIdentities:
                 family_bases[attribute].update(
                     location.symbol for location in declaring
                 )
-        return cls(
+        built = cls(
             classes={name: tuple(found) for name, found in classes.items()},
             modules=module_locations,
             members={
@@ -1680,12 +1921,224 @@ class DeclaredIdentities:
             enumerators={name: tuple(sorted(found)) for name, found in enumerators.items()},
             enum_values=cls.enum_values_of(class_names),
         ).with_family_values((*explicit, *class_names.derived_spellings()))
+        if ScanCache.active() is not None and len(modules) >= 20:
+            slot = _base_declared_identities_slot()
+            if slot[0] is None:
+                slot[0] = _build_declared_identities_baseline(modules, built)
+        return built
+
+    @classmethod
+    def _incremental_from_modules(
+        cls,
+        modules: tuple[ModuleDeclarations, ...],
+        base_entry: _DeclaredIdentitiesBaseline,
+        changed_mods: list[ModuleDeclarations],
+        removed_paths: frozenset[str],
+    ) -> DeclaredIdentities:
+        base_id = base_entry.identities
+        base_by_path = base_entry.by_path
+        class_names = ClassNameOwners.from_modules(modules)
+        cur_by_path = {m.file_path: m for m in modules}
+        path_order = {m.file_path: idx for idx, m in enumerate(modules)}
+
+        # Identify affected class names and check whether member spellings can change.
+        affected_names: set[str] = set()
+        members_may_change = bool(removed_paths)
+        for path in removed_paths:
+            for declared in base_by_path[path].classes:
+                affected_names.add(declared.name)
+        for mod in changed_mods:
+            old_mod = base_by_path.get(mod.file_path)
+            if old_mod is None:
+                members_may_change = True
+            else:
+                if len(old_mod.classes) != len(mod.classes) or any(
+                    (
+                        oc.name != nc.name
+                        or oc.line != nc.line
+                        or oc.base_names != nc.base_names
+                        or oc.keywords != nc.keywords
+                        or oc.consumed_keywords != nc.consumed_keywords
+                        or oc.slots != nc.slots
+                        or oc.constants != nc.constants
+                        or oc.unnamed_keywords != nc.unnamed_keywords
+                        or oc.origins != nc.origins
+                        or oc.top_level != nc.top_level
+                    )
+                    for oc, nc in zip(old_mod.classes, mod.classes, strict=True)
+                ):
+                    members_may_change = True
+                for declared in old_mod.classes:
+                    affected_names.add(declared.name)
+            for declared in mod.classes:
+                affected_names.add(declared.name)
+
+        classes = dict(base_id.classes)
+        lookups = dict(base_id.lookups)
+        enumerators = dict(base_id.enumerators)
+        bases = dict(base_id.bases)
+        instance_attributes = dict(base_id.instance_attributes)
+
+        changed_by_name: dict[str, list[str]] = defaultdict(list)
+        for mod in changed_mods:
+            seen_local: set[str] = set()
+            for declared in mod.classes:
+                if declared.name not in seen_local:
+                    seen_local.add(declared.name)
+                    changed_by_name[declared.name].append(mod.file_path)
+
+        for cname in affected_names:
+            cand_paths: set[str] = set()
+            for p in base_entry.paths_by_class_name.get(cname, ()):
+                if p in cur_by_path:
+                    cand_paths.add(p)
+            cand_paths.update(changed_by_name.get(cname, ()))
+            ordered_paths = sorted(cand_paths, key=path_order.__getitem__)
+            c_locs: list[SourceLocation] = []
+            c_lookups: set[str] = set()
+            c_enums: set[str] = set()
+            c_bases: set[str] = set()
+            c_inst: set[str] = set()
+            for p in ordered_paths:
+                mod = cur_by_path[p]
+                for declared in mod.classes:
+                    if declared.name == cname:
+                        c_locs.append(
+                            SourceLocation(mod.file_path, declared.line, declared.name)
+                        )
+                        c_lookups.update(declared.lookups)
+                        c_enums.update(declared.enumerators)
+                        c_bases.update(declared.base_names)
+                        c_inst.update(declared.instance_attributes)
+            if c_locs:
+                classes[cname] = tuple(c_locs)
+                lookups[cname] = tuple(sorted(c_lookups))
+                enumerators[cname] = tuple(sorted(c_enums))
+                bases[cname] = tuple(sorted(c_bases))
+                instance_attributes[cname] = frozenset(c_inst)
+            else:
+                classes.pop(cname, None)
+                lookups.pop(cname, None)
+                enumerators.pop(cname, None)
+                bases.pop(cname, None)
+                instance_attributes.pop(cname, None)
+
+        module_locations = dict(base_id.modules)
+        for path in removed_paths:
+            module_locations.pop(base_by_path[path].module_name, None)
+        for mod in changed_mods:
+            old_mod = base_by_path.get(mod.file_path)
+            if old_mod is not None and old_mod.module_name != mod.module_name:
+                module_locations.pop(old_mod.module_name, None)
+            module_locations[mod.module_name] = SourceLocation(
+                mod.file_path, 1, mod.module_name
+            )
+
+        enum_values = cls.enum_values_of(class_names)
+
+        if not members_may_change:
+            return cls(
+                classes=classes,
+                modules=module_locations,
+                members=base_id.members,
+                lookups=lookups,
+                bases=bases,
+                instance_attributes=instance_attributes,
+                class_names=class_names,
+                enumerators=enumerators,
+                enum_values=enum_values,
+            )
+
+        siblings: dict[tuple[str, str, bool], list[tuple[str, SourceLocation]]] = (
+            defaultdict(list)
+        )
+        consumers: dict[str, list[SourceLocation]] = defaultdict(list)
+        slots: dict[str, list[SourceLocation]] = defaultdict(list)
+        explicit: list[tuple[str, str, SourceLocation]] = []
+        for module in modules:
+            for declared in module.classes:
+                if (
+                    not declared.consumed_keywords
+                    and not declared.slots
+                    and not declared.keywords
+                    and not declared.constants
+                ):
+                    continue
+                location = SourceLocation(
+                    module.file_path, declared.line, declared.name
+                )
+                for keyword in declared.consumed_keywords:
+                    consumers[keyword].append(location)
+                for slot_name in declared.slots:
+                    slots[slot_name].append(location)
+                for by_keyword, spellings in (
+                    (True, declared.keywords),
+                    (False, declared.constants),
+                ):
+                    for attribute, value in spellings:
+                        explicit.append((attribute, value, location))
+                        for base in declared.base_names:
+                            siblings[(attribute, base, by_keyword)].append(
+                                (value, location)
+                            )
+        families: dict[
+            str, list[tuple[str, tuple[tuple[str, SourceLocation], ...]]]
+        ] = defaultdict(list)
+        family_bases: dict[str, set[str]] = defaultdict(set)
+        keyword_attributes: set[str] = set(consumers)
+        for (attribute, base, by_keyword), group in siblings.items():
+            values = [value for value, _location in group]
+            if (
+                len(values) >= 2
+                and len(set(values)) == len(values)
+                and not cls.protocol_name(attribute)
+            ):
+                families[attribute].append((base, tuple(group)))
+                family_bases[attribute].add(base)
+                if by_keyword:
+                    keyword_attributes.add(attribute)
+        for declaring_by_attribute in (consumers, slots):
+            for attribute, declaring in declaring_by_attribute.items():
+                if cls.protocol_name(attribute):
+                    continue
+                family_bases[attribute].update(
+                    location.symbol for location in declaring
+                )
+        return cls(
+            classes=classes,
+            modules=module_locations,
+            members={
+                attribute: MemberSpellings(
+                    attribute=attribute,
+                    families=tuple(families[attribute]),
+                    family_bases=frozenset(found),
+                    declared_by_keyword=attribute in keyword_attributes,
+                    slotted=attribute in slots,
+                    declared_at=(
+                        *consumers.get(attribute, ()),
+                        *slots.get(attribute, ()),
+                        *(
+                            location
+                            for _base, group in families[attribute]
+                            for _value, location in group
+                        ),
+                    ),
+                )
+                for attribute, found in family_bases.items()
+            },
+            lookups=lookups,
+            bases=bases,
+            instance_attributes=instance_attributes,
+            class_names=class_names,
+            enumerators=enumerators,
+            enum_values=enum_values,
+        ).with_family_values((*explicit, *class_names.derived_spellings()))
 
     @staticmethod
     def enum_values_of(owners: ClassNameOwners) -> dict[str, tuple[EnumMember, ...]]:
         found: dict[str, list[EnumMember]] = defaultdict(list)
         for qualified, declared in owners.classes.items():
-            if not owners.is_enum(qualified):
+            if not declared.constants or not owners.is_enum(qualified):
                 continue
             module = owners.modules[qualified.rpartition(".")[0]]
             location = SourceLocation(module.file_path, declared.line, declared.name)
@@ -1747,7 +2200,7 @@ class DeclaredIdentities:
             if (
                 spellings is not None
                 and (spellings.declared_by_keyword or spellings.slotted)
-                and (value, location) not in spellings.members
+                and (value, location) not in spellings.member_set
                 and (base := self.family_base(location.symbol, spellings)) is not None
             ):
                 added[attribute][base].append((value, location))
@@ -1785,7 +2238,7 @@ class DeclaredIdentities:
         if self.protocol_name(literal):
             return None
         for spellings in self.members.values():
-            if any(value == literal for value, _location in spellings.members):
+            if literal in spellings.member_values:
                 return spellings.spelled(literal)
         return None
 
@@ -1801,9 +2254,28 @@ class DeclaredIdentities:
             return None
         return ResolvedIdentity(f"module `{name}`", (declared,))
 
+    @cached_property
+    def all_lookup_methods(self) -> frozenset[str]:
+        return frozenset(
+            method for methods in self.lookups.values() for method in methods
+        )
+
+    @cached_property
+    def all_instance_attribute_names(self) -> frozenset[str]:
+        return frozenset(
+            attr for attrs in self.instance_attributes.values() for attr in attrs
+        )
+
     def ancestors(self, name: str) -> tuple[str, ...]:
         """The class and every scanned class it inherits from, by name."""
 
+        cache: dict[str, tuple[str, ...]] | None = self.__dict__.get("_ancestors_cache")
+        if cache is None:
+            cache = {}
+            self.__dict__["_ancestors_cache"] = cache
+        cached = cache.get(name)
+        if cached is not None:
+            return cached
         found = {name: None}
         frontier = [name]
         for current in frontier:
@@ -1811,7 +2283,9 @@ class DeclaredIdentities:
                 if base not in found:
                     found[base] = None
                     frontier.append(base)
-        return tuple(found)
+        result = tuple(found)
+        cache[name] = result
+        return result
 
     def family_base(self, name: str, spellings: MemberSpellings) -> str | None:
         """The nearest class, the class itself or an ancestor, below which the spelling names members."""
@@ -1861,7 +2335,7 @@ class DeclaredIdentities:
                 and not self.per_object(receiver.instance, attribute)
                 else None
             )
-        if any(attribute in declared for declared in self.instance_attributes.values()):
+        if attribute in self.all_instance_attribute_names:
             return None
         return spellings if spellings.members else None
 
@@ -1953,6 +2427,8 @@ class DeclaredIdentities:
     def member_looked_up(
         self, receiver: str, method: str, literal: str
     ) -> ResolvedIdentity | None:
+        if method not in self.all_lookup_methods:
+            return None
         declaring = next(
             (
                 ancestor
@@ -2088,8 +2564,11 @@ class IdentityPositions:
             for node_index, node in enumerate(self.index.depth_first_nodes)
         }
         self.references = ModuleReferenceScope(
-            parsed_module.module, package=self.package_of(parsed_module)
+            parsed_module.module,
+            package=self.package_of(parsed_module),
+            syntax_index=self.index,
         )
+        self._all_scope_receiver_attrs: dict[int, dict[str, tuple[str, ...]]] | None = None
 
     @staticmethod
     def package_of(parsed_module: ParsedModule) -> str:
@@ -2290,6 +2769,40 @@ class IdentityPositions:
         """The attributes the call's scope reads off the same receiver: the
         innermost enclosing function, or the module."""
 
+        all_scopes = self._all_scope_receiver_attrs
+        if all_scopes is None:
+            grouped: dict[int, dict[str, set[str]]] = {}
+            called = self.called
+            nodes = self.index.depth_first_nodes
+            parents = self.index.parent_indices
+            mod_id = id(self.parsed_module.module)
+            for attr_idx, attr_node in self.index.indexed_nodes_of_type(ast.Attribute):
+                target_name = called(attr_node.value)
+                if not target_name:
+                    continue
+                attr_name = attr_node.attr
+                mod_bucket = grouped.setdefault(mod_id, {})
+                mod_attrs = mod_bucket.get(target_name)
+                if mod_attrs is None:
+                    mod_bucket[target_name] = {attr_name}
+                else:
+                    mod_attrs.add(attr_name)
+                cur = parents[attr_idx]
+                while cur >= 0:
+                    anc = nodes[cur]
+                    if isinstance(anc, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        fn_bucket = grouped.setdefault(id(anc), {})
+                        fn_attrs = fn_bucket.get(target_name)
+                        if fn_attrs is None:
+                            fn_bucket[target_name] = {attr_name}
+                        else:
+                            fn_attrs.add(attr_name)
+                    cur = parents[cur]
+            all_scopes = {
+                scope_id: {name: tuple(sorted(attrs)) for name, attrs in bucket.items()}
+                for scope_id, bucket in grouped.items()
+            }
+            self._all_scope_receiver_attrs = all_scopes
         scope = next(
             (
                 ancestor
@@ -2298,16 +2811,10 @@ class IdentityPositions:
             ),
             self.parsed_module.module,
         )
-        named = self.called(receiver)
-        return tuple(
-            sorted(
-                {
-                    node.attr
-                    for node in ast.walk(scope)
-                    if isinstance(node, ast.Attribute) and self.called(node.value) == named
-                }
-            )
-        )
+        by_receiver = all_scopes.get(id(scope))
+        if by_receiver is None:
+            return ()
+        return by_receiver.get(self.called(receiver), ())
 
     REFUSAL_CHECKS: ClassVar[frozenset[str]] = frozenset(
         ("raises", "assertRaises", "assertRaisesRegex")
@@ -2365,6 +2872,22 @@ class IdentityPositions:
                         ),
                     )
 
+    @staticmethod
+    def _receiver_text(receiver: ast.expr) -> str:
+        if isinstance(receiver, ast.Name):
+            return receiver.id
+        if isinstance(receiver, ast.Attribute):
+            parts: list[str] = [receiver.attr]
+            cur: ast.expr = receiver.value
+            while isinstance(cur, ast.Attribute):
+                parts.append(cur.attr)
+                cur = cur.value
+            if isinstance(cur, ast.Name):
+                parts.append(cur.id)
+                parts.reverse()
+                return ".".join(parts)
+        return ast.unparse(receiver)
+
     def receiver(self, node_index: int, receiver: ast.expr) -> Receiver:
         """The receiver's text, last segment, and the type its binding declares for it."""
 
@@ -2377,7 +2900,7 @@ class IdentityPositions:
                 case ast.Name() | ast.Attribute():
                     instance = self.called(declared)
         return Receiver(
-            ast.unparse(receiver), self.called(receiver), class_object, instance
+            self._receiver_text(receiver), self.called(receiver), class_object, instance
         )
 
     def declared_type(self, node_index: int, name: str) -> ast.expr | None:
@@ -2515,7 +3038,7 @@ class IdentityPositions:
     # Module positions ---------------------------------------------------------
 
     def module_sites(self) -> Iterator[tuple[ast.expr, tuple[str, ...]]]:
-        for spelled in SpelledModules(self.parsed_module.module):
+        for spelled in SpelledModules(self.parsed_module.module, syntax_index=self.index):
             yield self.site(
                 spelled.literal,
                 ModuleSpelling.detail(

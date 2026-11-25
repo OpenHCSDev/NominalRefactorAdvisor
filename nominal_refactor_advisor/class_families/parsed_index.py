@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Iterable
 
@@ -121,6 +121,10 @@ class IndexedClass(ClassDeclaration, ClassNamespaceDeclaration):
 
 @dataclass(frozen=True)
 class ClassFamilyIndex(ClassDeclarationIndex[IndexedClass], ParsedModuleSetFact):
+    _has_ambiguous_symbols: bool = field(
+        default=False, init=False, repr=False, compare=False
+    )
+
     @classmethod
     def derive(cls, modules: ParsedModuleSet) -> ClassFamilyIndex:
         return ClassFamilyIndexBuilder(modules.modules).build()
@@ -336,17 +340,82 @@ class ClassFamilyIndexBuilder:
     previous: ClassFamilyIndexPredecessor | None = None
 
     def build(self) -> ClassFamilyIndex:
-        class_records = tuple(
-            UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
-                self.module_class_records(),
-                lambda record: record.symbol,
-            ).values()
-        )
-        known_symbols = frozenset(record.symbol for record in class_records)
-        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex | None = None
-        moved_terminal_names = self.moved_terminal_names(known_symbols)
-        classes_by_symbol: dict[str, IndexedClass] = {}
         previous = self.previous
+        if previous is not None and not previous.index._has_ambiguous_symbols:
+            module_by_file_path = self.module_by_file_path
+            prev_modules = previous.modules_by_file_path
+            prev_classes = previous.index.classes_by_symbol
+            changed_modules = tuple(
+                module
+                for module in self.modules
+                if prev_modules.get(module.file_path) is not module
+            )
+            removed_paths = prev_modules.keys() - module_by_file_path.keys()
+            if len(changed_modules) + len(removed_paths) <= 64:
+                changed_paths = {module.file_path for module in changed_modules}
+                dropped_paths = changed_paths | removed_paths
+                new_records = tuple(
+                    record
+                    for module in changed_modules
+                    for record in module.fact(ModuleIndexedClasses).records
+                )
+                new_symbols = {record.symbol for record in new_records}
+                if len(new_symbols) == len(new_records):
+                    dropped_symbols = {
+                        record.symbol
+                        for path in dropped_paths
+                        if path in prev_modules
+                        for record in prev_modules[path].fact(ModuleIndexedClasses).records
+                    }
+                    retained_keys = prev_classes.keys() - dropped_symbols
+                    if retained_keys.isdisjoint(new_symbols):
+                        known_symbols = frozenset(retained_keys | new_symbols)
+                        moved_terminal_names = self.moved_terminal_names(known_symbols)
+                        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex | None = None
+                        classes_by_symbol: dict[str, IndexedClass] = dict(prev_classes)
+                        for sym in dropped_symbols:
+                            classes_by_symbol.pop(sym, None)
+                        if moved_terminal_names:
+                            for sym, prev_record in list(classes_by_symbol.items()):
+                                if any(
+                                    reference.resolved_parts[-1] in moved_terminal_names
+                                    for reference in prev_record.registry_facts.base_references
+                                ):
+                                    if unique_symbols_by_suffix is None:
+                                        unique_symbols_by_suffix = _unique_known_symbol_by_suffix(
+                                            known_symbols
+                                        )
+                                    classes_by_symbol[sym] = self.resolved_record(
+                                        prev_record,
+                                        known_symbols,
+                                        unique_symbols_by_suffix,
+                                    )
+                        for record in new_records:
+                            if unique_symbols_by_suffix is None:
+                                unique_symbols_by_suffix = _unique_known_symbol_by_suffix(
+                                    known_symbols
+                                )
+                            classes_by_symbol[record.symbol] = self.resolved_record(
+                                record, known_symbols, unique_symbols_by_suffix
+                            )
+                        return self._finalize_index(
+                            classes_by_symbol,
+                            unique_symbols_by_suffix,
+                            moved_terminal_names,
+                            has_ambiguous=False,
+                        )
+
+        all_records = self.module_class_records()
+        unambiguous = UniqueIdentityIndexAuthority.unambiguous_declarations_by_handle(
+            all_records,
+            lambda record: record.symbol,
+        )
+        has_ambiguous = len(unambiguous) != len(all_records)
+        class_records = tuple(unambiguous.values())
+        known_symbols = frozenset(record.symbol for record in class_records)
+        unique_symbols_by_suffix = None
+        moved_terminal_names = self.moved_terminal_names(known_symbols)
+        classes_by_symbol = {}
         module_by_file_path = self.module_by_file_path if previous is not None else {}
         prev_modules = previous.modules_by_file_path if previous is not None else {}
         prev_classes = previous.index.classes_by_symbol if previous is not None else {}
@@ -369,6 +438,24 @@ class ClassFamilyIndexBuilder:
                     record, known_symbols, unique_symbols_by_suffix
                 )
             classes_by_symbol[record.symbol] = resolved
+        return self._finalize_index(
+            classes_by_symbol,
+            unique_symbols_by_suffix,
+            moved_terminal_names,
+            has_ambiguous=has_ambiguous,
+        )
+
+    def _finalize_index(
+        self,
+        classes_by_symbol: dict[str, IndexedClass],
+        unique_symbols_by_suffix: _UniqueKnownSymbolSuffixIndex | None,
+        moved_terminal_names: frozenset[str],
+        *,
+        has_ambiguous: bool,
+    ) -> ClassFamilyIndex:
+        previous = self.previous
+        module_by_file_path = self.module_by_file_path if previous is not None else {}
+        prev_modules = previous.modules_by_file_path if previous is not None else {}
         metaclass_records = tuple(
             (symbol, record)
             for symbol, record in classes_by_symbol.items()
@@ -431,7 +518,10 @@ class ClassFamilyIndexBuilder:
             )
             for symbol, record in metaclass_records:
                 classes_by_symbol[symbol] = record.with_registering_metaclass(authority)
-        return ClassFamilyIndex(classes_by_symbol=classes_by_symbol)
+        index = ClassFamilyIndex(classes_by_symbol=classes_by_symbol)
+        if has_ambiguous:
+            object.__setattr__(index, "_has_ambiguous_symbols", True)
+        return index
 
     def moved_terminal_names(self, known_symbols: frozenset[str]) -> frozenset[str]:
         """The terminal names of symbols this build knows and the previous did

@@ -10,11 +10,17 @@ its type map, keyed by the receiver's exact source span.
 from __future__ import annotations
 
 import ast
+import fcntl
+import gc
 import importlib
 import importlib.util
 import os
+import pickle
+import signal
 import stat
+import struct
 import sys
+import traceback
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
@@ -514,6 +520,11 @@ class TypeCheckerSession(ABC):
         """What the type checker could answer: how much it typed, or why nothing."""
         raise NotImplementedError
 
+    def file_version(self, file_path: str) -> int | None:
+        """Per-file monotonic version for incremental sessions, or None when unversioned."""
+        del file_path
+        return None
+
     @staticmethod
     def _active_incremental() -> FineGrainedTypeChecker | None:
         if ScanCache.active() is None:
@@ -524,6 +535,32 @@ class TypeCheckerSession(ABC):
     def has_active_incremental() -> bool:
         """Whether an in-memory incremental type checker is active in this scope."""
         return TypeCheckerSession._active_incremental() is not None
+
+    @staticmethod
+    def start_speculative_sync(sources: SourceTexts) -> None:
+        """Start an asynchronous copy-on-write mypy delta sync in a child process
+        so subsequent ``started(sources)`` can merge its results if unchanged."""
+
+        existing = TypeCheckerSession._active_incremental()
+        if existing is not None:
+            existing.start_speculative_sync(sources)
+
+    @staticmethod
+    def send_speculative_followup(sources: SourceTexts) -> None:
+        """Send a follow-up stage delta to an already-running speculative mypy sync
+        so it finishes syncing and extracting before settlement arrives."""
+
+        existing = TypeCheckerSession._active_incremental()
+        if existing is not None:
+            existing.send_speculative_followup(sources)
+
+    @staticmethod
+    def cancel_speculative_sync() -> None:
+        """Abort and reap any in-flight speculative mypy sync owned by this process."""
+
+        existing = TypeCheckerSession._active_incremental()
+        if existing is not None:
+            existing.cancel_speculative_sync()
 
     @staticmethod
     def seed_incremental(sources: SourceTexts) -> TypeCheckerSession:
@@ -877,7 +914,28 @@ class FineGrainedTypeChecker(TypeCheckerSession):
         self._shared = shared
         self._raw_by_file: dict[str, dict[ReceiverSpan, Type]] = {}
         self._formatted_by_file: dict[str, dict[ReceiverSpan, InferredReceiverType]] = {}
+        self._file_versions: dict[str, int] = {}
         self._mtime = mtime
+        self._deferred_split_delta: list[tuple[str, str, str]] = []
+        self._split_touched_modules: set[str] = set()
+        self._split_typed_coords_by_file: dict[
+            str, frozenset[tuple[int, int, int, int]]
+        ] = {}
+        self._pending_presync: (
+            tuple[
+                int,
+                int | None,
+                int,
+                int,
+                dict[str, tuple[str, str]],
+                dict[str, tuple[str, str]] | None,
+            ]
+            | None
+        ) = None
+        self._member_expr_cls = importlib.import_module("mypy.nodes").MemberExpr
+
+    def file_version(self, file_path: str) -> int | None:
+        return self._file_versions.get(file_path, 0)
 
     @staticmethod
     def _ensure_virtual_dir(fscache: FileSystemCache, directory: str, mtime: int) -> None:
@@ -1043,15 +1101,15 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             mtime=mtime,
         )
 
-    def _apply_delta(
+    def _apply_delta_and_touched(
         self,
         changed: list[tuple[str, str, str]],
         removed: list[tuple[str, str]],
         shared: dict[str, str],
-    ) -> bool:
+    ) -> set[str] | None:
         if not changed and not removed:
             self._shared = shared
-            return True
+            return set()
         started = perf_counter()
         for module_name, path in removed:
             self._delete_memory_file(module_name, path)
@@ -1060,6 +1118,8 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             self._state_by_path.pop(path, None)
             self._raw_by_file.pop(path, None)
             self._formatted_by_file.pop(path, None)
+            self._split_typed_coords_by_file.pop(path, None)
+            self._file_versions[path] = self._file_versions.get(path, 0) + 1
         for module_name, path, text in changed:
             old_path = self._path_by_module.get(module_name)
             if old_path is not None and old_path != path:
@@ -1067,6 +1127,8 @@ class FineGrainedTypeChecker(TypeCheckerSession):
                 self._state_by_path.pop(old_path, None)
                 self._raw_by_file.pop(old_path, None)
                 self._formatted_by_file.pop(old_path, None)
+                self._split_typed_coords_by_file.pop(old_path, None)
+                self._file_versions[old_path] = self._file_versions.get(old_path, 0) + 1
             self._mtime += 1
             is_new = module_name not in self._path_by_module or old_path != path
             self._put_memory_file(
@@ -1085,7 +1147,7 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             removed,
         )
         if self._manager.blocking_error is not None or self._manager.stale:
-            return False
+            return None
         touched_modules: set[str] = (
             {module_name for module_name, _path, _text in changed}
             | {module_name for module_name, _path in removed}
@@ -1105,6 +1167,10 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             if touched_path is not None:
                 self._raw_by_file.pop(touched_path, None)
                 self._formatted_by_file.pop(touched_path, None)
+                self._split_typed_coords_by_file.pop(touched_path, None)
+                self._file_versions[touched_path] = (
+                    self._file_versions.get(touched_path, 0) + 1
+                )
                 if state is not None:
                     self._state_by_path[touched_path] = state
                 else:
@@ -1113,7 +1179,787 @@ class FineGrainedTypeChecker(TypeCheckerSession):
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
         )
-        return True
+        return touched_modules
+
+    def _apply_delta(
+        self,
+        changed: list[tuple[str, str, str]],
+        removed: list[tuple[str, str]],
+        shared: dict[str, str],
+    ) -> bool:
+        return self._apply_delta_and_touched(changed, removed, shared) is not None
+
+    def _flush_deferred_split_delta(self) -> bool:
+        if not self._deferred_split_delta:
+            return True
+        pending = self._deferred_split_delta
+        self._deferred_split_delta = []
+        self._split_touched_modules.clear()
+        self._split_typed_coords_by_file.clear()
+        return self._apply_delta(pending, [], self._shared)
+
+    def _extract_split_file_answers(
+        self,
+        touched_modules: set[str],
+    ) -> tuple[
+        dict[str, dict[ReceiverSpan, InferredReceiverType]],
+        dict[str, frozenset[tuple[int, int, int, int]]],
+    ]:
+        formatted_by_file: dict[str, dict[ReceiverSpan, InferredReceiverType]] = {}
+        typed_coords_by_file: dict[str, frozenset[tuple[int, int, int, int]]] = {}
+        all_types = self._manager.manager.all_types
+        member_expr_cls = self._member_expr_cls
+        format_type_bare = self._format_type_bare
+        mypy_types = self._mypy_types
+        options = self._options
+        for module_name in touched_modules:
+            state = self._manager.graph.get(module_name)
+            if state is None or state.tree is None:
+                continue
+            path = state.xpath
+            exprs = self._subexpressions(state.tree)
+            member_receivers = {
+                expr.expr for expr in exprs if isinstance(expr, member_expr_cls)
+            }
+            member_receiver_coords: set[tuple[int, int, int, int]] = set()
+            last_by_coords: dict[tuple[int, int, int, int], Type] = {}
+            for expression in exprs:
+                found = all_types.get(expression)
+                if (
+                    found is None
+                    or expression.end_line is None
+                    or expression.end_column is None
+                ):
+                    continue
+                coords = (
+                    expression.line,
+                    expression.column,
+                    expression.end_line,
+                    expression.end_column,
+                )
+                last_by_coords[coords] = found
+                if expression in member_receivers:
+                    member_receiver_coords.add(coords)
+            formatted: dict[ReceiverSpan, InferredReceiverType] = {}
+            for coords in member_receiver_coords:
+                formatted[ReceiverSpan(path, *coords)] = (
+                    ExpressionExtractionScope._inferred_type(
+                        last_by_coords[coords],
+                        options,
+                        format_type_bare,
+                        mypy_types,
+                    )
+                )
+            formatted_by_file[path] = formatted
+            typed_coords_by_file[path] = frozenset(last_by_coords)
+        return formatted_by_file, typed_coords_by_file
+
+    @staticmethod
+    def _changed_top_level_symbols(
+        old_text: str, new_text: str
+    ) -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
+        """Return `(changed_declared_symbols, added_referenced_names, added_import_modules)`
+        via AST comparison of top-level statements."""
+        try:
+            old_mod = ast.parse(old_text)
+            new_mod = ast.parse(new_text)
+        except SyntaxError:
+            return frozenset(), frozenset(), frozenset()
+
+        def _stmt_names(stmt: ast.stmt) -> tuple[str, ...]:
+            if isinstance(stmt, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+                return (stmt.name,)
+            if isinstance(stmt, ast.Assign):
+                return tuple(
+                    t.id for t in stmt.targets if isinstance(t, ast.Name)
+                )
+            if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+                return (stmt.target.id,)
+            return ()
+
+        old_by_name: dict[str, list[str]] = defaultdict(list)
+        old_imports: set[tuple[str | None, tuple[str, ...]]] = set()
+        for stmt in old_mod.body:
+            if isinstance(stmt, ast.ImportFrom):
+                old_imports.add(
+                    (stmt.module, tuple(alias.name for alias in stmt.names))
+                )
+                continue
+            if isinstance(stmt, ast.Import):
+                old_imports.add((None, tuple(alias.name for alias in stmt.names)))
+                continue
+            dumped = ast.dump(stmt)
+            for name in _stmt_names(stmt):
+                old_by_name[name].append(dumped)
+
+        new_by_name: dict[str, list[str]] = defaultdict(list)
+        new_nodes_by_name: dict[str, list[ast.stmt]] = defaultdict(list)
+        added_refs: set[str] = set()
+        added_import_mods: set[str] = set()
+        for stmt in new_mod.body:
+            if isinstance(stmt, ast.ImportFrom):
+                key = (stmt.module, tuple(alias.name for alias in stmt.names))
+                if key not in old_imports:
+                    if stmt.module:
+                        added_import_mods.add(stmt.module)
+                    for alias in stmt.names:
+                        added_refs.add(alias.name)
+                continue
+            if isinstance(stmt, ast.Import):
+                key = (None, tuple(alias.name for alias in stmt.names))
+                if key not in old_imports:
+                    for alias in stmt.names:
+                        added_import_mods.add(alias.name)
+                continue
+            dumped = ast.dump(stmt)
+            for name in _stmt_names(stmt):
+                new_by_name[name].append(dumped)
+                new_nodes_by_name[name].append(stmt)
+
+        changed_symbols: set[str] = set()
+        for name in set(old_by_name) | set(new_by_name):
+            if old_by_name.get(name) != new_by_name.get(name):
+                changed_symbols.add(name)
+                for stmt in new_nodes_by_name.get(name, ()):
+                    for node in ast.walk(stmt):
+                        if isinstance(node, ast.Name):
+                            added_refs.add(node.id)
+                        elif isinstance(node, ast.Attribute):
+                            added_refs.add(node.attr)
+        # Subtract identifiers already present in the old version of those changed statements.
+        old_nodes_by_name: dict[str, list[ast.stmt]] = defaultdict(list)
+        for stmt in old_mod.body:
+            for name in _stmt_names(stmt):
+                if name in changed_symbols:
+                    old_nodes_by_name[name].append(stmt)
+        old_refs: set[str] = set()
+        for stmts in old_nodes_by_name.values():
+            for stmt in stmts:
+                for node in ast.walk(stmt):
+                    if isinstance(node, ast.Name):
+                        old_refs.add(node.id)
+                    elif isinstance(node, ast.Attribute):
+                        old_refs.add(node.attr)
+        return (
+            frozenset(changed_symbols),
+            frozenset(added_refs - old_refs),
+            frozenset(added_import_mods),
+        )
+
+    def _partition_independent_delta(
+        self,
+        changed: list[tuple[str, str, str]],
+    ) -> tuple[
+        list[tuple[str, str, str]],
+        list[tuple[str, str, str]],
+        dict[str, frozenset[str]],
+        dict[str, frozenset[str]],
+    ] | None:
+        """Partition ``changed`` into two balanced groups weighted by fine-grained
+        mypy trigger fanout and module size, keeping coupled modules together."""
+        if len(changed) < 4:
+            return None
+        deps_map = self._manager.deps
+        graph = self._manager.graph
+        changed_by_mod = {mod: (mod, path, text) for mod, path, text in changed}
+        changed_names = set(changed_by_mod)
+        changed_syms_by_mod: dict[str, frozenset[str]] = {}
+        added_refs_by_mod: dict[str, frozenset[str]] = {}
+        added_imports_by_mod: dict[str, frozenset[str]] = {}
+        fanout_by_mod: dict[str, int] = {}
+
+        parent = {mod: mod for mod in changed_names}
+
+        def find(name: str) -> str:
+            while parent[name] != name:
+                parent[name] = parent[parent[name]]
+                name = parent[name]
+            return name
+
+        def union(a: str, b: str) -> None:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        mods_by_changed_sym: dict[str, list[str]] = defaultdict(list)
+        for mod, _path, new_text in changed:
+            old_text = self._text_by_module.get(mod, "")
+            changed_syms, added_refs, added_imports = self._changed_top_level_symbols(
+                old_text, new_text
+            )
+            changed_syms_by_mod[mod] = changed_syms
+            added_refs_by_mod[mod] = added_refs
+            added_imports_by_mod[mod] = added_imports
+            for sym in changed_syms:
+                mods_by_changed_sym[sym].append(mod)
+            hit_modules: set[str] = set()
+            target_work = 0
+            for sym in changed_syms:
+                targets = deps_map.get(f"<{mod}.{sym}>")
+                if not targets:
+                    continue
+                target_work += len(targets)
+                for target in targets:
+                    target_work += len(deps_map.get(f"<{target}>", ()))
+                    prefix = self._module_prefix(graph, target)
+                    if prefix is not None:
+                        hit_modules.add(prefix)
+            # Weight by 1-hop + 2-hop fine-grained mypy target fanout so heavy
+            # hubs (e.g. a widely imported wire module) sit in their own bin.
+            fanout_by_mod[mod] = max(
+                1, target_work * 4 + len(hit_modules) * 8 + len(new_text) // 20000
+            )
+            for hit in hit_modules:
+                if hit in changed_names and hit != mod:
+                    union(mod, hit)
+
+        # Union modules that co-edit the same symbol (e.g. class moves/extractions),
+        # or add imports/references to another changed module's edited symbols.
+        for mods in mods_by_changed_sym.values():
+            first = mods[0]
+            for other in mods[1:]:
+                union(first, other)
+        for mod in changed_names:
+            for imp_mod in added_imports_by_mod[mod]:
+                if imp_mod in changed_names and imp_mod != mod:
+                    union(mod, imp_mod)
+            refs = added_refs_by_mod[mod]
+            if refs:
+                for ref in refs:
+                    for other in mods_by_changed_sym.get(ref, ()):
+                        if other != mod:
+                            union(mod, other)
+
+        comps: dict[str, list[tuple[str, str, str]]] = {}
+        for mod, item in changed_by_mod.items():
+            comps.setdefault(find(mod), []).append(item)
+        if len(comps) < 2:
+            return None
+        weighted_comps = sorted(
+            (
+                (sum(fanout_by_mod[item[0]] for item in comp), comp)
+                for comp in comps.values()
+            ),
+            key=lambda pair: -pair[0],
+        )
+        group_a: list[tuple[str, str, str]] = []
+        group_b: list[tuple[str, str, str]] = []
+        weight_a = 0
+        weight_b = 0
+        for comp_weight, comp in weighted_comps:
+            if weight_a <= weight_b:
+                group_a.extend(comp)
+                weight_a += comp_weight
+            else:
+                group_b.extend(comp)
+                weight_b += comp_weight
+        if not group_a or not group_b:
+            return None
+        # Keep the larger-module-count group in group_a (the main speculative
+        # child where stage-1 follow-ups run) and isolate the compact heavy hub
+        # in group_b so follow-ups rarely collide with group_b.
+        if len(group_a) < len(group_b):
+            group_a, group_b = group_b, group_a
+        return group_a, group_b, changed_syms_by_mod, added_refs_by_mod
+
+    def _run_speculative_child_body(
+        self,
+        changed: list[tuple[str, str, str]],
+        shared: dict[str, str],
+        req_r: int,
+        res_w: int,
+    ) -> tuple[bool, object]:
+        """Execute stage-0 (optionally 2-way split-parallel when independent)
+        and optional stage-1 follow-up inside the speculative child."""
+        split = self._partition_independent_delta(changed)
+        split_b_result: tuple[
+            set[str],
+            set[str],
+            frozenset[str],
+            dict[str, dict[ReceiverSpan, InferredReceiverType]],
+            dict[str, frozenset[tuple[int, int, int, int]]],
+        ] | None = None
+        group_b: list[tuple[str, str, str]] = []
+        changed_syms_by_mod: dict[str, frozenset[str]] = {}
+        added_refs_by_mod: dict[str, frozenset[str]] = {}
+        pre_deps_by_mod: dict[str, frozenset[str]] = {}
+
+        if split is not None:
+            group_a, group_b, changed_syms_by_mod, added_refs_by_mod = split
+            for mod, _p, _t in changed:
+                st = self._manager.graph.get(mod)
+                pre_deps_by_mod[mod] = (
+                    frozenset(st.dependencies) if st is not None else frozenset()
+                )
+            sub_r, sub_w = os.pipe()
+            try:
+                fcntl.fcntl(sub_w, 1031, 1 << 20)  # F_SETPIPE_SZ
+            except OSError:
+                pass
+            sub_pid = os.fork()
+            if sub_pid == 0:
+                os.close(sub_r)
+                os.close(req_r)
+                os.close(res_w)
+                gc.disable()
+                try:
+                    try:
+                        touched_b = self._apply_delta_and_touched(group_b, [], shared)
+                        if touched_b is None:
+                            sub_payload = pickle.dumps((False, None))
+                        else:
+                            new_deps_b: set[str] = set()
+                            for mod, _p, _t in group_b:
+                                st = self._manager.graph.get(mod)
+                                if st is not None:
+                                    new_deps_b.update(
+                                        set(st.dependencies) - pre_deps_by_mod[mod]
+                                    )
+                            fmt_b, coords_b = self._extract_split_file_answers(
+                                touched_b
+                            )
+                            sub_payload = pickle.dumps(
+                                (True, (touched_b, new_deps_b, fmt_b, coords_b))
+                            )
+                    except BaseException:  # noqa: BLE001
+                        sub_payload = pickle.dumps((False, None))
+                    with os.fdopen(sub_w, "wb") as out:
+                        out.write(sub_payload)
+                finally:
+                    os._exit(0)
+            os.close(sub_w)
+            touched_a = self._apply_delta_and_touched(group_a, [], shared)
+            sub_chunks: list[bytes] = []
+            while chunk := os.read(sub_r, 1 << 20):
+                sub_chunks.append(chunk)
+            os.close(sub_r)
+            os.waitpid(sub_pid, 0)
+            sub_raw = b"".join(sub_chunks)
+            if sub_raw and touched_a is not None:
+                sub_ok, sub_val = pickle.loads(sub_raw)
+                if sub_ok and sub_val is not None:
+                    touched_b, new_deps_b, fmt_b, coords_b = sub_val
+                    new_deps_a: set[str] = set()
+                    for mod, _p, _t in group_a:
+                        st = self._manager.graph.get(mod)
+                        if st is not None:
+                            new_deps_a.update(
+                                set(st.dependencies) - pre_deps_by_mod[mod]
+                            )
+                    all_b_syms = frozenset().union(
+                        *(changed_syms_by_mod[mod] for mod, _p, _t in group_b)
+                    )
+                    all_a_syms = frozenset().union(
+                        *(changed_syms_by_mod[mod] for mod, _p, _t in group_a)
+                    )
+
+                    def _edits_cross_reference(
+                        edited_group: list[tuple[str, str, str]],
+                        other_touched: set[str],
+                        other_syms: frozenset[str],
+                    ) -> bool:
+                        if not other_syms:
+                            return False
+                        for mod, _p, _t in edited_group:
+                            added = added_refs_by_mod.get(mod, frozenset())
+                            if not added or added.isdisjoint(other_syms):
+                                continue
+                            if not pre_deps_by_mod.get(mod, frozenset()).isdisjoint(
+                                other_touched
+                            ):
+                                return True
+                        return False
+
+                    if (
+                        touched_a.isdisjoint(touched_b)
+                        and new_deps_a.isdisjoint(touched_b)
+                        and new_deps_b.isdisjoint(touched_a)
+                        and not _edits_cross_reference(group_a, touched_b, all_b_syms)
+                        and not _edits_cross_reference(group_b, touched_a, all_a_syms)
+                    ):
+                        stage0_touched: set[str] | None = touched_a
+                        split_b_result = (
+                            touched_b,
+                            new_deps_b,
+                            all_b_syms,
+                            fmt_b,
+                            coords_b,
+                        )
+                    else:
+                        # Sound fallback: apply group_b sequentially on top of group_a.
+                        more = self._apply_delta_and_touched(group_b, [], shared)
+                        stage0_touched = (
+                            None if more is None else (touched_a | more)
+                        )
+                else:
+                    more = self._apply_delta_and_touched(group_b, [], shared)
+                    stage0_touched = None if more is None else (touched_a | more)
+            else:
+                stage0_touched = None
+        else:
+            stage0_touched = self._apply_delta_and_touched(changed, [], shared)
+
+        hdr = bytearray()
+        while len(hdr) < 4:
+            chunk = os.read(req_r, 4 - len(hdr))
+            if not chunk:
+                break
+            hdr += chunk
+        if len(hdr) < 4:
+            os.close(req_r)
+            return (False, None)
+        (req_len,) = struct.unpack("!I", hdr)
+        req_buf = bytearray()
+        while len(req_buf) < req_len:
+            chunk = os.read(req_r, min(1 << 20, req_len - len(req_buf)))
+            if not chunk:
+                break
+            req_buf += chunk
+        os.close(req_r)
+        if len(req_buf) < req_len:
+            return (False, None)
+        followup_changed, followup_removed = pickle.loads(bytes(req_buf))
+        if stage0_touched is None:
+            return (False, None)
+
+        if split_b_result is not None:
+            touched_b, new_deps_b, all_b_syms, fmt_b, coords_b = split_b_result
+            if not followup_changed and not followup_removed:
+                fmt_a, coords_a = self._extract_split_file_answers(stage0_touched)
+                return (
+                    True,
+                    (
+                        stage0_touched | touched_b,
+                        {**fmt_b, **fmt_a},
+                        {**coords_b, **coords_a},
+                    ),
+                )
+            if (
+                not followup_removed
+                and {m for m, _p, _t in followup_changed}.isdisjoint(touched_b)
+            ):
+                followup_pre_deps = {
+                    mod: (
+                        frozenset(st.dependencies)
+                        if (st := self._manager.graph.get(mod)) is not None
+                        else frozenset()
+                    )
+                    for mod, _p, _t in followup_changed
+                }
+                followup_added = {
+                    mod: self._changed_top_level_symbols(
+                        self._text_by_module.get(mod, ""), new_text
+                    )[1]
+                    for mod, _p, new_text in followup_changed
+                }
+                followup_shared = dict(shared)
+                for _mod, ch_path, ch_text in followup_changed:
+                    followup_shared[ch_path] = ch_text
+                stage1_touched = self._apply_delta_and_touched(
+                    followup_changed, [], followup_shared
+                )
+                if stage1_touched is not None:
+                    followup_new_deps: set[str] = set()
+                    followup_cross = False
+                    for mod, _p, _t in followup_changed:
+                        st = self._manager.graph.get(mod)
+                        pre = followup_pre_deps[mod]
+                        if st is not None:
+                            followup_new_deps.update(set(st.dependencies) - pre)
+                        added = followup_added[mod]
+                        if (
+                            added
+                            and not added.isdisjoint(all_b_syms)
+                            and not pre.isdisjoint(touched_b)
+                        ):
+                            followup_cross = True
+                    if (
+                        stage1_touched.isdisjoint(touched_b)
+                        and followup_new_deps.isdisjoint(touched_b)
+                        and new_deps_b.isdisjoint(stage1_touched)
+                        and not followup_cross
+                    ):
+                        all_a = stage0_touched | stage1_touched
+                        fmt_a, coords_a = self._extract_split_file_answers(all_a)
+                        return (
+                            True,
+                            (
+                                all_a | touched_b,
+                                {**fmt_b, **fmt_a},
+                                {**coords_b, **coords_a},
+                            ),
+                        )
+            # Follow-up interacted with group_b: finish sequentially from group_a + group_b + followup.
+            followup_shared = dict(shared)
+            for _mod, rem_path in followup_removed:
+                followup_shared.pop(rem_path, None)
+            for _mod, ch_path, ch_text in followup_changed:
+                followup_shared[ch_path] = ch_text
+            merged_by_mod = {mod: (mod, path, text) for mod, path, text in group_b}
+            for mod, ch_path, ch_text in followup_changed:
+                merged_by_mod[mod] = (mod, ch_path, ch_text)
+            for mod, _rem_path in followup_removed:
+                merged_by_mod.pop(mod, None)
+            stage1_touched = self._apply_delta_and_touched(
+                list(merged_by_mod.values()), followup_removed, followup_shared
+            )
+            if stage1_touched is None:
+                return (False, None)
+            all_touched = stage0_touched | stage1_touched
+            formatted_by_file, typed_coords_by_file = (
+                self._extract_split_file_answers(all_touched)
+            )
+            return (True, (all_touched, formatted_by_file, typed_coords_by_file))
+
+        if followup_changed or followup_removed:
+            followup_shared = dict(shared)
+            for _mod, rem_path in followup_removed:
+                followup_shared.pop(rem_path, None)
+            for _mod, ch_path, ch_text in followup_changed:
+                followup_shared[ch_path] = ch_text
+            stage1_touched = self._apply_delta_and_touched(
+                followup_changed, followup_removed, followup_shared
+            )
+        else:
+            stage1_touched = set()
+        if stage1_touched is None:
+            return (False, None)
+        all_touched = stage0_touched | stage1_touched
+        formatted_by_file, typed_coords_by_file = self._extract_split_file_answers(
+            all_touched
+        )
+        return (True, (all_touched, formatted_by_file, typed_coords_by_file))
+
+    def start_speculative_sync(self, sources: SourceTexts) -> None:
+        """Fork one child to typecheck ``sources`` delta against this live engine
+        in the background and wait for any follow-up delta on a second pipe, so
+        subsequent ``sync_corpus`` transitions ``stage0 -> final`` sequentially
+        inside the already-warm child."""
+
+        if (
+            not sys.platform.startswith("linux")
+            or self._deferred_split_delta
+            or self._pending_presync is not None
+        ):
+            return
+        unique, shared = TypeCheckerSession.unique_sources(sources, self._options)
+        next_by_module = {
+            source.module: (path, source.text or "") for path, source in unique
+        }
+        changed = [
+            (module_name, path, text)
+            for module_name, (path, text) in next_by_module.items()
+            if self._path_by_module.get(module_name) != path
+            or self._text_by_module.get(module_name) != text
+        ]
+        removed = [
+            (module_name, path)
+            for module_name, path in self._path_by_module.items()
+            if module_name not in next_by_module
+        ]
+        if removed or len(changed) < 3 or len(changed) > max(
+            32, len(self._path_by_module) // 2
+        ):
+            return
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        req_r, req_w = os.pipe()
+        res_r, res_w = os.pipe()
+        for pipe_fd in (req_w, res_w):
+            try:
+                fcntl.fcntl(pipe_fd, 1031, 1 << 20)  # F_SETPIPE_SZ
+            except OSError:
+                pass
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pid = os.fork()
+        if pid == 0:
+            os.close(req_w)
+            os.close(res_r)
+            gc.disable()
+            try:
+                os.setpgrp()
+            except OSError:
+                pass
+            try:
+                try:
+                    ok_val = self._run_speculative_child_body(
+                        changed, shared, req_r, res_w
+                    )
+                    payload = pickle.dumps(ok_val)
+                except BaseException:  # noqa: BLE001
+                    payload = pickle.dumps((False, traceback.format_exc()))
+                with os.fdopen(res_w, "wb") as out:
+                    out.write(payload)
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os._exit(0)
+        os.close(req_r)
+        os.close(res_w)
+        if gc_was_enabled:
+            gc.enable()
+        self._pending_presync = (
+            os.getpid(),
+            req_w,
+            res_r,
+            pid,
+            next_by_module,
+            None,
+        )
+
+    def send_speculative_followup(self, sources: SourceTexts) -> None:
+        pending = self._pending_presync
+        if pending is None:
+            return
+        owner_pid, req_w, res_r, pid, stage0_by_mod, sent_final_by_mod = pending
+        if owner_pid != os.getpid() or req_w is None or sent_final_by_mod is not None:
+            return
+        unique, shared = TypeCheckerSession.unique_sources(sources, self._options)
+        final_by_mod = {
+            source.module: (path, source.text or "") for path, source in unique
+        }
+        followup_changed = [
+            (module_name, path, text)
+            for module_name, (path, text) in final_by_mod.items()
+            if stage0_by_mod.get(module_name) != (path, text)
+        ]
+        followup_removed = [
+            (module_name, path)
+            for module_name, (path, _text) in stage0_by_mod.items()
+            if module_name not in final_by_mod
+        ]
+        if followup_removed:
+            return
+        req_payload = pickle.dumps((followup_changed, followup_removed))
+        framed = struct.pack("!I", len(req_payload)) + req_payload
+        if len(framed) > (1 << 19):
+            return
+        try:
+            with os.fdopen(req_w, "wb") as out:
+                out.write(framed)
+        except OSError:
+            self.cancel_speculative_sync()
+            return
+        self._pending_presync = (
+            owner_pid,
+            None,
+            res_r,
+            pid,
+            stage0_by_mod,
+            final_by_mod,
+        )
+
+    @staticmethod
+    def _terminate_presync_pid(pid: int) -> None:
+        try:
+            os.killpg(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+    def cancel_speculative_sync(self) -> None:
+        pending = self._pending_presync
+        if pending is None:
+            return
+        self._pending_presync = None
+        owner_pid, req_w, res_r, pid, _stage0_by_mod, _sent_final = pending
+        if owner_pid != os.getpid():
+            return
+        for fd in (req_w, res_r):
+            if fd is None:
+                continue
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        self._terminate_presync_pid(pid)
+
+    def _try_consume_speculative_sync(
+        self,
+        changed: list[tuple[str, str, str]],
+        removed: list[tuple[str, str]],
+        next_by_module: dict[str, tuple[str, str]],
+        shared: dict[str, str],
+    ) -> TypeCheckerSession | None:
+        pending = self._pending_presync
+        if pending is None:
+            return None
+        self._pending_presync = None
+        owner_pid, req_w, res_r, pid, stage0_by_mod, sent_final_by_mod = pending
+        if owner_pid != os.getpid():
+            return None
+        if removed or (
+            sent_final_by_mod is not None and sent_final_by_mod != next_by_module
+        ):
+            for fd in (req_w, res_r):
+                if fd is None:
+                    continue
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            self._terminate_presync_pid(pid)
+            return None
+        try:
+            if sent_final_by_mod is None:
+                assert req_w is not None
+                followup_changed = [
+                    (module_name, path, text)
+                    for module_name, (path, text) in next_by_module.items()
+                    if stage0_by_mod.get(module_name) != (path, text)
+                ]
+                followup_removed = [
+                    (module_name, path)
+                    for module_name, (path, _text) in stage0_by_mod.items()
+                    if module_name not in next_by_module
+                ]
+                req_payload = pickle.dumps((followup_changed, followup_removed))
+                framed = struct.pack("!I", len(req_payload)) + req_payload
+                with os.fdopen(req_w, "wb") as out:
+                    out.write(framed)
+            chunks: list[bytes] = []
+            while chunk := os.read(res_r, 1 << 20):
+                chunks.append(chunk)
+        except BaseException:
+            try:
+                os.close(res_r)
+            except OSError:
+                pass
+            self._terminate_presync_pid(pid)
+            raise
+        os.close(res_r)
+        ScanCache.defer_child_reap(pid)
+        raw = b"".join(chunks)
+        if raw:
+            ok, value = pickle.loads(raw)
+            if ok and value is not None:
+                all_touched, child_formatted, child_typed_coords = value
+                for path, formatted_map in child_formatted.items():
+                    self._formatted_by_file[path] = formatted_map
+                    self._raw_by_file.pop(path, None)
+                    self._file_versions[path] = (
+                        self._file_versions.get(path, 0) + 1
+                    )
+                for path, coords in child_typed_coords.items():
+                    self._split_typed_coords_by_file[path] = coords
+                for module_name, path, text in changed:
+                    self._text_by_module[module_name] = text
+                    self._path_by_module[module_name] = path
+                self._deferred_split_delta = list(changed)
+                self._split_touched_modules = set(all_touched)
+                self._shared = shared
+                return self
+        return None
 
     def sync_corpus(self, sources: SourceTexts) -> TypeCheckerSession | None:
         """Update this live engine to match a full corpus ``sources``.
@@ -1137,6 +1983,33 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             for module_name, path in self._path_by_module.items()
             if module_name not in next_by_module
         ]
+        if not changed and not removed:
+            self._shared = shared
+            return self
+        if self._pending_presync is not None and not self._deferred_split_delta:
+            consumed = self._try_consume_speculative_sync(
+                changed, removed, next_by_module, shared
+            )
+            if consumed is not None:
+                return consumed
+        if self._deferred_split_delta:
+            if (
+                not removed
+                and len(changed) == 1
+                and changed[0][0] not in self._split_touched_modules
+            ):
+                touched = self._apply_delta_and_touched(changed, [], shared)
+                if touched is None:
+                    return None
+                if touched.isdisjoint(self._split_touched_modules):
+                    return self
+                if not self._flush_deferred_split_delta():
+                    return None
+                if not self._apply_delta(changed, [], shared):
+                    return None
+                return self
+            if not self._flush_deferred_split_delta():
+                return None
         if len(changed) + len(removed) > max(32, len(self._path_by_module) // 2):
             return None
         if not self._apply_delta(changed, removed, shared):
@@ -1159,6 +2032,11 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             ):
                 changed.append((source.module, path, text))
         merged_shared = {**self._shared, **shared} if shared else self._shared
+        if not changed:
+            self._shared = merged_shared
+            return self
+        if self._deferred_split_delta and not self._flush_deferred_split_delta():
+            return None
         if not self._apply_delta(changed, [], merged_shared):
             return None
         return self
@@ -1199,6 +2077,16 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             hit = formatted.get(span)
             if hit is not None:
                 return hit
+        split_coords = self._split_typed_coords_by_file.get(span.file_path)
+        if split_coords is not None:
+            coords = (span.line, span.column, span.end_line, span.end_column)
+            if coords not in split_coords:
+                if span.file_path in self._shared:
+                    return FailedReceiverType(self._shared[span.file_path])
+                return FailedReceiverType(
+                    f"the build exported no type at {span.location}"
+                )
+            self._flush_deferred_split_delta()
         raw = self._file_raw_types(span.file_path)
         found = raw.get(span)
         if found is not None:

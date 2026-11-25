@@ -113,9 +113,15 @@ class ModuleReferenceScope:
     TYPE_METADATA = frozenset((ANNOTATED, "Literal"))
     OWN_PACKAGE = "__package__"
 
-    def __init__(self, module: ast.Module, package: str = "") -> None:
+    def __init__(
+        self,
+        module: ast.Module,
+        package: str = "",
+        syntax_index: object | None = None,
+    ) -> None:
         self.module = module
         self.package = package
+        self._syntax_index = syntax_index
 
     @cached_property
     def lazy_annotations(self) -> bool:
@@ -184,19 +190,31 @@ class ModuleReferenceScope:
 
     def quoted_type_names(self) -> Iterator[QuotedTypeName]:
         for expression, annotation in self.type_expressions():
+            if isinstance(expression, ast.Name):
+                continue
+            if isinstance(expression, ast.Constant):
+                if isinstance(expression.value, str):
+                    names = self.annotation_names(expression.value)
+                    if names:
+                        yield QuotedTypeName(expression, names, annotation)
+                continue
+            walked = tuple(ast.walk(expression))
+            str_constants = [
+                node
+                for node in walked
+                if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            ]
+            if not str_constants:
+                continue
             metadata = {
                 id(part)
-                for node in ast.walk(expression)
+                for node in walked
                 if isinstance(node, ast.Subscript)
                 and self.called(node.value) in self.TYPE_METADATA
                 for part in self.metadata_parts(node)
             }
-            for node in ast.walk(expression):
-                if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-                    and id(node) not in metadata
-                ):
+            for node in str_constants:
+                if id(node) not in metadata:
                     names = self.annotation_names(node.value)
                     if names:
                         yield QuotedTypeName(node, names, annotation)
@@ -256,6 +274,34 @@ class ModuleReferenceScope:
             return self.OWN_PACKAGE
         return None
 
+    _BOUND_NODE_TYPES = (
+        ast.Import,
+        ast.ImportFrom,
+        ast.Name,
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.arg,
+    )
+    _TYPE_EXPR_NODE_TYPES = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.AnnAssign,
+        ast.ClassDef,
+        ast.Call,
+    )
+
+    def _nodes_for(self, node_types: tuple[type[ast.AST], ...]) -> Iterator[ast.AST]:
+        index = self._syntax_index
+        if index is not None:
+            nodes = index.depth_first_nodes  # type: ignore[attr-defined]
+            by_type = index.node_indices_by_type  # type: ignore[attr-defined]
+            for node_type in node_types:
+                for node_index in by_type.get(node_type, ()):
+                    yield nodes[node_index]
+            return
+        yield from ast.walk(self.module)
+
     @cached_property
     def runs_in_package(self) -> bool:
         """Whether the module imports relatively at top level and never rebinds `__package__`."""
@@ -265,14 +311,14 @@ class ModuleReferenceScope:
             for statement in self.module.body
         ) and not any(
             bound == self.OWN_PACKAGE
-            for node in ast.walk(self.module)
+            for node in self._nodes_for(self._BOUND_NODE_TYPES)
             for bound in self.bound_names(node)
         )
 
     def type_expressions(self) -> Iterator[tuple[ast.expr, bool]]:
         """Each type position, and whether it is an annotation."""
 
-        for node in ast.walk(self.module):
+        for node in self._nodes_for(self._TYPE_EXPR_NODE_TYPES):
             match node:
                 case ast.FunctionDef(
                     args=arguments, returns=returns
@@ -361,7 +407,7 @@ class ModuleReferenceScope:
 
         reachable: dict[str, str] = {}
         bindings: dict[str, int] = {}
-        for node in ast.walk(self.module):
+        for node in self._nodes_for(self._BOUND_NODE_TYPES):
             for bound in self.bound_names(node):
                 bindings[bound] = bindings.get(bound, 0) + 1
         for statement in self.module.body:
@@ -435,11 +481,34 @@ class SpelledModules:
     RUN_MODULE = "-m"
     NAME_OF_MODULE = ".__name__"
 
-    def __init__(self, module: ast.Module) -> None:
+    _NODE_TYPES = (ast.Call, ast.Subscript, ast.Compare, ast.Tuple, ast.List)
+
+    def __init__(self, module: ast.Module, syntax_index: object | None = None) -> None:
         self.module = module
+        self._syntax_index = syntax_index
+
+    @staticmethod
+    def _is_module_table(node: ast.expr) -> bool:
+        return (
+            isinstance(node, ast.Attribute)
+            and node.attr == "modules"
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+        )
 
     def __iter__(self) -> Iterator[SpelledModule]:
-        for node in ast.walk(self.module):
+        index = self._syntax_index
+        if index is not None:
+            depth_nodes = index.depth_first_nodes  # type: ignore[attr-defined]
+            by_type = index.node_indices_by_type  # type: ignore[attr-defined]
+            nodes: Iterator[ast.AST] = (
+                depth_nodes[node_index]
+                for node_type in self._NODE_TYPES
+                for node_index in by_type.get(node_type, ())
+            )
+        else:
+            nodes = ast.walk(self.module)
+        for node in nodes:
             for spelled in self.at(node):
                 if isinstance(spelled.literal.value, str) and self.DOTTED.fullmatch(
                     spelled.literal.value
@@ -467,18 +536,18 @@ class SpelledModules:
                 args=[ast.Constant(value=str()) as literal, *_],
             ) if (
                 method in self.MODULE_TABLE_METHODS
-                and ast.unparse(table) == self.MODULE_TABLE
+                and self._is_module_table(table)
             ):
                 yield SpelledModule(literal, None)
             case ast.Subscript(
                 value=table, slice=ast.Constant(value=str()) as literal, ctx=context
-            ) if (ast.unparse(table) == self.MODULE_TABLE):
+            ) if self._is_module_table(table):
                 yield SpelledModule(
                     literal, node if isinstance(context, ast.Load) else None
                 )
             case ast.Compare(
                 left=ast.Constant(value=str()) as literal, comparators=comparators
-            ) if self.MODULE_TABLE in map(ast.unparse, comparators):
+            ) if any(self._is_module_table(comp) for comp in comparators):
                 yield SpelledModule(literal, None)
             case ast.Tuple(elts=elements) | ast.List(elts=elements):
                 for option, argument in pairwise(elements):

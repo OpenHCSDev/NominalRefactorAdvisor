@@ -187,10 +187,30 @@ class Scope:
         """The module's own scope and every definition's, each once."""
 
         yield cls(module.body)
-        for node in ast.walk(module):
-            match node:
-                case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef():
-                    yield cls(node.body)
+        pending: list[list[ast.stmt]] = [module.body]
+        while pending:
+            block = pending.pop()
+            for stmt in block:
+                if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    yield cls(stmt.body)
+                    pending.append(stmt.body)
+                elif isinstance(stmt, (ast.If, ast.For, ast.AsyncFor, ast.While)):
+                    if stmt.orelse:
+                        pending.append(stmt.orelse)
+                    pending.append(stmt.body)
+                elif isinstance(stmt, (ast.With, ast.AsyncWith)):
+                    pending.append(stmt.body)
+                elif isinstance(stmt, (ast.Try, ast.TryStar)):
+                    if stmt.finalbody:
+                        pending.append(stmt.finalbody)
+                    if stmt.orelse:
+                        pending.append(stmt.orelse)
+                    for handler in reversed(stmt.handlers):
+                        pending.append(handler.body)
+                    pending.append(stmt.body)
+                elif isinstance(stmt, ast.Match):
+                    for case in reversed(stmt.cases):
+                        pending.append(case.body)
 
 
 @dataclass(frozen=True)
@@ -774,22 +794,32 @@ class NameUse:
 
         index = parsed_module.syntax_index
         parents = index.parent_by_node
-        for node in index.breadth_first_nodes:
-            match node:
-                case ast.Name(id=name) | ast.Attribute(attr=name):
-                    yield name, NameUseKind.of(node, parents), node.lineno
-                case ast.Constant(value=str() as text):
-                    for word in SPELLED_WORD.findall(text):
-                        yield word, NameUseKind.OTHER, node.lineno
-                case ast.alias(name=name, asname=exported) if exported == name:
-                    yield name, NameUseKind.OTHER, node.lineno
-                case ast.ExceptHandler(type=ast.expr() as caught, name=str() as bound) if any(
-                    IdentityRead.of(inner, bound) for inner in ast.walk(node)
-                ):
-                    for name in IdentityRead.caught_names(caught):
-                        yield name, NameUseKind.READ_IDENTITY, node.lineno
-        if "#" in parsed_module.source:
-            for token in tokenize.generate_tokens(io.StringIO(parsed_module.source).readline):
+        for _node_index, node in index.indexed_nodes_of_type(ast.Name):
+            yield node.id, NameUseKind.of(node, parents), node.lineno
+        for _node_index, node in index.indexed_nodes_of_type(ast.Attribute):
+            yield node.attr, NameUseKind.of(node, parents), node.lineno
+        for _node_index, node in index.indexed_nodes_of_type(ast.Constant):
+            if isinstance(node.value, str):
+                for word in SPELLED_WORD.findall(node.value):
+                    yield word, NameUseKind.OTHER, node.lineno
+        for _node_index, node in index.indexed_nodes_of_type(ast.alias):
+            if node.asname == node.name:
+                yield node.name, NameUseKind.OTHER, node.lineno
+        for _node_index, node in index.indexed_nodes_of_type(ast.ExceptHandler):
+            if (
+                isinstance(node.type, ast.expr)
+                and isinstance(node.name, str)
+                and any(IdentityRead.of(inner, node.name) for inner in ast.walk(node))
+            ):
+                for name in IdentityRead.caught_names(node.type):
+                    yield name, NameUseKind.READ_IDENTITY, node.lineno
+        source = parsed_module.source
+        if "#" in source and any(
+            SPELLED_WORD.search(line[line.find("#") :]) is not None
+            for line in source.splitlines()
+            if "#" in line
+        ):
+            for token in tokenize.generate_tokens(io.StringIO(source).readline):
                 if token.type == tokenize.COMMENT:
                     for word in SPELLED_WORD.findall(token.string):
                         yield word, NameUseKind.OTHER, token.start[0]
@@ -903,6 +933,17 @@ def _repository_test_paths(root: Path, pyproject: Path | None) -> tuple[Path, ..
         if PythonSourcePathPolicy.is_test_path(path.relative_to(root))
         and DeclaredRoot.nearest_pyproject(path) == pyproject
     )
+
+
+@ScanCache.cached
+def _cached_sibling_test_name_uses(root: Path, path: Path) -> frozenset[NameUse]:
+    policy = PythonSourcePathPolicy(include_tests=True)
+    parsed = PythonModuleRootParser.for_root(root, source_policy=policy).parsed_source_paths(
+        (path,)
+    )
+    if not parsed:
+        return frozenset()
+    return NameUse.in_module(parsed[0])
 
 
 @dataclass(frozen=True)
@@ -1101,6 +1142,68 @@ class EmptySubclassSiteFamily(ShapeFamily[EmptySubclassSiteModule]):
 
 
 @dataclass(frozen=True)
+class _EmptySubclassBaseline:
+    by_path: dict[str, EmptySubclassSiteModule]
+    pair_counts: dict[tuple[str, NameUseKind], int]
+    kinds_by_name: dict[str, frozenset[NameUseKind]]
+    held: frozenset[Path]
+    repositories: tuple[tuple[Path, Path | None], ...]
+    test_paths_by_repo: tuple[tuple[Path, tuple[Path, ...]], ...]
+
+
+@ScanCache.cached
+def _base_empty_subclass_slot() -> list[_EmptySubclassBaseline | None]:
+    return [None]
+
+
+def _build_empty_subclass_baseline(
+    modules: Sequence[EmptySubclassSiteModule],
+) -> _EmptySubclassBaseline:
+    pair_counts: dict[tuple[str, NameUseKind], int] = defaultdict(int)
+    kinds: dict[str, set[NameUseKind]] = defaultdict(set)
+    held_set: set[Path] = set()
+    repositories_set: set[tuple[Path, Path | None]] = set()
+    seen_dirs: set[tuple[str, str]] = set()
+    for module in modules:
+        mod_path = Path(module.file_path)
+        held_set.add(mod_path.resolve())
+        parent_key = (module.import_root, str(mod_path.parent))
+        if parent_key not in seen_dirs:
+            seen_dirs.add(parent_key)
+            repositories_set.add(
+                SiblingTestModules.repository(Path(module.import_root), mod_path)
+            )
+        seen_pairs: set[tuple[str, NameUseKind]] = set()
+        for use in module.uses:
+            pair = (use.name, use.kind)
+            if pair not in seen_pairs:
+                seen_pairs.add(pair)
+                pair_counts[pair] += 1
+                kinds[use.name].add(use.kind)
+    held = frozenset(held_set)
+    repositories = tuple(sorted(repositories_set))
+    test_paths_by_repo = tuple(
+        (
+            root,
+            tuple(
+                path
+                for path in _repository_test_paths(root, pyproject)
+                if path.resolve() not in held
+            ),
+        )
+        for root, pyproject in repositories
+    )
+    return _EmptySubclassBaseline(
+        by_path={m.file_path: m for m in modules},
+        pair_counts=dict(pair_counts),
+        kinds_by_name={name: frozenset(found) for name, found in kinds.items()},
+        held=held,
+        repositories=repositories,
+        test_paths_by_repo=test_paths_by_repo,
+    )
+
+
+@dataclass(frozen=True)
 class EmptySubclassIndex:
     """The scan's empty subclasses that differ from their base only by name.
 
@@ -1123,6 +1226,156 @@ class EmptySubclassIndex:
     ) -> EmptySubclassIndex:
         class_index = CompactClassFamilyIndex.from_projection_groups(projections_by_family)
         modules = EmptySubclassSiteFamily.modules_in(projections_by_family)
+        if ScanCache.active() is not None:
+            slot = _base_empty_subclass_slot()
+            base = slot[0]
+            if base is None and len(modules) >= 20:
+                base = _build_empty_subclass_baseline(modules)
+                slot[0] = base
+            if base is not None:
+                base_by_path = base.by_path
+                changed_mods: list[EmptySubclassSiteModule] = []
+                added_paths = False
+                cur_paths: set[str] = set()
+                for mod in modules:
+                    cur_paths.add(mod.file_path)
+                    old_mod = base_by_path.get(mod.file_path)
+                    if old_mod is mod:
+                        continue
+                    if old_mod is None:
+                        added_paths = True
+                        changed_mods.append(mod)
+                    elif old_mod.uses != mod.uses:
+                        changed_mods.append(mod)
+                removed_paths = (
+                    frozenset()
+                    if len(cur_paths) == len(base_by_path) and not added_paths
+                    else frozenset(p for p in base_by_path if p not in cur_paths)
+                )
+                if len(changed_mods) + len(removed_paths) <= 64:
+                    if not changed_mods and not removed_paths:
+                        prod_kinds: dict[str, frozenset[NameUseKind]] = base.kinds_by_name
+                    else:
+                        delta_counts: dict[tuple[str, NameUseKind], int] = defaultdict(int)
+                        affected_names: set[str] = set()
+                        for path in removed_paths:
+                            for pair in {(u.name, u.kind) for u in base_by_path[path].uses}:
+                                delta_counts[pair] -= 1
+                                affected_names.add(pair[0])
+                        for mod in changed_mods:
+                            old_mod = base_by_path.get(mod.file_path)
+                            old_pairs = (
+                                {(u.name, u.kind) for u in old_mod.uses}
+                                if old_mod is not None
+                                else set()
+                            )
+                            new_pairs = {(u.name, u.kind) for u in mod.uses}
+                            for pair in old_pairs - new_pairs:
+                                delta_counts[pair] -= 1
+                                affected_names.add(pair[0])
+                            for pair in new_pairs - old_pairs:
+                                delta_counts[pair] += 1
+                                affected_names.add(pair[0])
+                        if affected_names:
+                            prod_kinds = dict(base.kinds_by_name)
+                            base_counts = base.pair_counts
+                            for name in affected_names:
+                                live = frozenset(
+                                    kind
+                                    for kind in NameUseKind
+                                    if base_counts.get((name, kind), 0)
+                                    + delta_counts.get((name, kind), 0)
+                                    > 0
+                                )
+                                if live:
+                                    prod_kinds[name] = live
+                                else:
+                                    prod_kinds.pop(name, None)
+                        else:
+                            prod_kinds = base.kinds_by_name
+                    production_index = cls(class_index, prod_kinds, {})
+                    candidates = [
+                        site
+                        for module in modules
+                        for site in module.sites
+                        if any(
+                            production_index.undistinguished_base(
+                                site.detail[0], site.group
+                            )
+                        )
+                    ]
+                    if not candidates:
+                        return production_index
+                    watched = frozenset(
+                        name
+                        for site in candidates
+                        for name in (
+                            site.group,
+                            *cls.ancestor_names(
+                                (
+                                    site.detail[0],
+                                    *class_index.ancestor_symbols(site.detail[0]),
+                                )
+                            ),
+                        )
+                    )
+                    test_filter = MentioningSiblingTests.for_names(watched)
+                    if not added_paths and not removed_paths:
+                        test_paths_by_repo = base.test_paths_by_repo
+                    else:
+                        held = frozenset(
+                            Path(module.file_path).resolve() for module in modules
+                        )
+                        repositories_set: set[tuple[Path, Path | None]] = set()
+                        seen_dirs: set[tuple[str, str]] = set()
+                        for module in modules:
+                            parent_key = (
+                                module.import_root,
+                                str(Path(module.file_path).parent),
+                            )
+                            if parent_key in seen_dirs:
+                                continue
+                            seen_dirs.add(parent_key)
+                            repositories_set.add(
+                                SiblingTestModules.repository(
+                                    Path(module.import_root), Path(module.file_path)
+                                )
+                            )
+                        test_paths_by_repo = tuple(
+                            (
+                                root,
+                                tuple(
+                                    path
+                                    for path in _repository_test_paths(root, pyproject)
+                                    if path.resolve() not in held
+                                ),
+                            )
+                            for root, pyproject in sorted(repositories_set)
+                        )
+                    extra_kinds: dict[str, set[NameUseKind]] = defaultdict(set)
+                    for root, test_paths in test_paths_by_repo:
+                        for path in test_paths:
+                            if test_filter.matches(path):
+                                for use in _cached_sibling_test_name_uses(root, path):
+                                    if use.name in watched:
+                                        extra_kinds[use.name].add(use.kind)
+                    if extra_kinds:
+                        merged_kinds = dict(prod_kinds)
+                        for name, added in extra_kinds.items():
+                            merged_kinds[name] = merged_kinds.get(name, frozenset()) | added
+                    else:
+                        merged_kinds = prod_kinds
+                    index = cls(class_index, merged_kinds, {})
+                    return replace(
+                        index,
+                        bases_by_symbol={
+                            site.detail[0]: base_sym
+                            for site in candidates
+                            for base_sym in index.undistinguished_base(
+                                site.detail[0], site.group
+                            )
+                        },
+                    )
         kinds: dict[str, set[NameUseKind]] = defaultdict(set)
         for module in modules:
             for use in module.uses:
@@ -1148,14 +1401,36 @@ class EmptySubclassIndex:
                 ),
             )
         )
-        for test_module in SiblingTestModules.under(
-            ((module.import_root, module.file_path) for module in modules),
-            frozenset(Path(module.file_path).resolve() for module in modules),
-            test_filter=MentioningSiblingTests.for_names(watched),
-        ).modules:
-            for use in NameUse.in_module(test_module):
-                if use.name in watched:
-                    kinds[use.name].add(use.kind)
+        if ScanCache.active() is not None:
+            test_filter = MentioningSiblingTests.for_names(watched)
+            held = frozenset(Path(module.file_path).resolve() for module in modules)
+            repositories: set[tuple[Path, Path | None]] = set()
+            seen_dirs: set[tuple[str, str]] = set()
+            for module in modules:
+                parent_key = (module.import_root, str(Path(module.file_path).parent))
+                if parent_key in seen_dirs:
+                    continue
+                seen_dirs.add(parent_key)
+                repositories.add(
+                    SiblingTestModules.repository(
+                        Path(module.import_root), Path(module.file_path)
+                    )
+                )
+            for root, pyproject in sorted(repositories):
+                for path in _repository_test_paths(root, pyproject):
+                    if path.resolve() not in held and test_filter.matches(path):
+                        for use in _cached_sibling_test_name_uses(root, path):
+                            if use.name in watched:
+                                kinds[use.name].add(use.kind)
+        else:
+            for test_module in SiblingTestModules.under(
+                ((module.import_root, module.file_path) for module in modules),
+                frozenset(Path(module.file_path).resolve() for module in modules),
+                test_filter=MentioningSiblingTests.for_names(watched),
+            ).modules:
+                for use in NameUse.in_module(test_module):
+                    if use.name in watched:
+                        kinds[use.name].add(use.kind)
         index = cls(class_index, {name: frozenset(found) for name, found in kinds.items()}, {})
         return replace(
             index,
@@ -1571,24 +1846,36 @@ def enum_uses(
 ) -> tuple[list[EnumMemberUse], list[EnumClassUse], list[MemberGroup]]:
     """Every `Owner.MEMBER` and every other spelling of an owner that `owners` admits."""
 
-    module = parsed.module
-    parents = parsed.syntax_index.parent_by_node
+    syntax_index = parsed.syntax_index
+    parents = syntax_index.parent_by_node
+    depth_nodes = syntax_index.depth_first_nodes
+    by_type = syntax_index.node_indices_by_type
     member_uses: list[EnumMemberUse] = []
     class_uses: list[EnumClassUse] = []
     groups: list[MemberGroup] = []
-    for node in ast.walk(module):
-        match node:
-            case ast.Attribute(value=ast.Name(id=owner) | ast.Attribute(attr=owner)) if owners(
-                owner
-            ):
-                group = MemberGroup.of(node, parents)
-                groups.append(group)
-                member_uses.append(group.use(owner, node))
-        match node:
-            case ast.Name(id=owner) | ast.Attribute(attr=owner) if owners(owner):
-                class_uses.append(
-                    EnumClassUse(owner, EnumUseKind.of(node, parents), node.lineno)
-                )
+    for node_index in by_type.get(ast.Attribute, ()):
+        node = cast(ast.Attribute, depth_nodes[node_index])
+        val = node.value
+        if isinstance(val, ast.Name):
+            owner = val.id
+        elif isinstance(val, ast.Attribute):
+            owner = val.attr
+        else:
+            owner = ""
+        if owner and owners(owner):
+            group = MemberGroup.of(node, parents)
+            groups.append(group)
+            member_uses.append(group.use(owner, node))
+        if owners(node.attr):
+            class_uses.append(
+                EnumClassUse(node.attr, EnumUseKind.of(node, parents), node.lineno)
+            )
+    for node_index in by_type.get(ast.Name, ()):
+        node_name = cast(ast.Name, depth_nodes[node_index])
+        if owners(node_name.id):
+            class_uses.append(
+                EnumClassUse(node_name.id, EnumUseKind.of(node_name, parents), node_name.lineno)
+            )
     return member_uses, class_uses, groups
 
 

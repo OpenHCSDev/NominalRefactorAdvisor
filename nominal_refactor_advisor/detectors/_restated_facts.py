@@ -25,6 +25,7 @@ from nominal_refactor_advisor.class_index import (
     ClassMemberAnswersABC,
     CompactClassFamilyIndex,
     CompactModuleClassProjectionFamily,
+    ModuleClassTypingProjection,
 )
 from nominal_refactor_advisor.ast_tools import CollectedFamily, ParsedModuleSet
 from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
@@ -798,11 +799,13 @@ class ForeignAbsenceProbeDetector(
     )
 
     compact_shared_group_context_builder = staticmethod(_probe_owner_context_from_files)
+    compact_class_projection_fact = ModuleClassTypingProjection
     compact_analysis_priority = 2
+    pure_compact_projection_function = False
 
     @classmethod
     def prefers_in_process_execution(cls) -> bool:
-        return TypeCheckerSession.has_active_incremental()
+        return True
 
     restated = RestatedFact(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",

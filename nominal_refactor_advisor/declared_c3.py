@@ -143,20 +143,30 @@ class DeclaredC3(ABC):
         return entry
 
     def _require_created_order(self, symbol: str, entry: type) -> tuple[str, ...]:
+        mro = entry.__mro__
+        declared_ancestors = tuple(
+            ancestor.declaration
+            for ancestor in mro
+            if type(ancestor) is DeclarationMroType or isinstance(ancestor, DeclarationMroType)
+        )
         try:
-            self.creation.require_order(
-                tuple(
-                    ancestor.declaration
-                    for ancestor in entry.__mro__
-                    if isinstance(ancestor, DeclarationMroType)
-                )
-            )
+            self.creation.require_order(declared_ancestors)
         except NeedsInput as unproved:
             raise NeedsInput(
                 f"`{symbol.rpartition('.')[2]}` has no proved created order: {unproved}",
                 *unproved.needs,
             ) from unproved
-        return tuple(self.entry_symbol(ancestor) for ancestor in entry.__mro__)
+        for_python_type = NativeMroBase.for_python_type
+        return tuple(
+            ancestor.declaration.symbol
+            if type(ancestor) is DeclarationMroType or isinstance(ancestor, DeclarationMroType)
+            else (
+                native.value
+                if (native := for_python_type(ancestor)) is not None
+                else ancestor.__name__
+            )
+            for ancestor in mro
+        )
 
     def linearized(self, symbol: str, bases: tuple[str, ...] | None = None) -> tuple[str, ...]:
         """Python's C3 order of `symbol`, over its declared bases or `bases`; refuses

@@ -37,7 +37,11 @@ class StoredRecords:
 
     @classmethod
     def of(cls, snapshot: CodemodSourceSnapshot, file_path: str) -> StoredRecords:
-        return cls(snapshot, DeclaredRoot.durable_bases_for(Path(file_path)))
+        durable_bases = DeclaredRoot.durable_bases_for(Path(file_path))
+        return snapshot.retained_operation_derivation(
+            (cls, durable_bases),
+            lambda: cls(snapshot, durable_bases),
+        )
 
     @cached_property
     def resolver(self) -> CompactClassReferenceResolver:

@@ -481,36 +481,42 @@ class ConsumerShapeFamily(ShapeFamily[ConsumerShapesModule]):
 
     @classmethod
     def collect(cls, parsed_module: ParsedModule) -> list[ConsumerShapesModule]:
-        symbols = enclosing_symbols(parsed_module)
+        index = parsed_module.syntax_index
         resolver = ProbeOwnerResolver.of(parsed_module)
         reads = []
         calls = []
-        for node in ast.walk(parsed_module.module):
-            symbol = symbols.get(id(node), "<module>")
-            for test in branch_tests(node):
-                for read, member, called in tested_reads(test):
-                    reads.append(
-                        BranchRead(
-                            parsed_module.file_path,
-                            read.lineno,
-                            symbol,
-                            member,
-                            cls.receiver(read, resolver),
-                            called,
+        file_path = parsed_module.file_path
+        for node_type in (ast.If, ast.While, ast.IfExp, ast.comprehension, ast.match_case):
+            for node_index, node in index.indexed_nodes_of_type(node_type):
+                tests = tuple(branch_tests(node))
+                if not tests:
+                    continue
+                symbol = index.lexical_symbol(node_index)
+                for test in tests:
+                    for read, member, called in tested_reads(test):
+                        reads.append(
+                            BranchRead(
+                                file_path,
+                                read.lineno,
+                                symbol,
+                                member,
+                                cls.receiver(read, resolver),
+                                called,
+                            )
                         )
-                    )
+        for node_index, node in index.indexed_nodes_of_type(ast.Call):
             match node:
                 case ast.Call(func=ast.Attribute(attr=member), args=arguments, keywords=keywords):
                     lambdas = sum(
                         isinstance(argument, ast.Lambda)
-                        for argument in [*arguments, *(keyword.value for keyword in keywords)]
+                        for argument in (*arguments, *(keyword.value for keyword in keywords))
                     )
                     if lambdas >= 2:
                         calls.append(
                             LambdaCall(
-                                parsed_module.file_path,
+                                file_path,
                                 node.lineno,
-                                symbol,
+                                index.lexical_symbol(node_index),
                                 member,
                                 cls.receiver(node, resolver),
                                 lambdas,

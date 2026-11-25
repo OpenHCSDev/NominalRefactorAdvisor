@@ -2198,32 +2198,22 @@ class SourceTopLevelSymbolClosureMovePlan(SourceTopLevelSymbolClosureMoveCarrier
         import_graph = context.module_import_graph
         source_module_name = import_graph.module_name_for_file_path(source_path)
         kept: set[str] = set()
-        for source_file, parsed in FilesReachingModule(context, source_module_name):
-            if source_file.file_path == source_path:
-                continue
-            for node in parsed.fact(ModuleImportStatements).import_froms:
-                if (
-                    source_file.module_path_identity.resolve_import_from_module(
-                        imported_module=node.module,
-                        level=node.level,
-                    )
-                    != source_module_name
-                ):
-                    continue
-                for alias in node.names:
-                    binding = source_table.import_binding_for_dependency(
-                        alias.name,
-                        import_graph=import_graph,
-                        permits_guarded_import=True,
-                    )
-                    if binding is not None and (
-                        binding[1].imported_name != alias.name
-                        or ImportedNameOwner.declaring_path(
-                            context, binding[1].module_name, alias.name
-                        )
-                        is None
-                    ):
-                        kept.add(alias.name)
+        for imported_name in context.execution_snapshot().names_imported_from_module(
+            source_path, source_module_name
+        ):
+            binding = source_table.import_binding_for_dependency(
+                imported_name,
+                import_graph=import_graph,
+                permits_guarded_import=True,
+            )
+            if binding is not None and (
+                binding[1].imported_name != imported_name
+                or ImportedNameOwner.declaring_path(
+                    context, binding[1].module_name, imported_name
+                )
+                is None
+            ):
+                kept.add(imported_name)
         return frozenset(kept)
 
     @classmethod
@@ -4667,53 +4657,93 @@ class _ModuleIdentityStrings:
                 )
         return tuple(edits)
 
-    def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
-        embedded = _EmbeddedImportFrom(self.source_module_name)
+    def _source_filter(self) -> Callable[[str], bool]:
+        """Fast prefilter: skip files that cannot mention this module, its file
+        path, or a glued f-string prefix of it."""
+        module_name = self.source_module_name
         file_suffix = "/" + self.source_path.rsplit("/", 1)[-1]
-        head = self.source_module_name.partition(".")[0]
+        head = module_name.partition(".")[0]
         glued_hint = re.compile(
             rf"(?<![\w.]){re.escape(head)}\.(?:[A-Za-z_]\w*\.)*(?:\s*['\"]+[\s\\()]*[fFrRuU]*['\"]+)*\s*\{{"
         )
+        return (
+            lambda source: module_name in source
+            or file_suffix in source
+            or glued_hint.search(source) is not None
+        )
+
+    def _string_value_filter(self) -> Callable[[str], bool]:
+        """Fast check on a parsed string constant's value before tokenizing the file."""
+        module_name = self.source_module_name
+        file_suffix = "/" + self.source_path.rsplit("/", 1)[-1]
+        return lambda value: module_name in value or file_suffix in value
+
+    def edits(self, context: CodemodSelectorContext) -> tuple[NominalSourceEdit, ...]:
+        embedded = _EmbeddedImportFrom(self.source_module_name)
+        may_mention = self._source_filter()
+        may_mention_value = self._string_value_filter()
         edits: list[NominalSourceEdit] = []
         for source_file, parsed in FilesReachingModule(context, self.source_module_name):
             file_path = source_file.file_path
             if file_path == self.source_path:
                 continue
             source = parsed.source
-            if (
-                self.source_module_name not in source
-                and file_suffix not in source
-                and glued_hint.search(source) is None
-            ):
+            if not may_mention(source):
                 continue
-            geometry = SourceTextGeometry(source)
-            retained = self._retained_nodes(parsed.fact(ModuleNodeIndex))
-            replacements: list[SourceTextSpanReplacement] = []
-            for node in parsed.fact(ModuleNodeIndex).string_constants:
-                if id(node) in retained:
-                    continue
-                offsets = geometry.node_offsets(node)
-                if offsets is None:
-                    continue
-                start, end = offsets
-                segment = source[start:end]
-                routed: list[tuple[int, int]] = []
-                for match in embedded.matches(segment):
-                    if self._routes_embedded_import(
-                        f"{file_path!r}:{node.lineno}", embedded.names(match)
-                    ):
-                        routed.append(match.span())
-                replacements.extend(
-                    self.string_replacements(
-                        context, f"{file_path!r}:{node.lineno}", segment, start, routed
-                    )
-                )
-            replacements.extend(
-                self._glued_replacements(context, file_path, parsed.fact(ModuleNodeIndex), geometry)
+            matching_strings, node_index = self._matching_string_constants(
+                parsed, may_mention_value
             )
+            geometry: SourceTextGeometry | None = None
+            replacements: list[SourceTextSpanReplacement] = []
+            if matching_strings:
+                geometry = SourceTextGeometry(source)
+                retained = (
+                    self._retained_nodes(node_index or parsed.fact(ModuleNodeIndex))
+                    if self.retained_calls
+                    else frozenset()
+                )
+                for node in matching_strings:
+                    if id(node) in retained:
+                        continue
+                    offsets = geometry.node_offsets(node)
+                    if offsets is None:
+                        continue
+                    start, end = offsets
+                    segment = source[start:end]
+                    routed: list[tuple[int, int]] = []
+                    for match in embedded.matches(segment):
+                        if self._routes_embedded_import(
+                            f"{file_path!r}:{node.lineno}", embedded.names(match)
+                        ):
+                            routed.append(match.span())
+                    replacements.extend(
+                        self.string_replacements(
+                            context, f"{file_path!r}:{node.lineno}", segment, start, routed
+                        )
+                    )
+            if node_index is not None:
+                glued = self._glued_replacements(
+                    context, file_path, node_index, geometry, source
+                )
+                replacements.extend(glued)
             if replacements:
+                if geometry is None:
+                    geometry = SourceTextGeometry(source)
                 edits.append(geometry.nominal_edit(file_path=file_path, replacements=tuple(replacements)))
         return tuple(edits)
+
+    def _matching_string_constants(
+        self,
+        parsed: ParsedModule,
+        may_mention_value: Callable[[str], bool],
+    ) -> tuple[tuple[ast.Constant, ...], ModuleNodeIndex | None]:
+        node_index = parsed.fact(ModuleNodeIndex)
+        return (
+            tuple(
+                node for node in node_index.string_constants if may_mention_value(node.value)
+            ),
+            node_index,
+        )
 
     def _routes_embedded_import(self, where: str, names: list[str]) -> bool:
         """Whether a `from <module> import ...` inside a string is left to the
@@ -4732,7 +4762,8 @@ class _ModuleIdentityStrings:
         context: CodemodSelectorContext,
         file_path: str,
         index: ModuleNodeIndex,
-        geometry: SourceTextGeometry,
+        geometry: SourceTextGeometry | None,
+        source: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         """A module name glued together in an f-string, `f"import pkg.{module}"`,
         names the dissolved module through every literal bound to `module`: a
@@ -4771,6 +4802,8 @@ class _ModuleIdentityStrings:
                         f"{file_path!r}:{literal.lineno} glues {prefix!r} onto "
                         f"{remainder!r}; the successor {successor!r} is not under it"
                     )
+                if geometry is None:
+                    geometry = SourceTextGeometry(source)
                 start, end = geometry.required_node_offsets(literal)
                 quote = geometry.source[start]
                 replacements.append(
@@ -4874,16 +4907,80 @@ class _RelocatedNameStrings(_ModuleIdentityStrings):
         del where
         return any(name in self.owners for name in names)
 
+    def _source_filter(self) -> Callable[[str], bool]:
+        """Relocations leave paths and glued module names untouched, so only
+        files spelling the source module name and at least one moved name can match."""
+
+        module_name = self.source_module_name
+        moved_names = tuple(self.owners)
+        if not moved_names:
+            return lambda _source: False
+        return lambda source: module_name in source and any(
+            name in source for name in moved_names
+        )
+
+    def _string_value_filter(self) -> Callable[[str], bool]:
+        module_name = self.source_module_name
+        moved_names = tuple(self.owners)
+        if not moved_names:
+            return lambda _value: False
+        return lambda value: module_name in value and any(
+            name in value for name in moved_names
+        )
+
+    def _matching_string_constants(
+        self,
+        parsed: ParsedModule,
+        may_mention_value: Callable[[str], bool],
+    ) -> tuple[tuple[ast.Constant, ...], ModuleNodeIndex | None]:
+        """Relocations ignore glued f-strings, so scan string constants directly
+        without building a full ``ModuleNodeIndex`` + ``ModuleSyntaxIndex``."""
+        cached_index = parsed._facts.get(ModuleNodeIndex)
+        if isinstance(cached_index, ModuleNodeIndex):
+            return (
+                tuple(
+                    node
+                    for node in cached_index.string_constants
+                    if may_mention_value(node.value)
+                ),
+                None,
+            )
+        if "syntax_index" in parsed.__dict__:
+            syntax_index = parsed.syntax_index
+            nodes = syntax_index.depth_first_nodes
+            return (
+                tuple(
+                    node
+                    for idx in syntax_index.node_indices_by_type.get(ast.Constant, ())
+                    if isinstance((node := nodes[idx]), ast.Constant)
+                    and isinstance(node.value, str)
+                    and may_mention_value(node.value)
+                ),
+                None,
+            )
+        matched: list[ast.Constant] = []
+        const_type = ast.Constant
+        str_type = str
+        for node in ast.walk(parsed.module):
+            if (
+                type(node) is const_type
+                and type(node.value) is str_type
+                and may_mention_value(node.value)
+            ):
+                matched.append(node)
+        return tuple(matched), None
+
     def _glued_replacements(
         self,
         context: CodemodSelectorContext,
         file_path: str,
         index: ModuleNodeIndex,
-        geometry: SourceTextGeometry,
+        geometry: SourceTextGeometry | None,
+        source: str,
     ) -> tuple[SourceTextSpanReplacement, ...]:
         """A glued module name still names the module, which stays."""
 
-        del context, file_path, index, geometry
+        del context, file_path, index, geometry, source
         return ()
 
 

@@ -10,8 +10,113 @@ from functools import lru_cache
 from typing import ClassVar
 
 from nominal_refactor_advisor.ast_projection import ExpressionReference
-from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
+
+
+@dataclass(frozen=True)
+class _InnerScopeBoundNameSuperset(ParsedModuleFact):
+    """Conservative superset of every name bound inside any inner scope
+    (class, function, lambda, or comprehension) without building a full
+    ``ModuleNodeIndex`` or ``ModuleSyntaxIndex``."""
+
+    names: frozenset[str]
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _InnerScopeBoundNameSuperset:
+        bound: set[str] = set()
+        inner_scope_types = (
+            ast.FunctionDef,
+            ast.AsyncFunctionDef,
+            ast.ClassDef,
+            ast.Lambda,
+            ast.ListComp,
+            ast.SetComp,
+            ast.DictComp,
+            ast.GeneratorExp,
+        )
+        # Walk top-level statements to find inner scope roots, then collect
+        # every binding target inside those inner scopes.
+        inner_roots: list[ast.AST] = []
+        top_stack: list[ast.AST] = list(parsed_module.module.body)
+        while top_stack:
+            node = top_stack.pop()
+            if isinstance(node, inner_scope_types):
+                inner_roots.append(node)
+                continue
+            top_stack.extend(ast.iter_child_nodes(node))
+        if not inner_roots:
+            return cls(frozenset())
+        stack: list[ast.AST] = []
+        for root in inner_roots:
+            if isinstance(root, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                args = root.args
+                for arg in (
+                    *args.posonlyargs,
+                    *args.args,
+                    *args.kwonlyargs,
+                ):
+                    bound.add(arg.arg)
+                if args.vararg is not None:
+                    bound.add(args.vararg.arg)
+                if args.kwarg is not None:
+                    bound.add(args.kwarg.arg)
+                stack.extend(root.body)
+            elif isinstance(root, ast.ClassDef):
+                stack.extend(root.body)
+            elif isinstance(root, ast.Lambda):
+                args = root.args
+                for arg in (
+                    *args.posonlyargs,
+                    *args.args,
+                    *args.kwonlyargs,
+                ):
+                    bound.add(arg.arg)
+                if args.vararg is not None:
+                    bound.add(args.vararg.arg)
+                if args.kwarg is not None:
+                    bound.add(args.kwarg.arg)
+                stack.append(root.body)
+            else:
+                stack.extend(ast.iter_child_nodes(root))
+        name_type = ast.Name
+        load_type = ast.Load
+        arg_type = ast.arg
+        func_class_types = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+        except_type = ast.ExceptHandler
+        import_type = ast.Import
+        import_from_type = ast.ImportFrom
+        while stack:
+            node = stack.pop()
+            node_t = type(node)
+            if node_t is name_type:
+                assert isinstance(node, ast.Name)
+                if type(node.ctx) is not load_type:
+                    bound.add(node.id)
+                continue
+            if node_t is arg_type:
+                assert isinstance(node, ast.arg)
+                bound.add(node.arg)
+            elif node_t in func_class_types:
+                assert isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                bound.add(node.name)
+            elif node_t is except_type:
+                assert isinstance(node, ast.ExceptHandler)
+                if node.name is not None:
+                    bound.add(node.name)
+            elif node_t is import_type:
+                assert isinstance(node, ast.Import)
+                for alias in node.names:
+                    bound.add(alias.asname or alias.name.split(".", 1)[0])
+                continue
+            elif node_t is import_from_type:
+                assert isinstance(node, ast.ImportFrom)
+                for alias in node.names:
+                    if alias.name != "*":
+                        bound.add(alias.asname or alias.name)
+                continue
+            stack.extend(ast.iter_child_nodes(node))
+        return cls(frozenset(bound))
 
 
 def iter_class_definitions(
@@ -178,6 +283,9 @@ class ClassSymbolResolutionAuthority:
         """The class, function, lambda or comprehension whose own variable `name`
         at `reference` reads; `None` for the module's."""
 
+        if ScopedImportBindings not in self.parsed_module._facts:
+            if name not in self.parsed_module.fact(_InnerScopeBoundNameSuperset).names:
+                return None
         scoped = self._scoped_imports
         if name not in scoped.inner_bound_names:
             return None

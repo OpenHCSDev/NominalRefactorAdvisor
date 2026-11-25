@@ -2679,11 +2679,16 @@ class CodemodSourceRevision(CodemodPayloadRecord):
         sources_by_file_path: Mapping[str, str],
         *,
         required_paths: Iterable[str] = (),
+        known_hashes: Mapping[str, str] | None = None,
     ) -> tuple[CodemodSourceRevision, ...]:
         """Capture the supplied source context, including absent creation targets."""
 
         return tuple(
-            cls.from_sources(path, sources_by_file_path)
+            cls.from_sources(
+                path,
+                sources_by_file_path,
+                known_hashes=known_hashes,
+            )
             for path in sorted(set(sources_by_file_path).union(required_paths))
         )
 
@@ -2692,11 +2697,19 @@ class CodemodSourceRevision(CodemodPayloadRecord):
         cls,
         file_path: str,
         sources_by_file_path: Mapping[str, str],
+        *,
+        known_hashes: Mapping[str, str] | None = None,
     ) -> CodemodSourceRevision:
         source = sources_by_file_path.get(file_path)
+        if source is None:
+            source_hash: str | None = None
+        elif known_hashes is not None and (cached := known_hashes.get(file_path)) is not None:
+            source_hash = cached
+        else:
+            source_hash = cls.hash_source(source)
         return cls(
             file_path=file_path,
-            source_hash=(cls.hash_source(source) if source is not None else None),
+            source_hash=source_hash,
         )
 
     hash_source = staticmethod(python_source_cache_signature)

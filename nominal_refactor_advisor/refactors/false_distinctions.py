@@ -5,7 +5,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import (
@@ -188,15 +188,13 @@ class ScopeBranchFindingRecipeSynthesizer(
             target=SourceRewriteTarget(target_id=target_ids[0]), line=evidence.line
         )
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=self.recipe_reason,
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 class IdenticalArmsFindingRecipeSynthesizer(ScopeBranchFindingRecipeSynthesizer, ABC):
@@ -350,7 +348,23 @@ class ClassTargetFindingRecipeSynthesizer(
 ):
     """One operation on the top-level class the finding's primary witness names."""
 
+    prefers_parallel_synthesis = True
     recipe_reason: ClassVar[str]
+
+    @classmethod
+    def prewarm_parallel_synthesis(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: Sequence[RefactorFinding],
+    ) -> None:
+        _ = snapshot.source_index
+        _ = snapshot.compact_class_index
+        seen_paths: set[str] = set()
+        for finding in findings:
+            evidence = finding.primary_evidence
+            if evidence is not None and evidence.file_path not in seen_paths:
+                seen_paths.add(evidence.file_path)
+                _ = StoredRecords.of(snapshot, evidence.file_path).records
 
     @abstractmethod
     def operation_for(
@@ -379,15 +393,13 @@ class ClassTargetFindingRecipeSynthesizer(
             return self.rejected_evaluation(f"`{evidence.symbol}` is not one class")
         try:
             operation = self.operation_for(SourceRewriteTarget(target_id=target_ids[0]), context)
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=self.recipe_reason,
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 class EmptySubclassFindingRecipeSynthesizer(ClassTargetFindingRecipeSynthesizer, ABC):

@@ -2846,8 +2846,26 @@ def _line_difference_edits(
 ) -> tuple[NominalSourceEdit, ...]:
     """The line spans that differ between two versions of one source."""
 
+    if before == after:
+        return ()
     before_lines = before.splitlines(keepends=True)
     after_lines = after.splitlines(keepends=True)
+    before_len = len(before_lines)
+    after_len = len(after_lines)
+    prefix = 0
+    limit = min(before_len, after_len)
+    while prefix < limit and before_lines[prefix] == after_lines[prefix]:
+        prefix += 1
+    suffix = 0
+    max_suffix = limit - prefix
+    while (
+        suffix < max_suffix
+        and before_lines[before_len - 1 - suffix]
+        == after_lines[after_len - 1 - suffix]
+    ):
+        suffix += 1
+    before_end = before_len - suffix
+    after_end = after_len - suffix
     offsets = [0]
     for line in before_lines:
         offsets.append(offsets[-1] + len(line))
@@ -2856,12 +2874,16 @@ def _line_difference_edits(
         file_path=file_path,
         replacements=tuple(
             SourceTextSpanReplacement.from_offsets(
-                start_offset=offsets[first],
-                end_offset=offsets[last],
-                replacement_source="".join(after_lines[new_first:new_last]),
+                start_offset=offsets[prefix + first],
+                end_offset=offsets[prefix + last],
+                replacement_source="".join(
+                    after_lines[prefix + new_first : prefix + new_last]
+                ),
             )
             for tag, first, last, new_first, new_last in difflib.SequenceMatcher(
-                a=before_lines, b=after_lines, autojunk=False
+                a=before_lines[prefix:before_end],
+                b=after_lines[prefix:after_end],
+                autojunk=False,
             ).get_opcodes()
             if tag != "equal"
         ),
@@ -3245,8 +3267,14 @@ class RelocationStep:
         checkout importing one."""
 
         snapshot = context.execution_snapshot()
-        relocation = self.relocation(snapshot)
-        return () if relocation is None else relocation.text_file_changes(self.relocation_state(snapshot))
+        return snapshot.retained_operation_derivation(
+            (self, RelocationStep.text_file_changes),
+            lambda: (
+                ()
+                if (relocation := self.relocation(snapshot)) is None
+                else relocation.text_file_changes(self.relocation_state(snapshot))
+            ),
+        )
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3271,8 +3299,14 @@ class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperati
     def relocation(
         self, snapshot: CodemodSourceSnapshot
     ) -> RelocateSymbolsToModuleOperation | RelocateSymbolsToNewModuleOperation:
-        return relocation_to(
-            snapshot, self.owner, self.home_module, MovedClosure.of(snapshot, self.owner).qualnames
+        return snapshot.retained_operation_derivation(
+            (self, ComposeMovedOwnerOperation.relocation),
+            lambda: relocation_to(
+                snapshot,
+                self.owner,
+                self.home_module,
+                MovedClosure.of(snapshot, self.owner).qualnames,
+            ),
         )
 
     def _simulated_relocation(
@@ -3290,40 +3324,249 @@ class ComposeMovedOwnerOperation(RelocationStep, RepositorySourceReprovedOperati
             simulate_and_check,
         )
 
+    def _reuse_cache_key(self) -> tuple[object, ...]:
+        return (
+            ComposeMovedOwnerOperation._reusable_parent_outcome,
+            self.target,
+            self.owner,
+            self.home_module,
+            self.composers,
+        )
+
+    def _reusable_parent_outcome(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[bool, tuple[NominalSourceEdit, ...] | NeedsInput] | None:
+        """Carry forward a parent snapshot's proved edits or `NeedsInput` refusal
+        when every file modified since that parent is provably disjoint from this
+        move's owner, composers, home module, rewritten files, imports, and
+        referenced names."""
+
+        cache_key = self._reuse_cache_key()
+        delta_paths: set[str] = set()
+        cursor = snapshot
+        parent_outcome: (
+            tuple[bool, tuple[NominalSourceEdit, ...] | NeedsInput, frozenset[str], str | None]
+            | None
+        ) = None
+        parent_snap: CodemodSourceSnapshot | None = None
+        for _ in range(3):
+            parent = cursor._parent_snapshot
+            if parent is None:
+                break
+            delta_paths.update(cursor._changed_from_parent)
+            cached = parent._operation_derivations.get(cache_key)
+            if cached is not None:
+                parent_snap = parent
+                parent_outcome = cached  # type: ignore[assignment]
+                break
+            cursor = parent
+        if parent_snap is None or parent_outcome is None or not delta_paths:
+            return None
+        ok, payload, touched_paths, cached_rationale = parent_outcome
+        if not delta_paths.isdisjoint(touched_paths):
+            return None
+        if len(parent_snap.sources_by_file_path) != len(snapshot.sources_by_file_path):
+            return None
+        names_to_watch = {
+            self.owner.qualname.rsplit(".", 1)[-1],
+            self.home_module.rsplit(".", 1)[-1],
+            *(c.qualname.rsplit(".", 1)[-1] for c in (self.target, *self.composers)),
+        }
+        parent_index = parent_snap.overlap_class_index
+        cur_index = snapshot.overlap_class_index
+        watched_symbols: set[str] = set()
+        for target in (self.owner, self.target, *self.composers):
+            mod = snapshot.parsed_module_for_source_path(target.file_path)
+            sym = f"{mod.module_name}.{target.qualname}"
+            watched_symbols.add(sym)
+            watched_symbols.update(parent_index.ancestor_symbols(sym))
+            watched_symbols.update(parent_index.descendant_symbols(sym))
+            watched_symbols.update(cur_index.ancestor_symbols(sym))
+            watched_symbols.update(cur_index.descendant_symbols(sym))
+        owner_mod_name = snapshot.parsed_module_for_source_path(self.owner.file_path).module_name
+        composer_mod_names = frozenset(
+            snapshot.parsed_module_for_source_path(c.file_path).module_name
+            for c in (self.target, *self.composers)
+        )
+        protected_mods = frozenset((owner_mod_name, self.home_module, *composer_mod_names))
+        old_graph: ModuleImportGraph | None = None
+        cur_graph: ModuleImportGraph | None = None
+        for path in delta_paths:
+            if path not in parent_snap.sources_by_file_path or path not in snapshot.sources_by_file_path:
+                return None
+            old_mod = parent_snap.parsed_module_for_source_path(path)
+            new_mod = snapshot.parsed_module_for_source_path(path)
+            changed_lines: set[str] | None = None
+            for name in names_to_watch:
+                if name in old_mod.source or name in new_mod.source:
+                    if changed_lines is None:
+                        changed_lines = set(old_mod.source.splitlines()) ^ set(
+                            new_mod.source.splitlines()
+                        )
+                    if old_mod.source.count(name) != new_mod.source.count(name) or any(
+                        name in line for line in changed_lines
+                    ):
+                        return None
+            for sym_mod in (old_mod, new_mod):
+                prefix = f"{sym_mod.module_name}."
+                if any(s.startswith(prefix) for s in watched_symbols):
+                    return None
+            if module_import_aliases(old_mod) != module_import_aliases(new_mod):
+                mod_name = new_mod.module_name
+                if mod_name in protected_mods:
+                    return None
+                old_edges = parent_snap.module_import_graph.import_edges_by_module.get(
+                    mod_name, ()
+                )
+                cur_edges = snapshot.module_import_graph.import_edges_by_module.get(
+                    mod_name, ()
+                )
+                if old_edges != cur_edges:
+                    if not protected_mods.isdisjoint(
+                        frozenset(old_edges) ^ frozenset(cur_edges)
+                    ):
+                        return None
+                    if old_graph is None or cur_graph is None:
+                        old_graph = ModuleImportGraph(
+                            parent_snap.module_import_graph.import_edges_by_module
+                        )
+                        cur_graph = ModuleImportGraph(
+                            snapshot.module_import_graph.import_edges_by_module
+                        )
+                    if any(
+                        mod_name in old_graph.reachable(pm)
+                        or mod_name in cur_graph.reachable(pm)
+                        for pm in protected_mods
+                    ):
+                        return None
+        if ok and self.rationale != cached_rationale:
+            default_rationale = (
+                f"Move `{self.owner.qualname}` to `{self.home_module}` and compose it there "
+                "instead of restating its body."
+            )
+            old_base = cached_rationale if cached_rationale is not None else default_rationale
+            new_base = self.rationale if self.rationale is not None else default_rationale
+            edits = tuple(
+                replace(
+                    edit,
+                    rationale=(
+                        new_base + edit.rationale[len(old_base) :]
+                        if edit.rationale.startswith(old_base)
+                        else edit.rationale
+                    ),
+                )
+                for edit in payload  # type: ignore[union-attr]
+            )
+            updated_outcome = (True, edits, touched_paths, self.rationale)
+            snapshot._operation_derivations[cache_key] = updated_outcome
+            return (True, edits)
+        snapshot._operation_derivations[cache_key] = parent_outcome
+        return (ok, payload)
+
     def source_edits_from_snapshot(
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
-        move = self.relocation(snapshot)
-        try:
-            move_result = self._simulated_relocation(snapshot, move)
-        except ValueError as error:
-            raise NeedsInput(
-                f"`{self.owner.qualname}` moves to `{self.home_module}` so composing it "
-                f"closes no import cycle, and that move refuses: {error}",
-                *NeedsInput.needs_of(error),
-            ) from error
-        moved_snapshot = snapshot.with_virtual_sources(
-            move_result.simulation.rewritten_sources
+        def derive() -> tuple[NominalSourceEdit, ...]:
+            reused = self._reusable_parent_outcome(snapshot)
+            if reused is not None:
+                ok, payload = reused
+                if ok:
+                    return payload  # type: ignore[return-value]
+                raise payload  # type: ignore[misc]
+            cache_key = self._reuse_cache_key()
+            home_file = snapshot.module_import_graph.unique_source_file_for_module_name(
+                self.home_module
+            )
+            base_touched: set[str] = {
+                self.owner.file_path,
+                self.target.file_path,
+                *(c.file_path for c in self.composers),
+            }
+            if home_file is not None:
+                base_touched.add(home_file.file_path)
+            try:
+                owner = OverlapClass.require(snapshot, self.owner)
+                body = (
+                    owner.node.body[1:]
+                    if is_docstring_statement(owner.node.body[0])
+                    else owner.node.body
+                )
+                if not body or any(
+                    not declared_names(statement) and not is_docstring_statement(statement)
+                    for statement in body
+                ):
+                    raise NeedsInput(
+                        f"`{owner.qualname}` runs statements beyond declarations",
+                        NeededInput.SOURCE_CHANGE,
+                    )
+                owner_names = frozenset(
+                    declaration.name for declaration in owner.facts.body_declarations
+                )
+                class_index = snapshot.overlap_class_index
+                for composer_ref in (self.target, *self.composers):
+                    composer_cls = OverlapClass.require(snapshot, composer_ref)
+                    composer_cls.require_dataclass_base(owner, owner_names)
+                    require_static_c3(snapshot, composer_cls.facts)
+                    for desc_sym in class_index.descendant_symbols(composer_cls.symbol):
+                        desc_facts = class_index.class_for(desc_sym)
+                        if desc_facts is not None:
+                            require_static_c3(snapshot, desc_facts)
+                move = self.relocation(snapshot)
+                try:
+                    move_result = self._simulated_relocation(snapshot, move)
+                except ValueError as error:
+                    raise NeedsInput(
+                        f"`{self.owner.qualname}` moves to `{self.home_module}` so composing it "
+                        f"closes no import cycle, and that move refuses: {error}",
+                        *NeedsInput.needs_of(error),
+                    ) from error
+                base_touched.update(move_result.simulation.rewritten_sources.keys())
+                moved_snapshot = snapshot.with_virtual_sources(
+                    move_result.simulation.rewritten_sources
+                )
+                moved = SourceRewriteTarget(
+                    file_path=move.destination_path, qualname=self.owner.qualname
+                )
+                names = tuple(declaration.name for declaration in owner.facts.body_declarations)
+                rationale = self.rationale_text(
+                    f"Move `{self.owner.qualname}` to `{self.home_module}` and compose it there "
+                    "instead of restating its body."
+                )
+                for composer in (self.target, *self.composers):
+                    restated = RestatedDeclarations(
+                        owner, OverlapClass.require(snapshot, composer), names
+                    )
+                    rationale = KeptDocumentation.composing(restated).rationale(rationale)
+                states = in_order_states(
+                    moved_snapshot,
+                    tuple(
+                        ComposeExistingClassOperation(target=composer, owner=moved)
+                        for composer in (self.target, *self.composers)
+                    ),
+                    f"compose-moved-{self.owner.qualname}",
+                )
+                edits = changed_source_edits(snapshot, states[-1], rationale)
+                base_touched.update(edit.file_path for edit in edits)
+                snapshot._operation_derivations[cache_key] = (
+                    True,
+                    edits,
+                    frozenset(base_touched),
+                    self.rationale,
+                )
+                return edits
+            except NeedsInput as missing:
+                snapshot._operation_derivations[cache_key] = (
+                    False,
+                    missing,
+                    frozenset(base_touched),
+                    self.rationale,
+                )
+                raise
+
+        return snapshot.retained_operation_derivation(
+            (self, ComposeMovedOwnerOperation.source_edits_from_snapshot),
+            derive,
         )
-        moved = SourceRewriteTarget(file_path=move.destination_path, qualname=self.owner.qualname)
-        owner = OverlapClass.require(snapshot, self.owner)
-        names = tuple(declaration.name for declaration in owner.facts.body_declarations)
-        rationale = self.rationale_text(
-            f"Move `{self.owner.qualname}` to `{self.home_module}` and compose it there "
-            "instead of restating its body."
-        )
-        for composer in (self.target, *self.composers):
-            restated = RestatedDeclarations(owner, OverlapClass.require(snapshot, composer), names)
-            rationale = KeptDocumentation.composing(restated).rationale(rationale)
-        states = in_order_states(
-            moved_snapshot,
-            tuple(
-                ComposeExistingClassOperation(target=composer, owner=moved)
-                for composer in (self.target, *self.composers)
-            ),
-            f"compose-moved-{self.owner.qualname}",
-        )
-        return changed_source_edits(snapshot, states[-1], rationale)
 
     def current_source_authority_claims(
         self, context: CodemodSelectorContext
@@ -3796,23 +4039,29 @@ class MovedClosure:
 
     @classmethod
     def of_roots(cls, snapshot: CodemodSourceSnapshot, file_path: str, roots: tuple[str, ...]) -> Self:
-        module = snapshot.module_nodes_by_file_path[file_path]
-        selection = SourceTopLevelSymbolMoveSelection.dependency_closure(file_path, module, roots)
-        moved = frozenset(item.name for item in selection.declarations)
-        module_name = snapshot.parsed_module_for_source_path(file_path).module_name
-        bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
-        # A name the module does not bind is a builtin: no module provides it.
-        return cls(
-            roots,
-            tuple(item.name for item in selection.declarations),
-            tuple(
-                ClosureRead(item.name, name, owner)
-                for item in selection.declarations
-                for name in sorted(
-                    (DeclarationDependencyProjection.from_declarations((item.node,)).names & bound) - moved
-                )
-                if (owner := ImportedNameOwner.declaring_module(snapshot, module_name, name)) is not None
-            ),
+        def derive() -> Self:
+            module = snapshot.module_nodes_by_file_path[file_path]
+            selection = SourceTopLevelSymbolMoveSelection.dependency_closure(file_path, module, roots)
+            moved = frozenset(item.name for item in selection.declarations)
+            module_name = snapshot.parsed_module_for_source_path(file_path).module_name
+            bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(module.body)
+            # A name the module does not bind is a builtin: no module provides it.
+            return cls(
+                roots,
+                tuple(item.name for item in selection.declarations),
+                tuple(
+                    ClosureRead(item.name, name, owner)
+                    for item in selection.declarations
+                    for name in sorted(
+                        (DeclarationDependencyProjection.from_declarations((item.node,)).names & bound) - moved
+                    )
+                    if (owner := ImportedNameOwner.declaring_module(snapshot, module_name, name)) is not None
+                ),
+            )
+
+        return snapshot.retained_operation_derivation(
+            (cls, file_path, roots),
+            derive,
         )
 
 
@@ -4352,6 +4601,45 @@ class ClassOverlapFindingRecipeSynthesizer(
     finding.
     """
 
+    prefers_parallel_synthesis = True
+
+    @classmethod
+    def prewarm_parallel_synthesis(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: Sequence[RefactorFinding],
+    ) -> None:
+        del findings
+        _ = snapshot.class_overlap_verdicts
+        _ = snapshot.module_import_graph
+
+    @classmethod
+    def parallel_synthesis_priority(
+        cls,
+        finding: RefactorFinding,
+        snapshot: CodemodSourceSnapshot | None = None,
+    ) -> int:
+        metrics = finding.metrics
+        if isinstance(metrics, ClassOverlapMetrics) and metrics.permitted:
+            if metrics.move is ComposeExisting:
+                if snapshot is not None:
+                    class_index = snapshot.class_overlap_verdicts.class_index
+                    owner = class_index.class_for(metrics.owner_symbol)
+                    if owner is not None:
+                        graph = snapshot.module_import_graph
+                        if any(
+                            (composer := class_index.class_for(symbol)) is not None
+                            and graph.import_would_create_cycle(
+                                importing_file_path=composer.file_path,
+                                imported_file_path=owner.file_path,
+                            )
+                            for symbol in metrics.restating_symbols
+                        ):
+                            return 3
+                return 2
+            return 1
+        return 0
+
     @staticmethod
     def picked_operations(
         finding: RefactorFinding,
@@ -4652,10 +4940,9 @@ class ClassOverlapFindingRecipeSynthesizer(
         )
         for operation in operations:
             try:
-                operation.source_edits(context)
+                recipe = recipe.with_proved_operation(operation, context)
             except CodemodOperationPreflightError as error:
                 return self.stopped_evaluation(error)
-            recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)
 
     def evaluate_recipe_for_finding(
@@ -4743,8 +5030,7 @@ class ClassOverlapFindingRecipeSynthesizer(
         )
         for operation in operations:
             try:
-                operation.source_edits(context)
+                recipe = recipe.with_proved_operation(operation, context)
             except CodemodOperationPreflightError as error:
                 return self.stopped_evaluation(error)
-            recipe = recipe.with_operation(operation)
         return self.executable_evaluation(recipe)

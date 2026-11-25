@@ -52,12 +52,28 @@ from nominal_refactor_advisor.source_index import AstTargetDigest
 
 @dataclass(frozen=True)
 class _ModuleDynamicNameSurfaceIndex(ParsedModuleFact):
-    """Lightweight per-module text & string-literal summary so dynamic-surface
-    proofs skip modules without building a full ``ModuleNodeIndex``."""
+    """Lightweight per-module text, string-literal, lexical-scope, star-import,
+    and lazy comment summary so rename/redirect proofs avoid building a full
+    ``ModuleNodeIndex`` on non-reaching modules or re-walking/re-tokenizing per
+    target."""
 
+    source: str
     identifier_text: str
+    has_star_import: bool
+    str_constants: tuple[ast.Constant, ...]
     non_source_strings: tuple[ast.Constant, ...]
     non_source_strings_joined: str
+    global_nonlocal_names: frozenset[str]
+
+    @cached_property
+    def comment_text(self) -> str:
+        if "#" not in self.source:
+            return ""
+        return "\n".join(
+            token.string
+            for token in tokenize.generate_tokens(io.StringIO(self.source).readline)
+            if token.type == tokenize.COMMENT
+        )
 
     @classmethod
     def derive(cls, parsed_module: ParsedModule) -> _ModuleDynamicNameSurfaceIndex:
@@ -65,20 +81,35 @@ class _ModuleDynamicNameSurfaceIndex(ParsedModuleFact):
         identifier_text = (
             source if source.isascii() else unicodedata.normalize("NFKC", source)
         )
+        syntax_index = parsed_module.syntax_index
+        has_star_import = any(
+            alias.name == "*"
+            for _, node in syntax_index.indexed_nodes_of_type(ast.ImportFrom)
+            for alias in node.names
+        )
+        str_constants: list[ast.Constant] = []
         non_source: list[ast.Constant] = []
-        for node in ast.walk(parsed_module.module):
-            if (
-                isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and node.value not in identifier_text
-            ):
-                non_source.append(node)
+        for _, node in syntax_index.indexed_nodes_of_type(ast.Constant):
+            value = node.value
+            if isinstance(value, str):
+                str_constants.append(node)
+                if value not in identifier_text:
+                    non_source.append(node)
+        global_nonlocal_names: set[str] = set()
+        for _, node in syntax_index.indexed_nodes_of_type(ast.Global):
+            global_nonlocal_names.update(node.names)
+        for _, node in syntax_index.indexed_nodes_of_type(ast.Nonlocal):
+            global_nonlocal_names.update(node.names)
         return cls(
+            source=source,
             identifier_text=identifier_text,
+            has_star_import=has_star_import,
+            str_constants=tuple(str_constants),
             non_source_strings=tuple(non_source),
             non_source_strings_joined="\0".join(
                 str(node.value) for node in non_source
             ),
+            global_nonlocal_names=frozenset(global_nonlocal_names),
         )
 
 
@@ -1006,10 +1037,10 @@ class DeclarationAuthorityRenameProof:
         binds it without naming it. Any other module's proof is empty and
         refuses nothing, so it is not built."""
 
-        index = module.fact(ModuleNodeIndex)
+        surface = module.fact(_ModuleDynamicNameSurfaceIndex)
         return (
-            index.spells(target.name)
-            or index.star_imports
+            target.name in surface.identifier_text
+            or surface.has_star_import
             or bool(binding_closure.imports_for(module))
         )
 
@@ -1049,10 +1080,9 @@ class DeclarationAuthorityRenameProof:
                             "name surface"
                         )
                 continue
-            for node in ast.walk(parsed_module.module):
+            for node in surface.str_constants:
                 if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
+                    isinstance(node.value, str)
                     and target_name in node.value
                     and name_pattern.search(node.value)
                     and id(node) not in annotation_literal_ids
@@ -1062,21 +1092,17 @@ class DeclarationAuthorityRenameProof:
                         f"Declaration authority {target_name!r} has a string "
                         "name surface"
                     )
-                if isinstance(node, ast.Global | ast.Nonlocal) and target_name in (
-                    node.names
-                ):
-                    raise ValueError(
-                        f"Declaration authority {target_name!r} has an explicit "
-                        "lexical scope declaration"
-                    )
-            for token in tokenize.generate_tokens(
-                io.StringIO(parsed_module.source).readline
-            ):
-                if token.type == tokenize.COMMENT and name_pattern.search(token.string):
-                    raise ValueError(
-                        f"Declaration authority {target_name!r} has a comment "
-                        "name surface"
-                    )
+            if target_name in surface.global_nonlocal_names:
+                raise ValueError(
+                    f"Declaration authority {target_name!r} has an explicit "
+                    "lexical scope declaration"
+                )
+            comments = surface.comment_text
+            if comments and target_name in comments and name_pattern.search(comments):
+                raise ValueError(
+                    f"Declaration authority {target_name!r} has a comment "
+                    "name surface"
+                )
 
 
 @dataclass(frozen=True)

@@ -260,6 +260,7 @@ class AnsweredMethod:
         typing = snapshot.declared_receiver_typing
         reached: list[tuple[TypedReceiver, ReceiverBinding]] = []
         undeclared: dict[ReceiverSpan, TypedReceiver] = {}
+        blocking_needs: list[str] = []
         for receiver in receivers:
             parents = receiver.parsed.fact(ModuleNodeIndex).parents
             if _rebound(receiver.expression, parents):
@@ -287,16 +288,25 @@ class AnsweredMethod:
                         "more than once, so no one type holds every value it has"
                     )
                 undeclared[spans[0]] = receiver
-            elif self.answers(tuple(getattr(owner, "class_symbols", tuple)()), receiver.where):
-                reached.append((receiver, ReceiverBinding(self.symbol)))
+            else:
+                try:
+                    if self.answers(tuple(getattr(owner, "class_symbols", tuple)()), receiver.where):
+                        reached.append((receiver, ReceiverBinding(self.symbol)))
+                except NeedsInput as missing:
+                    blocking_needs.append(str(missing))
         if undeclared:
             answers = snapshot.type_checker.receiver_types(undeclared)
             for span, receiver in undeclared.items():
                 answer = answers.get(span)
                 if not isinstance(answer, InferredReceiverType):
                     raise ValueError(f"{receiver.where}: the type checker gives no type for the receiver")
-                if self.answers(answer.classes, receiver.where):
-                    reached.append((receiver, ReceiverBinding(self.symbol)))
+                try:
+                    if self.answers(answer.classes, receiver.where):
+                        reached.append((receiver, ReceiverBinding(self.symbol)))
+                except NeedsInput as missing:
+                    blocking_needs.append(str(missing))
+        if blocking_needs:
+            raise NeedsInput("; ".join(blocking_needs), NeededInput.SOURCE_CHANGE)
         return reached
 
     def lookup_reaching_family(self) -> str | None:

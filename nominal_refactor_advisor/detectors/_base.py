@@ -1069,11 +1069,13 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         None
     )
     compact_report_class_header_core_safe: ClassVar[bool] = False
+    compact_class_projection_fact: ClassVar[type[object] | None] = None
     compact_report_context_promotion_predicate: ClassVar[
         CompactReportContextPromotionPredicate | None
     ] = None
     compact_report_context_requires_target_projection: ClassVar[bool] = False
     compact_analysis_priority: ClassVar[int] = 0
+    pure_compact_projection_function: ClassVar[bool] = True
 
     @classmethod
     def compact_projection_families(

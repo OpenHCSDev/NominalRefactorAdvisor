@@ -2731,8 +2731,20 @@ class NativeScopeInventoryABC(ABC):
         )
 
 
+def _code_has_declaration_child(code: CodeType) -> bool:
+    for value in code.co_consts:
+        if isinstance(value, CodeType):
+            if not value.co_name.startswith("<") or _code_has_declaration_child(value):
+                return True
+    return False
+
+
 class NativeInventoryPolicy(ABC):
     """Which code scopes and observations a native inventory walks."""
+
+    @classmethod
+    def has_tracked_children(cls, code: CodeType) -> bool:
+        return any(isinstance(value, CodeType) for value in code.co_consts)
 
     @classmethod
     @abstractmethod
@@ -2772,6 +2784,10 @@ class FullScopeInventory(NativeInventoryPolicy):
 
 class DeclarationInventory(NativeInventoryPolicy):
     """Observe declaration-bearing and class-body scopes without entry-window publication."""
+
+    @classmethod
+    def has_tracked_children(cls, code: CodeType) -> bool:
+        return _code_has_declaration_child(code)
 
     @classmethod
     def includes_scope(cls, has_children: bool, requires_prefix: bool) -> bool:
@@ -3856,9 +3872,7 @@ class NativeCreationBackend(ABC, metaclass=AutoRegisterMeta):
         primitive_operations = self.primitive_operations
         while pending:
             parent, requires_prefix = pending.pop()
-            has_children = any(
-                isinstance(value, CodeType) for value in parent.co_consts
-            )
+            has_children = policy.has_tracked_children(parent)
             if not policy.includes_scope(has_children, requires_prefix):
                 continue
             prefix = policy.start_scope(parent, primitive_operations, observations)

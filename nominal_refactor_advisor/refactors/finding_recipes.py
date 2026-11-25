@@ -277,6 +277,13 @@ class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):
         evaluator = FindingRecipeEvaluator.for_finding(finding)
         if evaluator is None:
             return False
+        if isinstance(evaluator, DelegatedRecipeDeclaration):
+            possible = evaluator.possible_declaration_types(finding)
+            if possible is not None:
+                if not any(issubclass(cand, concept_type) for cand in possible):
+                    return False
+                if all(issubclass(cand, concept_type) for cand in possible):
+                    return True
         return issubclass(
             evaluator.evaluation_declaration_for_finding(finding, selector_context),
             concept_type,
@@ -696,6 +703,16 @@ class SemanticMirrorFindingRecipeEvaluator(
     DelegatedRecipeDeclaration, FindingRecipeEvaluator
 ):
     """Evaluate a declared semantic-mirror finding through its metric contract."""
+
+    @classmethod
+    def possible_declaration_types(
+        cls,
+        finding: RefactorFinding,
+    ) -> tuple[type[object], ...] | None:
+        strategy = SemanticMirrorFindingRecipeStrategy.strategy_for(finding.metrics)
+        if strategy is None:
+            return (cls,)
+        return strategy.possible_declaration_types()
 
     def action_keys_for_finding(
         self,

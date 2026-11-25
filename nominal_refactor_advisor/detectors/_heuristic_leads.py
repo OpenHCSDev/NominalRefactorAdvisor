@@ -19,6 +19,7 @@ from nominal_refactor_advisor.observation_families import (
     ModuleExpressionShapeFamily,
 )
 from nominal_refactor_advisor.observation_shapes import (
+    DeclaredClassScope,
     TypeTestModule,
     TypeTestShape,
     ModuleExpressionShape,
@@ -226,11 +227,13 @@ class ForeignTypeSwitchDetector(
         projections: Sequence[TypeTestModule],
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
-        scanned = tuple(projection.module_name for projection in projections)
+        scope = DeclaredClassScope(
+            tuple(projection.module_name for projection in projections)
+        )
         groups: dict[str, list[TypeTestShape]] = defaultdict(list)
         for projection in projections:
             for shape in projection.sites:
-                if len(shape.owners) == 1 and shape.is_foreign_to(scanned):
+                if len(shape.owners) == 1 and shape.is_foreign_to(scope):
                     (owner,) = shape.owners
                     if owner:
                         groups[owner].append(shape)

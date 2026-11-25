@@ -32,6 +32,7 @@ class FlatModulePackageDestinationDetector(
     """One finding per flat module the run's destination tables send somewhere."""
 
     module_projection_family = CompactModuleClassProjectionFamily
+    pure_compact_projection_function = False
     finding_spec = high_confidence_certified_spec(
         PatternId.FLAT_MODULE_WITH_DECLARED_PACKAGE,
         "A flat module belongs in the package its destination table declares",

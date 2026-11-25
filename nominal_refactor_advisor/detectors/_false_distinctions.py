@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.class_index import (
+    CompactModuleClassProjectionFamily,
+    ModuleClassTypingProjection,
+)
 from nominal_refactor_advisor.refactors.false_distinctions import (
     CollapseIdenticalArmsOperation,
     EnumFoldFindingRecipeSynthesizer,
@@ -106,6 +109,7 @@ class NameOnlySubclassDetector(
         EmptySubclassSiteFamily,
         CompactModuleClassProjectionFamily,
     )
+    compact_class_projection_fact = ModuleClassTypingProjection
     compact_shared_group_context_builder = staticmethod(
         EmptySubclassIndex.from_projection_groups
     )
@@ -148,6 +152,7 @@ class UndistinguishedEnumMembersDetector(
     """Plain-Enum members that every spelling names together."""
 
     module_projection_families = (EnumUseSiteFamily, CompactModuleClassProjectionFamily)
+    compact_class_projection_fact = ModuleClassTypingProjection
     compact_shared_group_context_builder = staticmethod(
         EnumMemberIndex.from_projection_groups
     )

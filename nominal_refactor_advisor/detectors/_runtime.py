@@ -90,6 +90,7 @@ from nominal_refactor_advisor.models import (
     RefactorFinding,
     SourceLocation,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.observation_shapes import (
     ForeignFamilySiteModule,
     ForeignFamilySiteShape,
@@ -1799,6 +1800,7 @@ class _CompactConcreteFamilyContext:
     manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...]
     latent_rosters: tuple[LatentRosterObservation, ...]
     parallel_mirrored_leaf_family_builder: ParallelMirroredLeafFamilyComponentBuilder
+    projections: tuple[CompactModuleClassProjection, ...] = ()
 
 
 def _compact_concrete_family_context(
@@ -1808,31 +1810,33 @@ def _compact_concrete_family_context(
     class_index: CompactClassFamilyIndex | None = None,
 ) -> _CompactConcreteFamilyContext:
     del config
+    proj_tuple = tuple(projections)
     if class_index is None:
-        class_index = build_compact_class_family_index(projections)
+        class_index = build_compact_class_family_index(proj_tuple)
     return _CompactConcreteFamilyContext(
         class_index=class_index,
         class_reference_resolver=CompactClassReferenceResolver.from_index(
-            projections,
+            proj_tuple,
             class_index,
         ),
         module_name_by_file_path=tuple(
-            (projection.file_path, projection.module_name) for projection in projections
+            (projection.file_path, projection.module_name) for projection in proj_tuple
         ),
         manual_subclass_roster_roots=tuple(
             root
-            for projection in projections
+            for projection in proj_tuple
             for root in projection.manual_subclass_roster_roots
         ),
         latent_rosters=tuple(
-            roster for projection in projections for roster in projection.latent_rosters
+            roster for projection in proj_tuple for roster in projection.latent_rosters
         ),
         parallel_mirrored_leaf_family_builder=(
             ParallelMirroredLeafFamilyComponentBuilder.from_projections(
-                projections,
+                proj_tuple,
                 class_index=class_index,
             )
         ),
+        projections=proj_tuple,
     )
 
 
@@ -2124,73 +2128,269 @@ def _compact_matched_latent_roster_key_attr(
     return None
 
 
+@dataclass(frozen=True)
+class _LatentRosterBaseline:
+    by_path: dict[str, CompactModuleClassProjection]
+    class_index: CompactClassFamilyIndex
+    candidates_by_root: dict[str, tuple[LatentImplementationRosterCandidate, ...]]
+    root_authority_names: dict[str, frozenset[str]]
+    all_candidates: tuple[LatentImplementationRosterCandidate, ...]
+
+
+@ScanCache.cached
+def _base_latent_roster_slots() -> dict[int, _LatentRosterBaseline]:
+    return {}
+
+
+def _latent_rosters_indexed(
+    latent_rosters: tuple[LatentRosterObservation, ...],
+) -> tuple[
+    dict[str, list[tuple[int, LatentRosterObservation]]],
+    list[tuple[int, LatentRosterObservation]],
+]:
+    rosters_by_first_member: dict[str, list[tuple[int, LatentRosterObservation]]] = (
+        defaultdict(list)
+    )
+    empty_rosters: list[tuple[int, LatentRosterObservation]] = []
+    for roster_idx, roster in enumerate(latent_rosters):
+        if roster.is_public_export_surface:
+            continue
+        if roster.member_names:
+            rosters_by_first_member[roster.member_names[0]].append((roster_idx, roster))
+        else:
+            empty_rosters.append((roster_idx, roster))
+    return rosters_by_first_member, empty_rosters
+
+
+def _latent_roster_candidates_for_root(
+    class_index: CompactClassFamilyIndex,
+    indexed_class: CompactIndexedClass,
+    min_descendants: int,
+    rosters_by_first_member: dict[str, list[tuple[int, LatentRosterObservation]]],
+    empty_rosters: list[tuple[int, LatentRosterObservation]],
+) -> tuple[tuple[LatentImplementationRosterCandidate, ...], frozenset[str] | None]:
+    if not indexed_class.is_abstract or _compact_family_has_registration_authority(
+        class_index, indexed_class
+    ):
+        return (), None
+    descendants = _compact_concrete_descendants(class_index, indexed_class)
+    if len(descendants) < min_descendants:
+        return (), None
+    concrete_class_names = sorted_tuple(
+        _compact_class_display_name(descendant, class_index)
+        for descendant in descendants
+    )
+    concrete_simple_names = sorted_tuple(
+        descendant.simple_name for descendant in descendants
+    )
+    key_values_by_attr = tuple(
+        (key_attr_name, key_values)
+        for key_attr_name in InheritanceIdentityAttributeProjection.common_names(
+            tuple(
+                descendant.direct_non_none_assignment_names
+                for descendant in descendants
+            )
+        )
+        if len(
+            key_values := _compact_descendant_key_values(
+                descendants,
+                key_attr_name,
+            )
+        )
+        >= 2
+    )
+    authority_names_set: set[str] = set(concrete_class_names)
+    authority_names_set.update(concrete_simple_names)
+    for _, key_values in key_values_by_attr:
+        authority_names_set.update(key_values)
+    authority_names = frozenset(authority_names_set)
+    matched_rosters: list[tuple[int, LatentRosterObservation]] = list(empty_rosters)
+    for name in authority_names:
+        bucket = rosters_by_first_member.get(name)
+        if bucket is not None:
+            matched_rosters.extend(bucket)
+    if not matched_rosters:
+        return (), authority_names
+    if len(matched_rosters) > 1:
+        matched_rosters.sort(key=lambda pair: pair[0])
+    emitted: list[LatentImplementationRosterCandidate] = []
+    display_name = _compact_class_display_name(indexed_class, class_index)
+    for _, roster in matched_rosters:
+        key_attr_name: str | None = None
+        match = roster.match(concrete_class_names) or roster.match(
+            concrete_simple_names
+        )
+        if match is None:
+            key_match = _compact_matched_latent_roster_key_attr(
+                roster,
+                key_values_by_attr,
+            )
+            if key_match is not None:
+                key_attr_name, match = key_match
+        if match is None:
+            continue
+        emitted.append(
+            LatentImplementationRosterCandidate(
+                file_path=roster.file_path,
+                line=roster.line,
+                class_name=display_name,
+                roster=roster,
+                match=match,
+                concrete_class_names=concrete_class_names,
+                key_attr_name=key_attr_name,
+            )
+        )
+    return tuple(emitted), authority_names
+
+
 def _compact_latent_implementation_roster_candidates(
     context: _CompactConcreteFamilyContext,
     config: DetectorConfig,
 ) -> tuple[LatentImplementationRosterCandidate, ...]:
     class_index = context.class_index
-    candidates: list[LatentImplementationRosterCandidate] = []
+    min_descendants = max(2, config.min_registration_sites)
+    cur_projs = context.projections
+    if ScanCache.active() is not None and cur_projs:
+        slots = _base_latent_roster_slots()
+        base = slots.get(min_descendants)
+        if base is not None:
+            base_by_path = base.by_path
+            cur_by_path = {p.file_path: p for p in cur_projs}
+            changed = tuple(
+                p for p in cur_projs if base_by_path.get(p.file_path) is not p
+            )
+            removed = tuple(
+                p for path, p in base_by_path.items() if path not in cur_by_path
+            )
+            if not changed and not removed:
+                return base.all_candidates
+            if len(changed) + len(removed) <= 64:
+                base_index = base.class_index
+                dirty_roots: set[str] = set()
+                changed_simple_names: set[str] = set()
+
+                def _touch_class(sym: str, simple_name: str) -> None:
+                    dirty_roots.add(sym)
+                    dirty_roots.update(base_index.ancestor_symbols(sym))
+                    dirty_roots.update(class_index.ancestor_symbols(sym))
+                    dirty_roots.update(base_index.descendant_symbols(sym))
+                    dirty_roots.update(class_index.descendant_symbols(sym))
+                    old_multi = len(base_index.symbols_by_simple_name.get(simple_name, ())) > 1
+                    new_multi = len(class_index.symbols_by_simple_name.get(simple_name, ())) > 1
+                    if old_multi != new_multi:
+                        changed_simple_names.add(simple_name)
+
+                for p in removed:
+                    for c in p.classes:
+                        _touch_class(c.symbol, c.simple_name)
+                for p in changed:
+                    old_p = base_by_path.get(p.file_path)
+                    if old_p is not None:
+                        for c in old_p.classes:
+                            _touch_class(c.symbol, c.simple_name)
+                    for c in p.classes:
+                        _touch_class(c.symbol, c.simple_name)
+                for simple_name in changed_simple_names:
+                    for sym in (
+                        *base_index.symbols_by_simple_name.get(simple_name, ()),
+                        *class_index.symbols_by_simple_name.get(simple_name, ()),
+                    ):
+                        dirty_roots.add(sym)
+                        dirty_roots.update(base_index.ancestor_symbols(sym))
+                        dirty_roots.update(class_index.ancestor_symbols(sym))
+
+                changed_first_members: set[str] = set()
+                empty_roster_changed = False
+
+                def _record_rosters(rosters: tuple[LatentRosterObservation, ...]) -> None:
+                    nonlocal empty_roster_changed
+                    for r in rosters:
+                        if r.is_public_export_surface:
+                            continue
+                        if r.member_names:
+                            changed_first_members.add(r.member_names[0])
+                        else:
+                            empty_roster_changed = True
+
+                for p in removed:
+                    if p.latent_rosters:
+                        _record_rosters(p.latent_rosters)
+                for p in changed:
+                    old_p = base_by_path.get(p.file_path)
+                    if old_p is None:
+                        if p.latent_rosters:
+                            _record_rosters(p.latent_rosters)
+                    elif old_p.latent_rosters != p.latent_rosters:
+                        _record_rosters(old_p.latent_rosters)
+                        _record_rosters(p.latent_rosters)
+
+                if empty_roster_changed:
+                    dirty_roots.update(base.root_authority_names)
+                elif changed_first_members:
+                    for root_sym, auth_names in base.root_authority_names.items():
+                        if not auth_names.isdisjoint(changed_first_members):
+                            dirty_roots.add(root_sym)
+
+                candidates_by_root = dict(base.candidates_by_root)
+                if dirty_roots:
+                    rosters_by_first_member, empty_rosters = _latent_rosters_indexed(
+                        context.latent_rosters
+                    )
+                    for sym in dirty_roots:
+                        indexed = class_index.class_for(sym)
+                        if indexed is None:
+                            candidates_by_root.pop(sym, None)
+                            continue
+                        cands, _auth = _latent_roster_candidates_for_root(
+                            class_index,
+                            indexed,
+                            min_descendants,
+                            rosters_by_first_member,
+                            empty_rosters,
+                        )
+                        if cands:
+                            candidates_by_root[sym] = cands
+                        else:
+                            candidates_by_root.pop(sym, None)
+                return tuple(
+                    cand
+                    for sym in sorted(candidates_by_root)
+                    for cand in candidates_by_root[sym]
+                )
+
+    rosters_by_first_member, empty_rosters = _latent_rosters_indexed(
+        context.latent_rosters
+    )
+    candidates_by_root_full: dict[str, tuple[LatentImplementationRosterCandidate, ...]] = {}
+    root_authority_names_full: dict[str, frozenset[str]] = {}
+    all_candidates: list[LatentImplementationRosterCandidate] = []
     for indexed_class in sorted(
         class_index.classes_by_symbol.values(), key=lambda item: item.symbol
     ):
-        if not indexed_class.is_abstract or _compact_family_has_registration_authority(
-            class_index, indexed_class
-        ):
-            continue
-        descendants = _compact_concrete_descendants(class_index, indexed_class)
-        if len(descendants) < max(2, config.min_registration_sites):
-            continue
-        concrete_class_names = sorted_tuple(
-            _compact_class_display_name(descendant, class_index)
-            for descendant in descendants
+        cands, auth_names = _latent_roster_candidates_for_root(
+            class_index,
+            indexed_class,
+            min_descendants,
+            rosters_by_first_member,
+            empty_rosters,
         )
-        concrete_simple_names = sorted_tuple(
-            descendant.simple_name for descendant in descendants
-        )
-        key_values_by_attr = tuple(
-            (key_attr_name, key_values)
-            for key_attr_name in InheritanceIdentityAttributeProjection.common_names(
-                tuple(
-                    descendant.direct_non_none_assignment_names
-                    for descendant in descendants
-                )
+        if auth_names is not None:
+            root_authority_names_full[indexed_class.symbol] = auth_names
+        if cands:
+            candidates_by_root_full[indexed_class.symbol] = cands
+            all_candidates.extend(cands)
+    result = tuple(all_candidates)
+    if ScanCache.active() is not None and len(cur_projs) >= 20:
+        slots = _base_latent_roster_slots()
+        if min_descendants not in slots:
+            slots[min_descendants] = _LatentRosterBaseline(
+                by_path={p.file_path: p for p in cur_projs},
+                class_index=class_index,
+                candidates_by_root=candidates_by_root_full,
+                root_authority_names=root_authority_names_full,
+                all_candidates=result,
             )
-            if len(
-                key_values := _compact_descendant_key_values(
-                    descendants,
-                    key_attr_name,
-                )
-            )
-            >= 2
-        )
-        for roster in context.latent_rosters:
-            if roster.is_public_export_surface:
-                continue
-            key_attr_name: str | None = None
-            match = roster.match(concrete_class_names) or roster.match(
-                concrete_simple_names
-            )
-            if match is None:
-                key_match = _compact_matched_latent_roster_key_attr(
-                    roster,
-                    key_values_by_attr,
-                )
-                if key_match is not None:
-                    key_attr_name, match = key_match
-            if match is None:
-                continue
-            candidates.append(
-                LatentImplementationRosterCandidate(
-                    file_path=roster.file_path,
-                    line=roster.line,
-                    class_name=_compact_class_display_name(indexed_class, class_index),
-                    roster=roster,
-                    match=match,
-                    concrete_class_names=concrete_class_names,
-                    key_attr_name=key_attr_name,
-                )
-            )
-    return tuple(candidates)
+    return result
 
 
 def _compact_predicate_selected_concrete_family_candidates(

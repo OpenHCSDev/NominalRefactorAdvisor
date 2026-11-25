@@ -6,8 +6,10 @@ from abc import ABC, abstractmethod
 from collections import Counter, deque
 from collections.abc import Callable, Hashable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+import fcntl
 from functools import cached_property
 import gc
 import os
@@ -18,7 +20,7 @@ import signal
 import sys
 import time
 import traceback
-from typing import ClassVar, Generic, Self, TextIO, TypeVar
+from typing import ClassVar, Generic, Self, TextIO, TypeVar, cast
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.needed_input import NeededInput
@@ -29,16 +31,25 @@ from nominal_refactor_advisor.analysis import (
     EvidenceLocalPartialDetectorSelection,
     SemanticDescentGraphAnalysisSource,
     SortedFindingsAuthority,
+    _prewarm_compact_families,
     analyze_detector_types,
     analyze_modules,
     default_detector_types_for_analysis,
+    prewarm_compact_families_and_analyze_per_module,
 )
 from nominal_refactor_advisor.ast_tools import (
+    CollectedFamily,
     ParsedModule,
     ParsedModuleSourceProjection,
+    collect_family_items,
     parse_python_module_roots,
 )
-from nominal_refactor_advisor.class_index import CompactModuleClassProjectionFamily
+from nominal_refactor_advisor.class_index import (
+    CompactClassFamilyIndex,
+    CompactModuleClassProjectionFamily,
+    build_compact_class_family_index,
+    register_base_modules_for_class_digests,
+)
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeClassPlan,
     FindingRecipeClassPlanReport,
@@ -51,6 +62,8 @@ from nominal_refactor_advisor.codemod_architecture_guards import (
 from nominal_refactor_advisor.codemod_semantics import FindingRecipeSynthesisStatus
 from nominal_refactor_advisor.codemod_source_edits import FileText, TextFileRewrite
 from nominal_refactor_advisor.codemod_runtime import (
+    CodemodAfterSnapshotProjection,
+    CodemodPlanDocument,
     CodemodPlanDocumentSimulation,
     CodemodPlanSequence,
     CodemodPlanSequenceContinuationReport,
@@ -58,11 +71,17 @@ from nominal_refactor_advisor.codemod_runtime import (
     CodemodSourceSnapshot,
     FindingRecipeFrontierBudget,
     FindingRecipePlan,
+    FindingRecipeSetAssessment,
     FindingRecipeSynthesisRecord,
+    FindingRecipeSynthesisReport,
+    FindingRecipeTrajectoryBranch,
+    FindingRecipeTrajectoryFrontier,
     FindingRecipeTrajectoryObstacle,
     apply_codemod_simulation,
 )
 from nominal_refactor_advisor.detectors._base import (
+    CompactModuleProjectionDetectorMixin,
+    CompactMultiModuleProjectionDetectorMixin,
     DetectorCacheGranularity,
     DetectorConfig,
     IssueDetector,
@@ -82,6 +101,7 @@ from nominal_refactor_advisor.source_index import SourceIndex
 from nominal_refactor_advisor.refactor_concepts import RefactorConcept
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.stage_proof import TrajectoryScans
+from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
 
 
 IdentityT = TypeVar("IdentityT", bound=Hashable)
@@ -898,7 +918,7 @@ class CodemodRefactorTrajectoryState:
 
     @property
     def source_state_id(self) -> str:
-        return self.scan.source_snapshot.source_state_id
+        return self.scan.source_state_id
 
     @property
     def depth(self) -> int:
@@ -1752,6 +1772,13 @@ class CodemodWorkflowScan:
             self.text_files
         )
 
+    @property
+    def source_state_id(self) -> str:
+        return self.source_snapshot.source_state_id
+
+    def warm_compact_class_index(self) -> CompactClassFamilyIndex:
+        return self.source_snapshot.compact_class_index
+
     @cached_property
     def _findings_by_concept(
         self,
@@ -1832,6 +1859,71 @@ class ProvedWorkflowScan(CodemodWorkflowScan):
     @cached_property
     def source_snapshot(self) -> CodemodSourceSnapshot:
         return self.proved.with_findings(self.findings)
+
+    def warm_compact_class_index(self) -> CompactClassFamilyIndex:
+        index = self.proved.compact_class_index
+        if "source_snapshot" in self.__dict__:
+            snap_dict = self.__dict__["source_snapshot"].__dict__
+            snap_dict.setdefault(
+                "compact_class_projections", self.proved.compact_class_projections
+            )
+            snap_dict.setdefault("compact_class_index", index)
+        return index
+
+
+@dataclass(frozen=True)
+class LazyProvedWorkflowScan(CodemodWorkflowScan):
+    """A proved branch scan whose ``CodemodAfterSnapshotProjection`` is
+    materialized only if its parsed modules or snapshot are actually read."""
+
+    projection: CodemodAfterSnapshotProjection = field(kw_only=True, repr=False)
+    changed_projections: Mapping[str, tuple[tuple[object, ...], str]] = field(
+        default_factory=dict, kw_only=True, repr=False
+    )
+    modules: ParsedModuleSet = field(init=False, repr=False)
+    text_files: Mapping[str, FileText] = field(init=False, repr=False)
+
+    def __getattr__(self, name: str) -> object:
+        if name == "modules":
+            value = self.proved.module_set
+            object.__setattr__(self, "modules", value)
+            return value
+        if name == "text_files":
+            value = self.proved.text_files
+            object.__setattr__(self, "text_files", value)
+            return value
+        raise AttributeError(name)
+
+    @cached_property
+    def proved(self) -> CodemodSourceSnapshot:
+        after_snapshot = self.projection.snapshot
+        if self.changed_projections:
+            for file_path, (items, sig) in self.changed_projections.items():
+                if file_path in after_snapshot.sources_by_file_path:
+                    after_snapshot.parsed_module_for_source_path(
+                        file_path
+                    ).install_family_batch(
+                        CompactModuleClassProjectionFamily, items, sig
+                    )
+        return after_snapshot
+
+    @property
+    def source_state_id(self) -> str:
+        return self.projection.source_state_id
+
+    @cached_property
+    def source_snapshot(self) -> CodemodSourceSnapshot:
+        return self.proved.with_findings(self.findings)
+
+    def warm_compact_class_index(self) -> CompactClassFamilyIndex:
+        index = self.proved.compact_class_index
+        if "source_snapshot" in self.__dict__:
+            snap_dict = self.__dict__["source_snapshot"].__dict__
+            snap_dict.setdefault(
+                "compact_class_projections", self.proved.compact_class_projections
+            )
+            snap_dict.setdefault("compact_class_index", index)
+        return index
 
 
 @dataclass(frozen=True)
@@ -2033,6 +2125,493 @@ class CodemodGoalProgress:
         )
 
 
+@dataclass
+class _Stage0Prewarm:
+    """Background worker that prewarms compact families and per-module findings
+    for stage-0 edited modules while multi-stage planning continues."""
+
+    done_r: int
+    mem_fd: int
+    pid: int
+    _closed: bool = False
+
+    @classmethod
+    def start(
+        cls,
+        modules: tuple[ParsedModule, ...],
+        config: DetectorConfig,
+        *,
+        close_fds: Iterable[int] = (),
+    ) -> _Stage0Prewarm | None:
+        if not sys.platform.startswith("linux") or not modules:
+            return None
+        all_detectors = default_detector_types_for_analysis()
+        per_module_types = DetectorCacheGranularity.PER_MODULE.select_detector_types(
+            all_detectors
+        )
+        cross_module_types = tuple(
+            dt for dt in all_detectors if dt not in per_module_types
+        )
+        pooled_cross = tuple(
+            dt for dt in cross_module_types if not dt.prefers_in_process_execution()
+        )
+        pure_families: tuple[type[CollectedFamily], ...] = tuple(
+            dict.fromkeys(
+                family
+                for dt in pooled_cross
+                if issubclass(dt, CompactModuleProjectionDetectorMixin)
+                and dt.pure_compact_projection_function
+                for family in dt.compact_projection_families()
+            )
+        )
+        done_r, done_w = os.pipe()
+        mem_fd = os.memfd_create("nra_stage0_prewarm")
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        sys.stdout.flush()
+        sys.stderr.flush()
+        pid = os.fork()
+        if pid == 0:
+            try:
+                os.setpgrp()
+            except OSError:
+                pass
+            os.close(done_r)
+            for fd in close_fds:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            gc.disable()
+            try:
+                try:
+                    def _prewarm_tasks(
+                        tasks: tuple[
+                            tuple[ParsedModule, tuple[type[CollectedFamily], ...], bool],
+                            ...,
+                        ],
+                    ) -> dict[
+                        str,
+                        tuple[
+                            str,
+                            dict[type[CollectedFamily], tuple[tuple[object, ...], str]],
+                            list[RefactorFinding],
+                        ],
+                    ]:
+                        local_entries: dict[
+                            str,
+                            tuple[
+                                str,
+                                dict[type[CollectedFamily], tuple[tuple[object, ...], str]],
+                                list[RefactorFinding],
+                            ],
+                        ] = {}
+                        for module, fam_subset, run_local in tasks:
+                            batches: dict[
+                                type[CollectedFamily], tuple[tuple[object, ...], str]
+                            ] = {}
+                            for family in fam_subset:
+                                batch_obj = module.family_batch(family)
+                                batches[family] = (
+                                    batch_obj.items,
+                                    batch_obj.content_signature,
+                                )
+                            mod_findings = (
+                                analyze_detector_types(
+                                    ParsedModuleSet((module,)),
+                                    config,
+                                    detector_types=per_module_types,
+                                    analysis_workers=1,
+                                )
+                                if run_local and per_module_types
+                                else []
+                            )
+                            existing = local_entries.get(module.file_path)
+                            if existing is None:
+                                local_entries[module.file_path] = (
+                                    module.source,
+                                    batches,
+                                    mod_findings,
+                                )
+                            else:
+                                existing[1].update(batches)
+                                if mod_findings:
+                                    existing[2].extend(mod_findings)
+                        return local_entries
+
+                    # Split large files across family shards so a single huge
+                    # module (e.g. 160 KB) does not serialize prewarm on one core.
+                    work_items: list[
+                        tuple[
+                            int,
+                            ParsedModule,
+                            tuple[type[CollectedFamily], ...],
+                            bool,
+                        ]
+                    ] = []
+                    has_large_module = False
+                    for module in modules:
+                        src_len = len(module.source)
+                        if src_len >= 48_000 and len(pure_families) >= 6:
+                            has_large_module = True
+                            shard_count = 3 if src_len >= 80_000 else 2
+                            for shard_idx in range(shard_count):
+                                fam_shard = pure_families[shard_idx::shard_count]
+                                work_items.append(
+                                    (
+                                        max(1, src_len // shard_count),
+                                        module,
+                                        fam_shard,
+                                        shard_idx == shard_count - 1,
+                                    )
+                                )
+                        else:
+                            work_items.append((src_len, module, pure_families, True))
+
+                    worker_count = (
+                        4
+                        if len(modules) >= 10 or has_large_module
+                        else (2 if len(modules) >= 4 else 1)
+                    )
+                    if worker_count > 1 and len(work_items) > 1:
+                        work_items.sort(key=lambda item: -item[0])
+                        bins: list[
+                            list[
+                                tuple[
+                                    ParsedModule,
+                                    tuple[type[CollectedFamily], ...],
+                                    bool,
+                                ]
+                            ]
+                        ] = [[] for _ in range(worker_count)]
+                        loads = [0] * worker_count
+                        for weight, module, fam_subset, run_local in work_items:
+                            lightest = min(range(worker_count), key=loads.__getitem__)
+                            bins[lightest].append((module, fam_subset, run_local))
+                            loads[lightest] += weight
+                        packed = [tuple(b) for b in bins if b]
+                        sub_children: dict[int, tuple[int, bytearray]] = {}
+                        for bucket in packed[1:]:
+                            sr, sw = os.pipe()
+                            _enlarge_pipe(sw)
+                            spid = os.fork()
+                            if spid == 0:
+                                os.close(sr)
+                                os.close(done_w)
+                                os.close(mem_fd)
+                                for ofd in list(sub_children):
+                                    os.close(ofd)
+                                gc.disable()
+                                try:
+                                    try:
+                                        sub_payload = pickle.dumps(
+                                            (True, _prewarm_tasks(bucket))
+                                        )
+                                    except BaseException:  # noqa: BLE001
+                                        sub_payload = pickle.dumps(
+                                            (False, traceback.format_exc())
+                                        )
+                                    with os.fdopen(sw, "wb") as out:
+                                        out.write(sub_payload)
+                                finally:
+                                    os._exit(0)
+                            os.close(sw)
+                            sub_children[sr] = (spid, bytearray())
+                        entries = _prewarm_tasks(packed[0])
+                        with selectors.DefaultSelector() as sel:
+                            for sfd in sub_children:
+                                sel.register(sfd, selectors.EVENT_READ)
+                            while sub_children:
+                                for skey, _ in sel.select():
+                                    sfd = skey.fd
+                                    spid, sbuf = sub_children[sfd]
+                                    schunk = os.read(sfd, 1 << 20)
+                                    if schunk:
+                                        sbuf += schunk
+                                        continue
+                                    sel.unregister(sfd)
+                                    os.close(sfd)
+                                    del sub_children[sfd]
+                                    os.waitpid(spid, 0)
+                                    if sbuf:
+                                        sok, sval = pickle.loads(bytes(sbuf))
+                                        if sok:
+                                            for path, (
+                                                src_text,
+                                                sub_batches,
+                                                sub_findings,
+                                            ) in sval.items():
+                                                existing = entries.get(path)
+                                                if existing is None:
+                                                    entries[path] = (
+                                                        src_text,
+                                                        sub_batches,
+                                                        sub_findings,
+                                                    )
+                                                else:
+                                                    existing[1].update(sub_batches)
+                                                    if sub_findings:
+                                                        existing[2].extend(
+                                                            sub_findings
+                                                        )
+                    else:
+                        entries = _prewarm_tasks(
+                            tuple(
+                                (module, pure_families, True) for module in modules
+                            )
+                        )
+                    payload = pickle.dumps((True, entries))
+                except BaseException:  # noqa: BLE001
+                    payload = pickle.dumps((False, traceback.format_exc()))
+                view = memoryview(payload)
+                offset = 0
+                while offset < len(view):
+                    written = os.pwrite(mem_fd, view[offset:], offset)
+                    offset += written
+                os.close(mem_fd)
+                try:
+                    os.write(done_w, b"1")
+                except OSError:
+                    pass
+                os.close(done_w)
+                sys.stdout.flush()
+                sys.stderr.flush()
+            finally:
+                os._exit(0)
+        os.close(done_w)
+        if gc_was_enabled:
+            gc.enable()
+        return cls(done_r=done_r, mem_fd=mem_fd, pid=pid)
+
+    def read_entries(
+        self,
+    ) -> dict[
+        str,
+        tuple[
+            str,
+            dict[type[CollectedFamily], tuple[tuple[object, ...], str]],
+            list[RefactorFinding],
+        ],
+    ] | None:
+        if self._closed:
+            return None
+        try:
+            os.read(self.done_r, 1)
+        except OSError:
+            return None
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            chunk = os.pread(self.mem_fd, 1 << 20, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+        if not chunks:
+            return None
+        ok, payload = pickle.loads(b"".join(chunks))
+        if not ok:
+            return None
+        return payload
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            os.close(self.done_r)
+        except OSError:
+            pass
+        try:
+            os.close(self.mem_fd)
+        except OSError:
+            pass
+        try:
+            os.killpg(self.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            try:
+                os.kill(self.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+        try:
+            os.waitpid(self.pid, 0)
+        except ChildProcessError:
+            pass
+
+
+_ACTIVE_STAGE0_PREWARM: ContextVar[tuple[_Stage0Prewarm, ...]] = ContextVar(
+    "nra_active_stage0_prewarm", default=()
+)
+
+
+def _enlarge_pipe(fd: int, size: int = 1 << 20) -> None:
+    if sys.platform.startswith("linux"):
+        try:
+            fcntl.fcntl(fd, 1031, size)  # F_SETPIPE_SZ
+        except OSError:
+            pass
+
+
+class _PendingTrajectoryEntry(ABC):
+    """One BFS queue entry: either an already-proved trajectory state or a
+    forked sibling branch whose reproof (and optional preplan) finishes in
+    parallel while earlier branches advance."""
+
+    @property
+    @abstractmethod
+    def depth(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def source_state_id(self) -> str: ...
+
+    @abstractmethod
+    def open_fds(self) -> tuple[int, ...]: ...
+
+    @abstractmethod
+    def ready_state_for_preplan(self) -> CodemodRefactorTrajectoryState | None: ...
+
+    @abstractmethod
+    def materialize(
+        self,
+        runner: CodemodRefactorGoalRunner,
+        preplanned: dict[str, tuple[int, int]],
+    ) -> CodemodRefactorTrajectoryState: ...
+
+    @abstractmethod
+    def cleanup(self) -> None: ...
+
+
+@dataclass(frozen=True)
+class _ReadyTrajectoryEntry(_PendingTrajectoryEntry):
+    state: CodemodRefactorTrajectoryState
+
+    @property
+    def depth(self) -> int:
+        return self.state.depth
+
+    @property
+    def source_state_id(self) -> str:
+        return self.state.source_state_id
+
+    def open_fds(self) -> tuple[int, ...]:
+        return ()
+
+    def ready_state_for_preplan(self) -> CodemodRefactorTrajectoryState | None:
+        return self.state
+
+    def materialize(
+        self,
+        runner: CodemodRefactorGoalRunner,
+        preplanned: dict[str, tuple[int, int]],
+    ) -> CodemodRefactorTrajectoryState:
+        del runner, preplanned
+        return self.state
+
+    def cleanup(self) -> None:
+        return None
+
+
+@dataclass(frozen=True)
+class _DeferredBranchEntry(_PendingTrajectoryEntry):
+    source_state_id_value: str
+    depth_value: int
+    parent_scan: CodemodWorkflowScan
+    parent_stages: tuple[CodemodRefactorTrajectoryStage, ...]
+    class_plan_report: FindingRecipeClassPlanReport
+    simulation: CodemodPlanDocumentSimulation
+    reproof_reader: int
+    reproof_pid: int
+    preplan_reader: int | None
+
+    @property
+    def depth(self) -> int:
+        return self.depth_value
+
+    @property
+    def source_state_id(self) -> str:
+        return self.source_state_id_value
+
+    def open_fds(self) -> tuple[int, ...]:
+        return (
+            (self.reproof_reader, self.preplan_reader)
+            if self.preplan_reader is not None
+            else (self.reproof_reader,)
+        )
+
+    def ready_state_for_preplan(self) -> CodemodRefactorTrajectoryState | None:
+        return None
+
+    def materialize(
+        self,
+        runner: CodemodRefactorGoalRunner,
+        preplanned: dict[str, tuple[int, int]],
+    ) -> CodemodRefactorTrajectoryState:
+        buf = bytearray()
+        try:
+            while True:
+                chunk = os.read(self.reproof_reader, 1 << 20)
+                if not chunk:
+                    break
+                buf += chunk
+        finally:
+            os.close(self.reproof_reader)
+        if not buf:
+            if self.preplan_reader is not None:
+                os.close(self.preplan_reader)
+            _, status = os.waitpid(self.reproof_pid, 0)
+            raise RuntimeError(
+                f"branch reproof worker exited without results (wait status {status})"
+            )
+        ok, value = pickle.loads(bytes(buf))
+        if not ok:
+            if self.preplan_reader is not None:
+                os.close(self.preplan_reader)
+            os.waitpid(self.reproof_pid, 0)
+            raise RuntimeError(f"branch reproof worker failed:\n{value}")
+        findings, coverage, changed_projections, will_preplan = value
+        projected: CodemodWorkflowScan = LazyProvedWorkflowScan(
+            projection=self.simulation.after_snapshot_projection,
+            changed_projections=changed_projections,
+            findings=findings,
+            coverage=coverage,
+        )
+        if will_preplan and self.preplan_reader is not None:
+            preplanned[self.source_state_id_value] = (
+                self.preplan_reader,
+                self.reproof_pid,
+            )
+        else:
+            if self.preplan_reader is not None:
+                os.close(self.preplan_reader)
+            ScanCache.defer_child_reap(self.reproof_pid)
+        if not runner.target_findings(projected):
+            projected = runner.certified(projected)
+        stage = runner.stage(
+            self.parent_scan,
+            projected,
+            class_plan_report=self.class_plan_report,
+            simulation=self.simulation,
+        )
+        return CodemodRefactorTrajectoryState(
+            scan=projected,
+            stages=(*self.parent_stages, stage),
+        )
+
+    def cleanup(self) -> None:
+        os.close(self.reproof_reader)
+        if self.preplan_reader is not None:
+            os.close(self.preplan_reader)
+        try:
+            os.kill(self.reproof_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        os.waitpid(self.reproof_pid, 0)
+
+
 @dataclass(frozen=True, kw_only=True)
 class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     """Prove virtual stages, then commit one revision-checked migration batch."""
@@ -2079,7 +2658,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     def _pooled_exact_reproof_workers(self, effective_workers: int) -> int:
         """Worker count for pooled cross-module reproofs overlapped with mypy."""
 
-        return max(1, min(8, effective_workers - 1))
+        return max(1, min(6, effective_workers - 1))
 
     def fresh_scan(self) -> CodemodWorkflowScan:
         scan = CodemodWorkflowScan.parsed(
@@ -2161,7 +2740,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         self.config,
                         detector_types=detector_types,
                         analysis_workers=(
-                            1 if len(detector_types) <= 2 else self.analysis_workers
+                            1 if len(detector_types) <= 8 else self.effective_analysis_workers()
                         ),
                     ),
                     *carried,
@@ -2223,9 +2802,10 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 for path, module in after_by_path.items()
                 if before_by_path.get(path) is not module
             )
+            removed_paths = frozenset(before_by_path) - frozenset(after_by_path)
             invalidated = frozenset(
                 module.file_path for module in changed_or_created
-            ) | (frozenset(before_by_path) - frozenset(after_by_path))
+            ) | removed_paths
             already_exact_ids = scan.coverage.exact_detector_ids
             all_detectors = default_detector_types_for_analysis()
             remaining_detectors = tuple(
@@ -2269,46 +2849,84 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 for detector_type in cross_module_types
                 if not detector_type.prefers_in_process_execution()
             )
+            skipped_cross_ids: frozenset[str] = frozenset()
             if (
-                in_process_cross
+                (effective_workers >= 2 or len(changed_or_created) >= 4)
+                and in_process_cross
                 and (pooled_cross or (changed_or_created and per_module_types))
-                and effective_workers >= 2
+                and (len(changed_or_created) >= 3 or bool(removed_paths))
                 and sys.platform.startswith("linux")
             ):
-                reproved_local, reproved_cross = self._overlapped_exact_reproof(
-                    scan=scan,
-                    changed_or_created=changed_or_created,
-                    per_module_types=per_module_types,
-                    in_process_cross=in_process_cross,
-                    pooled_cross=pooled_cross,
-                    effective_workers=effective_workers,
+                reproved_local, reproved_cross, skipped_cross_ids = (
+                    self._overlapped_exact_reproof(
+                        scan=scan,
+                        before_by_path=before_by_path,
+                        removed_paths=removed_paths,
+                        changed_or_created=changed_or_created,
+                        per_module_types=per_module_types,
+                        in_process_cross=in_process_cross,
+                        pooled_cross=pooled_cross,
+                        effective_workers=effective_workers,
+                    )
                 )
             else:
+                pure_families: tuple[type[CollectedFamily], ...] = tuple(
+                    dict.fromkeys(
+                        family
+                        for dt in cross_module_types
+                        if issubclass(dt, CompactModuleProjectionDetectorMixin)
+                        and dt.pure_compact_projection_function
+                        for family in dt.compact_projection_families()
+                    )
+                )
                 reproved_local = (
-                    analyze_detector_types(
+                    prewarm_compact_families_and_analyze_per_module(
                         ParsedModuleSet.of(changed_or_created),
                         self.config,
-                        detector_types=per_module_types,
-                        analysis_workers=self.analysis_workers,
+                        per_module_types=per_module_types,
+                        families=pure_families,
+                        analysis_workers=effective_workers,
                     )
-                    if changed_or_created and per_module_types
+                    if changed_or_created and (per_module_types or pure_families)
                     else []
+                )
+                dirty_cross, skipped_cross_ids = self._partition_unchanged_cross_detectors(
+                    before_by_path=before_by_path,
+                    removed_paths=removed_paths,
+                    changed_or_created=changed_or_created,
+                    cross_detectors=cross_module_types,
+                    analysis_workers=1,
                 )
                 reproved_cross = (
                     analyze_detector_types(
                         scan.modules,
                         self.config,
-                        detector_types=cross_module_types,
+                        detector_types=dirty_cross,
                         analysis_workers=effective_workers,
                     )
-                    if cross_module_types
+                    if dirty_cross
                     else []
                 )
+            carried_cross = (
+                [
+                    finding
+                    for finding in baseline.findings
+                    if finding.detector_id in skipped_cross_ids
+                ]
+                if skipped_cross_ids
+                else []
+            )
             return replace(
                 scan,
                 findings=self.report_scoped_findings(
                     SortedFindingsAuthority.sort(
-                        (*carried_exact, *carried, *reproved_local, *reproved_cross)
+                        (
+                            *carried_exact,
+                            *carried,
+                            *carried_cross,
+                            *reproved_local,
+                            *reproved_cross,
+                        )
                     )
                 ),
                 coverage=EveryDetectorCoverage(),
@@ -2323,23 +2941,339 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             coverage=EveryDetectorCoverage(),
         )
 
+    @staticmethod
+    def _partition_unchanged_cross_detectors(
+        *,
+        before_by_path: Mapping[str, ParsedModule],
+        removed_paths: frozenset[str],
+        changed_or_created: tuple[ParsedModule, ...],
+        cross_detectors: tuple[type[IssueDetector], ...],
+        analysis_workers: int,
+    ) -> tuple[tuple[type[IssueDetector], ...], frozenset[str]]:
+        """Separate pure compact cross-module detectors whose input families are
+        bit-for-bit identical to the exact baseline scan so their baseline
+        findings carry forward without re-running them."""
+
+        pure_detectors = tuple(
+            dt
+            for dt in cross_detectors
+            if issubclass(dt, CompactModuleProjectionDetectorMixin)
+            and dt.pure_compact_projection_function
+        )
+        if not pure_detectors:
+            return cross_detectors, frozenset()
+        families: tuple[type[CollectedFamily], ...] = tuple(
+            dict.fromkeys(
+                family
+                for dt in pure_detectors
+                for family in dt.compact_projection_families()
+            )
+        )
+        if changed_or_created:
+            _prewarm_compact_families(
+                ParsedModuleSet.of(changed_or_created),
+                families,
+                analysis_workers,
+            )
+        changed_families: set[type[CollectedFamily]] = set()
+        for family in families:
+            dirty = False
+            for module in changed_or_created:
+                old_module = before_by_path.get(module.file_path)
+                if old_module is None or not old_module.has_family_batch(family):
+                    dirty = True
+                    break
+                if module.family_batch(family).items != old_module.family_batch(family).items:
+                    dirty = True
+                    break
+            if not dirty and removed_paths:
+                for path in removed_paths:
+                    old_module = before_by_path.get(path)
+                    if (
+                        old_module is None
+                        or not old_module.has_family_batch(family)
+                        or old_module.family_batch(family).items
+                    ):
+                        dirty = True
+                        break
+            if dirty:
+                changed_families.add(family)
+        dirty_detectors: list[type[IssueDetector]] = []
+        skipped_ids: set[str] = set()
+        for dt in cross_detectors:
+            if (
+                issubclass(dt, CompactModuleProjectionDetectorMixin)
+                and dt.pure_compact_projection_function
+                and all(
+                    family not in changed_families
+                    for family in dt.compact_projection_families()
+                )
+            ):
+                skipped_ids.add(dt.effective_detector_id())
+            else:
+                dirty_detectors.append(dt)
+        return tuple(dirty_detectors), frozenset(skipped_ids)
+
+    @staticmethod
+    def _partition_dirty_pooled_groups(
+        dirty_pooled: tuple[type[IssueDetector], ...],
+        *,
+        three_way: bool,
+    ) -> tuple[tuple[type[IssueDetector], ...], ...]:
+        """Partition `dirty_pooled` cross-module detectors into 2 or 3 balanced
+        groups while keeping shared-group-context detectors atomic."""
+
+        class_only_dirty = tuple(
+            dt
+            for dt in dirty_pooled
+            if issubclass(dt, CompactModuleProjectionDetectorMixin)
+            and not issubclass(dt, CompactMultiModuleProjectionDetectorMixin)
+            and dt.module_projection_family is CompactModuleClassProjectionFamily
+        )
+        other_dirty = tuple(dt for dt in dirty_pooled if dt not in class_only_dirty)
+        if not class_only_dirty or not other_dirty:
+            return (dirty_pooled,)
+        if three_way and len(other_dirty) >= 8:
+            shared_buckets: dict[object, list[type[IssueDetector]]] = {}
+            atomic_units: list[list[type[IssueDetector]]] = []
+            for dt in other_dirty:
+                builder = (
+                    dt.compact_shared_group_context_builder
+                    if issubclass(dt, CompactMultiModuleProjectionDetectorMixin)
+                    else None
+                )
+                if builder is not None:
+                    bucket = shared_buckets.get(builder)
+                    if bucket is None:
+                        bucket = []
+                        shared_buckets[builder] = bucket
+                        atomic_units.append(bucket)
+                    bucket.append(dt)
+                else:
+                    atomic_units.append([dt])
+            if len(atomic_units) >= 2:
+                other_a: list[type[IssueDetector]] = []
+                other_b: list[type[IssueDetector]] = []
+                for unit in sorted(atomic_units, key=len, reverse=True):
+                    if len(other_a) <= len(other_b):
+                        other_a.extend(unit)
+                    else:
+                        other_b.extend(unit)
+                return (class_only_dirty, tuple(other_a), tuple(other_b))
+        return (class_only_dirty, other_dirty)
+
     def _overlapped_exact_reproof(
         self,
         *,
         scan: CodemodWorkflowScan,
+        before_by_path: Mapping[str, ParsedModule],
+        removed_paths: frozenset[str],
         changed_or_created: tuple[ParsedModule, ...],
         per_module_types: tuple[type[IssueDetector], ...],
         in_process_cross: tuple[type[IssueDetector], ...],
         pooled_cross: tuple[type[IssueDetector], ...],
         effective_workers: int,
-    ) -> tuple[list[RefactorFinding], list[RefactorFinding]]:
+    ) -> tuple[list[RefactorFinding], list[RefactorFinding], frozenset[str]]:
         """Run non-type-checker local + cross-module reproofs (including their
-        compact-family prewarms) in a forked child concurrently with stateful
+        compact-family prewarms) in forked children concurrently with stateful
         in-process detectors (e.g. incremental mypy) in the parent."""
 
-        already_frozen = gc.get_freeze_count() > 0
-        gc.freeze()
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        stage0_prewarm = _ACTIVE_STAGE0_PREWARM.get()
+        pure_families: tuple[type[CollectedFamily], ...] = tuple(
+            dict.fromkeys(
+                family
+                for dt in pooled_cross
+                if issubclass(dt, CompactModuleProjectionDetectorMixin)
+                and dt.pure_compact_projection_function
+                for family in dt.compact_projection_families()
+            )
+        )
+        # Fast path when speculative stage-0 prewarm already computed compact
+        # families and per-module findings: install them in the parent before
+        # forking so direct child workers share the prewarmed batches and class
+        # index via copy-on-write with zero nested grandchild forks and while
+        # the parent overlaps mypy + one pooled shard.
+        if stage0_prewarm and changed_or_created and (per_module_types or pure_families):
+            prewarmed_parent: dict[
+                str,
+                tuple[
+                    str,
+                    dict[type[CollectedFamily], tuple[tuple[object, ...], str]],
+                    list[RefactorFinding],
+                ],
+            ] = {}
+            for pw in stage0_prewarm:
+                pw_entries = pw.read_entries()
+                if pw_entries:
+                    prewarmed_parent.update(pw_entries)
+            if prewarmed_parent:
+                wanted_local_ids = frozenset(
+                    dt.effective_detector_id() for dt in per_module_types
+                )
+                parent_local: list[RefactorFinding] = []
+                parent_misses: list[ParsedModule] = []
+                for module in changed_or_created:
+                    hit = prewarmed_parent.get(module.file_path)
+                    if (
+                        hit is not None
+                        and hit[0] == module.source
+                        and all(fam in hit[1] for fam in pure_families)
+                    ):
+                        for fam in pure_families:
+                            items, sig = hit[1][fam]
+                            module.install_family_batch(fam, items, sig)
+                        if wanted_local_ids:
+                            parent_local.extend(
+                                f
+                                for f in hit[2]
+                                if f.detector_id in wanted_local_ids
+                            )
+                    else:
+                        parent_misses.append(module)
+                if len(parent_misses) <= 2:
+                    if parent_misses:
+                        parent_local.extend(
+                            prewarm_compact_families_and_analyze_per_module(
+                                ParsedModuleSet.of(tuple(parent_misses)),
+                                self.config,
+                                per_module_types=per_module_types,
+                                families=pure_families,
+                                analysis_workers=1,
+                            )
+                        )
+                    dirty_pooled, skipped_ids = self._partition_unchanged_cross_detectors(
+                        before_by_path=before_by_path,
+                        removed_paths=removed_paths,
+                        changed_or_created=changed_or_created,
+                        cross_detectors=pooled_cross,
+                        analysis_workers=1,
+                    )
+                    if dirty_pooled:
+                        groups = self._partition_dirty_pooled_groups(
+                            dirty_pooled,
+                            three_way=False,
+                        )
+                        scan.warm_compact_class_index()
+                        direct_children: dict[int, tuple[int, bytearray]] = {}
+                        reap_pids: list[int] = []
+                        sys.stdout.flush()
+                        sys.stderr.flush()
+                        try:
+                            for group in groups:
+                                sub_r, sub_w = os.pipe()
+                                _enlarge_pipe(sub_w)
+                                sub_pid = os.fork()
+                                if sub_pid == 0:
+                                    os.close(sub_r)
+                                    for open_fd in list(direct_children):
+                                        os.close(open_fd)
+                                    gc.disable()
+                                    try:
+                                        try:
+                                            sub_findings = analyze_detector_types(
+                                                scan.modules,
+                                                self.config,
+                                                detector_types=group,
+                                                analysis_workers=1,
+                                            )
+                                            sub_payload = pickle.dumps(
+                                                (True, sub_findings)
+                                            )
+                                        except BaseException:  # noqa: BLE001
+                                            sub_payload = pickle.dumps(
+                                                (False, traceback.format_exc())
+                                            )
+                                        with os.fdopen(sub_w, "wb") as out:
+                                            out.write(sub_payload)
+                                    finally:
+                                        os._exit(0)
+                                os.close(sub_w)
+                                direct_children[sub_r] = (sub_pid, bytearray())
+                            if (
+                                TypeCheckerSession.has_active_incremental()
+                                and any(
+                                    dt.prefers_in_process_execution()
+                                    for dt in in_process_cross
+                                )
+                            ):
+                                TypeCheckerSession.started(
+                                    SourceTexts(tuple(scan.modules))
+                                )
+                            in_process_findings = analyze_detector_types(
+                                scan.modules,
+                                self.config,
+                                detector_types=in_process_cross,
+                                analysis_workers=1,
+                            )
+                            pooled_findings: list[RefactorFinding] = []
+                            raw_payloads: list[bytes] = []
+                            with selectors.DefaultSelector() as sub_sel:
+                                for sfd in direct_children:
+                                    sub_sel.register(sfd, selectors.EVENT_READ)
+                                while direct_children:
+                                    for skey, _ in sub_sel.select():
+                                        sfd = skey.fd
+                                        spid, sbuf = direct_children[sfd]
+                                        schunk = os.read(sfd, 1 << 20)
+                                        if schunk:
+                                            sbuf += schunk
+                                            continue
+                                        sub_sel.unregister(sfd)
+                                        os.close(sfd)
+                                        del direct_children[sfd]
+                                        reap_pids.append(spid)
+                                        raw_payloads.append(bytes(sbuf))
+                            for raw_sub in raw_payloads:
+                                sub_ok, sub_val = pickle.loads(raw_sub)
+                                if not sub_ok:
+                                    raise RuntimeError(
+                                        f"direct exact reproof worker failed:\n{sub_val}"
+                                    )
+                                pooled_findings.extend(sub_val)
+                        finally:
+                            for sfd, (spid, _sbuf) in direct_children.items():
+                                os.close(sfd)
+                                try:
+                                    os.kill(spid, signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+                                os.waitpid(spid, 0)
+                            for spid in reap_pids:
+                                ScanCache.defer_child_reap(spid)
+                            if gc_was_enabled:
+                                gc.enable()
+                        return (
+                            parent_local,
+                            [*in_process_findings, *pooled_findings],
+                            skipped_ids,
+                        )
+                    if (
+                        TypeCheckerSession.has_active_incremental()
+                        and any(
+                            dt.prefers_in_process_execution()
+                            for dt in in_process_cross
+                        )
+                    ):
+                        TypeCheckerSession.started(SourceTexts(tuple(scan.modules)))
+                    in_process_findings = analyze_detector_types(
+                        scan.modules,
+                        self.config,
+                        detector_types=in_process_cross,
+                        analysis_workers=1,
+                    )
+                    if gc_was_enabled:
+                        gc.enable()
+                    return (
+                        parent_local,
+                        list(in_process_findings),
+                        skipped_ids,
+                    )
+
         reader, writer = os.pipe()
+        _enlarge_pipe(writer)
         sys.stdout.flush()
         sys.stderr.flush()
         pid = os.fork()
@@ -2348,36 +3282,191 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             gc.disable()
             try:
                 try:
-                    local = (
-                        analyze_detector_types(
-                            ParsedModuleSet.of(changed_or_created),
-                            self.config,
-                            detector_types=per_module_types,
-                            analysis_workers=1,
-                        )
-                        if changed_or_created and per_module_types
-                        else []
+                    pooled_workers = self._pooled_exact_reproof_workers(
+                        effective_workers
                     )
-                    pooled = (
-                        analyze_detector_types(
-                            scan.modules,
-                            self.config,
-                            detector_types=pooled_cross,
-                            analysis_workers=self._pooled_exact_reproof_workers(
-                                effective_workers
-                            ),
+                    local: list[RefactorFinding] = []
+                    remaining_changed = changed_or_created
+                    if (
+                        stage0_prewarm
+                        and changed_or_created
+                        and (per_module_types or pure_families)
+                    ):
+                        prewarmed: dict[
+                            str,
+                            tuple[
+                                str,
+                                dict[
+                                    type[CollectedFamily],
+                                    tuple[tuple[object, ...], str],
+                                ],
+                                list[RefactorFinding],
+                            ],
+                        ] = {}
+                        for pw in stage0_prewarm:
+                            pw_entries = pw.read_entries()
+                            if pw_entries:
+                                prewarmed.update(pw_entries)
+                        if prewarmed:
+                            wanted_local_ids = frozenset(
+                                dt.effective_detector_id() for dt in per_module_types
+                            )
+                            misses: list[ParsedModule] = []
+                            for module in changed_or_created:
+                                hit = prewarmed.get(module.file_path)
+                                if (
+                                    hit is not None
+                                    and hit[0] == module.source
+                                    and all(fam in hit[1] for fam in pure_families)
+                                ):
+                                    for fam in pure_families:
+                                        items, sig = hit[1][fam]
+                                        module.install_family_batch(fam, items, sig)
+                                    if wanted_local_ids:
+                                        local.extend(
+                                            f
+                                            for f in hit[2]
+                                            if f.detector_id in wanted_local_ids
+                                        )
+                                else:
+                                    misses.append(module)
+                            remaining_changed = tuple(misses)
+                    if remaining_changed and (per_module_types or pure_families):
+                        local.extend(
+                            prewarm_compact_families_and_analyze_per_module(
+                                ParsedModuleSet.of(remaining_changed),
+                                self.config,
+                                per_module_types=per_module_types,
+                                families=pure_families,
+                                analysis_workers=(
+                                    max(pooled_workers, 2)
+                                    if len(remaining_changed) >= 8
+                                    else pooled_workers
+                                ),
+                            )
                         )
-                        if pooled_cross
-                        else []
+                    dirty_pooled, skipped_ids = self._partition_unchanged_cross_detectors(
+                        before_by_path=before_by_path,
+                        removed_paths=removed_paths,
+                        changed_or_created=changed_or_created,
+                        cross_detectors=pooled_cross,
+                        analysis_workers=1,
                     )
+                    if dirty_pooled:
+                        # Re-query live shared worker budget after prewarm_local:
+                        # peer plays may have finished while prewarm ran, freeing
+                        # cores for the remaining cross-module detectors.
+                        live_pooled_workers = self._pooled_exact_reproof_workers(
+                            self.effective_analysis_workers()
+                        )
+                        if len(changed_or_created) >= 8:
+                            live_pooled_workers = max(live_pooled_workers, 2)
+                        groups = (
+                            self._partition_dirty_pooled_groups(
+                                dirty_pooled,
+                                three_way=live_pooled_workers >= 3,
+                            )
+                            if live_pooled_workers >= 2
+                            else (dirty_pooled,)
+                        )
+                        if len(groups) >= 2:
+                            scan.warm_compact_class_index()
+                            sub_groups = groups[:-1]
+                            local_group = groups[-1]
+                            sub_workers: dict[int, tuple[int, bytearray]] = {}
+                            sub_reap_pids: list[int] = []
+                            for group in sub_groups:
+                                sub_r, sub_w = os.pipe()
+                                _enlarge_pipe(sub_w)
+                                sub_pid = os.fork()
+                                if sub_pid == 0:
+                                    os.close(sub_r)
+                                    os.close(writer)
+                                    for open_fd in list(sub_workers):
+                                        os.close(open_fd)
+                                    gc.disable()
+                                    try:
+                                        try:
+                                            sub_findings = analyze_detector_types(
+                                                scan.modules,
+                                                self.config,
+                                                detector_types=group,
+                                                analysis_workers=1,
+                                            )
+                                            sub_payload = pickle.dumps((True, sub_findings))
+                                        except BaseException:  # noqa: BLE001
+                                            sub_payload = pickle.dumps(
+                                                (False, traceback.format_exc())
+                                            )
+                                        with os.fdopen(sub_w, "wb") as out:
+                                            out.write(sub_payload)
+                                    finally:
+                                        os._exit(0)
+                                os.close(sub_w)
+                                sub_workers[sub_r] = (sub_pid, bytearray())
+                            pooled = list(
+                                analyze_detector_types(
+                                    scan.modules,
+                                    self.config,
+                                    detector_types=local_group,
+                                    analysis_workers=1,
+                                )
+                            )
+                            try:
+                                sub_raw_payloads: list[bytes] = []
+                                with selectors.DefaultSelector() as sub_sel:
+                                    for sfd in sub_workers:
+                                        sub_sel.register(sfd, selectors.EVENT_READ)
+                                    while sub_workers:
+                                        for skey, _ in sub_sel.select():
+                                            sfd = skey.fd
+                                            spid, sbuf = sub_workers[sfd]
+                                            schunk = os.read(sfd, 1 << 20)
+                                            if schunk:
+                                                sbuf += schunk
+                                                continue
+                                            sub_sel.unregister(sfd)
+                                            os.close(sfd)
+                                            del sub_workers[sfd]
+                                            sub_reap_pids.append(spid)
+                                            sub_raw_payloads.append(bytes(sbuf))
+                                for sub_raw in sub_raw_payloads:
+                                    sub_ok, sub_val = pickle.loads(sub_raw)
+                                    if not sub_ok:
+                                        raise RuntimeError(
+                                            f"split exact reproof worker failed:\n{sub_val}"
+                                        )
+                                    pooled.extend(sub_val)
+                            finally:
+                                for sfd, (spid, _sbuf) in sub_workers.items():
+                                    os.close(sfd)
+                                    try:
+                                        os.kill(spid, signal.SIGTERM)
+                                    except ProcessLookupError:
+                                        pass
+                                    os.waitpid(spid, 0)
+                                for spid in sub_reap_pids:
+                                    ScanCache.defer_child_reap(spid)
+                        else:
+                            pooled = analyze_detector_types(
+                                scan.modules,
+                                self.config,
+                                detector_types=dirty_pooled,
+                                analysis_workers=live_pooled_workers,
+                            )
+                    else:
+                        pooled = []
                     changed_projections = {
-                        module.file_path: module.family_batch(
-                            CompactModuleClassProjectionFamily
-                        ).items
+                        module.file_path: (
+                            (b := module.family_batch(CompactModuleClassProjectionFamily)).items,
+                            b.content_signature,
+                        )
                         for module in changed_or_created
                         if module.has_family_batch(CompactModuleClassProjectionFamily)
                     }
-                    payload = pickle.dumps((True, (local, pooled, changed_projections)))
+                    payload = pickle.dumps(
+                        (True, (local, pooled, skipped_ids, changed_projections))
+                    )
                 except BaseException:  # noqa: BLE001
                     payload = pickle.dumps((False, traceback.format_exc()))
                 with os.fdopen(writer, "wb") as out:
@@ -2388,6 +3477,17 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 os._exit(0)
         os.close(writer)
         try:
+            if (
+                TypeCheckerSession.has_active_incremental()
+                and any(
+                    dt.prefers_in_process_execution() for dt in in_process_cross
+                )
+            ):
+                # Sync the full changed corpus once (including files without
+                # ForeignAbsenceSite) so a parallel split covers every edited
+                # module and follow-up score(end) hits zero changes without
+                # flushing a deferred split delta.
+                TypeCheckerSession.started(SourceTexts(tuple(scan.modules)))
             in_process_findings = analyze_detector_types(
                 scan.modules,
                 self.config,
@@ -2404,29 +3504,30 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             except ProcessLookupError:
                 pass
             os.waitpid(pid, 0)
-            if not already_frozen:
-                gc.unfreeze()
+            if gc_was_enabled:
+                gc.enable()
             raise
         os.close(reader)
-        _, status = os.waitpid(pid, 0)
-        if not already_frozen:
-            gc.unfreeze()
+        if gc_was_enabled:
+            gc.enable()
         raw = b"".join(chunks)
         if not raw:
+            _, status = os.waitpid(pid, 0)
             raise RuntimeError(
                 f"exact reproof worker exited without findings (wait status {status})"
             )
+        ScanCache.defer_child_reap(pid)
         ok, value = pickle.loads(raw)
         if not ok:
             raise RuntimeError(f"exact reproof worker failed:\n{value}")
-        local_findings, pooled_findings, changed_projections = value
+        local_findings, pooled_findings, skipped_ids, changed_projections = value
         if changed_projections:
             modules_by_path = {module.file_path: module for module in changed_or_created}
-            for file_path, items in changed_projections.items():
+            for file_path, (items, sig) in changed_projections.items():
                 module = modules_by_path.get(file_path)
                 if module is not None:
-                    module.install_family_batch(CompactModuleClassProjectionFamily, items)
-        return local_findings, [*in_process_findings, *pooled_findings]
+                    module.install_family_batch(CompactModuleClassProjectionFamily, items, sig)
+        return local_findings, [*in_process_findings, *pooled_findings], skipped_ids
 
     def certified(self, scan: CodemodWorkflowScan) -> CodemodWorkflowScan:
         """The scan a terminal state and its report are judged on, as the
@@ -2451,12 +3552,16 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             with self.progress.phase("starting scan") as details:
                 starting_scan = self.starting_scan()
                 details.append(f"{len(starting_scan.findings)} findings")
+            register_base_modules_for_class_digests(starting_scan.modules)
             if self.owner_picks is not None:
                 starting_scan = replace(
                     starting_scan,
                     findings=self.owner_picks.applied(starting_scan.findings)[0],
                 )
-            report = self.proved_run(starting_scan)
+            runner = self
+            if runner.initial_scan is None and starting_scan.scan_mode.exact:
+                runner = replace(runner, initial_scan=starting_scan)
+            report = runner.proved_run(starting_scan)
             if self.owner_picks is None:
                 return report
             return replace(
@@ -2499,7 +3604,9 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             ),
         )
         initial_state = CodemodRefactorTrajectoryState(scan=starting_scan)
-        pending = deque((initial_state,))
+        pending: deque[_PendingTrajectoryEntry] = deque(
+            (_ReadyTrajectoryEntry(initial_state),)
+        )
         visited_source_state_ids = {initial_state.source_state_id}
         terminals_by_source_state_id: dict[
             str,
@@ -2527,153 +3634,477 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             else:
                 dead_ends.append(settled)
 
-        while pending:
-            state = pending.popleft()
-            active_scan = state.scan
-            with self.progress.phase(f"depth {state.depth} targets") as details:
-                target_findings = self.target_findings(active_scan)
-                details.append(f"{len(target_findings)} targets")
-            if not target_findings:
-                active_scan = self.certified(active_scan)
-                target_findings = self.target_findings(active_scan)
-                state = replace(state, scan=active_scan)
-                if not target_findings:
-                    finding_class_delta = CodemodFindingClassDelta.from_findings(
-                        active_scan.covered_findings(starting_scan.findings),
-                        tuple(active_scan.findings),
-                    )
-                    terminal_rejected = False
-                    unjustified = self.migration_type.stage_proof.unjustified(
-                        finding_class_delta.increased_changes
-                    )
-                    if unjustified:
-                        unjustified_debt_terminals.append(
-                            CodemodRefactorUnjustifiedDebtTerminal(
-                                state=state,
-                                finding_class_changes=unjustified,
-                            )
-                        )
-                        terminal_rejected = True
-                    terminal_guard_report = self.terminal_guard_report(active_scan)
-                    if not terminal_guard_report.is_clean:
-                        guard_rejected_terminals.append(
-                            CodemodRefactorGuardRejectedTerminal(
-                                state=state,
-                                guard_report=terminal_guard_report,
-                            )
-                        )
-                        terminal_rejected = True
-                    if not terminal_rejected:
-                        terminals_by_source_state_id[state.source_state_id] = (
-                            CodemodRefactorTrajectoryTerminal(
-                                state,
-                                terminal_guard_report,
-                            )
-                        )
-                    continue
+        preplanned: dict[str, tuple[int, int]] = {}
+        stage_prewarms: list[_Stage0Prewarm] = []
+        stage_tokens: list[object] = []
+        stage1_followup_sent = False
 
-            snapshot = active_scan.source_snapshot
-            with self.progress.phase(f"depth {state.depth} plan") as details:
-                plan = snapshot.plan_from_findings(
-                    target_findings,
-                    frontier_budget=budget.recipe_frontier,
-                )
-                details.append(f"{len(plan.trajectory_frontier.branches)} branches")
-            class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
-                target_findings,
-                root=self.class_plan_root(),
-                finding_plan=plan,
-            )
-            frontier = plan.trajectory_frontier
-            if not frontier.complete:
-                obstacles.append(
-                    CodemodRefactorRecipeFrontierObstacle(
-                        source_state_id=state.source_state_id,
-                        depth=state.depth,
-                        recipe_obstacles=frontier.obstacles,
-                    )
-                )
-                continue
-            if not frontier.branches:
-                settle_dead_end(state, class_plan_report)
-                continue
-            if state.depth >= budget.max_depth:
-                obstacles.append(
-                    CodemodRefactorDepthBudgetObstacle(
-                        source_state_id=state.source_state_id,
-                        depth=state.depth,
-                        max_depth=budget.max_depth,
-                    )
-                )
-                with self.progress.phase(f"depth {state.depth} prefix") as details:
-                    settlement = self.exact_settlement(starting_scan, state)
-                    details.append(settlement.rejection or "clean")
-                if not settlement.rejection:
-                    budget_prefixes.append(
-                        CodemodRefactorBudgetPrefix(
-                            state=replace(state, scan=settlement.scan),
-                            guard_report=settlement.guard_report,
-                            remaining_target_ids=tuple(
-                                sorted(
-                                    finding.stable_id
-                                    for finding in self.target_findings(settlement.scan)
-                                )
-                            ),
-                        )
-                    )
-                continue
+        def _open_background_fds() -> tuple[int, ...]:
+            fds: list[int] = [fd for fd, _pid in preplanned.values()]
+            for queued_entry in pending:
+                fds.extend(queued_entry.open_fds())
+            return tuple(fds)
 
-            valid_transition_count = 0
-            analyzed_rewritten_source_digests: set[str] = set()
-            reproof_branches: list[tuple[int, CodemodPlanDocumentSimulation]] = []
-            for branch_number, branch in enumerate(frontier.branches, start=1):
-                simulation = branch.document_simulation
-                if not simulation.simulation.changed_file_paths:
-                    continue
-                valid_transition_count += 1
-                transition_count += 1
-                rewritten_source_digest = branch.assessment.rewritten_source_digest
-                if rewritten_source_digest in analyzed_rewritten_source_digests:
-                    continue
-                analyzed_rewritten_source_digests.add(rewritten_source_digest)
-                if simulation.required_after_snapshot.source_state_id in visited_source_state_ids:
-                    continue
-                reproof_branches.append((branch_number, simulation))
-            branch_scans = self._reprove_branches(
-                active_scan,
-                reproof_branches,
-                target_findings,
-                depth=state.depth,
-                total_branches=len(frontier.branches),
-            )
-            for (_branch_number, simulation), projected_scan in zip(
-                reproof_branches, branch_scans, strict=True
+        def _maybe_preplan_next_sibling(current_depth: int) -> None:
+            if (
+                not sys.platform.startswith("linux")
+                or not pending
+                or current_depth >= budget.max_depth
             ):
-                stage = self.stage(
-                    active_scan,
-                    projected_scan,
-                    class_plan_report=class_plan_report,
-                    simulation=simulation,
-                )
-                next_state = CodemodRefactorTrajectoryState(
-                    scan=projected_scan,
-                    stages=(*state.stages, stage),
-                )
-                if next_state.source_state_id in visited_source_state_ids:
-                    continue
-                if len(visited_source_state_ids) >= budget.max_states:
-                    obstacles.append(
-                        CodemodRefactorStateBudgetObstacle(
-                            source_state_id=state.source_state_id,
-                            depth=state.depth,
-                            max_states=budget.max_states,
+                return
+            next_state = pending[0].ready_state_for_preplan()
+            if (
+                next_state is None
+                or next_state.depth != current_depth
+                or next_state.source_state_id in preplanned
+                or len(next_state.scan.modules) < 16
+            ):
+                return
+            next_targets = self.target_findings(next_state.scan)
+            if not next_targets:
+                return
+            gc_was_enabled = gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
+            sys.stdout.flush()
+            sys.stderr.flush()
+            bg_fds = _open_background_fds()
+            reader, writer = os.pipe()
+            _enlarge_pipe(writer)
+            pid = os.fork()
+            if pid == 0:
+                os.close(reader)
+                for p_fd in bg_fds:
+                    os.close(p_fd)
+                gc.disable()
+                try:
+                    try:
+                        next_plan = next_state.scan.source_snapshot.plan_from_findings(
+                            next_targets,
+                            frontier_budget=budget.recipe_frontier,
                         )
+                        next_frontier = next_plan.trajectory_frontier
+                        branch_summaries = tuple(
+                            (
+                                branch_number,
+                                branch.assessment,
+                                bool(
+                                    branch.document_simulation.simulation.changed_file_paths
+                                ),
+                                branch.document_simulation.after_snapshot_projection.source_state_id,
+                                branch.document_simulation.document,
+                            )
+                            for branch_number, branch in enumerate(
+                                next_frontier.branches, start=1
+                            )
+                        )
+                        payload = pickle.dumps(
+                            (
+                                True,
+                                (
+                                    next_plan.document,
+                                    next_plan.report,
+                                    next_frontier.complete,
+                                    next_frontier.obstacles,
+                                    branch_summaries,
+                                ),
+                            )
+                        )
+                    except BaseException:  # noqa: BLE001
+                        payload = pickle.dumps((False, traceback.format_exc()))
+                    with os.fdopen(writer, "wb") as out:
+                        out.write(payload)
+                    sys.stdout.flush()
+                    sys.stderr.flush()
+                finally:
+                    os._exit(0)
+            os.close(writer)
+            if gc_was_enabled:
+                gc.enable()
+            preplanned[next_state.source_state_id] = (reader, pid)
+
+        def _collect_preplanned(
+            source_state_id: str,
+        ) -> tuple[
+            CodemodPlanDocument,
+            FindingRecipeSynthesisReport,
+            bool,
+            tuple[FindingRecipeTrajectoryObstacle, ...],
+            tuple[tuple[int, FindingRecipeSetAssessment, bool, str, CodemodPlanDocument], ...],
+        ]:
+            reader, pid = preplanned.pop(source_state_id)
+            buf = bytearray()
+            try:
+                while True:
+                    chunk = os.read(reader, 1 << 20)
+                    if not chunk:
+                        break
+                    buf += chunk
+            finally:
+                os.close(reader)
+                ScanCache.defer_child_reap(pid)
+            if not buf:
+                raise RuntimeError("preplanned trajectory worker exited without result")
+            ok, payload_val = pickle.loads(bytes(buf))
+            if not ok:
+                raise RuntimeError(f"preplanned trajectory worker failed:\n{payload_val}")
+            return payload_val
+
+        try:
+            while pending:
+                state = pending.popleft().materialize(self, preplanned)
+                active_scan = state.scan
+                with self.progress.phase(f"depth {state.depth} targets") as details:
+                    target_findings = self.target_findings(active_scan)
+                    details.append(f"{len(target_findings)} targets")
+                if not target_findings:
+                    active_scan = self.certified(active_scan)
+                    target_findings = self.target_findings(active_scan)
+                    state = replace(state, scan=active_scan)
+                    if not target_findings:
+                        finding_class_delta = CodemodFindingClassDelta.from_findings(
+                            active_scan.covered_findings(starting_scan.findings),
+                            tuple(active_scan.findings),
+                        )
+                        terminal_rejected = False
+                        unjustified = self.migration_type.stage_proof.unjustified(
+                            finding_class_delta.increased_changes
+                        )
+                        if unjustified:
+                            unjustified_debt_terminals.append(
+                                CodemodRefactorUnjustifiedDebtTerminal(
+                                    state=state,
+                                    finding_class_changes=unjustified,
+                                )
+                            )
+                            terminal_rejected = True
+                        terminal_guard_report = self.terminal_guard_report(active_scan)
+                        if not terminal_guard_report.is_clean:
+                            guard_rejected_terminals.append(
+                                CodemodRefactorGuardRejectedTerminal(
+                                    state=state,
+                                    guard_report=terminal_guard_report,
+                                )
+                            )
+                            terminal_rejected = True
+                        if not terminal_rejected:
+                            terminals_by_source_state_id[state.source_state_id] = (
+                                CodemodRefactorTrajectoryTerminal(
+                                    state,
+                                    terminal_guard_report,
+                                )
+                            )
+                        continue
+
+                _maybe_preplan_next_sibling(state.depth)
+                if state.source_state_id in preplanned:
+                    with self.progress.phase(f"depth {state.depth} plan") as details:
+                        (
+                            pre_document,
+                            pre_report,
+                            frontier_complete,
+                            frontier_obstacles,
+                            branch_summaries,
+                        ) = _collect_preplanned(state.source_state_id)
+                        details.append(f"{len(branch_summaries)} branches")
+                    if not frontier_complete:
+                        obstacles.append(
+                            CodemodRefactorRecipeFrontierObstacle(
+                                source_state_id=state.source_state_id,
+                                depth=state.depth,
+                                recipe_obstacles=frontier_obstacles,
+                            )
+                        )
+                        continue
+                    if not branch_summaries:
+                        rebuilt_plan = FindingRecipePlan(
+                            document=pre_document,
+                            trajectory_frontier=FindingRecipeTrajectoryFrontier(
+                                branches=(),
+                                complete=frontier_complete,
+                                obstacles=frontier_obstacles,
+                            ),
+                            report=pre_report,
+                        )
+                        class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
+                            target_findings,
+                            root=self.class_plan_root(),
+                            finding_plan=rebuilt_plan,
+                        )
+                        settle_dead_end(state, class_plan_report)
+                        continue
+                    valid_transition_count = 0
+                    analyzed_rewritten_source_digests: set[str] = set()
+                    reproof_branches: list[tuple[int, CodemodPlanDocumentSimulation]] = []
+                    reproof_complete_flags: list[bool] = []
+                    rebuilt_branches: list[FindingRecipeTrajectoryBranch] = []
+                    for (
+                        branch_number,
+                        branch_assessment,
+                        has_changes,
+                        after_state_id,
+                        document,
+                    ) in branch_summaries:
+                        if not has_changes:
+                            continue
+                        valid_transition_count += 1
+                        transition_count += 1
+                        rewritten_source_digest = branch_assessment.rewritten_source_digest
+                        if rewritten_source_digest in analyzed_rewritten_source_digests:
+                            continue
+                        analyzed_rewritten_source_digests.add(rewritten_source_digest)
+                        if after_state_id in visited_source_state_ids:
+                            continue
+                        simulation = document.simulate_snapshot(active_scan.source_snapshot)
+                        reproof_branches.append((branch_number, simulation))
+                        reproof_complete_flags.append(
+                            len(branch_assessment.candidate_indices)
+                            == len(target_findings)
+                        )
+                        rebuilt_branches.append(
+                            FindingRecipeTrajectoryBranch(
+                                assessment=branch_assessment,
+                                document_simulation=simulation,
+                            )
+                        )
+                    total_branch_count = len(branch_summaries)
+                    if reproof_branches or valid_transition_count == 0:
+                        rebuilt_plan = FindingRecipePlan(
+                            document=pre_document,
+                            trajectory_frontier=FindingRecipeTrajectoryFrontier(
+                                branches=tuple(rebuilt_branches),
+                                complete=frontier_complete,
+                                obstacles=frontier_obstacles,
+                            ),
+                            report=pre_report,
+                        )
+                        class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
+                            target_findings,
+                            root=self.class_plan_root(),
+                            finding_plan=rebuilt_plan,
+                        )
+                    else:
+                        class_plan_report = cast(FindingRecipeClassPlanReport, None)
+                else:
+                    snapshot = active_scan.source_snapshot
+                    with self.progress.phase(f"depth {state.depth} plan") as details:
+                        plan = snapshot.plan_from_findings(
+                            target_findings,
+                            frontier_budget=budget.recipe_frontier,
+                        )
+                        details.append(
+                            f"{len(plan.trajectory_frontier.branches)} branches"
+                        )
+                    class_plan_report = FindingRecipeClassPlanReport.from_finding_plan(
+                        target_findings,
+                        root=self.class_plan_root(),
+                        finding_plan=plan,
                     )
-                    continue
-                visited_source_state_ids.add(next_state.source_state_id)
-                pending.append(next_state)
-            if valid_transition_count == 0:
-                settle_dead_end(state, class_plan_report)
+                    frontier = plan.trajectory_frontier
+                    if not frontier.complete:
+                        obstacles.append(
+                            CodemodRefactorRecipeFrontierObstacle(
+                                source_state_id=state.source_state_id,
+                                depth=state.depth,
+                                recipe_obstacles=frontier.obstacles,
+                            )
+                        )
+                        continue
+                    if not frontier.branches:
+                        settle_dead_end(state, class_plan_report)
+                        continue
+                    if state.depth >= budget.max_depth:
+                        obstacles.append(
+                            CodemodRefactorDepthBudgetObstacle(
+                                source_state_id=state.source_state_id,
+                                depth=state.depth,
+                                max_depth=budget.max_depth,
+                            )
+                        )
+                        with self.progress.phase(f"depth {state.depth} prefix") as details:
+                            settlement = self.exact_settlement(starting_scan, state)
+                            details.append(settlement.rejection or "clean")
+                        if not settlement.rejection:
+                            budget_prefixes.append(
+                                CodemodRefactorBudgetPrefix(
+                                    state=replace(state, scan=settlement.scan),
+                                    guard_report=settlement.guard_report,
+                                    remaining_target_ids=tuple(
+                                        sorted(
+                                            finding.stable_id
+                                            for finding in self.target_findings(
+                                                settlement.scan
+                                            )
+                                        )
+                                    ),
+                                )
+                            )
+                        continue
+
+                    valid_transition_count = 0
+                    analyzed_rewritten_source_digests = set()
+                    reproof_branches = []
+                    reproof_complete_flags = []
+                    for branch_number, branch in enumerate(frontier.branches, start=1):
+                        simulation = branch.document_simulation
+                        if not simulation.simulation.changed_file_paths:
+                            continue
+                        valid_transition_count += 1
+                        transition_count += 1
+                        rewritten_source_digest = branch.assessment.rewritten_source_digest
+                        if rewritten_source_digest in analyzed_rewritten_source_digests:
+                            continue
+                        analyzed_rewritten_source_digests.add(rewritten_source_digest)
+                        if (
+                            state.depth == 0
+                            and len(visited_source_state_ids) == 1
+                            and (
+                                bool(simulation.simulation.deleted_file_paths)
+                                or bool(simulation.simulation.text_file_rewrites)
+                                or any(
+                                    active_scan.sources_by_file_path.get(path) != src
+                                    for path, src in simulation.simulation.rewritten_sources.items()
+                                )
+                            )
+                        ):
+                            pass
+                        elif (
+                            simulation.after_snapshot_projection.source_state_id
+                            in visited_source_state_ids
+                        ):
+                            continue
+                        reproof_branches.append((branch_number, simulation))
+                        reproof_complete_flags.append(
+                            len(branch.assessment.candidate_indices)
+                            == len(target_findings)
+                        )
+                    total_branch_count = len(frontier.branches)
+                if (
+                    state.depth == 0
+                    and reproof_branches
+                    and (
+                        self.effective_analysis_workers() >= 2
+                        or len(reproof_branches) >= 2
+                    )
+                    and len(reproof_branches[0][1].simulation.changed_file_paths) >= 3
+                ):
+                    stage0_sim = reproof_branches[0][1]
+                    if TypeCheckerSession.has_active_incremental():
+                        TypeCheckerSession.start_speculative_sync(
+                            SourceTexts(
+                                tuple(stage0_sim.required_after_snapshot.parsed_modules)
+                            )
+                        )
+                    if (
+                        not stage_prewarms
+                        and budget.max_depth >= 2
+                        and self.migration_type.stage_proof.prewarms_full_rescan
+                    ):
+                        stage0_changed_paths = frozenset(
+                            stage0_sim.simulation.changed_file_paths
+                        )
+                        stage0_modules = tuple(
+                            module
+                            for module in stage0_sim.required_after_snapshot.parsed_modules
+                            if module.file_path in stage0_changed_paths
+                        )
+                        pw0 = _Stage0Prewarm.start(
+                            stage0_modules,
+                            self.config,
+                            close_fds=_open_background_fds(),
+                        )
+                        if pw0 is not None:
+                            stage_prewarms.append(pw0)
+                            stage_tokens.append(
+                                _ACTIVE_STAGE0_PREWARM.set(tuple(stage_prewarms))
+                            )
+                elif (
+                    state.depth == 1
+                    and not stage1_followup_sent
+                    and reproof_branches
+                    and (
+                        self.effective_analysis_workers() >= 2
+                        or bool(stage_prewarms)
+                    )
+                    and budget.max_depth >= 2
+                    and self.migration_type.stage_proof.prewarms_full_rescan
+                ):
+                    stage1_followup_sent = True
+                    stage1_sim = reproof_branches[0][1]
+                    if TypeCheckerSession.has_active_incremental():
+                        TypeCheckerSession.send_speculative_followup(
+                            SourceTexts(
+                                tuple(stage1_sim.required_after_snapshot.parsed_modules)
+                            )
+                        )
+                    stage1_changed_paths = frozenset(
+                        stage1_sim.simulation.changed_file_paths
+                    )
+                    stage1_modules = tuple(
+                        module
+                        for module in stage1_sim.required_after_snapshot.parsed_modules
+                        if module.file_path in stage1_changed_paths
+                    )
+                    if len(stage1_modules) >= 3:
+                        pw1 = _Stage0Prewarm.start(
+                            stage1_modules,
+                            self.config,
+                            close_fds=_open_background_fds(),
+                        )
+                        if pw1 is not None:
+                            stage_prewarms.append(pw1)
+                            stage_tokens.append(
+                                _ACTIVE_STAGE0_PREWARM.set(tuple(stage_prewarms))
+                            )
+                branch_entries = self._reprove_branches(
+                    active_scan,
+                    state,
+                    class_plan_report,
+                    reproof_branches,
+                    target_findings,
+                    depth=state.depth,
+                    total_branches=total_branch_count,
+                    preplan_frontier_budget=(
+                        budget.recipe_frontier
+                        if state.depth + 1 < budget.max_depth
+                        else None
+                    ),
+                    complete_branch_flags=reproof_complete_flags,
+                    close_fds=_open_background_fds(),
+                )
+                for entry in branch_entries:
+                    if entry.source_state_id in visited_source_state_ids:
+                        entry.cleanup()
+                        continue
+                    if len(visited_source_state_ids) >= budget.max_states:
+                        entry.cleanup()
+                        obstacles.append(
+                            CodemodRefactorStateBudgetObstacle(
+                                source_state_id=state.source_state_id,
+                                depth=state.depth,
+                                max_states=budget.max_states,
+                            )
+                        )
+                        continue
+                    visited_source_state_ids.add(entry.source_state_id)
+                    pending.append(entry)
+                if valid_transition_count == 0:
+                    settle_dead_end(state, class_plan_report)
+        finally:
+            TypeCheckerSession.cancel_speculative_sync()
+            for tok in reversed(stage_tokens):
+                _ACTIVE_STAGE0_PREWARM.reset(tok)  # type: ignore[arg-type]
+            for pw in stage_prewarms:
+                pw.close()
+            for queued_entry in pending:
+                queued_entry.cleanup()
+            for reader, pid in preplanned.values():
+                os.close(reader)
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(pid, 0)
 
         return CodemodRefactorTrajectoryProof(
             initial_source_state_id=initial_state.source_state_id,
@@ -2697,51 +4128,110 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
     def _reprove_branches(
         self,
         active_scan: CodemodWorkflowScan,
+        parent_state: CodemodRefactorTrajectoryState,
+        class_plan_report: FindingRecipeClassPlanReport,
         branches: list[tuple[int, CodemodPlanDocumentSimulation]],
         target_findings: tuple[RefactorFinding, ...],
         *,
         depth: int,
         total_branches: int,
-    ) -> list[CodemodWorkflowScan]:
+        preplan_frontier_budget: FindingRecipeFrontierBudget | None = None,
+        complete_branch_flags: Sequence[bool] = (),
+        close_fds: Sequence[int] = (),
+    ) -> list[_PendingTrajectoryEntry]:
         """Re-prove frontier branches, overlapping sibling branches across forked
-        workers when the runner has multiple workers available."""
+        workers when the runner has multiple workers available.
+
+        Branches ``1..N-1`` run in forked children and return deferred queue
+        entries immediately once branch ``0`` finishes in the parent, so the
+        parent advances branch ``0``'s next depth without waiting for slower
+        siblings while those siblings complete both their reproof and next-depth
+        preplan in the background."""
 
         if not branches:
             return []
         if (
             len(branches) < 2
-            or self.effective_analysis_workers() < 2
             or not sys.platform.startswith("linux")
+            or len(active_scan.modules) < 16
         ):
-            results: list[CodemodWorkflowScan] = []
-            for branch_number, simulation in branches:
+            results: list[_PendingTrajectoryEntry] = []
+            for idx, (branch_number, simulation) in enumerate(branches):
+                all_targets_covered = (
+                    idx < len(complete_branch_flags) and complete_branch_flags[idx]
+                )
                 with self.progress.phase(
                     f"depth {depth} reproof {branch_number}/{total_branches}"
                 ) as details:
-                    projected = self.projected_target_scan(
-                        active_scan, simulation, target_findings
-                    )
+                    if all_targets_covered:
+                        projected = self.migration_type.stage_proof.reprove_complete_branch(
+                            self,
+                            lambda sim=simulation: ProvedWorkflowScan(
+                                proved=sim.required_after_snapshot,
+                                findings=(),
+                                coverage=DeferredStageProofCoverage(
+                                    (),
+                                    deferred_detector_ids=(),
+                                    deferred_file_paths=(),
+                                ),
+                            ),
+                            lambda sim=simulation: self.projected_target_scan(
+                                active_scan, sim, target_findings
+                            ),
+                        )
+                    else:
+                        projected = self.projected_target_scan(
+                            active_scan, simulation, target_findings
+                        )
                     if not self.target_findings(projected):
                         projected = self.certified(projected)
                     details.append(f"{len(projected.findings)} findings")
-                results.append(projected)
+                stage = self.stage(
+                    active_scan,
+                    projected,
+                    class_plan_report=class_plan_report,
+                    simulation=simulation,
+                )
+                results.append(
+                    _ReadyTrajectoryEntry(
+                        CodemodRefactorTrajectoryState(
+                            scan=projected,
+                            stages=(*parent_state.stages, stage),
+                        )
+                    )
+                )
             return results
 
-        already_frozen = gc.get_freeze_count() > 0
-        gc.freeze()
-        children: dict[int, tuple[int, int, bytearray]] = {}
-        raw_results: list[CodemodWorkflowScan | None] = [None] * len(branches)
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        deferred_entries: list[_DeferredBranchEntry] = []
+        want_preplan = preplan_frontier_budget is not None
         try:
             sys.stdout.flush()
             sys.stderr.flush()
             for index in range(1, len(branches)):
                 _branch_number, simulation = branches[index]
                 reader, writer = os.pipe()
+                _enlarge_pipe(writer)
+                pre_r: int | None = None
+                pre_w: int | None = None
+                if want_preplan:
+                    pre_r, pre_w = os.pipe()
+                    _enlarge_pipe(pre_w)
                 pid = os.fork()
                 if pid == 0:
                     os.close(reader)
+                    if pre_r is not None:
+                        os.close(pre_r)
+                    for open_fd in close_fds:
+                        os.close(open_fd)
+                    for prev_entry in deferred_entries:
+                        for prev_fd in prev_entry.open_fds():
+                            os.close(prev_fd)
                     gc.disable()
                     try:
+                        projected: CodemodWorkflowScan | None = None
                         try:
                             projected = self.projected_target_scan(
                                 active_scan, simulation, target_findings
@@ -2750,15 +4240,22 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                                 simulation.simulation.changed_file_paths
                             )
                             changed_projections = {
-                                module.file_path: module.family_batch(
-                                    CompactModuleClassProjectionFamily
-                                ).items
+                                module.file_path: (
+                                    (b := module.family_batch(CompactModuleClassProjectionFamily)).items,
+                                    b.content_signature,
+                                )
                                 for module in projected.modules
                                 if module.file_path in changed_paths
                                 and module.has_family_batch(
                                     CompactModuleClassProjectionFamily
                                 )
                             }
+                            next_targets = (
+                                self.target_findings(projected)
+                                if pre_w is not None
+                                else ()
+                            )
+                            will_preplan = bool(next_targets) and pre_w is not None
                             payload = pickle.dumps(
                                 (
                                     True,
@@ -2766,19 +4263,80 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                                         projected.findings,
                                         projected.coverage,
                                         changed_projections,
+                                        will_preplan,
                                     ),
                                 )
                             )
                         except BaseException:  # noqa: BLE001
+                            will_preplan = False
+                            next_targets = ()
                             payload = pickle.dumps((False, traceback.format_exc()))
                         with os.fdopen(writer, "wb") as out:
                             out.write(payload)
+                        if pre_w is not None:
+                            if will_preplan and projected is not None:
+                                try:
+                                    next_plan = (
+                                        projected.source_snapshot.plan_from_findings(
+                                            next_targets,
+                                            frontier_budget=preplan_frontier_budget,
+                                        )
+                                    )
+                                    next_frontier = next_plan.trajectory_frontier
+                                    branch_summaries = tuple(
+                                        (
+                                            branch_number,
+                                            branch.assessment,
+                                            bool(
+                                                branch.document_simulation.simulation.changed_file_paths
+                                            ),
+                                            branch.document_simulation.after_snapshot_projection.source_state_id,
+                                            branch.document_simulation.document,
+                                        )
+                                        for branch_number, branch in enumerate(
+                                            next_frontier.branches, start=1
+                                        )
+                                    )
+                                    pre_payload = pickle.dumps(
+                                        (
+                                            True,
+                                            (
+                                                next_plan.document,
+                                                next_plan.report,
+                                                next_frontier.complete,
+                                                next_frontier.obstacles,
+                                                branch_summaries,
+                                            ),
+                                        )
+                                    )
+                                except BaseException:  # noqa: BLE001
+                                    pre_payload = pickle.dumps(
+                                        (False, traceback.format_exc())
+                                    )
+                                with os.fdopen(pre_w, "wb") as out:
+                                    out.write(pre_payload)
+                            else:
+                                os.close(pre_w)
                         sys.stdout.flush()
                         sys.stderr.flush()
                     finally:
                         os._exit(0)
                 os.close(writer)
-                children[reader] = (index, pid, bytearray())
+                if pre_w is not None:
+                    os.close(pre_w)
+                deferred_entries.append(
+                    _DeferredBranchEntry(
+                        source_state_id_value=simulation.after_snapshot_projection.source_state_id,
+                        depth_value=depth + 1,
+                        parent_scan=active_scan,
+                        parent_stages=parent_state.stages,
+                        class_plan_report=class_plan_report,
+                        simulation=simulation,
+                        reproof_reader=reader,
+                        reproof_pid=pid,
+                        preplan_reader=pre_r,
+                    )
+                )
 
             first_number, first_simulation = branches[0]
             with self.progress.phase(
@@ -2790,60 +4348,26 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                 if not self.target_findings(first_projected):
                     first_projected = self.certified(first_projected)
                 details.append(f"{len(first_projected.findings)} findings")
-            raw_results[0] = first_projected
-
-            with selectors.DefaultSelector() as selector:
-                for fd in children:
-                    selector.register(fd, selectors.EVENT_READ)
-                while children:
-                    for sel_key, _ in selector.select():
-                        fd = sel_key.fd
-                        index, pid, buf = children[fd]
-                        chunk = os.read(fd, 1 << 20)
-                        if chunk:
-                            buf += chunk
-                            continue
-                        selector.unregister(fd)
-                        os.close(fd)
-                        del children[fd]
-                        _, status = os.waitpid(pid, 0)
-                        if not buf:
-                            raise RuntimeError(
-                                f"branch reproof worker exited without results (wait status {status})"
-                            )
-                        ok, value = pickle.loads(bytes(buf))
-                        if not ok:
-                            raise RuntimeError(f"branch reproof worker failed:\n{value}")
-                        findings, coverage, changed_projections = value
-                        _branch_number, simulation = branches[index]
-                        after_snapshot = simulation.required_after_snapshot
-                        if changed_projections:
-                            for file_path, items in changed_projections.items():
-                                if file_path in after_snapshot.sources_by_file_path:
-                                    after_snapshot.parsed_module_for_source_path(
-                                        file_path
-                                    ).install_family_batch(
-                                        CompactModuleClassProjectionFamily, items
-                                    )
-                        projected = ProvedWorkflowScan(
-                            proved=after_snapshot,
-                            findings=findings,
-                            coverage=coverage,
-                        )
-                        if not self.target_findings(projected):
-                            projected = self.certified(projected)
-                        raw_results[index] = projected
+            first_stage = self.stage(
+                active_scan,
+                first_projected,
+                class_plan_report=class_plan_report,
+                simulation=first_simulation,
+            )
+            first_entry = _ReadyTrajectoryEntry(
+                CodemodRefactorTrajectoryState(
+                    scan=first_projected,
+                    stages=(*parent_state.stages, first_stage),
+                )
+            )
+            return [first_entry, *deferred_entries]
+        except BaseException:
+            for entry in deferred_entries:
+                entry.cleanup()
+            raise
         finally:
-            for fd, (_index, pid, _buf) in children.items():
-                os.close(fd)
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                os.waitpid(pid, 0)
-            if not already_frozen:
-                gc.unfreeze()
-        return [scan for scan in raw_results if scan is not None]
+            if gc_was_enabled:
+                gc.enable()
 
     def terminal_guard_report(self, scan: CodemodWorkflowScan) -> ArchitectureGuardReport:
         return (

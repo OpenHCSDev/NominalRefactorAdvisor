@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
-from nominal_refactor_advisor.class_index import CompactIndexedClass
+from nominal_refactor_advisor.class_index import (
+    CompactClassFamilyIndex,
+    CompactIndexedClass,
+    CompactModuleClassProjection,
+)
 from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.detectors._base import (
     CompactClassRepositoryCandidateDetector,
@@ -18,7 +22,20 @@ from nominal_refactor_advisor.refactors.restated_overrides import (
     RestatedOverrideFindingRecipeSynthesizer,
     inherited_restatements,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.taxonomy import CapabilityTag, ObservationTag
+
+
+@ScanCache.cached
+def _base_restated_override_slot() -> list[
+    tuple[
+        tuple[CompactModuleClassProjection, ...],
+        CompactClassFamilyIndex,
+        dict[str, RestatedOverrideCandidate],
+    ]
+    | None
+]:
+    return [None]
 
 
 @dataclass(frozen=True)
@@ -59,12 +76,117 @@ class RestatedOverrideDetector(
             ClassOverlapVerdicts,
             lambda: ClassOverlapVerdicts(tuple(context.projections), context.class_index),
         )
-        candidates = [
-            RestatedOverrideCandidate(indexed, restated)
+        if ScanCache.active() is not None:
+            slot = _base_restated_override_slot()
+            base_entry = slot[0]
+            if base_entry is not None:
+                base_projs, base_index, base_by_symbol = base_entry
+                base_by_path = {p.file_path: p for p in base_projs}
+                cur_projs = tuple(context.projections)
+                cur_by_path = {p.file_path: p for p in cur_projs}
+                changed = tuple(
+                    p for p in cur_projs if base_by_path.get(p.file_path) is not p
+                )
+                removed = tuple(
+                    p for path, p in base_by_path.items() if path not in cur_by_path
+                )
+                if len(changed) + len(removed) <= 64:
+                    old_by_sym = {
+                        c.symbol: c
+                        for p in (
+                            *(
+                                base_by_path[p.file_path]
+                                for p in changed
+                                if p.file_path in base_by_path
+                            ),
+                            *removed,
+                        )
+                        for c in p.classes
+                    }
+                    new_by_sym = {c.symbol: c for p in changed for c in p.classes}
+
+                    def _ro_sig(c: CompactIndexedClass) -> tuple[object, ...]:
+                        return (
+                            c.base_references,
+                            c.base_references_are_complete,
+                            c.resolved_base_symbols,
+                            c.declared_base_names,
+                            c.mro_bases_are_static,
+                            c.star_resolution,
+                            c.abstract_method_names,
+                            tuple(
+                                (
+                                    d.kind,
+                                    d.name,
+                                    d.digest,
+                                    d.bindings,
+                                    d.deferred,
+                                    d.unbound,
+                                    d.field_declaration,
+                                    d.reads_its_class,
+                                )
+                                for d in c.body_declarations
+                            ),
+                        )
+
+                    semantically_changed: set[str] = set()
+                    line_shifted: dict[str, CompactIndexedClass] = {}
+                    for sym in old_by_sym.keys() | new_by_sym.keys():
+                        old_c = old_by_sym.get(sym)
+                        new_c = new_by_sym.get(sym)
+                        if old_c is None or new_c is None or _ro_sig(old_c) != _ro_sig(new_c):
+                            semantically_changed.add(sym)
+                        elif old_c.line != new_c.line:
+                            line_shifted[sym] = new_c
+                    affected: set[str] = set(semantically_changed)
+                    for sym in semantically_changed:
+                        affected.update(base_index.descendant_symbols(sym))
+                        affected.update(context.class_index.descendant_symbols(sym))
+                    classes = context.class_index.classes_by_symbol
+                    by_symbol = {
+                        sym: (
+                            replace(cand, indexed=line_shifted[sym])
+                            if sym in line_shifted
+                            else cand
+                        )
+                        for sym, cand in base_by_symbol.items()
+                        if sym in classes and sym not in affected
+                    }
+                    for sym in affected:
+                        indexed = classes.get(sym)
+                        if indexed is None:
+                            continue
+                        if restated := inherited_restatements(verdicts, sym):
+                            by_symbol[sym] = RestatedOverrideCandidate(indexed, restated)
+                    return tuple(
+                        sorted(
+                            by_symbol.values(),
+                            key=lambda candidate: (
+                                candidate.indexed.file_path,
+                                candidate.indexed.line,
+                            ),
+                        )
+                    )
+
+        by_symbol_full = {
+            indexed.symbol: RestatedOverrideCandidate(indexed, restated)
             for indexed in context.class_index.classes_by_symbol.values()
             if (restated := inherited_restatements(verdicts, indexed.symbol))
-        ]
-        return tuple(sorted(candidates, key=lambda candidate: (candidate.indexed.file_path, candidate.indexed.line)))
+        }
+        if ScanCache.active() is not None:
+            slot = _base_restated_override_slot()
+            if slot[0] is None:
+                slot[0] = (
+                    tuple(context.projections),
+                    context.class_index,
+                    by_symbol_full,
+                )
+        return tuple(
+            sorted(
+                by_symbol_full.values(),
+                key=lambda candidate: (candidate.indexed.file_path, candidate.indexed.line),
+            )
+        )
 
     def _finding_for_candidate(self, candidate: RestatedOverrideCandidate) -> RefactorFinding:
         return self.build_finding(

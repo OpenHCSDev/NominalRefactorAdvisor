@@ -27,6 +27,7 @@ from nominal_refactor_advisor.amortization import (
     IntrospectionSource,
     MethodCall,
     NoTrace,
+    _inheritance_amortization_incremental,
     inheritance_amortization_for_calls,
 )
 from nominal_refactor_advisor.ast_projection import ExpressionReference
@@ -56,6 +57,7 @@ from nominal_refactor_advisor.observation_families import (
     type_test_shapes,
 )
 from nominal_refactor_advisor.observation_shapes import DeclaredClassScope
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.type_checker_session import (
     SourceTexts,
     TypeCheckerSession,
@@ -242,6 +244,55 @@ class MemberObservation:
 
 
 @dataclass(frozen=True)
+class _ModuleTypeArgumentResolverFact(ParsedModuleFact):
+    """Cached ``TypeArgumentResolver`` per ``ParsedModule``."""
+
+    resolver: TypeArgumentResolver
+
+    @classmethod
+    def derive(cls, parsed_module: ParsedModule) -> _ModuleTypeArgumentResolverFact:
+        return cls(TypeArgumentResolver(parsed_module))
+
+
+@ScanCache.cached
+def _cached_module_calls() -> dict[tuple[int, frozenset[str]], ModuleCalls]:
+    return {}
+
+
+@dataclass(frozen=True)
+class _CensusBaseline:
+    config: DetectorConfig
+    modules_by_path: dict[str, ParsedModule]
+    module_names: frozenset[str]
+    class_index: CompactClassFamilyIndex
+    reexports_by_file: dict[str, tuple[tuple[str, str], ...]]
+    reexports_by_target: dict[str, tuple[str, ...]]
+    foreign_owners: tuple[MemberOwner, ...]
+    enum_classes: dict[str, CompactIndexedClass]
+    enum_owners: tuple[MemberOwner, ...]
+    own_owners_by_symbol: dict[str, MemberOwner]
+    foreign_obs_by_file: dict[str, tuple[MemberObservation, ...]]
+    enum_obs_by_file: dict[str, tuple[MemberObservation, ...]]
+    enum_receiver_owners_by_file: dict[str, frozenset[str]]
+    own_obs_by_file: dict[str, tuple[MemberObservation, ...]]
+    own_tested_symbols_by_file: dict[str, frozenset[str]]
+
+
+@ScanCache.cached
+def _base_census_slot() -> list[_CensusBaseline | None]:
+    return [None]
+
+
+def _file_reexports(corpus: CensusCorpus, module: ParsedModule) -> tuple[tuple[str, str], ...]:
+    snapshot = corpus.resolvers[module.file_path].snapshot
+    prefix = f"{module.module_name}."
+    return tuple(
+        (binding.qualified_name, f"{prefix}{name}")
+        for name, binding in snapshot.bindings_by_name.items()
+    )
+
+
+@dataclass(frozen=True)
 class CensusCorpus:
     """The parsed modules every source reads, and their one class index."""
 
@@ -279,7 +330,8 @@ class CensusCorpus:
     @cached_property
     def resolvers(self) -> dict[str, TypeArgumentResolver]:
         return {
-            module.file_path: TypeArgumentResolver(module) for module in self.modules
+            module.file_path: module.fact(_ModuleTypeArgumentResolverFact).resolver
+            for module in self.modules
         }
 
     @cached_property
@@ -559,14 +611,358 @@ class MemberAwarenessCensusBuilder:
 
     @classmethod
     def from_sources(cls, corpus: CensusCorpus) -> Self:
-        sources = tuple(source(corpus) for source in MemberCensusSource.__subclasses__())
-        return cls(
-            corpus=corpus,
-            owners=tuple(chain.from_iterable(source.owners() for source in sources)),
-            observations=tuple(
-                chain.from_iterable(source.observations() for source in sources)
-            ),
+        source_types = tuple(MemberCensusSource.__subclasses__())
+        standard_sources = (
+            len(source_types) == 3
+            and set(source_types) == {ForeignModuleSource, EnumSource, OwnClassSource}
         )
+        if standard_sources and ScanCache.active() is not None:
+            slot = _base_census_slot()
+            base = slot[0]
+            if base is not None and base.config == corpus.config:
+                changed_modules = tuple(
+                    m for m in corpus.modules if base.modules_by_path.get(m.file_path) is not m
+                )
+                cur_paths = {m.file_path for m in corpus.modules}
+                removed_paths = frozenset(base.modules_by_path.keys() - cur_paths)
+                if len(changed_modules) + len(removed_paths) <= 64:
+                    changed_reexport_targets: set[str] = set()
+                    reexports_by_target: dict[str, tuple[str, ...]] | None = None
+                    removed_reexport_pairs: list[tuple[str, str]] = []
+                    added_reexport_pairs: list[tuple[str, str]] = []
+                    for rpath in removed_paths:
+                        for target, alias in base.reexports_by_file.get(rpath, ()):
+                            removed_reexport_pairs.append((target, alias))
+                    for mod in changed_modules:
+                        old_pairs = base.reexports_by_file.get(mod.file_path, ())
+                        new_pairs = _file_reexports(corpus, mod)
+                        if old_pairs != new_pairs:
+                            old_set = set(old_pairs)
+                            new_set = set(new_pairs)
+                            for pair in old_set - new_set:
+                                removed_reexport_pairs.append(pair)
+                            for pair in new_set - old_set:
+                                added_reexport_pairs.append(pair)
+                    if not removed_reexport_pairs and not added_reexport_pairs:
+                        reexports_by_target = base.reexports_by_target
+                        corpus.__dict__["_reexports_by_target"] = reexports_by_target
+                    else:
+                        updated_reexports: dict[str, set[str]] = {}
+                        for target, alias in removed_reexport_pairs:
+                            changed_reexport_targets.add(target)
+                            if target not in updated_reexports:
+                                updated_reexports[target] = set(
+                                    base.reexports_by_target.get(target, ())
+                                )
+                            updated_reexports[target].discard(alias)
+                        for target, alias in added_reexport_pairs:
+                            changed_reexport_targets.add(target)
+                            if target not in updated_reexports:
+                                updated_reexports[target] = set(
+                                    base.reexports_by_target.get(target, ())
+                                )
+                            updated_reexports[target].add(alias)
+                        reexports_by_target = dict(base.reexports_by_target)
+                        for target, aliases_set in updated_reexports.items():
+                            if aliases_set:
+                                reexports_by_target[target] = tuple(aliases_set)
+                            else:
+                                reexports_by_target.pop(target, None)
+                        corpus.__dict__["_reexports_by_target"] = reexports_by_target
+                    # Every symbol whose aliases_of() chain reaches a changed target:
+                    alias_affected_symbols: set[str] = set(changed_reexport_targets)
+                    if changed_reexport_targets:
+                        reverse_edges: defaultdict[str, list[str]] = defaultdict(list)
+                        for target, aliases_t in base.reexports_by_target.items():
+                            for alias in aliases_t:
+                                reverse_edges[alias].append(target)
+                        for target, alias in added_reexport_pairs:
+                            reverse_edges[alias].append(target)
+                        frontier_a = list(changed_reexport_targets)
+                        while frontier_a:
+                            node = frontier_a.pop()
+                            for pred in reverse_edges.get(node, ()):
+                                if pred not in alias_affected_symbols:
+                                    alias_affected_symbols.add(pred)
+                                    frontier_a.append(pred)
+
+                    cur_module_names = frozenset(corpus.module_names)
+                    foreign_src = ForeignModuleSource(corpus)
+                    enum_src = EnumSource(corpus)
+                    own_src = OwnClassSource(corpus)
+
+                    if not alias_affected_symbols or all(
+                        owner.name not in alias_affected_symbols
+                        for owner in base.foreign_owners
+                    ):
+                        foreign_owners = base.foreign_owners
+                    else:
+                        foreign_owners = foreign_src.owners()
+
+                    base_index = base.class_index
+                    cur_index = corpus.class_index
+                    cur_enum_classes = unique_direct_enum_classes(cur_index)
+                    same_enums = len(cur_enum_classes) == len(base.enum_classes) and all(
+                        base.enum_classes.get(k) is v
+                        for k, v in cur_enum_classes.items()
+                    )
+                    enum_owners = (
+                        base.enum_owners if same_enums else enum_src.owners()
+                    )
+                    base_classes = base_index.classes_by_symbol
+                    cur_classes = cur_index.classes_by_symbol
+                    added_or_removed = base_classes.keys() ^ cur_classes.keys()
+                    direct_base_changed: set[str] = set(added_or_removed)
+                    direct_meta_changed: set[str] = set(added_or_removed)
+                    direct_ann_changed: set[str] = set(added_or_removed)
+                    for sym in base_classes.keys() & cur_classes.keys():
+                        bc = base_classes[sym]
+                        cc = cur_classes[sym]
+                        if bc.resolved_base_symbols != cc.resolved_base_symbols:
+                            direct_base_changed.add(sym)
+                        if (
+                            bc.method_names != cc.method_names
+                            or bc.file_path != cc.file_path
+                            or bc.qualname != cc.qualname
+                        ):
+                            direct_meta_changed.add(sym)
+                        if (
+                            bc.direct_annotation_writes_by_name
+                            != cc.direct_annotation_writes_by_name
+                        ):
+                            direct_ann_changed.add(sym)
+
+                    dirty_owners: set[str] = (
+                        set(direct_base_changed | direct_meta_changed)
+                        | (alias_affected_symbols & (base_classes.keys() | cur_classes.keys()))
+                    )
+                    for sym in tuple(direct_base_changed | direct_meta_changed):
+                        dirty_owners.update(base_index.ancestor_symbols(sym))
+                        dirty_owners.update(cur_index.ancestor_symbols(sym))
+                    own_owner_list: list[MemberOwner] = [
+                        owner
+                        for sym, owner in base.own_owners_by_symbol.items()
+                        if sym not in dirty_owners
+                    ]
+                    for sym in dirty_owners:
+                        if sym not in cur_classes:
+                            continue
+                        descendants = cur_index.descendant_symbols(sym)
+                        if len(descendants) >= 2:
+                            own_owner_list.append(
+                                ClassOwner(
+                                    kind=CensusFamilyKind.CLASS,
+                                    name=sym,
+                                    covered=frozenset((sym, *descendants)),
+                                    method_names=frozenset(cur_classes[sym].method_names),
+                                    aliases=corpus.aliases_of(sym),
+                                    definitions=frozenset(
+                                        (
+                                            corpus.module_name_by_file[declared.file_path],
+                                            declared.qualname,
+                                        )
+                                        for declared in map(
+                                            cur_classes.__getitem__,
+                                            (sym, *descendants),
+                                        )
+                                    ),
+                                )
+                            )
+                    own_owners = tuple(own_owner_list)
+
+                    # Observations: Foreign + Own incremental per-file, Enum via source
+                    if cur_module_names == base.module_names:
+                        changed_paths = frozenset(m.file_path for m in changed_modules)
+                        scope = corpus.declared_class_scope
+                        foreign_obs: list[MemberObservation] = []
+                        for mod in corpus.modules:
+                            if mod.file_path not in changed_paths:
+                                foreign_obs.extend(
+                                    base.foreign_obs_by_file.get(mod.file_path, ())
+                                )
+                            else:
+                                for shape in mod.fact(_ModuleTypeTestShapesFact).shapes:
+                                    match tuple(shape.owners):
+                                        case (owner,) if owner and shape.is_foreign_to(scope):
+                                            foreign_obs.append(
+                                                MemberObservation(
+                                                    kind=CensusFamilyKind.FOREIGN_MODULE,
+                                                    family=owner,
+                                                    file_path=shape.file_path,
+                                                    symbol=shape.symbol,
+                                                    subject=shape.subject,
+                                                    members=frozenset(shape.type_names),
+                                                )
+                                            )
+                    else:
+                        foreign_obs = list(foreign_src.observations())
+
+                    ancestry_changed: set[str] = set(direct_base_changed)
+                    for sym in direct_base_changed:
+                        ancestry_changed.update(base_index.descendant_symbols(sym))
+                        ancestry_changed.update(cur_index.descendant_symbols(sym))
+                    dirty_own_symbols = frozenset(ancestry_changed | added_or_removed)
+                    changed_paths = frozenset(m.file_path for m in changed_modules)
+                    own_obs: list[MemberObservation] = []
+                    recompute_own_modules: list[ParsedModule] = []
+                    for mod in corpus.modules:
+                        if (
+                            mod.file_path not in changed_paths
+                            and base.own_tested_symbols_by_file.get(
+                                mod.file_path, frozenset()
+                            ).isdisjoint(dirty_own_symbols)
+                        ):
+                            own_obs.extend(base.own_obs_by_file.get(mod.file_path, ()))
+                        else:
+                            recompute_own_modules.append(mod)
+                    if recompute_own_modules:
+                        tested: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+                        for mod in recompute_own_modules:
+                            for shape in mod.fact(_ModuleTypeTestShapesFact).shapes:
+                                if set(shape.type_names) <= cur_classes.keys():
+                                    tested[
+                                        shape.file_path, shape.symbol, shape.subject
+                                    ].update(shape.type_names)
+                        for (file_path, symbol, subject), names in sorted(tested.items()):
+                            members = frozenset(names)
+                            if family := own_src.family_of(members):
+                                own_obs.append(
+                                    MemberObservation(
+                                        kind=CensusFamilyKind.CLASS,
+                                        family=family,
+                                        file_path=file_path,
+                                        symbol=symbol,
+                                        subject=subject,
+                                        members=members,
+                                    )
+                                )
+
+                    if same_enums:
+                        dirty_enum_owners: set[str] = set(ancestry_changed | direct_ann_changed)
+                        for sym in direct_ann_changed:
+                            dirty_enum_owners.update(base_index.descendant_symbols(sym))
+                            dirty_enum_owners.update(cur_index.descendant_symbols(sym))
+                        enum_obs: list[MemberObservation] = []
+                        for projection in corpus.projections:
+                            if (
+                                projection.file_path not in changed_paths
+                                and base.enum_receiver_owners_by_file.get(
+                                    projection.file_path, frozenset()
+                                ).isdisjoint(dirty_enum_owners)
+                            ):
+                                enum_obs.extend(
+                                    base.enum_obs_by_file.get(projection.file_path, ())
+                                )
+                            else:
+                                for function in projection.closed_axis_branch_functions:
+                                    for enum_name, site in recovered_enum_sites(
+                                        cur_index, cur_enum_classes, function
+                                    ).items():
+                                        enum_class = cur_enum_classes[enum_name]
+                                        inside_declaration = (
+                                            function.file_path == enum_class.file_path
+                                            and function.qualname.startswith(
+                                                f"{enum_class.qualname}."
+                                            )
+                                        )
+                                        if site.case_names and not inside_declaration:
+                                            enum_obs.append(
+                                                MemberObservation(
+                                                    kind=CensusFamilyKind.ENUM,
+                                                    family=enum_class.symbol,
+                                                    file_path=function.file_path,
+                                                    symbol=function.qualname,
+                                                    subject="",
+                                                    members=frozenset(site.case_names),
+                                                )
+                                            )
+                    else:
+                        enum_obs = list(enum_src.observations())
+
+                    return cls(
+                        corpus=corpus,
+                        owners=(*foreign_owners, *enum_owners, *own_owners),
+                        observations=(
+                            *foreign_obs,
+                            *enum_obs,
+                            *own_obs,
+                        ),
+                    )
+
+        sources = tuple(source_cls(corpus) for source_cls in source_types)
+        owners_by_type = {type(source): source.owners() for source in sources}
+        obs_by_type = {type(source): tuple(source.observations()) for source in sources}
+        builder = cls(
+            corpus=corpus,
+            owners=tuple(chain.from_iterable(owners_by_type.values())),
+            observations=tuple(chain.from_iterable(obs_by_type.values())),
+        )
+        if (
+            standard_sources
+            and ScanCache.active() is not None
+            and len(corpus.modules) >= 20
+            and _base_census_slot()[0] is None
+        ):
+            foreign_obs_by_file: dict[str, list[MemberObservation]] = defaultdict(list)
+            for obs in obs_by_type[ForeignModuleSource]:
+                foreign_obs_by_file[obs.file_path].append(obs)
+            enum_obs_by_file: dict[str, list[MemberObservation]] = defaultdict(list)
+            for obs in obs_by_type[EnumSource]:
+                enum_obs_by_file[obs.file_path].append(obs)
+            enum_receiver_owners_by_file: dict[str, frozenset[str]] = {}
+            for projection in corpus.projections:
+                owners_in_file: set[str] = set()
+                for function in projection.closed_axis_branch_functions:
+                    if not function.receiver_field_reads:
+                        continue
+                    owner_qualname, _dot, _method = function.qualname.rpartition(".")
+                    owner = corpus.class_index.symbol_for(
+                        file_path=function.file_path, qualname=owner_qualname
+                    )
+                    if owner is not None:
+                        owners_in_file.add(owner)
+                if owners_in_file:
+                    enum_receiver_owners_by_file[projection.file_path] = frozenset(
+                        owners_in_file
+                    )
+            own_obs_by_file: dict[str, list[MemberObservation]] = defaultdict(list)
+            for obs in obs_by_type[OwnClassSource]:
+                own_obs_by_file[obs.file_path].append(obs)
+            own_tested_by_file: dict[str, frozenset[str]] = {}
+            for mod in corpus.modules:
+                syms: set[str] = set()
+                for shape in mod.fact(_ModuleTypeTestShapesFact).shapes:
+                    syms.update(shape.type_names)
+                if syms:
+                    own_tested_by_file[mod.file_path] = frozenset(syms)
+            _base_census_slot()[0] = _CensusBaseline(
+                config=corpus.config,
+                modules_by_path={m.file_path: m for m in corpus.modules},
+                module_names=frozenset(corpus.module_names),
+                class_index=corpus.class_index,
+                reexports_by_file={
+                    m.file_path: _file_reexports(corpus, m) for m in corpus.modules
+                },
+                reexports_by_target=dict(corpus._reexports_by_target),
+                foreign_owners=owners_by_type[ForeignModuleSource],
+                enum_classes=unique_direct_enum_classes(corpus.class_index),
+                enum_owners=owners_by_type[EnumSource],
+                own_owners_by_symbol={
+                    owner.name: owner for owner in owners_by_type[OwnClassSource]
+                },
+                foreign_obs_by_file={
+                    path: tuple(items) for path, items in foreign_obs_by_file.items()
+                },
+                enum_obs_by_file={
+                    path: tuple(items) for path, items in enum_obs_by_file.items()
+                },
+                enum_receiver_owners_by_file=enum_receiver_owners_by_file,
+                own_obs_by_file={
+                    path: tuple(items) for path, items in own_obs_by_file.items()
+                },
+                own_tested_symbols_by_file=own_tested_by_file,
+            )
+        return builder
 
     @cached_property
     def consumers(self) -> tuple[Consumer, ...]:
@@ -616,9 +1012,20 @@ class MemberAwarenessCensusBuilder:
         cached = self._calls_by_file_path.get(file_path)
         if cached is None:
             module = self._modules_by_file_path[file_path]
-            cached = ModuleCalls(
-                module, self.corpus.resolvers[file_path], self._owner_method_names
-            )
+            method_names = self._owner_method_names
+            if ScanCache.active() is not None:
+                shared_cache = _cached_module_calls()
+                key = (id(module), method_names)
+                cached = shared_cache.get(key)
+                if cached is None:
+                    cached = ModuleCalls(
+                        module, self.corpus.resolvers[file_path], method_names
+                    )
+                    shared_cache[key] = cached
+            else:
+                cached = ModuleCalls(
+                    module, self.corpus.resolvers[file_path], method_names
+                )
             self._calls_by_file_path[file_path] = cached
         return cached
 
@@ -762,6 +1169,15 @@ class MemberAwarenessCensusBuilder:
         )
 
     def inherited(self) -> InheritanceAmortization:
+        if TypeCheckerSession.has_active_incremental() and self.corpus.modules:
+            with TypeCheckerSession.scoped_session(
+                SourceTexts(self.corpus.modules),
+                (),
+            ) as session:
+                if session.file_version(self.corpus.modules[0].file_path) is not None:
+                    return _inheritance_amortization_incremental(
+                        self.corpus.modules, self.corpus.class_index, session
+                    )
         calls = MethodCall.in_modules(self.corpus.modules)
         with TypeCheckerSession.scoped_session(
             SourceTexts(self.corpus.modules),

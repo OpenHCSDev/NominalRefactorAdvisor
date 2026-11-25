@@ -27,10 +27,12 @@ from nominal_refactor_advisor.class_index import (
     PER_CLASS_NAMES,
     ClassBodyDeclarationKind,
     ClassBodyModuleScope,
+    CompactClassFamilyIndex,
     CompactIndexedClass,
     CompactModuleClassProjection,
     reads_class_cell_or_private_name,
 )
+from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.class_method_facets import CompactClassMethod
 from nominal_refactor_advisor.class_overlap import ClassOverlapVerdicts
 from nominal_refactor_advisor.class_references import ClassReferenceRole
@@ -155,45 +157,73 @@ def _members_read(
     return read[symbol]
 
 
-def sibling_override_step_candidates(
-    verdicts: ClassOverlapVerdicts,
-    projections: Sequence[CompactModuleClassProjection],
-) -> tuple[SiblingOverrideStepCandidate, ...]:
-    """Every inherited method overridden differently by independent siblings with a shared
-    or omitted receiver step."""
+@dataclass(frozen=True)
+class _SiblingOverrideStepsBaseline:
+    by_path: dict[str, CompactModuleClassProjection]
+    class_index: CompactClassFamilyIndex
+    methods_by_symbol: dict[str, dict[str, CompactClassMethod]]
+    overriding_by_symbol: dict[str, tuple[tuple[str, str], ...]]
+    candidates_by_declaring: dict[
+        str, tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideStepCandidate], ...]
+    ]
+    declared_names: frozenset[str]
 
+
+@ScanCache.cached
+def _base_sibling_override_steps_slots() -> dict[bool, _SiblingOverrideStepsBaseline]:
+    return {}
+
+
+def _symbol_step_overrides(
+    verdicts: ClassOverlapVerdicts,
+    methods: dict[str, dict[str, CompactClassMethod]],
+    symbol: str,
+) -> tuple[tuple[str, str], ...]:
     index, bodies = verdicts.class_index, verdicts.bodies
-    methods: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
-    for projection in projections:
-        for method in projection.class_methods:
-            methods[method.class_symbol][method.method_name] = method
-    declared = frozenset(name for owned in methods.values() for name in owned)
-    overriding: defaultdict[tuple[str, str], list[str]] = defaultdict(list)
-    for symbol in bodies.declarations_by_symbol:
-        mine = methods.get(symbol)
-        if not mine:
+    mine = methods.get(symbol)
+    if not mine:
+        return ()
+    indexed_self = index.class_for(symbol)
+    if indexed_self is None:
+        return ()
+    ancestors = tuple(
+        ancestor
+        for ancestor in index.ancestor_symbols(symbol)
+        if ancestor in bodies.declarations_by_symbol
+    )
+    if not ancestors:
+        return ()
+    ancestor_decls = tuple(
+        (ancestor, bodies.declarations_of(ancestor)) for ancestor in ancestors
+    )
+    abstract = indexed_self.abstract_method_names
+    emitted: list[tuple[str, str]] = []
+    for name, declaration in bodies.declarations_of(symbol).items():
+        if (
+            name in PER_CLASS_NAMES
+            or name in abstract
+            or name not in mine
+            or declaration.kind is not ClassBodyDeclarationKind.METHOD
+        ):
             continue
-        indexed_self = index.class_for(symbol)
-        if indexed_self is None:
-            continue
-        abstract = indexed_self.abstract_method_names
-        for name, declaration in bodies.declarations_of(symbol).items():
-            if (
-                name in PER_CLASS_NAMES
-                or name in abstract
-                or name not in mine
-                or declaration.kind is not ClassBodyDeclarationKind.METHOD
-            ):
-                continue
-            for ancestor in index.ancestor_symbols(symbol):
-                if (
-                    ancestor in bodies.declarations_by_symbol
-                    and name in bodies.declarations_of(ancestor)
-                ):
-                    overriding[(ancestor, name)].append(symbol)
-    nearest: dict[tuple[str, frozenset[str]], SiblingOverrideStepCandidate] = {}
-    read: dict[str, frozenset[str]] = {}
-    for (declaring, name), symbols in overriding.items():
+        for ancestor, decls in ancestor_decls:
+            if name in decls:
+                emitted.append((ancestor, name))
+    return tuple(emitted)
+
+
+def _step_candidates_for_declaring(
+    verdicts: ClassOverlapVerdicts,
+    methods: dict[str, dict[str, CompactClassMethod]],
+    declared: frozenset[str],
+    read: dict[str, frozenset[str]],
+    declaring: str,
+    by_name: dict[str, list[str]],
+) -> tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideStepCandidate], ...]:
+    index, bodies = verdicts.class_index, verdicts.bodies
+    declaring_class = index.classes_by_symbol[declaring]
+    emitted: list[tuple[tuple[str, frozenset[str]], SiblingOverrideStepCandidate]] = []
+    for name, symbols in by_name.items():
         symbol_set = frozenset(symbols)
         independent = [
             symbol
@@ -229,24 +259,47 @@ def sibling_override_step_candidates(
         )
         if not restated and not omitted:
             continue
-        key = (name, frozenset(independent))
-        held = nearest.get(key)
-        if held is None or held.declaring.symbol in index.ancestor_symbols(declaring):
-            nearest[key] = SiblingOverrideStepCandidate(
-                declaring=index.classes_by_symbol[declaring],
-                name=name,
-                overriding=tuple(
-                    sorted(
-                        (
-                            (index.classes_by_symbol[symbol], methods[symbol][name].line)
-                            for symbol in independent
-                        ),
-                        key=lambda found: (found[0].file_path, found[1]),
-                    )
+        emitted.append(
+            (
+                (name, frozenset(independent)),
+                SiblingOverrideStepCandidate(
+                    declaring=declaring_class,
+                    name=name,
+                    overriding=tuple(
+                        sorted(
+                            (
+                                (index.classes_by_symbol[symbol], methods[symbol][name].line)
+                                for symbol in independent
+                            ),
+                            key=lambda found: (found[0].file_path, found[1]),
+                        )
+                    ),
+                    restated=tuple(sorted(restated)),
+                    omitted=omitted,
                 ),
-                restated=tuple(sorted(restated)),
-                omitted=omitted,
             )
+        )
+    return tuple(emitted)
+
+
+def _merge_nearest_step_candidates(
+    index: CompactClassFamilyIndex,
+    candidates_by_declaring: dict[
+        str, tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideStepCandidate], ...]
+    ],
+) -> tuple[SiblingOverrideStepCandidate, ...]:
+    nearest: dict[tuple[str, frozenset[str]], SiblingOverrideStepCandidate] = {}
+    for declaring, entries in candidates_by_declaring.items():
+        declaring_ancestors: tuple[str, ...] | None = None
+        for key, candidate in entries:
+            held = nearest.get(key)
+            if held is None:
+                nearest[key] = candidate
+            else:
+                if declaring_ancestors is None:
+                    declaring_ancestors = index.ancestor_symbols(declaring)
+                if held.declaring.symbol in declaring_ancestors:
+                    nearest[key] = candidate
     return tuple(
         sorted(
             nearest.values(),
@@ -257,6 +310,144 @@ def sibling_override_step_candidates(
             ),
         )
     )
+
+
+def sibling_override_step_candidates(
+    verdicts: ClassOverlapVerdicts,
+    projections: Sequence[CompactModuleClassProjection],
+) -> tuple[SiblingOverrideStepCandidate, ...]:
+    """Every inherited method overridden differently by independent siblings with a shared
+    or omitted receiver step."""
+
+    index, bodies = verdicts.class_index, verdicts.bodies
+    cur_projs = tuple(projections)
+    settled_key = not any(p.has_unsettled_field_declarations for p in cur_projs)
+    if ScanCache.active() is not None:
+        slots = _base_sibling_override_steps_slots()
+        base = slots.get(settled_key)
+        if base is not None:
+            base_by_path = base.by_path
+            cur_by_path = {p.file_path: p for p in cur_projs}
+            changed = tuple(
+                p for p in cur_projs if base_by_path.get(p.file_path) is not p
+            )
+            removed = tuple(
+                p for path, p in base_by_path.items() if path not in cur_by_path
+            )
+            if not changed and not removed:
+                return _merge_nearest_step_candidates(index, base.candidates_by_declaring)
+            if len(changed) + len(removed) <= 64:
+                methods: dict[str, dict[str, CompactClassMethod]] = dict(
+                    base.methods_by_symbol
+                )
+                affected_direct: set[str] = set()
+                for p in removed:
+                    for c in p.classes:
+                        affected_direct.add(c.symbol)
+                        methods.pop(c.symbol, None)
+                    for m in p.class_methods:
+                        affected_direct.add(m.class_symbol)
+                        methods.pop(m.class_symbol, None)
+                for p in changed:
+                    old_p = base_by_path.get(p.file_path)
+                    if old_p is not None:
+                        for c in old_p.classes:
+                            affected_direct.add(c.symbol)
+                            methods.pop(c.symbol, None)
+                        for m in old_p.class_methods:
+                            affected_direct.add(m.class_symbol)
+                            methods.pop(m.class_symbol, None)
+                    for c in p.classes:
+                        affected_direct.add(c.symbol)
+                    for m in p.class_methods:
+                        affected_direct.add(m.class_symbol)
+                        methods.setdefault(m.class_symbol, {})[m.method_name] = m
+                declared = frozenset(name for owned in methods.values() for name in owned)
+                affected_symbols: set[str] = set(affected_direct)
+                for sym in affected_direct:
+                    affected_symbols.update(base.class_index.descendant_symbols(sym))
+                    affected_symbols.update(index.descendant_symbols(sym))
+                overriding_by_symbol = dict(base.overriding_by_symbol)
+                dirty_declaring: set[str] = set()
+                if declared != base.declared_names:
+                    dirty_declaring.update(base.candidates_by_declaring)
+                for sym in affected_symbols:
+                    old_pairs = overriding_by_symbol.pop(sym, ())
+                    for anc, _name in old_pairs:
+                        dirty_declaring.add(anc)
+                    if sym in bodies.declarations_by_symbol:
+                        new_pairs = _symbol_step_overrides(verdicts, methods, sym)
+                        if new_pairs:
+                            overriding_by_symbol[sym] = new_pairs
+                            for anc, _name in new_pairs:
+                                dirty_declaring.add(anc)
+                dirty_declaring.update(affected_symbols)
+                # Also mark declaring ancestors whose candidates contain any affected symbol
+                # (in case _members_read changed for a descendant without changing overriding pairs).
+                for sym in affected_symbols:
+                    for anc in index.ancestor_symbols(sym):
+                        if anc in base.candidates_by_declaring:
+                            dirty_declaring.add(anc)
+                dirty_by_declaring: dict[str, dict[str, list[str]]] = defaultdict(
+                    lambda: defaultdict(list)
+                )
+                for sym, pairs in overriding_by_symbol.items():
+                    for anc, name in pairs:
+                        if anc in dirty_declaring:
+                            dirty_by_declaring[anc][name].append(sym)
+                candidates_by_declaring = dict(base.candidates_by_declaring)
+                read: dict[str, frozenset[str]] = {}
+                for declaring in dirty_declaring:
+                    by_name = dirty_by_declaring.get(declaring)
+                    if by_name and declaring in index.classes_by_symbol:
+                        cands = _step_candidates_for_declaring(
+                            verdicts, methods, declared, read, declaring, by_name
+                        )
+                        if cands:
+                            candidates_by_declaring[declaring] = cands
+                        else:
+                            candidates_by_declaring.pop(declaring, None)
+                    else:
+                        candidates_by_declaring.pop(declaring, None)
+                return _merge_nearest_step_candidates(index, candidates_by_declaring)
+
+    methods_full: dict[str, dict[str, CompactClassMethod]] = defaultdict(dict)
+    for projection in cur_projs:
+        for method in projection.class_methods:
+            methods_full[method.class_symbol][method.method_name] = method
+    declared_full = frozenset(name for owned in methods_full.values() for name in owned)
+    overriding_by_sym_full: dict[str, tuple[tuple[str, str], ...]] = {}
+    by_declaring_full: dict[str, dict[str, list[str]]] = defaultdict(
+        lambda: defaultdict(list)
+    )
+    for symbol in bodies.declarations_by_symbol:
+        pairs = _symbol_step_overrides(verdicts, methods_full, symbol)
+        if pairs:
+            overriding_by_sym_full[symbol] = pairs
+            for anc, name in pairs:
+                by_declaring_full[anc][name].append(symbol)
+    read_full: dict[str, frozenset[str]] = {}
+    candidates_by_decl_full: dict[
+        str, tuple[tuple[tuple[str, frozenset[str]], SiblingOverrideStepCandidate], ...]
+    ] = {}
+    for declaring, by_name in by_declaring_full.items():
+        cands = _step_candidates_for_declaring(
+            verdicts, methods_full, declared_full, read_full, declaring, by_name
+        )
+        if cands:
+            candidates_by_decl_full[declaring] = cands
+    if ScanCache.active() is not None and len(cur_projs) >= 20:
+        slots = _base_sibling_override_steps_slots()
+        if settled_key not in slots:
+            slots[settled_key] = _SiblingOverrideStepsBaseline(
+                by_path={p.file_path: p for p in cur_projs},
+                class_index=index,
+                methods_by_symbol=dict(methods_full),
+                overriding_by_symbol=overriding_by_sym_full,
+                candidates_by_declaring=candidates_by_decl_full,
+                declared_names=declared_full,
+            )
+    return _merge_nearest_step_candidates(index, candidates_by_decl_full)
 
 
 def _decorator_terminal_name(decorator: ast.expr) -> str | None:
@@ -1473,19 +1664,17 @@ class SiblingOverrideStepFindingRecipeSynthesizer(
             hook_name=hook_name,
         )
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=(
                     f"Every override of `{candidate.declaring.qualname}.{candidate.name}` "
                     f"shares hoistable step(s); move them once into "
                     f"`{candidate.declaring.qualname}.{candidate.name}` calling `{hook_name}`."
                 ),
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 __all__ = (

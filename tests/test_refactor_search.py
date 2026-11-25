@@ -90,6 +90,7 @@ class StandInConcept:
     seconds = 0.0
     plays = True
     fails = False
+    search_nice = 0
 
     @classmethod
     def concept_key(cls) -> str:

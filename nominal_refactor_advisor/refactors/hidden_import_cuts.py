@@ -587,18 +587,16 @@ class HiddenImportCutFindingRecipeSynthesizer(
         if isinstance(plan, HubRetype):
             operation = plan.operation()
             try:
-                operation.source_edits(context)
-            except ValueError as error:
-                return self.stopped_evaluation(error)
-            return self.executable_evaluation(
-                RefactorRecipe(
+                recipe = RefactorRecipe(
                     recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                     reason=(
                         f"Annotating with a base below each reader lets {len(plan.dissolved)} guarded "
                         f"import(s) load with no cycle: {operation.described}."
                     ),
-                ).with_operation(operation)
-            )
+                ).with_proved_operation(operation, context)
+            except ValueError as error:
+                return self.stopped_evaluation(error)
+            return self.executable_evaluation(recipe)
         if not isinstance(plan, HubCut):
             need = NeedsInput(
                 "; ".join(f"{refusal.hidden.location}: {need}" for refusal, need in plan.needs),
@@ -607,18 +605,16 @@ class HiddenImportCutFindingRecipeSynthesizer(
             return self.stopped_evaluation(need)
         operation = plan.operation()
         try:
-            operation.source_edits(context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=(
                     f"Moving {len(plan.moved)} declaration(s) to `{plan.destination}` lets "
                     f"{len(plan.dissolved)} hidden import(s) load with no cycle."
                 ),
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except ValueError as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 class LayeringViolationFindingRecipeSynthesizer(
@@ -660,18 +656,16 @@ class LayeringViolationFindingRecipeSynthesizer(
         try:
             destination = cuts.destination(module, users, tuple(sorted({read.reader for read in reads})), closure)
             operation = HubCut(module, (), (), evidence.file_path, closure.qualnames, destination).operation()
-            operation.source_edits(context)
-        except (NeedsInput, ValueError) as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(
-            RefactorRecipe(
+            recipe = RefactorRecipe(
                 recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
                 reason=(
                     f"Moving {len(closure.qualnames)} declaration(s) to `{destination}` puts "
                     f"`{evidence.symbol}` in the layer of the {len(reads)} read(s) of it."
                 ),
-            ).with_operation(operation)
-        )
+            ).with_proved_operation(operation, context)
+        except (NeedsInput, ValueError) as error:
+            return self.stopped_evaluation(error)
+        return self.executable_evaluation(recipe)
 
 
 __all__ = (
