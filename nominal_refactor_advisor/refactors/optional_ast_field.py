@@ -66,9 +66,11 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_target_selectors import SourceIndexTargetSelector
+from nominal_refactor_advisor.declared_receivers import DeclaredInstance
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.native_declarations import NativeDeclaration
+from nominal_refactor_advisor.probe_owner import ProbeOwnerResolver
 from nominal_refactor_advisor.refactor_concepts import OptionalAstFieldDecoderConcept
 from nominal_refactor_advisor.registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
 
@@ -587,24 +589,26 @@ class SingleNodeProbeSite(ProbeSite, ABC):
 
 @dataclass(frozen=True)
 class IfPresentProbeSite(SingleNodeProbeSite):
-    """``if [GUARD and] V.f is not None: BODY`` reading ``V.f`` in BODY.
+    """``if [GUARD and] V.f is not None [and POST]: BODY`` reading ``V.f``.
 
     BODY runs once per value the decoder answers: ``for N in DECODED(V): BODY``
-    with ``V.f`` read as ``N``.
+    (with ``if POST:`` inside when post-guards follow) with ``V.f`` read as ``N``.
     """
 
     statement: ast.If
     guards: tuple[ast.expr, ...]
+    post_guards: tuple[ast.expr, ...] = ()
 
     @classmethod
     def at(cls, probe, authority):
         parent = authority.parents.get(probe)
         guards: tuple[ast.expr, ...] = ()
+        post_guards: tuple[ast.expr, ...] = ()
         test: ast.expr = probe
         if isinstance(parent, ast.BoolOp) and isinstance(parent.op, ast.And):
-            if parent.values[-1] is not probe:
-                return None
-            guards = tuple(parent.values[:-1])
+            idx = next(i for i, value in enumerate(parent.values) if value is probe)
+            guards = tuple(parent.values[:idx])
+            post_guards = tuple(parent.values[idx + 1 :])
             test = parent
             parent = authority.parents.get(parent)
         match parent:
@@ -624,17 +628,12 @@ class IfPresentProbeSite(SingleNodeProbeSite):
             field,
             parent,
             guards,
+            post_guards,
         )
 
     def replacements(self, authority):
         geometry = authority.geometry
         statement = self.statement
-        name = self.decoder.present_name()
-        if name in authority.bound_names or any(
-            isinstance(node, ast.Name) and node.id == name
-            for node in ast.walk(statement)
-        ):
-            raise authority.refusal(statement, f"`{name}` is already used here")
         start, _ = geometry.required_node_offsets(statement)
         if not geometry.source.startswith("if", start):
             raise authority.refusal(statement, "an `elif` cannot become a loop")
@@ -662,8 +661,16 @@ class IfPresentProbeSite(SingleNodeProbeSite):
             and node.attr == self.field
             and _same_expression(node.value, self.subject)
         ]
+        post_reads = [
+            node
+            for guard in self.post_guards
+            for node in ast.walk(guard)
+            if isinstance(node, ast.Attribute)
+            and node.attr == self.field
+            and _same_expression(node.value, self.subject)
+        ]
         decoded = self.decoder.single(authority.source_of(self.subject))
-        if not reads:
+        if not reads and not post_reads:
             # Nothing reads the field: the probe only asks presence.
             probe_start, probe_end = geometry.required_node_offsets(self.probe)
             return (
@@ -673,7 +680,26 @@ class IfPresentProbeSite(SingleNodeProbeSite):
                     replacement_source=decoded,
                 ),
             )
-        if not self.guards:
+        if not self.guards and not self.post_guards:
+            match statement.body:
+                case [ast.Expr(value=ast.Yield(value=yielded))] if (
+                    yielded is not None and _same_expression(yielded, self.probe.left)
+                ):
+                    _, stmt_end = geometry.required_node_offsets(statement)
+                    return (
+                        SourceTextSpanReplacement.from_offsets(
+                            start_offset=start,
+                            end_offset=stmt_end,
+                            replacement_source=f"yield from {decoded}",
+                        ),
+                    )
+        name = self.decoder.present_name()
+        if name in authority.bound_names or any(
+            isinstance(node, ast.Name) and node.id == name
+            for node in ast.walk(statement)
+        ):
+            raise authority.refusal(statement, f"`{name}` is already used here")
+        if not self.guards and not self.post_guards:
             _, test_end = geometry.required_node_offsets(statement.test)
             header = SourceTextSpanReplacement.from_offsets(
                 start_offset=start,
@@ -693,7 +719,7 @@ class IfPresentProbeSite(SingleNodeProbeSite):
         decoded: str,
         reads: list[ast.Attribute],
     ) -> SourceTextSpanReplacement:
-        """``if GUARD:`` over a loop holding the body, indented one level deeper."""
+        """``[if GUARD:] for N in DECODED(V): [if POST:] BODY`` indented cleanly."""
 
         geometry = authority.geometry
         statement = self.statement
@@ -718,21 +744,60 @@ class IfPresentProbeSite(SingleNodeProbeSite):
             body = (
                 body[: read_start - body_start] + name + body[read_end - body_start :]
             )
-        guard = " and ".join(
-            (
-                f"({authority.source_of(part)})"
-                if isinstance(part, ast.BoolOp | ast.NamedExpr | ast.IfExp | ast.Lambda)
-                else authority.source_of(part)
+
+        def _render_conjunction(parts: tuple[ast.expr, ...], rename: bool) -> str:
+            rendered_parts: list[str] = []
+            for part in parts:
+                part_start, part_end = geometry.required_node_offsets(part)
+                text = geometry.source[part_start:part_end]
+                if rename:
+                    part_reads = [
+                        node
+                        for node in ast.walk(part)
+                        if isinstance(node, ast.Attribute)
+                        and node.attr == self.field
+                        and _same_expression(node.value, self.subject)
+                    ]
+                    for rnode in sorted(
+                        part_reads,
+                        key=lambda read: geometry.required_node_offsets(read)[0],
+                        reverse=True,
+                    ):
+                        rs, re_ = geometry.required_node_offsets(rnode)
+                        text = text[: rs - part_start] + name + text[re_ - part_start :]
+                if isinstance(part, ast.BoolOp | ast.NamedExpr | ast.IfExp | ast.Lambda):
+                    text = f"({text})"
+                rendered_parts.append(text)
+            return " and ".join(rendered_parts)
+
+        def _indent_lines(text: str, extra: str) -> str:
+            return "".join(
+                f"{extra}{line}" if line.strip() else line
+                for line in text.splitlines(keepends=True)
             )
-            for part in self.guards
-        )
-        indented = "".join(
-            f"    {line}" if line.strip() else line
-            for line in body.splitlines(keepends=True)
-        )
-        rewritten = (
-            f"if {guard}:\n{indentation}    for {name} in {decoded}:\n{indented}"
-        )
+
+        if self.guards and self.post_guards:
+            guard = _render_conjunction(self.guards, rename=False)
+            post = _render_conjunction(self.post_guards, rename=True)
+            indented = _indent_lines(body, "        ")
+            rewritten = (
+                f"if {guard}:\n"
+                f"{indentation}    for {name} in {decoded}:\n"
+                f"{indentation}        if {post}:\n"
+                f"{indented}"
+            )
+        elif self.guards:
+            guard = _render_conjunction(self.guards, rename=False)
+            indented = _indent_lines(body, "    ")
+            rewritten = (
+                f"if {guard}:\n{indentation}    for {name} in {decoded}:\n{indented}"
+            )
+        else:
+            post = _render_conjunction(self.post_guards, rename=True)
+            indented = _indent_lines(body, "    ")
+            rewritten = (
+                f"for {name} in {decoded}:\n{indentation}    if {post}:\n{indented}"
+            )
         if not authority.fit.fits(indentation, rewritten, ""):
             raise authority.refusal(statement, "the nested loop overflows the line")
         return SourceTextSpanReplacement.from_offsets(
@@ -844,10 +909,10 @@ def _reads_same_attribute(
     return False
 
 
-def _statements_after_in_block(
+def _enclosing_block(
     parent: ast.AST, statement: ast.stmt
-) -> tuple[ast.stmt, ...]:
-    """Statements that follow `statement` in its immediately enclosing statement list."""
+) -> tuple[list[ast.stmt], int] | None:
+    """Return `(block, index)` for `statement` inside `parent`, if found."""
 
     block_lists: list[list[ast.stmt]] = []
     match parent:
@@ -866,19 +931,216 @@ def _statements_after_in_block(
     for statements in block_lists:
         for idx, candidate in enumerate(statements):
             if candidate is statement:
-                return tuple(statements[idx + 1 :])
-    return ()
+                return statements, idx
+    return None
+
+
+def _statements_after_in_block(
+    parent: ast.AST, statement: ast.stmt
+) -> tuple[ast.stmt, ...]:
+    """Statements that follow `statement` in its immediately enclosing statement list."""
+
+    located = _enclosing_block(parent, statement)
+    if located is None:
+        return ()
+    statements, idx = located
+    return tuple(statements[idx + 1 :])
+
+
+def _always_terminates_block(statements: Iterable[ast.stmt]) -> bool:
+    items = tuple(statements)
+    if not items:
+        return False
+    match items[-1]:
+        case ast.Return() | ast.Raise():
+            return True
+        case ast.If(body=b, orelse=o) if o:
+            return _always_terminates_block(b) and _always_terminates_block(o)
+    return False
+
+
+def _is_pure_condition(expr: ast.expr) -> bool:
+    """Whether `expr` is a side-effect-free boolean test safe to reorder in `and`/`or`."""
+
+    match expr:
+        case ast.Constant() | ast.Name():
+            return True
+        case ast.Attribute(value=inner):
+            return _is_pure_condition(inner)
+        case ast.UnaryOp(op=ast.Not(), operand=inner):
+            return _is_pure_condition(inner)
+        case ast.Compare(left=left, comparators=comparators):
+            return _is_pure_condition(left) and all(
+                _is_pure_condition(comp) for comp in comparators
+            )
+    return False
+
+
+def _replace_attribute_in_ast(
+    node: ast.AST, subject: ast.expr, field: str, replacement_name: str
+) -> ast.AST:
+    class _Replacer(ast.NodeTransformer):
+        def visit_Attribute(self, attr: ast.Attribute) -> ast.AST:
+            if attr.attr == field and _same_expression(attr.value, subject):
+                return ast.Name(id=replacement_name, ctx=attr.ctx)
+            return self.generic_visit(attr)
+
+    return _Replacer().visit(ast.fix_missing_locations(node))
+
+
+@dataclass(frozen=True)
+class EarlyExitAbsentProbeSite(SingleNodeProbeSite):
+    """``if V.f is None: continue`` (in loop) or ``if V.f is None: return/raise`` + terminating tail."""
+
+    statement: ast.If
+    tail: tuple[ast.stmt, ...]
+    is_loop_continue: bool
+
+    @property
+    def anchor(self) -> ast.AST:
+        return self.statement
+
+    @classmethod
+    def at(cls, probe, authority):
+        parent = authority.parents.get(probe)
+        match parent:
+            case ast.If(test=found, body=body, orelse=[]) if found is probe and body:
+                pass
+            case _:
+                return None
+        proved = cls.proved_subject(probe, authority, absent=True)
+        if proved is None:
+            return None
+        subject, field = proved
+        if _reads_same_attribute(body, subject, field):
+            return None
+        enclosing = authority.parents.get(parent)
+        if enclosing is None:
+            return None
+        tail = _statements_after_in_block(enclosing, parent)
+        if not tail or not _reads_same_attribute(tail, subject, field):
+            return None
+        is_loop_continue = (
+            isinstance(enclosing, (ast.For, ast.AsyncFor, ast.While))
+            and len(body) == 1
+            and isinstance(body[0], ast.Continue)
+        )
+        if not is_loop_continue and not (
+            _always_terminates_block(body) and _always_terminates_block(tail)
+        ):
+            return None
+        return cls(
+            authority.decoder,
+            probe,
+            ast.unparse(subject),
+            subject,
+            field,
+            parent,
+            tail,
+            is_loop_continue,
+        )
+
+    def replacements(self, authority):
+        geometry = authority.geometry
+        statement = self.statement
+        name = self.decoder.present_name()
+        if name in authority.bound_names or any(
+            isinstance(node, ast.Name) and node.id == name
+            for node in (statement, *self.tail)
+            for node in ast.walk(node)
+        ):
+            raise authority.refusal(statement, f"`{name}` is already used here")
+        start, _ = geometry.required_node_offsets(statement)
+        if not geometry.source.startswith("if", start):
+            raise authority.refusal(statement, "an `elif` cannot become a loop")
+        if any(authority.escaping_loop_jumps(list(self.tail))):
+            raise authority.refusal(statement, "the guarded tail jumps an enclosing loop")
+        if not self.is_loop_continue and any(
+            authority.escaping_loop_jumps(statement.body)
+        ):
+            raise authority.refusal(statement, "the absent branch jumps an enclosing loop")
+        probed_names = {
+            part.id for part in ast.walk(self.subject) if isinstance(part, ast.Name)
+        }
+        for stmt in self.tail:
+            for node in ast.walk(stmt):
+                match node:
+                    case ast.Name(id=bound, ctx=ast.Store() | ast.Del()) if (
+                        bound in probed_names
+                    ):
+                        raise authority.refusal(node, "the tail rebinds the probed node")
+                if (
+                    isinstance(node, ast.Constant)
+                    and isinstance(node.value, str)
+                    and node.end_lineno != node.lineno
+                ):
+                    raise authority.refusal(node, "the tail holds a multi-line string")
+        _, tail_end = geometry.required_node_offsets(self.tail[-1])
+        if geometry.span_contains_comment(SourceTextSpan(start, tail_end)):
+            raise authority.refusal(statement, "the early-exit region holds a comment")
+        line_start = geometry.line_offsets[statement.lineno - 1]
+        indentation = geometry.source[line_start:start]
+        tail_line_start = geometry.line_offsets[self.tail[0].lineno - 1]
+        tail_source = geometry.source[tail_line_start:tail_end]
+        reads = [
+            node
+            for stmt in self.tail
+            for node in ast.walk(stmt)
+            if isinstance(node, ast.Attribute)
+            and node.attr == self.field
+            and _same_expression(node.value, self.subject)
+        ]
+        for rnode in sorted(
+            reads,
+            key=lambda read: geometry.required_node_offsets(read)[0],
+            reverse=True,
+        ):
+            rs, re_ = geometry.required_node_offsets(rnode)
+            tail_source = (
+                tail_source[: rs - tail_line_start]
+                + name
+                + tail_source[re_ - tail_line_start :]
+            )
+        indented_tail = "".join(
+            f"    {line}" if line.strip() else line
+            for line in tail_source.splitlines(keepends=True)
+        )
+        decoded = self.decoder.single(authority.source_of(self.subject))
+        if self.is_loop_continue:
+            rewritten = f"for {name} in {decoded}:\n{indented_tail}"
+        else:
+            absent_start = geometry.line_offsets[statement.body[0].lineno - 1]
+            _, absent_end = geometry.required_node_offsets(statement.body[-1])
+            absent_raw = geometry.source[absent_start:absent_end]
+            dedented_absent = "".join(
+                line[4:] if line.startswith(f"{indentation}    ") else line
+                for line in absent_raw.splitlines(keepends=True)
+            )
+            rewritten = (
+                f"for {name} in {decoded}:\n{indented_tail}\n{dedented_absent}"
+            )
+        if not authority.fit.fits(indentation, rewritten, ""):
+            raise authority.refusal(statement, "the rewritten early-exit loop overflows the line")
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=tail_end,
+                replacement_source=rewritten,
+            ),
+        )
 
 
 @dataclass(frozen=True)
 class FallbackTernaryProbeSite(SingleNodeProbeSite):
-    """``V.f if V.f is not None else FALLBACK`` or ``FALLBACK if V.f is None else V.f``.
+    """``EXPR(V.f) if V.f is not None else FALLBACK`` or ``FALLBACK if V.f is None else EXPR(V.f)``.
 
-    When ``FALLBACK`` is side-effect-free and does not read ``V.f``, this becomes
-    ``next(iter(DECODED(V)), FALLBACK)``.
+    When ``FALLBACK`` is side-effect-free and does not read ``V.f``, bare ``V.f``
+    becomes ``next(iter(DECODED(V)), FALLBACK)`` and a transforming ``EXPR(V.f)``
+    becomes ``next((EXPR(N) for N in DECODED(V)), FALLBACK)``.
     """
 
     expression: ast.IfExp
+    value_expr: ast.expr
     fallback: ast.expr
 
     @classmethod
@@ -897,7 +1159,13 @@ class FallbackTernaryProbeSite(SingleNodeProbeSite):
         else:
             return None
         if not _same_expression(value_expr, probe.left):
-            return None
+            if not _reads_same_attribute((value_expr,), subject, field):
+                return None
+            if any(
+                isinstance(node, (ast.Yield, ast.YieldFrom, ast.Await))
+                for node in ast.walk(value_expr)
+            ):
+                return None
         if not _is_pure_fallback(fallback) or _reads_same_attribute(
             (fallback,), subject, field
         ):
@@ -909,6 +1177,7 @@ class FallbackTernaryProbeSite(SingleNodeProbeSite):
             subject,
             field,
             expression,
+            value_expr,
             fallback,
         )
 
@@ -923,7 +1192,36 @@ class FallbackTernaryProbeSite(SingleNodeProbeSite):
             raise authority.refusal(self.expression, "the fallback ternary holds a comment")
         decoded = self.decoder.single(authority.source_of(self.subject))
         fallback_source = authority.source_of(self.fallback)
-        candidate = f"next(iter({decoded}), {fallback_source})"
+        if _same_expression(self.value_expr, self.probe.left):
+            candidate = f"next(iter({decoded}), {fallback_source})"
+        else:
+            name = self.decoder.present_name()
+            if name in authority.bound_names or any(
+                isinstance(node, ast.Name) and node.id == name
+                for node in ast.walk(self.value_expr)
+            ):
+                raise authority.refusal(
+                    self.expression, f"`{name}` is already used here"
+                )
+            val_start, val_end = geometry.required_node_offsets(self.value_expr)
+            val_source = geometry.source[val_start:val_end]
+            reads = [
+                node
+                for node in ast.walk(self.value_expr)
+                if isinstance(node, ast.Attribute)
+                and node.attr == self.field
+                and _same_expression(node.value, self.subject)
+            ]
+            for rnode in sorted(
+                reads,
+                key=lambda read: geometry.required_node_offsets(read)[0],
+                reverse=True,
+            ):
+                rs, re_ = geometry.required_node_offsets(rnode)
+                val_source = (
+                    val_source[: rs - val_start] + name + val_source[re_ - val_start :]
+                )
+            candidate = f"next(({val_source} for {name} in {decoded}), {fallback_source})"
         replacement = authority.fit.fitted(candidate, start, end)
         return (
             SourceTextSpanReplacement.from_offsets(
@@ -1073,6 +1371,7 @@ class PairedProbeSite(SingleNodeProbeSite):
     first: ast.expr
     second: ast.expr
     joined: str
+    adjacent_pair: bool = True
 
     @property
     def anchor(self) -> ast.AST:
@@ -1120,37 +1419,53 @@ class PairedProbeSite(SingleNodeProbeSite):
         item: ast.AST,
         joined: str,
     ) -> Self | None:
-        """The site when ``item``'s pair partner sits right next to it, in order."""
+        """The site when ``item``'s pair partner appears in ``items`` in order."""
 
         if proved is None:
             return None
         subject, field = proved
         first_field, second_field = authority.decoder.paired_fields
         index = next(index for index, value in enumerate(items) if value is item)
-        offset = 1 if field == first_field else -1
-        if not 0 <= index + offset < len(items):
+        wanted_field = second_field if field == first_field else first_field
+        candidate_indices = (
+            range(index + 1, len(items))
+            if field == first_field
+            else range(index - 1, -1, -1)
+        )
+        partner_index: int | None = None
+        for cand_idx in candidate_indices:
+            if joined == "*" and abs(cand_idx - index) != 1:
+                break
+            partner = items[cand_idx]
+            partner_probe = (
+                partner.value.test
+                if isinstance(partner, ast.Starred) and isinstance(partner.value, ast.IfExp)
+                else partner
+            )
+            match partner_probe:
+                case ast.Compare(
+                    left=ast.Attribute(value=other, attr=other_field), ops=[operator]
+                ) if (
+                    other_field == wanted_field
+                    and _same_expression(other, subject)
+                    and type(operator) is type(probe.ops[0])
+                    and _none_probe(partner_probe)
+                ):
+                    lo, hi = (index, cand_idx) if index < cand_idx else (cand_idx, index)
+                    if all(_is_pure_condition(items[mid]) for mid in range(lo + 1, hi)):
+                        partner_index = cand_idx
+                        break
+        if partner_index is None:
             return None
-        partner = items[index + offset]
+        partner = items[partner_index]
         partner_probe = (
             partner.value.test
             if isinstance(partner, ast.Starred) and isinstance(partner.value, ast.IfExp)
             else partner
         )
-        match partner_probe:
-            case ast.Compare(
-                left=ast.Attribute(value=other, attr=other_field), ops=[operator]
-            ) if (
-                other_field == (second_field if offset == 1 else first_field)
-                and _same_expression(other, subject)
-                and type(operator) is type(probe.ops[0])
-                and _none_probe(partner_probe)
-            ):
-                pass
-            case _:
-                return None
         if joined == "*" and SpliceProbeSite.at(partner_probe, authority) is None:
             return None
-        first, second = (item, partner) if offset == 1 else (partner, item)
+        first, second = (item, partner) if index < partner_index else (partner, item)
         return cls(
             authority.decoder,
             probe,
@@ -1160,16 +1475,34 @@ class PairedProbeSite(SingleNodeProbeSite):
             first,
             second,
             joined,
+            abs(partner_index - index) == 1,
         )
 
     def replacements(self, authority):
         geometry = authority.geometry
+        decoded = self.decoder.single(authority.source_of(self.subject))
+        boolean = authority.parents[self.first]
+        if not self.adjacent_pair and isinstance(boolean, ast.BoolOp):
+            first_start, first_end = geometry.required_node_offsets(self.first)
+            if geometry.span_contains_comment(SourceTextSpan(first_start, first_end)):
+                raise authority.refusal(self.probe, "the pair holds a comment")
+            replacement = (
+                f"not {decoded}"
+                if self.joined == "and"
+                else authority.truth_of(boolean, decoded)
+            )
+            return (
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=first_start,
+                    end_offset=first_end,
+                    replacement_source=replacement,
+                ),
+                CollectionProbeSite.dropped_operand(geometry, self.second, boolean),
+            )
         start, _ = geometry.required_node_offsets(self.first)
         _, end = geometry.required_node_offsets(self.second)
         if geometry.span_contains_comment(SourceTextSpan(start, end)):
             raise authority.refusal(self.probe, "the pair holds a comment")
-        decoded = self.decoder.single(authority.source_of(self.subject))
-        boolean = authority.parents[self.first]
         whole = isinstance(boolean, ast.BoolOp) and len(boolean.values) == 2
         match self.joined:
             case "*":
@@ -1193,6 +1526,300 @@ class PairedProbeSite(SingleNodeProbeSite):
         )
 
 
+@dataclass(frozen=True)
+class PairedIfPresentProbeSite(SingleNodeProbeSite):
+    """Adjacent ``if V.a is not None: BODY(V.a)`` + ``if V.b is not None: BODY(V.b)``."""
+
+    first_stmt: ast.If
+    second_stmt: ast.If
+    first_field: str
+    second_field: str
+
+    @property
+    def anchor(self) -> ast.AST:
+        return self.first_stmt
+
+    @classmethod
+    def at(cls, probe, authority):
+        parent = authority.parents.get(probe)
+        match parent:
+            case ast.If(test=found, body=body, orelse=[]) if found is probe and body:
+                pass
+            case _:
+                return None
+        proved = cls.proved_subject(probe, authority, absent=False)
+        if proved is None:
+            return None
+        subject, field = proved
+        first_field, second_field = authority.decoder.paired_fields
+        enclosing = authority.parents.get(parent)
+        if enclosing is None:
+            return None
+        located = _enclosing_block(enclosing, parent)
+        if located is None:
+            return None
+        statements, idx = located
+        offset = 1 if field == first_field else -1
+        partner_idx = idx + offset
+        if not 0 <= partner_idx < len(statements):
+            return None
+        partner = statements[partner_idx]
+        wanted_field = second_field if offset == 1 else first_field
+        match partner:
+            case ast.If(
+                test=ast.Compare(
+                    left=ast.Attribute(value=other, attr=other_field),
+                    ops=[ast.IsNot()],
+                    comparators=[ast.Constant(value=None)],
+                ),
+                body=partner_body,
+                orelse=[],
+            ) if (
+                other_field == wanted_field
+                and _same_expression(other, subject)
+                and partner_body
+            ):
+                pass
+            case _:
+                return None
+        first_stmt, second_stmt = (parent, partner) if offset == 1 else (partner, parent)
+        # Bodies must be structurally identical once `V.first_field` / `V.second_field` map to the loop var.
+        sentinel = "__nra_paired_param__"
+        norm_first = [
+            ast.dump(_replace_attribute_in_ast(ast.parse(ast.unparse(s)).body[0], subject, first_field, sentinel))
+            for s in first_stmt.body
+        ]
+        norm_second = [
+            ast.dump(_replace_attribute_in_ast(ast.parse(ast.unparse(s)).body[0], subject, second_field, sentinel))
+            for s in second_stmt.body
+        ]
+        if norm_first != norm_second:
+            return None
+        return cls(
+            authority.decoder,
+            probe,
+            ast.unparse(subject),
+            subject,
+            field,
+            first_stmt,
+            second_stmt,
+            first_field,
+            second_field,
+        )
+
+    def replacements(self, authority):
+        geometry = authority.geometry
+        name = self.decoder.present_name()
+        if name in authority.bound_names or any(
+            isinstance(node, ast.Name) and node.id == name
+            for stmt in (self.first_stmt, self.second_stmt)
+            for node in ast.walk(stmt)
+        ):
+            raise authority.refusal(self.first_stmt, f"`{name}` is already used here")
+        start, _ = geometry.required_node_offsets(self.first_stmt)
+        _, end = geometry.required_node_offsets(self.second_stmt)
+        if not geometry.source.startswith("if", start):
+            raise authority.refusal(self.first_stmt, "an `elif` cannot become a loop")
+        if self.first_stmt.body[0].lineno == self.first_stmt.lineno:
+            raise authority.refusal(self.first_stmt, "the body shares the `if` line")
+        if any(authority.escaping_loop_jumps(self.first_stmt.body)):
+            raise authority.refusal(self.first_stmt, "the body jumps an enclosing loop")
+        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+            raise authority.refusal(self.first_stmt, "the paired `if` holds a comment")
+        probed_names = {
+            part.id for part in ast.walk(self.subject) if isinstance(part, ast.Name)
+        }
+        for node in ast.walk(self.first_stmt):
+            match node:
+                case ast.Name(id=bound, ctx=ast.Store() | ast.Del()) if bound in probed_names:
+                    raise authority.refusal(node, "the body rebinds the probed node")
+        body_start = geometry.line_offsets[self.first_stmt.body[0].lineno - 1]
+        _, first_end = geometry.required_node_offsets(self.first_stmt)
+        body_source = geometry.source[body_start:first_end]
+        reads = [
+            node
+            for stmt in self.first_stmt.body
+            for node in ast.walk(stmt)
+            if isinstance(node, ast.Attribute)
+            and node.attr == self.first_field
+            and _same_expression(node.value, self.subject)
+        ]
+        for rnode in sorted(
+            reads,
+            key=lambda read: geometry.required_node_offsets(read)[0],
+            reverse=True,
+        ):
+            rs, re_ = geometry.required_node_offsets(rnode)
+            body_source = (
+                body_source[: rs - body_start] + name + body_source[re_ - body_start :]
+            )
+        decoded = self.decoder.single(authority.source_of(self.subject))
+        rewritten = f"for {name} in {decoded}:\n{body_source}"
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=rewritten,
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class PairedAnyPresentProbeSite(SingleNodeProbeSite):
+    """Adjacent ``(V.a is not None and P(V.a)) or (V.b is not None and P(V.b))``."""
+
+    first_branch: ast.BoolOp
+    second_branch: ast.BoolOp
+    first_field: str
+    second_field: str
+
+    @property
+    def anchor(self) -> ast.AST:
+        return self.first_branch
+
+    @classmethod
+    def at(cls, probe, authority):
+        and_node = authority.parents.get(probe)
+        if (
+            not isinstance(and_node, ast.BoolOp)
+            or not isinstance(and_node.op, ast.And)
+            or len(and_node.values) < 2
+            or and_node.values[0] is not probe
+        ):
+            return None
+        or_node = authority.parents.get(and_node)
+        if not isinstance(or_node, ast.BoolOp) or not isinstance(or_node.op, ast.Or):
+            return None
+        proved = cls.proved_subject(probe, authority, absent=False)
+        if proved is None:
+            return None
+        subject, field = proved
+        first_field, second_field = authority.decoder.paired_fields
+        idx = next(i for i, v in enumerate(or_node.values) if v is and_node)
+        offset = 1 if field == first_field else -1
+        partner_idx = idx + offset
+        if not 0 <= partner_idx < len(or_node.values):
+            return None
+        partner = or_node.values[partner_idx]
+        wanted_field = second_field if offset == 1 else first_field
+        match partner:
+            case ast.BoolOp(
+                op=ast.And(),
+                values=[
+                    ast.Compare(
+                        left=ast.Attribute(value=other, attr=other_field),
+                        ops=[ast.IsNot()],
+                        comparators=[ast.Constant(value=None)],
+                    ),
+                    *partner_rest,
+                ],
+            ) if (
+                partner_rest
+                and other_field == wanted_field
+                and _same_expression(other, subject)
+            ):
+                pass
+            case _:
+                return None
+        first_branch, second_branch = (
+            (and_node, partner) if offset == 1 else (partner, and_node)
+        )
+        sentinel = "__nra_paired_param__"
+        first_rest = first_branch.values[1:]
+        second_rest = second_branch.values[1:]
+        if len(first_rest) != len(second_rest):
+            return None
+        norm_first = [
+            ast.dump(_replace_attribute_in_ast(ast.parse(ast.unparse(e), mode="eval").body, subject, first_field, sentinel))
+            for e in first_rest
+        ]
+        norm_second = [
+            ast.dump(_replace_attribute_in_ast(ast.parse(ast.unparse(e), mode="eval").body, subject, second_field, sentinel))
+            for e in second_rest
+        ]
+        if norm_first != norm_second:
+            return None
+        return cls(
+            authority.decoder,
+            probe,
+            ast.unparse(subject),
+            subject,
+            field,
+            first_branch,
+            second_branch,
+            first_field,
+            second_field,
+        )
+
+    def replacements(self, authority):
+        geometry = authority.geometry
+        name = self.decoder.present_name()
+        if name in authority.bound_names or any(
+            isinstance(node, ast.Name) and node.id == name
+            for branch in (self.first_branch, self.second_branch)
+            for node in ast.walk(branch)
+        ):
+            raise authority.refusal(self.first_branch, f"`{name}` is already used here")
+        start, _ = geometry.required_node_offsets(self.first_branch)
+        _, end = geometry.required_node_offsets(self.second_branch)
+        # Include surrounding parentheses around each BoolOp branch when present.
+        src = geometry.source
+        while start > 0 and src[start - 1] == "(":
+            # Only consume matching outer parens on first_branch if second_branch ends with ")" or parens balance.
+            break
+        # Walk backwards/forwards cleanly for `(A and B)` parenthesized branches.
+        open_idx = start - 1
+        while open_idx >= 0 and src[open_idx] in " \t":
+            open_idx -= 1
+        close_first = geometry.required_node_offsets(self.first_branch)[1]
+        if open_idx >= 0 and src[open_idx] == "(":
+            probe_close = close_first
+            while probe_close < len(src) and src[probe_close] in " \t\n":
+                probe_close += 1
+            if probe_close < len(src) and src[probe_close] == ")":
+                start = open_idx
+        close_idx = end
+        while close_idx < len(src) and src[close_idx] in " \t\n":
+            close_idx += 1
+        sec_start = geometry.required_node_offsets(self.second_branch)[0] - 1
+        while sec_start >= 0 and src[sec_start] in " \t\n":
+            sec_start -= 1
+        if sec_start >= 0 and src[sec_start] == "(" and close_idx < len(src) and src[close_idx] == ")":
+            end = close_idx + 1
+        if geometry.span_contains_comment(SourceTextSpan(start, end)):
+            raise authority.refusal(self.first_branch, "the paired `or` holds a comment")
+        rest_start = geometry.required_node_offsets(self.first_branch.values[1])[0]
+        rest_end = geometry.required_node_offsets(self.first_branch.values[-1])[1]
+        pred_source = src[rest_start:rest_end]
+        reads = [
+            node
+            for expr in self.first_branch.values[1:]
+            for node in ast.walk(expr)
+            if isinstance(node, ast.Attribute)
+            and node.attr == self.first_field
+            and _same_expression(node.value, self.subject)
+        ]
+        for rnode in sorted(
+            reads,
+            key=lambda read: geometry.required_node_offsets(read)[0],
+            reverse=True,
+        ):
+            rs, re_ = geometry.required_node_offsets(rnode)
+            pred_source = (
+                pred_source[: rs - rest_start] + name + pred_source[re_ - rest_start :]
+            )
+        decoded = self.decoder.single(authority.source_of(self.subject))
+        candidate = f"any({pred_source} for {name} in {decoded})"
+        replacement = authority.fit.fitted(candidate, start, end)
+        return (
+            SourceTextSpanReplacement.from_offsets(
+                start_offset=start,
+                end_offset=end,
+                replacement_source=replacement,
+            ),
+        )
+
+
 class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     """One registered decoder: the ast fields it owns and the shapes sites take.
 
@@ -1209,6 +1836,7 @@ class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     owners: ClassVar[tuple[type | Callable[..., object], ...]]
     shapes: ClassVar[tuple[type[ProbeSite], ...]] = (
         IfPresentProbeSite,
+        EarlyExitAbsentProbeSite,
         SpliceProbeSite,
         FallbackTernaryProbeSite,
         PresenceTestProbeSite,
@@ -1280,6 +1908,7 @@ class CollectionDecoder(OptionalAstFieldDecoder, ABC):
     shapes: ClassVar[tuple[type[ProbeSite], ...]] = (
         *CollectionProbeSite.__subclasses__(),
         IfPresentProbeSite,
+        EarlyExitAbsentProbeSite,
         SpliceProbeSite,
         FallbackTernaryProbeSite,
         PresenceTestProbeSite,
@@ -1401,7 +2030,7 @@ class VariadicParameterDecoder(OptionalAstFieldDecoder):
     fields = {ast.arguments: "vararg"}
     paired_fields: ClassVar[tuple[str, str]] = ("vararg", "kwarg")
     owners = (ast_field_decoders.variadic_parameters,)
-    shapes = (PairedProbeSite,)
+    shapes = (PairedProbeSite, PairedIfPresentProbeSite, PairedAnyPresentProbeSite)
 
     @classmethod
     def field_names(cls) -> frozenset[str]:
@@ -1750,6 +2379,7 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
     """Every routable probe of one decoder's fields inside one function."""
 
     decoder: type[OptionalAstFieldDecoder]
+    snapshot: CodemodSourceSnapshot | None = None
     rewrite_name = "Probe routing"
 
     @cached_property
@@ -1814,14 +2444,83 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                 )
         return frozenset()
 
+    @staticmethod
+    def _match_pattern_ast_classes(
+        pattern: ast.pattern, subject: ast.expr, match_subject: ast.expr
+    ) -> frozenset[str]:
+        """AST classes proven for `subject` by a `match` case pattern."""
+
+        def _pattern_classes(pat: ast.pattern) -> frozenset[str]:
+            match pat:
+                case ast.MatchClass(cls=cls_expr):
+                    return OptionalAstFieldAuthority.ast_classes(cls_expr)
+                case ast.MatchAs(pattern=inner) if inner is not None:
+                    return _pattern_classes(inner)
+                case ast.MatchOr(patterns=alts) if alts:
+                    parts = [_pattern_classes(alt) for alt in alts]
+                    if all(parts):
+                        return frozenset().union(*parts)
+            return frozenset()
+
+        if _same_expression(subject, match_subject):
+            if found := _pattern_classes(pattern):
+                return found
+
+        if isinstance(subject, ast.Name):
+            target_name = subject.id
+            # Search for `MatchAs(pattern=..., name=target_name)` anywhere in the pattern.
+            stack: list[ast.AST] = [pattern]
+            found_aliases: list[frozenset[str]] = []
+            while stack:
+                cur = stack.pop()
+                match cur:
+                    case ast.MatchAs(pattern=inner, name=alias) if (
+                        alias == target_name and inner is not None
+                    ):
+                        classes = _pattern_classes(inner)
+                        if not classes:
+                            return frozenset()
+                        found_aliases.append(classes)
+                    case _:
+                        stack.extend(ast.iter_child_nodes(cur))
+            if found_aliases:
+                return frozenset().union(*found_aliases)
+        return frozenset()
+
+    @staticmethod
+    def _negated_isinstance_classes(
+        test: ast.expr, subject: ast.expr
+    ) -> frozenset[str]:
+        match test:
+            case ast.UnaryOp(
+                op=ast.Not(),
+                operand=ast.Call(
+                    func=ast.Name(id="isinstance"), args=[checked, classes]
+                ),
+            ) if _same_expression(checked, subject):
+                return OptionalAstFieldAuthority.ast_classes(classes)
+        return frozenset()
+
     def guarded(self, subject: ast.expr, at: ast.AST) -> frozenset[str]:
-        """Classes an enclosing ``isinstance(V, ...)`` guard proves at ``at``."""
+        """Classes an enclosing `isinstance`, `not isinstance` guard, or `match` proves at `at`."""
 
         for child, parent in self.ancestors(at):
             match parent:
                 case ast.BoolOp(op=ast.And(), values=values):
                     index = next(i for i, value in enumerate(values) if value is child)
                     tests = values[:index]
+                    for test in tests:
+                        match test:
+                            case ast.Call(
+                                func=ast.Name(id="isinstance"), args=[checked, classes]
+                            ) if _same_expression(checked, subject):
+                                if found := self.ast_classes(classes):
+                                    return found
+                case ast.BoolOp(op=ast.Or(), values=values):
+                    index = next(i for i, value in enumerate(values) if value is child)
+                    for test in values[:index]:
+                        if found := self._negated_isinstance_classes(test, subject):
+                            return found
                 case ast.If(test=test, body=body) if any(
                     statement is child for statement in body
                 ):
@@ -1830,15 +2529,46 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                         if isinstance(test, ast.BoolOp) and isinstance(test.op, ast.And)
                         else [test]
                     )
-                case _:
-                    continue
-            for test in tests:
-                match test:
-                    case ast.Call(
-                        func=ast.Name(id="isinstance"), args=[checked, classes]
-                    ) if _same_expression(checked, subject):
-                        if found := self.ast_classes(classes):
+                    for part in tests:
+                        match part:
+                            case ast.Call(
+                                func=ast.Name(id="isinstance"), args=[checked, classes]
+                            ) if _same_expression(checked, subject):
+                                if found := self.ast_classes(classes):
+                                    return found
+                case ast.match_case(pattern=pattern, body=body) if any(
+                    statement is child for statement in body
+                ):
+                    match_node = self.parents.get(parent)
+                    if isinstance(match_node, ast.Match):
+                        if found := self._match_pattern_ast_classes(
+                            pattern, subject, match_node.subject
+                        ):
                             return found
+            if isinstance(child, ast.stmt):
+                located = _enclosing_block(parent, child)
+                if located is not None:
+                    block, stmt_idx = located
+                    for earlier in reversed(block[:stmt_idx]):
+                        match earlier:
+                            case ast.If(test=guard_test, body=early_body, orelse=[]) if (
+                                early_body
+                                and isinstance(
+                                    early_body[-1],
+                                    (ast.Return, ast.Raise, ast.Continue, ast.Break),
+                                )
+                            ):
+                                guard_parts = (
+                                    guard_test.values
+                                    if isinstance(guard_test, ast.BoolOp)
+                                    and isinstance(guard_test.op, ast.Or)
+                                    else [guard_test]
+                                )
+                                for part in guard_parts:
+                                    if found := self._negated_isinstance_classes(
+                                        part, subject
+                                    ):
+                                        return found
         return frozenset()
 
     def _iterated_source(
@@ -1874,21 +2604,96 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                             return self.decoder.collected_classes()
         return frozenset()
 
-    def classes_of(self, subject: ast.expr, at: ast.AST) -> frozenset[str]:
+    def _bound_ast_classes(
+        self, name: str, seen: frozenset[str]
+    ) -> frozenset[str]:
+        """Classes proved when every assignment to `name` in this function yields AST classes."""
+
+        if name in seen:
+            return frozenset()
+        param_names = {
+            arg.arg
+            for arg in ast.walk(self.function.args)
+            if isinstance(arg, ast.arg)
+        }
+        if name in param_names and not self.annotated(name):
+            return frozenset()
+        bindings = [
+            node
+            for node in ast.walk(self.function)
+            if isinstance(node, ast.Name)
+            and node.id == name
+            and isinstance(node.ctx, ast.Store)
+        ]
+        if not bindings:
+            return frozenset()
+        next_seen = seen | {name}
+        proved: set[str] = set(self.annotated(name))
+        for binding in bindings:
+            found: frozenset[str] = frozenset()
+            match self.parents.get(binding):
+                case ast.AnnAssign(target=target, annotation=ann, value=val) as assign if (
+                    target is binding
+                ):
+                    found = self.ast_classes(ann) or (
+                        self.classes_of(val, assign, next_seen)
+                        if val is not None
+                        else frozenset()
+                    )
+                case ast.Assign(targets=[target], value=val) as assign if (
+                    target is binding
+                ):
+                    found = self.classes_of(val, assign, next_seen)
+                case ast.NamedExpr(target=target, value=val) as expr if (
+                    target is binding
+                ):
+                    found = self.classes_of(val, expr, next_seen)
+            if not found:
+                return frozenset()
+            proved.update(found)
+        return frozenset(proved)
+
+    def _declared_ast_classes(self, subject: ast.expr) -> frozenset[str]:
+        """AST classes proved by the snapshot's `DeclaredReceiverTyping`."""
+
+        if self.snapshot is None:
+            return frozenset()
+        declared = (
+            ProbeOwnerResolver.of(self.parsed_module)
+            .builder.path_of(subject)
+            .declared(self.snapshot.declared_receiver_typing)
+        )
+        if not isinstance(declared, DeclaredInstance) or not declared.symbols:
+            return frozenset()
+        names: list[str] = []
+        for sym in declared.symbols:
+            if sym.startswith(("ast.", "_ast.")):
+                names.append(sym.split(".", 1)[1])
+            else:
+                return frozenset()
+        return frozenset(names)
+
+    def classes_of(
+        self, subject: ast.expr, at: ast.AST, _seen: frozenset[str] = frozenset()
+    ) -> frozenset[str]:
         match subject:
             case ast.Name(id=name):
                 return (
                     self.guarded(subject, at)
                     or self.annotated(name)
                     or self.iterated(name, at)
+                    or self._bound_ast_classes(name, _seen)
+                    or self._declared_ast_classes(subject)
                 )
             case ast.Attribute(value=owner, attr="args"):
-                owner_classes = self.guarded(subject, at) or self.classes_of(owner, at)
+                owner_classes = self.guarded(subject, at) or self.classes_of(
+                    owner, at, _seen
+                )
                 if owner_classes == frozenset(("arguments",)):
                     return owner_classes
                 if owner_classes and owner_classes <= FUNCTION_CLASSES:
                     return frozenset(("arguments",))
-        return self.guarded(subject, at)
+        return self.guarded(subject, at) or self._declared_ast_classes(subject)
 
     def proves(self, subject: ast.expr, field: str, at: ast.AST) -> bool:
         """Whether ``subject`` is proved to be an ast class owning ``field``."""
@@ -1900,8 +2705,8 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
         """Whether the iterable is proved a collection of the decoder's elements.
 
         Proved by a collecting attribute, a tuple or concatenation of proved
-        collections, a parameter annotated with the element type, or a local
-        bound once to a proved collection.
+        collections, a parameter annotated with the element type, a decoder call
+        yielding those elements, or a local bound once to a proved collection.
         """
 
         match iterable:
@@ -1916,6 +2721,38 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                 return self.iterates_elements(left) and self.iterates_elements(right)
             case ast.Call(func=ast.Name(id="tuple" | "list"), args=[only], keywords=[]):
                 return self.iterates_elements(only)
+            case ast.Call(func=ast.Name(id="variadic_parameters"), args=[arg], keywords=[]) if (
+                self.decoder is DeclaredAnnotationDecoder
+                and self.classes_of(arg, iterable) == frozenset(("arguments",))
+            ):
+                return True
+            case ast.GeneratorExp(
+                elt=ast.Name(id=elt_name),
+                generators=[
+                    ast.comprehension(
+                        target=ast.Name(id=target_name),
+                        iter=ast.Tuple(
+                            elts=[
+                                ast.Attribute(value=owner1, attr="vararg" | "kwarg"),
+                                ast.Attribute(value=owner2, attr="vararg" | "kwarg"),
+                            ]
+                        ),
+                        ifs=[
+                            ast.Compare(
+                                left=ast.Name(id=if_name),
+                                ops=[ast.IsNot()],
+                                comparators=[ast.Constant(value=None)],
+                            )
+                        ],
+                    )
+                ],
+            ) if (
+                self.decoder is DeclaredAnnotationDecoder
+                and elt_name == target_name == if_name
+                and _same_expression(owner1, owner2)
+                and self.classes_of(owner1, iterable) == frozenset(("arguments",))
+            ):
+                return True
             case ast.Name(id=name):
                 return self.annotated_collection(name) or self.bound_collection(name)
         return False
@@ -2184,6 +3021,7 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             declaration=node,
             decoder=decoder,
+            snapshot=snapshot,
         )
         replacements = authority.replacements()
         used = tuple(
@@ -2556,6 +3394,7 @@ __all__ = (
     "CaptureNameDecoder",
     "DeclareAndRouteOptionalAstFieldProbesOperation",
     "DeclaredAnnotationDecoder",
+    "EarlyExitAbsentProbeSite",
     "ExceptionTypeDecoder",
     "FallbackTernaryProbeSite",
     "ImportAliasDecoder",
@@ -2564,6 +3403,9 @@ __all__ = (
     "OptionalAstFieldDecoder",
     "OptionalAstFieldDecoderFindingRecipeSynthesizer",
     "OptionalValueDecoder",
+    "PairedAnyPresentProbeSite",
+    "PairedIfPresentProbeSite",
+    "PairedProbeSite",
     "PendingDecoderMigration",
     "PresenceTestProbeSite",
     "ProjectDecoderOwners",
