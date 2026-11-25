@@ -148,7 +148,7 @@ class RequireAbsentDeclarationOperation(MaintenanceRequirementOperation):
         snapshot: CodemodSourceSnapshot,
     ) -> AbsentDeclarationRequirementResolution:
         _scope_id, scope = self.target_digest(snapshot)
-        if not scope.is_module:
+        if not scope.node_kind.is_module:
             raise ValueError("Absent-declaration scope must be a module")
         target = self.forbidden.optional_target_id(snapshot.source_index)
         if target is not None:

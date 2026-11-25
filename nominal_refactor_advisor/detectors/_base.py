@@ -30,7 +30,6 @@ from typing import (
     ParamSpec,
     Self,
     Sequence,
-    TYPE_CHECKING,
     TypedDict,
     TypeAlias,
     TypeVar,
@@ -41,6 +40,7 @@ from typing import (
 from metaclass_registry import AutoRegisterMeta, LazyDiscoveryDict, RegistryConfig
 
 from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.implementation_identity import AnswerDeclaration
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.ast_projection import ExpressionReference
@@ -74,6 +74,7 @@ from nominal_refactor_advisor.registry_identity import (
     DEFAULT_REGISTRY_KEY_ATTRIBUTE,
     class_name_registry_key,
 )
+from nominal_refactor_advisor.semantic_descent import SemanticDescentGraph
 from nominal_refactor_advisor.semantic_match import (
     AstPredicateRule,
     Maybe,
@@ -108,9 +109,6 @@ from nominal_refactor_advisor.factorization import ResidueHookNamesCarrier
 from nominal_refactor_advisor.semantic_shape_algebra import (
     InjectiveTypeRegistryProof,
 )
-
-if TYPE_CHECKING:
-    from nominal_refactor_advisor.semantic_descent import SemanticDescentGraph
 
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.ast_tools import (
@@ -3535,8 +3533,7 @@ class SyntaxProjectionAuthority:
         return frozenset(
             (
                 item.name
-                for item in node.body
-                if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for item in FunctionDefinition.within(node.body)
             )
         )
 
@@ -5664,8 +5661,7 @@ def _manual_fiber_tag_candidates(
             continue
         methods = {
             item.name: item
-            for item in node.body
-            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for item in FunctionDefinition.within(node.body)
         }
         init_method = methods.get("__init__")
         if init_method is None:
@@ -6385,10 +6381,6 @@ class ManualConcreteSubclassRosterCandidate(ClassLineWitnessCandidate):
         return self.registration_site.registry_name
 
     @property
-    def guard_summary(self) -> str | None:
-        return self.registration_site.guard_summary
-
-    @property
     def consumer_names(self) -> tuple[str, ...]:
         return tuple((location.symbol for location in self.consumer_locations))
 
@@ -6825,17 +6817,9 @@ class ParallelKeyedTableAndFamilyCandidate:
         return self.table.table_name
 
     @property
-    def table_line(self) -> int:
-        return self.table.line
-
-    @property
-    def value_shape_name(self) -> str | None:
-        return self.table.value_shape_name
-
-    @property
     def evidence(self) -> tuple[SourceLocation, ...]:
         return (
-            SourceLocation(self.file_path, self.table_line, self.table_name),
+            SourceLocation(self.file_path, self.table.line, self.table_name),
             SourceLocation(self.file_path, self.family_line, self.family_name),
         )
 

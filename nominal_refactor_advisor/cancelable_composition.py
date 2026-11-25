@@ -227,7 +227,7 @@ def detect_cancelable_composition_signals(
     ).function_nodes_by_target_id
     signals = []
     for target in source_index.ast_targets:
-        if not target.is_function_like:
+        if not target.node_kind.is_function_like:
             continue
         node = nodes_by_target_id.get(target.target_id)
         if node is None:

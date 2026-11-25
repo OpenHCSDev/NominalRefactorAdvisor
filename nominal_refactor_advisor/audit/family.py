@@ -20,12 +20,8 @@ def snake_case(name: str) -> str:
     return re.sub(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])", "_", name).lower()
 
 
-class UnknownMember(LookupError):
-    pass
-
-
 class Family:
-    _declared: ClassVar[list[type["Family"]]]
+    _declared: ClassVar[list[type[Family]]]
     _affix: ClassVar[str]
     family_name: ClassVar[str]
 
@@ -68,5 +64,5 @@ class Family:
     def decode(cls, name: str) -> type[Self]:
         member = cls._named().get(name)
         if member is None or not issubclass(member, cls):
-            raise UnknownMember(f"{cls.__name__} has no member named {name!r}")
+            raise LookupError(f"{cls.__name__} has no member named {name!r}")
         return member

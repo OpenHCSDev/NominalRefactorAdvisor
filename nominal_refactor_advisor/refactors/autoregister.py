@@ -212,7 +212,7 @@ class DeriveAutoregisterInstanceViewOperation(
         _target_id, authority_digest, authority_node = self.target_node_from_context(
             snapshot
         )
-        if not authority_digest.is_class or not isinstance(
+        if not authority_digest.node_kind.is_class or not isinstance(
             authority_node, ast.ClassDef
         ):
             raise ValueError("Instance-view derivation target must be a class")
@@ -226,7 +226,7 @@ class DeriveAutoregisterInstanceViewOperation(
         component.require_destination_key_compatibility(component.authority)
         authority_target = ResolvedClassTarget(
             target=authority_digest,
-            node=component.authority_node,
+            node=component.authority.node,
         )
         authority_replacements = self.authority_replacements(
             authority_target,
@@ -247,7 +247,7 @@ class DeriveAutoregisterInstanceViewOperation(
             *self.registry_key_declaration_replacements(
                 concrete_targets,
                 component.entries,
-                component.registry_key_attribute,
+                component.authority.key_attribute,
             ),
             *authority_replacements,
             self.assignment_replacement(source_path, component),
@@ -262,7 +262,7 @@ class DeriveAutoregisterInstanceViewOperation(
         if (
             self.instance_view_method_name
             in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                component.authority_node.body
+                component.authority.node.body
             )
         ):
             raise ValueError(
@@ -270,7 +270,7 @@ class DeriveAutoregisterInstanceViewOperation(
                 f"{self.instance_view_method_name!r}"
             )
         body = ClassBodyTailSourceAuthority(
-            component.authority_node, source_by_path[authority_target.file_path]
+            component.authority.node, source_by_path[authority_target.file_path]
         )
         members = [self.instance_method_source(body.indentation)]
         if not component.authority.declares_registry:
@@ -342,7 +342,7 @@ class ManualRegistryConversionTargets:
         anchor_target: AstTargetDigest,
         anchor_node: AstTargetNode,
     ) -> ManualRegistryConversionTargets:
-        if not anchor_target.is_class or not isinstance(anchor_node, ast.ClassDef):
+        if not anchor_target.node_kind.is_class or not isinstance(anchor_node, ast.ClassDef):
             raise ValueError("Manual registry conversion target must be a class")
         if "." in anchor_target.qualname:
             raise ValueError("Manual registry conversion requires a top-level class")
@@ -943,7 +943,7 @@ class AutoRegisterMroOrderingDerivation:
         for target in context.source_index.ast_targets:
             if (
                 target.file_path != source_path
-                or not target.is_class
+                or not target.node_kind.is_class
                 or "." in target.qualname
             ):
                 continue
@@ -1208,7 +1208,7 @@ class DeriveAutoRegisterMroOrderingOperation(RepositorySourceReprovedOperation):
         _target_identifier, root_target, _root_node = self.target_node_from_context(
             context
         )
-        if not root_target.is_class:
+        if not root_target.node_kind.is_class:
             raise ValueError("MRO ordering authority target must be a class")
         authority_name = AutoRegisterMroOrderingDerivation.resolution_class_name_for(
             root_target.name

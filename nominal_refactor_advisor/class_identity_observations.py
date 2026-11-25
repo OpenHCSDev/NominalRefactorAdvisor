@@ -26,6 +26,7 @@ from functools import cache, cached_property
 from pathlib import Path
 from typing import ClassVar
 
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     LEXICAL_SCOPE_BINDING_AUTHORITY,
     ImportBoundNameProjection,
@@ -428,8 +429,7 @@ class DeclaredIdentityFamily(ShapeFamily[ModuleDeclarations]):
     ) -> DeclaredClass:
         methods = [
             statement
-            for statement in node.body
-            if isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for statement in FunctionDefinition.within(node.body)
         ]
         return DeclaredClass(
             name=node.name,
@@ -2806,8 +2806,9 @@ class IdentityPositions:
         scope = next(
             (
                 ancestor
-                for ancestor in reversed(self.index.ancestor_nodes(node_index))
-                if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
+                for ancestor in FunctionDefinition.within(
+                    reversed(self.index.ancestor_nodes(node_index))
+                )
             ),
             self.parsed_module.module,
         )
@@ -3089,8 +3090,11 @@ class IdentityPositions:
             function = next(
                 (
                     ancestor
-                    for ancestor in reversed(self.index.ancestor_nodes(node_index))
-                    if isinstance(ancestor, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    for ancestor in FunctionDefinition.within(
+                        reversed(
+                            self.index.ancestor_nodes(node_index)
+                        )
+                    )
                 ),
                 None,
             )

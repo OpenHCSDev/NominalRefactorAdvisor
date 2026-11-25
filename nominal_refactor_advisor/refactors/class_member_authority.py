@@ -296,7 +296,7 @@ class ClassMemberPromotionTargets(CodemodSourceSnapshot):
         return tuple(
             target
             for target in source_index.targets_matching_symbol(class_name)
-            if target.is_class
+            if target.node_kind.is_class
             and (source_path is None or target.file_path == resolved_source_path)
         )
 
@@ -507,7 +507,7 @@ class ParallelMirroredLeafFamilyTargets:
         snapshot: CodemodSourceSnapshot,
         root_target: AstTargetDigest,
     ) -> ParallelMirroredLeafFamilyTargets:
-        if not root_target.is_class:
+        if not root_target.node_kind.is_class:
             raise ValueError("parallel leaf-family authority target must be a class")
         root_symbol = snapshot.source_index.symbol_for_target(root_target)
         component = snapshot.parallel_mirrored_leaf_family_component_builder.required_proven_component(
@@ -1302,7 +1302,7 @@ class PromoteExactLeafMethodsToAncestorOperation(RepositorySourceReprovedOperati
         _target_identifier, authority_target, _authority_node = (
             self.target_node_from_context(snapshot)
         )
-        if not authority_target.is_class:
+        if not authority_target.node_kind.is_class:
             raise ValueError("exact method authority target must be a class")
         authority_symbol = snapshot.source_index.symbol_for_target(authority_target)
         component = (

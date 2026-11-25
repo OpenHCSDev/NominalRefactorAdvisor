@@ -1210,7 +1210,7 @@ class Typed(Descent, ABC):
         snapshot: CodemodSourceSnapshot,
     ) -> _TypeKeyedBehaviorSourceDerivation:
         _target_identifier, target, _node = self.target_node_from_context(snapshot)
-        if not target.is_class:
+        if not target.node_kind.is_class:
             raise ValueError("type-keyed behavior projection target must be a class")
         return _TypeKeyedBehaviorSourceDerivation.required(
             snapshot,

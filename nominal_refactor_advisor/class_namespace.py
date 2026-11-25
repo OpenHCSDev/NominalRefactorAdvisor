@@ -20,7 +20,10 @@ from nominal_refactor_advisor.ast_projection import (
     StatementValueQuestion,
     SuppliedValue,
 )
-from nominal_refactor_advisor.ast_tools import ModuleAnnotationEvaluationMode
+from nominal_refactor_advisor.ast_tools import (
+    ModuleAnnotationEvaluationMode,
+    ParsedModule,
+)
 from nominal_refactor_advisor.captured_reference import SingleFlowPrefix
 from nominal_refactor_advisor.declaration_dependencies import (
     DeclarationDependencyUse,
@@ -54,7 +57,6 @@ from nominal_refactor_advisor.value_expression import (
 )
 
 if TYPE_CHECKING:
-    from nominal_refactor_advisor.ast_tools import ParsedModule
     from nominal_refactor_advisor.class_index import ModuleNominalBindingView
 
 

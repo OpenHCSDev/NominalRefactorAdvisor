@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from functools import cached_property
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.models import SourceLocation
 from nominal_refactor_advisor.observation_families import ShapeFamily
 
@@ -161,9 +162,7 @@ class StringKeySiteFamily(ShapeFamily[StringKeySiteModule]):
 
     @classmethod
     def sites(cls, parsed_module: ParsedModule) -> Iterator[StringKeySite]:
-        for function in ast.walk(parsed_module.module):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        for function in FunctionDefinition.within(ast.walk(parsed_module.module)):
             decoder = function.name in DECODER_NAMES
             nested: set[int] = set()
             for node in cls.own_nodes(function):

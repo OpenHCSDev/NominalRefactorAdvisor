@@ -26,8 +26,10 @@ from importlib import import_module
 from pathlib import Path
 from typing import ClassVar, Self, cast
 
+from nominal_refactor_advisor.ast_field_decoders import optional_values
 from nominal_refactor_advisor.declared_c3 import BASES_READ_AT_CREATION
 from nominal_refactor_advisor.declared_root import DeclaredRoot
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.refactors.class_attribute_reads import BasesReaders
 from nominal_refactor_advisor.refactors.class_creation import (
     ClassCreationProof,
@@ -2748,9 +2750,7 @@ class KeywordOnlyComposition:
         for symbol in symbols:
             owner = OverlapClass.for_symbol(self.snapshot, symbol)
             module = self.snapshot.parsed_module_for_source_path(owner.file_path)
-            for method in owner.node.body:
-                if not isinstance(method, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
+            for method in FunctionDefinition.within(owner.node.body):
                 digest = FieldOrderDigest.in_method(self.snapshot, module, method)
                 if digest is not None:
                     raise NeedsInput(
@@ -3089,8 +3089,7 @@ class ConstructionKeywording:
         )
         calls = tuple(
             call
-            for function in self.target.node.body
-            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for function in FunctionDefinition.within(self.target.node.body)
             for call in _receiver_class_calls(function, module_bound)
         )
         if not calls:
@@ -4288,7 +4287,7 @@ class OwnerExtension:
         added_required = tuple(
             ast.unparse(statement.target)
             for statement in self.restated.statements
-            if isinstance(statement, ast.AnnAssign) and statement.value is None
+            if isinstance(statement, ast.AnnAssign) and not optional_values(statement)
         )
         if added_required:
             built = tuple(site for site in sites.sites if site.role.binds_fields)

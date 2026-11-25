@@ -93,7 +93,7 @@ def decode_origin(merged_at: int, subject: str) -> ModuleOrigin:
 
 class Timing(Family, ABC, root=True, affix="Foundation"):
     @staticmethod
-    def of(origin: ModuleOrigin, foundation: ModuleOrigin) -> type["Timing"]:
+    def of(origin: ModuleOrigin, foundation: ModuleOrigin) -> type[Timing]:
         return MergedBeforeFoundation if origin.merged_at < foundation.merged_at else MergedAfterFoundation
 
 

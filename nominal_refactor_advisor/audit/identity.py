@@ -22,6 +22,7 @@ from nominal_refactor_advisor.audit.dispatch import TypeTests
 from nominal_refactor_advisor.audit.project import Project
 from nominal_refactor_advisor.audit.gate import Counts, InventoryMeasure, PerFileMeasure
 from nominal_refactor_advisor.audit.repository import ChangedPaths
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 
 
 class IdentityReading:
@@ -209,8 +210,7 @@ class DeclaredSpellings:
     @classmethod
     def declarations(cls, repo: Project, path: str, source: bytes) -> ModuleDeclarations:
         tree = ast.parse(source, path)
-        functions = (node.name for node in tree.body
-                     if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)))
+        functions = (node.name for node in FunctionDefinition.within(tree.body))
         classes = (node for node in ast.walk(tree) if isinstance(node, ast.ClassDef))
         return ModuleDeclarations(
             tuple(filter(cls.multiword, functions)),

@@ -3009,7 +3009,7 @@ def test_patch_target_operation_can_target_module_source(
     module_target = next(
         target
         for target in source_index.target_by_id.values()
-        if target.file_path == module_path.as_posix() and target.is_module
+        if target.file_path == module_path.as_posix() and target.node_kind.is_module
     )
     plan_path = tmp_path / "codemod-plan.json"
     plan_path.write_text(
@@ -3987,8 +3987,8 @@ def test_rejected_synthesis_does_not_require_executable_action_keys(
         "RejectedRecipeWithoutActionKeysSynthesizer"
     )
     assert record.action_keys == ()
-    assert plan.rejected_count == 1
-    assert plan.unsupported_count == 0
+    assert plan.report.rejected_count == 1
+    assert plan.report.unsupported_count == 0
 
 
 def test_executable_synthesis_requires_action_keys_before_planning(
@@ -4049,8 +4049,8 @@ def test_executable_synthesis_requires_action_keys_before_planning(
     )
     assert plan.document.recipes == ()
     assert plan.expected_removed_finding_ids == ()
-    assert plan.rejected_count == 0
-    assert plan.unsupported_count == 1
+    assert plan.report.rejected_count == 0
+    assert plan.report.unsupported_count == 1
 
 
 def test_unregistered_finding_has_no_recipe_evaluator() -> None:
@@ -18627,7 +18627,7 @@ def test_ast_target_node_index_joins_stable_target_geometry_after_source_edit(
     module_path = tmp_path / "pkg/mod.py"
     source_index = build_source_index(parse_python_modules(tmp_path), ())
 
-    target = next(target for target in source_index.ast_targets if target.is_function)
+    target = next(target for target in source_index.ast_targets if target.node_kind.is_function)
     node_index = AstTargetNodeIndex.from_source_mapping(
         source_index,
         {

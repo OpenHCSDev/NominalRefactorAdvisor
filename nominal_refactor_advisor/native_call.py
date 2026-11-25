@@ -16,7 +16,10 @@ from typing import (
     cast,
 )
 
-from nominal_refactor_advisor.ast_field_decoders import TYPE_PARAMETERS
+from nominal_refactor_advisor.ast_field_decoders import (
+    TYPE_PARAMETERS,
+    declared_annotations,
+)
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.ast_tools import SourceModule
 from nominal_refactor_advisor.captured_reference import (
@@ -584,7 +587,7 @@ class NativeReturnedClosureFactorySource:
             or any(default is not None for default in closure.args.kw_defaults)
             or closure.returns is not None
             or any(
-                argument.annotation is not None
+                bool(declared_annotations(argument))
                 for argument in (
                     *closure.args.posonlyargs,
                     *closure.args.args,

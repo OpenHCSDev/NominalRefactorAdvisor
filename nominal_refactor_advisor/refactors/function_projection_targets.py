@@ -63,7 +63,7 @@ class ResolvedFunctionProjectionTarget(FunctionProjectionTarget):
         _target_id, target, node = context.target_node_for_rewrite_target(
             target_reference
         )
-        if not target.is_function_like or not isinstance(
+        if not target.node_kind.is_function_like or not isinstance(
             node, ast.FunctionDef | ast.AsyncFunctionDef
         ):
             raise ValueError("Projection must target one exact function")

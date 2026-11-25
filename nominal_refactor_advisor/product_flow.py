@@ -28,6 +28,7 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.ast_field_decoders import capture_names, exception_types
 from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
     StatementValue,
@@ -81,6 +82,7 @@ from nominal_refactor_advisor.native_compilation import (
     NativeReturn,
     OpenNativeClassCapture,
 )
+from nominal_refactor_advisor.public_exports import CompactPublicNameExposure
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
 from nominal_refactor_advisor.value_expression import (
@@ -103,7 +105,6 @@ from nominal_refactor_advisor.value_graph import (
 if TYPE_CHECKING:
     from nominal_refactor_advisor.native_reference import NativeReferenceEnvironment
     from nominal_refactor_advisor.product_flow_authority import ProductFlowRepository
-    from nominal_refactor_advisor.public_exports import CompactPublicNameExposure
 
 
 SourcePositionedNode: TypeAlias = (
@@ -2554,10 +2555,6 @@ class CompactFunctionCall(DataclassGraphValue):
     line = AliasProperty[int]("source_span.start_line")
 
     @property
-    def result_use(self) -> CompactValueDestinationKind:
-        return self.result.use
-
-    @property
     def result_binding(self) -> LexicalValueReference | None:
         return self.result.binding
 
@@ -4760,11 +4757,11 @@ class _CompactFlowCollector(
     def visit_Try(self, node: ast.Try) -> None:
         self._collect_branch(node.body, CompactControlBranchKind.TRY_BODY)
         for index, handler in enumerate(node.handlers):
-            if handler.type is not None:
-                self.visit(handler.type)
-            if handler.name is not None:
+            for exception_type in exception_types(handler):
+                self.visit(exception_type)
+            for capture_name in capture_names(handler):
                 self._record_mutation(
-                    CompactBindingTarget(handler.name),
+                    CompactBindingTarget(capture_name),
                     handler,
                     CompactMutationKind.EXCEPTION_BINDING,
                 )

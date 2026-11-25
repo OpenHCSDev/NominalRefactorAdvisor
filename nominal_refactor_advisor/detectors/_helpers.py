@@ -39,6 +39,7 @@ from nominal_refactor_advisor.class_method_facets import (
 )
 from nominal_refactor_advisor.class_symbols import ClassSymbolResolutionAuthority
 from nominal_refactor_advisor.class_syntax_facets import annotation_type_names
+from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.value_expression import CompactValueExpression
 from nominal_refactor_advisor.annotation_semantics import (
     CLASSVAR_ANNOTATION_AUTHORITY,
@@ -710,9 +711,7 @@ def _guarded_delegator_candidates_for_class(
     if not _is_observation_spec_class(node) or CLASS_NODE_AUTHORITY.is_abstract(node):
         return
     guarded_returns: list[tuple[tuple[ast.FunctionDef | ast.AsyncFunctionDef, ast.If], ast.Return]] = []
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for statement in FunctionDefinition.within(node.body):
         if statement.name not in {
             "build_from_function",
             "build_from_assign",
@@ -1144,9 +1143,7 @@ def _property_alias_hook_groups(
 def _reflective_self_attribute_candidates_for_class(
     module: ParsedModule, node: ast.ClassDef
 ) -> Iterable[ReflectiveSelfAttributeCandidate]:
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for statement in FunctionDefinition.within(node.body):
         for subnode in _walk_nodes(statement):
             if not isinstance(subnode, ast.Call):
                 continue
@@ -1305,9 +1302,7 @@ def _guarded_wrapper_spec_pairs(
 def _dynamic_self_field_selection_candidates_for_class(
     module: ParsedModule, node: ast.ClassDef
 ) -> Iterable[DynamicSelfFieldSelectionCandidate]:
-    for statement in node.body:
-        if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for statement in FunctionDefinition.within(node.body):
         for subnode in module.syntax_index.function_walks[statement]:
             if not isinstance(subnode, ast.Call):
                 continue

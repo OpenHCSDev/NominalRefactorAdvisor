@@ -10,7 +10,6 @@ import ast
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import cached_property
-from typing import TYPE_CHECKING
 
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.captured_reference import OpenCapturedReference
@@ -38,13 +37,8 @@ from nominal_refactor_advisor.product_flow import (
     CompactDefinitionTarget,
     CompactMutation,
 )
+from nominal_refactor_advisor.product_flow_authority import SourceProductFlowRepository
 from nominal_refactor_advisor.source_geometry import SourceByteSpan
-
-if TYPE_CHECKING:
-    from nominal_refactor_advisor.product_flow_authority import (
-        SourceProductFlowRepository,
-    )
-
 
 @dataclass(frozen=True)
 class NativeUseReceipt(CodemodPayloadRecord):

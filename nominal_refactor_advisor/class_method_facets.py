@@ -19,6 +19,7 @@ from typing import (
     TypeAlias,
 )
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.class_namespace import PROMOTABLE_METHOD_DECORATOR_IDENTITIES
@@ -342,7 +343,7 @@ def _method_annotation_nodes(
             for argument in arguments
             if argument.annotation is not None
         ),
-        *((method.returns,) if method.returns is not None else ()),
+        *declared_annotations(method),
     )
 
 

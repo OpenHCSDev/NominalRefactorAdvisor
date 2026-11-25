@@ -177,7 +177,7 @@ class SemanticMirrorOperationTargets:
         if projection_target_id is None:
             return None
         projection_module = context.source_index.target_by_id[projection_target_id]
-        if not projection_module.is_module:
+        if not projection_module.node_kind.is_module:
             return None
         return SemanticMirrorOperationTargets(
             authority=ResolvedClassTarget(authority_target, authority_node),

@@ -16,7 +16,7 @@ from abc import ABC, abstractmethod
 from collections import defaultdict
 from dataclasses import dataclass, replace
 
-from nominal_refactor_advisor.ast_field_decoders import alias_names
+from nominal_refactor_advisor.ast_field_decoders import alias_names, optional_values
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet, ParsedModuleSetFact
 from nominal_refactor_advisor.class_body import ClassBodyDeclaration
 from nominal_refactor_advisor.class_index import (
@@ -917,7 +917,7 @@ class SiblingOverrideLift(SiblingOverrideMove):
             stub, (ast.FunctionDef, ast.AsyncFunctionDef)
         ):
             return ReplaceHomeStub(stub)
-        if isinstance(stub, ast.AnnAssign) and stub.value is None:
+        if isinstance(stub, ast.AnnAssign) and not optional_values(stub):
             if (
                 home.facts.dataclass_declaration.generates_construction
                 and not _is_classvar_annotation(stub.annotation)

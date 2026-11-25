@@ -127,12 +127,7 @@ class DataclassKeyValueSequenceProjectionDerivation(
         if (
             element_run is None
             or dataclasses_reference is None
-            or not element_run.owner_has_nominal_authority_type(
-                context,
-                boundary.authority,
-                projection,
-                boundary.authority_import_source,
-            )
+            or not element_run.instance.owner_has_nominal_authority_type(context, boundary.authority, projection, boundary.authority_import_source)
         ):
             return None
         source_replacement = cls.projection_replacement(
@@ -164,7 +159,7 @@ class DataclassKeyValueSequenceProjectionDerivation(
         first_offsets = geometry.node_offsets(element_run.first_element_node)
         last_offsets = geometry.node_offsets(element_run.last_element_node)
         sequence_offsets = geometry.node_offsets(projection.sequence_node)
-        owner_source = geometry.segment_for_node(element_run.owner_node)
+        owner_source = geometry.segment_for_node(element_run.instance.owner_node)
         if (
             first_offsets is None
             or last_offsets is None

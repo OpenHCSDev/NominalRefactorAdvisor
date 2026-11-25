@@ -18,6 +18,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
@@ -363,7 +364,7 @@ def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
                 )
                 if argument.annotation is not None
             ),
-            *((statement.returns,) if statement.returns is not None else ()),
+            *declared_annotations(statement),
         )
     else:
         evaluated = (statement,)

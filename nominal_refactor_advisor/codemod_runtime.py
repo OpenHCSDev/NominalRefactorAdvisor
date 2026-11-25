@@ -2993,14 +2993,6 @@ class FindingRecipeSynthesisBoundary(DataclassJsonReport):
     def candidate_count(self) -> int:
         return self.report.candidate_count
 
-    @property
-    def rejected_count(self) -> int:
-        return self.report.rejected_count
-
-    @property
-    def unsupported_count(self) -> int:
-        return self.report.unsupported_count
-
 
 @dataclass(frozen=True, kw_only=True)
 class FindingRecipeEvaluation(ABC):
@@ -4911,7 +4903,7 @@ class SourceRewriteSimulationAuthority(IndexedSourceAuthority):
         target = resolved_rewrite.target
         start_index = target.line - 1
         end_index = target.end_line
-        if target.is_module and not lines and target.line == 1 and target.end_line == 1:
+        if target.node_kind.is_module and not lines and target.line == 1 and target.end_line == 1:
             start_index = 0
             end_index = 0
         if start_index < 0 or end_index > len(lines):

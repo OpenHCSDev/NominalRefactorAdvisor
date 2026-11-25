@@ -34,6 +34,7 @@ from time import perf_counter
 from types import ModuleType
 from typing import TYPE_CHECKING, ClassVar
 
+from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.json_reports import DataclassJsonReport
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.probe_owner import (
@@ -52,7 +53,6 @@ if TYPE_CHECKING:
     from mypy.options import Options
     from mypy.server.update import FineGrainedBuildManager
 
-    from nominal_refactor_advisor.ast_tools import ParsedModule
     from mypy.types import Type
 
 TYPES_EXTRA = "pip install 'nominal-refactor-advisor[types]'"

@@ -30,6 +30,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.codemod_source_edits import (
     Include,
     NominalSourceEdit,
+    PhysicalSourceEdit,
     PhysicalSourceEditConflictError,
     SourceEditWindowABC,
     SourceLineSpan,
@@ -61,7 +62,6 @@ if TYPE_CHECKING:
     from nominal_refactor_advisor.codemod_selection_context import (
         CodemodSelectorContext,
     )
-    from nominal_refactor_advisor.codemod_source_edits import PhysicalSourceEdit
 
 
 @dataclass(frozen=True)

@@ -16,6 +16,7 @@ import typing
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.class_index import CompactIndexedClass
 from nominal_refactor_advisor.codemod_imports import ModuleImportMutation
@@ -293,8 +294,8 @@ class AnnotationReferences:
                 ):
                     if argument.annotation is not None:
                         yield argument.annotation
-                if node.returns is not None:
-                    yield node.returns
+                for declared_annotation in declared_annotations(node):
+                    yield declared_annotation
             elif isinstance(node, ast.AnnAssign):
                 yield node.annotation
 
