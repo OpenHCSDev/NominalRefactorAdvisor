@@ -1242,6 +1242,25 @@ def test_a_member_overriding_an_inherited_one_is_dispatch_not_a_forward(tmp_path
     assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
 
 
+def test_a_cooperative_mi_mixin_implementing_a_sibling_base_is_not_a_facade(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class UnengagedDefaults:\n"
+        "    @property\n    def verdict(self):\n        return None\n"
+        "    @property\n    def execution_id(self):\n        return None\n\n\n"
+        "class AssignmentState(UnengagedDefaults, ABC):\n"
+        "    @property\n    @abstractmethod\n    def mode(self):\n        raise NotImplementedError\n\n\n"
+        "class AssignmentDecision:\n"
+        "    decision: object\n"
+        "    @property\n    def mode(self):\n        return self.decision.mode\n"
+        "    @property\n    def verdict(self):\n        return self.decision.verdict\n"
+        "    @property\n    def execution_id(self):\n        return self.decision.execution_id\n\n\n"
+        "class BoundAssignment(AssignmentDecision, AssignmentState):\n"
+        "    pass\n"
+    )
+    assert _findings(tmp_path, ForwardingFacadeDetector, {"m": source}) == []
+
+
 def test_an_annotated_held_class_is_named_without_its_metadata(tmp_path: Path):
     source = (
         "from typing import Annotated\n\n\nclass Facade:\n"

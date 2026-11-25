@@ -2618,18 +2618,31 @@ class ClassDeclarationIndex(Generic[ClassDeclarationT]):
 
     def overridden_declarations(self, class_symbol: str, member: str) -> tuple[str, ...]:
         """What the class's `member` overrides: each scanned ancestor that declares
-        it, and each base outside the scan not known to lack it. A receiver typed as
-        one of them reaches the class's member by dispatch."""
+        it, each co-inherited ancestor in any descendant's MRO that declares it
+        (cooperative multiple inheritance: a mixin placed before a sibling base in
+        a subclass overrides/implements that base's member, and one placed after it
+        participates in its `super()` chain), and each base outside the scan not
+        known to lack it. A receiver typed as any of them reaches the class's
+        member by dispatch."""
 
-        lineage = (class_symbol, *self.ancestor_symbols(class_symbol))
+        descendants = self.descendant_symbols(class_symbol)
+        family = frozenset((class_symbol, *descendants))
+        ancestors = list(self.ancestor_symbols(class_symbol))
+        seen_ancestors = set(ancestors)
+        for descendant in descendants:
+            for ancestor in self.ancestor_symbols(descendant):
+                if ancestor not in family and ancestor not in seen_ancestors:
+                    seen_ancestors.add(ancestor)
+                    ancestors.append(ancestor)
+        lineage = (class_symbol, *descendants, *ancestors)
         classes = self.classes_by_symbol
         return (
-            *(
+            *dict.fromkeys(
                 classes[symbol].qualname
-                for symbol in lineage[1:]
+                for symbol in ancestors
                 if symbol in classes and member in classes[symbol].member_binding_names
             ),
-            *(
+            *dict.fromkeys(
                 spelled
                 for symbol in lineage
                 if symbol in classes
