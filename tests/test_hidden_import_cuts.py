@@ -540,3 +540,38 @@ def test_cut_deletes_emptied_future_only_husk_module(tmp_path: Path):
     assert not (tmp_path / "pkg/usage.py").exists()
     assert _run(tmp_path) == expected
     assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
+
+
+def test_sole_reader_refuses_collapsing_standalone_screen_module_into_hub(tmp_path: Path):
+    """A standalone screen/dialog class (>= 60 lines) reading back from a sole
+    reader hub refuses with `SoleReaderKept` even when a stray helper/constant
+    stays behind (e.g. QtSettingsScreen -> toad.qt.window)."""
+
+    methods = "\n\n".join(
+        f"    def step_{i}(self):\n        return self.app\n"
+        for i in range(25)
+    )
+    _write(
+        tmp_path,
+        {
+            "pkg/window.py": (
+                "class AppWindow:\n    pass\n\n\n"
+                "def open_settings():\n"
+                "    from pkg.settings_screen import SettingsScreen\n\n"
+                "    return SettingsScreen(AppWindow())\n"
+            ),
+            "pkg/settings_screen.py": (
+                "from pkg.window import AppWindow\n\n"
+                "_WIDTH = 420\n\n\n"
+                "class SettingsScreen:\n"
+                "    def __init__(self, app: AppWindow) -> None:\n"
+                "        self.app = app\n\n"
+                f"{methods}\n"
+            ),
+        },
+    )
+    [stays] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
+    assert isinstance(stays, HubStays)
+    [(_refusal, need)] = stays.needs
+    assert isinstance(need, SoleReaderKept)
+    assert "would collapse `pkg.settings_screen` into a hub" in str(need)
