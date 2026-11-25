@@ -122,6 +122,7 @@ def test_a_closure_reading_back_from_its_only_reader_moves_into_it(tmp_path: Pat
     _apply_all(tmp_path, HiddenImportCycleDetector())
     assert _run(tmp_path) == expected
     assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
+    assert not (tmp_path / "pkg/hub.py").exists()
 
 
 def test_a_reader_whose_cut_goes_down_alone_is_cut_without_the_one_that_reads_back(tmp_path: Path):
@@ -471,3 +472,71 @@ def test_pair_composition_of_promote_and_cut_removes_emptied_type_checking_guard
     assert "if TYPE_CHECKING:" not in surface_text
     assert "from typing import TYPE_CHECKING" not in surface_text
     assert _run(tmp_path) == expected
+
+
+def test_new_module_cut_refuses_hollowing_out_majority_of_hub(tmp_path: Path):
+    """When one hidden import pulls a closure that drags most of a hub's
+    declarations into a brand-new module named after the single root, refuse
+    instead of inverting module ownership (e.g. inbox_watch_client -> run_watch_url)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/cli.py": (
+                "def dispatch():\n"
+                "    from pkg.client import run_client\n\n"
+                "    return run_client()\n"
+            ),
+            "pkg/client.py": (
+                "from pkg.cli import dispatch\n\n\n"
+                "class HelperA:\n    value = 1\n\n\n"
+                "class HelperB:\n    value = HelperA.value + 1\n\n\n"
+                "def run_client():\n    return HelperB.value\n\n\n"
+                "def main():\n    return dispatch()\n"
+            ),
+        },
+    )
+    [stays] = HiddenImportCuts.of(_snapshot(tmp_path)).hubs()
+    assert isinstance(stays, HubStays)
+    [(_refusal, need)] = stays.needs
+    assert isinstance(need, NeedsInput)
+    assert need.needs == (NeededInput.SOURCE_CHANGE,)
+    assert "pkg.run_client" in str(need)
+    assert "3 of 4 declaration(s)" in str(need)
+    assert "`main`" in str(need)
+
+
+def test_cut_deletes_emptied_future_only_husk_module(tmp_path: Path):
+    """Moving the sole declaration out of a module that only leaves behind
+    `from __future__ import annotations` deletes the dead husk (TIME-6)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/usage.py": (
+                "from __future__ import annotations\n\n"
+                "from pkg.runner import BaseCount\n\n\n"
+                "class UsageAccount:\n"
+                "    count = BaseCount\n"
+            ),
+            "pkg/runner.py": (
+                "class BaseCount:\n    value = 7\n\n\n"
+                "def run():\n"
+                "    from pkg.usage import UsageAccount\n\n"
+                "    return UsageAccount.count.value\n"
+            ),
+            "main.py": "from pkg.runner import run\n\nprint(run())\n",
+        },
+    )
+    expected = _run(tmp_path)
+    snapshot = _snapshot(tmp_path)
+    [cut] = HiddenImportCuts.of(snapshot).hubs()
+    assert isinstance(cut, HubCut)
+    assert (cut.hub, cut.moved, cut.destination) == ("pkg.usage", ("UsageAccount",), "pkg.runner")
+    simulation = CodemodPlanSequence.from_operations((cut.operation(),)).simulate(snapshot)
+    assert simulation.is_clean
+    assert simulation.simulation.deleted_file_paths == ((tmp_path / "pkg/usage.py").as_posix(),)
+    simulation.apply()
+    assert not (tmp_path / "pkg/usage.py").exists()
+    assert _run(tmp_path) == expected
+    assert HiddenImportPlan.derive(_modules(tmp_path)).refused == ()
