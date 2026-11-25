@@ -4,6 +4,7 @@ import os
 import time
 
 import pytest
+from mypy.server.update import FineGrainedBuildManager
 
 from nominal_refactor_advisor.analysis import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.ast_tools import SourceModule
@@ -23,6 +24,7 @@ from nominal_refactor_advisor.type_checker_session import (
     FineGrainedTypeChecker,
     SourceTexts,
     TypeCheckerSession,
+    TypeErrors,
 )
 
 START = StateScore(findings=10, derived=100, add_member_edits=5)
@@ -266,3 +268,32 @@ def test_fine_grained_type_checker_updates_in_memory_and_matches_cold_build(tmp_
     # Compare against cold build outside ScanCache.scope()
     cold = TypeCheckerSession.started(SourceTexts((mod_init, mod_a2, mod_b2, mod_c)))
     assert cold.receiver_types((c_call_span,))[c_call_span] == fg_answer
+
+
+def test_type_errors_recovers_from_fine_grained_mypy_internal_error(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mypy fine-grained update() ICE falls back cleanly to a fresh seed instead of aborting."""
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    init_path = pkg / "__init__.py"
+    a_path = pkg / "a.py"
+    init_path.write_text("", encoding="utf-8")
+    a_path.write_text("x: int = 1\n", encoding="utf-8")
+
+    mod_init = SourceModule(init_path, "pkg", "").parse()
+    mod_a1 = SourceModule(a_path, "pkg.a", "x: int = 1\n").parse()
+    mod_a2 = SourceModule(a_path, "pkg.a", "x: int = 'bad'\n").parse()
+
+    def crash_update(self, changed, removed, *args, **kwargs):
+        raise AssertionError("simulated mypy join_instances_via_supertype ICE")
+
+    with ScanCache.scope():
+        initial = TypeErrors.of(SourceTexts((mod_init, mod_a1)))
+        assert initial.by_file == {}
+        monkeypatch.setattr(FineGrainedBuildManager, "update", crash_update)
+        recovered = TypeErrors.of(SourceTexts((mod_init, mod_a2)))
+        assert str(a_path) in recovered.by_file
+        assert any("Incompatible types in assignment" in msg for msg in recovered.by_file[str(a_path)])

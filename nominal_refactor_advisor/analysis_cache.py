@@ -6,12 +6,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
+import fcntl
+from functools import cached_property
 import hashlib
 import os
 from pathlib import Path
 import pickle
 import sys
-from time import monotonic, sleep, time
+from time import monotonic, sleep
 from types import TracebackType
 from typing import BinaryIO, Generic, TypeAlias, TypeVar
 
@@ -428,7 +430,7 @@ class AnalysisCacheRebuildLease:
 
     lock_path: Path | None
     owns_rebuild: bool
-    release_lock: Callable[[Path], None] | None = None
+    lock_fd: int | None = None
     cached_lookup: AnalysisCacheLookup | None = None
 
     def __enter__(self) -> AnalysisCacheRebuildLease:
@@ -441,12 +443,15 @@ class AnalysisCacheRebuildLease:
         traceback: TracebackType | None,
     ) -> None:
         del exc_type, exc, traceback
-        if (
-            self.owns_rebuild
-            and self.lock_path is not None
-            and self.release_lock is not None
-        ):
-            self.release_lock(self.lock_path)
+        if self.lock_fd is not None:
+            try:
+                fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
+            try:
+                os.close(self.lock_fd)
+            except OSError:
+                pass
 
 
 @dataclass(frozen=True)
@@ -1010,14 +1015,14 @@ class AnalysisCacheIdentity(AnalysisOrchestrationContext):
             presentation_roots=presentation_root_texts(roots),
         )
 
-    @property
+    @cached_property
     def cache_token(self) -> str:
         payload = repr(self).encode("utf-8")
         if self.report_filter_roots:
             payload += repr(self.report_filter_roots).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
 
-    @property
+    @cached_property
     def source_context_token(self) -> str:
         """Repository source-set identity independent of scan orchestration."""
 
@@ -1095,7 +1100,7 @@ class AnalysisCacheFamilyIdentity(AnalysisOrchestrationContext):
             presentation_roots=identity.presentation_roots,
         )
 
-    @property
+    @cached_property
     def cache_token(self) -> str:
         payload = repr(self).encode("utf-8")
         if self.report_filter_roots:
@@ -1940,7 +1945,7 @@ class SourceFileSignatureCache:
 
 @dataclass(frozen=True)
 class AnalysisCacheRebuildLockAuthority:
-    """Singleflight rebuild lock authority for exact analysis-cache misses."""
+    """Singleflight rebuild lock authority backed by kernel-released ``flock``."""
 
     storage: AnalysisCacheStorage
 
@@ -1950,53 +1955,45 @@ class AnalysisCacheRebuildLockAuthority:
         load_cache: AnalysisCacheLookupLoader,
         *,
         poll_interval_seconds: float,
-        stale_lock_seconds: float,
     ) -> AnalysisCacheRebuildLease:
         self.storage.ensure_directory()
         lock_path = self.storage.rebuild_lock_path(identity)
-        while True:
-            cached_lookup = load_cache(identity)
-            if cached_lookup.status.is_hit:
-                return AnalysisCacheRebuildLease(
-                    lock_path=None,
-                    owns_rebuild=False,
-                    cached_lookup=cached_lookup,
-                )
-            try:
-                descriptor = os.open(
-                    lock_path,
-                    os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                    0o644,
-                )
-            except FileExistsError:
-                if self.lock_is_stale(lock_path, stale_lock_seconds):
-                    self.release_lock(lock_path)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            while True:
+                cached_lookup = load_cache(identity)
+                if cached_lookup.status.is_hit:
+                    os.close(descriptor)
+                    return AnalysisCacheRebuildLease(
+                        lock_path=None,
+                        owns_rebuild=False,
+                        cached_lookup=cached_lookup,
+                    )
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    sleep(poll_interval_seconds)
                     continue
-                sleep(poll_interval_seconds)
-                continue
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(str(os.getpid()))
-                handle.flush()
-                os.fsync(handle.fileno())
-            return AnalysisCacheRebuildLease(
-                lock_path=lock_path,
-                owns_rebuild=True,
-                release_lock=self.release_lock,
-            )
-
-    def release_lock(self, lock_path: Path) -> None:
-        try:
-            lock_path.unlink()
-        except FileNotFoundError:
-            return
-
-    @staticmethod
-    def lock_is_stale(lock_path: Path, stale_lock_seconds: float) -> bool:
-        try:
-            lock_age_seconds = time() - lock_path.stat().st_mtime
-        except FileNotFoundError:
-            return False
-        return lock_age_seconds > stale_lock_seconds
+                cached_lookup = load_cache(identity)
+                if cached_lookup.status.is_hit:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    os.close(descriptor)
+                    return AnalysisCacheRebuildLease(
+                        lock_path=None,
+                        owns_rebuild=False,
+                        cached_lookup=cached_lookup,
+                    )
+                return AnalysisCacheRebuildLease(
+                    lock_path=lock_path,
+                    owns_rebuild=True,
+                    lock_fd=descriptor,
+                )
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
 
 
 @dataclass(frozen=True)
@@ -2298,7 +2295,6 @@ class AnalysisFindingCache:
         identity: AnalysisCacheIdentity,
         *,
         poll_interval_seconds: float = 0.05,
-        stale_lock_seconds: float = 600.0,
     ) -> AnalysisCacheRebuildLease:
         storage = self.storage()
         if storage is None:
@@ -2307,7 +2303,6 @@ class AnalysisFindingCache:
             identity,
             self.load,
             poll_interval_seconds=poll_interval_seconds,
-            stale_lock_seconds=stale_lock_seconds,
         )
 
     def storage(self) -> AnalysisCacheStorage | None:

@@ -14,6 +14,7 @@ import fcntl
 import gc
 import importlib
 import importlib.util
+import io
 import os
 import pickle
 import signal
@@ -24,7 +25,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from contextlib import contextmanager, redirect_stderr
 from contextvars import ContextVar
 from dataclasses import dataclass
 from itertools import chain
@@ -590,6 +591,8 @@ class TypeCheckerSession(ABC):
                 synced = existing.sync_corpus(sources)
                 if synced is not None:
                     return synced
+                if existing._failed:
+                    _incremental_type_checker_slot()[0] = None
         return TypeCheckerSession._built(sources, AllBuiltExpressions())
 
     @staticmethod
@@ -606,6 +609,8 @@ class TypeCheckerSession(ABC):
                 synced = existing.sync_overlay(sources)
                 if synced is not None:
                     return synced.receiver_types(asked)
+                if existing._failed:
+                    _incremental_type_checker_slot()[0] = None
         session = TypeCheckerSession._built(sources, RequestedSpanExpressions.of(asked))
         try:
             return session.receiver_types(asked)
@@ -631,10 +636,15 @@ class TypeCheckerSession(ABC):
         build_sources = scope.prepare_sources(unique)
         started = perf_counter()
         try:
-            result = build.build(build_sources, options)
+            with redirect_stderr(io.StringIO()):
+                result = build.build(build_sources, options)
         except errors.CompileError as error:
             return UnavailableTypeChecker(
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]
+            )
+        except (Exception, SystemExit) as error:  # noqa: BLE001 - mypy ICE
+            return UnavailableTypeChecker(
+                f"the mypy build hit an internal error: {type(error).__name__}: {error}"
             )
         session = BuiltTypeChecker.of(
             result,
@@ -661,6 +671,9 @@ class TypeCheckerSession(ABC):
         options.follow_imports = "skip"
         options.ignore_missing_imports = True
         options.python_version = sys.version_info[:2]
+        # Raise mypy internal errors as Python exceptions instead of calling
+        # sys.exit(2) and aborting an entire scan or plan synthesis run.
+        options.raise_exceptions = True
         return options
 
     @staticmethod
@@ -933,6 +946,7 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             | None
         ) = None
         self._member_expr_cls = importlib.import_module("mypy.nodes").MemberExpr
+        self._failed: bool = False
 
     def file_version(self, file_path: str) -> int | None:
         return self._file_versions.get(file_path, 0)
@@ -1077,11 +1091,18 @@ class FineGrainedTypeChecker(TypeCheckerSession):
 
         started = perf_counter()
         try:
-            result = build.build(build_sources, options, fscache=fscache)
-            manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(result)
+            with redirect_stderr(io.StringIO()):
+                result = build.build(build_sources, options, fscache=fscache)
+                manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(
+                    result
+                )
         except errors.CompileError as error:
             return UnavailableTypeChecker(
                 "the mypy build failed: " + "\n".join(error.messages)[-500:]
+            )
+        except (Exception, SystemExit) as error:  # noqa: BLE001 - mypy ICE
+            return UnavailableTypeChecker(
+                f"the mypy build hit an internal error: {type(error).__name__}: {error}"
             )
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
@@ -1142,10 +1163,15 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             self._manager.manager.ast_cache.pop(module_name, None)
             self._text_by_module[module_name] = text
             self._path_by_module[module_name] = path
-        self._manager.update(
-            [(module_name, path) for module_name, path, _text in changed],
-            removed,
-        )
+        try:
+            with redirect_stderr(io.StringIO()):
+                self._manager.update(
+                    [(module_name, path) for module_name, path, _text in changed],
+                    removed,
+                )
+        except (Exception, SystemExit):  # noqa: BLE001 - mypy fine-grained ICE
+            self._failed = True
+            return None
         if self._manager.blocking_error is not None or self._manager.stale:
             return None
         touched_modules: set[str] = (
@@ -2294,9 +2320,12 @@ class FineGrainedTypeErrors:
             build_sources.append(build_source(path, source.module, None))
 
         try:
-            result = build.build(build_sources, options, fscache=fscache)
-            manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(result)
-        except errors.CompileError:
+            with redirect_stderr(io.StringIO()):
+                result = build.build(build_sources, options, fscache=fscache)
+                manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(
+                    result
+                )
+        except (errors.CompileError, Exception, SystemExit):  # noqa: BLE001
             return None
 
         errors_by_file_target = cls._extract_errors_by_file_target(
@@ -2363,10 +2392,15 @@ class FineGrainedTypeErrors:
             self._path_by_module[module_name] = path
 
         self._manager.previous_targets_with_errors = set()
-        self._manager.update(
-            [(module_name, path) for module_name, path, _text in changed],
-            removed,
-        )
+        try:
+            with redirect_stderr(io.StringIO()):
+                self._manager.update(
+                    [(module_name, path) for module_name, path, _text in changed],
+                    removed,
+                )
+        except (Exception, SystemExit):  # noqa: BLE001 - mypy fine-grained ICE
+            self._failed = True
+            return None
         if self._manager.blocking_error is not None or self._manager.stale:
             return None
 
