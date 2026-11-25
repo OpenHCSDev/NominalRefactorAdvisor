@@ -362,7 +362,7 @@ def _candidates_for_declaring(
             )
             if (
                 home is None
-                and answer[0].declaration.kind is not ClassBodyDeclarationKind.METHOD
+                and not answer[0].declaration.kind.is_method
             ):
                 continue
             emitted.append(

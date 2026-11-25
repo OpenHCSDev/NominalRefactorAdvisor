@@ -288,6 +288,40 @@ def test_one_shared_field_is_no_verdict():
     )
 
 
+def test_one_shared_concrete_noop_stub_method_is_no_verdict():
+    """Unrelated concrete classes sharing only a no-op `pass`/`...`/docstring stub
+    (such as null-object sentinels `NoTimer.stop` vs `QtPublication.stop`) are not
+    reported, while `@abstractmethod` contracts and real method bodies still are."""
+
+    noop_source = (
+        "class NoTimer:\n"
+        "    def stop(self) -> None:\n"
+        "        pass\n\n\n"
+        "class QtPublication:\n"
+        "    def stop(self) -> None:\n"
+        '        """Stop the publication."""\n\n'
+        "    def start(self) -> int:\n"
+        "        return 1\n\n\n"
+        "NO_TIMER = NoTimer()\n"
+    )
+    assert _reported(("pkg.timers", noop_source)) == ()
+
+    abstract_source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class ContractA(ABC):\n"
+        "    @abstractmethod\n"
+        "    def stop(self) -> None:\n"
+        "        ...\n\n\n"
+        "class ContractB(ABC):\n"
+        "    @abstractmethod\n"
+        "    def stop(self) -> None:\n"
+        "        ...\n"
+        "    def start(self) -> int:\n"
+        "        return 1\n"
+    )
+    assert len(_reported(("pkg.contracts", abstract_source))) == 1
+
+
 def _score(kinds: list[str]) -> float:
     return 1.0 / (1.0 + math.exp(-sum(OverlapReceiptKind(kind).weight for kind in kinds)))
 

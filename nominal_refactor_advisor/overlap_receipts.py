@@ -12,6 +12,7 @@ class OverlapReceiptKind(ReceiptKind):
     concept score."""
 
     SHARED_METHOD = "shared_method", 1.5, False
+    SHARED_NOOP_METHOD = "shared_noop_method", 0.5, False
     SHARED_VALUE = "shared_value", 1.0, False
     SHARED_FIELD = "shared_field", 0.5, False
     EXISTING_OWNER = "existing_owner", 1.0, False
