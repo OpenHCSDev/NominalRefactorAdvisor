@@ -311,3 +311,46 @@ def test_a_property_forwarder_inlines_as_the_chain_it_reads(tmp_path: Path) -> N
     rewritten = simulation.simulation.rewritten_sources[(tmp_path / "pkg/fields.py").as_posix()]
     assert "def annotation" not in rewritten
     assert "return field.plan.annotation\n" in rewritten
+
+
+def test_a_cooperative_mi_mixin_forwarder_overriding_a_sibling_base_is_refused(
+    tmp_path: Path,
+) -> None:
+    """agent-comms `AssignmentDecision` placed before `AssignmentState` in
+    `BoundAssignment(AssignmentDecision, AssignmentState)`: deleting `mode`
+    un-implements `AssignmentState.mode` (`@abstractmethod`) and deleting
+    `verdict` falls through to `UnengagedDefaults.verdict` (`None`) on every
+    receiver typed as `AssignmentState`."""
+    _write(tmp_path, "pkg/__init__.py", "")
+    _write(
+        tmp_path,
+        "pkg/assignments.py",
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Engagement:\n"
+        "    mode = 'full'\n"
+        "    verdict = 'engage'\n\n\n"
+        "class UnengagedDefaults:\n"
+        "    @property\n    def verdict(self) -> str | None:\n        return None\n\n\n"
+        "class AssignmentState(UnengagedDefaults, ABC):\n"
+        "    @property\n    @abstractmethod\n    def mode(self) -> str:\n        raise NotImplementedError\n\n\n"
+        "class AssignmentDecision:\n"
+        "    decision: Engagement\n\n"
+        "    @property\n    def mode(self) -> str:\n        return self.decision.mode\n\n"
+        "    @property\n    def verdict(self) -> str | None:\n        return self.decision.verdict\n\n\n"
+        "class BoundAssignment(AssignmentDecision, AssignmentState):\n"
+        "    def __init__(self, decision: Engagement) -> None:\n        self.decision = decision\n\n\n"
+        "def read(state: AssignmentState) -> tuple[str, str | None]:\n"
+        "    return state.mode, state.verdict\n",
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    for member, overridden in (("mode", "AssignmentState"), ("verdict", "UnengagedDefaults")):
+        operation = InlineForwarderOperation(
+            target=SourceRewriteTarget(
+                file_path=(tmp_path / "pkg/assignments.py").as_posix(),
+                qualname=f"AssignmentDecision.{member}",
+            )
+        )
+        (report,) = operation.preflight_reports(snapshot)
+        assert report.status is CodemodPreflightStatus.FAILED, report
+        assert f"overrides ({overridden!r},)" in report.message
+
