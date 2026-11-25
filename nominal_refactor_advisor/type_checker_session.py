@@ -325,6 +325,7 @@ class ExpressionExtractionScope(ABC):
             _classes_of(found, types),
             _instances_only(found, types),
             _families_of(found, types),
+            _conjunctions_of(found, types),
         )
 
 
@@ -781,6 +782,46 @@ class DeferredTypeChecker(TypeCheckerSession):
         return "not started" if self._started is None else self._started.status
 
 
+def _instance_conjunction(
+    proper: Type, types: ModuleType
+) -> tuple[str, ...]:
+    """Class fullnames an `Instance` satisfies simultaneously (one for a plain class,
+    every base class for a synthetic mypy `<subclass of A and B>` intersection)."""
+
+    info = proper.type  # type: ignore[attr-defined]
+    if getattr(info, "is_intersection", False):
+        return tuple(
+            chain.from_iterable(_classes_of(base, types) for base in info.bases)
+        )
+    return (info.fullname,)
+
+
+def _conjunctions_of(
+    found: Type, mypy_types: ModuleType | None = None
+) -> tuple[tuple[str, ...], ...]:
+    """Union branches of conjunctive class fullnames a mypy type inhabits."""
+
+    types = importlib.import_module("mypy.types") if mypy_types is None else mypy_types
+    proper = types.get_proper_type(found)
+    match proper:
+        case types.Instance():
+            conj = _instance_conjunction(proper, types)
+            return (conj,) if conj else ()
+        case types.TypeType():
+            return _conjunctions_of(proper.item, types)
+        case types.TypeVarType():
+            return _conjunctions_of(proper.upper_bound, types)
+        case types.UnionType():
+            return tuple(
+                chain.from_iterable(
+                    _conjunctions_of(item, types)
+                    for item in proper.items
+                    if not isinstance(types.get_proper_type(item), types.NoneType)
+                )
+            )
+    return ()
+
+
 def _classes_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str, ...]:
     """The classes a mypy type is: the decoder at the type checker's boundary."""
 
@@ -788,7 +829,7 @@ def _classes_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str,
     proper = types.get_proper_type(found)
     match proper:
         case types.Instance():
-            return (proper.type.fullname,)
+            return _instance_conjunction(proper, types)
         case types.TypeType():
             return _classes_of(proper.item, types)
         case types.TypeVarType():
@@ -814,6 +855,8 @@ def _instances_only(found: Type, mypy_types: ModuleType | None = None) -> bool:
     match proper:
         case types.Instance():
             info = proper.type
+            if getattr(info, "is_intersection", False):
+                return any(_instances_only(base, types) for base in info.bases)
             return not (
                 info.is_protocol
                 or info.fullname == "builtins.object"
@@ -837,8 +880,18 @@ def _families_of(found: Type, mypy_types: ModuleType | None = None) -> tuple[str
     match proper:
         case types.TypeType():
             item = types.get_proper_type(proper.item)
-            if isinstance(item, types.Instance) and not item.type.is_protocol:
-                return (item.type.fullname,)
+            if isinstance(item, types.TypeVarType):
+                item = types.get_proper_type(item.upper_bound)
+            if isinstance(item, types.Instance):
+                if getattr(item.type, "is_intersection", False):
+                    return tuple(
+                        base.type.fullname
+                        for base in item.type.bases
+                        if not base.type.is_protocol
+                        and base.type.fullname != "builtins.object"
+                    )
+                if not item.type.is_protocol:
+                    return (item.type.fullname,)
         case types.UnionType():
             families = tuple(_families_of(item, types) for item in proper.items)
             if all(families):

@@ -266,6 +266,18 @@ class BooleanPredicateDispatchSite(DispatchSite):
 
 
 @dataclass(frozen=True)
+class BoolOpSuffixDispatchSite(BooleanPredicateDispatchSite):
+    """Suffix `isinstance(x, Sub) and/or REST` inside a longer `BoolOp`."""
+
+    end_expr: ast.expr
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        start, _ = geometry.required_node_offsets(self.predicate_expr)
+        _, end = geometry.required_node_offsets(self.end_expr)
+        return start, end
+
+
+@dataclass(frozen=True)
 class StatementDispatchSite(DispatchSite):
     """`if/elif/else`, early-return `if`, or `match` replaced by a statement call."""
 
@@ -331,33 +343,99 @@ def _has_any_return(statements: Sequence[ast.stmt]) -> bool:
     return False
 
 
-def _statement_list_children(block: list[ast.stmt]) -> list[tuple[list[ast.stmt], int, ast.stmt]]:
-    """Every `(containing_list, index, stmt)` in `block` (excluding nested defs/classes)."""
+def _has_value_return(statements: Sequence[ast.stmt]) -> bool:
+    for stmt in statements:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.Return) and node.value is not None:
+                return True
+    return False
 
-    found: list[tuple[list[ast.stmt], int, ast.stmt]] = []
-    stack: list[list[ast.stmt]] = [block]
+
+def _always_void_terminates(statements: Sequence[ast.stmt]) -> bool:
+    """Whether every path exits via bare `return` or `raise`, never returning a value."""
+
+    return _always_terminates(statements) and not _has_value_return(statements)
+
+
+def _strip_trailing_bare_return(statements: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    if (
+        statements
+        and isinstance(statements[-1], ast.Return)
+        and statements[-1].value is None
+    ):
+        remaining = statements[:-1]
+        return tuple(remaining) if remaining else (ast.Pass(),)
+    return tuple(statements)
+
+
+def _has_loop_escape(statements: Sequence[ast.stmt]) -> bool:
+    """Whether `statements` contains `return`, `break`, or `continue` escaping an enclosing loop."""
+
+    stack: list[ast.AST] = list(statements)
     while stack:
-        current = stack.pop()
+        node = stack.pop()
+        if isinstance(node, (ast.Return, ast.Break, ast.Continue)):
+            return True
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+def _ends_with_continue_only(statements: Sequence[ast.stmt]) -> bool:
+    """Whether `statements` ends with `continue` and has no other loop-escaping jumps."""
+
+    return (
+        bool(statements)
+        and isinstance(statements[-1], ast.Continue)
+        and not _has_loop_escape(statements[:-1])
+    )
+
+
+def _strip_trailing_continue(statements: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    remaining = statements[:-1]
+    return tuple(remaining) if remaining else (ast.Pass(),)
+
+
+def _statement_list_children(
+    block: list[ast.stmt],
+) -> list[tuple[list[ast.stmt], int, ast.stmt, bool]]:
+    """Every `(containing_list, index, stmt, in_loop_body)` in `block` (excluding nested defs/classes)."""
+
+    found: list[tuple[list[ast.stmt], int, ast.stmt, bool]] = []
+    stack: list[tuple[list[ast.stmt], bool]] = [(block, False)]
+    while stack:
+        current, in_loop_body = stack.pop()
         for idx, stmt in enumerate(current):
-            found.append((current, idx, stmt))
+            found.append((current, idx, stmt, in_loop_body))
             match stmt:
                 case ast.If(body=b, orelse=o):
-                    stack.append(o)
-                    stack.append(b)
+                    stack.append((o, False))
+                    stack.append((b, False))
                 case ast.For(body=b, orelse=o) | ast.AsyncFor(body=b, orelse=o) | ast.While(body=b, orelse=o):
-                    stack.append(o)
-                    stack.append(b)
+                    stack.append((o, False))
+                    stack.append((b, True))
                 case ast.With(body=b) | ast.AsyncWith(body=b):
-                    stack.append(b)
+                    stack.append((b, False))
                 case ast.Try(body=b, handlers=hs, orelse=o, finalbody=f):
-                    stack.append(f)
-                    stack.append(o)
+                    stack.append((f, False))
+                    stack.append((o, False))
                     for h in hs:
-                        stack.append(h.body)
-                    stack.append(b)
+                        stack.append((h.body, False))
+                    stack.append((b, False))
                 case ast.Match(cases=cases):
                     for case in cases:
-                        stack.append(case.body)
+                        stack.append((case.body, False))
     return found
 
 
@@ -367,6 +445,7 @@ def _extract_compound_if_site(
     stmt: ast.If,
     whole_fn_body: list[ast.stmt],
     test_line: int,
+    in_loop_body: bool = False,
 ) -> DispatchSite | None:
     """Extract `if [PREFIX and] isinstance(x, Sub) [and REST]:` or `if not isinstance(x, Sub) or REST:`."""
 
@@ -461,6 +540,47 @@ def _extract_compound_if_site(
                 is_whole,
                 (first_test.test_node,),
             )
+        if (
+            container is whole_fn_body
+            and tail
+            and _always_void_terminates(stmt.body)
+            and not _has_value_return(tail)
+        ):
+            arm_body = (
+                ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body=tuple(tail),
+                is_whole_function=index == 0,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+            )
+        if (
+            in_loop_body
+            and tail
+            and _ends_with_continue_only(stmt.body)
+            and not _has_loop_escape(tail)
+        ):
+            arm_body = (
+                ast.If(
+                    test=rest_expr,
+                    body=list(_strip_trailing_continue(stmt.body)),
+                    orelse=list(tail),
+                ),
+            )
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body=tuple(tail),
+                is_whole_function=False,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+            )
         if not _has_any_return(stmt.body):
             arm_stmt = ast.If(test=rest_expr, body=list(stmt.body), orelse=[])
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
@@ -516,6 +636,47 @@ def _extract_compound_if_site(
                 is_whole,
                 (first_test.test_node,),
             )
+        if (
+            container is whole_fn_body
+            and tail
+            and _always_void_terminates(stmt.body)
+            and not _has_value_return(tail)
+        ):
+            arm_body = (
+                ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
+                *tail,
+            )
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body=_strip_trailing_bare_return(stmt.body),
+                is_whole_function=index == 0,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+            )
+        if (
+            in_loop_body
+            and tail
+            and _ends_with_continue_only(stmt.body)
+            and not _has_loop_escape(tail)
+        ):
+            arm_body = (
+                ast.If(
+                    test=rest_expr,
+                    body=list(_strip_trailing_continue(stmt.body)),
+                    orelse=list(tail),
+                ),
+            )
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body=_strip_trailing_continue(stmt.body),
+                is_whole_function=False,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+            )
         return None
     return None
 
@@ -526,10 +687,13 @@ def _extract_if_site(
     stmt: ast.If,
     whole_fn_body: list[ast.stmt],
     test_line: int,
+    in_loop_body: bool = False,
 ) -> DispatchSite | None:
     first_test = _parse_type_test(stmt.test)
     if first_test is None:
-        return _extract_compound_if_site(container, index, stmt, whole_fn_body, test_line)
+        return _extract_compound_if_site(
+            container, index, stmt, whole_fn_body, test_line, in_loop_body=in_loop_body
+        )
     subject_dump = ast.dump(first_test.subject)
 
     # Negated single `if not test:` with early return/raise or else.
@@ -573,6 +737,36 @@ def _extract_if_site(
                 is_whole,
                 (first_test.test_node,),
             )
+        if (
+            container is whole_fn_body
+            and tail
+            and _always_void_terminates(stmt.body)
+            and not _has_value_return(tail)
+        ):
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, tuple(tail), first_test.exact),),
+                default_body=_strip_trailing_bare_return(stmt.body),
+                is_whole_function=index == 0,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+            )
+        if (
+            in_loop_body
+            and tail
+            and _ends_with_continue_only(stmt.body)
+            and not _has_loop_escape(tail)
+        ):
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, tuple(tail), first_test.exact),),
+                default_body=_strip_trailing_continue(stmt.body),
+                is_whole_function=False,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+            )
         return None
 
     # Positive `if test:` / `elif test:` chain.
@@ -608,7 +802,7 @@ def _extract_if_site(
             tuple(test_nodes),
         )
 
-    # No explicit `else:`: either early-return chain followed by terminating tail, or void `if`.
+    # No explicit `else:`: either early-return chain followed by terminating tail, void early-return, loop continue, or void `if`.
     tail = container[index + 1 :]
     if all(_always_terminates(arm.body) for arm in arms_list) and tail and _always_terminates(tail):
         replaced = tuple(container[index:])
@@ -620,6 +814,54 @@ def _extract_if_site(
             replaced,
             is_whole,
             tuple(test_nodes),
+        )
+    if (
+        container is whole_fn_body
+        and tail
+        and all(_always_void_terminates(arm.body) for arm in arms_list)
+        and not _has_value_return(tail)
+    ):
+        stripped_arms = tuple(
+            TypeTestArm(
+                arm.tested_exprs,
+                _strip_trailing_bare_return(arm.body),
+                arm.exact,
+                alias=arm.alias,
+            )
+            for arm in arms_list
+        )
+        return StatementDispatchSite(
+            subject=first_test.subject,
+            kind=first_test.kind,
+            arms=stripped_arms,
+            default_body=tuple(tail),
+            is_whole_function=index == 0,
+            test_nodes=tuple(test_nodes),
+            replaced_nodes=tuple(container[index:]),
+        )
+    if (
+        in_loop_body
+        and tail
+        and all(_ends_with_continue_only(arm.body) for arm in arms_list)
+        and not _has_loop_escape(tail)
+    ):
+        stripped_arms = tuple(
+            TypeTestArm(
+                arm.tested_exprs,
+                _strip_trailing_continue(arm.body),
+                arm.exact,
+                alias=arm.alias,
+            )
+            for arm in arms_list
+        )
+        return StatementDispatchSite(
+            subject=first_test.subject,
+            kind=first_test.kind,
+            arms=stripped_arms,
+            default_body=tuple(tail),
+            is_whole_function=False,
+            test_nodes=tuple(test_nodes),
+            replaced_nodes=tuple(container[index:]),
         )
     if not any(_has_any_return(arm.body) for arm in arms_list):
         replaced = (stmt,)
@@ -753,6 +995,33 @@ def _extract_match_site(
             replaced = tuple(container[index:])
             is_whole = container is whole_fn_body and index == 0
             default_body = tuple(tail)
+        elif (
+            container is whole_fn_body
+            and tail
+            and all(_always_void_terminates(arm.body) for arm in arms)
+            and not _has_value_return(tail)
+        ):
+            arms = [
+                TypeTestArm(
+                    arm.tested_exprs,
+                    _strip_trailing_bare_return(arm.body),
+                    arm.exact,
+                    alias=arm.alias,
+                )
+                for arm in arms
+            ]
+            replaced = tuple(container[index:])
+            is_whole = index == 0
+            default_body = tuple(tail)
+            return StatementDispatchSite(
+                subject=stmt.subject,
+                kind=InstanceDispatchKind(),
+                arms=tuple(arms),
+                default_body=default_body,
+                is_whole_function=is_whole,
+                test_nodes=tuple(expr for arm in arms for expr in arm.tested_exprs),
+                replaced_nodes=replaced,
+            )
         elif not any(_has_any_return(arm.body) for arm in arms):
             replaced = (stmt,)
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
@@ -802,8 +1071,9 @@ def _extract_ternary_site(
 def _extract_boolean_expr_site(
     expr: ast.expr,
     is_whole_return: bool,
+    test_line: int | None = None,
 ) -> BooleanPredicateDispatchSite | None:
-    """Extract bare `isinstance(x, Sub)` or compound `isinstance(x, Sub) and/or REST`."""
+    """Extract bare `isinstance(x, Sub)` or compound `[PREFIX and/or] isinstance(x, Sub) [and/or REST]`."""
 
     parsed = _parse_type_test(expr)
     if parsed is not None:
@@ -825,37 +1095,74 @@ def _extract_boolean_expr_site(
         )
     if not isinstance(expr, ast.BoolOp) or len(expr.values) < 2:
         return None
-    first = _parse_type_test(expr.values[0])
-    if first is None:
+    match_idx: int | None = None
+    matched: ParsedTypeTest | None = None
+    for idx, value in enumerate(expr.values):
+        if test_line is not None and value.lineno != test_line:
+            continue
+        candidate = _parse_type_test(value)
+        if candidate is not None:
+            match_idx = idx
+            matched = candidate
+            break
+    if match_idx is None or matched is None:
         return None
-    rest_values = expr.values[1:]
+    rest_values = expr.values[match_idx + 1 :]
+    if not rest_values:
+        true_val = not matched.negated
+        return BooleanPredicateDispatchSite(
+            subject=matched.subject,
+            kind=matched.kind,
+            arms=(
+                TypeTestArm(
+                    matched.tested_exprs,
+                    (ast.Return(value=ast.Constant(value=true_val)),),
+                    matched.exact,
+                ),
+            ),
+            default_body=(ast.Return(value=ast.Constant(value=not true_val)),),
+            is_whole_function=False,
+            test_nodes=(matched.test_node,),
+            predicate_expr=expr.values[match_idx],
+        )
     rest_expr: ast.expr = (
         rest_values[0]
         if len(rest_values) == 1
         else ast.BoolOp(op=expr.op, values=rest_values)
     )
     if isinstance(expr.op, ast.And):
-        if first.negated:
+        if matched.negated:
             arm_body: tuple[ast.stmt, ...] = (ast.Return(value=ast.Constant(value=False)),)
             default_body: tuple[ast.stmt, ...] = (ast.Return(value=rest_expr),)
         else:
             arm_body = (ast.Return(value=rest_expr),)
             default_body = (ast.Return(value=ast.Constant(value=False)),)
     else:
-        if first.negated:
+        if matched.negated:
             arm_body = (ast.Return(value=rest_expr),)
             default_body = (ast.Return(value=ast.Constant(value=True)),)
         else:
             arm_body = (ast.Return(value=ast.Constant(value=True)),)
             default_body = (ast.Return(value=rest_expr),)
-    return BooleanPredicateDispatchSite(
-        subject=first.subject,
-        kind=first.kind,
-        arms=(TypeTestArm(first.tested_exprs, arm_body, first.exact),),
+    if match_idx == 0:
+        return BooleanPredicateDispatchSite(
+            subject=matched.subject,
+            kind=matched.kind,
+            arms=(TypeTestArm(matched.tested_exprs, arm_body, matched.exact),),
+            default_body=default_body,
+            is_whole_function=is_whole_return,
+            test_nodes=(matched.test_node,),
+            predicate_expr=expr,
+        )
+    return BoolOpSuffixDispatchSite(
+        subject=matched.subject,
+        kind=matched.kind,
+        arms=(TypeTestArm(matched.tested_exprs, arm_body, matched.exact),),
         default_body=default_body,
-        is_whole_function=is_whole_return,
-        test_nodes=(first.test_node,),
-        predicate_expr=expr,
+        is_whole_function=False,
+        test_nodes=(matched.test_node,),
+        predicate_expr=expr.values[match_idx],
+        end_expr=expr.values[-1],
     )
 
 
@@ -863,7 +1170,7 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
     """Locate the normalized type-test dispatch in `function` whose test sits on `test_line`."""
 
     body = _body_without_docstring(function)
-    for container, index, stmt in _statement_list_children(body):
+    for container, index, stmt, in_loop_body in _statement_list_children(body):
         if isinstance(stmt, ast.If) and (
             stmt.test.lineno == test_line
             or (
@@ -871,7 +1178,9 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                 and any(value.lineno == test_line for value in stmt.test.values)
             )
         ):
-            extracted = _extract_if_site(container, index, stmt, body, test_line)
+            extracted = _extract_if_site(
+                container, index, stmt, body, test_line, in_loop_body=in_loop_body
+            )
             if extracted is not None:
                 return extracted
         if isinstance(stmt, ast.Match) and (
@@ -888,24 +1197,30 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                     returned.lineno == test_line
                     or (
                         isinstance(returned, ast.BoolOp)
-                        and bool(returned.values)
-                        and returned.values[0].lineno == test_line
+                        and any(value.lineno == test_line for value in returned.values)
                     )
                 ):
                     is_whole = container is body and len(body) == 1
-                    extracted = _extract_boolean_expr_site(returned, is_whole)
+                    extracted = _extract_boolean_expr_site(returned, is_whole, test_line)
                     if extracted is not None:
                         return extracted
-    # Fallback: ternary `IfExp` or compound `BoolOp` anywhere inside the function on `test_line`.
+    # Fallback: ternary `IfExp` or non-branching compound `BoolOp` anywhere inside the function on `test_line`.
+    branch_tests = {
+        id(node.test)
+        for node in ast.walk(function)
+        if isinstance(node, (ast.If, ast.IfExp))
+    }
     for node in ast.walk(function):
         if isinstance(node, ast.IfExp) and node.test.lineno == test_line:
             return _extract_ternary_site(node, is_whole_return=False)
         if (
             isinstance(node, ast.BoolOp)
-            and bool(node.values)
-            and node.values[0].lineno == test_line
+            and id(node) not in branch_tests
+            and any(value.lineno == test_line for value in node.values)
         ):
-            extracted = _extract_boolean_expr_site(node, is_whole_return=False)
+            extracted = _extract_boolean_expr_site(
+                node, is_whole_return=False, test_line=test_line
+            )
             if extracted is not None:
                 return extracted
     return None
@@ -1160,19 +1475,19 @@ def _resolve_subject_roots(
     site: DispatchSite,
     parents: AstParentIndex,
     source_path: str,
-) -> tuple[str, ...]:
-    """The scanned root class symbols every runtime value of `site.subject` belongs to."""
+) -> tuple[tuple[str, ...], ...]:
+    """Union branches of conjunctive scanned root classes every value of `site.subject` inhabits."""
 
     positional = (*function.args.posonlyargs, *function.args.args)
     first_param = positional[0].arg if positional else None
     annotation: ast.expr | None = None
-    roots: list[str] = []
+    branches: list[tuple[str, ...]] = []
 
     match site.subject:
         case ast.Name(id=name) if name == first_param:
             owner_symbol = enclosure.receiver_symbol(snapshot)
             if owner_symbol is not None:
-                roots.append(owner_symbol)
+                branches.append((owner_symbol,))
             else:
                 param = positional[0]
                 ann_tuple = declared_annotations(param)
@@ -1194,7 +1509,7 @@ def _resolve_subject_roots(
         ):
             annotation = enclosure.field_annotation(field_name)
 
-    if not roots and annotation is not None:
+    if not branches and annotation is not None:
         resolved_all = True
         for branch in _unpack_union_annotations(annotation):
             unwrapped = site.kind.unwrap_annotation(branch)
@@ -1208,11 +1523,11 @@ def _resolve_subject_roots(
             if symbol is None:
                 resolved_all = False
                 break
-            roots.append(symbol)
+            branches.append((symbol,))
         if not resolved_all:
-            roots.clear()
+            branches.clear()
 
-    if not roots:
+    if not branches:
         # Check that a bare local is not rebound before trusting mypy's inferred type.
         if isinstance(site.subject, ast.Name):
             parsed = snapshot.parsed_module_for_source_path(source_path)
@@ -1230,31 +1545,44 @@ def _resolve_subject_roots(
                 NeededInput.SOURCE_CHANGE,
             )
         classes_by_symbol = snapshot.required_class_family_index.classes_by_symbol
-        if not all(symbol in classes_by_symbol for symbol in answer.classes):
-            raise NeedsInput(
-                f"the type checker infers `{answer.spelled}` for `{ast.unparse(site.subject)}`, "
-                "which includes classes outside the scanned repository",
-                NeededInput.SOURCE_CHANGE,
+        inferred_branches = answer.branch_conjunctions()
+        scanned_branches: list[tuple[str, ...]] = []
+        for conjunction in inferred_branches:
+            scanned = tuple(
+                symbol for symbol in conjunction if symbol in classes_by_symbol
             )
+            if not scanned:
+                raise NeedsInput(
+                    f"the type checker infers `{answer.spelled}` for `{ast.unparse(site.subject)}`, "
+                    "which includes classes outside the scanned repository",
+                    NeededInput.SOURCE_CHANGE,
+                )
+            scanned_branches.append(scanned)
         site.kind.require_inferred_compatible(answer, ast.unparse(site.subject))
-        roots.extend(answer.classes)
+        branches.extend(scanned_branches)
 
-    return tuple(dict.fromkeys(roots))
+    return tuple(dict.fromkeys(branches))
 
 
 def _nearest_shared_ancestor(
-    snapshot: CodemodSourceSnapshot, symbols: Sequence[str]
+    snapshot: CodemodSourceSnapshot, branches: Sequence[tuple[str, ...]]
 ) -> str | None:
     index = snapshot.required_class_family_index
-    if not symbols:
+    if not branches:
         return None
-    common = frozenset.intersection(
-        *(
-            frozenset((sym, *index.ancestor_symbols(sym)))
-            for sym in symbols
-            if sym in index.classes_by_symbol
+    covered_per_branch = [
+        frozenset().union(
+            *(
+                frozenset((sym, *index.ancestor_symbols(sym)))
+                for sym in branch
+                if sym in index.classes_by_symbol
+            )
         )
-    )
+        for branch in branches
+    ]
+    if any(not covered for covered in covered_per_branch):
+        return None
+    common = frozenset.intersection(*covered_per_branch)
     scanned = [sym for sym in common if sym in index.classes_by_symbol]
     if not scanned:
         return None
@@ -1401,7 +1729,7 @@ class TargetBaseSelection(ABC):
     def select_base(
         self,
         snapshot: CodemodSourceSnapshot,
-        subject_roots: tuple[str, ...],
+        subject_roots: tuple[tuple[str, ...], ...],
         tested_symbols: Sequence[str],
         spelled_subject: str,
     ) -> tuple[ResolvedClassTarget, str]:
@@ -1420,7 +1748,7 @@ class ExplicitBaseSelection(TargetBaseSelection):
     def select_base(
         self,
         snapshot: CodemodSourceSnapshot,
-        subject_roots: tuple[str, ...],
+        subject_roots: tuple[tuple[str, ...], ...],
         tested_symbols: Sequence[str],
         spelled_subject: str,
     ) -> tuple[ResolvedClassTarget, str]:
@@ -1447,12 +1775,12 @@ class SharedAncestorBaseSelection(TargetBaseSelection):
     def select_base(
         self,
         snapshot: CodemodSourceSnapshot,
-        subject_roots: tuple[str, ...],
+        subject_roots: tuple[tuple[str, ...], ...],
         tested_symbols: Sequence[str],
         spelled_subject: str,
     ) -> tuple[ResolvedClassTarget, str]:
         shared_base = _nearest_shared_ancestor(
-            snapshot, (*subject_roots, *tested_symbols)
+            snapshot, (*subject_roots, *((symbol,) for symbol in tested_symbols))
         )
         if shared_base is None:
             raise NeedsInput(
@@ -1580,10 +1908,16 @@ class TypeTestDispatchProof:
         subject_roots = _resolve_subject_roots(
             snapshot, resolver, enclosure, function, site, parents, source_path
         )
-        subject_family = frozenset(
-            symbol
-            for root in subject_roots
-            for symbol in (root, *index.descendant_symbols(root))
+        subject_family = frozenset().union(
+            *(
+                frozenset.intersection(
+                    *(
+                        frozenset((symbol, *index.descendant_symbols(symbol)))
+                        for symbol in branch
+                    )
+                )
+                for branch in subject_roots
+            )
         )
 
         base, base_symbol = base_selection.select_base(
@@ -2025,6 +2359,7 @@ class OwnTypeTestFindingRecipeSynthesizer(
 
 
 __all__ = (
+    "BoolOpSuffixDispatchSite",
     "BooleanPredicateDispatchSite",
     "ClassDispatchKind",
     "DispatchKind",
