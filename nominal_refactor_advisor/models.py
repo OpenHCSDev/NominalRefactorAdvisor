@@ -835,6 +835,25 @@ class OwnTypeTestMetrics(DeclaredBasePickMetrics):
 
 
 @dataclass(frozen=True)
+class ConstantSubtypeAnswerMetrics(DeclaredBasePickMetrics):
+    """One family's constant subtype answer and its branch-read consumers."""
+
+    member_name: str
+    declaring_family: str
+    consumer_symbol: str
+    consumer_locations: tuple[SourceLocation, ...] = ()
+
+    def base_pick_owner_name(
+        self, authority_evidence: SourceLocation | None
+    ) -> str | None:
+        del authority_evidence
+        return self.consumer_symbol
+
+    def base_pick_owner_label(self) -> str:
+        return "consumer"
+
+
+@dataclass(frozen=True)
 class RegistrationMetrics(RegistrationFindingMetrics, DeclaredBasePickMetrics):
     """Metrics for manual or duplicated class-registration surfaces."""
 

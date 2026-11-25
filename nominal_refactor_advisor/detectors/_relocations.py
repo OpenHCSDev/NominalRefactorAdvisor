@@ -24,8 +24,19 @@ from nominal_refactor_advisor.class_index import (
 )
 
 from nominal_refactor_advisor.declared_receivers import DeclaredReceiverTyping
-from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
+from nominal_refactor_advisor.models import (
+    ConstantSubtypeAnswerMetrics,
+    EmptyFindingMetrics,
+    FindingMetrics,
+    RefactorFinding,
+    SourceLocation,
+)
 from nominal_refactor_advisor.patterns import PatternId
+from nominal_refactor_advisor.refactors.constant_subtype_answer import (
+    ConstantSubtypeAnswerFindingRecipeSynthesizer,
+    DeleteConstantSubtypeAnswerOperation,
+    PushConstantSubtypeAnswerOperation,
+)
 from nominal_refactor_advisor.relocation_observations import (
     BranchRead,
     ClassShape,
@@ -296,6 +307,12 @@ class RelocationDetector(
         """The (file, symbol, group) one finding covers."""
         raise NotImplementedError
 
+    def metrics_for(
+        self, sites: Sequence[RestatingSite], context: RelocationIndex
+    ) -> FindingMetrics:
+        del sites, context
+        return EmptyFindingMetrics()
+
     def findings_from_sites(
         self, sites: Iterable[RestatingSite], context: RelocationIndex
     ) -> list[RefactorFinding]:
@@ -313,7 +330,11 @@ class RelocationDetector(
                 f"Factoring: {self.restated.factoring} {self.restated.recipe_status}"
             )
             findings.append(
-                self.build_finding(summary, self.evidence(ordered, context))
+                self.build_finding(
+                    summary,
+                    self.evidence(ordered, context),
+                    metrics=self.metrics_for(ordered, context),
+                )
             )
         return findings
 
@@ -332,7 +353,10 @@ class FamilyMemberRelocationDetector(RelocationDetector, ABC):
         return f"{self.restated.owner} Declared first by: {family}."
 
 
-class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
+class ConstantSubtypeAnswerDetector(
+    FamilyMemberRelocationDetector,
+    ConstantSubtypeAnswerFindingRecipeSynthesizer,
+):
     """Every member of a family answers one zero-argument question with a constant."""
 
     module_projection_families = (
@@ -345,6 +369,10 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         fact="Each constant answer restates which member of the family the object is, a second copy of the subtype identity the class already is; a consumer that branches on it re-derives the subtype.",
         owner="The owner is the family: the work each consumer selects with the answer belongs on the members as an override.",
         factoring="Replace each consumer's `if x.answer:` with a call of a method named for that consumer's work, declared abstract on the family base and overridden per member with the branch body; then delete the answer.",
+        operations=(
+            PushConstantSubtypeAnswerOperation,
+            DeleteConstantSubtypeAnswerOperation,
+        ),
     )
     finding_spec = restated.spec(
         PatternId.CONSTANT_SUBTYPE_ANSWER,
@@ -354,6 +382,28 @@ class ConstantSubtypeAnswerDetector(FamilyMemberRelocationDetector):
         (CapabilityTag.CLOSED_FAMILY_DISPATCH,),
         (ObservationTag.CLASS_FAMILY, ObservationTag.BRANCH_DISPATCH),
     )
+
+    def metrics_for(
+        self, sites: Sequence[RestatingSite], context: RelocationIndex
+    ) -> FindingMetrics:
+        member = sites[0].group
+        family = context.families.family(sites[0].detail[0], member)
+        counted = self.consumers(sites, context).counted
+        consumer_locations = tuple(
+            SourceLocation(use.file_path, use.lineno, use.symbol)
+            for use in counted
+        )
+        consumer_symbol = (
+            consumer_locations[0].symbol
+            if len(consumer_locations) == 1
+            else family.rsplit(".", 1)[-1]
+        )
+        return ConstantSubtypeAnswerMetrics(
+            member_name=member,
+            declaring_family=family,
+            consumer_symbol=consumer_symbol,
+            consumer_locations=consumer_locations,
+        )
 
     def computed_elsewhere(
         self, sites: Sequence[RestatingSite], context: RelocationIndex
