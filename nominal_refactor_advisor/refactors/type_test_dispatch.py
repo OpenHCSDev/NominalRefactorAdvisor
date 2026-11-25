@@ -58,6 +58,7 @@ from nominal_refactor_advisor.refactors.class_overlap import obsolete_import_edi
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
 )
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
@@ -1926,6 +1927,7 @@ class PushTypeTestDispatchOperation(RepositorySourceReprovedOperation):
 class OwnTypeTestFindingRecipeSynthesizer(
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
     TypeTestDispatchConcept,
     ABC,
 ):

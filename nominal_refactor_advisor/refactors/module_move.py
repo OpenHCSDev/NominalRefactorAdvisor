@@ -3777,6 +3777,35 @@ class ImportedNameOwner:
         return None if path is None else context.module_import_graph.module_name_for_file_path(path)
 
     @staticmethod
+    def _module_binding_index(
+        context: CodemodSelectorContext,
+        file_path: str,
+    ) -> tuple[frozenset[str], dict[str, tuple[ast.Import | ast.ImportFrom, ast.alias]]]:
+        def derive() -> tuple[
+            frozenset[str],
+            dict[str, tuple[ast.Import | ast.ImportFrom, ast.alias]],
+        ]:
+            table = ModuleSymbolTable(
+                file_path=file_path,
+                source=context.sources_by_file_path[file_path],
+                module=context.module_nodes_by_file_path[file_path],
+            )
+            imports_by_bound_name: dict[str, tuple[ast.Import | ast.ImportFrom, ast.alias]] = {}
+            for scope in ModuleImportScope:
+                for node in scope.import_statements(table.module):
+                    projection = ImportBoundNameProjection(node)
+                    for alias in node.names:
+                        bound_name = projection.alias_bound_name(alias)
+                        if bound_name not in imports_by_bound_name:
+                            imports_by_bound_name[bound_name] = (node, alias)
+            return table.top_level_names, imports_by_bound_name
+
+        return context.retained_operation_derivation(
+            (ImportedNameOwner, "module_bindings", file_path),
+            derive,
+        )
+
+    @staticmethod
     def declaring_path(
         context: CodemodSelectorContext,
         module_name: str | None,
@@ -3790,44 +3819,52 @@ class ImportedNameOwner:
         A `from pkg import name` that `pkg` does not bind reads the submodule
         `pkg.name`."""
 
+        if module_name is None:
+            return None
+        cache: dict[tuple[str, str], str | None] = context.retained_operation_derivation(
+            (ImportedNameOwner, "declaring_path"),
+            dict,
+        )
+        start_key = (module_name, name)
+        if start_key in cache:
+            return cache[start_key]
         import_graph = context.module_import_graph
         seen: set[tuple[str, str]] = set()
+        result: str | None = None
         while module_name is not None and (module_name, name) not in seen:
-            seen.add((module_name, name))
+            current_key = (module_name, name)
+            if current_key in cache:
+                result = cache[current_key]
+                break
+            seen.add(current_key)
             source_file = import_graph.unique_source_file_for_module_name(module_name)
             if source_file is None:
-                return None
-            table = ModuleSymbolTable(
-                file_path=source_file.file_path,
-                source=context.sources_by_file_path[source_file.file_path],
-                module=context.module_nodes_by_file_path[source_file.file_path],
+                result = None
+                break
+            top_level_names, imports_by_bound_name = ImportedNameOwner._module_binding_index(
+                context, source_file.file_path
             )
-            if name in table.top_level_names:
-                return source_file.file_path
-            binding = next(
-                (
-                    (node, alias)
-                    for scope in ModuleImportScope
-                    for node in scope.import_statements(table.module)
-                    for alias in node.names
-                    if ImportBoundNameProjection(node).alias_bound_name(alias) == name
-                ),
-                None,
-            )
+            if name in top_level_names:
+                result = source_file.file_path
+                break
+            binding = imports_by_bound_name.get(name)
             if binding is None:
                 submodule = import_graph.unique_source_file_for_module_name(f"{module_name}.{name}")
-                return (submodule or source_file).file_path
+                result = (submodule or source_file).file_path
+                break
             node, alias = binding
             if isinstance(node, ast.Import):
                 bound = alias.name if alias.asname else alias.name.split(".")[0]
                 module = import_graph.unique_source_file_for_module_name(bound)
-                return None if module is None else module.file_path
+                result = None if module is None else module.file_path
+                break
             module_name = source_file.module_path_identity.resolve_import_from_module(
                 imported_module=node.module,
                 level=node.level,
             )
             name = alias.name
-        return None
+        cache[start_key] = result
+        return result
 
 
 @dataclass(frozen=True)

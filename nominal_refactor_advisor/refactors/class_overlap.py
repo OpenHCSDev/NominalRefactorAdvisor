@@ -4068,12 +4068,15 @@ class MovedClosure:
 def annotation_modes(snapshot: CodemodSourceSnapshot) -> dict[str, type[ModuleAnnotationEvaluationMode]]:
     """How each scanned module evaluates its annotations, by module name."""
 
-    graph = snapshot.module_import_graph
-    return {
-        module_name: ModuleAnnotationEvaluationMode.from_module(module)
-        for file_path, module in snapshot.module_nodes_by_file_path.items()
-        if (module_name := graph.module_name_for_file_path(file_path)) is not None
-    }
+    def derive() -> dict[str, type[ModuleAnnotationEvaluationMode]]:
+        graph = snapshot.module_import_graph
+        return {
+            module_name: ModuleAnnotationEvaluationMode.from_module(module)
+            for file_path, module in snapshot.module_nodes_by_file_path.items()
+            if (module_name := graph.module_name_for_file_path(file_path)) is not None
+        }
+
+    return snapshot.retained_operation_derivation(annotation_modes, derive)
 
 
 def relocation_to(

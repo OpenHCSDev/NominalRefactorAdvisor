@@ -2,6 +2,7 @@
 
 import ast
 from dataclasses import fields, replace
+from pathlib import Path
 import pickle
 
 import pytest
@@ -10,6 +11,8 @@ from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor import class_index, product_flow
 from nominal_refactor_advisor.binding_proofs import RepositoryModuleBindingProof
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
+from nominal_refactor_advisor.refactors import module_move
+from nominal_refactor_advisor.refactors.module_move import ImportedNameOwner
 from nominal_refactor_advisor.source_execution import SourceModuleExecution
 
 
@@ -167,3 +170,63 @@ def test_compact_payload_stays_independent_of_task_source(monkeypatch):
 
     monkeypatch.setattr(class_index, "source_product_flow_projection", forbidden)
     assert restored.flow_contexts
+
+
+def test_virtual_snapshot_projects_module_import_graph_incrementally():
+    base = CodemodSourceSnapshot.from_source_mapping(
+        {
+            "/repo/pkg/__init__.py": "",
+            "/repo/pkg/a.py": "from pkg.b import B\n\nclass A:\n    pass\n",
+            "/repo/pkg/b.py": "class B:\n    pass\n",
+            "/repo/pkg/c.py": "class C:\n    pass\n",
+        },
+        analysis_roots=(Path("/repo"),),
+    )
+    assert base.module_import_graph.reachable_modules("pkg.a") == frozenset({"pkg", "pkg.b"})
+
+    same_imports = base.with_virtual_sources(
+        {"/repo/pkg/a.py": "from pkg.b import B\n\nclass A:\n    x = 1\n"}
+    )
+    assert same_imports.module_import_graph.import_edges_by_module == (
+        base.module_import_graph.import_edges_by_module
+    )
+    assert same_imports.module_import_graph.reachable_modules("pkg.a") == frozenset({"pkg", "pkg.b"})
+
+    changed_imports = base.with_virtual_sources(
+        {"/repo/pkg/a.py": "from pkg.c import C\n\nclass A:\n    pass\n"}
+    )
+    assert changed_imports.module_import_graph.import_edges_by_module["pkg.a"] == frozenset(
+        {"pkg", "pkg.c"}
+    )
+    assert changed_imports.module_import_graph.reachable_modules("pkg.a") == frozenset({"pkg", "pkg.c"})
+
+
+def test_imported_name_owner_caches_bindings_and_declaring_path(monkeypatch):
+    state = CodemodSourceSnapshot.from_source_mapping(
+        {
+            "/repo/pkg/__init__.py": "",
+            "/repo/pkg/origin.py": "class Target:\n    pass\n",
+            "/repo/pkg/reexport.py": "from pkg.origin import Target as Alias\n",
+            "/repo/pkg/cycle_a.py": "from pkg.cycle_b import Loop\n",
+            "/repo/pkg/cycle_b.py": "from pkg.cycle_a import Loop\n",
+        },
+        analysis_roots=(Path("/repo"),),
+    )
+    built_tables: list[str] = []
+    original_table = module_move.ModuleSymbolTable
+
+    def counted_table(*args, **kwargs):
+        built_tables.append(kwargs.get("file_path") or args[0])
+        return original_table(*args, **kwargs)
+
+    monkeypatch.setattr(module_move, "ModuleSymbolTable", counted_table)
+    assert ImportedNameOwner.declaring_path(state, "pkg.reexport", "Alias") == "/repo/pkg/origin.py"
+    assert ImportedNameOwner.declaring_path(state, "pkg.reexport", "Alias") == "/repo/pkg/origin.py"
+    assert ImportedNameOwner.declaring_path(state, "pkg.cycle_a", "Loop") is None
+    assert ImportedNameOwner.declaring_path(state, "pkg.cycle_a", "Loop") is None
+    assert built_tables == [
+        "/repo/pkg/reexport.py",
+        "/repo/pkg/origin.py",
+        "/repo/pkg/cycle_a.py",
+        "/repo/pkg/cycle_b.py",
+    ]

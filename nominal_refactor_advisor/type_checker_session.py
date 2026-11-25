@@ -25,7 +25,7 @@ import traceback
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
-from contextlib import contextmanager, redirect_stderr
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from contextvars import ContextVar
 from dataclasses import dataclass
 from itertools import chain
@@ -502,6 +502,14 @@ class RequestedSpanExpressions(ExpressionExtractionScope):
         return LazyInferredTypes(raw, options, format_type_bare, mypy_types)
 
 
+@contextmanager
+def _quiet_mypy() -> Iterator[None]:
+    """Silence stray mypy stdout/stderr diagnostics during internal builds."""
+
+    with redirect_stderr(io.StringIO()), redirect_stdout(io.StringIO()):
+        yield
+
+
 class TypeCheckerSession(ABC):
     """The scan's type checker: one finished build, or the reason there is none."""
 
@@ -593,6 +601,11 @@ class TypeCheckerSession(ABC):
                     return synced
                 if existing._failed:
                     _incremental_type_checker_slot()[0] = None
+            if ScanCache.active() is not None and len(sources.modules) >= 16:
+                seeded = FineGrainedTypeChecker.seeded(sources)
+                if isinstance(seeded, FineGrainedTypeChecker):
+                    _incremental_type_checker_slot()[0] = seeded
+                    return seeded
         return TypeCheckerSession._built(sources, AllBuiltExpressions())
 
     @staticmethod
@@ -636,7 +649,7 @@ class TypeCheckerSession(ABC):
         build_sources = scope.prepare_sources(unique)
         started = perf_counter()
         try:
-            with redirect_stderr(io.StringIO()):
+            with _quiet_mypy():
                 result = build.build(build_sources, options)
         except errors.CompileError as error:
             return UnavailableTypeChecker(
@@ -947,6 +960,13 @@ class FineGrainedTypeChecker(TypeCheckerSession):
         ) = None
         self._member_expr_cls = importlib.import_module("mypy.nodes").MemberExpr
         self._failed: bool = False
+        self._type_errors: FineGrainedTypeErrors | None = None
+
+    def shared_type_errors(self) -> FineGrainedTypeErrors | None:
+        """The lockstep ``FineGrainedTypeErrors`` view backed by this engine, if active."""
+        if self._failed:
+            return None
+        return self._type_errors
 
     def file_version(self, file_path: str) -> int | None:
         return self._file_versions.get(file_path, 0)
@@ -1061,7 +1081,7 @@ class FineGrainedTypeChecker(TypeCheckerSession):
         options.cache_dir = os.devnull
         options.export_types = True
         options.preserve_asts = True
-        options.ignore_errors = True
+        options.ignore_errors = False
         # Force reads through FileSystemCache instead of mypy 2.x's native parser
         # opening unmodified files directly from disk.
         options.native_parser = False
@@ -1091,7 +1111,7 @@ class FineGrainedTypeChecker(TypeCheckerSession):
 
         started = perf_counter()
         try:
-            with redirect_stderr(io.StringIO()):
+            with _quiet_mypy():
                 result = build.build(build_sources, options, fscache=fscache)
                 manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(
                     result
@@ -1107,7 +1127,7 @@ class FineGrainedTypeChecker(TypeCheckerSession):
         TypeCheckerTimingLedger.active().record(
             TypeCheckerTiming(build_seconds=perf_counter() - started)
         )
-        return cls(
+        checker = cls(
             manager=manager,
             fscache=fscache,
             options=options,
@@ -1121,6 +1141,30 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             shared=shared,
             mtime=mtime,
         )
+        if sys.platform.startswith("linux") and len(path_by_module) >= 16:
+            checker._type_errors = FineGrainedTypeErrors(
+                manager=manager,
+                fscache=fscache,
+                options=options,
+                module_prefix=update_mod.module_prefix,
+                hash_digest=hash_digest,
+                text_by_module=text_by_module,
+                path_by_module=path_by_module,
+                errors_by_file_target=FineGrainedTypeErrors._extract_errors_by_file_target(
+                    manager.manager.errors
+                ),
+                mtime=mtime,
+                source_checker=checker,
+            )
+        return checker
+
+    def _invalidate_shared_type_errors(self) -> None:
+        shared = self._type_errors
+        self._type_errors = None
+        if shared is not None and ScanCache.active() is not None:
+            errors_slot = _incremental_type_errors_slot()
+            if errors_slot[0] is shared:
+                errors_slot[0] = None
 
     def _apply_delta_and_touched(
         self,
@@ -1132,6 +1176,7 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             self._shared = shared
             return set()
         started = perf_counter()
+        shared_errors = self._type_errors
         for module_name, path in removed:
             self._delete_memory_file(module_name, path)
             self._text_by_module.pop(module_name, None)
@@ -1141,6 +1186,8 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             self._formatted_by_file.pop(path, None)
             self._split_typed_coords_by_file.pop(path, None)
             self._file_versions[path] = self._file_versions.get(path, 0) + 1
+            if shared_errors is not None:
+                shared_errors._set_file_targets(path, None)
         for module_name, path, text in changed:
             old_path = self._path_by_module.get(module_name)
             if old_path is not None and old_path != path:
@@ -1150,6 +1197,8 @@ class FineGrainedTypeChecker(TypeCheckerSession):
                 self._formatted_by_file.pop(old_path, None)
                 self._split_typed_coords_by_file.pop(old_path, None)
                 self._file_versions[old_path] = self._file_versions.get(old_path, 0) + 1
+                if shared_errors is not None:
+                    shared_errors._set_file_targets(old_path, None)
             self._mtime += 1
             is_new = module_name not in self._path_by_module or old_path != path
             self._put_memory_file(
@@ -1163,17 +1212,24 @@ class FineGrainedTypeChecker(TypeCheckerSession):
             self._manager.manager.ast_cache.pop(module_name, None)
             self._text_by_module[module_name] = text
             self._path_by_module[module_name] = path
+        self._manager.previous_targets_with_errors = set()
         try:
-            with redirect_stderr(io.StringIO()):
+            with _quiet_mypy():
                 self._manager.update(
                     [(module_name, path) for module_name, path, _text in changed],
                     removed,
                 )
         except (Exception, SystemExit):  # noqa: BLE001 - mypy fine-grained ICE
             self._failed = True
+            self._invalidate_shared_type_errors()
             return None
         if self._manager.blocking_error is not None or self._manager.stale:
+            self._failed = True
+            self._invalidate_shared_type_errors()
             return None
+        if shared_errors is not None:
+            shared_errors._mtime = self._mtime
+            shared_errors._record_updated_errors(changed)
         touched_modules: set[str] = (
             {module_name for module_name, _path, _text in changed}
             | {module_name for module_name, _path in removed}
@@ -2198,6 +2254,7 @@ class FineGrainedTypeErrors:
         path_by_module: dict[str, str],
         errors_by_file_target: dict[str, dict[str, tuple[str, ...]]],
         mtime: int,
+        source_checker: FineGrainedTypeChecker | None = None,
     ) -> None:
         self._manager = manager
         self._fscache = fscache
@@ -2213,6 +2270,8 @@ class FineGrainedTypeErrors:
             if targets
         }
         self._mtime = mtime
+        self._source_checker = source_checker
+        self._failed: bool = False
 
     @staticmethod
     def _flatten_targets(targets: Mapping[str, tuple[str, ...]]) -> tuple[str, ...]:
@@ -2320,7 +2379,7 @@ class FineGrainedTypeErrors:
             build_sources.append(build_source(path, source.module, None))
 
         try:
-            with redirect_stderr(io.StringIO()):
+            with _quiet_mypy():
                 result = build.build(build_sources, options, fscache=fscache)
                 manager: FineGrainedBuildManager = update_mod.FineGrainedBuildManager(
                     result
@@ -2347,6 +2406,11 @@ class FineGrainedTypeErrors:
         return engine, TypeErrors(dict(engine._errors_by_file))
 
     def errors_for(self, sources: SourceTexts) -> TypeErrors | None:
+        if self._source_checker is not None:
+            if self._source_checker._failed or not self._source_checker._flush_deferred_split_delta():
+                self._failed = True
+                return None
+            self._mtime = self._source_checker._mtime
         unique, _shared = TypeCheckerSession.unique_sources(sources, self._options)
         next_by_module = {
             source.module: (path, source.text or "") for path, source in unique
@@ -2366,7 +2430,58 @@ class FineGrainedTypeErrors:
             return TypeErrors(dict(self._errors_by_file))
         if len(changed) + len(removed) > max(32, len(self._path_by_module) // 2):
             return None
+        if sys.platform.startswith("linux") and len(self._path_by_module) >= 16:
+            return self._errors_for_forked(changed, removed)
+        return self._errors_for_in_place(changed, removed)
 
+    def _errors_for_forked(
+        self,
+        changed: list[tuple[str, str, str]],
+        removed: list[tuple[str, str]],
+    ) -> TypeErrors | None:
+        """Evaluate one speculative delta in a COW child so the parent engine
+        stays at its clean baseline (no revert work and no ICE corruption)."""
+
+        gc_was_enabled = gc.isenabled()
+        if gc_was_enabled:
+            gc.disable()
+        reader, writer = os.pipe()
+        pid = os.fork()
+        if pid == 0:
+            os.close(reader)
+            gc.disable()
+            try:
+                try:
+                    self._options.export_types = False
+                    self._manager.manager.options.export_types = False
+                    result = self._errors_for_in_place(changed, removed)
+                    payload = pickle.dumps((True, result))
+                except BaseException:  # noqa: BLE001
+                    payload = pickle.dumps((False, None))
+                with os.fdopen(writer, "wb") as out:
+                    out.write(payload)
+            finally:
+                os._exit(0)
+        os.close(writer)
+        chunks: list[bytes] = []
+        try:
+            while chunk := os.read(reader, 1 << 20):
+                chunks.append(chunk)
+        finally:
+            os.close(reader)
+            ScanCache.defer_child_reap(pid)
+            if gc_was_enabled:
+                gc.enable()
+        if not chunks:
+            return None
+        ok, result = pickle.loads(b"".join(chunks))
+        return result if ok else None
+
+    def _errors_for_in_place(
+        self,
+        changed: list[tuple[str, str, str]],
+        removed: list[tuple[str, str]],
+    ) -> TypeErrors | None:
         for module_name, path in removed:
             self._delete_memory_file(module_name, path)
             self._text_by_module.pop(module_name, None)
@@ -2393,7 +2508,7 @@ class FineGrainedTypeErrors:
 
         self._manager.previous_targets_with_errors = set()
         try:
-            with redirect_stderr(io.StringIO()):
+            with _quiet_mypy():
                 self._manager.update(
                     [(module_name, path) for module_name, path, _text in changed],
                     removed,
@@ -2402,7 +2517,17 @@ class FineGrainedTypeErrors:
             self._failed = True
             return None
         if self._manager.blocking_error is not None or self._manager.stale:
+            self._failed = True
             return None
+
+        self._record_updated_errors(changed)
+        return TypeErrors(dict(self._errors_by_file))
+
+    def _record_updated_errors(
+        self,
+        changed: list[tuple[str, str, str]],
+    ) -> None:
+        """Merge reprocessed target errors after ``self._manager.update``."""
 
         new_by_file_target = self._extract_errors_by_file_target(
             self._manager.manager.errors
@@ -2446,8 +2571,6 @@ class FineGrainedTypeErrors:
             existing_targets.update(new_targets)
             self._set_file_targets(path, existing_targets)
 
-        return TypeErrors(dict(self._errors_by_file))
-
 
 @dataclass(frozen=True)
 class TypeErrors:
@@ -2490,13 +2613,26 @@ class TypeErrors:
                 if incremental is not None:
                     built[state] = incremental
                     return incremental
-                slot[0] = None
-            seeded = FineGrainedTypeErrors.seeded(sources)
-            if seeded is not None:
-                engine, initial = seeded
-                slot[0] = engine
-                built[state] = initial
-                return initial
+                if existing._failed:
+                    slot[0] = None
+            if slot[0] is None:
+                checker = TypeCheckerSession._active_incremental()
+                shared_engine = (
+                    checker.shared_type_errors() if checker is not None else None
+                )
+                if shared_engine is not None:
+                    slot[0] = shared_engine
+                    incremental = shared_engine.errors_for(sources)
+                    if incremental is not None:
+                        built[state] = incremental
+                        return incremental
+                else:
+                    seeded = FineGrainedTypeErrors.seeded(sources)
+                    if seeded is not None:
+                        engine, initial = seeded
+                        slot[0] = engine
+                        built[state] = initial
+                        return initial
         built[state] = cls._built(sources)
         return built[state]
 
@@ -2507,7 +2643,8 @@ class TypeErrors:
         build = importlib.import_module("mypy.build")
         options = TypeCheckerSession.options()
         unique, _shared = TypeCheckerSession.unique_sources(sources, options)
-        result = build.build([source for _path, source in unique], options)
+        with _quiet_mypy():
+            result = build.build([source for _path, source in unique], options)
         return cls(cls._parse_error_lines(result.errors))
 
     def new_since(self, before: TypeErrors) -> tuple[str, ...]:

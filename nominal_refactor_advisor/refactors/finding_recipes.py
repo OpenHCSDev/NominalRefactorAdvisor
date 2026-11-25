@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC
 from collections import defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
@@ -58,6 +58,7 @@ from nominal_refactor_advisor.planner import (
     build_refactor_execution_plan,
     build_refactor_execution_plan_from_groups,
 )
+from nominal_refactor_advisor.type_checker_session import SourceTexts, TypeCheckerSession
 from nominal_refactor_advisor.refactors.projection_descent import TypedMirror
 from nominal_refactor_advisor.refactor_concepts import (
     ClassFamilyAuthorityConcept,
@@ -260,6 +261,20 @@ def codemod_class_plan_from_findings(
         context=selector_context,
         detector_ids=detector_ids,
     )
+
+
+class PrewarmTypeCheckerMixin(FindingRecipeEvaluator, ABC):
+    """Seed the fine-grained mypy session once before parallel synthesis forks."""
+
+    @classmethod
+    def prewarm_parallel_synthesis(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: Sequence[RefactorFinding],
+    ) -> None:
+        del findings
+        if len(snapshot.parsed_modules) >= 16:
+            TypeCheckerSession.seed_incremental(SourceTexts(snapshot.parsed_modules))
 
 
 class FindingRecipeSynthesizer(FindingRecipeEvaluator, ABC):

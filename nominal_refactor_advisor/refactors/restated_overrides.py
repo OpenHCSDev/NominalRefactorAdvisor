@@ -58,6 +58,7 @@ from nominal_refactor_advisor.refactors.class_overlap import (
 )
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
     PrimaryEvidenceActionKeysMixin,
 )
 from nominal_refactor_advisor.refactors.class_attribute_reads import ClassAttributeReaders
@@ -1003,6 +1004,7 @@ class DeleteRestatedOverridesOperation(RepositorySourceReprovedOperation):
 class RestatedOverrideFindingRecipeSynthesizer(
     PrimaryEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
     RestatedOverrideConcept,
 ):
     """One deletion of the members the finding's class restates."""

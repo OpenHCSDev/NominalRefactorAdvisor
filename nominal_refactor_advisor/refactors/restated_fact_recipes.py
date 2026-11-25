@@ -18,6 +18,7 @@ from nominal_refactor_advisor.refactor_concepts import (
 from nominal_refactor_advisor.refactors.finding_recipes import (
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
+    PrewarmTypeCheckerMixin,
     PrimaryEvidenceActionKeysMixin,
 )
 from nominal_refactor_advisor.refactors.function_operations import InlineForwarderOperation
@@ -25,6 +26,7 @@ from nominal_refactor_advisor.refactors.module_move import DissolveModuleOperati
 
 
 class ForwarderInlineFindingRecipeSynthesizer(
+    PrewarmTypeCheckerMixin,
     FindingEvidenceActionKeysMixin,
     FindingRecipeSynthesizer,
     ForwarderInlineConcept,
