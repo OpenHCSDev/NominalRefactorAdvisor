@@ -2121,31 +2121,41 @@ class CapturedArgument:
     param_name: str
 
 
-def _outer_receiver_alias(
+@dataclass(frozen=True)
+class OuterReceiverAlias:
+    """One enclosing `self`/`cls` receiver renamed when forwarded into a pushed method."""
+
+    source_name: str
+    param_name: str
+
+
+def _outer_receiver_aliases(
     function: FunctionNode,
     site: DispatchSite,
     raw_bodies: Sequence[tuple[ast.stmt, ...]],
     enclosing_locals: frozenset[str] = frozenset(),
-) -> str | None:
-    """Fresh parameter name when the outer function binds `receiver` independently of `site.subject`."""
+) -> tuple[OuterReceiverAlias, ...]:
+    """Fresh parameter names for outer `self`/`cls` locals referenced independently of `site.subject`."""
 
     receiver = site.kind.receiver
-    if isinstance(site.subject, ast.Name) and site.subject.id == receiver:
-        return None
+    subject_name = site.subject.id if isinstance(site.subject, ast.Name) else None
     fn_locals = _function_local_names(function) | enclosing_locals
-    if receiver not in fn_locals:
-        return None
+    opposite = "cls" if receiver == "self" else "self"
+    candidates = tuple(
+        src
+        for src in (receiver, opposite)
+        if src in fn_locals and src != subject_name
+    )
+    if not candidates:
+        return ()
     subject_dump = ast.dump(site.subject)
-    uses_outer_receiver = False
+    referenced: set[str] = set()
 
     def scan(node: ast.AST) -> None:
-        nonlocal uses_outer_receiver
-        if uses_outer_receiver:
-            return
         if isinstance(node, ast.expr) and ast.dump(node) == subject_dump:
             return
-        if isinstance(node, ast.Name) and node.id == receiver:
-            uses_outer_receiver = True
+        if isinstance(node, ast.Name) and node.id in candidates:
+            referenced.add(node.id)
             return
         for child in ast.iter_child_nodes(node):
             scan(child)
@@ -2153,21 +2163,31 @@ def _outer_receiver_alias(
     for body in raw_bodies:
         for stmt in body:
             scan(stmt)
-    if not uses_outer_receiver:
-        return None
+    if not referenced:
+        return ()
     used_names = set(fn_locals)
     for body in raw_bodies:
         for stmt in body:
             for node in ast.walk(stmt):
                 if isinstance(node, ast.Name):
                     used_names.add(node.id)
-    for candidate in ("owner", "caller", "other"):
-        if candidate not in used_names:
-            return candidate
-    suffix = 1
-    while f"outer_{receiver}_{suffix}" in used_names:
-        suffix += 1
-    return f"outer_{receiver}_{suffix}"
+    aliases: list[OuterReceiverAlias] = []
+    for src in candidates:
+        if src not in referenced:
+            continue
+        chosen: str | None = None
+        for candidate in ("owner", "caller", "other"):
+            if candidate not in used_names:
+                chosen = candidate
+                break
+        if chosen is None:
+            suffix = 1
+            while f"outer_{src}_{suffix}" in used_names:
+                suffix += 1
+            chosen = f"outer_{src}_{suffix}"
+        used_names.add(chosen)
+        aliases.append(OuterReceiverAlias(source_name=src, param_name=chosen))
+    return tuple(aliases)
 
 
 def _rewrite_subject_to_receiver(
@@ -2175,9 +2195,10 @@ def _rewrite_subject_to_receiver(
     subject: ast.expr,
     receiver: str,
     alias: str | None = None,
-    outer_receiver_param: str | None = None,
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = (),
 ) -> tuple[ast.stmt, ...]:
     subject_dump = ast.dump(subject)
+    outer_map = {item.source_name: item.param_name for item in outer_receiver_aliases}
 
     class _Rewriter(ast.NodeTransformer):
         def visit(self, node: ast.AST) -> ast.AST:
@@ -2186,10 +2207,8 @@ def _rewrite_subject_to_receiver(
             match node:
                 case ast.Name(id=name, ctx=ast.Load()) if name == alias:
                     return ast.Name(id=receiver, ctx=ast.Load())
-                case ast.Name(id=name, ctx=ast.Load()) if (
-                    outer_receiver_param is not None and name == receiver
-                ):
-                    return ast.Name(id=outer_receiver_param, ctx=ast.Load())
+                case ast.Name(id=name, ctx=ast.Load()) if name in outer_map:
+                    return ast.Name(id=outer_map[name], ctx=ast.Load())
             return super().visit(node)
 
     rewriter = _Rewriter()
@@ -2200,13 +2219,16 @@ def _analyze_arm_bodies(
     function: FunctionNode,
     site: DispatchSite,
     rewritten_bodies: Sequence[tuple[ast.stmt, ...]],
-    outer_receiver_param: str | None = None,
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = (),
     enclosing_locals: frozenset[str] = frozenset(),
 ) -> tuple[tuple[CapturedArgument, ...], bool]:
     """Validate purity of rewritten bodies and return `(captured_args, is_async)`."""
 
     fn_locals = _function_local_names(function) | enclosing_locals
     receiver = site.kind.receiver
+    alias_to_source = {
+        item.param_name: item.source_name for item in outer_receiver_aliases
+    }
     captured: list[CapturedArgument] = []
     seen_captured: set[str] = set()
     uses_await = False
@@ -2240,13 +2262,16 @@ def _analyze_arm_bodies(
             for node in ast.walk(stmt):
                 match node:
                     case ast.Name(id=name, ctx=ast.Load()) if (
-                        outer_receiver_param is not None
-                        and name == outer_receiver_param
+                        name in alias_to_source
                         and name not in local_stores
                         and name not in seen_captured
                     ):
                         seen_captured.add(name)
-                        captured.append(CapturedArgument(call_expr=receiver, param_name=name))
+                        captured.append(
+                            CapturedArgument(
+                                call_expr=alias_to_source[name], param_name=name
+                            )
+                        )
                     case ast.Name(id=name, ctx=ast.Load()) if (
                         name != receiver
                         and name in fn_locals
@@ -2932,8 +2957,7 @@ class ResolvedMethodAnnotations:
         source_line: int,
         enclosure: FunctionEnclosure,
         function: FunctionNode,
-        receiver: str,
-        outer_receiver_param: str | None,
+        outer_receiver_aliases: tuple[OuterReceiverAlias, ...],
         captured_args: tuple[CapturedArgument, ...],
         destinations: Sequence[ResolvedClassTarget],
         *,
@@ -3030,15 +3054,19 @@ class ResolvedMethodAnnotations:
             return expr, needed_imports
 
         all_imports: dict[tuple[str, str], ModuleImportMutation] = {}
+        alias_by_param = {
+            item.param_name: item.source_name for item in outer_receiver_aliases
+        }
         resolved_params: list[tuple[str, ast.expr]] = []
         for arg in captured_args:
-            if outer_receiver_param is not None and arg.param_name == outer_receiver_param:
+            outer_source = alias_by_param.get(arg.param_name)
+            if outer_source is not None:
                 candidate = _parameter_annotation_in_scope(
-                    function, enclosing_chain, receiver
+                    function, enclosing_chain, outer_source
                 )
                 if candidate is None:
                     candidate = enclosure.enclosing_receiver_annotation(
-                        function, receiver
+                        function, outer_source
                     )
             else:
                 candidate = _parameter_annotation_in_scope(
@@ -3455,7 +3483,7 @@ class TypeTestDispatchProof:
     method_name: str
     docstring: str | None
     enclosure: FunctionEnclosure = ModuleEnclosure()
-    outer_receiver_param: str | None = None
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = ()
     base_reorders: tuple[BaseReorderPlan, ...] = ()
     precedence_overrides: tuple[PrecedenceOverridePlan, ...] = ()
 
@@ -3653,7 +3681,7 @@ class TypeTestDispatchProof:
             if folds_onto_base
             else (*(arm.body for arm in site.arms), site.default_body)
         )
-        outer_receiver_param = _outer_receiver_alias(
+        outer_receiver_aliases = _outer_receiver_aliases(
             function, site, raw_bodies, enclosing_locals=enclosing_locals
         )
         rewritten_arms: list[ResolvedTargetArm] = []
@@ -3663,7 +3691,7 @@ class TypeTestDispatchProof:
                 site.subject,
                 receiver,
                 alias=site.arms[0].alias,
-                outer_receiver_param=outer_receiver_param,
+                outer_receiver_aliases=outer_receiver_aliases,
             )
         else:
             for arm, arm_symbols in zip(site.arms, resolved_arm_symbols):
@@ -3686,7 +3714,7 @@ class TypeTestDispatchProof:
                             site.subject,
                             receiver,
                             alias=arm.alias,
-                            outer_receiver_param=outer_receiver_param,
+                            outer_receiver_aliases=outer_receiver_aliases,
                         ),
                         exact=arm.exact,
                     )
@@ -3695,14 +3723,14 @@ class TypeTestDispatchProof:
                 site.default_body,
                 site.subject,
                 receiver,
-                outer_receiver_param=outer_receiver_param,
+                outer_receiver_aliases=outer_receiver_aliases,
             )
 
         captured_args, is_async = _analyze_arm_bodies(
             function,
             site,
             (*(arm.body for arm in rewritten_arms), rewritten_default),
-            outer_receiver_param=outer_receiver_param,
+            outer_receiver_aliases=outer_receiver_aliases,
             enclosing_locals=enclosing_locals,
         )
 
@@ -3773,7 +3801,7 @@ class TypeTestDispatchProof:
             method_name=method_name,
             docstring=docstring.strip() if docstring else None,
             enclosure=enclosure,
-            outer_receiver_param=outer_receiver_param,
+            outer_receiver_aliases=outer_receiver_aliases,
             base_reorders=mro_plan.base_reorders,
             precedence_overrides=mro_plan.precedence_overrides,
         )
@@ -4349,8 +4377,7 @@ class TypeTestDispatchProof:
             self.test_line,
             self.enclosure,
             self.function,
-            self.site.kind.receiver,
-            self.outer_receiver_param,
+            self.outer_receiver_aliases,
             self.captured_args,
             all_destinations,
             propagates_function_return_type=self.site.propagates_function_return_type,

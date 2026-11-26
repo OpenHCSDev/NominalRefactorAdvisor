@@ -1878,6 +1878,54 @@ def test_resolves_mi_mixin_after_base_via_tier2_super_precedence_when_members_ov
     assert _findings(tmp_path) == []
 
 
+def test_aliases_and_annotates_outer_self_when_instance_method_pushes_classmethod(
+    tmp_path: Path,
+) -> None:
+    """When an instance method (`self: Attribution`) pushes a `@classmethod` (`cls`),
+    outer `self` is aliased to `owner: Attribution` instead of emitting a non-receiver
+    `self` parameter inside a `@classmethod`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/origin.py": (
+                "from __future__ import annotations\n\n\n"
+                "class ChangeKind:\n"
+                "    pass\n\n\n"
+                "class Attributed:\n"
+                "    pass\n\n\n"
+                "class DirectChange(ChangeKind, Attributed):\n"
+                "    pass\n\n\n"
+                "class Attribution:\n"
+                "    def __init__(self) -> None:\n"
+                "        self.items: list[str] = []\n\n"
+                "    def record(self, kind: type[ChangeKind], label: str) -> None:\n"
+                "        if issubclass(kind, Attributed):\n"
+                "            self.items.append(label)\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "origin.py").read_text()
+    assert "class DirectChange(Attributed, ChangeKind):" in after
+    assert "def record(cls, label: str, owner: Attribution) -> None:" in after
+    assert "owner.items.append(label)" in after
+    assert "kind.record(label, self)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    attr = ns["Attribution"]()  # type: ignore[operator]
+    attr.record(ns["ChangeKind"], "ignored")
+    attr.record(ns["DirectChange"], "kept")
+    assert attr.items == ["kept"]
+    assert _findings(tmp_path) == []
+
+
+
 
 
 
