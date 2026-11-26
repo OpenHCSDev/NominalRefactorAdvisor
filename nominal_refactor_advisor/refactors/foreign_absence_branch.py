@@ -67,6 +67,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     FunctionNode,
     InstanceDispatchKind,
     ModuleEnclosure,
+    OuterReceiverAlias,
     ResolvedMethodAnnotations,
     TypeTestDispatchProof,
     _always_terminates,
@@ -84,7 +85,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _is_pure_subject,
     _names_referenced_outside,
     _names_stored_in,
-    _outer_receiver_alias,
+    _outer_receiver_aliases,
     _render_indented_statements,
     _render_method,
     _rewrite_loop_continues_to_returns,
@@ -1169,8 +1170,7 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
             proof.test_line,
             proof.enclosure,
             proof.function,
-            "self",
-            proof.outer_receiver_param,
+            proof.outer_receiver_aliases,
             proof.captured_args,
             (proof.owner,),
             propagates_function_return_type=proof.site.propagates_function_return_type,
@@ -1257,7 +1257,7 @@ class ForeignAbsenceBranchProof:
     method_target: OwnerAbsenceMethodTarget
     matching_existing_methods: tuple[str, ...] = ()
     enclosure: FunctionEnclosure = ModuleEnclosure()
-    outer_receiver_param: str | None = None
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = ()
 
     @property
     def method_name(self) -> str:
@@ -1319,20 +1319,20 @@ class ForeignAbsenceBranchProof:
 
         adapter = site.as_dispatch_adapter()
         enclosing_locals = enclosure.enclosing_local_names()
-        outer_receiver_param = _outer_receiver_alias(
+        outer_receiver_aliases = _outer_receiver_aliases(
             function, adapter, (site.method_body,), enclosing_locals=enclosing_locals
         )
         rewritten_body = _rewrite_subject_to_receiver(
             site.method_body,
             site.subject,
             "self",
-            outer_receiver_param=outer_receiver_param,
+            outer_receiver_aliases=outer_receiver_aliases,
         )
         captured_args, is_async = _analyze_arm_bodies(
             function,
             adapter,
             (rewritten_body,),
-            outer_receiver_param=outer_receiver_param,
+            outer_receiver_aliases=outer_receiver_aliases,
             enclosing_locals=enclosing_locals,
         )
 
@@ -1400,7 +1400,7 @@ class ForeignAbsenceBranchProof:
             method_target=method_target,
             matching_existing_methods=matching_existing,
             enclosure=enclosure,
-            outer_receiver_param=outer_receiver_param,
+            outer_receiver_aliases=outer_receiver_aliases,
         )
 
     def rationale(self) -> str:

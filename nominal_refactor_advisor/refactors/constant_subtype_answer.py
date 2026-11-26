@@ -75,6 +75,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     FunctionNode,
     InstanceDispatchKind,
     OrElseGuardedStatementDispatchSite,
+    OuterReceiverAlias,
     PrefixGuardedOrDispatchSite,
     PrefixGuardedStatementDispatchSite,
     ResolvedMethodAnnotations,
@@ -94,7 +95,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _has_non_continue_loop_escape,
     _has_value_return,
     _is_pure_subject,
-    _outer_receiver_alias,
+    _outer_receiver_aliases,
     _render_method,
     _rewrite_loop_continues_to_returns,
     _rewrite_subject_to_receiver,
@@ -1651,7 +1652,7 @@ class ConstantAnswerPushProof:
     is_async: bool
     method_name: str
     docstring: str | None
-    outer_receiver_param: str | None = None
+    outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = ()
 
     @classmethod
     def proved(
@@ -1798,7 +1799,7 @@ class ConstantAnswerPushProof:
             )
 
         # Rewrite bodies cleanly for either in-place or pushed family method.
-        outer_receiver_param: str | None = None
+        outer_receiver_aliases: tuple[OuterReceiverAlias, ...] = ()
         if in_place:
             all_raw = (raw_body_for(base_value), *(raw_body_for(v) for _, v in override_symbols))
             if any(_contains_super_call(body) for body in all_raw):
@@ -1834,14 +1835,14 @@ class ConstantAnswerPushProof:
                 *(raw_body_for(val) for _, val in override_symbols),
             )
             enclosing_locals = enclosure.enclosing_local_names()
-            outer_receiver_param = _outer_receiver_alias(
+            outer_receiver_aliases = _outer_receiver_aliases(
                 function, site, raw_bodies, enclosing_locals=enclosing_locals
             )
             base_body = _rewrite_subject_to_receiver(
                 raw_body_for(base_value),
                 site.subject,
                 receiver,
-                outer_receiver_param=outer_receiver_param,
+                outer_receiver_aliases=outer_receiver_aliases,
             )
             overrides = tuple(
                 (
@@ -1856,7 +1857,7 @@ class ConstantAnswerPushProof:
                         raw_body_for(val),
                         site.subject,
                         receiver,
-                        outer_receiver_param=outer_receiver_param,
+                        outer_receiver_aliases=outer_receiver_aliases,
                     ),
                 )
                 for sym, val in override_symbols
@@ -1865,7 +1866,7 @@ class ConstantAnswerPushProof:
                 function,
                 site,
                 (base_body, *(body for _, body in overrides)),
-                outer_receiver_param=outer_receiver_param,
+                outer_receiver_aliases=outer_receiver_aliases,
                 enclosing_locals=enclosing_locals,
             )
             local_exclusions = frozenset(
@@ -1909,7 +1910,7 @@ class ConstantAnswerPushProof:
             is_async=is_async,
             method_name=method_name,
             docstring=docstring.strip() if docstring else None,
-            outer_receiver_param=outer_receiver_param,
+            outer_receiver_aliases=outer_receiver_aliases,
         )
 
     def consumed_attribute_ids(self) -> frozenset[int]:
@@ -1953,8 +1954,7 @@ class ConstantAnswerPushProof:
             self.test_line,
             self.enclosure,
             self.function,
-            site.kind.receiver,
-            self.outer_receiver_param,
+            self.outer_receiver_aliases,
             self.captured_args,
             all_destinations,
             propagates_function_return_type=site.propagates_function_return_type,
