@@ -1125,3 +1125,65 @@ def test_routes_match_guard_match_pattern_end_lineno_and_end_col_offset_decoders
         ]:
             sys.modules.pop(mod_name, None)
 
+
+def test_composes_two_optional_ast_field_decoders_on_same_line(
+    tmp_path: Path,
+) -> None:
+    """Two decoders targeting disjoint spans on one line must coalesce cleanly
+    through SourceTextMutation instead of colliding on whole-line physical edits."""
+
+    package = tmp_path / "pkg_same_line"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    mod_path = package / "mod.py"
+    mod_path.write_text(
+        "from __future__ import annotations\n"
+        "import ast\n\n\n"
+        "def default_case_body(node: ast.Match) -> list[ast.stmt] | None:\n"
+        "    default: list[ast.stmt] | None = None\n"
+        "    for case in node.cases:\n"
+        "        if isinstance(case.pattern, ast.MatchValue):\n"
+        "            continue\n"
+        "        elif isinstance(case.pattern, ast.MatchAs) and case.pattern.pattern is None and case.guard is None:\n"
+        "            default = case.body\n"
+        "    return default\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+        and Path(finding.primary_evidence.file_path) == mod_path
+    ]
+    assert len(findings) == 2
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert len(plan.document.recipes) >= 1, [
+        (r.finding.primary_evidence.line, r.status, r.reason) for r in plan.records
+    ]
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "is None" not in after
+    assert "match_patterns(" in after
+    assert "match_guards(" in after
+
+    ns: dict[str, object] = {}
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(after, str(mod_path), "exec"), ns)
+        m_default = ast.parse("match x:\n    case 1:\n        pass\n    case _:\n        y = 1\n").body[0]
+        m_guarded = ast.parse("match x:\n    case _ if flag:\n        y = 1\n").body[0]
+        m_bound = ast.parse("match x:\n    case 1 as a:\n        y = 1\n").body[0]
+        assert ns["default_case_body"](m_default) is not None  # type: ignore[operator]
+        assert ns["default_case_body"](m_guarded) is None  # type: ignore[operator]
+        assert ns["default_case_body"](m_bound) is None  # type: ignore[operator]
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [
+            m for m in sys.modules if m == "pkg_same_line" or m.startswith("pkg_same_line.")
+        ]:
+            sys.modules.pop(mod_name, None)
+
+
