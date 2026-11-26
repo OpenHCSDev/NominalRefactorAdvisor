@@ -15,7 +15,6 @@ from enum import StrEnum
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
-from nominal_refactor_advisor.class_composition import CompositeClassSpec
 from nominal_refactor_advisor.constructor_algebra import (
     ConstructorDerivedField,
     ConstructorVariantCatalog,
@@ -197,16 +196,18 @@ class LineSymbolObservationMixin(
     file_path: str
 
 
-FunctionBodyLineSymbolObservationMixin = CompositeClassSpec(
-    "FunctionBodyLineSymbolObservationMixin",
-    (FunctionBodyExecutionMixin, LineSymbolObservationMixin, ABC),
-).build(__name__)
+class FunctionBodyLineSymbolObservationMixin(
+    FunctionBodyExecutionMixin,
+    LineSymbolObservationMixin,
+):
+    pass
 
 
-ModuleBodyLineSymbolObservationMixin = CompositeClassSpec(
-    "ModuleBodyLineSymbolObservationMixin",
-    (ModuleBodyExecutionMixin, LineSymbolObservationMixin, ABC),
-).build(__name__)
+class ModuleBodyLineSymbolObservationMixin(
+    ModuleBodyExecutionMixin,
+    LineSymbolObservationMixin,
+):
+    pass
 
 
 class FunctionBodyLinenoSymbolObservationMixin(
