@@ -52,6 +52,7 @@ from nominal_refactor_advisor.annotation_semantics import (
 from nominal_refactor_advisor.ast_field_decoders import (
     TYPE_PARAMETERS,
     declared_annotations,
+    end_line_numbers,
     optional_values,
     variadic_parameters,
 )
@@ -5387,26 +5388,27 @@ def _class_body_digests_for_node(
     ),
 ) -> tuple[ClassBodyDeclarationDigest, ...]:
     del scope_keys
-    if cache is not None and node.end_lineno is not None:
-        class_src = "".join(source_lines[node.lineno - 1 : node.end_lineno])
-        names = tuple(sorted(set(_CLASS_BODY_IDENT_RE.findall(class_src))))
-        scope_key = scope.digest_scope_key(names)
-        key = (scope.module_name, class_src, scope_key)
-        cached = cache.get(key)
-        if cached is not None:
-            cached_lineno, cached_digests = cached
-            delta = node.lineno - cached_lineno
-            if delta == 0:
-                return cached_digests
-            return tuple(
-                digest._replace(line=digest.line + delta) for digest in cached_digests
+    if cache is not None:
+        for end_line in end_line_numbers(node):
+            class_src = "".join(source_lines[node.lineno - 1 : end_line])
+            names = tuple(sorted(set(_CLASS_BODY_IDENT_RE.findall(class_src))))
+            scope_key = scope.digest_scope_key(names)
+            key = (scope.module_name, class_src, scope_key)
+            cached = cache.get(key)
+            if cached is not None:
+                cached_lineno, cached_digests = cached
+                delta = node.lineno - cached_lineno
+                if delta == 0:
+                    return cached_digests
+                return tuple(
+                    digest._replace(line=digest.line + delta) for digest in cached_digests
+                )
+            digests = tuple(
+                declaration.compact()
+                for declaration in ClassBodyNormalForm.of_class(node, scope)
             )
-        digests = tuple(
-            declaration.compact()
-            for declaration in ClassBodyNormalForm.of_class(node, scope)
-        )
-        cache[key] = (node.lineno, digests)
-        return digests
+            cache[key] = (node.lineno, digests)
+            return digests
     return tuple(
         declaration.compact()
         for declaration in ClassBodyNormalForm.of_class(node, scope)

@@ -23,7 +23,11 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import ClassVar, TypeVar
 
-from nominal_refactor_advisor.ast_field_decoders import ParameterAnnotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    ParameterAnnotations,
+    kwarg_parameters,
+    vararg_parameters,
+)
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias,
@@ -1205,10 +1209,10 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
         expected_arguments = [
             ast.Name(id=argument.arg, ctx=ast.Load()) for argument in own
         ]
-        if signature.vararg is not None:
+        for vararg_parameter in vararg_parameters(signature):
             expected_arguments.append(
                 ast.Starred(
-                    value=ast.Name(id=signature.vararg.arg, ctx=ast.Load()),
+                    value=ast.Name(id=vararg_parameter.arg, ctx=ast.Load()),
                     ctx=ast.Load(),
                 )
             )
@@ -1218,10 +1222,10 @@ class ForwardingFacadeSiteFamily(RestatingSiteFamily[RestatingSiteModule]):
             )
             for argument in signature.kwonlyargs
         ]
-        if signature.kwarg is not None:
+        for kwarg_parameter in kwarg_parameters(signature):
             expected_keywords.append(
                 ast.keyword(
-                    arg=None, value=ast.Name(id=signature.kwarg.arg, ctx=ast.Load())
+                    arg=None, value=ast.Name(id=kwarg_parameter.arg, ctx=ast.Load())
                 )
             )
         return [ast.dump(item) for item in arguments] == [

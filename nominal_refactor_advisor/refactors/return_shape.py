@@ -13,7 +13,10 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    declared_annotations,
+    optional_values,
+)
 from nominal_refactor_advisor.codemod_payload import (
     RequiredStringPayloadValueCodec,
     codemod_payload_field,
@@ -159,16 +162,15 @@ class FlattenTupleReturnOperation(RepositorySourceReprovedOperation):
             classified = _classify_returns(method)
             for ret, kind in classified:
                 geo = geometry(resolved_class.file_path)
-                if ret.value is None:
-                    continue
-                start, end = geo.required_node_offsets(ret.value)
-                if kind == "empty":
-                    add(resolved_class.file_path, start, end, "None")
-                elif kind == "value":
-                    assert isinstance(ret.value, ast.Tuple) and len(ret.value.elts) == 1
-                    inner = ret.value.elts[0]
-                    inner_src = ast.unparse(inner)
-                    add(resolved_class.file_path, start, end, inner_src)
+                for optional_value in optional_values(ret):
+                    start, end = geo.required_node_offsets(optional_value)
+                    if kind == "empty":
+                        add(resolved_class.file_path, start, end, "None")
+                    elif kind == "value":
+                        assert isinstance(optional_value, ast.Tuple) and len(optional_value.elts) == 1
+                        inner = optional_value.elts[0]
+                        inner_src = ast.unparse(inner)
+                        add(resolved_class.file_path, start, end, inner_src)
 
             for declared_annotation in declared_annotations(method):
                 geo = geometry(resolved_class.file_path)

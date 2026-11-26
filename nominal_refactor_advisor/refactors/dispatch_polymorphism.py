@@ -21,6 +21,7 @@ from typing import (
 
 from metaclass_registry import AutoRegisterMeta
 
+from nominal_refactor_advisor.ast_field_decoders import match_guards
 from nominal_refactor_advisor.ast_tools import (
     statements_without_docstring,
     walk_function_body_nodes,
@@ -347,7 +348,7 @@ class DispatchPolymorphismFunction:
         arms: list[DispatchPolymorphismArm] = []
         fallback: tuple[ast.stmt, ...] = body[1:]
         for index, match_case in enumerate(match_node.cases):
-            if match_case.guard is not None:
+            if match_guards(match_case):
                 return None
             if self.is_default_match_pattern(match_case.pattern):
                 if index != len(match_node.cases) - 1 or fallback:

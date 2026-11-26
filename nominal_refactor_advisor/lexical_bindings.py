@@ -28,6 +28,8 @@ from nominal_refactor_advisor.ast_field_decoders import (
     capture_names,
     declared_annotations,
     import_modules,
+    kwarg_parameters,
+    vararg_parameters,
 )
 from nominal_refactor_advisor.python_module_identity import PythonModulePathIdentity
 
@@ -85,16 +87,16 @@ class FunctionArgumentSource:
             cls(argument, CompactParameterKind.POSITIONAL_OR_KEYWORD)
             for argument in arguments.args
         )
-        if arguments.vararg is not None:
+        for vararg_parameter in vararg_parameters(arguments):
             parameters.append(
-                cls(arguments.vararg, CompactParameterKind.VAR_POSITIONAL)
+                cls(vararg_parameter, CompactParameterKind.VAR_POSITIONAL)
             )
         parameters.extend(
             cls(argument, CompactParameterKind.KEYWORD_ONLY)
             for argument in arguments.kwonlyargs
         )
-        if arguments.kwarg is not None:
-            parameters.append(cls(arguments.kwarg, CompactParameterKind.VAR_KEYWORD))
+        for kwarg_parameter in kwarg_parameters(arguments):
+            parameters.append(cls(kwarg_parameter, CompactParameterKind.VAR_KEYWORD))
         return tuple(parameters)
 
     @staticmethod
