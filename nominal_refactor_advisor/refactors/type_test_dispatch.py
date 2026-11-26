@@ -14,6 +14,7 @@ a method name and one-line docstring via `--codemod-owner-picks` (`OWNER_PICK`).
 from __future__ import annotations
 
 import ast
+import builtins
 import copy
 import keyword as keyword_module
 import re
@@ -1592,6 +1593,28 @@ def _nearest_shared_ancestor(
     return max(scanned, key=lambda sym: (len(index.ancestor_symbols(sym)), sym))
 
 
+def _body_bound_names(body: Sequence[ast.stmt]) -> frozenset[str]:
+    """Every lexical name bound inside `body` (stores, comprehensions, lambdas, defs, handlers, aliases)."""
+
+    bound: set[str] = set()
+    for stmt in body:
+        for node in ast.walk(stmt):
+            match node:
+                case ast.Name(id=name, ctx=ast.Store()):
+                    bound.add(name)
+                case ast.arg(arg=name):
+                    bound.add(name)
+                case ast.ExceptHandler(name=str() as name):
+                    bound.add(name)
+                case ast.MatchAs(name=str() as name) | ast.MatchStar(name=str() as name):
+                    bound.add(name)
+                case ast.FunctionDef(name=name) | ast.AsyncFunctionDef(name=name) | ast.ClassDef(name=name):
+                    bound.add(name)
+                case ast.alias(name=raw_name, asname=asname):
+                    bound.add(asname or raw_name.split(".", 1)[0])
+    return frozenset(bound)
+
+
 def _cross_module_imports_for_body(
     snapshot: CodemodSourceSnapshot,
     source_module: ParsedModule,
@@ -1607,6 +1630,7 @@ def _cross_module_imports_for_body(
         return ()
     bindings = snapshot.module_binding_proof
     dest_module = snapshot.parsed_module_for_source_path(destination.file_path)
+    excluded = local_exclusions | _body_bound_names(body)
     imports: list[ModuleImportMutation] = []
     names = sorted(
         {
@@ -1615,7 +1639,7 @@ def _cross_module_imports_for_body(
             for node in ast.walk(stmt)
             if isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
-            and node.id not in local_exclusions
+            and node.id not in excluded
         }
     )
     for name in names:
@@ -1624,7 +1648,13 @@ def _cross_module_imports_for_body(
             source_module, reference, line=source_line
         )
         if expected is None:
-            continue
+            if name in builtins.__dict__:
+                continue
+            raise NeedsInput(
+                f"free name `{name}` in {source_module.file_path} has no proved "
+                f"cross-module import for {destination.file_path}",
+                NeededInput.SOURCE_CHANGE,
+            )
         actual = bindings.reference_or_builtin_witness_at(
             dest_module, reference, line=destination.node.lineno
         )
