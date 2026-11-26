@@ -1025,3 +1025,359 @@ def test_hoisting_multi_arg_return_call_with_fixed_keyword_and_rejecting_varying
     assert bad_eval.recipe is None
     assert "not independent leading or trailing statements" in bad_eval.rejection_reason
 
+
+def test_hoisting_concrete_base_with_shared_prefix_and_non_overriding_descendant(
+    tmp_path: Path,
+):
+    """When a concrete base method shares the same leading step as its overriding
+    siblings, hoisting preserves the base's own remaining middle as a concrete
+    default hook so direct callers and non-overriding descendants keep identical
+    behavior."""
+
+    source = (
+        "class Gate:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.events: list[str] = []\n"
+        "        self.last_kind: str = ''\n\n"
+        "    def template_once(self, tag: str) -> str:\n"
+        "        self.events.append(f'tpl:{tag}')\n"
+        "        return f'[{tag}]'\n\n"
+        "    def blocked(self, tag: str) -> str:\n"
+        "        tpl = self.template_once(tag)\n"
+        "        self.last_kind = 'base'\n"
+        "        return f'base:{tpl}'\n\n\n"
+        "class InheritingGate(Gate):\n"
+        "    pass\n\n\n"
+        "class FastGate(Gate):\n"
+        "    def blocked(self, tag: str) -> str:\n"
+        "        tpl = self.template_once(tag)\n"
+        "        self.last_kind = 'fast'\n"
+        "        return f'fast:{tpl}'\n\n\n"
+        "class AuditedGate(Gate):\n"
+        "    def blocked(self, tag: str) -> str:\n"
+        "        tpl = self.template_once(tag)\n"
+        "        self.last_kind = 'audited'\n"
+        "        return f'audited:{tpl}'\n\n\n"
+        "def run_direct(tag: str) -> str:\n"
+        "    return Gate().blocked(tag)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/gates.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/gates.py")]
+    assert "return self._blocked_step(tag, tpl)" in rewritten
+    assert "def _blocked_step(self, tag: str, tpl) -> str:" in rewritten
+
+    ns: dict[str, object] = {}
+    exec(compile(rewritten, "gates.py", "exec"), ns)
+    assert ns["run_direct"]("x") == "base:[x]"  # type: ignore[operator]
+    inh = ns["InheritingGate"]()  # type: ignore[operator]
+    assert inh.blocked("a") == "base:[a]"
+    assert inh.events == ["tpl:a"]
+    assert inh.last_kind == "base"
+    fast = ns["FastGate"]()  # type: ignore[operator]
+    assert fast.blocked("b") == "fast:[b]"
+    assert fast.events == ["tpl:b"]
+    assert fast.last_kind == "fast"
+    aud = ns["AuditedGate"]()  # type: ignore[operator]
+    assert aud.blocked("c") == "audited:[c]"
+    assert aud.events == ["tpl:c"]
+    assert aud.last_kind == "audited"
+
+    (tmp_path / "pkg/gates.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_concrete_base_default_hook_for_guarded_templates(tmp_path: Path):
+    """Concrete base methods matching `TrailingGuardedStepTemplate` (either the
+    guarded step -> `return True`, or no-op -> `return False`) or
+    `GuardedEarlyReturnSuffixTemplate` (`early_return_body` -> `return True`)
+    hoist cleanly even with direct base callers and non-overriding descendants."""
+
+    source = (
+        "class Resolution:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.released = 0\n\n"
+        "    def require_release(self) -> None:\n"
+        "        self.released += 1\n\n"
+        "    def require_release_in(self, retained: bool) -> None:\n"
+        "        self.require_release()\n\n\n"
+        "class PlainResolution(Resolution):\n"
+        "    pass\n\n\n"
+        "class NativeResolution(Resolution):\n"
+        "    def require_release_in(self, retained: bool) -> None:\n"
+        "        if not retained:\n"
+        "            self.require_release()\n\n\n"
+        "class DictResolution(Resolution):\n"
+        "    def require_release_in(self, retained: bool) -> None:\n"
+        "        if retained:\n"
+        "            self.require_release()\n\n\n"
+        "class Attachment:\n"
+        "    def root_source(self, msg: str) -> str:\n"
+        "        return f'root:{msg}'\n\n"
+        "    def current_roots(self, msg: str, allow: bool) -> str | None:\n"
+        "        return None\n\n\n"
+        "class PlainAttachment(Attachment):\n"
+        "    pass\n\n\n"
+        "class Supersession(Attachment):\n"
+        "    def current_roots(self, msg: str, allow: bool) -> str | None:\n"
+        "        if not allow:\n"
+        "            return None\n"
+        "        return self.root_source(msg)\n\n\n"
+        "class Scoped(Attachment):\n"
+        "    def current_roots(self, msg: str, allow: bool) -> str | None:\n"
+        "        if not msg:\n"
+        "            return None\n"
+        "        return self.root_source(msg)\n\n\n"
+        "def direct_attachment(msg: str) -> str | None:\n"
+        "    return Attachment().current_roots(msg, True)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/concrete.py": source})
+    for _ in range(2):
+        findings = _findings(tmp_path)
+        assert findings
+        snap = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(
+                tmp_path,
+                use_parse_cache=False,
+                source_policy=PythonSourcePathPolicy(include_tests=False),
+            )
+        )
+        ev = SiblingOverrideStepDetector().evaluate_recipe_for_finding(findings[0], snap)
+        sim = ev.executable_recipe.simulate(snap)
+        assert sim.is_clean, sim.preflight_report
+        sim.apply()
+
+    rewritten = (tmp_path / "pkg/concrete.py").read_text()
+    assert "return True" in rewritten
+    assert "if self._require_release_in_step(retained):" in rewritten
+    assert "if self._current_roots_step(msg, allow):" in rewritten
+
+    ns: dict[str, object] = {}
+    exec(compile(rewritten, "concrete.py", "exec"), ns)
+    plain_res = ns["PlainResolution"]()  # type: ignore[operator]
+    plain_res.require_release_in(True)
+    assert plain_res.released == 1
+    nat = ns["NativeResolution"]()  # type: ignore[operator]
+    nat.require_release_in(True)
+    assert nat.released == 0
+    nat.require_release_in(False)
+    assert nat.released == 1
+
+    assert ns["direct_attachment"]("hi") is None  # type: ignore[operator]
+    assert ns["PlainAttachment"]().current_roots("hi", True) is None  # type: ignore[operator]
+    assert ns["Supersession"]().current_roots("hi", False) is None  # type: ignore[operator]
+    assert ns["Supersession"]().current_roots("hi", True) == "root:hi"  # type: ignore[operator]
+    assert ns["Scoped"]().current_roots("", True) is None  # type: ignore[operator]
+    assert ns["Scoped"]().current_roots("x", False) == "root:x"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_shared_if_guard_template_with_walrus_and_shared_for_loop_template(
+    tmp_path: Path,
+):
+    """`if (found := cls.found(text)): <body_i>` and `for item in cls.items(src): <body_i>`
+    (with outer-loop `continue` rewritten to `return`, preserving nested-loop `continue`)
+    hoist cleanly onto their ancestor."""
+
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Words(ABC):\n"
+        "    @classmethod\n"
+        "    def found(cls, text: str) -> list[str]:\n"
+        "        return [w for w in text.split() if w.isupper()]\n\n"
+        "    @classmethod\n"
+        "    @abstractmethod\n"
+        "    def flag(cls, text: str, out: list[str]) -> None:\n"
+        "        ...\n\n\n"
+        "class PlainWords(Words):\n"
+        "    @classmethod\n"
+        "    def flag(cls, text: str, out: list[str]) -> None:\n"
+        "        if (hits := cls.found(text)):\n"
+        "            out.append('plain:' + ','.join(hits))\n\n\n"
+        "class OrderWords(Words):\n"
+        "    @classmethod\n"
+        "    def flag(cls, text: str, out: list[str]) -> None:\n"
+        "        if (hits := cls.found(text)):\n"
+        "            out.append('order:' + ','.join(hits))\n\n\n"
+        "class Store(ABC):\n"
+        "    @classmethod\n"
+        "    def resources(cls, items: list[str]) -> list[str]:\n"
+        "        return [item for item in items if item]\n\n"
+        "    @classmethod\n"
+        "    @abstractmethod\n"
+        "    def process(cls, items: list[str], out: list[str]) -> None:\n"
+        "        ...\n\n\n"
+        "class SkippingStore(Store):\n"
+        "    @classmethod\n"
+        "    def process(cls, items: list[str], out: list[str]) -> None:\n"
+        "        for res in cls.resources(items):\n"
+        "            if res.startswith('skip:'):\n"
+        "                continue\n"
+        "            for ch in res:\n"
+        "                if ch == '-':\n"
+        "                    continue\n"
+        "                out.append(ch)\n\n\n"
+        "class DirectStore(Store):\n"
+        "    @classmethod\n"
+        "    def process(cls, items: list[str], out: list[str]) -> None:\n"
+        "        for res in cls.resources(items):\n"
+        "            out.append(res.upper())\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/guards.py": source})
+    for _ in range(2):
+        findings = _findings(tmp_path)
+        assert findings
+        snap = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(
+                tmp_path,
+                use_parse_cache=False,
+                source_policy=PythonSourcePathPolicy(include_tests=False),
+            )
+        )
+        ev = SiblingOverrideStepDetector().evaluate_recipe_for_finding(findings[0], snap)
+        sim = ev.executable_recipe.simulate(snap)
+        assert sim.is_clean, sim.preflight_report
+        sim.apply()
+
+    rewritten = (tmp_path / "pkg/guards.py").read_text()
+    assert "if (hits := cls.found(text)):" in rewritten
+    assert "cls._flag_step(text, out, hits)" in rewritten
+    assert "for res in cls.resources(items):" in rewritten
+    assert "cls._process_step(items, out, res)" in rewritten
+
+    ns: dict[str, object] = {}
+    exec(compile(rewritten, "guards.py", "exec"), ns)
+    w_out: list[str] = []
+    ns["PlainWords"].flag("hello world", w_out)  # type: ignore[attr-defined]
+    ns["PlainWords"].flag("hello BIG WORLD", w_out)  # type: ignore[attr-defined]
+    ns["OrderWords"].flag("hi NOW", w_out)  # type: ignore[attr-defined]
+    assert w_out == ["plain:BIG,WORLD", "order:NOW"]
+
+    s_out: list[str] = []
+    ns["SkippingStore"].process(["", "skip:x", "a-b"], s_out)  # type: ignore[attr-defined]
+    ns["DirectStore"].process(["", "ok"], s_out)  # type: ignore[attr-defined]
+    assert s_out == ["a", "b", "OK"]
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_step_expr_past_pure_prep_and_pure_builtins_rejects_impure_prep(
+    tmp_path: Path,
+):
+    """Unconditional step calls following pure local prep assignments or pure builtin
+    calls (`str(...)`) hoist cleanly with single evaluation; impure prep calls before
+    the step remain refused."""
+
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Route(ABC):\n"
+        "    def __init__(self) -> None:\n"
+        "        self.calls = 0\n\n"
+        "    def target(self, col: str) -> str:\n"
+        "        self.calls += 1\n"
+        "        return f't.{col}'\n\n"
+        "    @abstractmethod\n"
+        "    def sql(self, col: str, names: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:\n"
+        "        ...\n\n\n"
+        "class MultiRoute(Route):\n"
+        "    def sql(self, col: str, names: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:\n"
+        "        marks = ','.join(('?' for _ in names))\n"
+        "        return (f'{self.target(col)} IN ({marks})', names)\n\n\n"
+        "class SingleRoute(Route):\n"
+        "    def sql(self, col: str, names: tuple[str, ...]) -> tuple[str, tuple[str, ...]]:\n"
+        "        return (f'{self.target(col)}=?', names)\n\n\n"
+        "class Rule(ABC):\n"
+        "    def __init__(self, num: int) -> None:\n"
+        "        self.num = num\n"
+        "        self.wire_calls = 0\n\n"
+        "    def to_wire(self) -> str:\n"
+        "        self.wire_calls += 1\n"
+        "        return f'w:{self.num}'\n\n"
+        "    @abstractmethod\n"
+        "    def values(self) -> dict[str, str]:\n"
+        "        ...\n\n\n"
+        "class FirstRule(Rule):\n"
+        "    def values(self) -> dict[str, str]:\n"
+        "        return {'num': str(self.num), 'wire': self.to_wire()}\n\n\n"
+        "class SecondRule(Rule):\n"
+        "    def values(self) -> dict[str, str]:\n"
+        "        return {'wire': self.to_wire(), 'num': str(self.num)}\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/hoist_pure.py": source})
+    for _ in range(2):
+        findings = _findings(tmp_path)
+        assert findings
+        snap = CodemodSourceSnapshot.from_modules(
+            parse_python_modules(
+                tmp_path,
+                use_parse_cache=False,
+                source_policy=PythonSourcePathPolicy(include_tests=False),
+            )
+        )
+        ev = SiblingOverrideStepDetector().evaluate_recipe_for_finding(findings[0], snap)
+        sim = ev.executable_recipe.simulate(snap)
+        assert sim.is_clean, sim.preflight_report
+        sim.apply()
+
+    rewritten = (tmp_path / "pkg/hoist_pure.py").read_text()
+    assert "target = self.target(col)" in rewritten
+    assert "to_wire = self.to_wire()" in rewritten
+
+    ns: dict[str, object] = {}
+    exec(compile(rewritten, "hoist_pure.py", "exec"), ns)
+    mr = ns["MultiRoute"]()  # type: ignore[operator]
+    assert mr.sql("id", ("a", "b")) == ("t.id IN (?,?)", ("a", "b"))
+    assert mr.calls == 1
+    sr = ns["SingleRoute"]()  # type: ignore[operator]
+    assert sr.sql("id", ("a",)) == ("t.id=?", ("a",))
+    assert sr.calls == 1
+    r1 = ns["FirstRule"](7)  # type: ignore[operator]
+    assert r1.values() == {"num": "7", "wire": "w:7"}
+    assert r1.wire_calls == 1
+    r2 = ns["SecondRule"](8)  # type: ignore[operator]
+    assert r2.values() == {"wire": "w:8", "num": "8"}
+    assert r2.wire_calls == 1
+    assert _findings(tmp_path) == []
+
+    # Impure prep call before the shared step must stay refused.
+    impure_dir = tmp_path / "impure"
+    _write(
+        impure_dir,
+        {
+            "pkg/__init__.py": "",
+            "pkg/impure.py": (
+                "from abc import ABC, abstractmethod\n\n\n"
+                "def side_effect() -> str:\n"
+                "    return 'x'\n\n\n"
+                "class Base(ABC):\n"
+                "    def step(self) -> str:\n"
+                "        return 's'\n\n"
+                "    @abstractmethod\n"
+                "    def run(self) -> str:\n"
+                "        ...\n\n\n"
+                "class SubA(Base):\n"
+                "    def run(self) -> str:\n"
+                "        val = side_effect()\n"
+                "        return val + self.step()\n\n\n"
+                "class SubB(Base):\n"
+                "    def run(self) -> str:\n"
+                "        return self.step() + '!'\n"
+            ),
+        },
+    )
+    (impure_finding,) = _findings(impure_dir)
+    impure_snap = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(
+            impure_dir,
+            use_parse_cache=False,
+            source_policy=PythonSourcePathPolicy(include_tests=False),
+        )
+    )
+    impure_eval = SiblingOverrideStepDetector().evaluate_recipe_for_finding(
+        impure_finding, impure_snap
+    )
+    assert impure_eval.recipe is None
+    assert "not independent leading or trailing statements" in impure_eval.rejection_reason
+
+
