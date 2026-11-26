@@ -835,3 +835,140 @@ def test_decodes_mypy_intersection_type_for_pushed_dispatch(tmp_path: Path):
         "single",
         "multi",
     ]
+
+
+def test_pushes_multiple_inheritance_mixin_dispatch_and_rejects_bad_c3_or_collision(
+    tmp_path: Path,
+):
+    """Pushes `isinstance`/`issubclass` against a composed mixin onto `(Base, Mixin)` when
+    C3 MRO puts `Mixin` ahead of `Base`, and refuses reversed C3 order or mixin hierarchy collisions."""
+
+    good = tmp_path / "good"
+    _write(
+        good,
+        {
+            "pkg/__init__.py": "",
+            "pkg/cli.py": (
+                "class Command:\n"
+                "    pass\n\n\n"
+                "class ApplyMixin:\n"
+                "    pass\n\n\n"
+                "class ApplyCommand(ApplyMixin, Command):\n"
+                "    pass\n\n\n"
+                "class Unrelated(ApplyMixin):\n"
+                "    def colliding(self) -> bool:\n"
+                "        return False\n\n\n"
+                "def accepts(cmd_type: type[Command]) -> bool:\n"
+                "    return issubclass(cmd_type, ApplyMixin)\n\n\n"
+                "def colliding(cmd_type: type[Command]) -> bool:\n"
+                "    return issubclass(cmd_type, ApplyMixin)\n"
+            ),
+        },
+    )
+    findings = _findings(good)
+    by_sym = {f.evidence[0].symbol: f for f in findings}
+    assert set(by_sym) == {"accepts", "colliding"}
+
+    # Unrelated subclass of ApplyMixin already declares `colliding`: must be refused.
+    colliding_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_sym["colliding"], _snapshot(good)
+    )
+    assert colliding_eval.recipe is None
+    assert "along mixin `ApplyMixin`'s hierarchy" in colliding_eval.rejection_reason
+
+    # `accepts` pushes cleanly onto Command (default False) and ApplyMixin (override True).
+    accepts_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        by_sym["accepts"], _snapshot(good)
+    )
+    _apply(good, accepts_eval.executable_recipe)
+    after = (good / "pkg" / "cli.py").read_text()
+    assert "return cmd_type.accepts()" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["accepts"](ns["Command"]) is False  # type: ignore[operator]
+    assert ns["accepts"](ns["ApplyCommand"]) is True  # type: ignore[operator]
+
+    # Reversed C3 order `class BadOrder(Command, ApplyMixin):` puts Command ahead of ApplyMixin -> refused.
+    bad = tmp_path / "bad"
+    _write(
+        bad,
+        {
+            "pkg/__init__.py": "",
+            "pkg/cli.py": (
+                "class Command:\n"
+                "    pass\n\n\n"
+                "class ApplyMixin:\n"
+                "    pass\n\n\n"
+                "class BadOrder(Command, ApplyMixin):\n"
+                "    pass\n\n\n"
+                "def accepts(cmd_type: type[Command]) -> bool:\n"
+                "    return issubclass(cmd_type, ApplyMixin)\n"
+            ),
+        },
+    )
+    (bad_finding,) = _findings(bad)
+    bad_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        bad_finding, _snapshot(bad)
+    )
+    assert bad_eval.recipe is None
+    assert "disagrees with the original type-test branch order" in bad_eval.rejection_reason
+
+
+def test_pushes_prefix_guarded_or_not_isinstance_preserving_short_circuit(tmp_path: Path):
+    """`if PREFIX or not isinstance(x, Sub): return fallback; ...` preserves PREFIX
+    short-circuiting and pushes the `isinstance` dispatch onto `(Base, Sub)`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/metrics.py": (
+                "class Base:\n"
+                "    pass\n\n\n"
+                "class Sub(Base):\n"
+                "    def __init__(self, label: str) -> None:\n"
+                "        self.label = label\n\n\n"
+                "def evaluate(ctx: object | None, item: Base) -> str:\n"
+                "    if ctx is None or not isinstance(item, Sub):\n"
+                "        return 'skip'\n"
+                "    return f'ok:{item.label}'\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    unpicked = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        finding, _snapshot(tmp_path)
+    )
+    assert unpicked.recipe is None
+    assert NeededInput.OWNER_PICK in unpicked.needs
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner="evaluate",
+                because="Base family owns item evaluation",
+                name="eval_item",
+                judgement="Evaluate item when context is present.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((finding,))
+    evaluation = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        picked[0], _snapshot(tmp_path)
+    )
+    _apply(tmp_path, evaluation.executable_recipe)
+
+    after = (tmp_path / "pkg" / "metrics.py").read_text()
+    assert "isinstance" not in after
+    assert "if ctx is None:" in after
+    assert "return item.eval_item()" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["evaluate"](None, None) == "skip"  # type: ignore[operator]
+    assert ns["evaluate"](object(), ns["Base"]()) == "skip"  # type: ignore[operator]
+    assert ns["evaluate"](object(), ns["Sub"]("win")) == "ok:win"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
