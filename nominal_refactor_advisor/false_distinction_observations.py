@@ -53,10 +53,6 @@ from nominal_refactor_advisor.class_index import (
 from nominal_refactor_advisor.codemod_foreign_family_source import RewrittenLineFit
 from nominal_refactor_advisor.declared_root import DeclaredRoot
 from nominal_refactor_advisor.scan_cache import ScanCache
-from nominal_refactor_advisor.enum_semantics import (
-    PythonEnumBaseKind,
-    PythonEnumDeclarationAuthority,
-)
 from nominal_refactor_advisor.observation_families import ShapeFamily
 from nominal_refactor_advisor.restated_fact_observations import (
     RestatingSiteFamily,
@@ -1981,10 +1977,7 @@ class EnumMemberIndex:
         indexed = class_index.classes_by_symbol.get(symbol)
         if indexed is None or class_index.symbols_by_simple_name.get(name) != (symbol,):
             return False
-        match indexed.enum_declaration:
-            case PythonEnumDeclarationAuthority(base=PythonEnumBaseKind.ENUM):
-                return not indexed.method_names
-        return False
+        return indexed.enum_declaration.plain_enum_declaration(indexed)
 
     @staticmethod
     def undistinguished(uses: Sequence[EnumMemberUse]) -> tuple[tuple[str, ...], ...]:

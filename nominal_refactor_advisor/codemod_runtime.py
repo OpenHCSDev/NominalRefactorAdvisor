@@ -3567,6 +3567,15 @@ class DelegatedRecipeDeclaration(ABC):
         del finding
         return None
 
+    def matches_concept(self, finding, concept_type, selector_context):
+        possible = self.possible_declaration_types(finding)
+        if possible is not None:
+            if not any((issubclass(cand, concept_type) for cand in possible)):
+                return False
+            if all((issubclass(cand, concept_type) for cand in possible)):
+                return True
+        return super().matches_concept(finding, concept_type, selector_context)
+
 
 class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
     """Declaration-owned proof evaluation for one detector finding.
@@ -3677,6 +3686,10 @@ class FindingRecipeEvaluator(AnswerFreeDeclaration, ABC):
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
         return ()
+
+    def matches_concept(self, finding, concept_type, selector_context):
+        """Return whether this evaluator's declaration matches concept_type."""
+        return issubclass(self.evaluation_declaration_for_finding(finding, selector_context), concept_type)
 
 
 @dataclass(frozen=True)

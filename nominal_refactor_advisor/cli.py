@@ -68,7 +68,6 @@ from nominal_refactor_advisor.analysis_cache import (
     AnalysisCacheIdentity,
     AnalysisCacheStatus,
     AnalysisExecutionPlanCacheIdentity,
-    AnalysisExecutionPlanLookup,
     AnalysisFindingCache,
     AnalysisFindingSummaryCachePayload,
     Hit,
@@ -4068,14 +4067,7 @@ class IdentifiedOutcome(ScanAnalysisOutcome):
         identity = AnalysisExecutionPlanCacheIdentity.from_analysis_identity(
             self.cache_identity, root, report_roots
         )
-        match cache.load_execution_plan(identity):
-            case AnalysisExecutionPlanLookup(
-                status=status, plan=RefactorExecutionPlanReport() as plan
-            ) if status.is_hit:
-                return plan
-        execution_plan = build_refactor_execution_plan(self.findings, root)
-        cache.store_execution_plan(identity, execution_plan)
-        return execution_plan
+        return cache.load_execution_plan(identity).cached_or_build_plan(root, identity, self, cache)
 
     def source_snapshot(
         self,

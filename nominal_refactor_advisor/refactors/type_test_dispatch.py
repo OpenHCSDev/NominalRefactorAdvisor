@@ -62,10 +62,18 @@ from nominal_refactor_advisor.codemod_spacing import (
     SourceInsertionBoundary,
     SourceInsertionLayer,
 )
+from nominal_refactor_advisor.declared_receivers import (
+    DeclaredClassObject,
+    DeclaredInstance,
+)
 from nominal_refactor_advisor.models import OwnTypeTestMetrics, RefactorFinding
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
-from nominal_refactor_advisor.probe_owner import InferredReceiverType, ReceiverSpan
+from nominal_refactor_advisor.probe_owner import (
+    InferredReceiverType,
+    ProbeOwnerResolver,
+    ReceiverSpan,
+)
 from nominal_refactor_advisor.refactor_concepts import TypeTestDispatchConcept
 from nominal_refactor_advisor.refactors.answered_method import AnsweredMethod
 from nominal_refactor_advisor.refactors.class_overlap import obsolete_import_edits
@@ -2265,6 +2273,27 @@ class FunctionEnclosure(ABC):
     def enclosing_local_names(self) -> frozenset[str]:
         return frozenset()
 
+    def class_receiver_symbol(self, snapshot):
+        """Return enclosing class symbol for ClassEnclosure or None."""
+        return None
+
+    def dispatch_kind_for_receiver(self, subject, first_param, function, source_path, snapshot):
+        """Return dispatch kind if subject is this class enclosure's receiver."""
+        parsed = snapshot.parsed_module_for_source_path(source_path)
+        declared = ProbeOwnerResolver.of(parsed).builder.path_of(subject).declared(snapshot.declared_receiver_typing)
+        if isinstance(declared, DeclaredClassObject):
+            return ClassDispatchKind()
+        if isinstance(declared, DeclaredInstance):
+            return InstanceDispatchKind()
+        span = ReceiverSpan.of(source_path, subject)
+        inferred = snapshot.type_checker.receiver_types((span,)).get(span)
+        if isinstance(inferred, InferredReceiverType):
+            if inferred.instances:
+                return InstanceDispatchKind()
+            if inferred.families:
+                return ClassDispatchKind()
+        raise NeedsInput(f'cannot determine whether `{ast.unparse(subject)}` at {source_path}:{subject.lineno} is a class object (`type[...]`) or an instance', NeededInput.PROOF)
+
 
 @dataclass(frozen=True)
 class ModuleEnclosure(FunctionEnclosure):
@@ -2295,6 +2324,15 @@ class ClassEnclosure(FunctionEnclosure):
                 ) if target_name == field_name:
                     return ann
         return None
+
+    def class_receiver_symbol(self, snapshot):
+        return self.receiver_symbol(snapshot)
+
+    def dispatch_kind_for_receiver(self, subject, first_param, function, source_path, snapshot):
+        if isinstance(subject, ast.Name) and subject.id == first_param:
+            is_cm = any((isinstance(dec, ast.Name) and dec.id == 'classmethod' for dec in function.decorator_list))
+            return ClassDispatchKind() if is_cm else InstanceDispatchKind()
+        return super().dispatch_kind_for_receiver(subject, first_param, function, source_path, snapshot)
 
 
 @dataclass(frozen=True)

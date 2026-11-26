@@ -313,6 +313,10 @@ class ParseOutcome(ABC):
     def unparsed(self) -> tuple[Unparsed, ...]:
         return ()
 
+    def record_measure_attribution(self, origin, foundation, attribution, args, path):
+        """Record attribution for this parse outcome."""
+        pass
+
 
 @dataclass(frozen=True)
 class Measured(ParseOutcome):
@@ -321,6 +325,9 @@ class Measured(ParseOutcome):
     def measured(self) -> tuple[Measured, ...]:
         return (self,)
 
+    def record_measure_attribution(self, origin, foundation, attribution, args, path):
+        attribution.record(origin, origin.kind(args.refactor_branches), self, foundation)
+
 
 @dataclass(frozen=True)
 class Unparsed(ParseOutcome):
@@ -328,6 +335,9 @@ class Unparsed(ParseOutcome):
 
     def unparsed(self) -> tuple[Unparsed, ...]:
         return (self,)
+
+    def record_measure_attribution(self, origin, foundation, attribution, args, path):
+        attribution.unparsed.append(path)
 
 
 def code_lines(text: str) -> int:

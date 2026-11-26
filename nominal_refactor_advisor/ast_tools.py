@@ -1700,6 +1700,10 @@ class BuiltinCall(ABC, metaclass=AutoRegisterMeta):
     def builtin(self) -> BuiltinCallName:
         return self.signature[0]
 
+    def record_type_setattr_injection(self, observations, parsed_module, node, function):
+        """Record a dynamic type setattr observation when applicable."""
+        pass
+
 
 @dataclass(frozen=True)
 class NonBuiltinCall(BuiltinCall):
@@ -1768,6 +1772,11 @@ class AttributeMutation(AttributeAccessCall):
 class Setattr(AttributeMutation):
     signature = (BuiltinCallName.SETATTR, 3)
     assigns = True
+
+    def record_type_setattr_injection(self, observations, parsed_module, node, function):
+        match self.object_argument:
+            case ast.Name(id=target) if target.endswith('type'):
+                observations.append(DynamicMethodInjectionObservation(file_path=parsed_module.file_path, line=node.lineno, symbol=function.name, mutator_name=self.builtin))
 
 
 @dataclass(frozen=True)
@@ -4759,18 +4768,7 @@ def _dynamic_method_injection_observations(
     for node in walk_function_body_nodes(function.body):
         if not isinstance(node, ast.Call):
             continue
-        match BuiltinCall.decoded(node):
-            case Setattr(object_argument=ast.Name(id=target)) as call if target.endswith(
-                "type"
-            ):
-                observations.append(
-                    DynamicMethodInjectionObservation(
-                        file_path=parsed_module.file_path,
-                        line=node.lineno,
-                        symbol=function.name,
-                        mutator_name=call.builtin,
-                    )
-                )
+        BuiltinCall.decoded(node).record_type_setattr_injection(observations, parsed_module, node, function)
     return sorted_tuple(observations, key=lambda item: item.line)
 
 

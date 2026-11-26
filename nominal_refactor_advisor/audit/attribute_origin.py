@@ -18,7 +18,6 @@ import sys
 from pathlib import Path
 
 from nominal_refactor_advisor.audit.census import CensusRun, Undeclared
-from nominal_refactor_advisor.audit.measures import Measured, Unparsed
 from nominal_refactor_advisor.audit.origin import Attribution, origin_of
 from nominal_refactor_advisor.audit.repository import Repository
 
@@ -41,11 +40,7 @@ def main() -> int:
         if path in existing:
             continue
         origin = origin_of(repo, args.rev, path)
-        match census.measure(args.rev, path):
-            case Measured() as measured:
-                attribution.record(origin, origin.kind(args.refactor_branches), measured, foundation)
-            case Unparsed():
-                attribution.unparsed.append(path)
+        census.measure(args.rev, path).record_measure_attribution(origin, foundation, attribution, args, path)
     print(attribution.render(args.foundation))
     return 0
 
