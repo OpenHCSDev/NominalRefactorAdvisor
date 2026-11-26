@@ -2949,7 +2949,7 @@ class ResolvedMethodAnnotations:
 
         def resolve_expr(
             expr: ast.expr,
-        ) -> tuple[ast.expr, tuple[ModuleImportMutation, ...]] | None:
+        ) -> tuple[ast.expr, dict[tuple[str, str], ModuleImportMutation]] | None:
             if _contains_forward_ref_string(expr):
                 return None
             names = sorted(
@@ -2976,8 +2976,14 @@ class ResolvedMethodAnnotations:
                 for dest in destinations:
                     dest_module = snapshot.parsed_module_for_source_path(dest.file_path)
                     future_ann = _has_future_annotations(dest_module.module)
+                    lookup_line = (
+                        dest_module.module.body[-1].end_lineno
+                        or dest_module.module.body[-1].lineno
+                        if future_ann and dest_module.module.body
+                        else dest.node.lineno
+                    )
                     actual = bindings.reference_or_builtin_witness_at(
-                        dest_module, reference, line=dest.node.lineno
+                        dest_module, reference, line=lookup_line
                     )
                     if actual is not None:
                         if actual.qualified_name != expected.qualified_name:
@@ -3016,7 +3022,7 @@ class ResolvedMethodAnnotations:
                             import_source=import_source,
                             rationale=rationale,
                         )
-            return expr, tuple(needed_imports.values())
+            return expr, needed_imports
 
         all_imports: dict[tuple[str, str], ModuleImportMutation] = {}
         resolved_params: list[tuple[str, ast.expr]] = []
@@ -3040,8 +3046,8 @@ class ResolvedMethodAnnotations:
                 continue
             ann, imports = resolved
             resolved_params.append((arg.param_name, ann))
-            for mut in imports:
-                all_imports.setdefault((mut.file_path, mut.import_source), mut)
+            for key, mut in imports.items():
+                all_imports.setdefault(key, mut)
 
         return_candidate: ast.expr | None = None
         if is_void_method:
@@ -3060,8 +3066,8 @@ class ResolvedMethodAnnotations:
             resolved = resolve_expr(return_candidate)
             if resolved is not None:
                 resolved_return, imports = resolved
-                for mut in imports:
-                    all_imports.setdefault((mut.file_path, mut.import_source), mut)
+                for key, mut in imports.items():
+                    all_imports.setdefault(key, mut)
 
         return cls(
             param_annotations=tuple(resolved_params),

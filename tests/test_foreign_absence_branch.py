@@ -756,7 +756,9 @@ def test_two_foreign_absence_branches_pushing_distinct_methods_onto_same_owner_c
     sim.apply()
 
     after = (tmp_path / "batch" / "cache.py").read_text()
-    assert "def append_if_pending(self, pending: list[Sig]) -> None:" in after
+    # `batch/cache.py` omits `from __future__ import annotations`, so self-referential
+    # `pending: list[Sig]` inside `class Sig` is omitted to avoid a runtime NameError.
+    assert "def append_if_pending(self, pending) -> None:" in after
     assert "def resolved_hash(self) -> str:" in after
     assert "return sig.resolved_hash()" in after
     assert "sig.append_if_pending(pending)" in after
