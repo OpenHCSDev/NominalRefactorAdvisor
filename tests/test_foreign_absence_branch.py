@@ -312,3 +312,35 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
     collision_ev = det.evaluate_recipe_for_finding(by_sym["existing"], snap)
     assert "already declares `existing`" in collision_ev.rejection_reason
     assert collision_ev.needs == (NeededInput.OWNER_PICK,)
+
+
+def test_cross_module_free_global_constant_is_refused(tmp_path: Path) -> None:
+    """Moving a branch across modules that reads an unproved module-level constant
+    must be refused instead of dropping the name and raising NameError at runtime."""
+
+    _write(
+        tmp_path,
+        {
+            "cross/__init__.py": "",
+            "cross/owner.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Item:\n"
+                "    cached: str | None\n"
+            ),
+            "cross/consumer.py": (
+                "from cross.owner import Item\n\n\n"
+                "_SENTINEL = '__cached__'\n\n\n"
+                "def read_cached(item: Item) -> str:\n"
+                "    if item.cached is not None:\n"
+                "        return item.cached\n"
+                "    return _SENTINEL\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    (finding,) = findings
+    ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(finding, snap)
+    assert "_SENTINEL" in ev.rejection_reason
+    assert ev.needs == (NeededInput.SOURCE_CHANGE,)
+
