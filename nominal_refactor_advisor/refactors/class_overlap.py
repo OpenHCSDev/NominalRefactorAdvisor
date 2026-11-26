@@ -1802,15 +1802,15 @@ class ComposedAncestry:
                 )
                 if was == becomes:
                     continue
-                if was == self.composer.symbol and name in self.deleted and becomes in (
-                    owner_set | self._owner_providers_for(name)
+                if was == self.composer.symbol and name in self.deleted and (
+                    becomes in owner_set or becomes in self._owner_providers_for(name)
                 ):
                     continue
                 if (
                     was is not None
                     and was in self.peer_deleted
                     and name in self.peer_deleted[was]
-                    and becomes in (owner_set | self._owner_providers_for(name))
+                    and (becomes in owner_set or becomes in self._owner_providers_for(name))
                 ):
                     continue
                 if name == "__slots__" and was in shifted and becomes == self.composer.symbol:
@@ -1885,8 +1885,8 @@ class ComposedAncestry:
             becomes = next(
                 (symbol for symbol in after if name in self.names(symbol, composed=True)), None
             )
-            if name in self.deleted and becomes in (
-                owner_symbols | self._owner_providers_for(name)
+            if name in self.deleted and (
+                becomes in owner_symbols or becomes in self._owner_providers_for(name)
             ):
                 continue
             if was != becomes:
