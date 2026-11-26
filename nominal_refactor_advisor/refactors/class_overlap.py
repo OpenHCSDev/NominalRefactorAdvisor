@@ -224,6 +224,44 @@ class OverlapClass(ABC):
             raise ValueError(f"`{self.qualname}` does not declare `{name}` itself")
         return declaration.require_proved(f"`{self.qualname}.{name}`")
 
+    def resolved_declaration(
+        self, snapshot: CodemodSourceSnapshot, name: str
+    ) -> ProvedClassBodyDeclaration:
+        """The class's resolved declaration of `name` (own or inherited)."""
+
+        own = snapshot.class_overlap_verdicts.bodies.declarations_of(self.symbol).get(
+            name
+        )
+        if own is not None:
+            return own.require_proved(f"`{self.qualname}.{name}`")
+        resolved = snapshot.class_overlap_verdicts.resolved_declarations(
+            self.symbol
+        ).get(name)
+        if resolved is None:
+            raise ValueError(f"`{self.qualname}` does not resolve `{name}`")
+        return resolved.declaration.require_proved(f"`{self.qualname}.{name}`")
+
+    def resolved_dataclass_field_names(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[str, ...]:
+        """Dataclass fields contributed by this class and its scanned dataclass
+        ancestors in Python's reverse-MRO collection order."""
+
+        verdicts = snapshot.class_overlap_verdicts
+        class_index = verdicts.class_index
+        fields: list[str] = []
+        for symbol in reversed(verdicts.linearized(self.symbol)):
+            if class_index.class_for(symbol) is None:
+                continue
+            ancestor = (
+                self
+                if symbol == self.symbol
+                else OverlapClass.for_symbol(snapshot, symbol)
+            )
+            if ancestor.dataclass_options_key:
+                fields.extend(ancestor.own_field_names)
+        return tuple(dict.fromkeys(fields))
+
     def attribute_docstring(self, statement: ast.stmt) -> ast.Expr | None:
         """The string statement right after a field, which documents it."""
 
@@ -600,7 +638,7 @@ class RestatedDeclarations:
         for name in names:
             if name.startswith("__") and not name.endswith("__"):
                 raise NeedsInput(f"`{name}` is name-mangled by its owner", NeededInput.PROOF)
-            mine = source.declaration(snapshot, name)
+            mine = source.resolved_declaration(snapshot, name)
             theirs = restating.declaration(snapshot, name)
             if not mine.same_declaration_as(theirs):
                 raise NeedsInput(
@@ -1764,13 +1802,15 @@ class ComposedAncestry:
                 )
                 if was == becomes:
                     continue
-                if was == self.composer.symbol and name in self.deleted and becomes in owner_set:
+                if was == self.composer.symbol and name in self.deleted and (
+                    becomes in owner_set or becomes in self._owner_providers_for(name)
+                ):
                     continue
                 if (
                     was is not None
                     and was in self.peer_deleted
                     and name in self.peer_deleted[was]
-                    and becomes in owner_set
+                    and (becomes in owner_set or becomes in self._owner_providers_for(name))
                 ):
                     continue
                 if name == "__slots__" and was in shifted and becomes == self.composer.symbol:
@@ -1788,6 +1828,23 @@ class ComposedAncestry:
             if len(non_object_bases) > 1:
                 self.require_slots_fit(non_object_bases)
         return tuple(drops)
+
+    def _owner_providers_for(self, name: str) -> frozenset[str]:
+        """The declaring class(es) in each owner's MRO that supply `name`."""
+
+        providers: list[str] = []
+        for owner in self.owners:
+            provider = next(
+                (
+                    symbol
+                    for symbol in self.c3.linearized(owner.symbol)
+                    if name in self.names(symbol, composed=False)
+                ),
+                None,
+            )
+            if provider is not None:
+                providers.append(provider)
+        return frozenset(providers)
 
     @cached_property
     def ancestry(self) -> tuple[CompactIndexedClass, ...]:
@@ -1828,7 +1885,9 @@ class ComposedAncestry:
             becomes = next(
                 (symbol for symbol in after if name in self.names(symbol, composed=True)), None
             )
-            if name in self.deleted and becomes in owner_symbols:
+            if name in self.deleted and (
+                becomes in owner_symbols or becomes in self._owner_providers_for(name)
+            ):
                 continue
             if was != becomes:
                 raise NeedsInput(
@@ -1946,7 +2005,10 @@ class ComposedAncestry:
                 f"Composing gives `{self.composer.qualname}` the metaclass of `{indexed.qualname}`",
                 NeededInput.PROOF,
             )
-        if any(declaration.kind.is_field for declaration in indexed.body_declarations):
+        if any(
+            declaration.kind.is_field and declaration.name not in self.deleted
+            for declaration in indexed.body_declarations
+        ):
             raise NeedsInput(
                 f"Composing gives `{self.composer.qualname}` the fields of `{indexed.qualname}`",
                 NeededInput.PROOF,
@@ -2026,29 +2088,86 @@ class ClassComposition:
             snapshot, (restating.symbol,), ComposeExisting, owner_symbol=owner.symbol
         )
         body = owner.node.body[1:] if is_docstring_statement(owner.node.body[0]) else owner.node.body
-        # A string statement documents the field before it and runs nothing.
-        if not body or any(
-            not declared_names(statement) and not is_docstring_statement(statement) for statement in body
+        # A string statement documents the field before it and runs nothing;
+        # `pass` and `...` are empty-body placeholders for inherited owners.
+        if any(
+            not declared_names(statement)
+            and not is_docstring_statement(statement)
+            and not isinstance(statement, ast.Pass)
+            and not (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and statement.value.value is Ellipsis
+            )
+            for statement in body
         ):
             raise NeedsInput(f"`{owner.qualname}` runs statements beyond declarations", NeededInput.SOURCE_CHANGE)
+        verdicts = snapshot.class_overlap_verdicts
+        class_index = verdicts.class_index
+        restating_own = verdicts.bodies.declarations_of(restating.symbol)
+        owner_own = verdicts.bodies.declarations_of(owner.symbol)
+        candidate_names: list[str] = list(owner_own)
+        for ancestor_symbol in class_index.ancestor_symbols(owner.symbol):
+            if class_index.class_for(ancestor_symbol) is None:
+                continue
+            for name, anc_decl in verdicts.bodies.declarations_of(ancestor_symbol).items():
+                rest_decl = restating_own.get(name)
+                if (
+                    rest_decl is not None
+                    and name not in owner_own
+                    and anc_decl.same_declaration_as(rest_decl)
+                ):
+                    candidate_names.append(name)
+        restated_names = tuple(dict.fromkeys(candidate_names))
         restated = RestatedDeclarations.require(
             snapshot,
             owner,
             restating,
-            (declaration.name for declaration in owner.facts.body_declarations),
+            restated_names,
         )
         composition = cls(snapshot, owner, restating, restated)
-        class_index = snapshot.class_overlap_verdicts.class_index
         NeedsInput.every(
             composition.require_owner_is_a_root,
+            composition.require_resolved_declarations_match,
             composition.require_field_order,
             lambda: restated.require_no_owner_bound_values(snapshot),
-            lambda: ClassReferenceSites(snapshot, frozenset((owner.symbol,))).require_no_identity_reads(
-                {owner.symbol: AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)}
-            ),
+            composition.require_no_gained_identity_reads,
             lambda: owner.file_path != restating.file_path or composition.relocation.require_safe(snapshot),
         )
         return composition
+
+    def require_resolved_declarations_match(self) -> None:
+        verdicts = self.snapshot.class_overlap_verdicts
+        owner_resolved = verdicts.resolved_declarations(self.owner.symbol)
+        restating_resolved = verdicts.resolved_declarations(self.restating.symbol)
+        for name, owner_entry in owner_resolved.items():
+            rest_entry = restating_resolved.get(name)
+            if rest_entry is None or not owner_entry.declaration.require_proved(
+                f"`{self.owner.qualname}.{name}`"
+            ).same_declaration_as(
+                rest_entry.declaration.require_proved(f"`{self.restating.qualname}.{name}`")
+            ):
+                raise NeedsInput(
+                    f"`{self.restating.qualname}.{name}` differs from `{self.owner.qualname}.{name}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+
+    def require_no_gained_identity_reads(self) -> None:
+        verdicts = self.snapshot.class_overlap_verdicts
+        class_index = verdicts.class_index
+        restating_ancestors = frozenset(class_index.ancestor_symbols(self.restating.symbol))
+        gained_ancestors = frozenset(
+            symbol
+            for symbol in verdicts.linearized(self.owner.symbol)
+            if class_index.class_for(symbol) is not None
+            and symbol not in restating_ancestors
+        )
+        ClassReferenceSites(self.snapshot, gained_ancestors).require_no_identity_reads(
+            {
+                symbol: AnswersFor.gaining(symbol, (self.restating.symbol,), class_index)
+                for symbol in gained_ancestors
+            }
+        )
 
     def require_owner_is_a_root(self) -> None:
         owner, restating = self.owner, self.restating
@@ -2091,7 +2210,9 @@ class ClassComposition:
 
         restating = self.restating
         before, after = composed_field_order(
-            self.snapshot, self.owner.own_field_names, restating
+            self.snapshot,
+            self.owner.resolved_dataclass_field_names(self.snapshot),
+            restating,
         )
         if before == after and self.owner.option("kw_only") == restating.option("kw_only"):
             return None
