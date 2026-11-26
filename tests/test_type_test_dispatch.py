@@ -889,10 +889,11 @@ def test_pushes_multiple_inheritance_mixin_dispatch_and_rejects_bad_c3_or_collis
     assert ns["accepts"](ns["Command"]) is False  # type: ignore[operator]
     assert ns["accepts"](ns["ApplyCommand"]) is True  # type: ignore[operator]
 
-    # Reversed C3 order `class BadOrder(Command, ApplyMixin):` puts Command ahead of ApplyMixin -> refused.
-    bad = tmp_path / "bad"
+    # Reversed C3 order `class BadOrder(Command, ApplyMixin):` with zero member overlap
+    # reorders lookup-neutrally to `class BadOrder(ApplyMixin, Command):` and pushes cleanly.
+    reordered = tmp_path / "reordered"
     _write(
-        bad,
+        reordered,
         {
             "pkg/__init__.py": "",
             "pkg/cli.py": (
@@ -904,6 +905,43 @@ def test_pushes_multiple_inheritance_mixin_dispatch_and_rejects_bad_c3_or_collis
                 "    pass\n\n\n"
                 "def accepts(cmd_type: type[Command]) -> bool:\n"
                 "    return issubclass(cmd_type, ApplyMixin)\n"
+            ),
+        },
+    )
+    (reordered_finding,) = _findings(reordered)
+    reordered_eval = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        reordered_finding, _snapshot(reordered)
+    )
+    assert reordered_eval.executable_recipe is not None, reordered_eval.rejection_reason
+    _apply(reordered, reordered_eval.executable_recipe)
+    reordered_after = (reordered / "pkg" / "cli.py").read_text()
+    assert "class BadOrder(ApplyMixin, Command):" in reordered_after
+    assert "return cmd_type.accepts()" in reordered_after
+    ns_reordered: dict[str, object] = {}
+    exec(reordered_after, ns_reordered)
+    assert ns_reordered["accepts"](ns_reordered["Command"]) is False  # type: ignore[operator]
+    assert ns_reordered["accepts"](ns_reordered["BadOrder"]) is True  # type: ignore[operator]
+    assert _findings(reordered) == []
+
+    # Unresolvable subclass-vs-superclass branch order (`if Parent ... elif Child`) is still refused.
+    bad = tmp_path / "bad"
+    _write(
+        bad,
+        {
+            "pkg/__init__.py": "",
+            "pkg/order.py": (
+                "class Base:\n"
+                "    pass\n\n\n"
+                "class Parent(Base):\n"
+                "    pass\n\n\n"
+                "class Child(Parent):\n"
+                "    pass\n\n\n"
+                "def label(item: Base) -> str:\n"
+                "    if isinstance(item, Parent):\n"
+                "        return 'parent'\n"
+                "    elif isinstance(item, Child):\n"
+                "        return 'child'\n"
+                "    return 'base'\n"
             ),
         },
     )
@@ -1767,6 +1805,78 @@ def test_preserves_parameter_owner_and_return_annotations_and_skips_cyclic_impor
     assert "def item_path_label(self, root: Path, owner) -> str:" in items_after
     assert "from pkg.consumer" not in items_after
     assert _findings(tmp_path) == []
+
+
+def test_resolves_mi_mixin_after_base_via_tier2_super_precedence_when_members_overlap(
+    tmp_path: Path,
+) -> None:
+    """When `class Mid(Base, Mixin):` cannot reorder bases because `Base` and `Mixin`
+    share an existing member (`hook`), NRA keeps `(Base, Mixin)` intact and emits a
+    minimal C3-proved `super(Base, self/cls)` precedence binding on `Mid` (Paper 1 Thm 4.17),
+    covering both instance and `@classmethod` dispatches and all descendants of `Mid`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/detectors.py": (
+                "from __future__ import annotations\n\n\n"
+                "class BaseDetector:\n"
+                "    def hook(self) -> str:\n"
+                "        return 'base_hook'\n\n\n"
+                "class CompactMixin:\n"
+                "    def hook(self) -> str:\n"
+                "        return 'mixin_hook'\n\n\n"
+                "class CompactCandidate(BaseDetector, CompactMixin):\n"
+                "    pass\n\n\n"
+                "class LeafCandidate(CompactCandidate):\n"
+                "    pass\n\n\n"
+                "class PlainDetector(BaseDetector):\n"
+                "    pass\n\n\n"
+                "def supports_compact(detector_cls: type[BaseDetector]) -> bool:\n"
+                "    return issubclass(detector_cls, CompactMixin)\n\n\n"
+                "def bucket_name(detector: BaseDetector, prefix: str) -> str:\n"
+                "    if isinstance(detector, CompactMixin):\n"
+                "        return f'{prefix}:compact'\n"
+                "    return f'{prefix}:plain'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"supports_compact", "bucket_name"}
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "detectors.py").read_text()
+    # Base order MUST stay `(BaseDetector, CompactMixin)` so `hook()` still resolves to BaseDetector!
+    assert "class CompactCandidate(BaseDetector, CompactMixin):" in after
+    assert "return super(BaseDetector, cls).supports_compact()" in after
+    assert "return super(BaseDetector, self).bucket_name(prefix)" in after
+    # LeafCandidate inherits the precedence binding from CompactCandidate — zero duplication on leaves!
+    assert after.count("super(BaseDetector, cls)") == 1
+    assert after.count("super(BaseDetector, self)") == 1
+
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    BaseDetector = ns["BaseDetector"]
+    CompactCandidate = ns["CompactCandidate"]
+    LeafCandidate = ns["LeafCandidate"]
+    PlainDetector = ns["PlainDetector"]
+    assert CompactCandidate().hook() == "base_hook"  # type: ignore[operator]
+    assert LeafCandidate().hook() == "base_hook"  # type: ignore[operator]
+    assert ns["supports_compact"](PlainDetector) is False  # type: ignore[operator]
+    assert ns["supports_compact"](CompactCandidate) is True  # type: ignore[operator]
+    assert ns["supports_compact"](LeafCandidate) is True  # type: ignore[operator]
+    assert ns["bucket_name"](PlainDetector(), "p") == "p:plain"  # type: ignore[operator]
+    assert ns["bucket_name"](CompactCandidate(), "p") == "p:compact"  # type: ignore[operator]
+    assert ns["bucket_name"](LeafCandidate(), "p") == "p:compact"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
 
 
 
