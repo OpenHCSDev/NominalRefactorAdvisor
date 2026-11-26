@@ -2464,10 +2464,8 @@ class CliCommand(CliArguments, ABC, metaclass=AutoRegisterMeta):
         parser: argparse.ArgumentParser,
         args: argparse.Namespace,
     ) -> None:
-        if args.codemod_plan is not None and not issubclass(
-            cls, CodemodPlanConsumingCliCommand
-        ):
-            parser.error("selected CLI command does not consume --codemod-plan")
+        if args.codemod_plan is not None:
+            cls.reject_unexpected_plan_input(parser)
 
     @classmethod
     def run_before_scan(
@@ -2504,6 +2502,26 @@ class CliCommand(CliArguments, ABC, metaclass=AutoRegisterMeta):
     @abstractmethod
     def run(self) -> int:
         raise NotImplementedError
+
+    @classmethod
+    def reject_unexpected_plan_input(cls, parser: argparse.ArgumentParser) -> None:
+        """Reject `--codemod-plan` when this command does not consume a codemod plan."""
+        parser.error('selected CLI command does not consume --codemod-plan')
+
+    @classmethod
+    def accepts_codemod_execution_mode(cls) -> bool:
+        """Return whether this command accepts codemod execution mode flags."""
+        return False
+
+    @classmethod
+    def accepts_apply_execution_mode(cls) -> bool:
+        """Return whether this command accepts `--codemod-apply` directly."""
+        return False
+
+    @classmethod
+    def supports_plan_output(cls) -> bool:
+        """Return whether this command can write `--codemod-plan-out`."""
+        return False
 
 
 @dataclass(frozen=True)
@@ -2717,17 +2735,33 @@ class DetectorCapabilitiesCliCommand(CliEarlyExitCommand):
 class CodemodPlanProducingCliCommand(ABC):
     """Nominal family of CLI commands that emit reusable codemod plans."""
 
+    @classmethod
+    def supports_plan_output(cls) -> bool:
+        return True
+
 
 class CodemodPlanConsumingCliCommand(ABC):
     """Nominal family of CLI commands that consume supplied codemod plans."""
+
+    @classmethod
+    def reject_unexpected_plan_input(cls, parser: argparse.ArgumentParser) -> None:
+        pass
 
 
 class CodemodExecutionModeCliCommand(ABC):
     """Nominal family accepting all codemod execution modes."""
 
+    @classmethod
+    def accepts_codemod_execution_mode(cls) -> bool:
+        return True
+
 
 class CodemodApplyExecutionModeCliCommand(ABC):
     """Nominal family accepting default and apply execution modes."""
+
+    @classmethod
+    def accepts_apply_execution_mode(cls) -> bool:
+        return True
 
 
 @dataclass(frozen=True)
@@ -2746,9 +2780,9 @@ class CodemodScanCliCommand(CliCommand, ABC):
 
 
 class CodemodValidatePlanCliCommand(
-    CliEarlyExitCommand,
-    CodemodPlanProducingCliCommand,
     CodemodPlanConsumingCliCommand,
+    CodemodPlanProducingCliCommand,
+    CliEarlyExitCommand,
 ):
     """Validate a supplied codemod DSL plan and emit its normalized form."""
 
@@ -2777,8 +2811,8 @@ class CodemodValidatePlanCliCommand(
 
 
 class CodemodComposePlansCliCommand(
-    CliEarlyExitCommand,
     CodemodPlanProducingCliCommand,
+    CliEarlyExitCommand,
 ):
     """Compose normalized codemod DSL plan documents."""
 
@@ -2811,8 +2845,8 @@ class CodemodComposePlansCliCommand(
 
 
 class CodemodComposeSequenceCliCommand(
-    CliEarlyExitCommand,
     CodemodPlanProducingCliCommand,
+    CliEarlyExitCommand,
 ):
     """Compose normalized codemod DSL plans as ordered replay stages."""
 
@@ -2980,7 +3014,7 @@ class CodemodExecutionStrategy(ABC):
 
     @classmethod
     def accepted_by(cls, command_type: type[CliCommand]) -> bool:
-        return issubclass(command_type, CodemodExecutionModeCliCommand)
+        return command_type.accepts_codemod_execution_mode()
 
     @classmethod
     def require_valid(
@@ -3086,10 +3120,7 @@ class ApplyCodemodExecutionStrategy(SimulateCodemodExecutionStrategy):
 
     @classmethod
     def accepted_by(cls, command_type: type[CliCommand]) -> bool:
-        return super().accepted_by(command_type) or issubclass(
-            command_type,
-            CodemodApplyExecutionModeCliCommand,
-        )
+        return super().accepted_by(command_type) or command_type.accepts_apply_execution_mode()
 
     @classmethod
     def require_valid(
@@ -3540,9 +3571,9 @@ class CodemodScanQueryCliCommand(
 
 
 class CodemodSynthesisExecutionCliCommand(
-    CodemodScanQueryCliCommand,
-    CodemodPlanProducingCliCommand,
     CodemodExecutionModeCliCommand,
+    CodemodPlanProducingCliCommand,
+    CodemodScanQueryCliCommand,
     ABC,
 ):
     """Shared execution surface for finding-backed synthesis commands."""
@@ -3925,10 +3956,10 @@ class CodemodTargetSourceCliCommand(CodemodSelectorQueryCliCommand):
 
 
 class CodemodRefactorGoalCliCommand(
-    CodemodScanCliCommand,
-    CodemodPlanProducingCliCommand,
     CodemodPlanConsumingCliCommand,
     CodemodApplyExecutionModeCliCommand,
+    CodemodPlanProducingCliCommand,
+    CodemodScanCliCommand,
 ):
     """Execute one goal-directed staged refactor against a prepared scan."""
 
@@ -4482,7 +4513,7 @@ def _main_without_deadline(invocation: CliArguments) -> int:
     selected_command_type = invocation.selected_command_type
     if args.codemod_plan_out is not None and not (
         selected_command_type is not None
-        and issubclass(selected_command_type, CodemodPlanProducingCliCommand)
+        and selected_command_type.supports_plan_output()
     ):
         parser.error("--codemod-plan-out requires a plan-producing codemod command")
     codemod_execution_mode = invocation.execution_mode

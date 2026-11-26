@@ -3039,9 +3039,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
             atomic_units: list[list[type[IssueDetector]]] = []
             for dt in other_dirty:
                 builder = (
-                    dt.compact_shared_group_context_builder
-                    if issubclass(dt, CompactMultiModuleProjectionDetectorMixin)
-                    else None
+                    dt.dirty_pooled_group_context_builder()
                 )
                 if builder is not None:
                     bucket = shared_buckets.get(builder)
