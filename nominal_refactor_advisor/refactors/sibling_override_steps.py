@@ -931,6 +931,14 @@ def _leading_unconditional_step_expr(
                 return
             case ast.Attribute(value=inner):
                 walk(inner)
+            case ast.Subscript(value=value, slice=slice_expr):
+                walk(value)
+                walk(slice_expr)
+                barrier_hit = True
+            case ast.Slice(lower=lower, upper=upper, step=step):
+                walk(lower)
+                walk(upper)
+                walk(step)
             case ast.UnaryOp(operand=operand):
                 walk(operand)
             case ast.BinOp(left=left, op=op, right=right):
@@ -1054,6 +1062,36 @@ def _render_expr_source(source: str, expr: ast.expr) -> str:
     return source[start:end]
 
 
+def _render_safe_expr(source: str, expr: ast.expr) -> str:
+    text = _render_expr_source(source, expr)
+    return f"({text})" if "\n" in text else text
+
+
+def _join_boolop_sources(
+    source: str, op: ast.boolop, operands: Sequence[ast.expr]
+) -> str:
+    word = " and " if isinstance(op, ast.And) else " or "
+    parts: list[str] = []
+    for operand in operands:
+        text = _render_expr_source(source, operand)
+        if isinstance(
+            operand, (ast.BoolOp, ast.IfExp, ast.Lambda, ast.NamedExpr)
+        ) or "\n" in text:
+            text = f"({text})"
+        parts.append(text)
+    joined = word.join(parts)
+    return f"({joined})" if "\n" in joined else joined
+
+
+def _render_boolop_atom(source: str, operand: ast.expr) -> str:
+    text = _render_expr_source(source, operand)
+    if isinstance(
+        operand, (ast.BoolOp, ast.IfExp, ast.Lambda, ast.NamedExpr)
+    ) or "\n" in text:
+        return f"({text})"
+    return text
+
+
 class HookDeclaration(ABC):
     """How the ancestor declares the per-subclass hook method."""
 
@@ -1146,13 +1184,363 @@ class HoistedStepExpression:
     expr: ast.expr
 
 
-@dataclass(frozen=True)
-class ReturnCallTemplate:
-    """Every sibling returns the same receiver call differing in a single argument slot."""
+class SiblingHookBody(ABC):
+    """How one sibling's differing middle body renders inside its hook method."""
 
+    @abstractmethod
+    def render_header(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str: ...
+
+    @abstractmethod
+    def render_body(
+        self,
+        source: str,
+        source_lines: Sequence[str],
+        inner_indent: str,
+    ) -> list[str]: ...
+
+
+@dataclass(frozen=True)
+class DirectMiddleHookBody(SiblingHookBody):
+    """Renders the sibling's remaining middle statements directly."""
+
+    middle: tuple[ast.stmt, ...]
+    leading_expr_replacement: tuple[ast.expr, str] | None = None
+
+    def render_header(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=True,
+        )
+
+    def render_body(
+        self,
+        source: str,
+        source_lines: Sequence[str],
+        inner_indent: str,
+    ) -> list[str]:
+        pieces: list[str] = []
+        for index, statement in enumerate(self.middle):
+            if index == 0 and self.leading_expr_replacement is not None:
+                target_expr, var_name = self.leading_expr_replacement
+                pieces.append(
+                    _render_statement_with_expr_replaced(
+                        source, statement, target_expr, var_name, inner_indent
+                    )
+                )
+            else:
+                pieces.append(
+                    _statement_source_block(source_lines, statement, inner_indent)
+                )
+        return pieces
+
+
+@dataclass(frozen=True)
+class ReturningExprHookBody(SiblingHookBody):
+    """Renders optional leading prep statements followed by `return <expr>`."""
+
+    prep: tuple[ast.stmt, ...]
+    return_expr: ast.expr
+
+    def render_header(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=False,
+        )
+
+    def render_body(
+        self,
+        source: str,
+        source_lines: Sequence[str],
+        inner_indent: str,
+    ) -> list[str]:
+        pieces = [
+            _statement_source_block(source_lines, statement, inner_indent)
+            for statement in self.prep
+        ]
+        pieces.append(f"{inner_indent}return {_render_safe_expr(source, self.return_expr)}\n")
+        return pieces
+
+
+@dataclass(frozen=True)
+class ReturningBoolOpHookBody(SiblingHookBody):
+    """Renders optional leading prep statements followed by `return <operands joined by op>`."""
+
+    prep: tuple[ast.stmt, ...]
+    op: ast.boolop
+    operands: tuple[ast.expr, ...]
+
+    def render_header(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=False,
+        )
+
+    def render_body(
+        self,
+        source: str,
+        source_lines: Sequence[str],
+        inner_indent: str,
+    ) -> list[str]:
+        pieces = [
+            _statement_source_block(source_lines, statement, inner_indent)
+            for statement in self.prep
+        ]
+        expr_text = (
+            _render_safe_expr(source, self.operands[0])
+            if len(self.operands) == 1
+            else _join_boolop_sources(source, self.op, self.operands)
+        )
+        pieces.append(f"{inner_indent}return {expr_text}\n")
+        return pieces
+
+
+class SiblingBodyTemplate(ABC):
+    """How the ancestor's template method invokes the sibling hook."""
+
+    def render_hook_declaration(
+        self,
+        hook_declaration: HookDeclaration,
+        declaring_method: FunctionNode,
+        hook_name: str,
+        indent: str,
+        method_kind: MethodKind,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return hook_declaration.render(
+            declaring_method,
+            hook_name,
+            indent,
+            method_kind,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=False,
+        )
+
+    @abstractmethod
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str: ...
+
+    @abstractmethod
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]: ...
+
+
+@dataclass(frozen=True)
+class DirectHookTemplate(SiblingBodyTemplate):
+    """Calls or returns/yields from the hook directly."""
+
+    forward_return: bool
+    is_generator: bool
+
+    def render_hook_declaration(
+        self,
+        hook_declaration: HookDeclaration,
+        declaring_method: FunctionNode,
+        hook_name: str,
+        indent: str,
+        method_kind: MethodKind,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return hook_declaration.render(
+            declaring_method,
+            hook_name,
+            indent,
+            method_kind,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=True,
+        )
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source, hoist_source_lines
+        if self.is_generator:
+            return (
+                f"{inner_indent}return (yield from {hook_call})\n"
+                if self.forward_return
+                else f"{inner_indent}yield from {hook_call}\n"
+            )
+        return (
+            f"{inner_indent}return {hook_call}\n"
+            if self.forward_return
+            else f"{inner_indent}{hook_call}\n"
+        )
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return ()
+
+
+@dataclass(frozen=True)
+class ReturnCallTemplate(SiblingBodyTemplate):
+    """Every sibling ends with the same receiver call differing in a single argument slot."""
+
+    template_stmt: ast.stmt
     template_call: ast.Call
     varying_slot_expr: ast.expr
     import_checked_stmt: ast.stmt
+    hoist_var_name: str | None = None
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source_lines
+        if self.hoist_var_name is not None:
+            rendered_call = _render_statement_with_expr_replaced(
+                hoist_source,
+                self.template_stmt,
+                self.varying_slot_expr,
+                self.hoist_var_name,
+                inner_indent,
+            )
+            return f"{inner_indent}{self.hoist_var_name} = {hook_call}\n{rendered_call}"
+        return _render_statement_with_expr_replaced(
+            hoist_source,
+            self.template_stmt,
+            self.varying_slot_expr,
+            hook_call,
+            inner_indent,
+        )
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return (self.import_checked_stmt,)
+
+
+@dataclass(frozen=True)
+class BoolOpTemplate(SiblingBodyTemplate):
+    """Every sibling returns a short-circuit `and`/`or` sharing leading or trailing operands."""
+
+    op: ast.boolop
+    shared_operands: tuple[ast.expr, ...]
+    hook_first: bool
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source_lines
+        word = " and " if isinstance(self.op, ast.And) else " or "
+        shared_parts = [_render_boolop_atom(hoist_source, expr) for expr in self.shared_operands]
+        ordered = [hook_call, *shared_parts] if self.hook_first else [*shared_parts, hook_call]
+        joined = word.join(ordered)
+        rendered = f"({joined})" if "\n" in joined else joined
+        return f"{inner_indent}return {rendered}\n"
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return tuple(ast.Expr(value=expr) for expr in self.shared_operands)
+
+
+@dataclass(frozen=True)
+class TrailingGuardedStepTemplate(SiblingBodyTemplate):
+    """Every sibling ends with `if <cond_i>: <identical step body>`."""
+
+    guarded_body: tuple[ast.stmt, ...]
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source
+        body_indent = f"{inner_indent}    "
+        pieces = [f"{inner_indent}if {hook_call}:\n"]
+        for statement in self.guarded_body:
+            pieces.append(
+                _statement_source_block(hoist_source_lines, statement, body_indent)
+            )
+        return "".join(pieces)
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return self.guarded_body
+
+
+@dataclass(frozen=True)
+class GuardedEarlyReturnSuffixTemplate(SiblingBodyTemplate):
+    """Every sibling has `if <cond_i>: <identical early return>` before an identical trailing step."""
+
+    early_return_body: tuple[ast.stmt, ...]
+    shared_tail: tuple[ast.stmt, ...]
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source
+        body_indent = f"{inner_indent}    "
+        pieces = [f"{inner_indent}if {hook_call}:\n"]
+        for statement in self.early_return_body:
+            pieces.append(
+                _statement_source_block(hoist_source_lines, statement, body_indent)
+            )
+        for statement in self.shared_tail:
+            pieces.append(
+                _statement_source_block(hoist_source_lines, statement, inner_indent)
+            )
+        return "".join(pieces)
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return (*self.early_return_body, *self.shared_tail)
 
 
 class SiblingRewrite(ABC):
@@ -1211,13 +1599,11 @@ class RewriteSiblingToHook(SiblingRewrite):
 
     child: OverlapClass
     method: FunctionNode
-    middle: tuple[ast.stmt, ...]
+    hook_body: SiblingHookBody
     dropped: tuple[ast.stmt, ...]
     hook_name: str
     method_kind: MethodKind
     extra_params: ExtraHookParams = ExtraHookParams()
-    leading_expr_replacement: tuple[ast.expr, str] | None = None
-    return_arg_expr: ast.expr | None = None
 
     def edits(
         self,
@@ -1237,34 +1623,18 @@ class RewriteSiblingToHook(SiblingRewrite):
             f"{indent}@{dec}\n"
             for dec in self.method_kind.sibling_hook_decorators(self.method)
         ]
-        header = _method_header_signature(
+        header = self.hook_body.render_header(
             self.method,
             self.hook_name,
             source_lines,
             extra_params=self.extra_params,
-            preserve_return_annotation=self.return_arg_expr is None,
         )
         for line in header.splitlines():
             pieces.append(f"{indent}{line}\n" if line.strip() else "\n")
         docstring = _leading_docstring_stmt(self.method)
         if docstring is not None:
             pieces.append(_statement_source_block(source_lines, docstring, inner_indent))
-        if self.return_arg_expr is not None:
-            arg_text = _render_expr_source(source, self.return_arg_expr)
-            pieces.append(f"{inner_indent}return {arg_text}\n")
-        else:
-            for index, statement in enumerate(self.middle):
-                if index == 0 and self.leading_expr_replacement is not None:
-                    target_expr, var_name = self.leading_expr_replacement
-                    pieces.append(
-                        _render_statement_with_expr_replaced(
-                            source, statement, target_expr, var_name, inner_indent
-                        )
-                    )
-                else:
-                    pieces.append(
-                        _statement_source_block(source_lines, statement, inner_indent)
-                    )
+        pieces.extend(self.hook_body.render_body(source, source_lines, inner_indent))
         replacement = SourceTextSpanReplacement.from_offsets(
             start_offset=start,
             end_offset=end,
@@ -1338,12 +1708,9 @@ class SiblingOverrideStepHoist:
     suffix: tuple[ast.stmt, ...]
     hoist_source_owner: OverlapClass
     rewrites: tuple[SiblingRewrite, ...]
-    forward_return: bool
+    body_template: SiblingBodyTemplate
     extra_params: ExtraHookParams = ExtraHookParams()
-    is_generator: bool = False
     hoisted_step_expr: HoistedStepExpression | None = None
-    return_call_template: ReturnCallTemplate | None = None
-    return_call_first_stmt: ast.stmt | None = None
 
     @classmethod
     def proved(
@@ -1445,8 +1812,8 @@ class SiblingOverrideStepHoist:
         )
         hoisted_step_expr: HoistedStepExpression | None = None
         sibling_step_exprs: tuple[ast.expr, ...] = ()
-        return_call_template: ReturnCallTemplate | None = None
-        sibling_return_args: tuple[ast.expr, ...] = ()
+        matched_body_template: SiblingBodyTemplate | None = None
+        matched_hook_bodies: tuple[SiblingHookBody, ...] = ()
         extra_names = list(prefix_extra_names)
         extra_annotations = dict(prefix_extra_annotations)
 
@@ -1465,20 +1832,20 @@ class SiblingOverrideStepHoist:
                 hoisted_step_expr, sibling_step_exprs = step_match
                 extra_names.append(hoisted_step_expr.var_name)
             elif not suffix and not is_generator:
-                rc_match = cls._detect_return_call_template(
+                template_match = cls._detect_body_template(
                     siblings,
                     raw_middles,
                     prefix_locals,
                     receiver_name,
                     restated_calls,
                 )
-                if rc_match is not None:
-                    return_call_template, sibling_return_args = rc_match
+                if template_match is not None:
+                    matched_body_template, matched_hook_bodies = template_match
 
         if (
             not has_edge_step
             and hoisted_step_expr is None
-            and return_call_template is None
+            and matched_body_template is None
         ):
             raise NeedsInput(
                 f"shared step(s) in `{siblings[0].owner.qualname}` and its siblings are not "
@@ -1584,14 +1951,23 @@ class SiblingOverrideStepHoist:
             has_empty_middle=any(not middle for middle in middles),
             is_generator=is_generator,
         )
-        if is_generator:
-            forward_return = (not suffix) and any(
-                _has_non_none_return(middle) for middle in middles
-            )
+        if matched_body_template is not None:
+            body_template: SiblingBodyTemplate = matched_body_template
         else:
-            any_middle_returns = any(_has_return_statement(middle) for middle in middles)
-            forward_return = (not suffix) and (
-                any_middle_returns or not _returns_none_annotation(declaring_method)
+            if is_generator:
+                forward_return = (not suffix) and any(
+                    _has_non_none_return(middle) for middle in middles
+                )
+            else:
+                any_middle_returns = any(
+                    _has_return_statement(middle) for middle in middles
+                )
+                forward_return = (not suffix) and (
+                    any_middle_returns or not _returns_none_annotation(declaring_method)
+                )
+            body_template = DirectHookTemplate(
+                forward_return=forward_return,
+                is_generator=is_generator,
             )
 
         rewrites_list: list[SiblingRewrite] = []
@@ -1610,21 +1986,23 @@ class SiblingOverrideStepHoist:
                     ),
                     *extra_dropped[idx],
                 )
+                hook_body: SiblingHookBody = (
+                    matched_hook_bodies[idx]
+                    if matched_body_template is not None
+                    else DirectMiddleHookBody(
+                        middle=middle,
+                        leading_expr_replacement=leading_replacements[idx],
+                    )
+                )
                 rewrites_list.append(
                     RewriteSiblingToHook(
                         sibling.owner,
                         sibling.method,
-                        middle,
+                        hook_body,
                         dropped_stmts,
                         hook_name,
                         method_kind,
                         extra_params=extra_params,
-                        leading_expr_replacement=leading_replacements[idx],
-                        return_arg_expr=(
-                            sibling_return_args[idx]
-                            if return_call_template is not None
-                            else None
-                        ),
                     )
                 )
         return cls(
@@ -1638,14 +2016,9 @@ class SiblingOverrideStepHoist:
             suffix=suffix,
             hoist_source_owner=siblings[0].owner,
             rewrites=tuple(rewrites_list),
-            forward_return=forward_return,
+            body_template=body_template,
             extra_params=extra_params,
-            is_generator=is_generator,
             hoisted_step_expr=hoisted_step_expr,
-            return_call_template=return_call_template,
-            return_call_first_stmt=(
-                raw_middles[0][0] if return_call_template is not None else None
-            ),
         )
 
     @staticmethod
@@ -1978,6 +2351,32 @@ class SiblingOverrideStepHoist:
         return HoistedStepExpression(var_name=var_name, expr=exprs[0]), tuple(exprs)
 
     @classmethod
+    def _detect_body_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[SiblingBodyTemplate, tuple[SiblingHookBody, ...]] | None:
+        for detector in (
+            cls._detect_return_call_template,
+            cls._detect_boolop_template,
+            cls._detect_trailing_guarded_step_template,
+            cls._detect_guarded_early_return_suffix_template,
+        ):
+            matched = detector(
+                siblings,
+                raw_middles,
+                prefix_locals,
+                receiver_name,
+                restated_calls,
+            )
+            if matched is not None:
+                return matched
+        return None
+
+    @classmethod
     def _detect_return_call_template(
         cls,
         siblings: tuple[_SiblingMethod, ...],
@@ -1985,20 +2384,43 @@ class SiblingOverrideStepHoist:
         prefix_locals: frozenset[str],
         receiver_name: str,
         restated_calls: frozenset[str],
-    ) -> tuple[ReturnCallTemplate, tuple[ast.expr, ...]] | None:
+    ) -> tuple[ReturnCallTemplate, tuple[SiblingHookBody, ...]] | None:
         calls: list[ast.Call] = []
+        wrappers: list[tuple[type[ast.stmt], bool]] = []
+        preps: list[tuple[ast.stmt, ...]] = []
         for middle in raw_middles:
-            if len(middle) != 1:
+            if not middle:
                 return None
-            match middle[0]:
+            prep = middle[:-1]
+            if _has_return_statement(prep) or _contains_node_type(
+                prep, (ast.Yield, ast.YieldFrom)
+            ):
+                return None
+            preps.append(prep)
+            last = middle[-1]
+            match last:
+                case ast.Return(value=ast.Await(value=ast.Call() as call)):
+                    calls.append(call)
+                    wrappers.append((ast.Return, True))
                 case ast.Return(value=ast.Call() as call):
                     calls.append(call)
+                    wrappers.append((ast.Return, False))
+                case ast.Expr(value=ast.Await(value=ast.Call() as call)):
+                    calls.append(call)
+                    wrappers.append((ast.Expr, True))
+                case ast.Expr(value=ast.Call() as call):
+                    calls.append(call)
+                    wrappers.append((ast.Expr, False))
                 case _:
                     return None
+        if len(set(wrappers)) != 1:
+            return None
         first_call = calls[0]
         if _receiver_call_path(first_call.func, receiver_name) not in restated_calls:
             return None
-        if any(isinstance(arg, ast.Starred) for arg in first_call.args) or CallKeywords.of(first_call.keywords).splats:
+        if any(isinstance(arg, ast.Starred) for arg in first_call.args) or CallKeywords.of(
+            first_call.keywords
+        ).splats:
             return None
         kw_names = tuple(kw.arg for kw in first_call.keywords)
         first = siblings[0]
@@ -2045,9 +2467,17 @@ class SiblingOverrideStepHoist:
                 diff_kw.append(j)
         if len(diff_pos) + len(diff_kw) != 1:
             return None
+        prep_bound = frozenset().union(
+            *(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prep) for prep in preps)
+        )
         if diff_pos:
             slot_index = diff_pos[0]
             slot_exprs = tuple(call.args[slot_index] for call in calls)
+            fixed_exprs: list[ast.expr] = [
+                *(arg for idx, arg in enumerate(first_call.args) if idx != slot_index),
+                *(kw.value for kw in first_call.keywords),
+            ]
+            has_earlier_args = slot_index > 0
             sanitized_args = [
                 ast.Constant(value=None) if idx == slot_index else arg
                 for idx, arg in enumerate(first_call.args)
@@ -2060,6 +2490,15 @@ class SiblingOverrideStepHoist:
         else:
             kw_index = diff_kw[0]
             slot_exprs = tuple(call.keywords[kw_index].value for call in calls)
+            fixed_exprs = [
+                *first_call.args,
+                *(
+                    kw.value
+                    for idx, kw in enumerate(first_call.keywords)
+                    if idx != kw_index
+                ),
+            ]
+            has_earlier_args = bool(first_call.args) or kw_index > 0
             sanitized_keywords = [
                 ast.keyword(arg=kw.arg, value=ast.Constant(value=None))
                 if idx == kw_index
@@ -2071,14 +2510,298 @@ class SiblingOverrideStepHoist:
                 args=list(first_call.args),
                 keywords=sanitized_keywords,
             )
-        return (
-            ReturnCallTemplate(
-                template_call=first_call,
-                varying_slot_expr=slot_exprs[0],
-                import_checked_stmt=ast.Expr(value=sanitized_call),
-            ),
-            slot_exprs,
+        if prep_bound and (
+            _read_names(tuple(ast.Expr(value=expr) for expr in (first_call.func, *fixed_exprs)))
+            & prep_bound
+        ):
+            return None
+        has_prep = any(bool(prep) for prep in preps)
+        hoist_var_name: str | None = None
+        if has_prep:
+            if has_earlier_args:
+                return None
+            forbidden = prefix_locals | _read_names((raw_middles[0][-1],))
+            hoist_var_name = next(
+                (
+                    name
+                    for name in ("_step_value", "_step_arg", "_hook_value")
+                    if name not in forbidden
+                ),
+                None,
+            )
+            if hoist_var_name is None:
+                return None
+        template = ReturnCallTemplate(
+            template_stmt=raw_middles[0][-1],
+            template_call=first_call,
+            varying_slot_expr=slot_exprs[0],
+            import_checked_stmt=ast.Expr(value=sanitized_call),
+            hoist_var_name=hoist_var_name,
         )
+        hook_bodies = tuple(
+            ReturningExprHookBody(prep=prep, return_expr=slot_expr)
+            for prep, slot_expr in zip(preps, slot_exprs, strict=True)
+        )
+        return template, hook_bodies
+
+    @classmethod
+    def _detect_boolop_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[BoolOpTemplate, tuple[SiblingHookBody, ...]] | None:
+        boolops: list[ast.BoolOp] = []
+        preps: list[tuple[ast.stmt, ...]] = []
+        for middle in raw_middles:
+            if not middle:
+                return None
+            prep = middle[:-1]
+            if _has_return_statement(prep) or _contains_node_type(
+                prep, (ast.Yield, ast.YieldFrom)
+            ):
+                return None
+            match middle[-1]:
+                case ast.Return(value=ast.BoolOp() as boolop) if len(boolop.values) >= 2:
+                    boolops.append(boolop)
+                    preps.append(prep)
+                case _:
+                    return None
+        op_type = type(boolops[0].op)
+        if any(type(b.op) is not op_type for b in boolops[1:]):
+            return None
+        first = siblings[0]
+        first_values = boolops[0].values
+        min_operands = min(len(b.values) for b in boolops)
+        prep_bound = frozenset().union(
+            *(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prep) for prep in preps)
+        )
+
+        # Try shared trailing operands: `return <hook> and/or <shared_tail>`.
+        tail_len = 0
+        while tail_len < min_operands - 1:
+            expr_0 = first_values[len(first_values) - 1 - tail_len]
+            if _read_names((ast.Expr(value=expr_0),)) & prep_bound:
+                break
+            if all(
+                cls._statements_semantically_equal(
+                    first,
+                    sibling,
+                    ast.Expr(value=expr_0),
+                    ast.Expr(value=b.values[len(b.values) - 1 - tail_len]),
+                    prefix_locals,
+                )
+                for sibling, b in zip(siblings[1:], boolops[1:], strict=True)
+            ):
+                tail_len += 1
+            else:
+                break
+        if tail_len > 0:
+            shared_tail = tuple(first_values[len(first_values) - tail_len :])
+            if _statement_calls_any_step(
+                tuple(ast.Expr(value=e) for e in shared_tail),
+                receiver_name,
+                restated_calls,
+            ):
+                template = BoolOpTemplate(
+                    op=boolops[0].op,
+                    shared_operands=shared_tail,
+                    hook_first=True,
+                )
+                hook_bodies = tuple(
+                    ReturningBoolOpHookBody(
+                        prep=prep,
+                        op=b.op,
+                        operands=tuple(b.values[: len(b.values) - tail_len]),
+                    )
+                    for prep, b in zip(preps, boolops, strict=True)
+                )
+                return template, hook_bodies
+
+        # Try shared leading operands (only when no sibling has prep statements):
+        # `return <shared_head> and/or <hook>`.
+        if any(bool(prep) for prep in preps):
+            return None
+        head_len = 0
+        while head_len < min_operands - 1:
+            expr_0 = first_values[head_len]
+            if all(
+                cls._statements_semantically_equal(
+                    first,
+                    sibling,
+                    ast.Expr(value=expr_0),
+                    ast.Expr(value=b.values[head_len]),
+                    prefix_locals,
+                )
+                for sibling, b in zip(siblings[1:], boolops[1:], strict=True)
+            ):
+                head_len += 1
+            else:
+                break
+        if head_len > 0:
+            shared_head = tuple(first_values[:head_len])
+            if _statement_calls_any_step(
+                tuple(ast.Expr(value=e) for e in shared_head),
+                receiver_name,
+                restated_calls,
+            ):
+                template = BoolOpTemplate(
+                    op=boolops[0].op,
+                    shared_operands=shared_head,
+                    hook_first=False,
+                )
+                hook_bodies = tuple(
+                    ReturningBoolOpHookBody(
+                        prep=(),
+                        op=b.op,
+                        operands=tuple(b.values[head_len:]),
+                    )
+                    for b in boolops
+                )
+                return template, hook_bodies
+        return None
+
+    @classmethod
+    def _detect_trailing_guarded_step_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[TrailingGuardedStepTemplate, tuple[SiblingHookBody, ...]] | None:
+        preps: list[tuple[ast.stmt, ...]] = []
+        conditions: list[ast.expr] = []
+        bodies: list[tuple[ast.stmt, ...]] = []
+        for middle in raw_middles:
+            if not middle:
+                return None
+            prep = middle[:-1]
+            if _has_return_statement(prep) or _contains_node_type(
+                prep, (ast.Yield, ast.YieldFrom)
+            ):
+                return None
+            match middle[-1]:
+                case ast.If(test=cond, body=if_body, orelse=[]) if if_body and not _contains_node_type(
+                    (ast.Expr(value=cond),), (ast.NamedExpr, ast.Yield, ast.YieldFrom)
+                ):
+                    preps.append(prep)
+                    conditions.append(cond)
+                    bodies.append(tuple(if_body))
+                case _:
+                    return None
+        first_body = bodies[0]
+        if _contains_node_type(first_body, (ast.Break, ast.Continue)):
+            return None
+        if not _statement_calls_any_step(first_body, receiver_name, restated_calls):
+            return None
+        prep_bound = frozenset().union(
+            *(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prep) for prep in preps)
+        )
+        if _read_names(first_body) & prep_bound:
+            return None
+        first = siblings[0]
+        for sibling, other_body in zip(siblings[1:], bodies[1:], strict=True):
+            if len(other_body) != len(first_body):
+                return None
+            local_names = set(prefix_locals)
+            for stmt_a, stmt_b in zip(first_body, other_body, strict=True):
+                if not cls._statements_semantically_equal(
+                    first, sibling, stmt_a, stmt_b, frozenset(local_names)
+                ):
+                    return None
+                local_names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((stmt_a,)))
+        template = TrailingGuardedStepTemplate(guarded_body=first_body)
+        hook_bodies = tuple(
+            ReturningExprHookBody(prep=prep, return_expr=cond)
+            for prep, cond in zip(preps, conditions, strict=True)
+        )
+        return template, hook_bodies
+
+    @classmethod
+    def _detect_guarded_early_return_suffix_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[GuardedEarlyReturnSuffixTemplate, tuple[SiblingHookBody, ...]] | None:
+        min_len = min(len(middle) for middle in raw_middles)
+        if min_len < 2:
+            return None
+        first = siblings[0]
+        first_middle = raw_middles[0]
+        tail_len = 0
+        while tail_len < min_len - 1:
+            stmt_0 = first_middle[len(first_middle) - 1 - tail_len]
+            if all(
+                cls._statements_semantically_equal(
+                    first,
+                    sibling,
+                    stmt_0,
+                    middle[len(middle) - 1 - tail_len],
+                    prefix_locals,
+                )
+                for sibling, middle in zip(siblings[1:], raw_middles[1:], strict=True)
+            ):
+                tail_len += 1
+            else:
+                break
+        if tail_len == 0:
+            return None
+        shared_tail = first_middle[len(first_middle) - tail_len :]
+        if _contains_node_type(shared_tail, (ast.Break, ast.Continue)):
+            return None
+        if not _statement_calls_any_step(shared_tail, receiver_name, restated_calls):
+            return None
+        preps: list[tuple[ast.stmt, ...]] = []
+        conditions: list[ast.expr] = []
+        early_bodies: list[tuple[ast.stmt, ...]] = []
+        for middle in raw_middles:
+            before_tail = middle[: len(middle) - tail_len]
+            if not before_tail:
+                return None
+            prep = before_tail[:-1]
+            if _has_return_statement(prep) or _contains_node_type(
+                prep, (ast.Yield, ast.YieldFrom)
+            ):
+                return None
+            match before_tail[-1]:
+                case ast.If(test=cond, body=if_body, orelse=[]) if (
+                    len(if_body) == 1
+                    and isinstance(if_body[0], ast.Return)
+                    and not _contains_node_type(
+                        (ast.Expr(value=cond),), (ast.NamedExpr, ast.Yield, ast.YieldFrom)
+                    )
+                ):
+                    preps.append(prep)
+                    conditions.append(cond)
+                    early_bodies.append(tuple(if_body))
+                case _:
+                    return None
+        first_early = early_bodies[0]
+        prep_bound = frozenset().union(
+            *(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prep) for prep in preps)
+        )
+        if (_read_names(first_early) | _read_names(shared_tail)) & prep_bound:
+            return None
+        for sibling, other_early in zip(siblings[1:], early_bodies[1:], strict=True):
+            if not cls._statements_semantically_equal(
+                first, sibling, first_early[0], other_early[0], prefix_locals
+            ):
+                return None
+        template = GuardedEarlyReturnSuffixTemplate(
+            early_return_body=first_early,
+            shared_tail=shared_tail,
+        )
+        hook_bodies = tuple(
+            ReturningExprHookBody(prep=prep, return_expr=cond)
+            for prep, cond in zip(preps, conditions, strict=True)
+        )
+        return template, hook_bodies
 
     @staticmethod
     def _require_dataflow_safe(
@@ -2290,29 +3013,12 @@ class SiblingOverrideStepHoist:
         hook_call = _forwarded_hook_call(
             self.declaring_method, self.hook_name, extra_params=self.extra_params
         )
-        if (
-            self.return_call_template is not None
-            and self.return_call_first_stmt is not None
-        ):
-            call_line = _render_statement_with_expr_replaced(
-                hoist_source,
-                self.return_call_first_stmt,
-                self.return_call_template.varying_slot_expr,
-                hook_call,
-                inner_indent,
-            )
-        elif self.is_generator:
-            call_line = (
-                f"{inner_indent}return (yield from {hook_call})\n"
-                if self.forward_return
-                else f"{inner_indent}yield from {hook_call}\n"
-            )
-        else:
-            call_line = (
-                f"{inner_indent}return {hook_call}\n"
-                if self.forward_return
-                else f"{inner_indent}{hook_call}\n"
-            )
+        call_line = self.body_template.render_template_call(
+            hoist_source,
+            hoist_source_lines,
+            hook_call,
+            inner_indent,
+        )
         template_pieces.append(call_line)
         for statement in self.suffix:
             template_pieces.append(
@@ -2320,14 +3026,14 @@ class SiblingOverrideStepHoist:
             )
         template_pieces.append("\n")
         template_pieces.append(
-            self.hook_declaration.render(
+            self.body_template.render_hook_declaration(
+                self.hook_declaration,
                 self.declaring_method,
                 self.hook_name,
                 indent,
                 self.method_kind,
                 declaring_lines,
                 extra_params=self.extra_params,
-                preserve_return_annotation=self.return_call_template is None,
             )
         )
 
@@ -2339,8 +3045,7 @@ class SiblingOverrideStepHoist:
         hoisted_statements: list[ast.stmt] = [*self.prefix, *self.suffix]
         if self.hoisted_step_expr is not None:
             hoisted_statements.append(ast.Expr(value=self.hoisted_step_expr.expr))
-        if self.return_call_template is not None:
-            hoisted_statements.append(self.return_call_template.import_checked_stmt)
+        hoisted_statements.extend(self.body_template.import_checked_statements())
         all_edits: list[NominalSourceEdit] = [
             *body.geometry.physical_edits(
                 file_path=declaring.file_path,
@@ -2470,11 +3175,15 @@ class SiblingOverrideStepFindingRecipeSynthesizer(
 
 __all__ = (
     "AbstractHookDeclaration",
+    "BoolOpTemplate",
     "CachedPropertyMethodKind",
     "ClassMethodKind",
     "DeleteEmptySiblingOverride",
+    "DirectHookTemplate",
+    "DirectMiddleHookBody",
     "EmptyGeneratorHookDeclaration",
     "ExtraHookParams",
+    "GuardedEarlyReturnSuffixTemplate",
     "HoistSiblingOverrideStepOperation",
     "HoistedStepExpression",
     "HookDeclaration",
@@ -2485,10 +3194,15 @@ __all__ = (
     "PlainMethodKind",
     "PropertyMethodKind",
     "ReturnCallTemplate",
+    "ReturningBoolOpHookBody",
+    "ReturningExprHookBody",
     "RewriteSiblingToHook",
+    "SiblingBodyTemplate",
+    "SiblingHookBody",
     "SiblingOverrideStepCandidate",
     "SiblingOverrideStepFindingRecipeSynthesizer",
     "SiblingOverrideStepHoist",
     "SiblingRewrite",
+    "TrailingGuardedStepTemplate",
     "sibling_override_step_candidates",
 )
