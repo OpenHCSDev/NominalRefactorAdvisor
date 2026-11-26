@@ -768,6 +768,7 @@ class DeclaredReceiverTyping:
     function_returns: Mapping[str, tuple[CompactAnnotatedFunctionReturn, ...]]
     type_variables_by_module: Mapping[str, tuple[str, ...]]
     declarations: StubDeclarations
+    type_aliases_by_module: Mapping[str, Mapping[str, str]] = field(default_factory=dict)
 
     @classmethod
     def from_projections(
@@ -820,6 +821,11 @@ class DeclaredReceiverTyping:
                 for projection in projections
             },
             declarations=declarations,
+            type_aliases_by_module={
+                projection.module_name: dict(projection.type_aliases)
+                for projection in projections
+                if projection.type_aliases
+            },
         )
 
     # members and calls ---------------------------------------------------
@@ -991,6 +997,57 @@ class DeclaredReceiverTyping:
             return UndeclaredType(f"`{qualified}` names no scanned class")
         return self.declarations.unbound(qualified)
 
+    def resolve_type_alias(self, qualified: str) -> tuple[str, str, str] | None:
+        """Follow re-exports to a module-level type alias `(symbol, module, expr)`."""
+
+        current = qualified
+        for _hop in range(REEXPORT_HOPS):
+            owner, _, name = current.rpartition(".")
+            if not owner:
+                return None
+            alias_expr = self.type_aliases_by_module.get(owner, {}).get(name)
+            if alias_expr is not None:
+                return current, owner, alias_expr
+            following = self.aliases_by_module.get(owner, {}).get(name, current)
+            if following == current:
+                break
+            current = following
+        return None
+
+    def unscanned_annotation(
+        self, qualified: str, scope: AnnotationScope
+    ) -> DeclaredType:
+        """Resolve an unscanned annotation name via declared type aliases before failing."""
+
+        resolved = self.resolve_type_alias(qualified)
+        if resolved is None and self.declarations.typing is not self:
+            resolved = self.declarations.typing.resolve_type_alias(qualified)
+            if resolved is not None:
+                alias_symbol, alias_module, alias_source = resolved
+                if alias_symbol not in scope.seen_aliases:
+                    return self.declarations.typing.annotation_source_type(
+                        alias_module,
+                        alias_source,
+                        AnnotationScope(
+                            scope.self_type,
+                            scope.parameters,
+                            scope.seen_aliases | {alias_symbol},
+                        ),
+                    )
+        if resolved is not None:
+            alias_symbol, alias_module, alias_source = resolved
+            if alias_symbol not in scope.seen_aliases:
+                return self.annotation_source_type(
+                    alias_module,
+                    alias_source,
+                    AnnotationScope(
+                        scope.self_type,
+                        scope.parameters,
+                        scope.seen_aliases | {alias_symbol},
+                    ),
+                )
+        return self.unscanned(qualified)
+
     # references -------------------------------------------------------------
 
     def reference(self, module_name: str, parts: tuple[str, ...]) -> DeclaredType:
@@ -1082,7 +1139,7 @@ class DeclaredReceiverTyping:
             return scope.self_type
         if qualified in ANY_SPELLINGS:
             return UndeclaredType("`Any` declares no type")
-        return self.class_symbol(module_name, parts).instance(self)
+        return self.class_symbol(module_name, parts).annotation_instance(self, scope)
 
     def subscripted_type(
         self,
@@ -1132,6 +1189,13 @@ class ScannedClassLookup(ABC):
     @abstractmethod
     def instance(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         """The name used as an annotation."""
+
+    def annotation_instance(
+        self, typing: DeclaredReceiverTyping, scope: AnnotationScope
+    ) -> DeclaredType:
+        """The name used as an annotation, allowing type alias expansion."""
+        del scope
+        return self.instance(typing)
 
     @abstractmethod
     def class_object(self, typing: DeclaredReceiverTyping) -> DeclaredType:
@@ -1190,6 +1254,11 @@ class UnscannedName(ScannedClassLookup):
 
     def instance(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.unscanned(self.qualified)
+
+    def annotation_instance(
+        self, typing: DeclaredReceiverTyping, scope: AnnotationScope
+    ) -> DeclaredType:
+        return typing.unscanned_annotation(self.qualified, scope)
 
     def class_object(self, typing: DeclaredReceiverTyping) -> DeclaredType:
         return typing.unscanned(self.qualified)
@@ -1338,6 +1407,7 @@ class AnnotationScope:
 
     self_type: DeclaredType
     parameters: Mapping[str, DeclaredType] = field(default_factory=dict)
+    seen_aliases: frozenset[str] = frozenset()
 
 
 OUTSIDE_METHOD = AnnotationScope(UndeclaredType("`Self` outside a method names no class"))
