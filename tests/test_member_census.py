@@ -380,6 +380,10 @@ def test_inheritance_amortization_disk_cache_hits_and_invalidates_on_edit(
 
     class _FailIfMypyRuns:
         @staticmethod
+        def has_active_incremental() -> bool:
+            return False
+
+        @staticmethod
         def scoped_session(*args, **kwargs):
             raise AssertionError("warm inheritance amortization cache should skip mypy")
 
