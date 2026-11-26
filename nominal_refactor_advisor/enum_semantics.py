@@ -146,6 +146,10 @@ class PythonEnumDeclarationFacet(ABC):
     def require_mapping_key(self, member_name: str) -> Hashable:
         raise NotImplementedError
 
+    def plain_enum_declaration(self, indexed):
+        """Return this declaration authority when it is a plain enum."""
+        return False
+
 
 @dataclass(frozen=True)
 class NoEnumDeclaration(PythonEnumDeclarationFacet):
@@ -203,6 +207,13 @@ class PythonEnumDeclarationAuthority(PythonEnumDeclarationFacet):
             raise ValueError(
                 f"Enum declaration has no member {member_name!r}"
             ) from error
+
+    def plain_enum_declaration(self, indexed):
+        match self.base:
+            case PythonEnumBaseKind.ENUM:
+                return not indexed.method_names
+            case _:
+                return False
 
 
 @dataclass(frozen=True)

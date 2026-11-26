@@ -47,21 +47,12 @@ from nominal_refactor_advisor.codemod_source_edits import (
     SourceTextSpanReplacement,
 )
 from nominal_refactor_advisor.codemod_statement_source import StatementDeletionSource
-from nominal_refactor_advisor.declared_receivers import (
-    DeclaredClassObject,
-    DeclaredInstance,
-)
 from nominal_refactor_advisor.models import (
     ConstantSubtypeAnswerMetrics,
     RefactorFinding,
 )
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
-from nominal_refactor_advisor.probe_owner import (
-    InferredReceiverType,
-    ProbeOwnerResolver,
-    ReceiverSpan,
-)
 from nominal_refactor_advisor.refactor_concepts import ConstantSubtypeAnswerConcept
 from nominal_refactor_advisor.refactors.class_overlap import (
     obsolete_import_edits,
@@ -77,7 +68,6 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     BooleanPredicateDispatchSite,
     BoolOpSuffixDispatchSite,
     CapturedArgument,
-    ClassDispatchKind,
     ClassEnclosure,
     DispatchKind,
     DispatchSite,
@@ -1593,39 +1583,7 @@ def _resolve_dispatch_kind(
 ) -> DispatchKind:
     positional = (*function.args.posonlyargs, *function.args.args)
     first_param = positional[0].arg if positional else None
-    if (
-        isinstance(enclosure, ClassEnclosure)
-        and isinstance(subject, ast.Name)
-        and subject.id == first_param
-    ):
-        is_cm = any(
-            isinstance(dec, ast.Name) and dec.id == "classmethod"
-            for dec in function.decorator_list
-        )
-        return ClassDispatchKind() if is_cm else InstanceDispatchKind()
-
-    parsed = snapshot.parsed_module_for_source_path(source_path)
-    declared = ProbeOwnerResolver.of(parsed).builder.path_of(subject).declared(
-        snapshot.declared_receiver_typing
-    )
-    if isinstance(declared, DeclaredClassObject):
-        return ClassDispatchKind()
-    if isinstance(declared, DeclaredInstance):
-        return InstanceDispatchKind()
-
-    span = ReceiverSpan.of(source_path, subject)
-    inferred = snapshot.type_checker.receiver_types((span,)).get(span)
-    if isinstance(inferred, InferredReceiverType):
-        if inferred.instances:
-            return InstanceDispatchKind()
-        if inferred.families:
-            return ClassDispatchKind()
-
-    raise NeedsInput(
-        f"cannot determine whether `{ast.unparse(subject)}` at {source_path}:{subject.lineno} "
-        "is a class object (`type[...]`) or an instance",
-        NeededInput.PROOF,
-    )
+    return enclosure.dispatch_kind_for_receiver(subject, first_param, function, source_path, snapshot)
 
 
 def _statement_full_line_span(
@@ -1742,9 +1700,7 @@ class ConstantAnswerPushProof:
         positional = (*function.args.posonlyargs, *function.args.args)
         first_param = positional[0].arg if positional else None
         enclosure_symbol = (
-            enclosure.receiver_symbol(snapshot)
-            if isinstance(enclosure, ClassEnclosure)
-            else None
+            enclosure.class_receiver_symbol(snapshot)
         )
         in_place = (
             enclosure_symbol is not None

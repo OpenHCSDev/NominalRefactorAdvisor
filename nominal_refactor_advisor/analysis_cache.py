@@ -49,7 +49,10 @@ from nominal_refactor_advisor.implementation_identity import (
     declaration_implementation_module_names,
 )
 from nominal_refactor_advisor.models import RefactorFinding, SourceLocation
-from nominal_refactor_advisor.planner import RefactorExecutionPlanReport
+from nominal_refactor_advisor.planner import (
+    RefactorExecutionPlanReport,
+    build_refactor_execution_plan,
+)
 from nominal_refactor_advisor.quoted_reference import DeclaredInterpreter
 from nominal_refactor_advisor.scan_cache import ScanCache
 from nominal_refactor_advisor.semantic_descent import (
@@ -387,6 +390,16 @@ class AnalysisExecutionPlanLookup:
 
     status: type[AnalysisCacheStatus]
     plan: RefactorExecutionPlanReport | None = None
+
+    def cached_or_build_plan(self, root, identity, owner, cache):
+        """Return the cached execution plan on hit or build and store a fresh one."""
+        match (self.status, self.plan):
+            case [status, RefactorExecutionPlanReport() as plan] if status.is_hit:
+                return plan
+            case _:
+                execution_plan = build_refactor_execution_plan(owner.findings, root)
+                cache.store_execution_plan(identity, execution_plan)
+                return execution_plan
 
 
 @dataclass(frozen=True)
