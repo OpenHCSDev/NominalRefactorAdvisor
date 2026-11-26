@@ -6793,10 +6793,25 @@ class TypeTestDispatchProof:
                 *(po.symbol for po in precedence_overrides),
             )
         )
+        po_by_symbol = {po.symbol: po for po in precedence_overrides}
         for symbol, declarations, winner_symbol in resolved_mros:
+            active_po: PrecedenceOverridePlan | None = None
+            for decl in declarations:
+                if decl.symbol in po_by_symbol:
+                    active_po = po_by_symbol[decl.symbol]
+                    break
+            skipping_po_span = False
             for decl in declarations:
                 if decl.symbol == winner_symbol:
                     break
+                if active_po is not None:
+                    if decl.symbol == active_po.symbol:
+                        skipping_po_span = True
+                        continue
+                    if skipping_po_span:
+                        if decl.symbol == active_po.winner_symbol:
+                            skipping_po_span = False
+                        continue
                 if method_name in decl.member_binding_names:
                     # During an in-place base split, a sibling subclass that already
                     # overrides `base.<method>` and inherits none of the newly overridden

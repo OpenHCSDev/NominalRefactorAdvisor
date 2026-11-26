@@ -2867,6 +2867,58 @@ def test_split_base_method_in_place_allows_disjoint_sibling_override_and_refuses
     )
 
 
+def test_split_base_method_in_place_with_tier2_mi_precedence_override(
+    tmp_path: Path,
+) -> None:
+    """In-place base splitting of a `@classmethod` when an MI subclass lists `Base`
+    ahead of a tested mixin (with an existing shared member preventing Tier-1 base
+    reordering) emits a Tier-2 `super(Base, cls)` override without falsely flagging
+    `Base` itself as shadowing the mixin."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/stores.py": (
+                "from __future__ import annotations\n\n\n"
+                "class RootFile:\n"
+                "    tag = 'root'\n\n"
+                "    @classmethod\n"
+                "    def declaring_owner(cls) -> str:\n"
+                "        if issubclass(cls, StoreLockFile):\n"
+                "            return f'lock:{cls.__name__}'\n"
+                "        return f'root:{cls.__name__}'\n\n\n"
+                "class StoreLockFile:\n"
+                "    tag = 'lock'\n\n\n"
+                "class LockedFile(RootFile, StoreLockFile):\n"
+                "    pass\n\n\n"
+                "class ContextStore(LockedFile):\n"
+                "    pass\n\n\n"
+                "class PlainFile(RootFile):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "stores.py").read_text()
+    assert "issubclass(" not in after
+    assert "super(RootFile, cls).declaring_owner()" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    # Existing `tag` lookup order is preserved (RootFile still wins over StoreLockFile).
+    assert ns["LockedFile"].tag == "root"  # type: ignore[attr-defined]
+    assert ns["ContextStore"].tag == "root"  # type: ignore[attr-defined]
+    assert ns["PlainFile"].declaring_owner() == "root:PlainFile"  # type: ignore[attr-defined]
+    assert ns["LockedFile"].declaring_owner() == "lock:LockedFile"  # type: ignore[attr-defined]
+    assert ns["ContextStore"].declaring_owner() == "lock:ContextStore"  # type: ignore[attr-defined]
+    assert _findings(tmp_path) == []
+
+
+
 
 
 
