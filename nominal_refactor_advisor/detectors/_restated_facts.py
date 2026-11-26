@@ -53,8 +53,11 @@ from nominal_refactor_advisor.refactors.restated_fact_recipes import (
 from nominal_refactor_advisor.codemod_legacy_path_recipe import (
     LegacyPathErasureFindingRecipeSynthesizer,
 )
+from nominal_refactor_advisor.refactors.foreign_absence_branch import (
+    ForeignAbsenceProbeFindingRecipeSynthesizer,
+    PushForeignAbsenceBranchOperation,
+)
 from nominal_refactor_advisor.refactors.optional_ast_field import (
-    OptionalAstFieldDecoderFindingRecipeSynthesizer,
     RouteOptionalAstFieldProbesOperation,
 )
 from nominal_refactor_advisor.refactors.type_test_dispatch import (
@@ -63,6 +66,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
 )
 from nominal_refactor_advisor.models import (
     DispatchCountMetrics,
+    ForeignAbsenceProbeMetrics,
     ForwardingFacadeMetrics,
     OwnTypeTestMetrics,
     RefactorFinding,
@@ -788,7 +792,7 @@ def _probe_owner_context_from_files(
 
 class ForeignAbsenceProbeDetector(
     JoinedRestatedFactDetector[ProbeOwnerContext, ForeignAbsenceSite],
-    OptionalAstFieldDecoderFindingRecipeSynthesizer,
+    ForeignAbsenceProbeFindingRecipeSynthesizer,
 ):
     """`other.attr is None` or `is not None` on an object that is not the method's own."""
 
@@ -811,7 +815,10 @@ class ForeignAbsenceProbeDetector(
         fact="Each probe restates a state of the other object's type, a second copy of that type's state that the type does not declare.",
         owner="The owner is the other object's type: its states as subclasses, or a null member.",
         factoring="Give the type its states as subclasses (for example PausedGoal and ActiveGoal) or a null member, and let the consumer call a method instead of probing the attribute.",
-        operations=(RouteOptionalAstFieldProbesOperation,),
+        operations=(
+            RouteOptionalAstFieldProbesOperation,
+            PushForeignAbsenceBranchOperation,
+        ),
     )
     finding_spec = restated.spec(
         PatternId.FOREIGN_ABSENCE_PROBE,
@@ -896,6 +903,27 @@ class ForeignAbsenceProbeDetector(
             ),
             config,
         )
+
+    def finding_context(
+        self, sites: Sequence[ForeignAbsenceSite], context: ProbeOwnerContext
+    ) -> dict[str, object]:
+        resolved_symbols = {
+            symbol
+            for site in sites
+            for symbol in site.owner.resolved_in(context).class_symbols()
+            if symbol in context.classes.by_symbol
+        }
+        owner_symbol = (
+            next(iter(resolved_symbols)) if len(resolved_symbols) == 1 else None
+        )
+        return {
+            "metrics": ForeignAbsenceProbeMetrics(
+                consumer_symbol=sites[0].symbol,
+                subject_source=sites[0].group,
+                probe_lines=tuple(sorted({site.lineno for site in sites})),
+                owner_symbol=owner_symbol,
+            )
+        }
 
     def describe(
         self, sites: Sequence[ForeignAbsenceSite], context: ProbeOwnerContext

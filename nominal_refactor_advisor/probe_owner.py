@@ -106,6 +106,11 @@ class ProbeOwner(ABC):
 
         return self
 
+    def resolved_in(self, context: ProbeOwnerContext) -> ProbeOwner:
+        """This owner once both declarations and any type-checker answers are applied."""
+
+        return self
+
     def class_symbols(self) -> tuple[str, ...]:
         """The scanned class the receiver is known to be, if any."""
 
@@ -257,6 +262,9 @@ class UndeclaredProbeOwner(ProbeOwner):
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
         return context.typed[self.span].describe(field_name, context)
 
+    def resolved_in(self, context: ProbeOwnerContext) -> ProbeOwner:
+        return context.typed.get(self.span, self)
+
     def type_checker_spans(self) -> tuple[ReceiverSpan, ...]:
         return (self.span,)
 
@@ -280,6 +288,9 @@ class DeclaredPathProbeOwner(ProbeOwner):
 
     def describe(self, field_name: str, context: ProbeOwnerContext) -> str:
         return self.resolved(context.typing).describe(field_name, context)
+
+    def resolved_in(self, context: ProbeOwnerContext) -> ProbeOwner:
+        return self.resolved(context.typing).resolved_in(context)
 
 
 @dataclass(frozen=True)
