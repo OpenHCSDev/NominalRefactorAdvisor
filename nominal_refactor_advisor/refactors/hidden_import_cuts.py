@@ -165,19 +165,12 @@ class HubPlan(ABC):
 
     def evaluate_plan_recipe(self, context, owner, finding):
         """Build the recipe evaluation for this hub plan."""
-        if not isinstance(self, HubCut):
-            need = NeedsInput('; '.join((f'{refusal.hidden.location}: {need}' for refusal, need in self.needs)), *(kind for _refusal, need in self.needs for kind in need.needs))
-            return owner.stopped_evaluation(need)
-        operation = self.operation()
-        try:
-            recipe = RefactorRecipe(recipe_id=f'{finding.stable_id}-{operation.operation_key()}', reason=f'Moving {len(self.moved)} declaration(s) to `{self.destination}` lets {len(self.dissolved)} hidden import(s) load with no cycle.').with_proved_operation(operation, context)
-        except ValueError as error:
-            return owner.stopped_evaluation(error)
-        return owner.executable_evaluation(recipe)
+        need = NeedsInput('; '.join((f'{refusal.hidden.location}: {need}' for refusal, need in self.needs)), *(kind for _refusal, need in self.needs for kind in need.needs))
+        return owner.stopped_evaluation(need)
 
     def synthesis_priority(self):
         """Return parallel synthesis priority for this hub plan."""
-        return 1 if isinstance(self, HubCut) else 0
+        return 0
 
 
 @dataclass(frozen=True)
@@ -199,6 +192,17 @@ class HubCut(HubPlan):
             moved=self.moved,
             destination=self.destination,
         )
+
+    def evaluate_plan_recipe(self, context, owner, finding):
+        operation = self.operation()
+        try:
+            recipe = RefactorRecipe(recipe_id=f'{finding.stable_id}-{operation.operation_key()}', reason=f'Moving {len(self.moved)} declaration(s) to `{self.destination}` lets {len(self.dissolved)} hidden import(s) load with no cycle.').with_proved_operation(operation, context)
+        except ValueError as error:
+            return owner.stopped_evaluation(error)
+        return owner.executable_evaluation(recipe)
+
+    def synthesis_priority(self):
+        return 1
 
 
 @dataclass(frozen=True, kw_only=True)

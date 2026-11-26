@@ -135,6 +135,11 @@ class TypeCheckerSources(ABC):
         finally:
             session.stop()
 
+    def started(self) -> TypeCheckerSession:
+        """Build these sources once with exported types, or name why that failed:
+    a session for receivers asked about later, so it keeps every file's types."""
+        return TypeCheckerSession._built(self, AllBuiltExpressions())
+
 
 @dataclass(frozen=True)
 class SourceFiles(TypeCheckerSources):
@@ -177,6 +182,21 @@ class SourceTexts(TypeCheckerSources):
             if existing._failed:
                 _incremental_type_checker_slot()[0] = None
         return super().resolve_answers(asked)
+
+    def started(self) -> TypeCheckerSession:
+        existing = TypeCheckerSession._active_incremental()
+        if existing is not None:
+            synced = existing.sync_corpus(self)
+            if synced is not None:
+                return synced
+            if existing._failed:
+                _incremental_type_checker_slot()[0] = None
+        if ScanCache.active() is not None and len(self.modules) >= 16:
+            seeded = FineGrainedTypeChecker.seeded(self)
+            if isinstance(seeded, FineGrainedTypeChecker):
+                _incremental_type_checker_slot()[0] = seeded
+                return seeded
+        return super().started()
 
 
 def _writes_receiver_attribute(node: ast.AST, receiver_names: frozenset[str]) -> bool:
@@ -642,20 +662,7 @@ class TypeCheckerSession(ABC):
         """Build these sources once with exported types, or name why that failed:
         a session for receivers asked about later, so it keeps every file's types."""
 
-        if isinstance(sources, SourceTexts):
-            existing = TypeCheckerSession._active_incremental()
-            if existing is not None:
-                synced = existing.sync_corpus(sources)
-                if synced is not None:
-                    return synced
-                if existing._failed:
-                    _incremental_type_checker_slot()[0] = None
-            if ScanCache.active() is not None and len(sources.modules) >= 16:
-                seeded = FineGrainedTypeChecker.seeded(sources)
-                if isinstance(seeded, FineGrainedTypeChecker):
-                    _incremental_type_checker_slot()[0] = seeded
-                    return seeded
-        return TypeCheckerSession._built(sources, AllBuiltExpressions())
+        return sources.started()
 
     @staticmethod
     def answers(
