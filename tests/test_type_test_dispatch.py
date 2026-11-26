@@ -2245,6 +2245,58 @@ def test_non_pushable_if_test_does_not_downgrade_to_boolean_predicate(
     assert "not a pushable dispatch shape" in (ev.rejection_reason or "")
 
 
+def test_staticmethod_first_param_uses_declared_annotation_not_enclosing_class(
+    tmp_path: Path,
+) -> None:
+    """A `@staticmethod` declared on an unrelated class has no `self`/`cls` receiver,
+    so dispatching on its first parameter resolves that parameter's own annotation
+    rather than the enclosing class."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/session.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Sources:\n"
+                "    pass\n\n\n"
+                "class InlineSources(Sources):\n"
+                "    def __init__(self, cached: str | None) -> None:\n"
+                "        self.cached = cached\n\n\n"
+                "class FileSources(Sources):\n"
+                "    pass\n\n\n"
+                "class Session:\n"
+                "    @staticmethod\n"
+                "    def answers(sources: Sources, log: list[str]) -> str:\n"
+                "        if isinstance(sources, InlineSources):\n"
+                "            if sources.cached is not None:\n"
+                "                return sources.cached\n"
+                "        log.append('build')\n"
+                "        try:\n"
+                "            return 'built'\n"
+                "        finally:\n"
+                "            log.append('stop')\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "session.py").read_text()
+    assert "return sources.answers(log)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    log: list[str] = []
+    assert ns["Session"].answers(ns["InlineSources"]("hit"), log) == "hit"  # type: ignore[attr-defined]
+    assert log == []
+    assert ns["Session"].answers(ns["FileSources"](), log) == "built"  # type: ignore[attr-defined]
+    assert log == ["build", "stop"]
+    assert _findings(tmp_path) == []
+
+
+
 
 
 

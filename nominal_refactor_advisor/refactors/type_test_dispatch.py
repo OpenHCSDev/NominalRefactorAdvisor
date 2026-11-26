@@ -2677,15 +2677,32 @@ class ModuleEnclosure(FunctionEnclosure):
         return module.body
 
 
+def _is_staticmethod(function: FunctionNode) -> bool:
+    return any(
+        isinstance(dec, ast.Name) and dec.id == "staticmethod"
+        for dec in function.decorator_list
+    )
+
+
 @dataclass(frozen=True)
-class ClassEnclosure(FunctionEnclosure):
-    """Method declared directly on a scanned class."""
+class StaticMethodEnclosure(FunctionEnclosure):
+    """`@staticmethod` declared directly on a scanned class (no `self`/`cls` receiver)."""
 
     owner: ResolvedClassTarget
 
     def body_statements(self, module: ast.Module) -> list[ast.stmt]:
         del module
         return self.owner.node.body
+
+    def enclosing_type_param_names(self) -> frozenset[str]:
+        return frozenset(
+            tp.name for tp in getattr(self.owner.node, "type_params", ())
+        )
+
+
+@dataclass(frozen=True)
+class ClassEnclosure(StaticMethodEnclosure):
+    """Instance or class method declared directly on a scanned class."""
 
     def receiver_symbol(self, snapshot: CodemodSourceSnapshot) -> str | None:
         return self.owner.required_symbol(snapshot)
@@ -2708,11 +2725,6 @@ class ClassEnclosure(FunctionEnclosure):
         positional = (*function.args.posonlyargs, *function.args.args)
         if not positional or positional[0].arg != receiver:
             return None
-        if any(
-            isinstance(dec, ast.Name) and dec.id == "staticmethod"
-            for dec in function.decorator_list
-        ):
-            return None
         owner_expr = _qualname_expr(self.owner.qualname)
         is_classmethod = any(
             isinstance(dec, ast.Name) and dec.id == "classmethod"
@@ -2726,11 +2738,6 @@ class ClassEnclosure(FunctionEnclosure):
             )
         return owner_expr
 
-    def enclosing_type_param_names(self) -> frozenset[str]:
-        return frozenset(
-            tp.name for tp in getattr(self.owner.node, "type_params", ())
-        )
-
     def dispatch_kind_for_receiver(self, subject, first_param, function, source_path, snapshot):
         if isinstance(subject, ast.Name) and subject.id == first_param:
             is_cm = any((isinstance(dec, ast.Name) and dec.id == 'classmethod' for dec in function.decorator_list))
@@ -2743,7 +2750,7 @@ class NestedFunctionEnclosure(FunctionEnclosure):
     """Function nested inside one or more enclosing functions (optionally inside a class)."""
 
     enclosing_functions: tuple[FunctionNode, ...]
-    enclosing_class: ClassEnclosure | None = None
+    enclosing_class: StaticMethodEnclosure | None = None
 
     def body_statements(self, module: ast.Module) -> list[ast.stmt]:
         del module
@@ -3831,16 +3838,6 @@ class TypeTestDispatchProof:
             enclosing_functions.append(outer_fn)
             current_body = outer_fn.body
 
-        if enclosing_functions:
-            enclosure: FunctionEnclosure = NestedFunctionEnclosure(
-                enclosing_functions=tuple(enclosing_functions),
-                enclosing_class=enclosing_class,
-            )
-        elif enclosing_class is not None:
-            enclosure = enclosing_class
-        else:
-            enclosure = ModuleEnclosure()
-
         function = _find_child_function(
             current_body,
             function_name,
@@ -3852,6 +3849,24 @@ class TypeTestDispatchProof:
                 f"`{qualname}` is not a top-level function or method in `{source_path}`",
                 NeededInput.SOURCE_CHANGE,
             )
+        if enclosing_functions:
+            nested_class: StaticMethodEnclosure | None = (
+                StaticMethodEnclosure(enclosing_class.owner)
+                if enclosing_class is not None and _is_staticmethod(enclosing_functions[0])
+                else enclosing_class
+            )
+            enclosure: FunctionEnclosure = NestedFunctionEnclosure(
+                enclosing_functions=tuple(enclosing_functions),
+                enclosing_class=nested_class,
+            )
+        elif enclosing_class is not None:
+            enclosure = (
+                StaticMethodEnclosure(enclosing_class.owner)
+                if _is_staticmethod(function)
+                else enclosing_class
+            )
+        else:
+            enclosure = ModuleEnclosure()
         return source_path, enclosure, function
 
     @classmethod
