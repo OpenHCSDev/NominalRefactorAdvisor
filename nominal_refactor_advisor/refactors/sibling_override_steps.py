@@ -1537,9 +1537,8 @@ class VariadicReturnCallTemplate(SiblingBodyTemplate):
             else f"*{hook_call}"
         )
         kw_parts = [
-            f"{kw.arg}={_render_safe_expr(hoist_source, kw.value)}"
-            for kw in self.fixed_keywords
-            if kw.arg is not None
+            f"{kw.name}={_render_safe_expr(hoist_source, kw.value)}"
+            for kw in CallKeywords.of(self.fixed_keywords).named
         ]
         all_args = ", ".join((star_arg, *kw_parts))
         call_text = f"await {func_src}({all_args})" if self.is_await else f"{func_src}({all_args})"

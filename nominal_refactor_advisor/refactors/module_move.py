@@ -1357,7 +1357,7 @@ class _SourceModuleAliasRetargets:
                 for node in index.imports
                 if isinstance(node, ast.Import)
                 for alias in node.names
-                if alias.asname is not None and alias.name == source_module_name
+                if alias_names(alias) and alias.name == source_module_name
             ),
             *(
                 _FromImportedModule(node.names[0], node)
@@ -1723,10 +1723,12 @@ class _SourceModuleObjectReads:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 alias_parts = tuple(alias.name.split("."))
-                if alias.asname is None and alias_parts[0] == source_parts[0]:
+                if not alias_names(alias) and alias_parts[0] == source_parts[0]:
                     yield source_parts
-                elif alias.asname is not None and source_parts[: len(alias_parts)] == alias_parts:
-                    yield (alias.asname, *source_parts[len(alias_parts) :])
+                else:
+                    for import_alias in alias_names(alias):
+                        if source_parts[: len(alias_parts)] == alias_parts:
+                            yield (import_alias, *source_parts[len(alias_parts) :])
         elif isinstance(node, ast.ImportFrom):
             package = identity.resolve_import_from_module(
                 imported_module=node.module,
@@ -5220,9 +5222,10 @@ class DissolveModuleOperation(RetainedCallOperation):
                                 f"{other_heads!r}, outside {head!r}"
                             )
                     bound = tuple(
-                        alias.asname
+                        import_alias
                         for alias in statement.names
-                        if alias.asname is not None and alias.name == source_module_name
+                        for import_alias in alias_names(alias)
+                        if alias.name == source_module_name
                     )
                 elif isinstance(statement, ast.ImportFrom) and (
                     identity.resolve_import_from_module(

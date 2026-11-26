@@ -21,7 +21,7 @@ from typing import Generic, TypeAlias, TypeVar, cast
 
 from tree_sitter import Node
 
-from nominal_refactor_advisor.ast_field_decoders import exception_types
+from nominal_refactor_advisor.ast_field_decoders import exception_types, import_modules
 from nominal_refactor_advisor.detectors._regex_bundle import (
     RepeatedLocalRegexBundleDetector,
 )
@@ -3174,13 +3174,14 @@ class MirroredImportFallbackCandidate(LineWitnessCandidate):
 def _import_from_signature(
     statement: ast.stmt,
 ) -> tuple[str, tuple[tuple[str, str | None], ...], int] | None:
-    if not isinstance(statement, ast.ImportFrom) or statement.module is None:
-        return None
-    return (
-        statement.module,
-        tuple(((alias.name, alias.asname) for alias in statement.names)),
-        statement.level,
-    )
+    if isinstance(statement, ast.ImportFrom):
+        for import_module in import_modules(statement):
+            return (
+                import_module,
+                tuple(((alias.name, alias.asname) for alias in statement.names)),
+                statement.level,
+            )
+    return None
 
 
 def _is_import_error_handler(handler: ast.ExceptHandler) -> bool:

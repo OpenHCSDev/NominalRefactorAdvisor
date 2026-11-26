@@ -16,7 +16,10 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_field_decoders import (
+    optional_values,
+    variadic_parameters,
+)
 from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
     PayloadRecordValueCodec,
@@ -222,7 +225,12 @@ def _trivial_pure_return(statements: Sequence[ast.stmt]) -> ast.Return | None:
     if len(statements) != 1 or not isinstance(statements[0], ast.Return):
         return None
     ret = statements[0]
-    if ret.value is None or _is_trivial_pure_return_expr(ret.value):
+    if all(
+        (
+            _is_trivial_pure_return_expr(optional_value)
+            for optional_value in optional_values(ret)
+        )
+    ):
         return ret
     return None
 

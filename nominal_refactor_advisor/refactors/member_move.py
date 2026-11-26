@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import ClassVar, NamedTuple
 
+from nominal_refactor_advisor.ast_field_decoders import alias_names
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.refactors.answered_method import (
     AnsweredMethod as AnsweredMethod,
@@ -823,7 +824,13 @@ def carried_imports(
                 alias for alias in statement.names
                 if ImportBoundNameProjection(statement).alias_bound_name(alias) == name
             )
-            spelled = alias.name if alias.asname is None else f"{alias.name} as {alias.asname}"
+            spelled = next(
+                (
+                    f"{alias.name} as {import_alias}"
+                    for import_alias in alias_names(alias)
+                ),
+                alias.name,
+            )
             import_source = f"from {statement.module} import {spelled}\n"
         else:
             import_source = graph.required_import_source(

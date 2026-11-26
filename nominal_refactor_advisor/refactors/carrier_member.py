@@ -7,6 +7,7 @@ import copy
 from dataclasses import dataclass
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_field_decoders import optional_values
 from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.codemod_payload import (
     PayloadRecordValueCodec,
@@ -200,10 +201,10 @@ class CarrierFieldBecomesMemberOperation(RepositorySourceReprovedOperation):
             declaration.annotation,
             f"type[{family_name}] | None" if carrier.optional else f"type[{family_name}]",
         )
-        if declaration.value is not None:
-            member = carrier.carried(source_path, declaration.value, source_parents, f"{source_path}:{declaration.lineno}")
+        for optional_value in optional_values(declaration):
+            member = carrier.carried(source_path, optional_value, source_parents, f"{source_path}:{declaration.lineno}")
             if member is not None:
-                replace(source_path, declaration.value, member.source)
+                replace(source_path, optional_value, member.source)
         index = snapshot.required_class_family_index
         spellings = {index.classes_by_symbol[symbol].simple_name for symbol in answered.family}
         for parsed in snapshot.parsed_modules:

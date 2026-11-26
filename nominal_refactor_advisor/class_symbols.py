@@ -9,7 +9,10 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import ClassVar
 
-from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
+from nominal_refactor_advisor.ast_field_decoders import (
+    capture_names,
+    variadic_parameters,
+)
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.module_node_index import ScopedImportBindings
@@ -99,8 +102,8 @@ class _InnerScopeBoundNameSuperset(ParsedModuleFact):
                 bound.add(node.name)
             elif node_t is except_type:
                 assert isinstance(node, ast.ExceptHandler)
-                if node.name is not None:
-                    bound.add(node.name)
+                for capture_name in capture_names(node):
+                    bound.add(capture_name)
             elif node_t is import_type:
                 assert isinstance(node, ast.Import)
                 for alias in node.names:
