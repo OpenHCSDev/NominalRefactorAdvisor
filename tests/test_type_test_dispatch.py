@@ -1514,8 +1514,9 @@ def test_match_with_call_subject_subpatterns_and_guard_folds_and_evaluates_once(
         },
     )
     findings = _findings(tmp_path)
-    by_sym = {f.primary_evidence.symbol: f for f in findings}
-    assert set(by_sym) == {"resolve_payload", "collect_type_setattr"}
+    # 3 findings: outer Lookup match, nested Payload subpattern on the same line, and SetattrCall match.
+    # Only the outer Lookup and SetattrCall findings execute; nested Payload must neither piggyback nor collide.
+    assert len(findings) == 3
     snap = _snapshot(tmp_path)
     plan = codemod_plan_from_findings(findings, selector_context=snap)
     assert plan.candidate_count == 2
@@ -1546,7 +1547,9 @@ def test_match_with_call_subject_subpatterns_and_guard_folds_and_evaluates_once(
     ns["collect_type_setattr"]("", counter, out)  # type: ignore[operator]
     assert counter == [1, 1, 1]
     assert out == ["my_type!"]
-    assert _findings(tmp_path) == []
+    remaining = _findings(tmp_path)
+    assert len(remaining) == 1
+    assert "Payload" in remaining[0].summary
 
 
 def test_nested_function_dispatch_captures_enclosing_locals_and_outer_self(

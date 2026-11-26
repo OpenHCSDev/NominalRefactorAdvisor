@@ -357,11 +357,14 @@ class OwnTypeTestDetector(
     def finding_context(
         self, sites: Sequence[TypeTestShape], context: DeclaredClassScope
     ) -> dict[str, object]:
-        del context
+        tested_symbols = tuple(
+            sorted({name for site in sites for name in site.own_type_names(context)})
+        )
         return {
             "metrics": OwnTypeTestMetrics(
                 consumer_symbol=sites[0].symbol,
                 test_line=sites[0].lineno,
+                tested_symbols=tested_symbols,
             )
         }
 

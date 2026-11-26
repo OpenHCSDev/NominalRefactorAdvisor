@@ -62,7 +62,7 @@ from nominal_refactor_advisor.codemod_spacing import (
     SourceInsertionBoundary,
     SourceInsertionLayer,
 )
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import OwnTypeTestMetrics, RefactorFinding
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.probe_owner import InferredReceiverType, ReceiverSpan
@@ -2833,6 +2833,8 @@ class TypeTestDispatchProof:
         base_selection: TargetBaseSelection,
         method_name: str,
         docstring: str | None = None,
+        *,
+        required_tested_symbols: Sequence[str] = (),
     ) -> TypeTestDispatchProof:
         if (
             not method_name.isidentifier()
@@ -2875,6 +2877,14 @@ class TypeTestDispatchProof:
                 symbols_for_arm.append(symbol)
                 all_tested_symbols.append(symbol)
             resolved_arm_symbols.append(tuple(symbols_for_arm))
+
+        if required_tested_symbols and not frozenset(required_tested_symbols).issubset(
+            all_tested_symbols
+        ):
+            raise NeedsInput(
+                f"type test at {source_path}:{test_line} is not a pushable dispatch shape",
+                NeededInput.SOURCE_CHANGE,
+            )
 
         subject_roots = _resolve_subject_roots(
             snapshot, resolver, enclosure, function, site, parents, source_path
@@ -3344,6 +3354,11 @@ class OwnTypeTestFindingRecipeSynthesizer(
                     NeededInput.SOURCE_CHANGE,
                 )
             )
+        required_tested_symbols = (
+            finding.metrics.tested_symbols
+            if isinstance(finding.metrics, OwnTypeTestMetrics)
+            else ()
+        )
         if pick is not None:
             method_name = pick.name
             docstring: str | None = pick.judgement
@@ -3363,6 +3378,7 @@ class OwnTypeTestFindingRecipeSynthesizer(
                     SharedAncestorBaseSelection(),
                     probe_name,
                     None,
+                    required_tested_symbols=required_tested_symbols,
                 )
             except ValueError as error:
                 return self.stopped_evaluation(error)
@@ -3383,6 +3399,7 @@ class OwnTypeTestFindingRecipeSynthesizer(
                 SharedAncestorBaseSelection(),
                 method_name,
                 docstring,
+                required_tested_symbols=required_tested_symbols,
             )
         except ValueError as error:
             return self.stopped_evaluation(error)

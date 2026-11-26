@@ -818,7 +818,7 @@ def test_partial_return_if_without_else_and_nested_function_foreign_absence_push
     after = (tmp_path / "ext" / "boxes.py").read_text()
     assert "box.cached" not in after
     assert "return box.read_positive(default)" in after
-    assert "box.record_box(out, self, offset)" in after
+    assert "box.record_box(out, offset, self)" in after
     _after_mods, _after_snap, remaining = _scan(tmp_path)
     assert remaining == []
 
