@@ -1172,6 +1172,9 @@ class CodemodSourceSnapshot(CodemodSelectorContext):
         target = group.target
         return (target.file_path, target.line, target.end_line, target.qualname)
 
+    def context_for_recipe(self, recipe):
+        return self.recipe_derivation_context(recipe)
+
 
 
 @dataclass(frozen=True)
@@ -1666,9 +1669,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             deletion
             for recipe in self.recipes
             for deletion in recipe.source_file_deletions(
-                snapshot.recipe_derivation_context(recipe)
-                if isinstance(snapshot, CodemodSourceSnapshot)
-                else snapshot
+                snapshot.context_for_recipe(recipe)
             )
         )
 
@@ -4103,8 +4104,7 @@ class CurrentSnapshotRecipeBatchEvaluation:
             return True
         return (
             isinstance(left, SourceInsertion)
-            and isinstance(right, SourceInsertion)
-            and left.insertion_line == right.insertion_line
+            and right.inserts_at_same_line(left)
         )
 
     def assess_pair(
@@ -4702,6 +4702,11 @@ class CommittedCodemodSource:
             return
         os.replace(self.backup_path, self.target_path)
 
+    def unlink_backup(self):
+        """Remove this committed source's backup file when one was created."""
+        if self.backup_path is not None:
+            self.backup_path.unlink(missing_ok=True)
+
 
 @dataclass(frozen=True)
 class CodemodSimulationWriter:
@@ -4731,8 +4736,7 @@ class CodemodSimulationWriter:
             for staged_path in staged_paths.values():
                 staged_path.unlink(missing_ok=True)
         for committed_source in committed_sources:
-            if committed_source.backup_path is not None:
-                committed_source.backup_path.unlink(missing_ok=True)
+            committed_source.unlink_backup()
         return self.simulation.changed_file_paths
 
     def stage_sources(self) -> Mapping[str, Path]:

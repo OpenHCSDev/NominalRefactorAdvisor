@@ -692,6 +692,11 @@ class ClassFamilyCollectionDerivation(SemanticMirrorOperationTargets):
             )
         return f"{indentation}{candidate.assignment_name} = {value_source}"
 
+    def append_authority_import_edits(self, edits, owner):
+        """Append the class-family authority import edits when an import is required."""
+        if self.import_source is not None:
+            edits.extend(owner.required_import_mutations(self.projection_path, import_source=self.import_source, default_rationale='Import the class-family authority.'))
+
 
 class PositionalCollectionReads:
     """A collection read by position gives each position a role: `row_tones[alternate]`
@@ -726,14 +731,7 @@ class DeriveClassFamilyCollectionOperation(SourceDerivedAuthorityProjectionOpera
     ) -> tuple[NominalSourceEdit, ...]:
         derivation = self.required_derivation(snapshot)
         edits: list[NominalSourceEdit] = []
-        if derivation.import_source is not None:
-            edits.extend(
-                self.required_import_mutations(
-                    derivation.projection_path,
-                    import_source=derivation.import_source,
-                    default_rationale="Import the class-family authority.",
-                )
-            )
+        derivation.append_authority_import_edits(edits, self)
         statement = derivation.candidate.statement
         edits.append(
             SourceSpanReplacement(

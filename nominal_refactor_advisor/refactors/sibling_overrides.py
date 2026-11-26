@@ -126,6 +126,46 @@ class SiblingOverrideCandidate:
             for indexed, line in self.answering
         )
 
+    def require_no_existing_home(self, member_name, snapshot, declaring, verdicts, cls, base_name, docstring):
+        """Refuse declaring a new base when an existing class can already hold the member."""
+        if self.home is not None:
+            raise NeedsInput(f'`{self.home.qualname}` already exists to hold `{member_name}`; lift onto it directly instead of declaring a new base', NeededInput.SOURCE_CHANGE)
+        if self.unordered:
+            raise NeedsInput(f"lookup order of {', '.join((f'`{name}`' for name in self.unordered))} is not proved (a base has no source the scan reads)", NeededInput.PROOF)
+        require_static_c3(snapshot, declaring.facts)
+        children = tuple((OverlapClass.for_symbol(snapshot, indexed.symbol) for indexed, _ in self.answering))
+        for child in children:
+            if '.' in child.qualname:
+                raise NeedsInput(f'`{child.qualname}` is nested inside another class; declaring an intermediate base needs top-level sibling classes', NeededInput.SOURCE_CHANGE)
+        restated = tuple((RestatedDeclarations.require(snapshot, children[0], child, (member_name,)) for child in children))
+        first = restated[0]
+        first.require_no_owner_bound_values(snapshot)
+        rebase = cls._select_rebase(snapshot, verdicts, declaring, children)
+        if '.' in rebase.parent.qualname:
+            raise NeedsInput(f'`{rebase.parent.qualname}` is nested inside another class', NeededInput.SOURCE_CHANGE)
+        require_static_c3(snapshot, rebase.parent.facts)
+        rebase.require_parent_safe(snapshot)
+        placement, parent_spelling = cls._select_placement(snapshot, rebase, children, base_name)
+        cls._require_base_name_unbound(snapshot, base_name, placement, children)
+        creation_keywords = _creation_keywords_for_intermediate(snapshot, rebase.parent)
+        movable_members(ClassMemberMoveProofContext.between(snapshot, children[0].target, placement.anchor.target), children[0], first.statements)
+        cls._require_post_rebase_mro_safe(snapshot, verdicts, rebase, declaring, children, member_name, base_name, lifted_is_property=any((_is_property_statement(statement) for statement in first.statements)))
+        names = frozenset((member_name,))
+        for child, restatement in zip(children, restated):
+            ancestry = require_static_c3(snapshot, child.facts)
+            order = verdicts.linearized(child.symbol)
+            proof = MemberDeletionCreationProof(snapshot, child.facts, ancestry, f'`{child.qualname}.{member_name}`', names, frozenset(), MroWalk(order, order, child.symbol, names))
+            for statement in restatement.statements:
+                RestatedOverrideDeletion.require_once_per_class(proof, child, statement)
+            RestatedOverrideDeletion.require_plain_decorators(proof, child)
+            proof.require_unchanged()
+            NamespaceReaders(snapshot).require_unread(child.facts, names)
+        return cls(candidate=self, rebase=rebase, placement=placement, parent_spelling=parent_spelling, base_name=base_name, docstring=docstring.strip(), creation_keywords=creation_keywords, children=children, restated=restated)
+
+    def existing_home_note(self):
+        """Format the summary clause naming an existing home class when one exists."""
+        return '' if self.home is None else f'; `{self.home.qualname}` already exists to hold it: every one of them inherits it' + (' and no class answering otherwise does' if self.answering_otherwise else '')
+
 
 @dataclass(frozen=True)
 class Override:
@@ -1622,97 +1662,7 @@ class SiblingOverrideBaseExtraction(SiblingOverrideMove):
                 NeededInput.SOURCE_CHANGE,
             )
         (candidate,) = matches
-        if candidate.home is not None:
-            raise NeedsInput(
-                f"`{candidate.home.qualname}` already exists to hold `{member_name}`; "
-                "lift onto it directly instead of declaring a new base",
-                NeededInput.SOURCE_CHANGE,
-            )
-        if candidate.unordered:
-            raise NeedsInput(
-                f"lookup order of {', '.join(f'`{name}`' for name in candidate.unordered)} "
-                "is not proved (a base has no source the scan reads)",
-                NeededInput.PROOF,
-            )
-        require_static_c3(snapshot, declaring.facts)
-        children = tuple(
-            OverlapClass.for_symbol(snapshot, indexed.symbol)
-            for indexed, _ in candidate.answering
-        )
-        for child in children:
-            if "." in child.qualname:
-                raise NeedsInput(
-                    f"`{child.qualname}` is nested inside another class; declaring an "
-                    "intermediate base needs top-level sibling classes",
-                    NeededInput.SOURCE_CHANGE,
-                )
-        restated = tuple(
-            RestatedDeclarations.require(snapshot, children[0], child, (member_name,))
-            for child in children
-        )
-        first = restated[0]
-        first.require_no_owner_bound_values(snapshot)
-        rebase = cls._select_rebase(snapshot, verdicts, declaring, children)
-        if "." in rebase.parent.qualname:
-            raise NeedsInput(
-                f"`{rebase.parent.qualname}` is nested inside another class",
-                NeededInput.SOURCE_CHANGE,
-            )
-        require_static_c3(snapshot, rebase.parent.facts)
-        rebase.require_parent_safe(snapshot)
-        placement, parent_spelling = cls._select_placement(
-            snapshot, rebase, children, base_name
-        )
-        cls._require_base_name_unbound(snapshot, base_name, placement, children)
-        creation_keywords = _creation_keywords_for_intermediate(snapshot, rebase.parent)
-        movable_members(
-            ClassMemberMoveProofContext.between(
-                snapshot, children[0].target, placement.anchor.target
-            ),
-            children[0],
-            first.statements,
-        )
-        cls._require_post_rebase_mro_safe(
-            snapshot,
-            verdicts,
-            rebase,
-            declaring,
-            children,
-            member_name,
-            base_name,
-            lifted_is_property=any(
-                _is_property_statement(statement) for statement in first.statements
-            ),
-        )
-        names = frozenset((member_name,))
-        for child, restatement in zip(children, restated):
-            ancestry = require_static_c3(snapshot, child.facts)
-            order = verdicts.linearized(child.symbol)
-            proof = MemberDeletionCreationProof(
-                snapshot,
-                child.facts,
-                ancestry,
-                f"`{child.qualname}.{member_name}`",
-                names,
-                frozenset(),
-                MroWalk(order, order, child.symbol, names),
-            )
-            for statement in restatement.statements:
-                RestatedOverrideDeletion.require_once_per_class(proof, child, statement)
-            RestatedOverrideDeletion.require_plain_decorators(proof, child)
-            proof.require_unchanged()
-            NamespaceReaders(snapshot).require_unread(child.facts, names)
-        return cls(
-            candidate=candidate,
-            rebase=rebase,
-            placement=placement,
-            parent_spelling=parent_spelling,
-            base_name=base_name,
-            docstring=docstring.strip(),
-            creation_keywords=creation_keywords,
-            children=children,
-            restated=restated,
-        )
+        return candidate.require_no_existing_home(member_name, snapshot, declaring, verdicts, cls, base_name, docstring)
 
     @staticmethod
     def _require_valid_pick(base_name: str, docstring: str) -> None:

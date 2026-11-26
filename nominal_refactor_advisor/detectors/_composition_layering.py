@@ -34,6 +34,10 @@ class LayeringViolationCandidate:
     reads: tuple[LayerRead, ...]
     home: str | None
 
+    def home_layer_sentence(self):
+        """Describe the home layer for this layering candidate."""
+        return f'; its home is the `{self.home}` layer.' if self.home is not None else '; no layer below every reader loads every one of them.'
+
 
 class LayeringViolationDetector(
     LayeringViolationFindingRecipeSynthesizer,
@@ -93,9 +97,7 @@ class LayeringViolationDetector(
             f"`{candidate.module if candidate.name == candidate.module else f'{candidate.module}.{candidate.name}'}` is read from {', '.join(layers)} at "
             + ", ".join(f"{read.location} {read.symbol}".rstrip() for read in candidate.reads)
             + (
-                f"; its home is the `{candidate.home}` layer."
-                if candidate.home is not None
-                else "; no layer below every reader loads every one of them."
+                candidate.home_layer_sentence()
             ),
             (
                 SourceLocation(candidate.file_path, candidate.lineno, candidate.name),

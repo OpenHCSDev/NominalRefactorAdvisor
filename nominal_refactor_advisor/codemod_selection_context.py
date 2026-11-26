@@ -428,6 +428,10 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
             )
         return targets[0]
 
+    def context_for_recipe(self, recipe):
+        """Return the selector context to evaluate a recipe against."""
+        return self
+
 
 @dataclass(frozen=True)
 class ResolvedClassTarget:

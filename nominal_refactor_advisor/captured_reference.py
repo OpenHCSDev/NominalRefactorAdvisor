@@ -373,6 +373,12 @@ class CapturedReferenceResolution(NativeScalarValueABC):
         """Require one object's identity, not mutable implementation stability."""
         return self.require_native((declaration,))
 
+    def resolve_annotation_mutation(self, context, mutation, owner, occurrence, query):
+        """Resolve an annotation mutation against this captured namespace."""
+        if not isinstance(self, NamespaceEvidenceABC):
+            return OpenCapturedReference(CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation)
+        return query.matching_item_write(owner, occurrence) if query.namespace is self and query.key == mutation.target.annotation_name else None
+
 
 class InstanceProtocolEvidenceABC(CapturedReferenceResolution):
     """Prove a requested native instance protocol on the actual captured class."""
@@ -541,6 +547,9 @@ class OpenCapturedReference(OpaqueCapturedObjectOperations):
 
     def open_reference(self) -> OpenCapturedReference:
         return self
+
+    def resolve_annotation_mutation(self, context, mutation, owner, occurrence, query):
+        return owner._item_mutation_resolution(context, mutation)
 
 
 @dataclass(frozen=True, eq=False)
@@ -2674,16 +2683,4 @@ class CapturedReferenceKernel(
         if isinstance(local_namespace, OpenCapturedReference):
             return local_namespace
         annotation_namespace = local_namespace.annotation_namespace
-        if isinstance(annotation_namespace, OpenCapturedReference):
-            return self._item_mutation_resolution(context, mutation)
-        if not isinstance(annotation_namespace, NamespaceEvidenceABC):
-            return OpenCapturedReference(
-                CapturedReferenceViolation.UNKNOWN_RECEIVER,
-                mutation,
-            )
-        return (
-            query.matching_item_write(self, occurrence)
-            if query.namespace is annotation_namespace
-            and query.key == mutation.target.annotation_name
-            else None
-        )
+        return annotation_namespace.resolve_annotation_mutation(context, mutation, self, occurrence, query)
