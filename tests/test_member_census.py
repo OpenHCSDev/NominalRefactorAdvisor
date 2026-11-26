@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+from nominal_refactor_advisor import member_census
 from nominal_refactor_advisor.ast_tools import parse_python_modules
 from nominal_refactor_advisor.cli import main
 from nominal_refactor_advisor.json_reports import json_report_object
@@ -12,7 +13,6 @@ from nominal_refactor_advisor.member_census import (
     build_member_awareness_census,
 )
 from nominal_refactor_advisor.observation_families import type_test_shapes
-from nominal_refactor_advisor.type_checker_session import TypeCheckerSession
 
 NAME_OR_ATTRIBUTE = ("ast.Attribute", "ast.Name")
 
@@ -378,11 +378,13 @@ def test_inheritance_amortization_disk_cache_hits_and_invalidates_on_edit(
     first = build_member_awareness_census(root, cache_dir=cache).inherited
     assert first.calls_reaching_inherited == 1
 
-    def _fail_if_called(*args, **kwargs):
-        raise AssertionError("warm inheritance amortization cache should skip mypy")
+    class _FailIfMypyRuns:
+        @staticmethod
+        def scoped_session(*args, **kwargs):
+            raise AssertionError("warm inheritance amortization cache should skip mypy")
 
     with monkeypatch.context() as scoped:
-        scoped.setattr(TypeCheckerSession, "scoped_session", staticmethod(_fail_if_called))
+        scoped.setattr(member_census, "TypeCheckerSession", _FailIfMypyRuns)
         second = build_member_awareness_census(root, cache_dir=cache).inherited
     assert second == first
 

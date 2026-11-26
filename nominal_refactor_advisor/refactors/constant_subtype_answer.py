@@ -1415,7 +1415,8 @@ class ConstantAnswerFamily:
     ) -> ConstantAnswerFamily:
         base = ResolvedClassTarget.from_rewrite_target(snapshot, base_target)
         base_symbol = base.required_symbol(snapshot)
-        index = snapshot.overlap_class_index
+        verdicts = snapshot.class_overlap_verdicts
+        index = verdicts.class_index
         classes = index.classes_by_symbol
         if base_symbol not in classes:
             raise NeedsInput(f"`{base_symbol}` is not in the scanned class index", NeededInput.PROOF)
@@ -1752,7 +1753,8 @@ class ConstantAnswerPushProof:
             and method_name == function.name
         )
 
-        index = snapshot.overlap_class_index
+        verdicts = snapshot.class_overlap_verdicts
+        index = verdicts.class_index
         classes = index.classes_by_symbol
         if in_place and enclosure_symbol is not None:
             owner_symbol = enclosure_symbol
