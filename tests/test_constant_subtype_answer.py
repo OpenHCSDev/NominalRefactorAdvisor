@@ -545,3 +545,365 @@ def test_pushes_sum_and_comprehension_filter_answers_with_parity_and_deletes_fla
     ) == frozenset({"k1"})
     assert _findings(tmp_path) == []
 
+
+def test_pushes_call_and_subscript_receivers_in_comprehensions_and_prefix_or(
+    tmp_path: Path,
+):
+    """Non-pure `Call` receivers (when absent from bodies) and pure `Subscript` receivers
+    (including when reused in comprehension `elt`, rewritten to `self`) push cleanly while
+    preserving single evaluation and short-circuiting; an impure `Call` repeated inside the
+    body stays rejected."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/receivers.py": (
+                "from dataclasses import dataclass, replace\n"
+                "from typing import ClassVar\n\n\n"
+                "class Policy:\n"
+                "    selected: ClassVar[bool] = False\n\n\n"
+                "class SelectedPolicy(Policy):\n"
+                "    selected: ClassVar[bool] = True\n\n\n"
+                "class Catalog:\n"
+                "    def __init__(self, mapping: dict[str, Policy]) -> None:\n"
+                "        self.mapping = mapping\n"
+                "        self.calls: list[str] = []\n\n"
+                "    def policy_for(self, key: str) -> Policy:\n"
+                "        self.calls.append(key)\n"
+                "        return self.mapping[key]\n\n\n"
+                "def selected_keys(catalog: Catalog, keys: list[str]) -> tuple[str, ...]:\n"
+                "    return tuple(\n"
+                "        key\n"
+                "        for key in keys\n"
+                "        if catalog.policy_for(\n"
+                "            key\n"
+                "        ).selected\n"
+                "    )\n\n\n"
+                "class Progress:\n"
+                "    def for_verdict(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class OpenProgress(Progress):\n"
+                "    def for_verdict(self) -> bool:\n"
+                "        return True\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Read:\n"
+                "    key: str\n"
+                "    progress: Progress | None = None\n\n\n"
+                "def judgeable(reads: list[Read], progress: dict[str, Progress]) -> tuple[Read, ...]:\n"
+                "    return tuple(\n"
+                "        replace(read, progress=progress[read.key])\n"
+                "        for read in reads\n"
+                "        if progress[read.key].for_verdict()\n"
+                "    )\n\n\n"
+                "class Binding:\n"
+                "    removable: ClassVar[bool] = False\n\n\n"
+                "class RemovableBinding(Binding):\n"
+                "    removable: ClassVar[bool] = True\n\n\n"
+                "def first_removable(pairs: list[tuple[Binding, str]]) -> tuple[Binding, str]:\n"
+                "    return next((pair for pair in pairs if pair[0].removable), pairs[0])\n\n\n"
+                "class ThreadStatus:\n"
+                "    def is_stopped(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class StoppedStatus(ThreadStatus):\n"
+                "    def is_stopped(self) -> bool:\n"
+                "        return True\n\n\n"
+                "class Registry:\n"
+                "    def __init__(self, statuses: dict[str, ThreadStatus]) -> None:\n"
+                "        self.statuses = statuses\n"
+                "        self.lookups: list[str] = []\n\n"
+                "    def status(self, name: str) -> ThreadStatus:\n"
+                "        self.lookups.append(name)\n"
+                "        return self.statuses[name]\n\n\n"
+                "def drain(wakes_disabled: bool, reg: Registry, name: str) -> str:\n"
+                "    if wakes_disabled or reg.status(name).is_stopped():\n"
+                "        return 'held'\n"
+                "    return 'run:' + name\n\n\n"
+                "class ImpureFlag:\n"
+                "    active: ClassVar[bool] = False\n\n\n"
+                "class ActiveImpureFlag(ImpureFlag):\n"
+                "    active: ClassVar[bool] = True\n\n\n"
+                "def make_flag(items: list[ImpureFlag]) -> ImpureFlag:\n"
+                "    return items.pop(0)\n\n\n"
+                "def impure_double(items: list[ImpureFlag]) -> ImpureFlag | None:\n"
+                "    if make_flag(items).active:\n"
+                "        return make_flag(items)\n"
+                "    return None\n"
+            ),
+        },
+    )
+
+    for member_name, consumer, method_name in (
+        ("selected", "selected_keys", "selected_entries"),
+        ("for_verdict", "judgeable", "verdict_entries"),
+        ("removable", "first_removable", "removable_entries"),
+        ("is_stopped", "drain", "drain_outcome"),
+    ):
+        findings = _findings(tmp_path)
+        target = next(f for f in findings if f.metrics.member_name == member_name)
+        unpicked = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            target, _snapshot(tmp_path)
+        )
+        assert unpicked.recipe is None
+        assert NeededInput.OWNER_PICK in unpicked.needs, (member_name, unpicked.reason)
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=target.stable_id,
+                    owner=consumer,
+                    because="family owns its own receiver dispatch",
+                    name=method_name,
+                    judgement="Push constant answer branch onto the family.",
+                ),
+            ),
+        )
+        picked, _ = picks.applied((target,))
+        ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            picked[0], _snapshot(tmp_path)
+        )
+        _apply(tmp_path, ev.executable_recipe)
+
+    # Impure call repeated inside arm body must remain rejected (SOURCE_CHANGE).
+    remaining = _findings(tmp_path)
+    assert [f.metrics.member_name for f in remaining] == ["active"]
+    impure_eval = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+        remaining[0], _snapshot(tmp_path)
+    )
+    assert impure_eval.recipe is None
+    assert NeededInput.SOURCE_CHANGE in impure_eval.needs
+
+    after = (tmp_path / "pkg" / "receivers.py").read_text()
+    for deleted in ("selected:", "for_verdict", "removable:", "is_stopped"):
+        assert deleted not in after
+    assert "replace(read, progress=self)" in after
+
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    cat = ns["Catalog"]({"a": ns["Policy"](), "b": ns["SelectedPolicy"]()})  # type: ignore[operator]
+    assert ns["selected_keys"](cat, ["a", "b"]) == ("b",)  # type: ignore[operator]
+    assert cat.calls == ["a", "b"]  # single evaluation per key
+
+    p_closed = ns["Progress"]()  # type: ignore[operator]
+    p_open = ns["OpenProgress"]()  # type: ignore[operator]
+    Read = ns["Read"]
+    reads = [Read("k1"), Read("k2")]  # type: ignore[operator]
+    assert ns["judgeable"](reads, {"k1": p_closed, "k2": p_open}) == (Read("k2", p_open),)  # type: ignore[operator]
+
+    b0, b1 = ns["Binding"](), ns["RemovableBinding"]()  # type: ignore[operator]
+    assert ns["first_removable"]([(b0, "x"), (b1, "y")]) == (b1, "y")  # type: ignore[operator]
+    assert ns["first_removable"]([(b0, "x")]) == (b0, "x")  # type: ignore[operator]
+
+    reg = ns["Registry"]({"a": ns["ThreadStatus"](), "b": ns["StoppedStatus"]()})  # type: ignore[operator]
+    assert ns["drain"](True, reg, "a") == "held"  # type: ignore[operator]
+    assert reg.lookups == []  # prefix short-circuited before status() call
+    assert ns["drain"](False, reg, "b") == "held"  # type: ignore[operator]
+    assert ns["drain"](False, reg, "a") == "run:a"  # type: ignore[operator]
+    assert reg.lookups == ["b", "a"]
+
+
+def test_pushes_assigning_and_prefix_guarded_assigning_branches(tmp_path: Path):
+    """Single-target assigning branches and prefix-guarded conditional rebinds promote
+    via `_upgrade_dispatch_site_to_assigning` and delete the dead constant flags."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/assigning.py": (
+                "from typing import ClassVar\n\n\n"
+                "class TurnPhase:\n"
+                "    def pauses_input_clock(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class ModelWaitPhase(TurnPhase):\n"
+                "    def pauses_input_clock(self) -> bool:\n"
+                "        return True\n\n\n"
+                "def wait_for(phase: TurnPhase, awaiting_start: bool, model_wait: str, input_wait: str) -> str:\n"
+                "    active = model_wait\n"
+                "    if awaiting_start and not phase.pauses_input_clock():\n"
+                "        active = input_wait\n"
+                "    return 'wait:' + active\n\n\n"
+                "class Mode:\n"
+                "    is_fast: ClassVar[bool] = False\n\n\n"
+                "class FastMode(Mode):\n"
+                "    is_fast: ClassVar[bool] = True\n\n\n"
+                "def compute_budget(mode: Mode, base: int) -> int:\n"
+                "    if mode.is_fast:\n"
+                "        budget = base // 2\n"
+                "    else:\n"
+                "        budget = base * 2\n"
+                "    return budget + 1\n"
+            ),
+        },
+    )
+
+    for member_name, consumer, method_name in (
+        ("pauses_input_clock", "wait_for", "effective_wait"),
+        ("is_fast", "compute_budget", "scaled_budget"),
+    ):
+        findings = _findings(tmp_path)
+        target = next(f for f in findings if f.metrics.member_name == member_name)
+        unpicked = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            target, _snapshot(tmp_path)
+        )
+        assert unpicked.recipe is None
+        assert NeededInput.OWNER_PICK in unpicked.needs, (member_name, unpicked.reason)
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=target.stable_id,
+                    owner=consumer,
+                    because="family owns its assigned value",
+                    name=method_name,
+                    judgement="Compute the branch value polymorphically.",
+                ),
+            ),
+        )
+        picked, _ = picks.applied((target,))
+        ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            picked[0], _snapshot(tmp_path)
+        )
+        _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "assigning.py").read_text()
+    assert "pauses_input_clock" not in after
+    assert "is_fast" not in after
+    assert "active = phase.effective_wait(" in after
+    assert "budget = mode.scaled_budget(" in after
+
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["wait_for"](ns["TurnPhase"](), True, "m", "i") == "wait:i"  # type: ignore[operator]
+    assert ns["wait_for"](ns["TurnPhase"](), False, "m", "i") == "wait:m"  # type: ignore[operator]
+    assert ns["wait_for"](ns["ModelWaitPhase"](), True, "m", "i") == "wait:m"  # type: ignore[operator]
+    assert ns["compute_budget"](ns["Mode"](), 10) == 21  # type: ignore[operator]
+    assert ns["compute_budget"](ns["FastMode"](), 10) == 6  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_pushes_unrelated_elif_partial_return_and_prefix_guarded_returning(
+    tmp_path: Path,
+):
+    """Unrelated `elif` chains (positive and negated), partially-returning `if` with
+    terminating tail, and `if PREFIX and x.flag [and SUFFIX]: return ...; return <trivial>`
+    push cleanly with full runtime parity and delete the dead constant flags."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/branches.py": (
+                "from typing import ClassVar\n\n\n"
+                "class SourceShape:\n"
+                "    keeps_receiver: ClassVar[bool] = False\n\n\n"
+                "class PlainMethodShape(SourceShape):\n"
+                "    keeps_receiver: ClassVar[bool] = True\n\n\n"
+                "def emit_arg(shape: SourceShape, idx: int, total: int, out: list[str]) -> None:\n"
+                "    if shape.keeps_receiver:\n"
+                "        out.append('keep')\n"
+                "    elif idx + 1 < total:\n"
+                "        out.append('mid')\n"
+                "    else:\n"
+                "        out.append('last')\n\n\n"
+                "class Status:\n"
+                "    def is_stopped(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class Stopped(Status):\n"
+                "    def is_stopped(self) -> bool:\n"
+                "        return True\n\n\n"
+                "def classify(status: Status, unread: int, buckets: dict[str, list[str]], name: str) -> None:\n"
+                "    if not status.is_stopped():\n"
+                "        buckets['live'].append(name)\n"
+                "    elif unread > 0:\n"
+                "        buckets['unread'].append(name)\n"
+                "    else:\n"
+                "        buckets['idle'].append(name)\n\n\n"
+                "class ScopeKind:\n"
+                "    is_module: ClassVar[bool] = False\n\n\n"
+                "class ModuleScope(ScopeKind):\n"
+                "    is_module: ClassVar[bool] = True\n\n\n"
+                "def resolve_symbol(kind: ScopeKind, is_nonlocal: bool, is_mutated: bool) -> str | None:\n"
+                "    if not kind.is_module:\n"
+                "        if is_nonlocal:\n"
+                "            return None\n"
+                "        if is_mutated:\n"
+                "            return None\n"
+                "    return 'resolved'\n\n\n"
+                "class GuardFlag:\n"
+                "    enabled: ClassVar[bool] = False\n\n\n"
+                "class EnabledFlag(GuardFlag):\n"
+                "    enabled: ClassVar[bool] = True\n\n\n"
+                "def maybe_emit(ready: bool, flag: GuardFlag, extra: bool) -> str | None:\n"
+                "    if ready and flag.enabled and extra:\n"
+                "        return 'emitted'\n"
+                "    return None\n"
+            ),
+        },
+    )
+
+    for member_name, consumer, method_name in (
+        ("keeps_receiver", "emit_arg", "append_arg"),
+        ("is_stopped", "classify", "record_bucket"),
+        ("is_module", "resolve_symbol", "resolve_symbol"),
+        ("enabled", "maybe_emit", "emit_when_ready"),
+    ):
+        findings = _findings(tmp_path)
+        target = next(f for f in findings if f.metrics.member_name == member_name)
+        ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            target, _snapshot(tmp_path)
+        )
+        if ev.recipe is None:
+            assert NeededInput.OWNER_PICK in ev.needs, (member_name, ev.reason)
+            picks = OwnerPicks(
+                "picks.json",
+                "",
+                (
+                    OwnerPick(
+                        finding=target.stable_id,
+                        owner=consumer,
+                        because="family owns its branch behavior",
+                        name=method_name,
+                        judgement="Push constant answer branch onto the family.",
+                    ),
+                ),
+            )
+            picked, _ = picks.applied((target,))
+            ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+                picked[0], _snapshot(tmp_path)
+            )
+        _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "branches.py").read_text()
+    for deleted in ("keeps_receiver", "is_stopped", "is_module", "enabled:"):
+        assert deleted not in after
+    assert "if ready:\n        return flag.emit_when_ready(" in after
+
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    out: list[str] = []
+    ns["emit_arg"](ns["PlainMethodShape"](), 0, 2, out)  # type: ignore[operator]
+    ns["emit_arg"](ns["SourceShape"](), 0, 2, out)  # type: ignore[operator]
+    ns["emit_arg"](ns["SourceShape"](), 1, 2, out)  # type: ignore[operator]
+    assert out == ["keep", "mid", "last"]
+
+    buckets: dict[str, list[str]] = {"live": [], "unread": [], "idle": []}
+    ns["classify"](ns["Status"](), 5, buckets, "a")  # type: ignore[operator]
+    ns["classify"](ns["Stopped"](), 2, buckets, "b")  # type: ignore[operator]
+    ns["classify"](ns["Stopped"](), 0, buckets, "c")  # type: ignore[operator]
+    assert buckets == {"live": ["a"], "unread": ["b"], "idle": ["c"]}
+
+    assert ns["resolve_symbol"](ns["ScopeKind"](), True, False) is None  # type: ignore[operator]
+    assert ns["resolve_symbol"](ns["ScopeKind"](), False, True) is None  # type: ignore[operator]
+    assert ns["resolve_symbol"](ns["ScopeKind"](), False, False) == "resolved"  # type: ignore[operator]
+    assert ns["resolve_symbol"](ns["ModuleScope"](), True, True) == "resolved"  # type: ignore[operator]
+
+    assert ns["maybe_emit"](False, ns["EnabledFlag"](), True) is None  # type: ignore[operator]
+    assert ns["maybe_emit"](True, ns["GuardFlag"](), True) is None  # type: ignore[operator]
+    assert ns["maybe_emit"](True, ns["EnabledFlag"](), False) is None  # type: ignore[operator]
+    assert ns["maybe_emit"](True, ns["EnabledFlag"](), True) == "emitted"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
