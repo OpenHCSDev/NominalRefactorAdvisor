@@ -175,6 +175,15 @@ def _is_bool_constant(expr: ast.expr) -> bool:
     return isinstance(expr, ast.Constant) and isinstance(expr.value, bool)
 
 
+def _is_zero_one_tuple_pair(first: ast.expr, second: ast.expr) -> bool:
+    """Whether `(first, second)` returns `()` on one arm and `(x,)` on the other (ZERO_ONE_TUPLE)."""
+
+    def _tuple_len(expr: ast.expr) -> int | None:
+        return len(expr.elts) if isinstance(expr, ast.Tuple) else None
+
+    return {_tuple_len(first), _tuple_len(second)} == {0, 1}
+
+
 def _is_trivial_constant_expr(expr: ast.expr) -> bool:
     """Whether `expr` is a tiny literal safe to retain at a short-circuiting `IfExp` guard."""
 
@@ -723,7 +732,10 @@ def _extract_absence_ternary_site(
     *,
     is_whole_return: bool,
 ) -> TernaryAbsenceBranchSite | None:
-    if _is_bool_constant(node.body) and _is_bool_constant(node.orelse):
+    if (
+        (_is_bool_constant(node.body) and _is_bool_constant(node.orelse))
+        or _is_zero_one_tuple_pair(node.body, node.orelse)
+    ):
         return None
     return TernaryAbsenceBranchSite(
         subject=probes[0].subject,
@@ -740,7 +752,10 @@ def _extract_prefix_guarded_absence_ternary_site(
     *,
     subject_source: str | None = None,
 ) -> TernaryAbsenceBranchSite | None:
-    if _is_bool_constant(node.body) and _is_bool_constant(node.orelse):
+    if (
+        (_is_bool_constant(node.body) and _is_bool_constant(node.orelse))
+        or _is_zero_one_tuple_pair(node.body, node.orelse)
+    ):
         return None
     split = _split_prefix_guarded_boolop(
         node.test, target_lines, subject_source=subject_source

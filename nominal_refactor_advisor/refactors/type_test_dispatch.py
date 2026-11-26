@@ -409,6 +409,10 @@ def _always_terminates(statements: Sequence[ast.stmt]) -> bool:
             return True
         case ast.If(body=body, orelse=orelse) if orelse:
             return _always_terminates(body) and _always_terminates(orelse)
+        case ast.Try(body=body, handlers=handlers, orelse=[], finalbody=[]) if handlers:
+            return _always_terminates(body) and all(
+                _always_terminates(handler.body) for handler in handlers
+            )
     return False
 
 
@@ -1684,7 +1688,7 @@ def _analyze_arm_bodies(
     uses_await = False
 
     for body in rewritten_bodies:
-        local_stores: set[str] = set()
+        local_stores: set[str] = set(_body_bound_names(body))
         for stmt in body:
             for node in ast.walk(stmt):
                 if isinstance(node, (ast.Yield, ast.YieldFrom, ast.Break, ast.Continue)):
@@ -1706,7 +1710,7 @@ def _analyze_arm_bodies(
                             f"`{function.name}` calls `super()` inside a type-test arm",
                             NeededInput.SOURCE_CHANGE,
                         )
-                    case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
+                    case ast.Name(id=name, ctx=ast.Del()):
                         local_stores.add(name)
         for stmt in body:
             for node in ast.walk(stmt):
