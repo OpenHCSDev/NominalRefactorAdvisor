@@ -24,9 +24,9 @@ from typing import ClassVar, Generic, Self, TextIO, TypeVar, cast
 
 from nominal_refactor_advisor.ast_tools import ParsedModuleSet
 from nominal_refactor_advisor.needed_input import NeededInput
+from nominal_refactor_advisor.worker_plan import DetectorAnalysisWorkerPlan
 from nominal_refactor_advisor.analysis import (
     AnalysisPathScope,
-    DetectorAnalysisWorkerPlan,
     EvidenceLocalFindingReuseAuthority,
     EvidenceLocalPartialDetectorSelection,
     SemanticDescentGraphAnalysisSource,
