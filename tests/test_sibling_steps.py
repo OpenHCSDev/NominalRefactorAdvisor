@@ -915,3 +915,113 @@ def test_hoisting_guarded_early_return_before_shared_tail(tmp_path: Path):
 
     (tmp_path / "pkg/attach.py").write_text(rewritten)
     assert _findings(tmp_path) == []
+
+
+def test_hoisting_variadic_return_call_template_preserves_prep_order_and_arity(
+    tmp_path: Path,
+):
+    """Siblings ending with the same receiver call at differing positional arities
+    (e.g. `DirectiveVerb.respond` calling `self.applied(...)` with 1 or 2 args) hoist
+    into `return self.applied(*_step_args)` with prep-first evaluation order."""
+
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Verb(ABC):\n"
+        "    def __init__(self) -> None:\n"
+        "        self.events: list[str] = []\n\n"
+        "    def applied(self, *items: str) -> tuple[str, ...]:\n"
+        "        self.events.append('applied')\n"
+        "        return items\n\n"
+        "    @abstractmethod\n"
+        "    def respond(self, tag: str) -> tuple[str, ...]:\n"
+        "        ...\n\n\n"
+        "class SendVerb(Verb):\n"
+        "    def respond(self, tag: str) -> tuple[str, ...]:\n"
+        "        self.events.append(f'send:{tag}')\n"
+        "        return self.applied(f'order:{tag}', f'msg:{tag}')\n\n\n"
+        "class StrikeVerb(Verb):\n"
+        "    def respond(self, tag: str) -> tuple[str, ...]:\n"
+        "        self.events.append(f'strike:{tag}')\n"
+        "        return self.applied(f'problem:{tag}')\n\n\n"
+        "class EmptyVerb(Verb):\n"
+        "    def respond(self, tag: str) -> tuple[str, ...]:\n"
+        "        return self.applied()\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/verbs.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/verbs.py")]
+    assert "_step_args = self._respond_step(tag)" in rewritten
+    assert "return self.applied(*_step_args)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "verbs.py", "exec"), namespace)
+    send = namespace["SendVerb"]()  # type: ignore[operator]
+    assert send.respond("x") == ("order:x", "msg:x")
+    assert send.events == ["send:x", "applied"]
+    strike = namespace["StrikeVerb"]()  # type: ignore[operator]
+    assert strike.respond("y") == ("problem:y",)
+    assert strike.events == ["strike:y", "applied"]
+    empty = namespace["EmptyVerb"]()  # type: ignore[operator]
+    assert empty.respond("z") == ()
+    assert empty.events == ["applied"]
+
+    (tmp_path / "pkg/verbs.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_multi_arg_return_call_with_fixed_keyword_and_rejecting_varying_keyword(
+    tmp_path: Path,
+):
+    """Fixed-arity calls with 2+ varying positional args and identical fixed keyword
+    arguments hoist via `*self._hook(...)`; varying keyword arguments remain refused."""
+
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Formatter(ABC):\n"
+        "    def join(self, a: str, b: str, *, sep: str = '-') -> str:\n"
+        "        return f'{a}{sep}{b}'\n\n"
+        "    @abstractmethod\n"
+        "    def render(self, x: str) -> str:\n"
+        "        ...\n\n\n"
+        "class LeftFmt(Formatter):\n"
+        "    def render(self, x: str) -> str:\n"
+        "        return self.join('L', x, sep=':')\n\n\n"
+        "class RightFmt(Formatter):\n"
+        "    def render(self, x: str) -> str:\n"
+        "        return self.join(x, 'R', sep=':')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/fmt.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/fmt.py")]
+    assert "return self.join(*self._render_step(x), sep=':')" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "fmt.py", "exec"), namespace)
+    assert namespace["LeftFmt"]().render("v") == "L:v"  # type: ignore[operator]
+    assert namespace["RightFmt"]().render("v") == "v:R"  # type: ignore[operator]
+
+    (tmp_path / "pkg/fmt.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+    # Varying keyword values must stay refused.
+    bad_source = source.replace("sep=':')", "sep='/')", 1)
+    bad_dir = tmp_path / "bad"
+    _write(bad_dir, {"pkg/__init__.py": "", "pkg/fmt.py": bad_source})
+    (bad_finding,) = _findings(bad_dir)
+    bad_snap = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(
+            bad_dir,
+            use_parse_cache=False,
+            source_policy=PythonSourcePathPolicy(include_tests=False),
+        )
+    )
+    bad_eval = SiblingOverrideStepDetector().evaluate_recipe_for_finding(
+        bad_finding, bad_snap
+    )
+    assert bad_eval.recipe is None
+    assert "not independent leading or trailing statements" in bad_eval.rejection_reason
+

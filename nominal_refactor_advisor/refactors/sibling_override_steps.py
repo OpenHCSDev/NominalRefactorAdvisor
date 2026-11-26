@@ -1296,6 +1296,50 @@ class ReturningExprHookBody(SiblingHookBody):
 
 
 @dataclass(frozen=True)
+class ReturningTupleHookBody(SiblingHookBody):
+    """Renders optional leading prep statements followed by `return (arg0, arg1, ...)`."""
+
+    prep: tuple[ast.stmt, ...]
+    args: tuple[ast.expr, ...]
+
+    def render_header(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=False,
+        )
+
+    def render_body(
+        self,
+        source: str,
+        source_lines: Sequence[str],
+        inner_indent: str,
+    ) -> list[str]:
+        pieces = [
+            _statement_source_block(source_lines, statement, inner_indent)
+            for statement in self.prep
+        ]
+        if not self.args:
+            tuple_src = "()"
+        elif len(self.args) == 1:
+            tuple_src = f"({_render_safe_expr(source, self.args[0])},)"
+        else:
+            rendered = ", ".join(_render_safe_expr(source, arg) for arg in self.args)
+            tuple_src = f"({rendered})"
+        pieces.append(f"{inner_indent}return {tuple_src}\n")
+        return pieces
+
+
+@dataclass(frozen=True)
 class ReturningBoolOpHookBody(SiblingHookBody):
     """Renders optional leading prep statements followed by `return <operands joined by op>`."""
 
@@ -1461,6 +1505,51 @@ class ReturnCallTemplate(SiblingBodyTemplate):
             hook_call,
             inner_indent,
         )
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return (self.import_checked_stmt,)
+
+
+@dataclass(frozen=True)
+class VariadicReturnCallTemplate(SiblingBodyTemplate):
+    """Every sibling ends with the same receiver call differing in positional arity or
+    multiple positional arguments, unpacked via `*self._hook(...)`."""
+
+    template_call: ast.Call
+    is_return: bool
+    is_await: bool
+    fixed_keywords: tuple[ast.keyword, ...]
+    import_checked_stmt: ast.stmt
+    hoist_var_name: str | None = None
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source_lines
+        func_src = _render_expr_source(hoist_source, self.template_call.func)
+        star_arg = (
+            f"*{self.hoist_var_name}"
+            if self.hoist_var_name is not None
+            else f"*{hook_call}"
+        )
+        kw_parts = [
+            f"{kw.arg}={_render_safe_expr(hoist_source, kw.value)}"
+            for kw in self.fixed_keywords
+            if kw.arg is not None
+        ]
+        all_args = ", ".join((star_arg, *kw_parts))
+        call_text = f"await {func_src}({all_args})" if self.is_await else f"{func_src}({all_args})"
+        stmt_text = f"return {call_text}" if self.is_return else call_text
+        if self.hoist_var_name is not None:
+            return (
+                f"{inner_indent}{self.hoist_var_name} = {hook_call}\n"
+                f"{inner_indent}{stmt_text}\n"
+            )
+        return f"{inner_indent}{stmt_text}\n"
 
     def import_checked_statements(self) -> tuple[ast.stmt, ...]:
         return (self.import_checked_stmt,)
@@ -2368,6 +2457,7 @@ class SiblingOverrideStepHoist:
     ) -> tuple[SiblingBodyTemplate, tuple[SiblingHookBody, ...]] | None:
         for detector in (
             cls._detect_return_call_template,
+            cls._detect_variadic_return_call_template,
             cls._detect_boolop_template,
             cls._detect_trailing_guarded_step_template,
             cls._detect_guarded_early_return_suffix_template,
@@ -2548,6 +2638,121 @@ class SiblingOverrideStepHoist:
         hook_bodies = tuple(
             ReturningExprHookBody(prep=prep, return_expr=slot_expr)
             for prep, slot_expr in zip(preps, slot_exprs, strict=True)
+        )
+        return template, hook_bodies
+
+    @classmethod
+    def _detect_variadic_return_call_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[VariadicReturnCallTemplate, tuple[SiblingHookBody, ...]] | None:
+        calls: list[ast.Call] = []
+        wrappers: list[tuple[type[ast.stmt], bool]] = []
+        preps: list[tuple[ast.stmt, ...]] = []
+        for middle in raw_middles:
+            if not middle:
+                return None
+            prep = middle[:-1]
+            if _has_return_statement(prep) or _contains_node_type(
+                prep, (ast.Yield, ast.YieldFrom)
+            ):
+                return None
+            preps.append(prep)
+            last = middle[-1]
+            match last:
+                case ast.Return(value=ast.Await(value=ast.Call() as call)):
+                    calls.append(call)
+                    wrappers.append((ast.Return, True))
+                case ast.Return(value=ast.Call() as call):
+                    calls.append(call)
+                    wrappers.append((ast.Return, False))
+                case ast.Expr(value=ast.Await(value=ast.Call() as call)):
+                    calls.append(call)
+                    wrappers.append((ast.Expr, True))
+                case ast.Expr(value=ast.Call() as call):
+                    calls.append(call)
+                    wrappers.append((ast.Expr, False))
+                case _:
+                    return None
+        if len(set(wrappers)) != 1:
+            return None
+        first_call = calls[0]
+        if _receiver_call_path(first_call.func, receiver_name) not in restated_calls:
+            return None
+        if any(
+            any(isinstance(arg, ast.Starred) for arg in call.args)
+            or CallKeywords.of(call.keywords).splats
+            for call in calls
+        ):
+            return None
+        kw_names = tuple(kw.arg for kw in first_call.keywords)
+        first = siblings[0]
+        for sibling, call in zip(siblings[1:], calls[1:], strict=True):
+            if tuple(kw.arg for kw in call.keywords) != kw_names:
+                return None
+            if not cls._statements_semantically_equal(
+                first,
+                sibling,
+                ast.Expr(value=first_call.func),
+                ast.Expr(value=call.func),
+                prefix_locals,
+            ):
+                return None
+            for kw_a, kw_b in zip(first_call.keywords, call.keywords, strict=True):
+                if not cls._statements_semantically_equal(
+                    first,
+                    sibling,
+                    ast.Expr(value=kw_a.value),
+                    ast.Expr(value=kw_b.value),
+                    prefix_locals,
+                ):
+                    return None
+        arg_counts = {len(call.args) for call in calls}
+        if len(arg_counts) == 1 and len(first_call.args) < 2:
+            return None
+        prep_bound = frozenset().union(
+            *(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prep) for prep in preps)
+        )
+        fixed_exprs = (first_call.func, *(kw.value for kw in first_call.keywords))
+        if prep_bound and (
+            _read_names(tuple(ast.Expr(value=expr) for expr in fixed_exprs)) & prep_bound
+        ):
+            return None
+        has_prep = any(bool(prep) for prep in preps)
+        hoist_var_name: str | None = None
+        if has_prep:
+            forbidden = prefix_locals | _read_names((raw_middles[0][-1],))
+            hoist_var_name = next(
+                (
+                    name
+                    for name in ("_step_args", "_step_values", "_hook_args")
+                    if name not in forbidden
+                ),
+                None,
+            )
+            if hoist_var_name is None:
+                return None
+        wrapper_cls, is_await = wrappers[0]
+        sanitized_call = ast.Call(
+            func=first_call.func,
+            args=[],
+            keywords=list(first_call.keywords),
+        )
+        template = VariadicReturnCallTemplate(
+            template_call=first_call,
+            is_return=wrapper_cls is ast.Return,
+            is_await=is_await,
+            fixed_keywords=tuple(first_call.keywords),
+            import_checked_stmt=ast.Expr(value=sanitized_call),
+            hoist_var_name=hoist_var_name,
+        )
+        hook_bodies = tuple(
+            ReturningTupleHookBody(prep=prep, args=tuple(call.args))
+            for prep, call in zip(preps, calls, strict=True)
         )
         return template, hook_bodies
 
@@ -3067,7 +3272,7 @@ class SiblingOverrideStepHoist:
                 rationale,
             ),
         ]
-        if isinstance(self.method_kind, CachedPropertyMethodKind) and not any(
+        if self.method_kind.is_cached_property() and not any(
             _decorator_terminal_name(dec) == "cached_property"
             for dec in self.declaring_method.decorator_list
         ):
@@ -3203,6 +3408,7 @@ __all__ = (
     "ReturnCallTemplate",
     "ReturningBoolOpHookBody",
     "ReturningExprHookBody",
+    "ReturningTupleHookBody",
     "RewriteSiblingToHook",
     "SiblingBodyTemplate",
     "SiblingHookBody",
@@ -3211,5 +3417,6 @@ __all__ = (
     "SiblingOverrideStepHoist",
     "SiblingRewrite",
     "TrailingGuardedStepTemplate",
+    "VariadicReturnCallTemplate",
     "sibling_override_step_candidates",
 )
