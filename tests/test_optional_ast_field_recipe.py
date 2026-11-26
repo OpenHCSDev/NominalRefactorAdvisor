@@ -685,3 +685,120 @@ def test_routes_transforming_ternary_paired_variadic_and_local_binding_proofs(
         assert ns["require_assigned_value"](ann_val) is True  # type: ignore[operator]
     finally:
         sys.path.remove(str(tmp_path))
+
+
+def _write_declared_decoder_pkg(tmp_path: Path, mod_source: str) -> tuple[Path, list]:
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    dec_src = Path(ast_field_decoders.__file__).read_text()
+    (package / "ast_field_decoders.py").write_text(dec_src)
+    mod_path = package / "mod.py"
+    mod_path.write_text(mod_source)
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+        and Path(finding.primary_evidence.file_path) == mod_path
+    ]
+    return mod_path, findings
+
+
+def test_same_function_different_decoders_compose_without_conflict(
+    tmp_path: Path,
+) -> None:
+    """Two distinct AST decoders in one function (`native_call.py:588,597` shape)
+    must not falsely collide on a function-level action key."""
+
+    mod_path, findings = _write_declared_decoder_pkg(
+        tmp_path,
+        "import ast\n\n\n"
+        "def has_header_inputs(closure: ast.FunctionDef) -> bool:\n"
+        "    return bool(\n"
+        "        closure.returns is not None\n"
+        "        or closure.args.vararg is not None\n"
+        "        or closure.args.kwarg is not None\n"
+        "    )\n",
+    )
+    assert len(findings) == 2
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path), findings
+    )
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert plan.candidate_count == 2
+    assert all(
+        record.status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+        for record in plan.records
+    )
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "declared_annotations(closure)" in after
+    assert "variadic_parameters(closure.args)" in after
+    assert "is not None" not in after
+
+
+def test_unroutable_probe_does_not_piggyback_on_routable_sibling_in_same_function(
+    tmp_path: Path,
+) -> None:
+    """An unroutable probe (`semantic_descent.py:5736` shape) must stay refused
+    even when another probe of the same decoder (`semantic_descent.py:5745`) in
+    the same function is routable."""
+
+    mod_path, findings = _write_declared_decoder_pkg(
+        tmp_path,
+        "import ast\n\n\n"
+        "def extract(node: ast.FunctionDef, argument: ast.arg, out: dict[str, ast.expr]) -> tuple[ast.expr, ...]:\n"
+        "    if argument.annotation is None:\n"
+        "        out.pop(argument.arg, None)\n"
+        "    else:\n"
+        "        out[argument.arg] = argument.annotation\n"
+        "    return () if node.returns is None else (node.returns,)\n",
+    )
+    assert len(findings) == 2
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path), findings
+    )
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert plan.candidate_count == 1
+    by_line = {record.finding.primary_evidence.line: record for record in plan.records}
+    assert by_line[5].status is FindingRecipeSynthesisStatus.REJECTED_BY_SAFETY_CHECK
+    assert "argument.annotation is None" in by_line[5].reason
+    assert by_line[9].status is FindingRecipeSynthesisStatus.EXECUTABLE_CANDIDATE
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "if argument.annotation is None:" in after
+    assert "return declared_annotations(node)" in after
+
+
+def test_same_function_same_decoder_both_routable_compose_cleanly(
+    tmp_path: Path,
+) -> None:
+    """Two routable probes of the same decoder in one function compose in one batch."""
+
+    mod_path, findings = _write_declared_decoder_pkg(
+        tmp_path,
+        "import ast\n\n\n"
+        "def both(node: ast.FunctionDef, argument: ast.arg) -> tuple[tuple[ast.expr, ...], tuple[ast.expr, ...]]:\n"
+        "    a = () if argument.annotation is None else (argument.annotation,)\n"
+        "    b = () if node.returns is None else (node.returns,)\n"
+        "    return a, b\n",
+    )
+    assert len(findings) == 2
+    snapshot = CodemodSourceSnapshot.from_modules(
+        parse_python_modules(tmp_path), findings
+    )
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert plan.candidate_count == 2
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "a = declared_annotations(argument)" in after
+    assert "b = declared_annotations(node)" in after
+    assert "is None" not in after
+

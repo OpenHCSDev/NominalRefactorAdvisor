@@ -443,11 +443,22 @@ class FindingEvidenceActionKeysMixin:
         self,
         finding: RefactorFinding,
     ) -> tuple[FindingRecipeActionKey, ...]:
+        child_subject = finding.metrics.action_key_child_subject()
         return FindingRecipeActionKey.from_finding_file_subjects(
             finding,
             sorted(
                 {
-                    (evidence.file_path, evidence.subject_symbol)
+                    (
+                        evidence.file_path,
+                        (
+                            evidence.subject_symbol
+                            if child_subject is None
+                            else FindingRecipeActionKey.child_subject(
+                                evidence.subject_symbol,
+                                child_subject,
+                            )
+                        ),
+                    )
                     for evidence in finding.evidence
                 }
             ),
