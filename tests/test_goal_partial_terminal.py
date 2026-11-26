@@ -89,3 +89,50 @@ def test_a_goal_with_nothing_executable_still_has_no_terminal(tmp_path: Path) ->
     assert proof["partial_terminals"] == []
     assert proof["dead_ends"][0]["depth"] == 0
     assert proof["dead_ends"][0]["partial_rejection"] == ""
+
+
+def test_a_two_stage_type_test_dispatch_goal_simulates_preplanned_branches(
+    tmp_path: Path,
+) -> None:
+    """Two dispatches pushing onto the same class conflict in stage 0, so depth 1
+    preplans the second stage and simulates its branch document."""
+    package = tmp_path / "pkg"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "dispatch.py").write_text(
+        "class Item:\n"
+        "    pass\n\n\n"
+        "class Special(Item):\n"
+        "    pass\n\n\n"
+        "def label(item: Item) -> str:\n"
+        "    if isinstance(item, Special):\n"
+        "        return 'special'\n"
+        "    return 'plain'\n\n\n"
+        "def weight(item: Item) -> int:\n"
+        "    if isinstance(item, Special):\n"
+        "        return 2\n"
+        "    return 1\n"
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "nominal_refactor_advisor",
+            str(package),
+            "--json",
+            "--codemod-refactor-goal",
+            "type_test_dispatch",
+            "--codemod-apply",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    assert completed.returncode == 1, completed.stderr
+    report = json.loads(completed.stdout)
+    proof = report["trajectory_proof"]
+    assert proof["status"] == "ambiguous_terminal_states", report
+    assert proof["terminal_count"] == 2
+    assert [t["stage_count"] for t in proof["terminals"]] == [2, 2]
+
+

@@ -3855,7 +3855,7 @@ class CodemodRefactorGoalRunner(TrajectoryScans[CodemodWorkflowScan]):
                         analyzed_rewritten_source_digests.add(rewritten_source_digest)
                         if after_state_id in visited_source_state_ids:
                             continue
-                        simulation = document.simulate_snapshot(active_scan.source_snapshot)
+                        simulation = document.simulate(active_scan.source_snapshot)
                         reproof_branches.append((branch_number, simulation))
                         reproof_complete_flags.append(
                             len(branch_assessment.candidate_indices)
