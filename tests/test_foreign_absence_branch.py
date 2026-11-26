@@ -102,8 +102,8 @@ def test_whole_function_early_return_and_guard_push_cross_module_with_parity(
 
     after_models = (tmp_path / "pkg/models.py").read_text()
     after_service = (tmp_path / "pkg/service.py").read_text()
-    assert "def char_ceiling(self, chars_per_token):" in after_models
-    assert "def require_deferral(self, authorized):" in after_models
+    assert "def char_ceiling(self, chars_per_token: int) -> int:" in after_models
+    assert "def require_deferral(self, authorized: bool) -> None:" in after_models
     assert "return budget.char_ceiling(chars_per_token)" in after_service
     assert "snapshot.require_deferral(authorized)" in after_service
 
@@ -216,9 +216,9 @@ def test_embedded_void_ternary_and_loop_continue_use_owner_picks_with_parity(
         _apply_one(picked, snap)
 
     after_source = (tmp_path / "app/work.py").read_text()
-    assert "def append_payload(self, sink):" in after_source
+    assert "def append_payload(self, sink: list[str]) -> None:" in after_source
     assert "def sequence_label(self):" in after_source
-    assert "def append_upper_payload(self, out):" in after_source
+    assert "def append_upper_payload(self, out: list[str]) -> None:" in after_source
     assert "event.append_payload(sink)" in after_source
     assert "row.sequence_label()" in after_source
     assert "event.append_upper_payload(out)" in after_source
@@ -756,8 +756,8 @@ def test_two_foreign_absence_branches_pushing_distinct_methods_onto_same_owner_c
     sim.apply()
 
     after = (tmp_path / "batch" / "cache.py").read_text()
-    assert "def append_if_pending(self, pending):" in after
-    assert "def resolved_hash(self):" in after
+    assert "def append_if_pending(self, pending: list[Sig]) -> None:" in after
+    assert "def resolved_hash(self) -> str:" in after
     assert "return sig.resolved_hash()" in after
     assert "sig.append_if_pending(pending)" in after
     _after_mods, _after_snap, remaining = _scan(tmp_path)
@@ -830,6 +830,50 @@ def test_partial_return_if_without_else_and_nested_function_foreign_absence_push
     assert ns["read_positive"](Box(None), -1) == -1  # type: ignore[operator]
     collector = ns["Collector"](10)  # type: ignore[operator]
     assert collector.collect(1, [Box(2), Box(None), Box(4)]) == [21, 41]
+
+
+def test_preserved_owner_annotation_unlocks_follow_up_foreign_absence_push(
+    tmp_path: Path,
+) -> None:
+    """Preserving `owner: EnclosingClass` on a same-module pushed method keeps
+    `owner.cached is None` resolvable for a subsequent foreign-absence-probe push."""
+
+    _write(
+        tmp_path,
+        {
+            "chain/__init__.py": "",
+            "chain/work.py": (
+                "from __future__ import annotations\n"
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Box:\n"
+                "    value: int | None\n\n\n"
+                "class Holder:\n"
+                "    def __init__(self, fallback: int | None) -> None:\n"
+                "        self.fallback = fallback\n\n"
+                "    def resolve(self, box: Box) -> int:\n"
+                "        if box.value is not None:\n"
+                "            return box.value\n"
+                "        if self.fallback is not None:\n"
+                "            return self.fallback\n"
+                "        return 0\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    assert [f.primary_evidence.symbol for f in findings] == ["Holder.resolve"]
+    _apply_one(findings[0], snap)
+
+    after_first = (tmp_path / "chain" / "work.py").read_text()
+    assert "def resolve(self, owner: Holder) -> int:" in after_first
+
+    # Follow-up scan sees `owner.fallback is not None` inside `Box.resolve` with
+    # `owner: Holder` already typed and pushes it straight back onto `Holder`.
+    _mods2, snap2, findings2 = _scan(tmp_path)
+    assert [f.primary_evidence.symbol for f in findings2] == ["Box.resolve"]
+    ev2 = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(findings2[0], snap2)
+    assert ev2.needs == (NeededInput.OWNER_PICK,)
+
 
 
 

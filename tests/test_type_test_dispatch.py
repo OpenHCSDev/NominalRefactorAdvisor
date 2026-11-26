@@ -140,7 +140,7 @@ def test_pushes_ternary_tuple_dispatch_and_migrates_cross_module_imports(tmp_pat
     assert "NamedBinding" not in use_after
     assert "OtherBinding" not in use_after
     assert "from pkg.helpers import format_symbol" in bindings_after
-    assert "def binding_label(self):" in bindings_after
+    assert "def binding_label(self) -> str | None:" in bindings_after
     assert _findings(tmp_path) == []
 
 
@@ -398,7 +398,7 @@ def test_pushes_compound_and_return_with_outer_self_rename(tmp_path: Path):
     after = (tmp_path / "pkg" / "messages.py").read_text()
     assert "isinstance" not in after
     assert "message.matches_carrier(self)" in after
-    assert "def matches_carrier(self, owner):" in after
+    assert "def matches_carrier(self, owner) -> bool:" in after
     ns: dict[str, object] = {}
     exec(after, ns)
     matcher = ns["CarrierMatcher"]("bus", 1)  # type: ignore[operator]
@@ -1088,8 +1088,8 @@ def test_except_handler_variable_is_not_captured_as_outer_param(tmp_path: Path):
     after = (tmp_path / "pkg" / "plans.py").read_text()
     assert "plan.execute()" in after
     assert "plan.execute_trailing()" in after
-    assert "def execute(self):" in after
-    assert "def execute_trailing(self):" in after
+    assert "def execute(self) -> str:" in after
+    assert "def execute_trailing(self) -> str:" in after
     ns: dict[str, object] = {}
     exec(after, ns)
     for fn_name in ("execute", "execute_trailing"):
@@ -1412,8 +1412,8 @@ def test_two_own_type_tests_pushing_distinct_methods_onto_same_pass_class_family
     after = (tmp_path / "pkg" / "same_family.py").read_text()
     assert "isinstance" not in after
     assert "    pass" not in after
-    assert "def tag(self):" in after
-    assert "def weight(self):" in after
+    assert "def tag(self) -> str:" in after
+    assert "def weight(self) -> int:" in after
     ns: dict[str, object] = {}
     exec(after, ns)
     assert ns["weight"](ns["Node"]()) == 1  # type: ignore[operator]
@@ -1700,6 +1700,74 @@ def test_defensive_not_isinstance_base_guard_is_not_folded_and_cross_module_impo
     assert "Authority" not in consumer_after
     assert "Kind" not in consumer_after
     assert "return facet.is_plain()" in consumer_after
+
+
+def test_preserves_parameter_owner_and_return_annotations_and_skips_cyclic_imports(
+    tmp_path: Path,
+) -> None:
+    """Pushed methods preserve parameter, annotated-local, `owner: EnclosingClass`
+    (under PEP 563), and return annotations, auto-import cycle-free annotation types,
+    and omit only annotations whose cross-module import would create a cycle."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/items.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Item:\n"
+                "    pass\n\n\n"
+                "class SpecialItem(Item):\n"
+                "    def __init__(self, tag: str) -> None:\n"
+                "        self.tag = tag\n\n\n"
+                "class SameModuleConsumer:\n"
+                "    def __init__(self, prefix: str | None) -> None:\n"
+                "        self.prefix = prefix\n\n"
+                "    def format_item(self, item: Item, count: int) -> str:\n"
+                "        if isinstance(item, SpecialItem):\n"
+                "            return f'{self.prefix}:{item.tag}:{count}'\n"
+                "        return f'{self.prefix}:plain:{count}'\n"
+            ),
+            "pkg/consumer.py": (
+                "from __future__ import annotations\n"
+                "from pathlib import Path\n"
+                "from pkg.items import Item, SpecialItem\n\n\n"
+                "class ExternalConsumer:\n"
+                "    def __init__(self, suffix: str) -> None:\n"
+                "        self.suffix = suffix\n\n"
+                "    def item_path_label(self, item: Item, root: Path) -> str:\n"
+                "        if isinstance(item, SpecialItem):\n"
+                "            return f'{root}/{item.tag}{self.suffix}'\n"
+                "        return f'{root}/plain{self.suffix}'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {
+        "SameModuleConsumer.format_item",
+        "ExternalConsumer.item_path_label",
+    }
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    items_after = (tmp_path / "pkg" / "items.py").read_text()
+    # Same-module push preserves `owner: SameModuleConsumer`, `count: int`, and `-> str`.
+    assert (
+        "def format_item(self, owner: SameModuleConsumer, count: int) -> str:"
+        in items_after
+    )
+    # Cross-module push imports `Path` cleanly, preserves `root: Path` and `-> str`,
+    # and omits `owner: ExternalConsumer` because importing `pkg.consumer` would cycle.
+    assert "from pathlib import Path" in items_after
+    assert "def item_path_label(self, root: Path, owner) -> str:" in items_after
+    assert "from pkg.consumer" not in items_after
+    assert _findings(tmp_path) == []
+
 
 
 
