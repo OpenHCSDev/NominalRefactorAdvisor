@@ -39,7 +39,6 @@ from nominal_refactor_advisor.cache_checkout import (
 )
 from nominal_refactor_advisor.case_root import Case
 from nominal_refactor_advisor.detectors._base import (
-    CompactModuleProjectionDetectorMixin,
     DetectorConfig,
     IssueDetector,
 )
@@ -620,9 +619,7 @@ def detector_implementation_module_names(
     implementation closure and the projection families it reads."""
 
     families = (
-        detector_type.compact_projection_families()
-        if issubclass(detector_type, CompactModuleProjectionDetectorMixin)
-        else ()
+        detector_type.implementation_projection_families()
     )
     return declaration_implementation_module_names((detector_type, *families))
 

@@ -15,14 +15,25 @@ from nominal_refactor_advisor.audit.repository import Repository
 class ChangeKind(Family, ABC, root=True, affix="Change"):
     """Why a module was written, judged by the branch that introduced it."""
 
+    @classmethod
+    def record_attribution(cls, measured: Measured, origin: ModuleOrigin, owner: Attribution, foundation: ModuleOrigin | None) -> None:
+        """Record attribution and timing for attributed change kinds."""
+        pass
+
 
 class Attributed:
     """Capability: listed by origin, and timed against the foundation."""
 
+    @classmethod
+    def record_attribution(cls, measured: Measured, origin: ModuleOrigin, owner: Attribution, foundation: ModuleOrigin | None) -> None:
+        owner.by_origin[origin].add(measured)
+        if foundation is not None:
+            owner.timing[Timing.of(origin, foundation)] += 1
+
 
 class RefactorChange(ChangeKind): ...
-class FeatureChange(ChangeKind, Attributed): ...
-class DirectChange(ChangeKind, Attributed): ...
+class FeatureChange(Attributed, ChangeKind): ...
+class DirectChange(Attributed, ChangeKind): ...
 
 
 class ModuleOrigin(ABC):
@@ -123,10 +134,7 @@ class Attribution:
     def record(self, origin: ModuleOrigin, kind: type[ChangeKind], measured: Measured,
                foundation: ModuleOrigin | None) -> None:
         self.by_kind[kind].add(measured)
-        if issubclass(kind, Attributed):
-            self.by_origin[origin].add(measured)
-            if foundation is not None:
-                self.timing[Timing.of(origin, foundation)] += 1
+        kind.record_attribution(measured, origin, self, foundation)
 
     @staticmethod
     def _origin_line(origin: ModuleOrigin, group: Group) -> str:

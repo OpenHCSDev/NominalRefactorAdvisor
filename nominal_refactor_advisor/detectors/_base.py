@@ -774,6 +774,16 @@ class IssueDetector(
     ) -> list[RefactorFinding]:
         raise NotImplementedError
 
+    @classmethod
+    def implementation_projection_families(cls):
+        """Return compact projection families that govern this detector's implementation hash."""
+        return ()
+
+    @classmethod
+    def dirty_pooled_group_context_builder(cls):
+        """Return the shared group context builder when this detector pools multiple projection families."""
+        return None
+
 
 class SsotAuthorityBoundaryDetector(IssueDetector):
     """Nominal detector relation whose findings open an SSOT proof boundary."""
@@ -1239,6 +1249,10 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         """Check whether target projections satisfy this detector's promotion requirement."""
         return True
 
+    @classmethod
+    def implementation_projection_families(cls):
+        return cls.compact_projection_families()
+
 
 class CompactMultiModuleProjectionDetectorMixin(
     CompactModuleProjectionDetectorMixin[object],
@@ -1366,6 +1380,10 @@ class CompactMultiModuleProjectionDetectorMixin(
             ),
             config,
         )
+
+    @classmethod
+    def dirty_pooled_group_context_builder(cls):
+        return cls.compact_shared_group_context_builder
 
 
 class CompactClassIndexMultiProjectionDetector(
@@ -2262,6 +2280,10 @@ class CompactProjectionCandidateDetector(
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
 
+    @classmethod
+    def implementation_projection_families(cls):
+        return super(IssueDetector, cls).implementation_projection_families()
+
 
 class CompactMultiProjectionCandidateDetector(
     CrossModuleCandidateDetector[CandidateItemT],
@@ -2317,6 +2339,14 @@ class CompactMultiProjectionCandidateDetector(
         config: DetectorConfig,
     ) -> Sequence[CandidateItemT]:
         raise NotImplementedError
+
+    @classmethod
+    def implementation_projection_families(cls):
+        return super(IssueDetector, cls).implementation_projection_families()
+
+    @classmethod
+    def dirty_pooled_group_context_builder(cls):
+        return super(IssueDetector, cls).dirty_pooled_group_context_builder()
 
 
 class CompactContextCandidateDetector(
