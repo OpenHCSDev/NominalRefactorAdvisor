@@ -55,6 +55,7 @@ from nominal_refactor_advisor.models import (
     ConstantSubtypeAnswerMetrics,
     RefactorFinding,
 )
+from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.probe_owner import (
     InferredReceiverType,
@@ -2055,15 +2056,15 @@ def _can_delete_constant_answer(
     family: ConstantAnswerFamily,
     consumed_attribute_ids: frozenset[int],
 ) -> bool:
-    for module in snapshot.module_nodes_by_file_path.values():
-        for node in ast.walk(module):
-            if (
-                isinstance(node, ast.Attribute)
-                and node.attr == family.member_name
-                and id(node) not in consumed_attribute_ids
-            ):
+    for parsed in snapshot.parsed_modules:
+        if family.member_name not in parsed.source:
+            continue
+        for node in parsed.fact(ModuleNodeIndex).attributes_by_attr.get(
+            family.member_name, ()
+        ):
+            if id(node) not in consumed_attribute_ids:
                 return False
-    classes = snapshot.class_overlap_verdicts.class_index.classes_by_symbol
+    classes = snapshot.overlap_class_index.classes_by_symbol
     for sym in family.declaring_statements:
         try:
             NamespaceReaders(snapshot).require_unread(
@@ -2233,14 +2234,17 @@ class DeleteConstantSubtypeAnswerOperation(RepositorySourceReprovedOperation):
         self, snapshot: CodemodSourceSnapshot
     ) -> tuple[NominalSourceEdit, ...]:
         family = ConstantAnswerFamily.resolve(snapshot, self.target, self.member_name)
-        for file_path, module in snapshot.module_nodes_by_file_path.items():
-            for node in ast.walk(module):
-                if isinstance(node, ast.Attribute) and node.attr == self.member_name:
-                    raise NeedsInput(
-                        f"{file_path}:{node.lineno} still reads `.{self.member_name}`",
-                        NeededInput.SOURCE_CHANGE,
-                    )
-        classes = snapshot.class_overlap_verdicts.class_index.classes_by_symbol
+        for parsed in snapshot.parsed_modules:
+            if self.member_name not in parsed.source:
+                continue
+            for node in parsed.fact(ModuleNodeIndex).attributes_by_attr.get(
+                self.member_name, ()
+            ):
+                raise NeedsInput(
+                    f"{parsed.file_path}:{node.lineno} still reads `.{self.member_name}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+        classes = snapshot.overlap_class_index.classes_by_symbol
         for sym in family.declaring_statements:
             NamespaceReaders(snapshot).require_unread(
                 classes[sym], frozenset((self.member_name,))
@@ -2308,7 +2312,7 @@ class ConstantSubtypeAnswerFindingRecipeSynthesizer(
                 )
             )
         snapshot = context.execution_snapshot()
-        classes = snapshot.class_overlap_verdicts.class_index.classes_by_symbol
+        classes = snapshot.overlap_class_index.classes_by_symbol
         base_indexed = classes.get(metrics.declaring_family)
         if base_indexed is None:
             return self.rejected_evaluation(

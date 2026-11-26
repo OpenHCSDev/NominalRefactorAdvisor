@@ -1022,14 +1022,9 @@ class RestatedOverrideFindingRecipeSynthesizer(
         if context is None or evidence is None:
             return self.rejected_evaluation("deleting a restated member needs source context and its class")
         snapshot = context.execution_snapshot()
-        indexed = next(
-            (
-                indexed
-                for indexed in snapshot.class_overlap_verdicts.class_index.classes_by_symbol.values()
-                if indexed.qualname == evidence.symbol and indexed.file_path == evidence.file_path
-            ),
-            None,
-        )
+        index = snapshot.overlap_class_index
+        symbol = index.symbol_for(file_path=evidence.file_path, qualname=evidence.symbol)
+        indexed = None if symbol is None else index.classes_by_symbol.get(symbol)
         if indexed is None:
             return self.rejected_evaluation(f"`{evidence.symbol}` left the source")
         operation = DeleteRestatedOverridesOperation(target=source_rewrite_target(indexed))

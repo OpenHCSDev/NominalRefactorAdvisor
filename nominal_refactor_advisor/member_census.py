@@ -23,6 +23,7 @@ from typing import Self
 
 from nominal_refactor_advisor.amortization import (
     InheritanceAmortization,
+    InheritanceAmortizationCache,
     IntrospectionAmortization,
     IntrospectionSource,
     MethodCall,
@@ -36,6 +37,7 @@ from nominal_refactor_advisor.ast_tools import (
     ParsedModuleFact,
     parse_python_modules,
 )
+from nominal_refactor_advisor.cache_paths import ParseCacheDirectory
 from nominal_refactor_advisor.class_index import (
     CompactClassFamilyIndex,
     CompactIndexedClass,
@@ -50,6 +52,7 @@ from nominal_refactor_advisor.detectors._systemic import (
 )
 from nominal_refactor_advisor.declared_family import ForeignAdapter
 from nominal_refactor_advisor.foreign_family import ForeignFamily
+from nominal_refactor_advisor.installed_source import InstalledModule
 from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
 from nominal_refactor_advisor.observation_families import (
     TypeArgumentResolver,
@@ -300,6 +303,7 @@ class CensusCorpus:
     config: DetectorConfig
     precomputed_projections: tuple | None = None
     precomputed_class_index: CompactClassFamilyIndex | None = None
+    amortization_cache_dir: Path | None = None
 
     @cached_property
     def projections(self) -> tuple:
@@ -1178,16 +1182,29 @@ class MemberAwarenessCensusBuilder:
                     return _inheritance_amortization_incremental(
                         self.corpus.modules, self.corpus.class_index, session
                     )
+        disk_cache = (
+            None
+            if self.corpus.amortization_cache_dir is None
+            else InheritanceAmortizationCache(self.corpus.amortization_cache_dir)
+        )
+        if disk_cache is not None:
+            cached = disk_cache.load(self.corpus.modules)
+            if cached is not None:
+                return cached
         calls = MethodCall.in_modules(self.corpus.modules)
         with TypeCheckerSession.scoped_session(
             SourceTexts(self.corpus.modules),
             (call.span for call in calls),
         ) as session:
-            return inheritance_amortization_for_calls(
+            result = inheritance_amortization_for_calls(
                 self.corpus.modules, calls, self.corpus.class_index, session
             )
+        if disk_cache is not None:
+            disk_cache.store(self.corpus.modules, result)
+        return result
 
 
+@ScanCache.scope()
 def build_member_awareness_census(
     root: Path,
     *,
@@ -1198,14 +1215,20 @@ def build_member_awareness_census(
 ) -> MemberAwarenessCensus:
     """Count the consumers that name each family's members under ``root``."""
 
-    corpus = CensusCorpus(
-        tuple(
-            parse_python_modules(
-                root,
-                cache_dir=cache_dir,
-                use_parse_cache=use_parse_cache,
-            )
-        ),
-        config or DetectorConfig(),
+    cache_paths = ParseCacheDirectory(
+        parse_cache_dir=cache_dir,
+        use_parse_cache=use_parse_cache,
     )
-    return MemberAwarenessCensusBuilder.from_sources(corpus).report(introspection)
+    with InstalledModule.cached_if_unset(cache_paths.collected_family_cache_dir):
+        corpus = CensusCorpus(
+            tuple(
+                parse_python_modules(
+                    root,
+                    cache_dir=cache_dir,
+                    use_parse_cache=use_parse_cache,
+                )
+            ),
+            config or DetectorConfig(),
+            amortization_cache_dir=cache_paths.inheritance_amortization_cache_dir,
+        )
+        return MemberAwarenessCensusBuilder.from_sources(corpus).report(introspection)

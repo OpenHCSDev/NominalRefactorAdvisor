@@ -11,6 +11,11 @@ many calls have no such receiver, the coverage this leaves out.
 from __future__ import annotations
 
 import ast
+import hashlib
+import importlib.metadata
+import os
+import pickle
+import sys
 from abc import ABC, abstractmethod
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator, Mapping
@@ -23,6 +28,10 @@ from nra_introspection_trace import IntrospectionTrace
 
 from nominal_refactor_advisor.ast_tools import ParsedModule, ParsedModuleFact
 from nominal_refactor_advisor.class_index import CompactClassFamilyIndex
+from nominal_refactor_advisor.implementation_identity import (
+    ImplementationSource,
+    declaration_implementation_module_names,
+)
 from nominal_refactor_advisor.json_reports import SemanticRecord, json_report_property
 from nominal_refactor_advisor.probe_owner import ReceiverSpan, ScannedClasses
 from nominal_refactor_advisor.scan_cache import ScanCache
@@ -62,6 +71,85 @@ class InheritanceAmortization(SemanticRecord):
     @json_report_property()
     def derived_pairs_per_kloc(self) -> float:
         return 1000 * self.derived_pairs / max(self.scanned_line_count, 1)
+
+
+@ScanCache.cached
+def _amortization_implementation_digest() -> str:
+    """Digest of amortization + type-checker implementation modules and mypy version."""
+
+    try:
+        mypy_version = importlib.metadata.version("mypy")
+    except importlib.metadata.PackageNotFoundError:
+        mypy_version = "unavailable"
+    sources = tuple(
+        ImplementationSource.from_module_name(module_name)
+        for module_name in declaration_implementation_module_names(
+            (InheritanceAmortization, TypeCheckerSession)
+        )
+    )
+    payload = repr(
+        (
+            "inheritance-amortization-cache-v1",
+            sys.version_info[:3],
+            sys.executable,
+            mypy_version,
+            sources,
+        )
+    ).encode("utf-8")
+    return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+
+@dataclass(frozen=True)
+class InheritanceAmortizationCache:
+    """Disk cache for whole-corpus ``InheritanceAmortization`` keyed by exact source text."""
+
+    cache_dir: Path
+
+    def key_for(self, modules: tuple[ParsedModule, ...]) -> str:
+        digest = hashlib.blake2s(digest_size=20)
+        digest.update(_amortization_implementation_digest().encode("ascii"))
+        for module in sorted(modules, key=lambda item: (item.file_path, item.module_name)):
+            raw_hash = hashlib.blake2s(
+                module.source.encode("utf-8"), digest_size=16
+            ).digest()
+            digest.update(module.file_path.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(module.module_name.encode("utf-8"))
+            digest.update(b"\0")
+            digest.update(raw_hash)
+        return digest.hexdigest()
+
+    def _entry_path(self, key: str) -> Path:
+        return self.cache_dir / f"{key}.pkl"
+
+    def load(self, modules: tuple[ParsedModule, ...]) -> InheritanceAmortization | None:
+        key = self.key_for(modules)
+        entry_path = self._entry_path(key)
+        try:
+            with entry_path.open("rb") as handle:
+                stored_key, value = pickle.load(handle)
+        except (FileNotFoundError, OSError, pickle.PickleError, EOFError, ValueError, TypeError):
+            return None
+        if stored_key != key or not isinstance(value, InheritanceAmortization):
+            return None
+        return value
+
+    def store(
+        self,
+        modules: tuple[ParsedModule, ...],
+        amortization: InheritanceAmortization,
+    ) -> None:
+        key = self.key_for(modules)
+        entry_path = self._entry_path(key)
+        tmp_path = self.cache_dir / f".{key}.{os.getpid()}.tmp"
+        try:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
+            with tmp_path.open("wb") as handle:
+                pickle.dump((key, amortization), handle, protocol=pickle.HIGHEST_PROTOCOL)
+            os.replace(tmp_path, entry_path)
+        except BaseException:
+            tmp_path.unlink(missing_ok=True)
+            raise
 
 
 @dataclass(frozen=True)

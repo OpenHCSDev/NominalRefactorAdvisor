@@ -4498,16 +4498,16 @@ def _main_without_deadline(invocation: CliArguments) -> int:
         parser,
         projection_requested=args.codemod_project_findings,
     )
-    if selected_command_type is not None:
-        selected_command_type.require_execution_mode(
-            parser,
-            codemod_execution_mode,
-        )
-        selected_command_type.require_plan_input(parser, args)
-        early_exit_code = selected_command_type.run_before_scan(parser, args)
-        if early_exit_code is not None:
-            return early_exit_code
     with InstalledModule.cached_in(invocation.installed_family_cache_dir):
+        if selected_command_type is not None:
+            selected_command_type.require_execution_mode(
+                parser,
+                codemod_execution_mode,
+            )
+            selected_command_type.require_plan_input(parser, args)
+            early_exit_code = selected_command_type.run_before_scan(parser, args)
+            if early_exit_code is not None:
+                return early_exit_code
         return _scan_main(invocation, selected_command_type, codemod_execution_mode)
 
 

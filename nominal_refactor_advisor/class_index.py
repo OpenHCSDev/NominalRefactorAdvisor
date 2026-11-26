@@ -8408,6 +8408,7 @@ def _remember_compact_class_family_index(
     )
 
 
+@ScanCache.scope()
 def build_compact_class_family_index(projections: Sequence[CompactModuleClassHeader]) -> CompactClassFamilyIndex:
     """The exact inheritance graph of AST-free per-module facts, built once per
     projection sequence that holds its views."""
