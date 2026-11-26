@@ -1758,7 +1758,7 @@ def test_preserves_parameter_owner_and_return_annotations_and_skips_cyclic_impor
     items_after = (tmp_path / "pkg" / "items.py").read_text()
     # Same-module push preserves `owner: SameModuleConsumer`, `count: int`, and `-> str`.
     assert (
-        "def format_item(self, owner: SameModuleConsumer, count: int) -> str:"
+        "def format_item(self, count: int, owner: SameModuleConsumer) -> str:"
         in items_after
     )
     # Cross-module push imports `Path` cleanly, preserves `root: Path` and `-> str`,
