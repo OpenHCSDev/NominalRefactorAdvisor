@@ -264,6 +264,11 @@ class AuthorityClaimStatus(Case):
                 f"{cls.value} authority resolution discovery shape is invalid"
             )
 
+    @classmethod
+    def discovery_for_claim(cls, searched_symbols, authority_count, ambiguity_reason, claim):
+        """Build discovery guidance for this status when unresolved or ambiguous."""
+        return AuthorityDiscoveryRequired(claimed_symbol=claim.claimed_symbol, searched_symbols=searched_symbols, candidate_count=authority_count, reason=ambiguity_reason)
+
 
 class Resolved(AuthorityClaimStatus):
     value = "resolved"
@@ -271,6 +276,10 @@ class Resolved(AuthorityClaimStatus):
     _minimum_authorities = 1
     _maximum_authorities = 1
     requires_discovery = False
+
+    @classmethod
+    def discovery_for_claim(cls, searched_symbols, authority_count, ambiguity_reason, claim):
+        return None
 
 
 class Ambiguous(AuthorityClaimStatus):
@@ -295,6 +304,10 @@ class Declared(AuthorityClaimStatus):
     _minimum_authorities = 1
     _maximum_authorities = 1
     requires_discovery = False
+
+    @classmethod
+    def discovery_for_claim(cls, searched_symbols, authority_count, ambiguity_reason, claim):
+        return None
 
 
 class AuthorityClaimProvenance(StrEnum):
@@ -1093,14 +1106,7 @@ class AuthorityClaimResolution(DataclassJsonReport):
         authority_count = len(frozenset(edge.authority_id for edge in proof_edges))
         status = AuthorityClaimStatus.from_authority_count(authority_count)
         discovery_required = (
-            AuthorityDiscoveryRequired(
-                claimed_symbol=claim.claimed_symbol,
-                searched_symbols=searched_symbols,
-                candidate_count=authority_count,
-                reason=ambiguity_reason,
-            )
-            if status.requires_discovery
-            else None
+            status.discovery_for_claim(searched_symbols, authority_count, ambiguity_reason, claim)
         )
         return cls(
             claim=claim,

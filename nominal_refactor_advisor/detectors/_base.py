@@ -1108,11 +1108,7 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
             )
             if demand is not None and not family.report_demand_includes_context(demand):
                 return False
-        if cls.compact_report_context_requires_target_projection:
-            return any(
-                target_projections_by_family.get(family, ()) for family in families
-            )
-        return True
+        return cls.has_required_target_projections(families, target_projections_by_family)
 
     @classmethod
     def compact_module_projection_groups(
@@ -1237,6 +1233,11 @@ class CompactModuleProjectionDetectorMixin(Generic[CompactProjectionItemT]):
         config: DetectorConfig,
     ) -> list[RefactorFinding]:
         raise NotImplementedError
+
+    @classmethod
+    def has_required_target_projections(cls, families, target_projections_by_family):
+        """Check whether target projections satisfy this detector's promotion requirement."""
+        return True
 
 
 class CompactMultiModuleProjectionDetectorMixin(

@@ -196,6 +196,10 @@ class RepeatedModuleExpressionLeadDetector(
             ),
         )
 
+    @classmethod
+    def has_required_target_projections(cls, families, target_projections_by_family):
+        return any((target_projections_by_family.get(family, ()) for family in families))
+
 
 class ForeignTypeSwitchDetector(
     CompactModuleProjectionDetectorMixin[TypeTestModule], IssueDetector

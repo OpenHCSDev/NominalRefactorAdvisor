@@ -602,9 +602,7 @@ class ClassBodyIndex:
                 declaration,
                 identity,
                 field_identity=(
-                    self._field_identity(module_name, declaration, identity)
-                    if declaration.field_declaration.depends_on_repository
-                    else declaration.field_declaration.static_field_identity(identity)
+                    declaration.field_declaration.resolved_body_declaration(identity, module_name, declaration, self)
                 ),
             )
         settlements = StarSettlements.keyed(

@@ -4154,6 +4154,10 @@ class CompactFieldFact(ABC):
     ) -> IdentityT | None:
         raise NotImplementedError
 
+    def resolved_body_declaration(self, identity, module_name, declaration, owner):
+        """Resolve this field fact's body declaration using repository wrappers when needed."""
+        return self.static_field_identity(identity)
+
 
 @dataclass(frozen=True)
 class NoFieldFact(CompactFieldFact):
@@ -4203,6 +4207,9 @@ class CompactCalledFieldFact(CompactFieldFact):
         if field_declarations.declares_bare_field(self.call) is not True:
             return None
         return bare_identity(self.bare)
+
+    def resolved_body_declaration(self, identity, module_name, declaration, owner):
+        return owner._field_identity(module_name, declaration, identity)
 
 
 class AnnotatedFieldFact(StatementValueQuestion[CompactFieldFact]):

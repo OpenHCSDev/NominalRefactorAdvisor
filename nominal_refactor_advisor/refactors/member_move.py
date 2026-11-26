@@ -491,6 +491,10 @@ class DestinationMember:
         if not self.moved.source.keeps_receiver and _calls(call.attribute.value):
             raise ValueError(f"{call.where}: the receiver calls, and the moved call no longer evaluates it")
 
+    def add_caller_destination_import(self, snapshot, call, imports, moved, graph):
+        """Import the destination class into the caller module when rewritten calls spell it."""
+        pass
+
 
 @dataclass(frozen=True)
 class DestinationInstanceMethod(DestinationMember):
@@ -661,6 +665,11 @@ class DestinationClassMethod(DestinationMember):
             start_offset=opening, end_offset=span_end, replacement_source=inserted,
         ))
         return tuple(replacements)
+
+    def add_caller_destination_import(self, snapshot, call, imports, moved, graph):
+        module_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(snapshot.module_nodes_by_file_path[call.file_path].body)
+        if call.file_path != moved.destination.file_path and moved.destination.name not in module_names:
+            imports.append(ModuleImportMutation.from_source(file_path=call.file_path, import_source=graph.required_import_source(importing_file_path=call.file_path, imported_file_path=moved.destination.file_path, imported_name=moved.destination.name), rationale=f'{call.where} calls {moved.name!r} on its new class.'))
 
 
 type _Edit = tuple[int, int, str]
@@ -928,21 +937,7 @@ class MoveMethodToClassOperation(RepositorySourceReprovedOperation):
             replacements.setdefault(call.file_path, []).extend(
                 moved.member.replacement(geometry, call)
             )
-            if not moved.member.callers_import_destination:
-                continue
-            module_names = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(
-                snapshot.module_nodes_by_file_path[call.file_path].body
-            )
-            if call.file_path != moved.destination.file_path and moved.destination.name not in module_names:
-                imports.append(ModuleImportMutation.from_source(
-                    file_path=call.file_path,
-                    import_source=graph.required_import_source(
-                        importing_file_path=call.file_path,
-                        imported_file_path=moved.destination.file_path,
-                        imported_name=moved.destination.name,
-                    ),
-                    rationale=f"{call.where} calls {moved.name!r} on its new class.",
-                ))
+            moved.member.add_caller_destination_import(snapshot, call, imports, moved, graph)
         source_geometry = SourceTextGeometry(snapshot.sources_by_file_path[source_path])
         start, end = method_deletion_offsets(source_geometry, moved.method)
         replacements.setdefault(source_path, []).append(
