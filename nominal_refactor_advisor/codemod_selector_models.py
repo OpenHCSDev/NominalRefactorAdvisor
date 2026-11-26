@@ -32,6 +32,7 @@ from nominal_refactor_advisor.json_reports import (
     json_report_object,
 )
 from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.source_index import (
     AstTargetDigest,
     AstTargetNodeKind,
@@ -163,6 +164,11 @@ class SourceRewriteTarget(
             "Source rewrite target did not resolve to exactly one eligible "
             "source-index target"
         )
+
+    def of(self, snapshot, cls):
+        if self.file_path is None or self.qualname is None:
+            raise NeedsInput('a moved class needs its module and name', NeededInput.OPERATION)
+        return cls.of_roots(snapshot, self.file_path, (self.qualname,))
 
 
 class SourcePathPayloadValueCodec(RequiredStringPayloadValueCodec):

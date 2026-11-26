@@ -1209,6 +1209,14 @@ class NativeBindingTransfer(StoredDataclassState):
         if observation.value is not None and observation.value is not self.value:
             raise ValueError("Store observation does not retain its original operand")
 
+    def _local_store_resolution(self, owner):
+        if self.value is None:
+            raise ValueError('Native local store has no proved operand')
+        previous = owner._preceding_native_local_value(self.name, self.instruction_offset)
+        if previous is not None:
+            previous.require_release_in(owner.native_lookup_prefix.endpoint.frame)
+        return (self.name, owner.native_value(self.value))
+
 
 class NativeClassPrologueResolverABC(ABC, Generic[NativeResolutionT]):
     @abstractmethod
@@ -1676,6 +1684,15 @@ class NativeOperandStack:
             tuple(self.bindings), offset, tuple(self.values)
         )
 
+    def capture(self, owner, instruction):
+        if self.expected_operation is not None and self.expected_operation is not owner:
+            raise ValueError('Native prepared protocol requires its next declared operation')
+        self.expected_operation = None
+        owner._capture(self, owner, instruction)
+        if owner.terminates_prefix:
+            return self.complete(instruction.offset)
+        return None
+
 
 class NativePrimitiveOperation(Enum):
     """Native primitives own both operand production and storage projection.
@@ -1833,18 +1850,7 @@ class NativePrimitiveOperation(Enum):
     def capture(
         self, stack: NativeOperandStack, instruction: dis.Instruction
     ) -> ExactNativeClassPrologue | None:
-        if (
-            stack.expected_operation is not None
-            and stack.expected_operation is not self
-        ):
-            raise ValueError(
-                "Native prepared protocol requires its next declared operation"
-            )
-        stack.expected_operation = None
-        self._capture(stack, self, instruction)
-        if self.terminates_prefix:
-            return stack.complete(instruction.offset)
-        return None
+        return stack.capture(self, instruction)
 
     def bindings(
         self, instruction: dis.Instruction, value: NativeProducedValue | None = None
@@ -3260,6 +3266,17 @@ class NativeCodeEmission:
     def source_span(self) -> SourceByteSpan | None:
         return NativeInstructionSite(self.containing_code, self.load).source_span
 
+    def _advance_created(self, instruction, cls):
+        if self.source_span is None or self.application_prelude:
+            return None
+        if NativeInstructionSite(self.containing_code, instruction).source_span != self.source_span:
+            return None
+        try:
+            self.installation, = cls.operation.bindings(instruction)
+        except ValueError:
+            return None
+        return None
+
 
 @dataclass(frozen=True)
 class NativeGeneratedClassFrame:
@@ -3583,18 +3600,7 @@ class InstallNativeFunction(CreatedNativeFunctionOperation):
         current: NativeCodeEmission,
         instruction: dis.Instruction,
     ) -> NativeCodeEmission | None:
-        if current.source_span is None or current.application_prelude:
-            return None
-        if (
-            NativeInstructionSite(current.containing_code, instruction).source_span
-            != current.source_span
-        ):
-            return None
-        try:
-            (current.installation,) = cls.operation.bindings(instruction)
-        except ValueError:
-            return None
-        return None
+        return current._advance_created(instruction, cls)
 
 
 class InstallGlobalNativeFunction(InstallNativeFunction):

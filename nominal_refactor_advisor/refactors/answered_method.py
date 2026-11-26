@@ -180,10 +180,7 @@ class AnsweredMethod:
         """The reference as a use the method answers: a method is answered by a call
         alone, since any other reference would lose it."""
 
-        if site.call is None:
-            raise ValueError(f"{site.where} uses {self.name!r} other than by calling it")
-        self.admits(binding, site.where)
-        return MethodCall(site.file_path, site.attribute, site.call)
+        return site.answer(self, binding)
 
     def answering_calls(self) -> tuple[AnsweredUse, ...]:
         """The uses the member answers, each receiver typed by the class binding, the
@@ -694,6 +691,14 @@ class MethodReference:
     @property
     def where(self) -> str:
         return f"{self.file_path}:{self.attribute.lineno}"
+
+    def answer(self, owner, binding):
+        """The reference as a use the method answers: a method is answered by a call
+    alone, since any other reference would lose it."""
+        if self.call is None:
+            raise ValueError(f'{self.where} uses {owner.name!r} other than by calling it')
+        owner.admits(binding, self.where)
+        return MethodCall(self.file_path, self.attribute, self.call)
 
 
 

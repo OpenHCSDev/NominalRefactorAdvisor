@@ -261,18 +261,7 @@ class ModuleReferenceScope:
         rebind it.
         """
 
-        if spelled.replaced is None:
-            return None
-        if spelled.name in self.imported_modules:
-            return f"{self.imported_modules[spelled.name]}{spelled.suffix}"
-        if (
-            spelled.replaced is spelled.literal
-            and self.package
-            and spelled.name == self.package
-            and self.runs_in_package
-        ):
-            return self.OWN_PACKAGE
-        return None
+        return spelled.module_reference(self)
 
     _BOUND_NODE_TYPES = (
         ast.Import,
@@ -467,6 +456,23 @@ class SpelledModule:
     @property
     def name(self) -> str:
         return self.literal.value
+
+    def module_reference(self, owner):
+        """The expression that stands where the spelled module is, or None.
+
+    A module the file imports eagerly is its import's reference. The file's
+    own package, where the string itself is the value, is `__package__`:
+    a module with a top-level relative import runs only as a submodule of
+    its package, and the import system sets `__package__` to that package's
+    name, so `__package__` is the string wherever the file does not
+    rebind it."""
+        if self.replaced is None:
+            return None
+        if self.name in owner.imported_modules:
+            return f'{owner.imported_modules[self.name]}{self.suffix}'
+        if self.replaced is self.literal and owner.package and (self.name == owner.package) and owner.runs_in_package:
+            return owner.OWN_PACKAGE
+        return None
 
 
 class SpelledModules:

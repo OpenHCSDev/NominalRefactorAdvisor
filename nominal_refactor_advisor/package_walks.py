@@ -53,6 +53,11 @@ class ClassKeyword:
     package: str | None
     expression: str
 
+    def _keyword_root(self, recursive):
+        if self.package is None:
+            return UnresolvedWalkRoot(self.expression)
+        return PackageWalkRoot(package=self.package, recursive=recursive)
+
 
 @dataclass(frozen=True)
 class ModuleWalks(ParsedModuleFact):
@@ -326,6 +331,4 @@ def family_walk_roots(
 
 
 def _keyword_root(keyword: ClassKeyword, recursive: bool) -> FamilyWalkRoot:
-    if keyword.package is None:
-        return UnresolvedWalkRoot(keyword.expression)
-    return PackageWalkRoot(package=keyword.package, recursive=recursive)
+    return keyword._keyword_root(recursive)

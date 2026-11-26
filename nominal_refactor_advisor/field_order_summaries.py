@@ -43,6 +43,17 @@ class HandedParameter:
     position: int | None
     keyword: str | None
 
+    def bound(self, owner, bound_method):
+        """The parameter of this function that `handed` binds: a method looked up
+    on a class or its receiver binds its first parameter itself, unless it is a
+    `staticmethod`."""
+        if self.keyword is not None:
+            return self.keyword if self.keyword in (*owner.positional, *owner.keyword_only) else None
+        if self.position is None:
+            return None
+        index = self.position + (1 if bound_method and owner.binds_first else 0)
+        return owner.positional[index] if index < len(owner.positional) else None
+
 
 @dataclass(frozen=True)
 class FunctionOrderSummary:
@@ -79,12 +90,7 @@ class FunctionOrderSummary:
         on a class or its receiver binds its first parameter itself, unless it is a
         `staticmethod`."""
 
-        if handed.keyword is not None:
-            return handed.keyword if handed.keyword in (*self.positional, *self.keyword_only) else None
-        if handed.position is None:
-            return None
-        index = handed.position + (1 if bound_method and self.binds_first else 0)
-        return self.positional[index] if index < len(self.positional) else None
+        return handed.bound(self, bound_method)
 
     @classmethod
     def of_syntax_index(
