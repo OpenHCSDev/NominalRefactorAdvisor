@@ -2465,7 +2465,15 @@ class SemanticDescentGraphQuestion(ABC, Generic[GraphAnswerT]):
         raise NotImplementedError
 
 
-class SemanticDescentGraphHolding(ABC):
+class SemanticDescentGraphDemand(ABC):
+    """Whether serving a reused result first needs the repository graph."""
+
+    @abstractmethod
+    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
+        raise NotImplementedError
+
+
+class SemanticDescentGraphHolding(SemanticDescentGraphDemand):
     """Whether a scan already holds its repository semantic-descent graph."""
 
     @staticmethod
@@ -2488,11 +2496,6 @@ class SemanticDescentGraphHolding(ABC):
         self, alternative: SemanticDescentGraphHolding
     ) -> SemanticDescentGraphHolding:
         """This holding when it holds a graph, else the alternative."""
-        raise NotImplementedError
-
-    @abstractmethod
-    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
-        """A reused result that needs this graph: served with it, or missed."""
         raise NotImplementedError
 
     @abstractmethod
@@ -3806,14 +3809,6 @@ class FastCacheMiss(FastCacheAnswer):
 
 
 FAST_CACHE_MISS = FastCacheMiss()
-
-
-class SemanticDescentGraphDemand(ABC):
-    """Whether serving a reused result first needs the repository graph."""
-
-    @abstractmethod
-    def serve(self, result: ReusedCacheResult) -> FastCacheAnswer:
-        raise NotImplementedError
 
 
 class NoGraphDemand(SemanticDescentGraphDemand):

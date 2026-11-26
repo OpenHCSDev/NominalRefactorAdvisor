@@ -16,6 +16,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from nominal_refactor_advisor.ast_field_decoders import variadic_parameters
 from nominal_refactor_advisor.codemod_payload import (
     OptionalStringPayloadValueCodec,
     PayloadRecordValueCodec,
@@ -1016,8 +1017,7 @@ def _matching_existing_method_names(
         if (
             args.posonlyargs
             or args.kwonlyargs
-            or args.vararg is not None
-            or args.kwarg is not None
+            or variadic_parameters(args)
             or args.defaults
             or len(args.args) != len(generated_params)
         ):

@@ -1516,7 +1516,7 @@ class CompactMutationResolverABC(ABC, Generic[ResolutionContextT, TargetResoluti
         raise NotImplementedError
 
 
-class CompactAssignmentTargetABC(DataclassGraphNode):
+class CompactAssignmentTargetABC(ValueExpressionShapeABC, DataclassGraphNode):
     """An evaluated write destination, distinct from the later write event."""
 
     imported_origin: ImportedNameOrigin | None = None
@@ -1528,11 +1528,6 @@ class CompactAssignmentTargetABC(DataclassGraphNode):
         context: ResolutionContextT,
         mutation: CompactMutation,
     ) -> TargetResolutionT:
-        raise NotImplementedError
-
-    @property
-    @abstractmethod
-    def lexical_reference(self) -> LexicalValueReference | None:
         raise NotImplementedError
 
     @property
