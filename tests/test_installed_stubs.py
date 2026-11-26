@@ -10,7 +10,10 @@ from nominal_refactor_advisor.ast_tools import (
     PythonSourcePathPolicy,
     parse_python_modules,
 )
-from nominal_refactor_advisor.class_index import InstalledClassDeclarations
+from nominal_refactor_advisor.class_index import (
+    CompactRepositoryPublicExposureIndex,
+    InstalledClassDeclarations,
+)
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._sibling_overrides import (
     SiblingOverrideDetector,
@@ -51,11 +54,13 @@ def toolkit(tmp_path: Path, monkeypatch):
     )
     monkeypatch.syspath_prepend(str(installed))
     for cached in (InstalledModule.located_source, InstalledModule.parsed,
-                   InstalledClassDeclarations.module, InstalledClassDeclarations.stub):
+                   InstalledClassDeclarations.module, InstalledClassDeclarations.stub,
+                   InstalledClassDeclarations.lazy_getattr_aliases):
         cached.cache_clear()
     yield installed
     for cached in (InstalledModule.located_source, InstalledModule.parsed,
-                   InstalledClassDeclarations.module, InstalledClassDeclarations.stub):
+                   InstalledClassDeclarations.module, InstalledClassDeclarations.stub,
+                   InstalledClassDeclarations.lazy_getattr_aliases):
         cached.cache_clear()
     for name in [name for name in sys.modules if name == "toolkit" or name.startswith("toolkit.")]:
         del sys.modules[name]
@@ -107,3 +112,95 @@ def test_classes_over_a_stubbed_base_and_a_run_time_reexport_have_a_proved_order
     # stub beside the package that binds it in `__getattr__`.
     assert "is not proved" not in finding.summary
     assert "`Scope` already exists to hold it" in finding.summary
+
+
+def test_installed_star_reexport_and_pep562_type_checking_reexport_are_resolved(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Installed modules re-exporting via `from mod import *` (like `collections.abc`)
+    or PEP 562 `def __getattr__` + `if TYPE_CHECKING:` (like `pydantic`) resolve
+    statically without executing third-party code; non-`__getattr__` modules never
+    expose `if TYPE_CHECKING:` imports as runtime re-exports."""
+
+    installed = tmp_path / "site"
+    _write(
+        installed,
+        {
+            "fakelib/__init__.py": (
+                "import typing\n\n"
+                "if typing.TYPE_CHECKING:\n"
+                "    from .main import BaseModel\n\n"
+                "def __getattr__(name: str):\n"
+                "    raise AttributeError(name)\n"
+            ),
+            "fakelib/main.py": "class BaseModel:\n    pass\n",
+            "fakelib/star_impl.py": "class StarBase:\n    pass\n",
+            "fakelib/star_pub.py": "from fakelib.star_impl import *\n",
+            "fakelib/no_getattr.py": (
+                "from typing import TYPE_CHECKING\n\n"
+                "if TYPE_CHECKING:\n"
+                "    from .main import BaseModel\n"
+            ),
+            "fakelib/cycle_a.py": "from fakelib.cycle_b import *\n",
+            "fakelib/cycle_b.py": "from fakelib.cycle_a import *\n",
+        },
+    )
+    monkeypatch.syspath_prepend(str(installed))
+    caches = (
+        InstalledModule.located_source,
+        InstalledModule.parsed,
+        InstalledClassDeclarations.module,
+        InstalledClassDeclarations.stub,
+        InstalledClassDeclarations.lazy_getattr_aliases,
+    )
+    for cached in caches:
+        cached.cache_clear()
+    try:
+        scanned = tmp_path / "scan"
+        _write(
+            scanned,
+            {
+                "app/__init__.py": "",
+                "app/shared.py": (
+                    "from abc import abstractmethod\n\n\n"
+                    "class Scope:\n    @abstractmethod\n    def scope(self) -> str: ...\n"
+                ),
+                "app/views.py": (
+                    "from collections.abc import MutableMapping\n"
+                    "from fakelib import BaseModel\n"
+                    "from fakelib.star_pub import StarBase\n"
+                    "from app.shared import Scope\n\n\n"
+                    "class ModelView(Scope, BaseModel):\n    def scope(self) -> str:\n        return 'm'\n\n\n"
+                    "class StarView(Scope, StarBase):\n    def scope(self) -> str:\n        return 'm'\n\n\n"
+                    "class MapView(Scope, MutableMapping):\n    def scope(self) -> str:\n        return 'm'\n"
+                ),
+            },
+        )
+        modules = parse_python_modules(
+            scanned,
+            use_parse_cache=False,
+            source_policy=PythonSourcePathPolicy(include_tests=False),
+        )
+        exposure = CompactRepositoryPublicExposureIndex(())
+        assert (
+            InstalledClassDeclarations.declaration("fakelib.BaseModel", exposure).symbol
+            == "fakelib.main.BaseModel"
+        )
+        assert (
+            InstalledClassDeclarations.declaration("fakelib.star_pub.StarBase", exposure).symbol
+            == "fakelib.star_impl.StarBase"
+        )
+        assert (
+            InstalledClassDeclarations.declaration("collections.abc.MutableMapping", exposure).symbol
+            in {"collections.abc.MutableMapping", "_collections_abc.MutableMapping"}
+        )
+        assert InstalledClassDeclarations.declaration("fakelib.no_getattr.BaseModel", exposure) is None
+        assert InstalledClassDeclarations.declaration("fakelib.cycle_a.Missing", exposure) is None
+
+        with ScanCache.scope():
+            (finding,) = SiblingOverrideDetector().detect(modules, DetectorConfig())
+        assert "is not proved" not in finding.summary
+        assert "`Scope` already exists to hold it" in finding.summary
+    finally:
+        for cached in caches:
+            cached.cache_clear()

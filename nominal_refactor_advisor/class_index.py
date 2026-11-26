@@ -54,6 +54,7 @@ from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     variadic_parameters,
 )
+from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
 from nominal_refactor_advisor.ast_projection import ExpressionReference
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
@@ -7717,6 +7718,36 @@ class InstalledClassDeclarations:
         (projection,) = found
         return projection
 
+    @staticmethod
+    @cache
+    def lazy_getattr_aliases(module_name: str) -> Mapping[str, str]:
+        """Re-export targets declared under `if TYPE_CHECKING:` in an installed
+        module that defines PEP 562 `def __getattr__` (e.g. `pydantic/__init__.py`)."""
+
+        parsed = InstalledModule.parsed(module_name)
+        if parsed is None:
+            return {}
+        if not any(
+            isinstance(statement, ast.FunctionDef) and statement.name == "__getattr__"
+            for statement in parsed.module.body
+        ):
+            return {}
+        aliases: dict[str, str] = {}
+        identity = parsed.module_path_identity
+        for statement in ModuleImportScope.TYPE_CHECKING.import_statements(parsed.module):
+            if not isinstance(statement, ast.ImportFrom):
+                continue
+            resolved_module = identity.resolve_import_from_module(
+                imported_module=statement.module, level=statement.level
+            )
+            if resolved_module is None:
+                continue
+            for alias in statement.names:
+                if alias.name == "*":
+                    continue
+                aliases[alias.asname or alias.name] = f"{resolved_module}.{alias.name}"
+        return aliases
+
     @classmethod
     def declaration(
         cls,
@@ -7731,44 +7762,98 @@ class InstalledClassDeclarations:
         module outside the scan is read from its installed source.
         """
 
-        modules = scan.module_projection_multiplicity
+        return cls._declaration(
+            qualified_name,
+            scan,
+            remaining_hops=cls.MAX_REEXPORTS,
+            visited=frozenset(),
+            installed_lookups={},
+        )
+
+    @classmethod
+    def _declaration(
+        cls,
+        qualified_name: str,
+        scan: CompactRepositoryPublicExposureIndex,
+        *,
+        remaining_hops: int,
+        visited: frozenset[str],
         installed_lookups: dict[
-            str, tuple[dict[str, CompactIndexedClass], dict[str, str]] | None
-        ] = {}
-        for _hop in range(cls.MAX_REEXPORTS):
-            module_name, _dot, name = qualified_name.rpartition(".")
+            str,
+            tuple[
+                dict[str, CompactIndexedClass],
+                dict[str, str],
+                tuple[CompactModuleStarImportOrigin, ...],
+            ]
+            | None,
+        ],
+    ) -> CompactIndexedClass | None:
+        modules = scan.module_projection_multiplicity
+        seen = set(visited)
+        current = qualified_name
+        for hop in range(remaining_hops):
+            if current in seen:
+                return None
+            seen.add(current)
+            module_name, _dot, name = current.rpartition(".")
             if module_name in modules.ambiguous_handles:
                 return None
-            lookup = scan.module_declaration_lookup(module_name)
-            in_scan = lookup is not None
-            if not in_scan:
+            scan_lookup = scan.module_declaration_lookup(module_name)
+            in_scan = scan_lookup is not None
+            star_origins: tuple[CompactModuleStarImportOrigin, ...] = ()
+            if in_scan:
+                classes_by_symbol, aliases = scan_lookup
+            else:
                 if module_name in installed_lookups:
-                    lookup = installed_lookups[module_name]
+                    installed = installed_lookups[module_name]
                 else:
                     projection = cls.module(module_name) if module_name else None
-                    lookup = (
+                    installed = (
                         None
                         if projection is None
                         else (
                             {declared.symbol: declared for declared in projection.classes},
                             dict(projection.import_aliases),
+                            projection.star_import_origins,
                         )
                     )
-                    installed_lookups[module_name] = lookup
-            if lookup is None:
-                return None
-            classes_by_symbol, aliases = lookup
-            declared = classes_by_symbol.get(qualified_name)
+                    installed_lookups[module_name] = installed
+                if installed is None:
+                    return None
+                classes_by_symbol, aliases, star_origins = installed
+            declared = classes_by_symbol.get(current)
             if declared is not None:
                 return declared
             target = aliases.get(name)
             if target is None and not in_scan:
-                # The `.py` computes the name when it is read (`__getattr__`); its stub states it.
+                # The `.py` computes the name when it is read (`__getattr__`);
+                # check its sibling `.pyi` stub, then PEP 562 `if TYPE_CHECKING:` imports.
                 stated = cls.stub(module_name)
                 target = None if stated is None else dict(stated.import_aliases).get(name)
-            if target is None or target == qualified_name:
+                if target is None:
+                    target = cls.lazy_getattr_aliases(module_name).get(name)
+            if target is None and not in_scan and star_origins:
+                # Follow `from <origin> import *` in Python's runtime precedence order
+                # (later star imports shadow earlier ones).
+                next_hops = remaining_hops - hop - 1
+                if next_hops > 0:
+                    frozen_seen = frozenset(seen)
+                    for origin in reversed(star_origins):
+                        if not isinstance(origin, ResolvedStarImportOrigin):
+                            continue
+                        found = cls._declaration(
+                            f"{origin.module_name}.{name}",
+                            scan,
+                            remaining_hops=next_hops,
+                            visited=frozen_seen,
+                            installed_lookups=installed_lookups,
+                        )
+                        if found is not None:
+                            return found
                 return None
-            qualified_name = target
+            if target is None or target == current:
+                return None
+            current = target
         return None
 
 

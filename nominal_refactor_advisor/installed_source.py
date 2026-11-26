@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -62,6 +63,24 @@ class InstalledModule:
             cls._family_cache_dir.reset(token)
 
     @staticmethod
+    def _loaded_module_source_path(module_name: str) -> Path | None:
+        """The `.py` or `.pyi` file of a module already loaded in `sys.modules`
+        (e.g. stdlib aliases like `collections.abc` -> `_collections_abc.py` and
+        `os.path` -> `posixpath.py` that have no file at their dotted path).
+        Never imports or executes any module."""
+
+        loaded = sys.modules.get(module_name)
+        if loaded is None:
+            return None
+        raw = getattr(loaded, "__file__", None)
+        if not isinstance(raw, str):
+            return None
+        path = Path(raw)
+        if path.suffix in (".py", STUB_SUFFIX) and path.is_file():
+            return path
+        return None
+
+    @staticmethod
     def source_path(module_name: str) -> Path | None:
         """The file a module name selects: the top package through `PathFinder`, each
         submodule under its package's directories. A `.py` file, or the `.pyi` stub of
@@ -70,7 +89,7 @@ class InstalledModule:
         top, *rest = module_name.split(".")
         spec = PathFinder.find_spec(top)
         if spec is None or spec.origin is None and not spec.submodule_search_locations:
-            return None
+            return InstalledModule._loaded_module_source_path(module_name)
         found = None if spec.origin is None else Path(spec.origin)
         locations = [
             Path(location) for location in spec.submodule_search_locations or ()
@@ -90,10 +109,10 @@ class InstalledModule:
                 None,
             )
             if found is None:
-                return None
+                return InstalledModule._loaded_module_source_path(module_name)
             locations = [found.parent] if source_path_is_package_init(found) else []
         if found is None or found.suffix not in (".py", STUB_SUFFIX):
-            return None
+            return InstalledModule._loaded_module_source_path(module_name)
         return found
 
     @staticmethod
