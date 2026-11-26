@@ -1187,3 +1187,124 @@ def test_composes_two_optional_ast_field_decoders_on_same_line(
             sys.modules.pop(mod_name, None)
 
 
+def test_routes_single_variadic_arbitrary_or_and_narrowed_subscript_as_ast(
+    tmp_path: Path,
+) -> None:
+    """Exercise VarargParameterDecoder, KwargParameterDecoder (with paired
+    VariadicParameterDecoder priority), arbitrary-position `or` early exits,
+    overlapping multi-decoder sequencing across passes, guard-first Subscript
+    narrowing, and `as_ast` / `indexed_nodes_of_type` proofs."""
+
+    package = tmp_path / "pkg_wave14"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    mod_path = package / "mod.py"
+    mod_path.write_text(
+        "from __future__ import annotations\n"
+        "import ast\n"
+        "from typing import TypeVar\n\n"
+        "NodeT = TypeVar('NodeT', bound=ast.AST)\n\n\n"
+        "def as_ast(node: ast.AST, cls: type[NodeT]) -> NodeT | None:\n"
+        "    return node if isinstance(node, cls) else None\n\n\n"
+        "def format_variadic(arguments: ast.arguments) -> list[str]:\n"
+        "    out: list[str] = []\n"
+        "    if arguments.vararg is not None:\n"
+        "        out.append('*' + arguments.vararg.arg)\n"
+        "    if arguments.kwarg is not None:\n"
+        "        out.append('**' + arguments.kwarg.arg)\n"
+        "    return out\n\n\n"
+        "def has_no_variadic(arguments: ast.arguments) -> bool:\n"
+        "    return arguments.vararg is None and arguments.kwarg is None\n\n\n"
+        "def single_base_span(node: ast.ClassDef) -> int | None:\n"
+        "    if node.end_lineno is None or len(node.bases) != 1:\n"
+        "        return None\n"
+        "    return node.end_lineno - node.lineno + 1\n\n\n"
+        "def middle_or_span(node: ast.expr, limit: int) -> tuple[int, int] | None:\n"
+        "    if limit < 0 or node.end_lineno is None or node.end_col_offset is None:\n"
+        "        return None\n"
+        "    return (node.end_lineno, node.end_col_offset)\n\n\n"
+        "def first_match_has_guard(body: list[ast.stmt]) -> bool:\n"
+        "    if not body or not isinstance(body[0], ast.Match):\n"
+        "        return False\n"
+        "    match_node = body[0]\n"
+        "    for _idx, match_case in enumerate(match_node.cases):\n"
+        "        if match_case.guard is not None:\n"
+        "            return True\n"
+        "    return False\n\n\n"
+        "def ann_default_src(statement: ast.stmt) -> str | None:\n"
+        "    assignment = as_ast(statement, ast.AnnAssign)\n"
+        "    if assignment is None:\n"
+        "        return None\n"
+        "    return ast.unparse(assignment.value) if assignment.value is not None else None\n"
+    )
+    for _pass in range(2):
+        modules = parse_python_modules(tmp_path)
+        findings = [
+            finding
+            for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+            if finding.detector_id == "foreign_absence_probe"
+            and Path(finding.primary_evidence.file_path) == mod_path
+        ]
+        if not findings:
+            break
+        snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+        plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+        assert plan.document.recipes, [
+            (r.finding.primary_evidence.line, r.status, r.reason) for r in plan.records
+        ]
+        simulation = plan.document.simulate(snapshot)
+        assert simulation.is_clean
+        simulation.apply()
+
+    after = mod_path.read_text()
+    assert "vararg_parameters(" in after
+    assert "kwarg_parameters(" in after
+    assert "variadic_parameters(" in after
+    assert "end_line_numbers(" in after
+    assert "end_column_offsets(" in after
+    assert "match_guards(" in after
+    assert "optional_values(" in after
+    remaining = [
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(
+            parse_python_modules(tmp_path), DetectorConfig()
+        )
+        if finding.detector_id == "foreign_absence_probe"
+        and Path(finding.primary_evidence.file_path) == mod_path
+    ]
+    assert remaining == []
+
+    ns: dict[str, object] = {}
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(after, str(mod_path), "exec"), ns)
+        fn_both = ast.parse("def f(*a, **k): pass").body[0]
+        fn_none = ast.parse("def g(x): pass").body[0]
+        cls_one = ast.parse("class C(Base):\n    x = 1\n").body[0]
+        cls_two = ast.parse("class D(A, B):\n    pass\n").body[0]
+        expr_node = ast.parse("1 + 2\n").body[0].value  # type: ignore[attr-defined]
+        m_guard = ast.parse("match x:\n    case 1 if ok:\n        pass\n").body
+        m_plain = ast.parse("match x:\n    case 1:\n        pass\n").body
+        ann_val = ast.parse("x: int = 3").body[0]
+        ann_bare = ast.parse("x: int").body[0]
+        assert ns["format_variadic"](fn_both.args) == ["*a", "**k"]  # type: ignore[operator,attr-defined]
+        assert ns["format_variadic"](fn_none.args) == []  # type: ignore[operator,attr-defined]
+        assert ns["has_no_variadic"](fn_both.args) is False  # type: ignore[operator,attr-defined]
+        assert ns["has_no_variadic"](fn_none.args) is True  # type: ignore[operator,attr-defined]
+        assert ns["single_base_span"](cls_one) == 2  # type: ignore[operator]
+        assert ns["single_base_span"](cls_two) is None  # type: ignore[operator]
+        assert ns["middle_or_span"](expr_node, 1) == (1, 5)  # type: ignore[operator]
+        assert ns["middle_or_span"](expr_node, -1) is None  # type: ignore[operator]
+        assert ns["first_match_has_guard"](m_guard) is True  # type: ignore[operator]
+        assert ns["first_match_has_guard"](m_plain) is False  # type: ignore[operator]
+        assert ns["ann_default_src"](ann_val) == "3"  # type: ignore[operator]
+        assert ns["ann_default_src"](ann_bare) is None  # type: ignore[operator]
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [
+            m for m in sys.modules if m == "pkg_wave14" or m.startswith("pkg_wave14.")
+        ]:
+            sys.modules.pop(mod_name, None)
+
+
+

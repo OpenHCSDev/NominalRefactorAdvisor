@@ -88,6 +88,24 @@ def variadic_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
     return ()
 
 
+def vararg_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
+    """The `*args` parameter a signature declares: none when absent."""
+
+    match arguments:
+        case ast.arguments(vararg=ast.arg() as vararg):
+            return (vararg,)
+    return ()
+
+
+def kwarg_parameters(arguments: ast.arguments) -> tuple[ast.arg, ...]:
+    """The `**kwargs` parameter a signature declares: none when absent."""
+
+    match arguments:
+        case ast.arguments(kwarg=ast.arg() as kwarg):
+            return (kwarg,)
+    return ()
+
+
 def alias_names(node: ast.alias) -> tuple[str, ...]:
     """The explicit alias name an import alias declares: none when unaliased."""
 
@@ -232,8 +250,10 @@ __all__ = (
     "end_line_numbers",
     "exception_types",
     "import_modules",
+    "kwarg_parameters",
     "match_guards",
     "match_patterns",
     "optional_values",
+    "vararg_parameters",
     "variadic_parameters",
 )
