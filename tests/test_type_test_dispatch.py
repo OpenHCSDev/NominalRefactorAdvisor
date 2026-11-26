@@ -2726,6 +2726,148 @@ def test_push_type_test_dispatch_absorbs_trailing_boolean_return(tmp_path: Path)
     assert _findings(tmp_path) == []
 
 
+def test_split_base_method_in_place_for_instance_ternary_classmethod_and_property(
+    tmp_path: Path,
+) -> None:
+    """Whole-method `isinstance(self, Sub)` / `issubclass(cls, Sub)` declared on `Base`
+    itself splits in place with zero OWNER_PICK: `Base` keeps its signature, docstring,
+    and default body while tested subclasses gain matching overrides (preserving unused
+    params, defaults, `@classmethod`, and `@property`)."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/plans.py": (
+                "from __future__ import annotations\n\n\n"
+                "class HubPlan:\n"
+                "    def __init__(self, label: str) -> None:\n"
+                "        self.label = label\n\n"
+                "    def evaluate(self, unused_ctx: object, suffix: str = '!') -> str:\n"
+                "        '''Evaluate this hub plan.'''\n"
+                "        if not isinstance(self, HubCut):\n"
+                "            return f'stop:{self.label}{suffix}'\n"
+                "        return f'cut:{self.label}:{self.target}{suffix}'\n\n"
+                "    def priority(self) -> int:\n"
+                "        '''Parallel synthesis priority.'''\n"
+                "        return 1 if isinstance(self, HubCut) else 0\n\n"
+                "    @property\n"
+                "    def is_actionable(self) -> bool:\n"
+                "        return isinstance(self, HubCut)\n\n"
+                "    @classmethod\n"
+                "    def owner_tag(cls) -> str:\n"
+                "        if issubclass(cls, HubCut):\n"
+                "            return 'cut-cls'\n"
+                "        return 'plan-cls'\n\n\n"
+                "class HubCut(HubPlan):\n"
+                "    def __init__(self, label: str, target: str) -> None:\n"
+                "        super().__init__(label)\n"
+                "        self.target = target\n\n\n"
+                "class HubSkip(HubPlan):\n"
+                "    pass\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 4
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 4
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "plans.py").read_text()
+    assert "isinstance(" not in after
+    assert "issubclass(" not in after
+    assert "return 0" in after
+    assert "return 1" in after
+    assert "return False" in after
+    assert "return True" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    cut = ns["HubCut"]("h", "dest")  # type: ignore[operator]
+    skip = ns["HubSkip"]("s")  # type: ignore[operator]
+    assert cut.evaluate(None) == "cut:h:dest!"  # type: ignore[attr-defined]
+    assert cut.evaluate(None, suffix="?") == "cut:h:dest?"  # type: ignore[attr-defined]
+    assert skip.evaluate(None) == "stop:s!"  # type: ignore[attr-defined]
+    assert cut.priority() == 1  # type: ignore[attr-defined]
+    assert skip.priority() == 0  # type: ignore[attr-defined]
+    assert cut.is_actionable is True  # type: ignore[attr-defined]
+    assert skip.is_actionable is False  # type: ignore[attr-defined]
+    assert ns["HubCut"].owner_tag() == "cut-cls"  # type: ignore[attr-defined]
+    assert ns["HubSkip"].owner_tag() == "plan-cls"  # type: ignore[attr-defined]
+    assert ns["HubPlan"].owner_tag() == "plan-cls"  # type: ignore[attr-defined]
+    assert _findings(tmp_path) == []
+
+
+def test_split_base_method_in_place_allows_disjoint_sibling_override_and_refuses_arm_descendant(
+    tmp_path: Path,
+) -> None:
+    """In-place base splitting preserves an existing sibling override that does not
+    inherit any tested arm class (even if it calls `super()`), while refusing when
+    a descendant of a tested arm class already overrides the method."""
+
+    disjoint = tmp_path / "disjoint"
+    _write(
+        disjoint,
+        {
+            "pkg/__init__.py": "",
+            "pkg/sibling.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Base:\n"
+                "    def score(self) -> int:\n"
+                "        return 1 if isinstance(self, Special) else 0\n\n\n"
+                "class Special(Base):\n"
+                "    pass\n\n\n"
+                "class Custom(Base):\n"
+                "    def score(self) -> int:\n"
+                "        return super().score() + 99\n"
+            ),
+        },
+    )
+    (finding,) = _findings(disjoint)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(disjoint))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(disjoint, ev.executable_recipe)
+    after = (disjoint / "pkg" / "sibling.py").read_text()
+    assert "isinstance(" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["Base"]().score() == 0  # type: ignore[attr-defined,operator]
+    assert ns["Special"]().score() == 1  # type: ignore[attr-defined,operator]
+    assert ns["Custom"]().score() == 99  # type: ignore[attr-defined,operator]
+    assert _findings(disjoint) == []
+
+    arm_desc = tmp_path / "arm_desc"
+    _write(
+        arm_desc,
+        {
+            "pkg/__init__.py": "",
+            "pkg/collide.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Base:\n"
+                "    def score(self) -> int:\n"
+                "        return 1 if isinstance(self, Special) else 0\n\n\n"
+                "class Special(Base):\n"
+                "    pass\n\n\n"
+                "class CustomSpecial(Special):\n"
+                "    def score(self) -> int:\n"
+                "        return 99\n"
+            ),
+        },
+    )
+    (finding_desc,) = _findings(arm_desc)
+    ev_desc = OwnTypeTestDetector().evaluate_recipe_for_finding(
+        finding_desc, _snapshot(arm_desc)
+    )
+    assert ev_desc.recipe is None
+    assert "already declares `score` ahead of `Base`" in (
+        ev_desc.rejection_reason or ""
+    )
+
+
+
 
 
 

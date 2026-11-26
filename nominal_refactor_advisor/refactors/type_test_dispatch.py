@@ -28,9 +28,11 @@ from typing import ClassVar, cast
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
     exception_types,
+    kwarg_parameters,
     match_guards,
     match_patterns,
     optional_values,
+    vararg_parameters,
     variadic_parameters,
 )
 from nominal_refactor_advisor.ast_tools import AstParentIndex, ParsedModule
@@ -115,6 +117,13 @@ class DispatchKind(ABC):
     def matches_method_decorators(self, decorators: Sequence[ast.expr]) -> bool:
         raise NotImplementedError
 
+    @abstractmethod
+    def in_place_override_decorators(
+        self, function: FunctionNode, base_node: ast.ClassDef
+    ) -> tuple[str, ...] | None:
+        """Decorators for subclass overrides when splitting `function` on `base_node` in place."""
+        raise NotImplementedError
+
 
 @dataclass(frozen=True)
 class InstanceDispatchKind(DispatchKind):
@@ -143,6 +152,28 @@ class InstanceDispatchKind(DispatchKind):
 
     def matches_method_decorators(self, decorators: Sequence[ast.expr]) -> bool:
         return not decorators
+
+    def in_place_override_decorators(
+        self, function: FunctionNode, base_node: ast.ClassDef
+    ) -> tuple[str, ...] | None:
+        if not function.decorator_list:
+            return ()
+        if (
+            len(function.decorator_list) == 1
+            and isinstance(function.decorator_list[0], ast.Name)
+            and function.decorator_list[0].id == "property"
+        ):
+            for stmt in base_node.body:
+                if not isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                for dec in stmt.decorator_list:
+                    match dec:
+                        case ast.Attribute(
+                            value=ast.Name(id=prop_name), attr="setter" | "deleter"
+                        ) if prop_name == function.name:
+                            return None
+            return ("@property",)
+        return None
 
 
 @dataclass(frozen=True)
@@ -174,6 +205,14 @@ class ClassDispatchKind(DispatchKind):
             and isinstance(decorators[0], ast.Name)
             and decorators[0].id == "classmethod"
         )
+
+    def in_place_override_decorators(
+        self, function: FunctionNode, base_node: ast.ClassDef
+    ) -> tuple[str, ...] | None:
+        del base_node
+        if self.matches_method_decorators(function.decorator_list):
+            return self.decorators
+        return None
 
 
 @dataclass(frozen=True)
@@ -286,6 +325,13 @@ class DispatchSite(ABC):
         del line_indent
         return call_expr
 
+    def render_in_place_default(
+        self, default_body: tuple[ast.stmt, ...], line_indent: str = ""
+    ) -> str | None:
+        """Render the replacement text for `default_body` when splitting a base method in place."""
+        del default_body, line_indent
+        return None
+
     @property
     def checks_local_store_escapes(self) -> bool:
         return False
@@ -343,6 +389,15 @@ class TernaryDispatchSite(DispatchSite):
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         return geometry.required_node_offsets(self.node)
 
+    def render_in_place_default(
+        self, default_body: tuple[ast.stmt, ...], line_indent: str = ""
+    ) -> str | None:
+        del line_indent
+        if len(default_body) == 1 and isinstance(default_body[0], ast.Return):
+            for value in optional_values(default_body[0]):
+                return ast.unparse(ast.fix_missing_locations(value))
+        return None
+
 
 @dataclass(frozen=True)
 class PrefixGuardedAndTernaryDispatchSite(TernaryDispatchSite):
@@ -390,6 +445,15 @@ class BooleanPredicateDispatchSite(DispatchSite):
 
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         return geometry.required_node_offsets(self.predicate_expr)
+
+    def render_in_place_default(
+        self, default_body: tuple[ast.stmt, ...], line_indent: str = ""
+    ) -> str | None:
+        del line_indent
+        if len(default_body) == 1 and isinstance(default_body[0], ast.Return):
+            for value in optional_values(default_body[0]):
+                return ast.unparse(ast.fix_missing_locations(value))
+        return None
 
     @property
     def returns_constant_bool(self) -> bool:
@@ -447,6 +511,15 @@ class StatementDispatchSite(DispatchSite):
         start, _ = geometry.required_node_offsets(self.replaced_nodes[0])
         _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
         return start, end
+
+    def render_in_place_default(
+        self, default_body: tuple[ast.stmt, ...], line_indent: str = ""
+    ) -> str | None:
+        lines = _render_indented_statements(default_body, line_indent)
+        if not lines:
+            return None
+        first = lines[0][len(line_indent) :] if lines[0].startswith(line_indent) else lines[0]
+        return "\n".join((first, *lines[1:]))
 
     @property
     def checks_local_store_escapes(self) -> bool:
@@ -4428,6 +4501,90 @@ class ResolvedMethodAnnotations:
         )
 
 
+def _function_signature_param_names(args: ast.arguments) -> tuple[str, ...]:
+    """Every parameter name declared on `args` (excluding the first receiver param)."""
+
+    positional = (*args.posonlyargs, *args.args)
+    names: list[str] = [arg.arg for arg in positional[1:]]
+    for var in variadic_parameters(args):
+        names.append(var.arg)
+    for kw in args.kwonlyargs:
+        names.append(kw.arg)
+    return tuple(names)
+
+
+def _function_signature_default_exprs(args: ast.arguments) -> tuple[ast.expr, ...]:
+    return (
+        *args.defaults,
+        *(d for d in args.kw_defaults if isinstance(d, ast.expr)),
+    )
+
+
+def _forward_call_arguments(
+    args: ast.arguments,
+) -> tuple[list[ast.expr], list[ast.keyword]]:
+    """Build call `(args, keywords)` forwarding every non-receiver parameter of `args`."""
+
+    positional = (*args.posonlyargs, *args.args)
+    call_args: list[ast.expr] = [
+        ast.Name(id=arg.arg, ctx=ast.Load()) for arg in positional[1:]
+    ]
+    for vararg in vararg_parameters(args):
+        call_args.append(
+            ast.Starred(
+                value=ast.Name(id=vararg.arg, ctx=ast.Load()), ctx=ast.Load()
+            )
+        )
+    call_keywords: list[ast.keyword] = [
+        ast.keyword(arg=kw.arg, value=ast.Name(id=kw.arg, ctx=ast.Load()))
+        for kw in args.kwonlyargs
+    ]
+    for kwarg in kwarg_parameters(args):
+        call_keywords.append(
+            ast.keyword(arg=None, value=ast.Name(id=kwarg.arg, ctx=ast.Load()))
+        )
+    return call_args, call_keywords
+
+
+def _render_method_with_signature(
+    decorators: Sequence[str],
+    receiver: str,
+    method_name: str,
+    fn_args: ast.arguments,
+    body: tuple[ast.stmt, ...],
+    *,
+    is_async: bool,
+    param_annotations: Mapping[str, ast.expr] = {},
+    return_annotation: ast.expr | None = None,
+) -> str:
+    """Render an override method preserving `fn_args` (defaults, kwonly, *args, **kwargs)."""
+
+    cloned = copy.deepcopy(fn_args)
+    positional = (*cloned.posonlyargs, *cloned.args)
+    if positional:
+        positional[0].arg = receiver
+        positional[0].annotation = None
+    for arg in (*positional[1:], *cloned.kwonlyargs):
+        arg.annotation = param_annotations.get(arg.arg)
+    for variadic in variadic_parameters(cloned):
+        variadic.annotation = param_annotations.get(variadic.arg)
+    fn_cls: type[ast.FunctionDef] | type[ast.AsyncFunctionDef] = (
+        ast.AsyncFunctionDef if is_async else ast.FunctionDef
+    )
+    fn_node = fn_cls(
+        name=method_name,
+        args=cloned,
+        body=[copy.deepcopy(stmt) for stmt in body],
+        decorator_list=[],
+        returns=copy.deepcopy(return_annotation) if return_annotation is not None else None,
+        type_params=[],
+    )
+    rendered = ast.unparse(ast.fix_missing_locations(fn_node))
+    if not decorators:
+        return rendered
+    return "\n".join((*decorators, rendered))
+
+
 def _render_method(
     kind: DispatchKind,
     method_name: str,
@@ -4697,6 +4854,17 @@ class PrecedenceOverridePlan:
     winner_symbol: str
     expected_arm: int
     import_source: str | None = None
+
+    def import_mutations(self, rationale: str) -> tuple[ModuleImportMutation, ...]:
+        if self.import_source is None:
+            return ()
+        return (
+            ModuleImportMutation.from_source(
+                file_path=self.target.file_path,
+                import_source=self.import_source,
+                rationale=rationale,
+            ),
+        )
 
 
 @dataclass(frozen=True)
@@ -5092,6 +5260,15 @@ class DispatchMethodTarget(ABC):
     def docstring(self) -> str | None:
         return None
 
+    def consumer_replacement(
+        self, proof: TypeTestDispatchProof, line_indent: str
+    ) -> str:
+        call_args = ", ".join(arg.call_expr for arg in proof.captured_args)
+        call = _format_receiver_call(proof.site.subject, self.method_name, call_args)
+        if proof.is_async:
+            call = f"await {call}"
+        return proof.site.render_call_replacement(call, line_indent)
+
     @abstractmethod
     def member_and_import_edits(
         self,
@@ -5255,14 +5432,7 @@ class NewDispatchMethod(DispatchMethodTarget):
                     rationale=rationale,
                 )
             )
-            if po.import_source is not None:
-                precedence_imports.append(
-                    ModuleImportMutation.from_source(
-                        file_path=po.target.file_path,
-                        import_source=po.import_source,
-                        rationale=rationale,
-                    )
-                )
+            precedence_imports.extend(po.import_mutations(rationale))
 
         local_exclusions = frozenset((proof.site.kind.receiver, *param_names))
         extra_edits: list[NominalSourceEdit] = [
@@ -5324,6 +5494,204 @@ class NewDispatchMethod(DispatchMethodTarget):
         return (
             f"Pushes the type test in `{proof.function.name}` onto "
             f"`{proof.base.qualname}.{self.method_name}` with overrides on {targets}."
+        )
+
+
+@dataclass(frozen=True)
+class InPlaceBaseDispatchMethod(DispatchMethodTarget):
+    """Split an existing whole-method `self`/`cls` type test on `base` in place:
+    keep `default_body` in `base`'s own method and push overrides onto each tested class."""
+
+    override_decorators: tuple[str, ...] = ()
+
+    def consumer_replacement(
+        self, proof: TypeTestDispatchProof, line_indent: str
+    ) -> str:
+        rendered = proof.site.render_in_place_default(proof.default_body, line_indent)
+        assert rendered is not None
+        return rendered
+
+    def member_and_import_edits(
+        self,
+        proof: TypeTestDispatchProof,
+        snapshot: CodemodSourceSnapshot,
+        geometry: object,
+        param_names: tuple[str, ...],
+        rationale: str,
+    ) -> tuple[tuple[NominalSourceEdit, ...], frozenset[str]]:
+        del param_names
+        parsed_source = snapshot.parsed_module_for_source_path(proof.source_path)
+        override_destinations = (
+            *(target_cls for arm in proof.arms for target_cls in arm.targets),
+            *(po.target for po in proof.precedence_overrides),
+        )
+        all_sig_params = _function_signature_param_names(proof.function.args)
+        sig_captured = tuple(
+            CapturedArgument(call_expr=name, param_name=name)
+            for name in all_sig_params
+        )
+        method_annotations = ResolvedMethodAnnotations.for_push(
+            snapshot,
+            parsed_source,
+            proof.test_line,
+            proof.enclosure,
+            proof.function,
+            (),
+            sig_captured,
+            override_destinations,
+            propagates_function_return_type=proof.site.propagates_function_return_type,
+            is_void_method=proof.site.is_void_method,
+            constant_bool_return=proof.site.returns_constant_bool,
+            rationale=rationale,
+        )
+        param_annotations = method_annotations.param_map
+        member_edits: list[NominalSourceEdit] = []
+        for resolved_arm in proof.arms:
+            arm_method = _render_method_with_signature(
+                self.override_decorators,
+                proof.site.kind.receiver,
+                self.method_name,
+                proof.function.args,
+                resolved_arm.body,
+                is_async=proof.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
+            )
+            for target_cls in resolved_arm.targets:
+                member_edits.extend(
+                    _class_append_edits(
+                        target_cls.file_path,
+                        geometry(target_cls.file_path),  # type: ignore[operator]
+                        target_cls.node,
+                        arm_method,
+                        member_names=(self.method_name,),
+                        rationale=rationale,
+                    )
+                )
+        for reorder in proof.base_reorders:
+            header = ClassHeaderSpanSourceAuthority(
+                node=reorder.target.node,
+                source=snapshot.sources_by_file_path[reorder.target.file_path],
+            )
+            reordered_items = tuple(
+                header.base_items[i] for i in reorder.new_base_order
+            )
+            member_edits.extend(
+                header.source_edits(
+                    header.with_base_items(reordered_items),
+                    file_path=reorder.target.file_path,
+                    rationale=rationale,
+                )
+            )
+        precedence_imports: list[NominalSourceEdit] = []
+        fwd_args, fwd_keywords = _forward_call_arguments(proof.function.args)
+        for po in proof.precedence_overrides:
+            po_call: ast.expr = ast.Call(
+                func=ast.Attribute(
+                    value=ast.Call(
+                        func=ast.Name(id="super", ctx=ast.Load()),
+                        args=[
+                            ast.Name(id=po.winner_target.qualname, ctx=ast.Load()),
+                            ast.Name(id=proof.site.kind.receiver, ctx=ast.Load()),
+                        ],
+                        keywords=[],
+                    ),
+                    attr=self.method_name,
+                    ctx=ast.Load(),
+                ),
+                args=copy.deepcopy(fwd_args),
+                keywords=copy.deepcopy(fwd_keywords),
+            )
+            if proof.is_async:
+                po_call = ast.Await(value=po_call)
+            po_stmt: ast.stmt = (
+                ast.Expr(value=po_call)
+                if proof.site.is_void_method
+                else ast.Return(value=po_call)
+            )
+            po_method = _render_method_with_signature(
+                self.override_decorators,
+                proof.site.kind.receiver,
+                self.method_name,
+                proof.function.args,
+                (po_stmt,),
+                is_async=proof.is_async,
+                param_annotations=param_annotations,
+                return_annotation=method_annotations.return_annotation,
+            )
+            member_edits.extend(
+                _class_append_edits(
+                    po.target.file_path,
+                    geometry(po.target.file_path),  # type: ignore[operator]
+                    po.target.node,
+                    po_method,
+                    member_names=(self.method_name,),
+                    rationale=rationale,
+                )
+            )
+            precedence_imports.extend(po.import_mutations(rationale))
+
+        local_exclusions = frozenset((proof.site.kind.receiver, *all_sig_params))
+        default_expr_stmts = tuple(
+            ast.Expr(value=expr)
+            for expr in _function_signature_default_exprs(proof.function.args)
+        )
+        extra_edits: list[NominalSourceEdit] = [
+            *member_edits,
+            *precedence_imports,
+            *method_annotations.import_edits,
+        ]
+        for resolved_arm in proof.arms:
+            for target_cls in resolved_arm.targets:
+                extra_edits.extend(
+                    _cross_module_imports_for_body(
+                        snapshot,
+                        parsed_source,
+                        proof.test_line,
+                        target_cls,
+                        (*resolved_arm.body, *default_expr_stmts),
+                        local_exclusions,
+                        rationale,
+                    )
+                )
+        for po in proof.precedence_overrides:
+            if default_expr_stmts:
+                extra_edits.extend(
+                    _cross_module_imports_for_body(
+                        snapshot,
+                        parsed_source,
+                        proof.test_line,
+                        po.target,
+                        default_expr_stmts,
+                        local_exclusions,
+                        rationale,
+                    )
+                )
+        retained_in_source: set[str] = set()
+        if any(dest.file_path == proof.source_path for dest in override_destinations):
+            retained_in_source.update(
+                _names_loaded_in(method_annotations.annotation_nodes())
+            )
+        for po in proof.precedence_overrides:
+            if po.target.file_path == proof.source_path:
+                retained_in_source.add(po.winner_target.qualname)
+        for resolved_arm in proof.arms:
+            if any(
+                target_cls.file_path == proof.source_path
+                for target_cls in resolved_arm.targets
+            ):
+                retained_in_source.update(_names_loaded_in(resolved_arm.body))
+        return tuple(extra_edits), frozenset(retained_in_source)
+
+    def rationale(self, proof: TypeTestDispatchProof) -> str:
+        targets = ", ".join(
+            f"`{cls.qualname}`"
+            for arm in proof.arms
+            for cls in arm.targets
+        )
+        return (
+            f"Splits `{proof.base.qualname}.{self.method_name}` in place with "
+            f"overrides on {targets}."
         )
 
 
@@ -5770,6 +6138,24 @@ class TypeTestDispatchProof:
                 outer_receiver_aliases=outer_receiver_aliases,
             )
 
+        positional_params = (*function.args.posonlyargs, *function.args.args)
+        override_decorators = (
+            site.kind.in_place_override_decorators(function, base.node)
+            if (
+                site.is_whole_function
+                and not folds_onto_base
+                and not outer_receiver_aliases
+                and method_name == function.name
+                and enclosure.class_receiver_symbol(snapshot) == base_symbol
+                and bool(positional_params)
+                and isinstance(site.subject, ast.Name)
+                and site.subject.id == positional_params[0].arg
+                and site.render_in_place_default(rewritten_default) is not None
+            )
+            else None
+        )
+        is_in_place_base_method = override_decorators is not None
+
         mro_plan = cls._require_dispatch_mro_safe(
             snapshot,
             subject_family,
@@ -5778,11 +6164,17 @@ class TypeTestDispatchProof:
             checked_arms,
             checked_arm_symbols,
             method_name,
+            allow_existing_base_binding=is_in_place_base_method,
         )
         super_safe_arms = mro_plan.super_safe_arms
 
         if not folds_onto_base:
             param_names = tuple(arg.param_name for arg in captured_args)
+            fwd_args, fwd_keywords = (
+                _forward_call_arguments(function.args)
+                if is_in_place_base_method
+                else ([], [])
+            )
             finalized_arms: list[ResolvedTargetArm] = []
             for arm_idx, (arm, resolved_arm) in enumerate(
                 zip(site.arms, rewritten_arms, strict=True)
@@ -5791,11 +6183,31 @@ class TypeTestDispatchProof:
                     finalized_arms.append(resolved_arm)
                     continue
                 if arm_idx in super_safe_arms:
-                    fallback_stmts: tuple[ast.stmt, ...] = (
-                        _super_fallback_return(
-                            method_name, param_names, is_async=is_async
-                        ),
-                    )
+                    if is_in_place_base_method:
+                        super_call: ast.expr = ast.Call(
+                            func=ast.Attribute(
+                                value=ast.Call(
+                                    func=ast.Name(id="super", ctx=ast.Load()),
+                                    args=[],
+                                    keywords=[],
+                                ),
+                                attr=method_name,
+                                ctx=ast.Load(),
+                            ),
+                            args=copy.deepcopy(fwd_args),
+                            keywords=copy.deepcopy(fwd_keywords),
+                        )
+                        if is_async:
+                            super_call = ast.Await(value=super_call)
+                        fallback_stmts: tuple[ast.stmt, ...] = (
+                            ast.Return(value=super_call),
+                        )
+                    else:
+                        fallback_stmts = (
+                            _super_fallback_return(
+                                method_name, param_names, is_async=is_async
+                            ),
+                        )
                 else:
                     fallback_stmts = rewritten_default
                 finalized_arms.append(
@@ -5809,30 +6221,70 @@ class TypeTestDispatchProof:
             rewritten_arms = finalized_arms
 
         # Verify cross-module imports are cycle-free and unambiguous during proof.
-        local_exclusions = frozenset(
-            (receiver, *(arg.param_name for arg in captured_args))
-        )
-        rationale_probe = f"Push `{method_name}` onto `{base.qualname}`."
-        _cross_module_imports_for_body(
-            snapshot,
-            parsed_module,
-            test_line,
-            base,
-            rewritten_default,
-            local_exclusions,
-            rationale_probe,
-        )
-        for resolved_arm in rewritten_arms:
-            for target_cls in resolved_arm.targets:
-                _cross_module_imports_for_body(
-                    snapshot,
-                    parsed_module,
-                    test_line,
-                    target_cls,
-                    resolved_arm.body,
-                    local_exclusions,
-                    rationale_probe,
-                )
+        if is_in_place_base_method:
+            all_sig_params = _function_signature_param_names(function.args)
+            local_exclusions = frozenset((receiver, *all_sig_params))
+            default_expr_stmts = tuple(
+                ast.Expr(value=expr)
+                for expr in _function_signature_default_exprs(function.args)
+            )
+            rationale_probe = f"Split `{base.qualname}.{method_name}` in place."
+            for resolved_arm in rewritten_arms:
+                for target_cls in resolved_arm.targets:
+                    _cross_module_imports_for_body(
+                        snapshot,
+                        parsed_module,
+                        test_line,
+                        target_cls,
+                        (*resolved_arm.body, *default_expr_stmts),
+                        local_exclusions,
+                        rationale_probe,
+                    )
+            for po in mro_plan.precedence_overrides:
+                if default_expr_stmts:
+                    _cross_module_imports_for_body(
+                        snapshot,
+                        parsed_module,
+                        test_line,
+                        po.target,
+                        default_expr_stmts,
+                        local_exclusions,
+                        rationale_probe,
+                    )
+            assert override_decorators is not None
+            method_target: DispatchMethodTarget = InPlaceBaseDispatchMethod(
+                method_name=method_name,
+                override_decorators=override_decorators,
+            )
+        else:
+            local_exclusions = frozenset(
+                (receiver, *(arg.param_name for arg in captured_args))
+            )
+            rationale_probe = f"Push `{method_name}` onto `{base.qualname}`."
+            _cross_module_imports_for_body(
+                snapshot,
+                parsed_module,
+                test_line,
+                base,
+                rewritten_default,
+                local_exclusions,
+                rationale_probe,
+            )
+            for resolved_arm in rewritten_arms:
+                for target_cls in resolved_arm.targets:
+                    _cross_module_imports_for_body(
+                        snapshot,
+                        parsed_module,
+                        test_line,
+                        target_cls,
+                        resolved_arm.body,
+                        local_exclusions,
+                        rationale_probe,
+                    )
+            method_target = NewDispatchMethod(
+                method_name=method_name,
+                _docstring=docstring.strip() if docstring else None,
+            )
 
         return cls(
             source_path=source_path,
@@ -5845,10 +6297,7 @@ class TypeTestDispatchProof:
             default_body=rewritten_default,
             captured_args=captured_args,
             is_async=is_async,
-            method_target=NewDispatchMethod(
-                method_name=method_name,
-                _docstring=docstring.strip() if docstring else None,
-            ),
+            method_target=method_target,
             matching_existing_methods=matching_existing,
             enclosure=enclosure,
             outer_receiver_aliases=outer_receiver_aliases,
@@ -5993,6 +6442,8 @@ class TypeTestDispatchProof:
         arms: tuple[TypeTestArm, ...],
         resolved_arm_symbols: list[tuple[str, ...]],
         method_name: str,
+        *,
+        allow_existing_base_binding: bool = False,
     ) -> _MroDispatchPlan:
         classes_by_symbol = snapshot.required_class_family_index.classes_by_symbol
         owner_arm: dict[str, int | None] = {base_symbol: None}
@@ -6301,7 +6752,7 @@ class TypeTestDispatchProof:
             for symbol, decls, winner_symbol, _expected_arm in evaluated
         ]
 
-        if method_name in base.bound_names:
+        if not allow_existing_base_binding and method_name in base.bound_names:
             raise NeedsInput(
                 f"`{base.qualname}` already binds `{method_name}`",
                 NeededInput.OWNER_PICK,
@@ -6336,11 +6787,29 @@ class TypeTestDispatchProof:
                     NeededInput.OWNER_PICK,
                 )
 
+        added_override_symbols = frozenset(
+            (
+                *(sym for sym, _target in arm_targets),
+                *(po.symbol for po in precedence_overrides),
+            )
+        )
         for symbol, declarations, winner_symbol in resolved_mros:
             for decl in declarations:
                 if decl.symbol == winner_symbol:
                     break
                 if method_name in decl.member_binding_names:
+                    # During an in-place base split, a sibling subclass that already
+                    # overrides `base.<method>` and inherits none of the newly overridden
+                    # arm classes keeps dispatching to its existing override (and any
+                    # `super()` call still reaches `base`'s unchanged default branch).
+                    if (
+                        allow_existing_base_binding
+                        and winner_symbol == base_symbol
+                        and not any(
+                            d.symbol in added_override_symbols for d in declarations
+                        )
+                    ):
+                        break
                     raise NeedsInput(
                         f"`{decl.symbol}` already declares `{method_name}` ahead of "
                         f"`{base.qualname}` for `{symbol}`",
@@ -6394,19 +6863,15 @@ class TypeTestDispatchProof:
         def add_span(file_path: str, start: int, end: int, text: str) -> None:
             replacements_by_file.setdefault(file_path, []).append((start, end, text))
 
-        # 1. Consumer call replacement.
-        call_args = ", ".join(arg.call_expr for arg in self.captured_args)
+        # 1. Consumer call replacement (or in-place base-method default body).
         param_names = tuple(arg.param_name for arg in self.captured_args)
-        call = _format_receiver_call(self.site.subject, self.method_name, call_args)
-        if self.is_async:
-            call = f"await {call}"
         source_geometry = geometry(self.source_path)
         start, end = self.site.replaced_offsets(source_geometry)
         line_start = source_geometry.source.rfind("\n", 0, start) + 1
         line_indent = source_geometry.source[line_start:start]
         if not line_indent.isspace():
             line_indent = ""
-        replacement_text = self.site.render_call_replacement(call, line_indent)
+        replacement_text = self.method_target.consumer_replacement(self, line_indent)
         add_span(
             self.source_path,
             start,
