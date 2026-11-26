@@ -16,8 +16,10 @@ from __future__ import annotations
 import ast
 import builtins
 import copy
+import io
 import keyword as keyword_module
 import re
+import tokenize
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -285,6 +287,25 @@ class BoolOpSuffixDispatchSite(BooleanPredicateDispatchSite):
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         start, _ = geometry.required_node_offsets(self.predicate_expr)
         _, end = geometry.required_node_offsets(self.end_expr)
+        tail = geometry.source[start:]
+        rel_end = end - start
+        line_offsets = [0]
+        for line in tail.splitlines(keepends=True):
+            line_offsets.append(line_offsets[-1] + len(line))
+        depth = 0
+        for tok in tokenize.generate_tokens(io.StringIO(tail).readline):
+            tok_end = line_offsets[tok.end[0] - 1] + tok.end[1]
+            if tok.type == tokenize.OP:
+                if tok.string in ("(", "[", "{"):
+                    depth += 1
+                elif tok.string in (")", "]", "}"):
+                    if depth == 0:
+                        break
+                    depth -= 1
+                    if tok_end > rel_end and depth == 0:
+                        return start, start + tok_end
+            if tok_end >= rel_end and depth == 0:
+                break
         return start, end
 
 
@@ -473,6 +494,30 @@ def _has_loop_escape(statements: Sequence[ast.stmt]) -> bool:
     return False
 
 
+def _has_break_or_continue(statements: Sequence[ast.stmt]) -> bool:
+    """Whether `statements` contains `break` or `continue` targeting an enclosing loop."""
+
+    stack: list[ast.AST] = list(statements)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.Break, ast.Continue)):
+            return True
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
 def _has_non_continue_loop_escape(statements: Sequence[ast.stmt]) -> bool:
     """Whether `statements` contains a `break` escaping the current loop or any `return`."""
 
@@ -612,6 +657,18 @@ def _statement_list_children(
     return found
 
 
+def _polarity_bodies(
+    negated: bool,
+    hit_body: tuple[ast.stmt, ...],
+    miss_body: tuple[ast.stmt, ...],
+) -> tuple[tuple[ast.stmt, ...], tuple[ast.stmt, ...]]:
+    """Order `(arm_body, default_body)` for a positive or negated type test."""
+
+    if negated:
+        return miss_body, hit_body
+    return hit_body, miss_body
+
+
 def _extract_compound_if_site(
     container: list[ast.stmt],
     index: int,
@@ -620,7 +677,7 @@ def _extract_compound_if_site(
     test_line: int,
     in_loop_body: bool = False,
 ) -> DispatchSite | None:
-    """Extract `if [PREFIX and] isinstance(x, Sub) [and REST]:` or `if not isinstance(x, Sub) or REST:`."""
+    """Extract `if [PREFIX and/or] [not] TEST [and/or REST]:`."""
 
     if not isinstance(stmt.test, ast.BoolOp) or len(stmt.test.values) < 2:
         return None
@@ -633,7 +690,9 @@ def _extract_compound_if_site(
             matched_test: ParsedTypeTest | None = None
             for idx, value in enumerate(stmt.test.values[1:], start=1):
                 parsed = _parse_type_test(value)
-                if parsed is not None and parsed.negated and value.lineno == test_line:
+                if parsed is not None and value.lineno <= test_line <= (
+                    value.end_lineno or value.lineno
+                ):
                     match_index = idx
                     matched_test = parsed
                     break
@@ -662,7 +721,7 @@ def _extract_compound_if_site(
                         _always_terminates(stmt.body) and _always_terminates(stmt.orelse)
                     ):
                         return None
-                    arm_body: tuple[ast.stmt, ...] = (
+                    fallback_body: tuple[ast.stmt, ...] = (
                         (
                             ast.If(
                                 test=suffix_expr,
@@ -673,6 +732,9 @@ def _extract_compound_if_site(
                         if suffix_expr is not None
                         else tuple(stmt.orelse)
                     )
+                    arm_body, default_body = _polarity_bodies(
+                        matched_test.negated, tuple(stmt.body), fallback_body
+                    )
                     return PrefixGuardedOrDispatchSite(
                         subject=matched_test.subject,
                         kind=matched_test.kind,
@@ -681,7 +743,7 @@ def _extract_compound_if_site(
                                 matched_test.tested_exprs, arm_body, matched_test.exact
                             ),
                         ),
-                        default_body=tuple(stmt.body),
+                        default_body=default_body,
                         is_whole_function=False,
                         test_nodes=(matched_test.test_node,),
                         replaced_nodes=replaced,
@@ -693,10 +755,13 @@ def _extract_compound_if_site(
             tail = container[index + 1 :]
             if tail and _always_terminates(stmt.body) and _always_terminates(tail):
                 replaced = tuple(container[index:])
-                arm_body = (
+                fallback_body = (
                     (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
                     if suffix_expr is not None
                     else tuple(tail)
+                )
+                arm_body, default_body = _polarity_bodies(
+                    matched_test.negated, tuple(stmt.body), fallback_body
                 )
                 return PrefixGuardedOrDispatchSite(
                     subject=matched_test.subject,
@@ -706,7 +771,7 @@ def _extract_compound_if_site(
                             matched_test.tested_exprs, arm_body, matched_test.exact
                         ),
                     ),
-                    default_body=tuple(stmt.body),
+                    default_body=default_body,
                     is_whole_function=False,
                     test_nodes=(matched_test.test_node,),
                     replaced_nodes=replaced,
@@ -721,10 +786,13 @@ def _extract_compound_if_site(
                 and not _has_value_return(tail)
             ):
                 stripped = _strip_trailing_bare_return(stmt.body)
-                arm_body = (
+                fallback_body = (
                     (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
                     if suffix_expr is not None
                     else tuple(tail)
+                )
+                arm_body, default_body = _polarity_bodies(
+                    matched_test.negated, stripped, fallback_body
                 )
                 return PrefixGuardedOrDispatchSite(
                     subject=matched_test.subject,
@@ -734,7 +802,7 @@ def _extract_compound_if_site(
                             matched_test.tested_exprs, arm_body, matched_test.exact
                         ),
                     ),
-                    default_body=stripped,
+                    default_body=default_body,
                     is_whole_function=False,
                     test_nodes=(matched_test.test_node,),
                     replaced_nodes=tuple(container[index:]),
@@ -750,7 +818,7 @@ def _extract_compound_if_site(
             ):
                 stripped = _strip_trailing_continue(stmt.body)
                 rewritten_tail = _rewrite_loop_continues_to_returns(tail)
-                arm_body = (
+                fallback_body = (
                     (
                         ast.If(
                             test=suffix_expr,
@@ -762,6 +830,9 @@ def _extract_compound_if_site(
                     if suffix_expr is not None
                     else rewritten_tail
                 )
+                arm_body, default_body = _polarity_bodies(
+                    matched_test.negated, stripped, fallback_body
+                )
                 return PrefixGuardedOrDispatchSite(
                     subject=matched_test.subject,
                     kind=matched_test.kind,
@@ -770,7 +841,7 @@ def _extract_compound_if_site(
                             matched_test.tested_exprs, arm_body, matched_test.exact
                         ),
                     ),
-                    default_body=stripped,
+                    default_body=default_body,
                     is_whole_function=False,
                     test_nodes=(matched_test.test_node,),
                     replaced_nodes=tuple(container[index:]),
@@ -779,10 +850,13 @@ def _extract_compound_if_site(
                     returns_value=False,
                 )
             if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
-                arm_body = (
+                fallback_body = (
                     (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
                     if suffix_expr is not None
                     else (ast.Pass(),)
+                )
+                arm_body, default_body = _polarity_bodies(
+                    matched_test.negated, tuple(stmt.body), fallback_body
                 )
                 return OrElseGuardedStatementDispatchSite(
                     subject=matched_test.subject,
@@ -792,7 +866,7 @@ def _extract_compound_if_site(
                             matched_test.tested_exprs, arm_body, matched_test.exact
                         ),
                     ),
-                    default_body=tuple(stmt.body),
+                    default_body=default_body,
                     is_whole_function=False,
                     test_nodes=(matched_test.test_node,),
                     replaced_nodes=(stmt,),
@@ -800,50 +874,56 @@ def _extract_compound_if_site(
                     guard_body=tuple(stmt.body),
                 )
             return None
-        # Void `if PREFIX and isinstance(x, Sub) [and SUFFIX]: body` preserves PREFIX short-circuiting.
+        # Void `if PREFIX and [not] TEST [and SUFFIX]: body` preserves PREFIX short-circuiting.
         if (
             not isinstance(stmt.test.op, ast.And)
             or stmt.orelse
             or _has_any_return(stmt.body)
+            or _has_loop_escape(stmt.body)
         ):
             return None
-        match_index: int | None = None
-        matched_test: ParsedTypeTest | None = None
+        match_index = None
+        matched_test = None
         for idx, value in enumerate(stmt.test.values[1:], start=1):
             parsed = _parse_type_test(value)
-            if parsed is not None and not parsed.negated and value.lineno == test_line:
+            if parsed is not None and value.lineno <= test_line <= (
+                value.end_lineno or value.lineno
+            ):
                 match_index = idx
                 matched_test = parsed
                 break
         if match_index is None or matched_test is None:
             return None
         prefix_values = stmt.test.values[:match_index]
-        guard_expr: ast.expr = (
+        guard_expr = (
             prefix_values[0]
             if len(prefix_values) == 1
             else ast.BoolOp(op=ast.And(), values=prefix_values)
         )
         suffix_values = stmt.test.values[match_index + 1 :]
         if suffix_values:
-            suffix_expr: ast.expr = (
+            suffix_expr = (
                 suffix_values[0]
                 if len(suffix_values) == 1
                 else ast.BoolOp(op=ast.And(), values=suffix_values)
             )
-            arm_body_guarded: tuple[ast.stmt, ...] = (
+            hit_body: tuple[ast.stmt, ...] = (
                 ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
             )
         else:
-            arm_body_guarded = tuple(stmt.body)
+            hit_body = tuple(stmt.body)
+        arm_body, default_body = _polarity_bodies(
+            matched_test.negated, hit_body, (ast.Pass(),)
+        )
         return PrefixGuardedStatementDispatchSite(
             subject=matched_test.subject,
             kind=matched_test.kind,
             arms=(
                 TypeTestArm(
-                    matched_test.tested_exprs, arm_body_guarded, matched_test.exact
+                    matched_test.tested_exprs, arm_body, matched_test.exact
                 ),
             ),
-            default_body=(ast.Pass(),),
+            default_body=default_body,
             is_whole_function=False,
             test_nodes=(matched_test.test_node,),
             replaced_nodes=(stmt,),
@@ -855,32 +935,41 @@ def _extract_compound_if_site(
         if len(rest_values) == 1
         else ast.BoolOp(op=stmt.test.op, values=rest_values)
     )
-    if isinstance(stmt.test.op, ast.And) and not first_test.negated:
-        # `if isinstance(x, Sub) and REST: body [else: orelse]`
+    if isinstance(stmt.test.op, ast.And):
+        # `if [not] TEST and REST: body [else: orelse]`
+        tail = container[index + 1 :]
         if stmt.orelse:
-            arm_stmt: ast.stmt = ast.If(
-                test=rest_expr, body=list(stmt.body), orelse=list(stmt.orelse)
+            hit_body = (
+                ast.If(test=rest_expr, body=list(stmt.body), orelse=list(stmt.orelse)),
+            )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, hit_body, tuple(stmt.orelse)
             )
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
             return _build_statement_site(
                 first_test,
-                (TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
-                tuple(stmt.orelse),
+                (TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body,
                 (stmt,),
                 is_whole,
                 (first_test.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
-        tail = container[index + 1 :]
         if _always_terminates(stmt.body) and tail and _always_terminates(tail):
-            arm_body: tuple[ast.stmt, ...] = (
+            hit_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
+            )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, hit_body, tuple(tail)
             )
             is_whole = container is whole_fn_body and index == 0
             return _build_statement_site(
                 first_test,
                 (TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                tuple(tail),
+                default_body,
                 tuple(container[index:]),
                 is_whole,
                 (first_test.test_node,),
@@ -891,15 +980,18 @@ def _extract_compound_if_site(
             and _always_void_terminates(stmt.body)
             and not _has_value_return(tail)
         ):
-            arm_body = (
+            hit_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
+            )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, hit_body, tuple(tail)
             )
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
                 arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                default_body=tuple(tail),
+                default_body=default_body,
                 is_whole_function=index == 0,
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
@@ -911,73 +1003,76 @@ def _extract_compound_if_site(
             and not _has_non_continue_loop_escape(tail)
         ):
             rewritten_tail = _rewrite_loop_continues_to_returns(tail)
-            arm_body = (
+            hit_body = (
                 ast.If(
                     test=rest_expr,
                     body=list(_strip_trailing_continue(stmt.body)),
                     orelse=list(rewritten_tail),
                 ),
             )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, hit_body, rewritten_tail
+            )
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
                 arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                default_body=rewritten_tail,
+                default_body=default_body,
                 is_whole_function=False,
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
             )
-        if not _has_any_return(stmt.body):
-            arm_stmt = ast.If(test=rest_expr, body=list(stmt.body), orelse=[])
+        if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+            hit_body = (ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),)
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, hit_body, (ast.Pass(),)
+            )
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
-                arms=(TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
-                default_body=(ast.Pass(),),
+                arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body=default_body,
                 is_whole_function=is_whole,
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=(stmt,),
             )
         return None
-    if isinstance(stmt.test.op, ast.Or) and first_test.negated:
-        # `if not isinstance(x, Sub) or REST: default [else: orelse]`
+    if isinstance(stmt.test.op, ast.Or):
+        # `if [not] TEST or REST: body [else: orelse]`
+        tail = container[index + 1 :]
         if stmt.orelse:
-            arm_stmt = ast.If(
-                test=rest_expr, body=list(stmt.body), orelse=list(stmt.orelse)
+            miss_body: tuple[ast.stmt, ...] = (
+                ast.If(test=rest_expr, body=list(stmt.body), orelse=list(stmt.orelse)),
+            )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, tuple(stmt.body), miss_body
             )
             is_whole = container is whole_fn_body and len(whole_fn_body) == 1
             return _build_statement_site(
                 first_test,
-                (TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
-                tuple(stmt.body),
+                (TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body,
                 (stmt,),
                 is_whole,
                 (first_test.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
-        if len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Raise):
-            arm_stmt = ast.If(test=rest_expr, body=list(stmt.body), orelse=[])
-            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
-            return StatementDispatchSite(
-                subject=first_test.subject,
-                kind=first_test.kind,
-                arms=(TypeTestArm(first_test.tested_exprs, (arm_stmt,), first_test.exact),),
-                default_body=tuple(stmt.body),
-                is_whole_function=is_whole,
-                test_nodes=(first_test.test_node,),
-                replaced_nodes=(stmt,),
-            )
-        tail = container[index + 1 :]
         if _always_terminates(stmt.body) and tail and _always_terminates(tail):
-            arm_body = (
+            miss_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
+            )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, tuple(stmt.body), miss_body
             )
             is_whole = container is whole_fn_body and index == 0
             return _build_statement_site(
                 first_test,
                 (TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                tuple(stmt.body),
+                default_body,
                 tuple(container[index:]),
                 is_whole,
                 (first_test.test_node,),
@@ -988,15 +1083,18 @@ def _extract_compound_if_site(
             and _always_void_terminates(stmt.body)
             and not _has_value_return(tail)
         ):
-            arm_body = (
+            miss_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
+            )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, _strip_trailing_bare_return(stmt.body), miss_body
             )
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
                 arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                default_body=_strip_trailing_bare_return(stmt.body),
+                default_body=default_body,
                 is_whole_function=index == 0,
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
@@ -1008,21 +1106,39 @@ def _extract_compound_if_site(
             and not _has_non_continue_loop_escape(tail)
         ):
             rewritten_tail = _rewrite_loop_continues_to_returns(tail)
-            arm_body = (
+            miss_body = (
                 ast.If(
                     test=rest_expr,
                     body=list(_strip_trailing_continue(stmt.body)),
                     orelse=list(rewritten_tail),
                 ),
             )
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, _strip_trailing_continue(stmt.body), miss_body
+            )
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
                 arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                default_body=_strip_trailing_continue(stmt.body),
+                default_body=default_body,
                 is_whole_function=False,
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
+            )
+        if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+            miss_body = (ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),)
+            arm_body, default_body = _polarity_bodies(
+                first_test.negated, tuple(stmt.body), miss_body
+            )
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
+                default_body=default_body,
+                is_whole_function=is_whole,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=(stmt,),
             )
         return None
     return None
@@ -1055,22 +1171,17 @@ def _extract_if_site(
             arms = (TypeTestArm(first_test.tested_exprs, tuple(stmt.orelse), first_test.exact),)
             default_body = tuple(stmt.body)
             return _build_statement_site(
-                first_test, arms, default_body, replaced, is_whole, (first_test.test_node,)
+                first_test,
+                arms,
+                default_body,
+                replaced,
+                is_whole,
+                (first_test.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
-        # Guard without else: either `if not test: raise ...` (void) or early return followed by tail.
-        if len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Raise):
-            replaced = (stmt,)
-            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
-            arms = (TypeTestArm(first_test.tested_exprs, (ast.Pass(),), first_test.exact),)
-            return StatementDispatchSite(
-                subject=first_test.subject,
-                kind=first_test.kind,
-                arms=arms,
-                default_body=tuple(stmt.body),
-                is_whole_function=is_whole,
-                test_nodes=(first_test.test_node,),
-                replaced_nodes=replaced,
-            )
+        # Guard without else: early return followed by tail, loop continue, or void/raising `if not test:`.
         tail = container[index + 1 :]
         if tail and _always_terminates(stmt.body) and _always_terminates(tail):
             replaced = tuple(container[index:])
@@ -1115,6 +1226,19 @@ def _extract_if_site(
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
             )
+        if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+            replaced = (stmt,)
+            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
+            arms = (TypeTestArm(first_test.tested_exprs, (ast.Pass(),), first_test.exact),)
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=arms,
+                default_body=tuple(stmt.body),
+                is_whole_function=is_whole,
+                test_nodes=(first_test.test_node,),
+                replaced_nodes=replaced,
+            )
         return None
 
     # Positive `if test:` / `elif test:` chain.
@@ -1148,6 +1272,9 @@ def _extract_if_site(
             replaced,
             is_whole,
             tuple(test_nodes),
+            container=container,
+            index=index,
+            whole_fn_body=whole_fn_body,
         )
 
     # No explicit `else:`: either early-return chain followed by terminating tail, void early-return, loop continue, or void `if`.
@@ -1234,20 +1361,58 @@ def _build_statement_site(
     replaced_nodes: tuple[ast.stmt, ...],
     is_whole_function: bool,
     test_nodes: tuple[ast.AST, ...],
+    *,
+    container: list[ast.stmt] | None = None,
+    index: int | None = None,
+    whole_fn_body: list[ast.stmt] | None = None,
 ) -> DispatchSite | None:
     all_bodies = (*(arm.body for arm in arms), default_body)
     any_returns = any(_has_any_return(body) for body in all_bodies)
     if any_returns:
-        if not all(_always_terminates(body) for body in all_bodies):
+        if all(_always_terminates(body) for body in all_bodies):
+            return ReturningStatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=arms,
+                default_body=default_body,
+                is_whole_function=is_whole_function,
+                test_nodes=test_nodes,
+                replaced_nodes=replaced_nodes,
+            )
+        if container is None or index is None or whole_fn_body is None:
             return None
+        tail = tuple(container[index + 1 :])
+        if not tail or not _always_terminates(tail) or _has_break_or_continue(tail):
+            return None
+        if any(
+            not _always_terminates(body) and _has_break_or_continue(body)
+            for body in all_bodies
+        ):
+            return None
+        extended_arms = tuple(
+            arm
+            if _always_terminates(arm.body)
+            else TypeTestArm(
+                arm.tested_exprs,
+                (*arm.body, *tail),
+                arm.exact,
+                alias=arm.alias,
+            )
+            for arm in arms
+        )
+        extended_default = (
+            default_body
+            if _always_terminates(default_body)
+            else (*default_body, *tail)
+        )
         return ReturningStatementDispatchSite(
             subject=first_test.subject,
             kind=first_test.kind,
-            arms=arms,
-            default_body=default_body,
-            is_whole_function=is_whole_function,
+            arms=extended_arms,
+            default_body=extended_default,
+            is_whole_function=container is whole_fn_body and index == 0,
             test_nodes=test_nodes,
-            replaced_nodes=replaced_nodes,
+            replaced_nodes=tuple(container[index:]),
         )
     return StatementDispatchSite(
         subject=first_test.subject,
@@ -1390,6 +1555,9 @@ def _extract_match_site(
         replaced,
         is_whole,
         tuple(expr for arm in arms for expr in arm.tested_exprs),
+        container=container,
+        index=index,
+        whole_fn_body=whole_fn_body,
     )
 
 
