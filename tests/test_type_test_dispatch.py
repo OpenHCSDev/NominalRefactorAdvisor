@@ -11,6 +11,7 @@ from nominal_refactor_advisor.ast_tools import (
 from nominal_refactor_advisor.codemod import (
     CodemodPlanSequence,
     CodemodSourceSnapshot,
+    codemod_plan_from_findings,
 )
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.detectors._base import DetectorConfig
@@ -1311,4 +1312,69 @@ def test_mro_dispatch_order_proof_fails_before_owner_pick_on_name_collision(
     assert ev.recipe is None
     assert ev.needs == (NeededInput.PROOF,)
     assert "branch order" in (ev.rejection_reason or "")
+
+
+def test_two_own_type_test_sites_in_one_function_compose_without_nominal_conflict(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/multi.py": (
+                "class Left:\n"
+                "    pass\n\n\n"
+                "class LeftSpecial(Left):\n"
+                "    pass\n\n\n"
+                "class Right:\n"
+                "    pass\n\n\n"
+                "class RightSpecial(Right):\n"
+                "    pass\n\n\n"
+                "def score(left: Left, right: Right) -> int:\n"
+                "    total = 1 if isinstance(left, LeftSpecial) else 0\n"
+                "    total += 2 if isinstance(right, RightSpecial) else 0\n"
+                "    return total\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    by_line = {f.primary_evidence.line: f for f in findings}
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_line[18].stable_id,
+                owner="score",
+                because="Left family owns its score contribution",
+                name="left_score",
+                judgement="Return this Left member's score contribution.",
+            ),
+            OwnerPick(
+                finding=by_line[19].stable_id,
+                owner="score",
+                because="Right family owns its score contribution",
+                name="right_score",
+                judgement="Return this Right member's score contribution.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(findings)
+    snapshot = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(picked, selector_context=snapshot)
+    assert plan.candidate_count == 2
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = (tmp_path / "pkg" / "multi.py").read_text()
+    assert "isinstance" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["score"](ns["Left"](), ns["Right"]()) == 0  # type: ignore[operator]
+    assert ns["score"](ns["LeftSpecial"](), ns["Right"]()) == 1  # type: ignore[operator]
+    assert ns["score"](ns["Left"](), ns["RightSpecial"]()) == 2  # type: ignore[operator]
+    assert ns["score"](ns["LeftSpecial"](), ns["RightSpecial"]()) == 3  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
 

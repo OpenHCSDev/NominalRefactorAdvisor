@@ -383,6 +383,11 @@ class FindingMetrics(SemanticRecord, ABC):
 
         return ()
 
+    def action_key_child_subject(self) -> str | None:
+        """Optional sub-subject inside each evidenced declaration for action conflict keys."""
+
+        return None
+
     def with_checkout_paths(self, rebase: Callable[[str], str]) -> Self:
         """These metrics with every source path they name moved by `rebase`, as
         a cached finding moves to another checkout: each field whose metadata
@@ -833,6 +838,9 @@ class OwnTypeTestMetrics(DeclaredBasePickMetrics):
     def base_pick_owner_label(self) -> str:
         return "consumer"
 
+    def action_key_child_subject(self) -> str | None:
+        return f"line:{self.test_line}"
+
 
 @dataclass(frozen=True)
 class ConstantSubtypeAnswerMetrics(DeclaredBasePickMetrics):
@@ -870,6 +878,14 @@ class ForeignAbsenceProbeMetrics(DeclaredBasePickMetrics):
 
     def base_pick_owner_label(self) -> str:
         return "consumer"
+
+    def action_key_child_subject(self) -> str | None:
+        lines = ",".join(str(line) for line in self.probe_lines)
+        if self.subject_source and lines:
+            return f"{self.subject_source}@{lines}"
+        if lines:
+            return f"lines:{lines}"
+        return self.subject_source or None
 
 
 @dataclass(frozen=True)

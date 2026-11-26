@@ -9,6 +9,7 @@ from abc import (
 )
 from collections.abc import (
     Callable,
+    Collection,
     Iterable,
     Iterator,
     Mapping,
@@ -73,6 +74,7 @@ from nominal_refactor_advisor.native_declarations import NativeDeclaration
 from nominal_refactor_advisor.probe_owner import ProbeOwnerResolver
 from nominal_refactor_advisor.refactor_concepts import OptionalAstFieldDecoderConcept
 from nominal_refactor_advisor.registry_identity import DEFAULT_REGISTRY_KEY_ATTRIBUTE
+from nominal_refactor_advisor.source_index import AstTargetDigest
 
 FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
 
@@ -2956,25 +2958,35 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             found.append((probe, site))
         return tuple(found)
 
-    def replacements(self) -> tuple[SourceTextSpanReplacement, ...]:
-        """Edits for every routable probe; a function with none is handed back."""
+    def line_span_of(self, replacement: SourceTextSpanReplacement) -> tuple[int, int]:
+        start_line = self.geometry.line_number_for_offset(replacement.start_offset)
+        end_offset = max(replacement.start_offset, replacement.end_offset - 1)
+        end_line = self.geometry.line_number_for_offset(end_offset)
+        return start_line, end_line
+
+    def resolve_replacements(
+        self,
+    ) -> tuple[tuple[SourceTextSpanReplacement, ...], dict[int, ValueError]]:
+        """Collect all routable probe edits alongside the first refusal per unrouted line."""
 
         replacements: list[SourceTextSpanReplacement] = []
         refusals: list[ValueError] = []
+        refusals_by_line: dict[int, ValueError] = {}
         for probe, site in self.sites():
             if site is None:
-                refusals.append(
-                    self.refusal(
-                        probe,
-                        f"`{ast.unparse(probe)}` is in no shape the "
-                        f"{self.decoder.__name__} can carry",
-                    )
+                error = self.refusal(
+                    probe,
+                    f"`{ast.unparse(probe)}` is in no shape the "
+                    f"{self.decoder.__name__} can carry",
                 )
+                refusals.append(error)
+                refusals_by_line.setdefault(probe.lineno, error)
                 continue
             try:
                 replacements.extend(site.replacements(self))
             except ValueError as error:
                 refusals.append(error)
+                refusals_by_line.setdefault(probe.lineno, error)
         if not replacements:
             raise (
                 refusals[0]
@@ -2984,7 +2996,29 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                     f"for {self.decoder.__name__} in {self.function.name!r}"
                 )
             )
-        return tuple(sorted(replacements, key=lambda item: item.start_offset))
+        return (
+            tuple(sorted(replacements, key=lambda item: item.start_offset)),
+            refusals_by_line,
+        )
+
+    def replacements(
+        self, *, required_lines: Collection[int] = ()
+    ) -> tuple[SourceTextSpanReplacement, ...]:
+        """Edits for every routable probe; a function with none (or missing required lines) is handed back."""
+
+        ordered, refusals_by_line = self.resolve_replacements()
+        if required_lines:
+            spans = tuple(self.line_span_of(item) for item in ordered)
+            for line in sorted(set(required_lines)):
+                if not any(start <= line <= end for start, end in spans):
+                    if line in refusals_by_line:
+                        raise refusals_by_line[line]
+                    raise ValueError(
+                        f"No routable probe of {', '.join(sorted(self.decoder.field_names()))} "
+                        f"for {self.decoder.__name__} at {self.parsed_module.path}:{line} "
+                        f"in {self.function.name!r}"
+                    )
+        return ordered
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -3007,12 +3041,11 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
             snapshot.parsed_module_for_source_path(target.file_path).module_name,
         )
 
-    def source_edits_from_snapshot(
+    def _authority(
         self, snapshot: CodemodSourceSnapshot
-    ) -> tuple[NominalSourceEdit, ...]:
+    ) -> tuple[AstTargetDigest, ParsedModule, OptionalAstFieldAuthority]:
         _, target, node = self.target_node_from_context(snapshot)
         parsed_module = snapshot.parsed_module_for_source_path(target.file_path)
-        decoder = self.decoder_type
         authority = OptionalAstFieldAuthority(
             parsed_module=parsed_module,
             geometry=SourceTextGeometry(
@@ -3020,10 +3053,20 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
             ),
             line_length=DeclaredRoot.line_length_for(Path(target.file_path)),
             declaration=node,
-            decoder=decoder,
+            decoder=self.decoder_type,
             snapshot=snapshot,
         )
-        replacements = authority.replacements()
+        return target, parsed_module, authority
+
+    def _edits_from_replacements(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        target: AstTargetDigest,
+        parsed_module: ParsedModule,
+        authority: OptionalAstFieldAuthority,
+        replacements: tuple[SourceTextSpanReplacement, ...],
+    ) -> tuple[NominalSourceEdit, ...]:
+        decoder = self.decoder_type
         used = tuple(
             name
             for name in decoder.owner_names()
@@ -3049,6 +3092,28 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
                     default_rationale=f"Import {decoder.__name__}'s owner.",
                 )
             ),
+        )
+
+    def verify_probe_lines(
+        self,
+        snapshot: CodemodSourceSnapshot,
+        required_lines: Collection[int],
+    ) -> tuple[NominalSourceEdit, ...]:
+        """Prove routing covers every evidenced probe line and imports resolve cleanly."""
+
+        target, parsed_module, authority = self._authority(snapshot)
+        replacements = authority.replacements(required_lines=required_lines)
+        return self._edits_from_replacements(
+            snapshot, target, parsed_module, authority, replacements
+        )
+
+    def source_edits_from_snapshot(
+        self, snapshot: CodemodSourceSnapshot
+    ) -> tuple[NominalSourceEdit, ...]:
+        target, parsed_module, authority = self._authority(snapshot)
+        replacements = authority.replacements()
+        return self._edits_from_replacements(
+            snapshot, target, parsed_module, authority, replacements
         )
 
 
@@ -3160,6 +3225,21 @@ class PendingDecoderMigration:
             if isinstance(consumer, RoutedConsumer)
         )
 
+    def route_for(
+        self,
+        file_path: str,
+        symbol: str,
+        decoder: type[OptionalAstFieldDecoder],
+    ) -> RoutedConsumer | None:
+        return next(
+            (
+                route
+                for route in self.routes
+                if route.key == (file_path, symbol) and route.decoder is decoder
+            ),
+            None,
+        )
+
     def refusal_for(self, file_path: str, symbol: str) -> str:
         """Why this function is not in the declaring recipe, or who routes it."""
 
@@ -3228,6 +3308,22 @@ class MigrationConsumer(ABC):
 class RoutedConsumer(MigrationConsumer):
     """A consumer whose routing is proved once the decoders are declared."""
 
+    routed_line_spans: tuple[tuple[int, int], ...] = ()
+    unrouted_refusals: tuple[tuple[int, ValueError], ...] = ()
+
+    def covers_line(self, line: int) -> bool:
+        return any(start <= line <= end for start, end in self.routed_line_spans)
+
+    def refusal_for_line(self, line: int) -> ValueError | None:
+        return next(
+            (
+                error
+                for error_line, error in self.unrouted_refusals
+                if error_line == line
+            ),
+            None,
+        )
+
     @staticmethod
     def attempt(
         snapshot: CodemodSourceSnapshot,
@@ -3242,12 +3338,23 @@ class RoutedConsumer(MigrationConsumer):
         """
 
         try:
-            _routing(snapshot, file_path, symbol, decoder).source_edits_from_snapshot(
-                snapshot
+            operation = _routing(snapshot, file_path, symbol, decoder)
+            target, parsed_module, authority = operation._authority(snapshot)
+            replacements, refusals_by_line = authority.resolve_replacements()
+            operation._edits_from_replacements(
+                snapshot, target, parsed_module, authority, replacements
             )
         except ValueError as error:
             return Unroutable(file_path, symbol, decoder, str(error))
-        return RoutedConsumer(file_path, symbol, decoder)
+        return RoutedConsumer(
+            file_path,
+            symbol,
+            decoder,
+            routed_line_spans=tuple(
+                authority.line_span_of(item) for item in replacements
+            ),
+            unrouted_refusals=tuple(sorted(refusals_by_line.items())),
+        )
 
 
 @dataclass(frozen=True)
@@ -3319,6 +3426,7 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
         refusals: list[str] = []
         needs: list[NeededInput] = []
         probed_fields: set[str] = set()
+        all_evidence_covered = bool(finding.evidence)
         for evidence in finding.evidence:
             parsed_module = snapshot.parsed_module_for_source_path(evidence.file_path)
             fields = {
@@ -3328,11 +3436,28 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
             }
             probed_fields |= fields
             owners = ProjectDecoderOwners.of(snapshot, parsed_module.module_name)
+            evidence_covered = False
             for field_name in sorted(fields):
                 for decoder in OptionalAstFieldDecoder.for_field(field_name):
                     try:
                         if decoder in owners.pending and owners.needs_declaration:
                             migration = PendingDecoderMigration.of(owners)
+                            routed = migration.route_for(
+                                evidence.file_path, evidence.symbol, decoder
+                            )
+                            if routed is not None and not routed.covers_line(
+                                evidence.line
+                            ):
+                                line_error = routed.refusal_for_line(evidence.line)
+                                if line_error is not None:
+                                    refusals.append(str(line_error))
+                                    needs.extend(NeedsInput.needs_of(line_error))
+                                else:
+                                    refusals.append(
+                                        f"{decoder.__name__}: no routable probe at "
+                                        f"{evidence.file_path}:{evidence.line}"
+                                    )
+                                continue
                             migrated = migration.recipe_operations(
                                 evidence.file_path, evidence.symbol
                             )
@@ -3343,6 +3468,8 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
                                         evidence.file_path, evidence.symbol
                                     )
                                 )
+                            else:
+                                evidence_covered = True
                             for operation in migrated:
                                 operations[
                                     (
@@ -3355,15 +3482,18 @@ class OptionalAstFieldDecoderFindingRecipeSynthesizer(
                         operation = _routing(
                             snapshot, evidence.file_path, evidence.symbol, decoder
                         )
-                        operation.source_edits_from_snapshot(snapshot)
+                        operation.verify_probe_lines(snapshot, (evidence.line,))
                     except ValueError as error:
                         refusals.append(str(error))
                         needs.extend(NeedsInput.needs_of(error))
                         continue
+                    evidence_covered = True
                     operations[
                         (evidence.file_path, evidence.symbol, decoder.__name__)
                     ] = operation
-        if not operations:
+            if not evidence_covered:
+                all_evidence_covered = False
+        if not operations or not all_evidence_covered:
             registered = sorted(
                 {
                     name
