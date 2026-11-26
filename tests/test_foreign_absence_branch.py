@@ -20,7 +20,7 @@ from nominal_refactor_advisor.detectors._restated_facts import (
     ForeignAbsenceProbeDetector,
 )
 from nominal_refactor_advisor.needed_input import NeededInput
-from nominal_refactor_advisor.owner_picks import OwnerPicks
+from nominal_refactor_advisor.owner_picks import OwnerPick, OwnerPicks
 from nominal_refactor_advisor.scan_cache import ScanCache
 
 
@@ -273,12 +273,8 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
                 "    if box.value is None:\n"
                 "        return 0\n"
                 "    return box.value\n\n\n"
-                "def nullable_subject_guard(box: Box | None) -> int:\n"
-                "    if box is None or box.value is None:\n"
-                "        return 0\n"
-                "    return box.value\n\n\n"
-                "def short_circuit_prefix_guard(ready: bool, box: Box | None) -> None:\n"
-                "    if ready and box.value is not None:\n"
+                "def nested_short_circuit_guard(ready: bool, flag: bool, box: Box | None) -> None:\n"
+                "    if ready and (flag or box.value is not None):\n"
                 "        raise ValueError('boom')\n"
             ),
         },
@@ -292,8 +288,7 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
         "mutates_outer_local",
         "proto_consumer",
         "existing",
-        "nullable_subject_guard",
-        "short_circuit_prefix_guard",
+        "nested_short_circuit_guard",
     }
 
     det = ForeignAbsenceProbeDetector()
@@ -302,8 +297,7 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
         "bool_ternary",
         "mutates_outer_local",
         "proto_consumer",
-        "nullable_subject_guard",
-        "short_circuit_prefix_guard",
+        "nested_short_circuit_guard",
     ):
         ev = det.evaluate_recipe_for_finding(by_sym[sym], snap)
         assert ev.rejection_reason != "", f"{sym} must be refused"
@@ -312,6 +306,217 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
     collision_ev = det.evaluate_recipe_for_finding(by_sym["existing"], snap)
     assert "already declares `existing`" in collision_ev.rejection_reason
     assert collision_ev.needs == (NeededInput.OWNER_PICK,)
+
+
+def test_pushes_prefix_guarded_or_and_multi_return_and_multi_continue_absence_branches(
+    tmp_path: Path,
+) -> None:
+    """Pushes prefix-guarded `or`/`and` absence checks (preserving exact short-circuiting,
+    including `box is None or box.value is None`), multi-early-return void functions,
+    and multi-`continue` loop tails cleanly with runtime parity."""
+
+    _write(
+        tmp_path,
+        {
+            "shapes/__init__.py": "",
+            "shapes/work.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Box:\n"
+                "    value: int | None\n"
+                "    tag: str\n\n\n"
+                "def nullable_or_value(box: Box | None) -> int:\n"
+                "    if box is None or box.value is None:\n"
+                "        return 0\n"
+                "    return box.value + 1\n\n\n"
+                "def reject_if_ready_or_present(ready: bool, box: Box) -> None:\n"
+                "    if ready or box.value is not None:\n"
+                "        raise ValueError('bad')\n\n\n"
+                "def record_if_ready_and_present(ready: bool, box: Box, out: list[int]) -> None:\n"
+                "    if ready and box.value is not None:\n"
+                "        out.append(box.value)\n\n\n"
+                "def multi_void_return(box: Box, out: list[int]) -> None:\n"
+                "    if box.value is None:\n"
+                "        return\n"
+                "    if box.tag == 'skip':\n"
+                "        return\n"
+                "    out.append(box.value)\n\n\n"
+                "def multi_continue_loop(boxes: list[Box]) -> list[int]:\n"
+                "    out: list[int] = []\n"
+                "    for box in boxes:\n"
+                "        if box.value is None:\n"
+                "            continue\n"
+                "        if box.tag == 'skip':\n"
+                "            continue\n"
+                "        out.append(box.value)\n"
+                "    return out\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {
+        "nullable_or_value",
+        "reject_if_ready_or_present",
+        "record_if_ready_and_present",
+        "multi_void_return",
+        "multi_continue_loop",
+    }
+
+    det = ForeignAbsenceProbeDetector()
+    # Whole-function void multi-return needs no owner pick; the 4 guarded/loop sites ask for OWNER_PICK.
+    whole_ev = det.evaluate_recipe_for_finding(by_sym["multi_void_return"], snap)
+    assert whole_ev.rejection_reason == ""
+    for sym in (
+        "nullable_or_value",
+        "reject_if_ready_or_present",
+        "record_if_ready_and_present",
+        "multi_continue_loop",
+    ):
+        ev = det.evaluate_recipe_for_finding(by_sym[sym], snap)
+        assert ev.needs == (NeededInput.OWNER_PICK,), (sym, ev.rejection_reason)
+
+    pick_specs = (
+        ("multi_void_return", None, None),
+        (
+            "nullable_or_value",
+            "incremented_or_zero",
+            "Return value + 1 or zero when absent.",
+        ),
+        (
+            "reject_if_ready_or_present",
+            "reject_if_present",
+            "Raise when value is present.",
+        ),
+        (
+            "record_if_ready_and_present",
+            "append_value",
+            "Append value when present.",
+        ),
+        (
+            "multi_continue_loop",
+            "append_unless_skipped",
+            "Append value unless absent or skipped.",
+        ),
+    )
+    for sym, method_name, judgement in pick_specs:
+        _mods, snap, cur = _scan(tmp_path)
+        finding = next(f for f in cur if f.primary_evidence.symbol == sym)
+        if method_name is not None and judgement is not None:
+            picks = OwnerPicks(
+                "picks.json",
+                "",
+                (
+                    OwnerPick(
+                        finding=finding.stable_id,
+                        owner=sym,
+                        because="test pick",
+                        name=method_name,
+                        judgement=judgement,
+                    ),
+                ),
+            )
+            picked, report = picks.applied(cur)
+            assert not report.unmatched
+            finding = next(f for f in picked if f.primary_evidence.symbol == sym)
+        _apply_one(finding, snap)
+
+    after = (tmp_path / "shapes" / "work.py").read_text()
+    _after_mods, _after_snap, remaining = _scan(tmp_path)
+    assert remaining == []
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "shapes/work.py"), "exec"), ns)
+    Box = ns["Box"]
+    assert ns["nullable_or_value"](None) == 0  # type: ignore[operator]
+    assert ns["nullable_or_value"](Box(None, "a")) == 0  # type: ignore[operator]
+    assert ns["nullable_or_value"](Box(5, "a")) == 6  # type: ignore[operator]
+
+    try:
+        ns["reject_if_ready_or_present"](True, None)  # type: ignore[operator]
+        raise AssertionError("expected ValueError on short-circuit prefix")
+    except ValueError:
+        pass
+    try:
+        ns["reject_if_ready_or_present"](False, Box(1, "a"))  # type: ignore[operator]
+        raise AssertionError("expected ValueError on present box")
+    except ValueError:
+        pass
+    ns["reject_if_ready_or_present"](False, Box(None, "a"))  # type: ignore[operator]
+
+    sink: list[int] = []
+    ns["record_if_ready_and_present"](False, None, sink)  # type: ignore[operator]
+    ns["record_if_ready_and_present"](True, Box(None, "a"), sink)  # type: ignore[operator]
+    ns["record_if_ready_and_present"](True, Box(9, "a"), sink)  # type: ignore[operator]
+    assert sink == [9]
+
+    void_sink: list[int] = []
+    ns["multi_void_return"](Box(None, "a"), void_sink)  # type: ignore[operator]
+    ns["multi_void_return"](Box(3, "skip"), void_sink)  # type: ignore[operator]
+    ns["multi_void_return"](Box(4, "ok"), void_sink)  # type: ignore[operator]
+    assert void_sink == [4]
+
+    assert ns["multi_continue_loop"]([Box(None, "ok"), Box(2, "skip"), Box(8, "ok")]) == [8]  # type: ignore[operator]
+
+
+def test_two_subjects_on_same_or_line_replay_cleanly(tmp_path: Path) -> None:
+    """When one `if` line probes two distinct subjects (`parent.pos is None or child.after is not None`),
+    persisting `subject_source` in `PushForeignAbsenceBranchOperation` lets replay resolve the
+    exact probed subject without losing the pick."""
+
+    _write(
+        tmp_path,
+        {
+            "dual/__init__.py": "",
+            "dual/pair.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Parent:\n"
+                "    pos: int | None\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Child:\n"
+                "    after: int | None\n\n\n"
+                "def check_pair(parent: Parent, child: Child) -> None:\n"
+                "    if parent.pos is None or child.after is not None:\n"
+                "        raise ValueError('bad pair')\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    assert len(findings) == 2
+    child_finding = next(f for f in findings if f.metrics.subject_source == "child")
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=child_finding.stable_id,
+                owner="check_pair",
+                because="Child owns rejecting a set after",
+                name="require_fresh",
+                judgement="Raise when after is already set.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(findings)
+    assert not report.unmatched
+    picked_child = next(f for f in picked if f.stable_id == child_finding.stable_id)
+    _apply_one(picked_child, snap)
+
+    after = (tmp_path / "dual" / "pair.py").read_text()
+    assert "if parent.pos is None:" in after
+    assert "child.require_fresh()" in after
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "dual/pair.py"), "exec"), ns)
+    Parent = ns["Parent"]
+    Child = ns["Child"]
+    ns["check_pair"](Parent(1), Child(None))  # type: ignore[operator]
+    for args in ((Parent(None), Child(None)), (Parent(1), Child(2))):
+        try:
+            ns["check_pair"](*args)  # type: ignore[operator]
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
 
 
 def test_cross_module_free_global_constant_is_refused(tmp_path: Path) -> None:

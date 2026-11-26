@@ -972,3 +972,72 @@ def test_pushes_prefix_guarded_or_not_isinstance_preserving_short_circuit(tmp_pa
     assert ns["evaluate"](object(), ns["Sub"]("win")) == "ok:win"  # type: ignore[operator]
     assert _findings(tmp_path) == []
 
+
+def test_pushes_multi_continue_loop_and_refuses_escaping_loop_local(tmp_path: Path):
+    """Loop-`continue` tails with further `continue` guards push cleanly by rewriting
+    direct-loop `continue`s to `return`, while escaping outer-local stores are refused."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/items.py": (
+                "class Item:\n"
+                "    pass\n\n\n"
+                "class Named(Item):\n"
+                "    def __init__(self, name: str) -> None:\n"
+                "        self.name = name\n\n\n"
+                "def collect(items: list[Item]) -> list[str]:\n"
+                "    out: list[str] = []\n"
+                "    for item in items:\n"
+                "        if not isinstance(item, Named):\n"
+                "            continue\n"
+                "        if not item.name:\n"
+                "            continue\n"
+                "        out.append(item.name)\n"
+                "    return out\n\n\n"
+                "def escaping_local(items: list[Item]) -> str | None:\n"
+                "    last: str | None = None\n"
+                "    for item in items:\n"
+                "        if not isinstance(item, Named):\n"
+                "            continue\n"
+                "        last = item.name\n"
+                "    return last\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"collect", "escaping_local"}
+
+    det = OwnTypeTestDetector()
+    esc_ev = det.evaluate_recipe_for_finding(by_sym["escaping_local"], _snapshot(tmp_path))
+    assert esc_ev.recipe is None
+    assert "assigns outer local(s) last" in esc_ev.rejection_reason
+    assert NeededInput.OWNER_PICK not in esc_ev.needs
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["collect"].stable_id,
+                owner="collect",
+                because="Item owns appending its non-empty name",
+                name="append_non_empty",
+                judgement="Append name to out when named and non-empty.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((by_sym["collect"],))
+    ev = det.evaluate_recipe_for_finding(picked[0], _snapshot(tmp_path))
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "items.py").read_text()
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    Item = ns["Item"]
+    Named = ns["Named"]
+    assert ns["collect"]([Item(), Named(""), Named("ok")]) == ["ok"]  # type: ignore[operator]
+    assert [f.primary_evidence.symbol for f in _findings(tmp_path)] == ["escaping_local"]
+

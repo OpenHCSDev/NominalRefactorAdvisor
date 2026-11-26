@@ -243,6 +243,13 @@ class DispatchSite(ABC):
         del line_indent
         return call_expr
 
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return False
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return ()
+
     def tested_expr_nodes(self) -> tuple[ast.AST, ...]:
         return tuple(
             expr for arm in self.arms for expr in arm.tested_exprs
@@ -292,10 +299,21 @@ class StatementDispatchSite(DispatchSite):
         _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
         return start, end
 
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return not self.is_whole_function
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return self.replaced_nodes
+
 
 @dataclass(frozen=True)
 class ReturningStatementDispatchSite(StatementDispatchSite):
     """Returning `if/elif/else`, early-return `if`, or `match` replaced by `return x.method(...)`."""
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return False
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         del line_indent
@@ -312,6 +330,16 @@ class PrefixGuardedStatementDispatchSite(StatementDispatchSite):
         return f"if {ast.unparse(self.guard_expr)}:\n{line_indent}    {call_expr}"
 
 
+def _render_indented_statements(
+    statements: Sequence[ast.stmt], body_indent: str
+) -> list[str]:
+    return [
+        f"{body_indent}{raw}" if raw else ""
+        for stmt in statements
+        for raw in ast.unparse(ast.fix_missing_locations(stmt)).splitlines()
+    ]
+
+
 @dataclass(frozen=True)
 class PrefixGuardedOrDispatchSite(StatementDispatchSite):
     """`if PREFIX or not isinstance(x, Sub): early_exit` + tail/else replaced by
@@ -321,12 +349,12 @@ class PrefixGuardedOrDispatchSite(StatementDispatchSite):
     guard_body: tuple[ast.stmt, ...]
     returns_value: bool
 
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return not self.returns_value
+
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
-        body_lines = [
-            f"{line_indent}    {raw}" if raw else ""
-            for stmt in self.guard_body
-            for raw in ast.unparse(ast.fix_missing_locations(stmt)).splitlines()
-        ]
+        body_lines = _render_indented_statements(self.guard_body, f"{line_indent}    ")
         call_line = (
             f"{line_indent}return {call_expr}"
             if self.returns_value
@@ -334,6 +362,26 @@ class PrefixGuardedOrDispatchSite(StatementDispatchSite):
         )
         return "\n".join(
             (f"if {ast.unparse(self.guard_expr)}:", *body_lines, call_line)
+        )
+
+
+@dataclass(frozen=True)
+class OrElseGuardedStatementDispatchSite(StatementDispatchSite):
+    """Void `if PREFIX or TEST: body` replaced by `if PREFIX:\\n    body\\nelse:\\n    x.method(...)`."""
+
+    guard_expr: ast.expr
+    guard_body: tuple[ast.stmt, ...]
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        body_indent = f"{line_indent}    "
+        body_lines = _render_indented_statements(self.guard_body, body_indent)
+        return "\n".join(
+            (
+                f"if {ast.unparse(self.guard_expr)}:",
+                *body_lines,
+                f"{line_indent}else:",
+                f"{body_indent}{call_expr}",
+            )
         )
 
 
@@ -419,6 +467,98 @@ def _has_loop_escape(statements: Sequence[ast.stmt]) -> bool:
             continue
         stack.extend(ast.iter_child_nodes(node))
     return False
+
+
+def _has_non_continue_loop_escape(statements: Sequence[ast.stmt]) -> bool:
+    """Whether `statements` contains a `break` escaping the current loop or any `return`."""
+
+    if _has_any_return(statements):
+        return True
+    stack: list[ast.AST] = list(statements)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.Break):
+            return True
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return False
+
+
+class _LoopContinueToReturnRewriter(ast.NodeTransformer):
+    """Replace `continue` targeting the current loop with bare `return`."""
+
+    def visit_Continue(self, node: ast.Continue) -> ast.AST:
+        return ast.copy_location(ast.Return(value=None), node)
+
+    def visit_For(self, node: ast.For) -> ast.AST:
+        return node
+
+    def visit_AsyncFor(self, node: ast.AsyncFor) -> ast.AST:
+        return node
+
+    def visit_While(self, node: ast.While) -> ast.AST:
+        return node
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        return node
+
+
+def _rewrite_loop_continues_to_returns(
+    statements: Sequence[ast.stmt],
+) -> tuple[ast.stmt, ...]:
+    rewriter = _LoopContinueToReturnRewriter()
+    return tuple(
+        cast(ast.stmt, rewriter.visit(copy.deepcopy(stmt)))
+        for stmt in statements
+    )
+
+
+def _names_stored_in(nodes: Sequence[ast.AST]) -> frozenset[str]:
+    stored: set[str] = set()
+    for root in nodes:
+        for node in ast.walk(root):
+            match node:
+                case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
+                    stored.add(name)
+                case ast.ExceptHandler(name=str() as name):
+                    stored.add(name)
+    return frozenset(stored)
+
+
+def _names_referenced_outside(
+    function: FunctionNode, excluded_nodes: Sequence[ast.AST]
+) -> frozenset[str]:
+    excluded_ids = {id(node) for node in excluded_nodes}
+    referenced: set[str] = set()
+
+    def walk(node: ast.AST) -> None:
+        if id(node) in excluded_ids:
+            return
+        if isinstance(node, ast.Name):
+            referenced.add(node.id)
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in function.body:
+        walk(stmt)
+    return frozenset(referenced)
 
 
 def _ends_with_continue_only(statements: Sequence[ast.stmt]) -> bool:
@@ -602,9 +742,10 @@ def _extract_compound_if_site(
                 in_loop_body
                 and tail
                 and _ends_with_continue_only(stmt.body)
-                and not _has_loop_escape(tail)
+                and not _has_non_continue_loop_escape(tail)
             ):
                 stripped = _strip_trailing_continue(stmt.body)
+                rewritten_tail = _rewrite_loop_continues_to_returns(tail)
                 arm_body = (
                     (
                         ast.If(
@@ -612,10 +753,10 @@ def _extract_compound_if_site(
                             body=[*stmt.body[:-1], ast.Return(value=None)],
                             orelse=[],
                         ),
-                        *tail,
+                        *rewritten_tail,
                     )
                     if suffix_expr is not None
-                    else tuple(tail)
+                    else rewritten_tail
                 )
                 return PrefixGuardedOrDispatchSite(
                     subject=matched_test.subject,
@@ -632,6 +773,27 @@ def _extract_compound_if_site(
                     guard_expr=guard_expr,
                     guard_body=tuple(stmt.body),
                     returns_value=False,
+                )
+            if not _has_any_return(stmt.body) and not _has_loop_escape(stmt.body):
+                arm_body = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
+                    if suffix_expr is not None
+                    else (ast.Pass(),)
+                )
+                return OrElseGuardedStatementDispatchSite(
+                    subject=matched_test.subject,
+                    kind=matched_test.kind,
+                    arms=(
+                        TypeTestArm(
+                            matched_test.tested_exprs, arm_body, matched_test.exact
+                        ),
+                    ),
+                    default_body=tuple(stmt.body),
+                    is_whole_function=False,
+                    test_nodes=(matched_test.test_node,),
+                    replaced_nodes=(stmt,),
+                    guard_expr=guard_expr,
+                    guard_body=tuple(stmt.body),
                 )
             return None
         # Void `if PREFIX and isinstance(x, Sub) [and SUFFIX]: body` preserves PREFIX short-circuiting.
@@ -742,20 +904,21 @@ def _extract_compound_if_site(
             in_loop_body
             and tail
             and _ends_with_continue_only(stmt.body)
-            and not _has_loop_escape(tail)
+            and not _has_non_continue_loop_escape(tail)
         ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
             arm_body = (
                 ast.If(
                     test=rest_expr,
                     body=list(_strip_trailing_continue(stmt.body)),
-                    orelse=list(tail),
+                    orelse=list(rewritten_tail),
                 ),
             )
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
                 arms=(TypeTestArm(first_test.tested_exprs, arm_body, first_test.exact),),
-                default_body=tuple(tail),
+                default_body=rewritten_tail,
                 is_whole_function=False,
                 test_nodes=(first_test.test_node,),
                 replaced_nodes=tuple(container[index:]),
@@ -838,13 +1001,14 @@ def _extract_compound_if_site(
             in_loop_body
             and tail
             and _ends_with_continue_only(stmt.body)
-            and not _has_loop_escape(tail)
+            and not _has_non_continue_loop_escape(tail)
         ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
             arm_body = (
                 ast.If(
                     test=rest_expr,
                     body=list(_strip_trailing_continue(stmt.body)),
-                    orelse=list(tail),
+                    orelse=list(rewritten_tail),
                 ),
             )
             return StatementDispatchSite(
@@ -935,12 +1099,13 @@ def _extract_if_site(
             in_loop_body
             and tail
             and _ends_with_continue_only(stmt.body)
-            and not _has_loop_escape(tail)
+            and not _has_non_continue_loop_escape(tail)
         ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
             return StatementDispatchSite(
                 subject=first_test.subject,
                 kind=first_test.kind,
-                arms=(TypeTestArm(first_test.tested_exprs, tuple(tail), first_test.exact),),
+                arms=(TypeTestArm(first_test.tested_exprs, rewritten_tail, first_test.exact),),
                 default_body=_strip_trailing_continue(stmt.body),
                 is_whole_function=False,
                 test_nodes=(first_test.test_node,),
@@ -1022,8 +1187,9 @@ def _extract_if_site(
         in_loop_body
         and tail
         and all(_ends_with_continue_only(arm.body) for arm in arms_list)
-        and not _has_loop_escape(tail)
+        and not _has_non_continue_loop_escape(tail)
     ):
+        rewritten_tail = _rewrite_loop_continues_to_returns(tail)
         stripped_arms = tuple(
             TypeTestArm(
                 arm.tested_exprs,
@@ -1037,7 +1203,7 @@ def _extract_if_site(
             subject=first_test.subject,
             kind=first_test.kind,
             arms=stripped_arms,
-            default_body=tuple(tail),
+            default_body=rewritten_tail,
             is_whole_function=False,
             test_nodes=tuple(test_nodes),
             replaced_nodes=tuple(container[index:]),
@@ -1567,7 +1733,7 @@ def _analyze_arm_bodies(
                             NeededInput.SOURCE_CHANGE,
                         )
 
-    # Reject if an arm mutates a local variable read later in the enclosing function.
+    # Reject if an arm mutates or assigns a local variable read outside the replaced span.
     if not site.is_whole_function:
         for body in rewritten_bodies:
             for stmt in body:
@@ -1578,6 +1744,19 @@ def _analyze_arm_bodies(
                                 f"`{function.name}` mutates outer local `{name}` inside a type-test arm",
                                 NeededInput.SOURCE_CHANGE,
                             )
+    if site.checks_local_store_escapes:
+        replaced_nodes = site.replaced_ast_nodes()
+        if replaced_nodes:
+            stored = _names_stored_in(
+                tuple(stmt for body in rewritten_bodies for stmt in body)
+            )
+            used_outside = _names_referenced_outside(function, replaced_nodes)
+            escaping = sorted(stored & used_outside)
+            if escaping:
+                raise NeedsInput(
+                    f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside a dispatch arm",
+                    NeededInput.SOURCE_CHANGE,
+                )
 
     if uses_await and not isinstance(function, ast.AsyncFunctionDef):
         raise NeedsInput(
