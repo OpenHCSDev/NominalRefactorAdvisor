@@ -27,6 +27,7 @@ from typing import ClassVar, cast
 
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
+    exception_types,
     match_guards,
     match_patterns,
     optional_values,
@@ -308,6 +309,11 @@ class DispatchSite(ABC):
     @property
     def returns_constant_bool(self) -> bool:
         return False
+
+    @property
+    def reassigned_target(self) -> str | None:
+        """Outer local explicitly passed in, rebound/augmented, and returned by the pushed method."""
+        return None
 
 
 @dataclass(frozen=True)
@@ -741,34 +747,285 @@ def _super_fallback_return(
     return ast.Return(value=call)
 
 
+def _target_store_names(node: ast.AST) -> frozenset[str]:
+    """Names bound by an assignment or comprehension target expression."""
+
+    return frozenset(
+        child.id
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+    )
+
+
+def _walk_comprehension_walrus_stores(node: ast.AST, stored: set[str]) -> None:
+    """Collect PEP 572 `NamedExpr` targets inside a comprehension without entering nested defs/lambdas."""
+
+    match node:
+        case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef() | ast.Lambda():
+            return
+        case ast.NamedExpr(target=ast.Name(id=name), value=value):
+            stored.add(name)
+            _walk_comprehension_walrus_stores(value, stored)
+            return
+    for child in ast.iter_child_nodes(node):
+        _walk_comprehension_walrus_stores(child, stored)
+
+
 def _names_stored_in(nodes: Sequence[ast.AST]) -> frozenset[str]:
+    """Names bound or deleted in the enclosing function scope by `nodes`."""
+
     stored: set[str] = set()
+
+    def walk(node: ast.AST) -> None:
+        match node:
+            case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
+                stored.add(name)
+                return
+            case ast.ExceptHandler(name=name, body=body):
+                if isinstance(name, str):
+                    stored.add(name)
+                for exc_type in exception_types(node):
+                    walk(exc_type)
+                for stmt in body:
+                    walk(stmt)
+                return
+            case ast.MatchAs(name=name):
+                if isinstance(name, str):
+                    stored.add(name)
+                for pattern in match_patterns(node):
+                    walk(pattern)
+                return
+            case ast.MatchStar(name=name):
+                if isinstance(name, str):
+                    stored.add(name)
+                return
+            case ast.MatchMapping(keys=keys, patterns=patterns, rest=rest):
+                if isinstance(rest, str):
+                    stored.add(rest)
+                for item in (*keys, *patterns):
+                    walk(item)
+                return
+            case ast.FunctionDef(
+                name=name,
+                decorator_list=decorators,
+                args=args,
+            ) | ast.AsyncFunctionDef(
+                name=name,
+                decorator_list=decorators,
+                args=args,
+            ):
+                stored.add(name)
+                for expr in (
+                    *decorators,
+                    *args.defaults,
+                    *(d for d in args.kw_defaults if d is not None),
+                    *declared_annotations(node),
+                ):
+                    walk(expr)
+                return
+            case ast.ClassDef(
+                name=name,
+                decorator_list=decorators,
+                bases=bases,
+                keywords=keywords,
+            ):
+                stored.add(name)
+                for item in (*decorators, *bases, *keywords):
+                    walk(item)
+                return
+            case ast.Lambda(args=args):
+                for expr in (
+                    *args.defaults,
+                    *(d for d in args.kw_defaults if d is not None),
+                ):
+                    walk(expr)
+                return
+            case ast.ListComp(elt=elt, generators=generators) | ast.SetComp(
+                elt=elt, generators=generators
+            ) | ast.GeneratorExp(elt=elt, generators=generators):
+                if generators:
+                    walk(generators[0].iter)
+                    for gen in generators[1:]:
+                        _walk_comprehension_walrus_stores(gen.iter, stored)
+                    for gen in generators:
+                        for cond in gen.ifs:
+                            _walk_comprehension_walrus_stores(cond, stored)
+                _walk_comprehension_walrus_stores(elt, stored)
+                return
+            case ast.DictComp(key=key, value=value, generators=generators):
+                if generators:
+                    walk(generators[0].iter)
+                    for gen in generators[1:]:
+                        _walk_comprehension_walrus_stores(gen.iter, stored)
+                    for gen in generators:
+                        for cond in gen.ifs:
+                            _walk_comprehension_walrus_stores(cond, stored)
+                _walk_comprehension_walrus_stores(key, stored)
+                _walk_comprehension_walrus_stores(value, stored)
+                return
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
     for root in nodes:
-        for node in ast.walk(root):
-            match node:
-                case ast.Name(id=name, ctx=ast.Store() | ast.Del()):
-                    stored.add(name)
-                case ast.ExceptHandler(name=str() as name):
-                    stored.add(name)
+        walk(root)
     return frozenset(stored)
+
+
+def _walrus_bound_before_loads(expr: ast.expr) -> set[str]:
+    """Names unconditionally assigned by `:=` before any read inside a comprehension `if` clause."""
+
+    bound: set[str] = set()
+    read_before: set[str] = set()
+
+    def walk(node: ast.AST) -> None:
+        match node:
+            case ast.NamedExpr(target=ast.Name(id=name), value=value):
+                walk(value)
+                if name not in read_before:
+                    bound.add(name)
+                return
+            case ast.Name(id=name, ctx=ast.Load()):
+                if name not in bound:
+                    read_before.add(name)
+                return
+            case ast.BoolOp(op=ast.And(), values=values):
+                for value in values:
+                    walk(value)
+                return
+            case ast.BoolOp(op=ast.Or(), values=values):
+                if values:
+                    walk(values[0])
+                return
+            case ast.Compare(left=left, comparators=comparators):
+                walk(left)
+                for comp in comparators:
+                    walk(comp)
+                return
+            case ast.UnaryOp(operand=operand):
+                walk(operand)
+                return
+            case ast.IfExp(test=test, body=body, orelse=orelse):
+                walk(test)
+                for branch in (body, orelse):
+                    for inner in ast.walk(branch):
+                        if isinstance(inner, ast.Name) and isinstance(inner.ctx, ast.Load):
+                            if inner.id not in bound:
+                                read_before.add(inner.id)
+                return
+            case ast.FunctionDef() | ast.AsyncFunctionDef() | ast.ClassDef() | ast.Lambda():
+                return
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    walk(expr)
+    return bound
 
 
 def _names_referenced_outside(
     function: FunctionNode, excluded_nodes: Sequence[ast.AST]
 ) -> frozenset[str]:
+    """Enclosing-scope `Load` references outside `excluded_nodes`, respecting inner scopes."""
+
     excluded_ids = {id(node) for node in excluded_nodes}
     referenced: set[str] = set()
 
-    def walk(node: ast.AST) -> None:
+    def walk(node: ast.AST, shadowed: frozenset[str]) -> None:
         if id(node) in excluded_ids:
             return
-        if isinstance(node, ast.Name):
-            referenced.add(node.id)
+        match node:
+            case ast.Name(id=name, ctx=ast.Load()):
+                if name not in shadowed:
+                    referenced.add(name)
+                return
+            case ast.Name():
+                return
+            case ast.ListComp(elt=elt, generators=generators) | ast.SetComp(
+                elt=elt, generators=generators
+            ) | ast.GeneratorExp(elt=elt, generators=generators):
+                comp_shadow = shadowed
+                for idx, gen in enumerate(generators):
+                    walk(gen.iter, shadowed if idx == 0 else comp_shadow)
+                    comp_shadow = comp_shadow | _target_store_names(gen.target)
+                    for cond in gen.ifs:
+                        # Any name bound by `:=` before its own read in `cond` shadows
+                        # outer bindings for `cond`'s trailing uses, later `ifs`, and `elt`.
+                        walrus = _walrus_bound_before_loads(cond)
+                        walk(cond, comp_shadow | walrus)
+                        comp_shadow = comp_shadow | walrus
+                walk(elt, comp_shadow)
+                return
+            case ast.DictComp(key=key, value=value, generators=generators):
+                comp_shadow = shadowed
+                for idx, gen in enumerate(generators):
+                    walk(gen.iter, shadowed if idx == 0 else comp_shadow)
+                    comp_shadow = comp_shadow | _target_store_names(gen.target)
+                    for cond in gen.ifs:
+                        walrus = _walrus_bound_before_loads(cond)
+                        walk(cond, comp_shadow | walrus)
+                        comp_shadow = comp_shadow | walrus
+                walk(key, comp_shadow)
+                walk(value, comp_shadow)
+                return
+            case ast.Lambda(args=args, body=body):
+                for expr in (*args.defaults, *(d for d in args.kw_defaults if d is not None)):
+                    walk(expr, shadowed)
+                param_names = frozenset(
+                    arg.arg
+                    for arg in (
+                        *args.posonlyargs,
+                        *args.args,
+                        *args.kwonlyargs,
+                        *variadic_parameters(args),
+                    )
+                )
+                walk(body, shadowed | param_names)
+                return
+            case ast.FunctionDef(
+                decorator_list=decorators, args=args, body=body
+            ) | ast.AsyncFunctionDef(
+                decorator_list=decorators, args=args, body=body
+            ):
+                for expr in (
+                    *decorators,
+                    *args.defaults,
+                    *(d for d in args.kw_defaults if d is not None),
+                    *declared_annotations(node),
+                ):
+                    walk(expr, shadowed)
+                param_names = frozenset(
+                    arg.arg
+                    for arg in (
+                        *args.posonlyargs,
+                        *args.args,
+                        *args.kwonlyargs,
+                        *variadic_parameters(args),
+                    )
+                )
+                nonlocals = frozenset(
+                    name
+                    for stmt in body
+                    for inner in ast.walk(stmt)
+                    if isinstance(inner, ast.Nonlocal)
+                    for name in inner.names
+                )
+                inner_shadow = shadowed | param_names | (_names_stored_in(body) - nonlocals)
+                for stmt in body:
+                    walk(stmt, inner_shadow)
+                return
+            case ast.ClassDef(
+                decorator_list=decorators, bases=bases, keywords=keywords, body=body
+            ):
+                for item in (*decorators, *bases, *keywords):
+                    walk(item, shadowed)
+                inner_shadow = shadowed | _names_stored_in(body)
+                for stmt in body:
+                    walk(stmt, inner_shadow)
+                return
         for child in ast.iter_child_nodes(node):
-            walk(child)
+            walk(child, shadowed)
 
     for stmt in function.body:
-        walk(stmt)
+        walk(stmt, frozenset())
     return frozenset(referenced)
 
 
@@ -2536,8 +2793,11 @@ def _analyze_arm_bodies(
     seen_captured: set[str] = set()
     uses_await = False
 
+    reassigned = site.reassigned_target
     for body in rewritten_bodies:
         local_stores: set[str] = set(_body_bound_names(body))
+        if reassigned is not None:
+            local_stores.discard(reassigned)
         for stmt in body:
             for node in ast.walk(stmt):
                 if isinstance(node, (ast.Yield, ast.YieldFrom, ast.Break, ast.Continue)):
@@ -2595,7 +2855,9 @@ def _analyze_arm_bodies(
             for stmt in body:
                 for node in ast.walk(stmt):
                     match node:
-                        case ast.AugAssign(target=ast.Name(id=name)) if name in fn_locals:
+                        case ast.AugAssign(target=ast.Name(id=name)) if (
+                            name in fn_locals and name != reassigned
+                        ):
                             raise NeedsInput(
                                 f"`{function.name}` mutates outer local `{name}` inside a type-test arm",
                                 NeededInput.SOURCE_CHANGE,

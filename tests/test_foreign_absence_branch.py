@@ -263,11 +263,13 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
                 "    return box.value is not None\n\n\n"
                 "def bool_ternary(box: Box) -> bool:\n"
                 "    return True if box.value is not None else False\n\n\n"
-                "def mutates_outer_local(box: Box) -> int:\n"
+                "def mutates_outer_local(box: Box) -> tuple[int, bool]:\n"
                 "    total = 0\n"
+                "    seen = False\n"
                 "    if box.value is not None:\n"
                 "        total = box.value\n"
-                "    return total\n\n\n"
+                "        seen = True\n"
+                "    return total, seen\n\n\n"
                 "def proto_consumer(box: BoxProto) -> int:\n"
                 "    if box.value is None:\n"
                 "        return 0\n"
@@ -1266,6 +1268,273 @@ def test_composite_multi_ternary_expression_pushes_and_auto_reuses_on_second_sit
     s2 = Scope("m", None, "b")
     assert ns["build_seed_key"](s1, "p") == ("m", "p:a", None)  # type: ignore[operator]
     assert ns["build_live_key"](s2, "p") == ("m", None, "p:b")  # type: ignore[operator]
+
+
+def test_comprehension_and_outside_walrus_scopes_do_not_trigger_false_escape(
+    tmp_path: Path,
+) -> None:
+    """Comprehension loop targets inside an absence branch and freshly walrus-bound
+    variables in a later comprehension must not trigger false escaping-local refusals."""
+
+    _write(
+        tmp_path,
+        {
+            "sc/__init__.py": "",
+            "sc/scopes.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Graph:\n"
+                "    paths: tuple[str, ...] | None\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class History:\n"
+                "    revision: str | None\n"
+                "    label: str\n\n\n"
+                "def collect_paths(graph: Graph, extra: list[str]) -> list[str]:\n"
+                "    out: list[str] = []\n"
+                "    for file_path in extra:\n"
+                "        out.append(file_path)\n"
+                "    if graph.paths is not None:\n"
+                "        out.extend(file_path for file_path in graph.paths if file_path)\n"
+                "    return out\n\n\n"
+                "def retain_histories(items: list[tuple[str, History]]) -> dict[str, str]:\n"
+                "    saved: dict[str, str] = {}\n"
+                "    for key, history in items:\n"
+                "        if history.revision is None:\n"
+                "            continue\n"
+                "        successor = f'{history.label}:{history.revision}'\n"
+                "        saved[key] = successor\n"
+                "    return {\n"
+                "        key: successor\n"
+                "        for key, _history in items\n"
+                "        if (successor := saved.get(key)) is not None\n"
+                "        and len(successor) > 1\n"
+                "    }\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"collect_paths", "retain_histories"}
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["collect_paths"].stable_id,
+                owner="collect_paths",
+                because="graph appends its own paths",
+                name="extend_paths",
+                judgement="Append non-empty paths owned by this graph.",
+            ),
+            OwnerPick(
+                finding=by_sym["retain_histories"].stable_id,
+                owner="retain_histories",
+                because="history records itself when revision is present",
+                name="record_if_present",
+                judgement="Record this history under key when it has a revision.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(tuple(findings))
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "sc" / "scopes.py").read_text()
+    assert "graph.extend_paths(out)" in after
+    assert "history.record_if_present(saved, key)" in after
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "sc/scopes.py"), "exec"), ns)
+    Graph = ns["Graph"]
+    History = ns["History"]
+    assert ns["collect_paths"](Graph(("a.py", "", "b.py")), ["e.py"]) == ["e.py", "a.py", "b.py"]  # type: ignore[operator]
+    assert ns["collect_paths"](Graph(None), ["e.py"]) == ["e.py"]  # type: ignore[operator]
+    assert ns["retain_histories"]([("k1", History("r1", "L")), ("k2", History(None, "X"))]) == {"k1": "L:r1"}  # type: ignore[operator]
+
+
+def test_assigning_absence_branch_sites_push_with_runtime_parity(
+    tmp_path: Path,
+) -> None:
+    """Single-target definite-assign `if/elif/else`, subject self-rebind, conditional
+    outer-local rebind, prefix-guarded assign, and `AugAssign` push cleanly onto the
+    owner while unbound conditional assigns and multi-local escapes stay refused."""
+
+    _write(
+        tmp_path,
+        {
+            "asgn/__init__.py": "",
+            "asgn/branches.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Context:\n"
+                "    index: int | None\n"
+                "    fallback: int = 0\n\n"
+                "    def materialized(self) -> 'Context':\n"
+                "        return Context(index=self.fallback, fallback=self.fallback)\n\n\n"
+                "def ensure_index(context: Context) -> int:\n"
+                "    if context.index is None:\n"
+                "        context = context.materialized()\n"
+                "    return context.fallback + (context.index or 0)\n\n\n"
+                "def select_label(context: Context, flag: bool) -> str:\n"
+                "    if context.index is not None:\n"
+                "        label = f'idx:{context.index}'\n"
+                "    elif flag:\n"
+                "        label = 'flagged'\n"
+                "    else:\n"
+                "        label = 'plain'\n"
+                "    return label\n\n\n"
+                "def update_selectors(context: Context) -> tuple[str, ...]:\n"
+                "    selectors = ('base',)\n"
+                "    if context.index is not None:\n"
+                "        selectors = ('base', f'n:{context.index}')\n"
+                "    return selectors\n\n\n"
+                "def guarded_rebind(context: Context, enabled: bool) -> list[int]:\n"
+                "    items = [1]\n"
+                "    if enabled and context.index is None:\n"
+                "        items = [*items, context.fallback]\n"
+                "    return items\n\n\n"
+                "def append_detail(context: Context, detail: str, log: list[str]) -> tuple[str, list[str]]:\n"
+                "    if context.index is not None:\n"
+                "        detail += f':{context.index}'\n"
+                "    return detail, log\n\n\n"
+                "def append_items_inplace(context: Context, items: list[int]) -> list[int]:\n"
+                "    if context.index is not None:\n"
+                "        items += [context.index]\n"
+                "    return items\n\n\n"
+                "def unbound_conditional(context: Context) -> int:\n"
+                "    if context.index is not None:\n"
+                "        bound = context.index\n"
+                "    return bound\n\n\n"
+                "def multi_escape(context: Context) -> tuple[int, int]:\n"
+                "    a, b = 0, 0\n"
+                "    if context.index is not None:\n"
+                "        a = context.index\n"
+                "        b = context.index + 1\n"
+                "    return a, b\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {
+        "ensure_index",
+        "select_label",
+        "update_selectors",
+        "guarded_rebind",
+        "append_detail",
+        "append_items_inplace",
+        "unbound_conditional",
+        "multi_escape",
+    }
+
+    # Unbound conditional assign and multi-local escape MUST stay refused.
+    for refused_sym in ("unbound_conditional", "multi_escape"):
+        ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(
+            by_sym[refused_sym], snap
+        )
+        assert ev.recipe is None
+        assert "assigns outer local" in ev.rejection_reason
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["ensure_index"].stable_id,
+                owner="ensure_index",
+                because="context materializes itself when index is absent",
+                name="with_index",
+                judgement="Return this context materialized if its index is absent.",
+            ),
+            OwnerPick(
+                finding=by_sym["select_label"].stable_id,
+                owner="select_label",
+                because="context owns its label choice",
+                name="label_for",
+                judgement="Compute the display label for this context.",
+            ),
+            OwnerPick(
+                finding=by_sym["update_selectors"].stable_id,
+                owner="update_selectors",
+                because="context extends selectors when indexed",
+                name="selectors_with",
+                judgement="Return updated selectors for this context.",
+            ),
+            OwnerPick(
+                finding=by_sym["guarded_rebind"].stable_id,
+                owner="guarded_rebind",
+                because="context appends fallback when index is absent",
+                name="items_with_fallback",
+                judgement="Return items extended with fallback when index is absent.",
+            ),
+            OwnerPick(
+                finding=by_sym["append_detail"].stable_id,
+                owner="append_detail",
+                because="context formats its index suffix onto detail",
+                name="extend_detail",
+                judgement="Append index suffix to detail when present.",
+            ),
+            OwnerPick(
+                finding=by_sym["append_items_inplace"].stable_id,
+                owner="append_items_inplace",
+                because="context appends its index onto items",
+                name="extend_items",
+                judgement="Append index onto items in place when present.",
+            ),
+        ),
+    )
+    pushable = tuple(
+        by_sym[sym]
+        for sym in (
+            "ensure_index",
+            "select_label",
+            "update_selectors",
+            "guarded_rebind",
+            "append_detail",
+            "append_items_inplace",
+        )
+    )
+    picked, report = picks.applied(pushable)
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 6
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "asgn" / "branches.py").read_text()
+    assert "context = context.with_index()" in after
+    assert "def with_index(self)" in after
+    assert "label = context.label_for(flag)" in after
+    assert "selectors = context.selectors_with(selectors)" in after
+    assert "if enabled:\n        items = context.items_with_fallback(items)" in after
+    assert "detail = context.extend_detail(detail)" in after
+    assert "items = context.extend_items(items)" in after
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "asgn/branches.py"), "exec"), ns)
+    Context = ns["Context"]
+    assert ns["ensure_index"](Context(None, 5)) == 10  # type: ignore[operator]
+    assert ns["ensure_index"](Context(3, 5)) == 8  # type: ignore[operator]
+    assert ns["select_label"](Context(4), False) == "idx:4"  # type: ignore[operator]
+    assert ns["select_label"](Context(None), True) == "flagged"  # type: ignore[operator]
+    assert ns["select_label"](Context(None), False) == "plain"  # type: ignore[operator]
+    assert ns["update_selectors"](Context(2)) == ("base", "n:2")  # type: ignore[operator]
+    assert ns["update_selectors"](Context(None)) == ("base",)  # type: ignore[operator]
+    assert ns["guarded_rebind"](Context(None, 9), True) == [1, 9]  # type: ignore[operator]
+    assert ns["guarded_rebind"](Context(None, 9), False) == [1]  # type: ignore[operator]
+    assert ns["guarded_rebind"](Context(3, 9), True) == [1]  # type: ignore[operator]
+    assert ns["append_detail"](Context(7), "d", []) == ("d:7", [])  # type: ignore[operator]
+    assert ns["append_detail"](Context(None), "d", []) == ("d", [])  # type: ignore[operator]
+    shared: list[int] = [10]
+    res = ns["append_items_inplace"](Context(42), shared)  # type: ignore[operator]
+    assert res is shared and shared == [10, 42]
+    assert ns["append_items_inplace"](Context(None), shared) is shared and shared == [10, 42]
+
 
 
 
