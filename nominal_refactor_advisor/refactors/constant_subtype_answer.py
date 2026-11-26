@@ -82,6 +82,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     FunctionEnclosure,
     FunctionNode,
     InstanceDispatchKind,
+    PrefixGuardedOrDispatchSite,
     PrefixGuardedStatementDispatchSite,
     ReturningStatementDispatchSite,
     StatementDispatchSite,
@@ -265,8 +266,6 @@ def _extract_compound_answer_if(
         return None
     first = _parse_answer_test(stmt.test.values[0], member_name)
     if first is None:
-        if stmt.orelse or _has_any_return(stmt.body):
-            return None
         match_index: int | None = None
         matched: ParsedAnswerTest | None = None
         for idx, value in enumerate(stmt.test.values[1:], start=1):
@@ -293,6 +292,132 @@ def _extract_compound_answer_if(
                 else ast.BoolOp(op=stmt.test.op, values=suffix_values)
             )
         )
+        if isinstance(stmt.test.op, ast.Or) and (stmt.orelse or _has_any_return(stmt.body) or _always_terminates(stmt.body) or (in_loop_body and _ends_with_continue_only(stmt.body))):
+            if stmt.orelse:
+                if not (_has_any_return((stmt,)) and _always_terminates(stmt.body) and _always_terminates(stmt.orelse)):
+                    return None
+                fallback_body: tuple[ast.stmt, ...] = (
+                    (
+                        ast.If(
+                            test=suffix_expr,
+                            body=list(stmt.body),
+                            orelse=list(stmt.orelse),
+                        ),
+                    )
+                    if suffix_expr is not None
+                    else tuple(stmt.orelse)
+                )
+                arm_body = fallback_body if matched.negated else tuple(stmt.body)
+                default_body = tuple(stmt.body) if matched.negated else fallback_body
+                return AnswerBranchSite(
+                    PrefixGuardedOrDispatchSite(
+                        subject=matched.subject,
+                        kind=kind,
+                        arms=(_dummy_arm(arm_body),),
+                        default_body=default_body,
+                        is_whole_function=False,
+                        test_nodes=(matched.test_node,),
+                        replaced_nodes=(stmt,),
+                        guard_expr=guard_expr,
+                        guard_body=tuple(stmt.body),
+                        returns_value=True,
+                    ),
+                    (matched.tested_value,),
+                )
+            tail = container[index + 1 :]
+            if tail and _always_terminates(stmt.body) and _always_terminates(tail):
+                replaced = tuple(container[index:])
+                fallback_body = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                arm_body = fallback_body if matched.negated else tuple(stmt.body)
+                default_body = tuple(stmt.body) if matched.negated else fallback_body
+                return AnswerBranchSite(
+                    PrefixGuardedOrDispatchSite(
+                        subject=matched.subject,
+                        kind=kind,
+                        arms=(_dummy_arm(arm_body),),
+                        default_body=default_body,
+                        is_whole_function=False,
+                        test_nodes=(matched.test_node,),
+                        replaced_nodes=replaced,
+                        guard_expr=guard_expr,
+                        guard_body=tuple(stmt.body),
+                        returns_value=_has_any_return(replaced),
+                    ),
+                    (matched.tested_value,),
+                )
+            if (
+                container is whole_fn_body
+                and tail
+                and _always_void_terminates(stmt.body)
+                and not _has_value_return(tail)
+            ):
+                stripped = _strip_trailing_bare_return(stmt.body)
+                fallback_body = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                arm_body = fallback_body if matched.negated else stripped
+                default_body = stripped if matched.negated else fallback_body
+                return AnswerBranchSite(
+                    PrefixGuardedOrDispatchSite(
+                        subject=matched.subject,
+                        kind=kind,
+                        arms=(_dummy_arm(arm_body),),
+                        default_body=default_body,
+                        is_whole_function=False,
+                        test_nodes=(matched.test_node,),
+                        replaced_nodes=tuple(container[index:]),
+                        guard_expr=guard_expr,
+                        guard_body=tuple(stmt.body),
+                        returns_value=False,
+                    ),
+                    (matched.tested_value,),
+                )
+            if (
+                in_loop_body
+                and tail
+                and _ends_with_continue_only(stmt.body)
+                and not _has_loop_escape(tail)
+            ):
+                stripped = _strip_trailing_continue(stmt.body)
+                fallback_body = (
+                    (
+                        ast.If(
+                            test=suffix_expr,
+                            body=[*stmt.body[:-1], ast.Return(value=None)],
+                            orelse=[],
+                        ),
+                        *tail,
+                    )
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                arm_body = fallback_body if matched.negated else stripped
+                default_body = stripped if matched.negated else fallback_body
+                return AnswerBranchSite(
+                    PrefixGuardedOrDispatchSite(
+                        subject=matched.subject,
+                        kind=kind,
+                        arms=(_dummy_arm(arm_body),),
+                        default_body=default_body,
+                        is_whole_function=False,
+                        test_nodes=(matched.test_node,),
+                        replaced_nodes=tuple(container[index:]),
+                        guard_expr=guard_expr,
+                        guard_body=tuple(stmt.body),
+                        returns_value=False,
+                    ),
+                    (matched.tested_value,),
+                )
+            if stmt.orelse or _has_any_return(stmt.body):
+                return None
+        if stmt.orelse or _has_any_return(stmt.body):
+            return None
         if isinstance(stmt.test.op, ast.And):
             if (
                 container is whole_fn_body
@@ -775,6 +900,35 @@ def _extract_answer_if(
     return None
 
 
+def _is_pure_independent_guard(expr: ast.expr, subject_root_name: str) -> bool:
+    """Whether `expr` is side-effect-free and does not reference `subject_root_name`
+    (so evaluating the subject before `expr` preserves short-circuit semantics)."""
+
+    match expr:
+        case ast.Constant():
+            return True
+        case ast.Name(id=name):
+            return name != subject_root_name
+        case ast.Attribute(value=value):
+            return _is_pure_independent_guard(value, subject_root_name)
+        case ast.UnaryOp(op=ast.Not(), operand=operand):
+            return _is_pure_independent_guard(operand, subject_root_name)
+        case ast.BoolOp(values=values):
+            return all(_is_pure_independent_guard(v, subject_root_name) for v in values)
+        case ast.Compare(left=left, comparators=comparators):
+            return _is_pure_independent_guard(left, subject_root_name) and all(
+                _is_pure_independent_guard(c, subject_root_name) for c in comparators
+            )
+    return False
+
+
+def _subject_root_name(expr: ast.expr) -> str | None:
+    current = expr
+    while isinstance(current, ast.Attribute):
+        current = current.value
+    return current.id if isinstance(current, ast.Name) else None
+
+
 def _extract_answer_ternary(
     node: ast.IfExp,
     is_whole_return: bool,
@@ -802,10 +956,27 @@ def _extract_answer_ternary(
             (parsed.tested_value,),
         )
     if isinstance(node.test, ast.BoolOp) and len(node.test.values) >= 2:
-        first = _parse_answer_test(node.test.values[0], member_name)
-        if first is None:
+        match_idx: int | None = None
+        matched: ParsedAnswerTest | None = None
+        for idx, value in enumerate(node.test.values):
+            candidate = _parse_answer_test(value, member_name)
+            if candidate is not None:
+                match_idx = idx
+                matched = candidate
+                break
+        if match_idx is None or matched is None:
             return None
-        rest_values = node.test.values[1:]
+        if match_idx > 0:
+            root_name = _subject_root_name(matched.subject)
+            if root_name is None or not all(
+                _is_pure_independent_guard(val, root_name)
+                for val in node.test.values[:match_idx]
+            ):
+                return None
+        rest_values = [
+            *node.test.values[:match_idx],
+            *node.test.values[match_idx + 1 :],
+        ]
         rest_expr: ast.expr = (
             rest_values[0]
             if len(rest_values) == 1
@@ -813,14 +984,14 @@ def _extract_answer_ternary(
         )
         rest_ifexp = ast.IfExp(test=rest_expr, body=node.body, orelse=node.orelse)
         if isinstance(node.test.op, ast.Or):
-            if first.negated:
+            if matched.negated:
                 arm_body = (ast.Return(value=rest_ifexp),)
                 default_body = (ast.Return(value=node.body),)
             else:
                 arm_body = (ast.Return(value=node.body),)
                 default_body = (ast.Return(value=rest_ifexp),)
         else:
-            if first.negated:
+            if matched.negated:
                 arm_body = (ast.Return(value=node.orelse),)
                 default_body = (ast.Return(value=rest_ifexp),)
             else:
@@ -828,15 +999,15 @@ def _extract_answer_ternary(
                 default_body = (ast.Return(value=node.orelse),)
         return AnswerBranchSite(
             TernaryDispatchSite(
-                subject=first.subject,
+                subject=matched.subject,
                 kind=kind,
                 arms=(_dummy_arm(arm_body),),
                 default_body=default_body,
                 is_whole_function=is_whole_return,
-                test_nodes=(first.test_node,),
+                test_nodes=(matched.test_node,),
                 node=node,
             ),
-            (first.tested_value,),
+            (matched.tested_value,),
         )
     return None
 

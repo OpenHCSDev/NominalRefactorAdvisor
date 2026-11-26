@@ -327,3 +327,84 @@ def test_pushes_or_else_guard_and_compound_ternary_with_owner_pick(tmp_path: Pat
     assert ns["load_catalog"](ns["ChannelSelection"](), True) == "loaded"  # type: ignore[operator]
     assert ns["load_catalog"](ns["ChannelSelection"](), False) == "none"  # type: ignore[operator]
     assert _findings(tmp_path) == []
+
+
+def test_pushes_prefix_guarded_or_early_return_and_non_first_compound_ternary(tmp_path: Path):
+    """`if PREFIX or not subject.flag(): return fallback; ...` and
+    `a if (p1 and p2 and subject.flag) else b` push cleanly while preserving
+    PREFIX short-circuiting and deleting the dead constant answer."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/roles.py": (
+                "from typing import ClassVar\n\n\n"
+                "class ThreadRole:\n"
+                "    def hears_each_reply(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class PersonRole(ThreadRole):\n"
+                "    def hears_each_reply(self) -> bool:\n"
+                "        return True\n\n\n"
+                "def format_route(reply_route: str, role: ThreadRole, target: str) -> str:\n"
+                "    if not reply_route or not role.hears_each_reply():\n"
+                "        return ''\n"
+                "    return reply_route + ':' + target\n\n\n"
+                "class ViewportRequest:\n"
+                "    animates_arrivals: ClassVar[bool] = False\n\n\n"
+                "class LiveViewportRequest(ViewportRequest):\n"
+                "    animates_arrivals: ClassVar[bool] = True\n\n\n"
+                "def select_keys(arrivals: bool, drawn: bool, request: ViewportRequest, keys: list[str]) -> list[str] | None:\n"
+                "    chosen = list(keys) if (not arrivals and drawn and request.animates_arrivals) else None\n"
+                "    return chosen\n"
+            ),
+        },
+    )
+
+    # 1. `format_route` (`if not reply_route or not role.hears_each_reply(): return ''`)
+    for member_name, consumer, method_name in (
+        ("hears_each_reply", "format_route", "format_reply_route"),
+        ("animates_arrivals", "select_keys", "animated_keys"),
+    ):
+        findings = _findings(tmp_path)
+        target = next(f for f in findings if f.metrics.member_name == member_name)
+        unpicked = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            target, _snapshot(tmp_path)
+        )
+        assert unpicked.recipe is None
+        assert NeededInput.OWNER_PICK in unpicked.needs
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=target.stable_id,
+                    owner=consumer,
+                    because="family owns its own branch behavior",
+                    name=method_name,
+                    judgement="Push constant answer branch onto the family.",
+                ),
+            ),
+        )
+        picked, _ = picks.applied((target,))
+        ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            picked[0], _snapshot(tmp_path)
+        )
+        _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "roles.py").read_text()
+    assert "hears_each_reply" not in after
+    assert "animates_arrivals" not in after
+    assert "if not reply_route:" in after
+    assert "return role.format_reply_route(" in after
+    assert "request.animated_keys(" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["format_route"]("", ns["PersonRole"](), "t") == ""  # type: ignore[operator]
+    assert ns["format_route"]("r", ns["ThreadRole"](), "t") == ""  # type: ignore[operator]
+    assert ns["format_route"]("r", ns["PersonRole"](), "t") == "r:t"  # type: ignore[operator]
+    assert ns["select_keys"](False, True, ns["LiveViewportRequest"](), ["a"]) == ["a"]  # type: ignore[operator]
+    assert ns["select_keys"](True, True, ns["LiveViewportRequest"](), ["a"]) is None  # type: ignore[operator]
+    assert ns["select_keys"](False, True, ns["ViewportRequest"](), ["a"]) is None  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
