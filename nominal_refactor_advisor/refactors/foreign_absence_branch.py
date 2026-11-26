@@ -9,6 +9,7 @@ derived boolean predicate back to callers.
 from __future__ import annotations
 
 import ast
+import copy
 import keyword as keyword_module
 import re
 from abc import ABC, abstractmethod
@@ -915,6 +916,230 @@ def _resolve_scanned_instance_owner(
     return ResolvedClassTarget.from_rewrite_target(snapshot, source_rewrite_target(owner_indexed))
 
 
+class _AlphaRenameParameters(ast.NodeTransformer):
+    """Alpha-rename free parameter references without entering nested scopes."""
+
+    def __init__(self, rename_map: dict[str, str]) -> None:
+        self.rename_map = rename_map
+
+    def visit_Name(self, node: ast.Name) -> ast.AST:
+        mapped = self.rename_map.get(node.id)
+        if mapped is None:
+            return node
+        return ast.copy_location(ast.Name(id=mapped, ctx=node.ctx), node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.AST:
+        return node
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> ast.AST:
+        return node
+
+    def visit_Lambda(self, node: ast.Lambda) -> ast.AST:
+        return node
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> ast.AST:
+        return node
+
+
+def _body_without_docstring(body: Sequence[ast.stmt]) -> tuple[ast.stmt, ...]:
+    if (
+        len(body) > 1
+        and isinstance(body[0], ast.Expr)
+        and isinstance(body[0].value, ast.Constant)
+        and isinstance(body[0].value.value, str)
+    ):
+        return tuple(body[1:])
+    return tuple(body)
+
+
+def _body_shadows_parameter(body: Sequence[ast.stmt], param_names: frozenset[str]) -> bool:
+    for stmt in body:
+        for node in ast.walk(stmt):
+            if isinstance(node, ast.comprehension):
+                for target_node in ast.walk(node.target):
+                    if isinstance(target_node, ast.Name) and target_node.id in param_names:
+                        return True
+    return False
+
+
+def _normalized_body_dumps(
+    body: Sequence[ast.stmt], param_names: Sequence[str]
+) -> tuple[str, ...] | None:
+    stripped = _body_without_docstring(body)
+    if _body_shadows_parameter(stripped, frozenset(param_names)):
+        return None
+    rename_map = {name: f"__p{index}" for index, name in enumerate(param_names)}
+    transformer = _AlphaRenameParameters(rename_map)
+    return tuple(
+        ast.dump(transformer.visit(copy.deepcopy(stmt)), include_attributes=False)
+        for stmt in stripped
+    )
+
+
+def _matching_existing_method_names(
+    owner_node: ast.ClassDef,
+    index: object,
+    owner_symbol: str,
+    rewritten_body: tuple[ast.stmt, ...],
+    captured_args: tuple[CapturedArgument, ...],
+    is_async: bool,
+    import_edits: tuple[NominalSourceEdit, ...],
+) -> tuple[str, ...]:
+    """Find plain methods on `owner_node` with the exact generated signature and body."""
+
+    if import_edits:
+        return ()
+    generated_params = ("self", *(arg.param_name for arg in captured_args))
+    generated_dumps = _normalized_body_dumps(rewritten_body, generated_params)
+    if generated_dumps is None:
+        return ()
+    classes = index.classes_by_symbol  # type: ignore[attr-defined]
+    descendant_names: set[str] = set()
+    for desc_symbol in index.descendant_symbols(owner_symbol):  # type: ignore[attr-defined]
+        desc = classes.get(desc_symbol)
+        if desc is not None:
+            descendant_names.update(desc.member_binding_names)
+
+    matches: list[str] = []
+    for stmt in owner_node.body:
+        if not isinstance(stmt, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        if stmt.decorator_list:
+            continue
+        if isinstance(stmt, ast.AsyncFunctionDef) != is_async:
+            continue
+        if stmt.name.startswith("__") and stmt.name.endswith("__"):
+            continue
+        if stmt.name in descendant_names:
+            continue
+        args = stmt.args
+        if (
+            args.posonlyargs
+            or args.kwonlyargs
+            or args.vararg is not None
+            or args.kwarg is not None
+            or args.defaults
+            or len(args.args) != len(generated_params)
+        ):
+            continue
+        existing_dumps = _normalized_body_dumps(
+            stmt.body, tuple(arg.arg for arg in args.args)
+        )
+        if existing_dumps == generated_dumps:
+            matches.append(stmt.name)
+    return tuple(matches)
+
+
+@dataclass(frozen=True)
+class OwnerAbsenceMethodTarget(ABC):
+    """Whether an absence-branch push adds a new method or reuses an exact existing one."""
+
+    method_name: str
+
+    @abstractmethod
+    def owner_replacements(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        owner_geometry: SourceTextGeometry,
+    ) -> tuple[tuple[int, int, str], ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def import_edits(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def rationale(self, proof: ForeignAbsenceBranchProof) -> str:
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class ExistingOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
+    """Reuse an already-declared owner method whose body matches identically."""
+
+    def owner_replacements(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        owner_geometry: SourceTextGeometry,
+    ) -> tuple[tuple[int, int, str], ...]:
+        del proof, owner_geometry
+        return ()
+
+    def import_edits(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        del proof, snapshot, rationale
+        return ()
+
+    def rationale(self, proof: ForeignAbsenceBranchProof) -> str:
+        return (
+            f"Reuse existing `{proof.owner.qualname}.{self.method_name}` for foreign "
+            f"absence branch on `{ast.unparse(proof.site.subject)}` in "
+            f"`{proof.function.name}`."
+        )
+
+
+@dataclass(frozen=True)
+class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
+    """Append a newly factored method onto the scanned owner class."""
+
+    docstring: str | None = None
+
+    def owner_replacements(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        owner_geometry: SourceTextGeometry,
+    ) -> tuple[tuple[int, int, str], ...]:
+        params = tuple(arg.param_name for arg in proof.captured_args)
+        method_source = _render_method(
+            InstanceDispatchKind(),
+            self.method_name,
+            params,
+            proof.method_body,
+            is_async=proof.is_async,
+            docstring=self.docstring,
+        )
+        return (_class_append_span(owner_geometry, proof.owner.node, method_source),)
+
+    def import_edits(
+        self,
+        proof: ForeignAbsenceBranchProof,
+        snapshot: CodemodSourceSnapshot,
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        source_module = snapshot.parsed_module_for_source_path(proof.source_path)
+        local_exclusions = frozenset(
+            (
+                "self",
+                *(arg.param_name for arg in proof.captured_args),
+                *_names_stored_in(proof.method_body),
+            )
+        )
+        return _cross_module_imports_for_body(
+            snapshot,
+            source_module,
+            proof.test_line,
+            proof.owner,
+            proof.method_body,
+            local_exclusions,
+            rationale=rationale,
+        )
+
+    def rationale(self, proof: ForeignAbsenceBranchProof) -> str:
+        return (
+            f"Push foreign absence branch on `{ast.unparse(proof.site.subject)}` in "
+            f"`{proof.function.name}` onto `{proof.owner.qualname}.{self.method_name}`."
+        )
+
+
 @dataclass(frozen=True)
 class ForeignAbsenceBranchProof:
     """A foreign absence probe proved safe to push onto the scanned owner class."""
@@ -928,8 +1153,12 @@ class ForeignAbsenceBranchProof:
     method_body: tuple[ast.stmt, ...]
     captured_args: tuple[CapturedArgument, ...]
     is_async: bool
-    method_name: str
-    docstring: str | None
+    method_target: OwnerAbsenceMethodTarget
+    matching_existing_methods: tuple[str, ...] = ()
+
+    @property
+    def method_name(self) -> str:
+        return self.method_target.method_name
 
     @classmethod
     def proved(
@@ -975,21 +1204,6 @@ class ForeignAbsenceBranchProof:
                     NeededInput.PROOF,
                 )
 
-        index = snapshot.compact_class_index
-        classes = index.classes_by_symbol
-        family_symbols = (
-            resolved_symbol,
-            *index.ancestor_symbols(resolved_symbol),
-            *index.descendant_symbols(resolved_symbol),
-        )
-        for symbol in family_symbols:
-            decl = classes.get(symbol)
-            if decl is not None and method_name in decl.member_binding_names:
-                raise NeedsInput(
-                    f"`{decl.qualname}` already declares `{method_name}`",
-                    NeededInput.OWNER_PICK,
-                )
-
         if site.checks_local_store_escapes:
             stored = _names_stored_in(site.method_body)
             used_outside = _names_referenced_outside(function, site.replaced_ast_nodes())
@@ -1020,7 +1234,7 @@ class ForeignAbsenceBranchProof:
             ("self", *(arg.param_name for arg in captured_args), *_names_stored_in(rewritten_body))
         )
         try:
-            _cross_module_imports_for_body(
+            import_edits = _cross_module_imports_for_body(
                 snapshot,
                 source_module,
                 test_line,
@@ -1034,6 +1248,37 @@ class ForeignAbsenceBranchProof:
         except ValueError as error:
             raise NeedsInput(str(error), NeededInput.SOURCE_CHANGE) from error
 
+        index = snapshot.compact_class_index
+        classes = index.classes_by_symbol
+        matching_existing = _matching_existing_method_names(
+            resolved_owner.node,
+            index,
+            resolved_symbol,
+            rewritten_body,
+            captured_args,
+            is_async,
+            import_edits,
+        )
+        method_target: OwnerAbsenceMethodTarget
+        if method_name in matching_existing:
+            method_target = ExistingOwnerAbsenceMethod(method_name=method_name)
+        else:
+            family_symbols = (
+                resolved_symbol,
+                *index.ancestor_symbols(resolved_symbol),
+                *index.descendant_symbols(resolved_symbol),
+            )
+            for symbol in family_symbols:
+                decl = classes.get(symbol)
+                if decl is not None and method_name in decl.member_binding_names:
+                    raise NeedsInput(
+                        f"`{decl.qualname}` already declares `{method_name}`",
+                        NeededInput.OWNER_PICK,
+                    )
+            method_target = NewOwnerAbsenceMethod(
+                method_name=method_name, docstring=docstring
+            )
+
         return cls(
             source_path=source_path,
             test_line=test_line,
@@ -1044,52 +1289,21 @@ class ForeignAbsenceBranchProof:
             method_body=rewritten_body,
             captured_args=captured_args,
             is_async=is_async,
-            method_name=method_name,
-            docstring=docstring,
+            method_target=method_target,
+            matching_existing_methods=matching_existing,
         )
 
     def rationale(self) -> str:
-        return (
-            f"Push foreign absence branch on `{ast.unparse(self.site.subject)}` in "
-            f"`{self.function.name}` onto `{self.owner.qualname}.{self.method_name}`."
-        )
+        return self.method_target.rationale(self)
 
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str
     ) -> tuple[NominalSourceEdit, ...]:
-        source_module = snapshot.parsed_module_for_source_path(self.source_path)
-        local_exclusions = frozenset(
-            (
-                "self",
-                *(arg.param_name for arg in self.captured_args),
-                *_names_stored_in(self.method_body),
-            )
-        )
-        import_edits = _cross_module_imports_for_body(
-            snapshot,
-            source_module,
-            self.test_line,
-            self.owner,
-            self.method_body,
-            local_exclusions,
-            rationale=rationale,
-        )
-
-        params = tuple(arg.param_name for arg in self.captured_args)
-        method_source = _render_method(
-            InstanceDispatchKind(),
-            self.method_name,
-            params,
-            self.method_body,
-            is_async=self.is_async,
-            docstring=self.docstring,
-        )
+        import_edits = self.method_target.import_edits(self, snapshot, rationale)
         owner_geometry = SourceTextGeometry(
             snapshot.sources_by_file_path[self.owner.file_path]
         )
-        append_start, append_end, append_text = _class_append_span(
-            owner_geometry, self.owner.node, method_source
-        )
+        owner_replacements = self.method_target.owner_replacements(self, owner_geometry)
 
         subject_source = ast.unparse(self.site.subject)
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
@@ -1106,9 +1320,8 @@ class ForeignAbsenceBranchProof:
         replacement = self.site.render_call_replacement(call_expr, line_indent)
 
         replacements_by_file: dict[str, list[tuple[int, int, str]]] = {}
-        replacements_by_file.setdefault(self.owner.file_path, []).append(
-            (append_start, append_end, append_text)
-        )
+        for owner_span in owner_replacements:
+            replacements_by_file.setdefault(self.owner.file_path, []).append(owner_span)
         replacements_by_file.setdefault(self.source_path, []).append(
             (rep_start, rep_end, replacement)
         )
@@ -1238,13 +1451,10 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
         if pick is not None:
             method_name = pick.name
             docstring: str | None = pick.judgement
-        elif site.is_whole_function and not is_dunder:
-            method_name = function.name
-            docstring = ast.get_docstring(function)
         else:
             probe_name = "__nra_probe_absence_method"
             try:
-                proof = ForeignAbsenceBranchProof.proved(
+                probe_proof = ForeignAbsenceBranchProof.proved(
                     snapshot,
                     target,
                     probe_lines[0],
@@ -1255,14 +1465,21 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
                 )
             except ValueError as error:
                 return self.stopped_evaluation(error)
-            return self.stopped_evaluation(
-                NeedsInput(
-                    f"embedded absence probe in `{primary.symbol}` can push onto "
-                    f"`{proof.owner.qualname}`; supply `owner` `{primary.symbol}` with a "
-                    "method name and one-line judgement in `--codemod-owner-picks`",
-                    NeededInput.OWNER_PICK,
+            if len(probe_proof.matching_existing_methods) == 1:
+                method_name = probe_proof.matching_existing_methods[0]
+                docstring = None
+            elif site.is_whole_function and not is_dunder:
+                method_name = function.name
+                docstring = ast.get_docstring(function)
+            else:
+                return self.stopped_evaluation(
+                    NeedsInput(
+                        f"embedded absence probe in `{primary.symbol}` can push onto "
+                        f"`{probe_proof.owner.qualname}`; supply `owner` `{primary.symbol}` with a "
+                        "method name and one-line judgement in `--codemod-owner-picks`",
+                        NeededInput.OWNER_PICK,
+                    )
                 )
-            )
 
         try:
             proof = ForeignAbsenceBranchProof.proved(
