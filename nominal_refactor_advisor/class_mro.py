@@ -40,7 +40,10 @@ class NativeMroBase(StrEnum):
 
     @classmethod
     def for_python_type(cls, python_type: type) -> NativeMroBase | None:
-        return _NATIVE_MRO_BASE_BY_TYPE.get(python_type)
+        for member in cls:
+            if python_type is member.python_type:
+                return member
+        return None
 
 
 NAMESPACE_READ_NATIVES: tuple[type, ...] = (Generic,)

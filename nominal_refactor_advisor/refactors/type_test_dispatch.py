@@ -312,6 +312,31 @@ class PrefixGuardedStatementDispatchSite(StatementDispatchSite):
         return f"if {ast.unparse(self.guard_expr)}:\n{line_indent}    {call_expr}"
 
 
+@dataclass(frozen=True)
+class PrefixGuardedOrDispatchSite(StatementDispatchSite):
+    """`if PREFIX or not isinstance(x, Sub): early_exit` + tail/else replaced by
+    `if PREFIX:\\n    <early_exit>\\n[return ]x.method(...)`."""
+
+    guard_expr: ast.expr
+    guard_body: tuple[ast.stmt, ...]
+    returns_value: bool
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        body_lines = [
+            f"{line_indent}    {raw}" if raw else ""
+            for stmt in self.guard_body
+            for raw in ast.unparse(ast.fix_missing_locations(stmt)).splitlines()
+        ]
+        call_line = (
+            f"{line_indent}return {call_expr}"
+            if self.returns_value
+            else f"{line_indent}{call_expr}"
+        )
+        return "\n".join(
+            (f"if {ast.unparse(self.guard_expr)}:", *body_lines, call_line)
+        )
+
+
 def _is_docstring_stmt(statement: ast.stmt) -> bool:
     match statement:
         case ast.Expr(value=ast.Constant(value=str())):
@@ -459,6 +484,156 @@ def _extract_compound_if_site(
         return None
     first_test = _parse_type_test(stmt.test.values[0])
     if first_test is None:
+        if isinstance(stmt.test.op, ast.Or):
+            match_index: int | None = None
+            matched_test: ParsedTypeTest | None = None
+            for idx, value in enumerate(stmt.test.values[1:], start=1):
+                parsed = _parse_type_test(value)
+                if parsed is not None and parsed.negated and value.lineno == test_line:
+                    match_index = idx
+                    matched_test = parsed
+                    break
+            if match_index is None or matched_test is None:
+                return None
+            prefix_values = stmt.test.values[:match_index]
+            guard_expr: ast.expr = (
+                prefix_values[0]
+                if len(prefix_values) == 1
+                else ast.BoolOp(op=ast.Or(), values=prefix_values)
+            )
+            suffix_values = stmt.test.values[match_index + 1 :]
+            suffix_expr: ast.expr | None = (
+                None
+                if not suffix_values
+                else (
+                    suffix_values[0]
+                    if len(suffix_values) == 1
+                    else ast.BoolOp(op=ast.Or(), values=suffix_values)
+                )
+            )
+            if stmt.orelse:
+                replaced = (stmt,)
+                if _has_any_return((stmt,)):
+                    if not (
+                        _always_terminates(stmt.body) and _always_terminates(stmt.orelse)
+                    ):
+                        return None
+                    arm_body: tuple[ast.stmt, ...] = (
+                        (
+                            ast.If(
+                                test=suffix_expr,
+                                body=list(stmt.body),
+                                orelse=list(stmt.orelse),
+                            ),
+                        )
+                        if suffix_expr is not None
+                        else tuple(stmt.orelse)
+                    )
+                    return PrefixGuardedOrDispatchSite(
+                        subject=matched_test.subject,
+                        kind=matched_test.kind,
+                        arms=(
+                            TypeTestArm(
+                                matched_test.tested_exprs, arm_body, matched_test.exact
+                            ),
+                        ),
+                        default_body=tuple(stmt.body),
+                        is_whole_function=False,
+                        test_nodes=(matched_test.test_node,),
+                        replaced_nodes=replaced,
+                        guard_expr=guard_expr,
+                        guard_body=tuple(stmt.body),
+                        returns_value=True,
+                    )
+                return None
+            tail = container[index + 1 :]
+            if tail and _always_terminates(stmt.body) and _always_terminates(tail):
+                replaced = tuple(container[index:])
+                arm_body = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                return PrefixGuardedOrDispatchSite(
+                    subject=matched_test.subject,
+                    kind=matched_test.kind,
+                    arms=(
+                        TypeTestArm(
+                            matched_test.tested_exprs, arm_body, matched_test.exact
+                        ),
+                    ),
+                    default_body=tuple(stmt.body),
+                    is_whole_function=False,
+                    test_nodes=(matched_test.test_node,),
+                    replaced_nodes=replaced,
+                    guard_expr=guard_expr,
+                    guard_body=tuple(stmt.body),
+                    returns_value=_has_any_return(replaced),
+                )
+            if (
+                container is whole_fn_body
+                and tail
+                and _always_void_terminates(stmt.body)
+                and not _has_value_return(tail)
+            ):
+                stripped = _strip_trailing_bare_return(stmt.body)
+                arm_body = (
+                    (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]), *tail)
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                return PrefixGuardedOrDispatchSite(
+                    subject=matched_test.subject,
+                    kind=matched_test.kind,
+                    arms=(
+                        TypeTestArm(
+                            matched_test.tested_exprs, arm_body, matched_test.exact
+                        ),
+                    ),
+                    default_body=stripped,
+                    is_whole_function=False,
+                    test_nodes=(matched_test.test_node,),
+                    replaced_nodes=tuple(container[index:]),
+                    guard_expr=guard_expr,
+                    guard_body=tuple(stmt.body),
+                    returns_value=False,
+                )
+            if (
+                in_loop_body
+                and tail
+                and _ends_with_continue_only(stmt.body)
+                and not _has_loop_escape(tail)
+            ):
+                stripped = _strip_trailing_continue(stmt.body)
+                arm_body = (
+                    (
+                        ast.If(
+                            test=suffix_expr,
+                            body=[*stmt.body[:-1], ast.Return(value=None)],
+                            orelse=[],
+                        ),
+                        *tail,
+                    )
+                    if suffix_expr is not None
+                    else tuple(tail)
+                )
+                return PrefixGuardedOrDispatchSite(
+                    subject=matched_test.subject,
+                    kind=matched_test.kind,
+                    arms=(
+                        TypeTestArm(
+                            matched_test.tested_exprs, arm_body, matched_test.exact
+                        ),
+                    ),
+                    default_body=stripped,
+                    is_whole_function=False,
+                    test_nodes=(matched_test.test_node,),
+                    replaced_nodes=tuple(container[index:]),
+                    guard_expr=guard_expr,
+                    guard_body=tuple(stmt.body),
+                    returns_value=False,
+                )
+            return None
         # Void `if PREFIX and isinstance(x, Sub) [and SUFFIX]: body` preserves PREFIX short-circuiting.
         if (
             not isinstance(stmt.test.op, ast.And)
@@ -1816,6 +1991,24 @@ class SharedAncestorBaseSelection(TargetBaseSelection):
             snapshot, (*subject_roots, *((symbol,) for symbol in tested_symbols))
         )
         if shared_base is None:
+            # Multiple-inheritance mixin dispatch: subject belongs to a scanned base and
+            # each tested class is a scanned mixin composed into subclasses of that base.
+            # `_require_dispatch_mro_safe` proves C3 MRO dispatch equivalence for every member.
+            subject_base = _nearest_shared_ancestor(snapshot, subject_roots)
+            if subject_base is not None:
+                index = snapshot.required_class_family_index
+                family = frozenset(
+                    (subject_base, *index.descendant_symbols(subject_base))
+                )
+                if tested_symbols and all(
+                    any(
+                        tested in (member, *index.ancestor_symbols(member))
+                        for member in family
+                    )
+                    for tested in tested_symbols
+                ):
+                    shared_base = subject_base
+        if shared_base is None:
             raise NeedsInput(
                 f"`{spelled_subject}` and its tested classes share no scanned base class",
                 NeededInput.SOURCE_CHANGE,
@@ -2088,6 +2281,25 @@ class TypeTestDispatchProof:
                         f"`{target_cls.qualname}` already binds `{method_name}`",
                         NeededInput.OWNER_PICK,
                     )
+                # When a tested class is a mixin outside `base`'s subtree, verify no
+                # ancestor or descendant of the mixin already binds `method_name`.
+                compact_index = snapshot.compact_class_index
+                compact_classes = compact_index.classes_by_symbol
+                if base_symbol not in (sym, *compact_index.ancestor_symbols(sym)):
+                    for related in (
+                        *compact_index.ancestor_symbols(sym),
+                        *compact_index.descendant_symbols(sym),
+                    ):
+                        related_decl = compact_classes.get(related)
+                        if (
+                            related_decl is not None
+                            and method_name in related_decl.member_binding_names
+                        ):
+                            raise NeedsInput(
+                                f"`{related_decl.qualname}` already declares `{method_name}` "
+                                f"along mixin `{target_cls.qualname}`'s hierarchy",
+                                NeededInput.OWNER_PICK,
+                            )
                 owner_arm[sym] = arm_idx
 
         authority = snapshot.compact_class_index.declared_mro_authority
