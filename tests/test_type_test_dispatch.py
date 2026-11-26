@@ -1690,7 +1690,7 @@ def test_defensive_not_isinstance_base_guard_is_not_folded_and_cross_module_impo
     snap = _snapshot(tmp_path)
 
     guard_ev = OwnTypeTestDetector().evaluate_recipe_for_finding(by_sym["check_guard"], snap)
-    assert guard_ev.executable_recipe is None
+    assert guard_ev.recipe is None
 
     plain_ev = OwnTypeTestDetector().evaluate_recipe_for_finding(by_sym["is_plain"], snap)
     assert plain_ev.executable_recipe is not None, plain_ev.rejection_reason
