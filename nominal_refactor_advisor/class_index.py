@@ -4321,6 +4321,10 @@ class ClassBodyModuleScope:
             return ModuleNominalBindingWitness(f"{self.module_name}.{name}", name)
         return None
 
+    def digest_scope_key(self, names):
+        """Build the digest cache key tuple for the requested bound names."""
+        return (self.module_name, _binding_snapshot_slice_key(self.declaration, names), _binding_snapshot_slice_key(self.final, names), None if self.star_blind_declaration is None else _binding_snapshot_slice_key(self.star_blind_declaration, names), None if self.star_blind_final is None else _binding_snapshot_slice_key(self.star_blind_final, names))
+
 
 def _is_zero_arg_super_call(node: ast.Call) -> bool:
     return (
@@ -5340,17 +5344,7 @@ def _seed_class_body_digests_from_baseline(
             continue
         class_src = "".join(source_lines[cls_rec.line - 1 : cls_rec.end_line])
         names = tuple(sorted(set(_CLASS_BODY_IDENT_RE.findall(class_src))))
-        scope_key = (
-            scope.module_name,
-            _binding_snapshot_slice_key(scope.declaration, names),
-            _binding_snapshot_slice_key(scope.final, names),
-            None
-            if scope.star_blind_declaration is None
-            else _binding_snapshot_slice_key(scope.star_blind_declaration, names),
-            None
-            if scope.star_blind_final is None
-            else _binding_snapshot_slice_key(scope.star_blind_final, names),
-        )
+        scope_key = scope.digest_scope_key(names)
         key = (scope.module_name, class_src, scope_key)
         cache.setdefault(key, (cls_rec.line, cls_rec.body_declarations))
 
@@ -5391,17 +5385,7 @@ def _class_body_digests_for_node(
     if cache is not None and node.end_lineno is not None:
         class_src = "".join(source_lines[node.lineno - 1 : node.end_lineno])
         names = tuple(sorted(set(_CLASS_BODY_IDENT_RE.findall(class_src))))
-        scope_key = (
-            scope.module_name,
-            _binding_snapshot_slice_key(scope.declaration, names),
-            _binding_snapshot_slice_key(scope.final, names),
-            None
-            if scope.star_blind_declaration is None
-            else _binding_snapshot_slice_key(scope.star_blind_declaration, names),
-            None
-            if scope.star_blind_final is None
-            else _binding_snapshot_slice_key(scope.star_blind_final, names),
-        )
+        scope_key = scope.digest_scope_key(names)
         key = (scope.module_name, class_src, scope_key)
         cached = cache.get(key)
         if cached is not None:
