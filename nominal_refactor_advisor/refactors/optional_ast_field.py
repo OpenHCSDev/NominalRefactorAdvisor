@@ -3919,7 +3919,7 @@ class RouteOptionalAstFieldProbesOperation(SourceReprovedOperation):
         )
         imports = self.owners(snapshot).import_sources_for(parsed_module, used)
         return (
-            *authority.geometry.physical_edits(
+            authority.geometry.nominal_edit(
                 file_path=target.file_path,
                 replacements=replacements,
                 rationale=self.rationale
