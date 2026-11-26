@@ -1802,13 +1802,15 @@ class ComposedAncestry:
                 )
                 if was == becomes:
                     continue
-                if was == self.composer.symbol and name in self.deleted and becomes in owner_set:
+                if was == self.composer.symbol and name in self.deleted and becomes in (
+                    owner_set | self._owner_providers_for(name)
+                ):
                     continue
                 if (
                     was is not None
                     and was in self.peer_deleted
                     and name in self.peer_deleted[was]
-                    and becomes in owner_set
+                    and becomes in (owner_set | self._owner_providers_for(name))
                 ):
                     continue
                 if name == "__slots__" and was in shifted and becomes == self.composer.symbol:
@@ -1826,6 +1828,23 @@ class ComposedAncestry:
             if len(non_object_bases) > 1:
                 self.require_slots_fit(non_object_bases)
         return tuple(drops)
+
+    def _owner_providers_for(self, name: str) -> frozenset[str]:
+        """The declaring class(es) in each owner's MRO that supply `name`."""
+
+        providers: list[str] = []
+        for owner in self.owners:
+            provider = next(
+                (
+                    symbol
+                    for symbol in self.c3.linearized(owner.symbol)
+                    if name in self.names(symbol, composed=False)
+                ),
+                None,
+            )
+            if provider is not None:
+                providers.append(provider)
+        return frozenset(providers)
 
     @cached_property
     def ancestry(self) -> tuple[CompactIndexedClass, ...]:
@@ -1866,7 +1885,9 @@ class ComposedAncestry:
             becomes = next(
                 (symbol for symbol in after if name in self.names(symbol, composed=True)), None
             )
-            if name in self.deleted and becomes in owner_symbols:
+            if name in self.deleted and becomes in (
+                owner_symbols | self._owner_providers_for(name)
+            ):
                 continue
             if was != becomes:
                 raise NeedsInput(
@@ -2089,8 +2110,13 @@ class ClassComposition:
         for ancestor_symbol in class_index.ancestor_symbols(owner.symbol):
             if class_index.class_for(ancestor_symbol) is None:
                 continue
-            for name in verdicts.bodies.declarations_of(ancestor_symbol):
-                if name in restating_own and name not in owner_own:
+            for name, anc_decl in verdicts.bodies.declarations_of(ancestor_symbol).items():
+                rest_decl = restating_own.get(name)
+                if (
+                    rest_decl is not None
+                    and name not in owner_own
+                    and anc_decl.same_declaration_as(rest_decl)
+                ):
                     candidate_names.append(name)
         restated_names = tuple(dict.fromkeys(candidate_names))
         restated = RestatedDeclarations.require(
