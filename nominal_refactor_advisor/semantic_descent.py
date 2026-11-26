@@ -3450,6 +3450,14 @@ class SemanticDescentGraphCacheLookup:
     graph: SemanticDescentGraph | None = None
     identity: SemanticDescentGraphCacheIdentity | None = None
 
+    def resolve_or_store(self, request, identity, cache):
+        """Return the cached graph when present, else build and store it."""
+        if self.graph is not None:
+            return self.graph
+        graph = request.graph
+        cache.store(identity, graph)
+        return graph
+
 
 @dataclass(frozen=True)
 class SemanticDescentGraphCacheDisabled(SemanticDescentGraphCacheLookup):
@@ -3954,11 +3962,7 @@ def build_semantic_descent_graph(
         identity = SemanticDescentGraphCacheIdentity.from_modules(request.modules)
         cache = SemanticDescentGraphCache(resolved_cache_dir)
         cache_lookup = cache.load(identity)
-        if cache_lookup.graph is not None:
-            return cache_lookup.graph
-        graph = request.graph
-        cache.store(identity, graph)
-        return graph
+        return cache_lookup.resolve_or_store(request, identity, cache)
     return request.graph
 
 

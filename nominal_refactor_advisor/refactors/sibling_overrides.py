@@ -166,6 +166,17 @@ class SiblingOverrideCandidate:
         """Format the summary clause naming an existing home class when one exists."""
         return '' if self.home is None else f'; `{self.home.qualname}` already exists to hold it: every one of them inherits it' + (' and no class answering otherwise does' if self.answering_otherwise else '')
 
+    def evaluate_override_recipe(self, finding, context, owner):
+        """Evaluate the sibling-override recipe for this candidate."""
+        if self.home is None:
+            return owner._evaluate_intermediate_base_recipe(finding, context, self)
+        operation = LiftSiblingOverrideOperation(target=source_rewrite_target(self.home), member_name=self.name)
+        try:
+            recipe = RefactorRecipe(recipe_id=f'{finding.stable_id}-{operation.operation_key()}', reason=f'Every sibling overrides `{self.declaring.qualname}.{self.name}` identically; `{self.home.qualname}` already exists to hold it once.').with_proved_operation(operation, context)
+        except ValueError as error:
+            return owner.stopped_evaluation(error)
+        return owner.executable_evaluation(recipe)
+
 
 @dataclass(frozen=True)
 class Override:
@@ -2016,23 +2027,7 @@ class SiblingOverrideFindingRecipeSynthesizer(
         )
         if candidate is None:
             return self.rejected_evaluation("the sibling override left the source")
-        if candidate.home is None:
-            return self._evaluate_intermediate_base_recipe(finding, context, candidate)
-        operation = LiftSiblingOverrideOperation(
-            target=source_rewrite_target(candidate.home),
-            member_name=candidate.name,
-        )
-        try:
-            recipe = RefactorRecipe(
-                recipe_id=f"{finding.stable_id}-{operation.operation_key()}",
-                reason=(
-                    f"Every sibling overrides `{candidate.declaring.qualname}.{candidate.name}` "
-                    f"identically; `{candidate.home.qualname}` already exists to hold it once."
-                ),
-            ).with_proved_operation(operation, context)
-        except ValueError as error:
-            return self.stopped_evaluation(error)
-        return self.executable_evaluation(recipe)
+        return candidate.evaluate_override_recipe(finding, context, self)
 
     def _evaluate_intermediate_base_recipe(
         self,

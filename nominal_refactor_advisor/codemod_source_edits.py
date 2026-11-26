@@ -414,6 +414,10 @@ class NominalSourceEdit(ABC):
     ) -> tuple[SourceRewriteContributor, ...]:
         return SourceRewriteContributor.merge(*(edit.contributors for edit in edits))
 
+    def classify_edit(self, import_mutations_by_file, non_import_files):
+        """Record this edit as an import mutation or non-import file touch."""
+        non_import_files.add(self.file_path)
+
 
 class PhysicalSourceEditConflictError(ValueError):
     """Physical source edits cannot coexist in one nominal rewrite."""

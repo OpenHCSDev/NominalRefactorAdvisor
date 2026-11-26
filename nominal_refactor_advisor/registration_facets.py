@@ -657,6 +657,10 @@ class FamilyWalkRoot(ABC):
         """Why moving a member from module `source` to `destination` takes it out
         of this walk, or None when the walk still reaches it."""
 
+    def collect_walk_references(self, enumerated):
+        """Collect module references for this walk root."""
+        pass
+
 
 @dataclass(frozen=True)
 class NoWalkRoot(FamilyWalkRoot):
@@ -684,6 +688,9 @@ class PackageWalkRoot(FamilyWalkRoot):
             return None
         reach = "tree" if self.recursive else "direct modules (the walk is flat)"
         return f"it walks {self.package}'s {reach}, and {destination} is outside it"
+
+    def collect_walk_references(self, enumerated):
+        enumerated.add(self)
 
 
 @dataclass(frozen=True)

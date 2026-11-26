@@ -241,6 +241,10 @@ class SearchMove(SemanticRecord, ABC):
         """Equivalent move for a sub-concept with identical targets and proof, if achieved cleanly."""
         return None
 
+    def encode_for_worker(self, scan):
+        """Encode this search move for worker transport."""
+        return self
+
 
 @dataclass(frozen=True)
 class UnscoredMove(SearchMove):
@@ -422,6 +426,9 @@ class PlayableMove(ScoredMove):
         return replace(
             played, following=search.turn(self.end.scan_from(scan), self.after, depth).front
         )
+
+    def encode_for_worker(self, scan):
+        return (type(self), self.concept, self.stages, self.tokens, self.before, self.after, _DeltaEndState.encode(scan, self.end))
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -1288,17 +1295,7 @@ class ForkedPlay:
                 try:
                     move = search.move(scan, start, concept)
                     wire_move: object = (
-                        (
-                            type(move),
-                            move.concept,
-                            move.stages,
-                            move.tokens,
-                            move.before,
-                            move.after,
-                            _DeltaEndState.encode(scan, move.end),
-                        )
-                        if isinstance(move, PlayableMove)
-                        else move
+                        move.encode_for_worker(scan)
                     )
                     result = pickle.dumps((True, wire_move))
                 except BaseException:  # noqa: BLE001 - the search raises it from the parent

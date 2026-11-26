@@ -6089,8 +6089,7 @@ class SupportProjectionAuthority:
     ) -> dict[str, tuple[int, ast.AST]]:
         values: dict[str, tuple[int, ast.AST]] = {}
         for binding in self.module_named_value_bindings(module):
-            if binding.value is not None:
-                values[binding.name] = (binding.line, binding.value)
+            binding.record_module_value(values)
         return values
 
     def module_constant_bindings(
