@@ -1378,3 +1378,49 @@ def test_two_own_type_test_sites_in_one_function_compose_without_nominal_conflic
     assert _findings(tmp_path) == []
 
 
+def test_two_own_type_tests_pushing_distinct_methods_onto_same_pass_class_family_compose_in_one_batch(
+    tmp_path: Path,
+) -> None:
+    """Two dispatches targeting the exact same empty `pass`-body family compose in
+    one batch: `pass` deletions coalesce and both methods insert commutatively."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/same_family.py": (
+                "class Node:\n"
+                "    pass\n\n\n"
+                "class Special(Node):\n"
+                "    pass\n\n\n"
+                "def weight(node: Node) -> int:\n"
+                "    return 10 if isinstance(node, Special) else 1\n\n\n"
+                "def tag(node: Node) -> str:\n"
+                "    return 'special' if isinstance(node, Special) else 'plain'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    snapshot = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snapshot)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "same_family.py").read_text()
+    assert "isinstance" not in after
+    assert "    pass" not in after
+    assert "def tag(self):" in after
+    assert "def weight(self):" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["weight"](ns["Node"]()) == 1  # type: ignore[operator]
+    assert ns["weight"](ns["Special"]()) == 10  # type: ignore[operator]
+    assert ns["tag"](ns["Node"]()) == "plain"  # type: ignore[operator]
+    assert ns["tag"](ns["Special"]()) == "special"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+

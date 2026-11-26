@@ -10,7 +10,10 @@ from nominal_refactor_advisor.ast_tools import (
     PythonSourcePathPolicy,
     parse_python_modules,
 )
-from nominal_refactor_advisor.codemod import CodemodPlanSequence
+from nominal_refactor_advisor.codemod import (
+    CodemodPlanSequence,
+    codemod_plan_from_findings,
+)
 from nominal_refactor_advisor.codemod_runtime import CodemodSourceSnapshot
 from nominal_refactor_advisor.detectors._base import DetectorConfig
 from nominal_refactor_advisor.detectors._relocations import (
@@ -660,5 +663,112 @@ def test_does_not_reuse_existing_method_overridden_by_descendant(
     ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(finding, snap)
     assert ev.recipe is None
     assert ev.needs == (NeededInput.OWNER_PICK,)
+
+
+def test_two_foreign_absence_branches_pushing_distinct_methods_onto_same_owner_compose_in_one_batch(
+    tmp_path: Path,
+) -> None:
+    """Two distinct foreign absence pushes targeting the same owner class (exact
+    `CachedSourceFileSignature` shape) coalesce commutatively in one batch, while
+    two pushes declaring the same method name with different bodies still conflict."""
+
+    _write(
+        tmp_path,
+        {
+            "batch/__init__.py": "",
+            "batch/cache.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Sig:\n"
+                "    semantic_hash: str | None\n\n"
+                "    def compute(self) -> str:\n"
+                "        return 'computed'\n\n\n"
+                "def resolve_hash(sig: Sig) -> str:\n"
+                "    if sig.semantic_hash is not None:\n"
+                "        return sig.semantic_hash\n"
+                "    return sig.compute()\n\n\n"
+                "def collect_pending(sigs: list[Sig]) -> list[Sig]:\n"
+                "    pending: list[Sig] = []\n"
+                "    for sig in sigs:\n"
+                "        if sig.semantic_hash is None:\n"
+                "            pending.append(sig)\n"
+                "    return pending\n"
+            ),
+        },
+    )
+
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"resolve_hash", "collect_pending"}
+
+    # Soundness: two distinct bodies claiming the SAME method name on Sig must conflict.
+    colliding_picks = OwnerPicks(
+        "collide.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["resolve_hash"].stable_id,
+                owner="resolve_hash",
+                because="owner",
+                name="same_name",
+                judgement="Resolve hash.",
+            ),
+            OwnerPick(
+                finding=by_sym["collect_pending"].stable_id,
+                owner="collect_pending",
+                because="owner",
+                name="same_name",
+                judgement="Collect pending.",
+            ),
+        ),
+    )
+    colliding_findings, _ = colliding_picks.applied(tuple(findings))
+    colliding_plan = codemod_plan_from_findings(colliding_findings, selector_context=snap)
+    assert colliding_plan.candidate_count == 0
+
+    # Distinct method names on Sig compose commutatively in ONE batch.
+    picks = OwnerPicks(
+        "batch.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["resolve_hash"].stable_id,
+                owner="resolve_hash",
+                because="owner",
+                name="resolved_hash",
+                judgement="Return cached hash or compute it.",
+            ),
+            OwnerPick(
+                finding=by_sym["collect_pending"].stable_id,
+                owner="collect_pending",
+                because="owner",
+                name="append_if_pending",
+                judgement="Append when hash is missing.",
+            ),
+        ),
+    )
+    picked_findings, report = picks.applied(tuple(findings))
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked_findings, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "batch" / "cache.py").read_text()
+    assert "def append_if_pending(self, pending):" in after
+    assert "def resolved_hash(self):" in after
+    assert "return sig.resolved_hash()" in after
+    assert "sig.append_if_pending(pending)" in after
+    _after_mods, _after_snap, remaining = _scan(tmp_path)
+    assert remaining == []
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "batch/cache.py"), "exec"), ns)
+    Sig = ns["Sig"]
+    assert ns["resolve_hash"](Sig("abc")) == "abc"  # type: ignore[operator]
+    assert ns["resolve_hash"](Sig(None)) == "computed"  # type: ignore[operator]
+    assert ns["collect_pending"]([Sig("abc"), Sig(None)]) == [Sig(None)]  # type: ignore[operator]
+
 
 

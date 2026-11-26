@@ -51,8 +51,16 @@ from nominal_refactor_advisor.codemod_selection_context import (
 from nominal_refactor_advisor.codemod_selector_models import SourceRewriteTarget
 from nominal_refactor_advisor.codemod_source_edits import (
     NominalSourceEdit,
+    PhysicalSourceEdit,
+    SourceInsertion,
+    SourceLineSpan,
+    SourceSpanDeletion,
     SourceTextGeometry,
     SourceTextSpanReplacement,
+)
+from nominal_refactor_advisor.codemod_spacing import (
+    SourceInsertionBoundary,
+    SourceInsertionLayer,
 )
 from nominal_refactor_advisor.models import RefactorFinding
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
@@ -2267,6 +2275,82 @@ def _class_append_span(
     return end, end, text
 
 
+def _class_append_edits(
+    file_path: str,
+    geometry: SourceTextGeometry,
+    node: ast.ClassDef,
+    member_source: str,
+    *,
+    member_names: tuple[str, ...],
+    rationale: str,
+) -> tuple[PhysicalSourceEdit, ...]:
+    """Emit commutative class-member insertion edits for appending `member_source` onto `node`."""
+
+    last = node.body[-1]
+    _start, end = geometry.required_node_offsets(last)
+    last_end_line = geometry.line_number_for_offset(max(0, end - 1))
+    logical_lines = geometry.logical_lines
+    if (
+        last.lineno == node.lineno
+        or last_end_line < 1
+        or last_end_line > len(logical_lines)
+        or not logical_lines[last_end_line - 1].endswith("\n")
+    ):
+        start, stop, text = _class_append_span(geometry, node, member_source)
+        return (
+            geometry.nominal_edit(
+                file_path=file_path,
+                replacements=(
+                    SourceTextSpanReplacement.from_offsets(
+                        start_offset=start,
+                        end_offset=stop,
+                        replacement_source=text,
+                    ),
+                ),
+                rationale=rationale,
+            ),
+        )
+
+    indent = " " * last.col_offset
+    body_lines = tuple(
+        f"{indent}{line}\n" if line else "\n"
+        for line in member_source.splitlines()
+    )
+    is_placeholder_pass = isinstance(last, ast.Pass) and (
+        len(node.body) == 1
+        or (len(node.body) == 2 and _is_docstring_stmt(node.body[0]))
+    )
+    if is_placeholder_pass:
+        pass_line = last.lineno
+        return (
+            SourceSpanDeletion(
+                file_path=file_path,
+                span=SourceLineSpan(pass_line, pass_line),
+                rationale=rationale,
+            ),
+            SourceInsertion(
+                file_path=file_path,
+                insertion_line=pass_line + 1,
+                inserted_lines=body_lines,
+                leading_boundary=SourceInsertionBoundary.ONE_BLANK_LINE,
+                layer=SourceInsertionLayer.CLASS_MEMBER,
+                declared_member_names=member_names,
+                rationale=rationale,
+            ),
+        )
+    return (
+        SourceInsertion(
+            file_path=file_path,
+            insertion_line=last_end_line + 1,
+            inserted_lines=("\n", *body_lines),
+            leading_boundary=SourceInsertionBoundary.ONE_BLANK_LINE,
+            layer=SourceInsertionLayer.CLASS_MEMBER,
+            declared_member_names=member_names,
+            rationale=rationale,
+        ),
+    )
+
+
 @dataclass(frozen=True)
 class ResolvedTargetArm:
     """One arm resolved to its scanned target classes and rewritten method body."""
@@ -2744,7 +2828,7 @@ class TypeTestDispatchProof:
             self.site.render_call_replacement(call, line_indent),
         )
 
-        # 2. Base method and per-arm overrides.
+        # 2. Base method and per-arm overrides (commutative class-member insertions).
         base_method = _render_method(
             self.site.kind,
             self.method_name,
@@ -2753,10 +2837,16 @@ class TypeTestDispatchProof:
             is_async=self.is_async,
             docstring=self.docstring,
         )
-        add_span(
-            self.base.file_path,
-            *_class_append_span(geometry(self.base.file_path), self.base.node, base_method),
-        )
+        member_edits: list[NominalSourceEdit] = [
+            *_class_append_edits(
+                self.base.file_path,
+                geometry(self.base.file_path),
+                self.base.node,
+                base_method,
+                member_names=(self.method_name,),
+                rationale=rationale,
+            )
+        ]
         for resolved_arm in self.arms:
             arm_method = _render_method(
                 self.site.kind,
@@ -2766,17 +2856,22 @@ class TypeTestDispatchProof:
                 is_async=self.is_async,
             )
             for target_cls in resolved_arm.targets:
-                add_span(
-                    target_cls.file_path,
-                    *_class_append_span(
-                        geometry(target_cls.file_path), target_cls.node, arm_method
-                    ),
+                member_edits.extend(
+                    _class_append_edits(
+                        target_cls.file_path,
+                        geometry(target_cls.file_path),
+                        target_cls.node,
+                        arm_method,
+                        member_names=(self.method_name,),
+                        rationale=rationale,
+                    )
                 )
 
         # 3. Cross-module imports for moved bodies and obsolete-import cleanup at consumer.
         parsed_source = snapshot.parsed_module_for_source_path(self.source_path)
         local_exclusions = frozenset((self.site.kind.receiver, *param_names))
         extra_edits: list[NominalSourceEdit] = [
+            *member_edits,
             *_cross_module_imports_for_body(
                 snapshot,
                 parsed_source,

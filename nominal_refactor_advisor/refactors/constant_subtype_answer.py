@@ -96,7 +96,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _always_void_terminates,
     _analyze_arm_bodies,
     _body_without_docstring,
-    _class_append_span,
+    _class_append_edits,
     _cross_module_imports_for_body,
     _ends_with_continue_only,
     _has_any_return,
@@ -2147,7 +2147,7 @@ class PushConstantSubtypeAnswerOperation(RepositorySourceReprovedOperation):
         def add_span(file_path: str, start: int, end: int, text: str) -> None:
             replacements_by_file.setdefault(file_path, []).append((start, end, text))
 
-        appended_by_class: dict[str, tuple[ResolvedClassTarget, list[str]]] = {}
+        appended_by_class: dict[str, tuple[ResolvedClassTarget, list[tuple[str, str]]]] = {}
         extra_edits: list[NominalSourceEdit] = []
         for proof in proofs:
             source_geom = geometry(proof.source_path)
@@ -2155,7 +2155,7 @@ class PushConstantSubtypeAnswerOperation(RepositorySourceReprovedOperation):
             add_span(proof.source_path, start, end, replacement)
             for sym, target_cls, rendered in proof.appended_methods(snapshot, source_geom):
                 bucket = appended_by_class.setdefault(sym, (target_cls, []))
-                bucket[1].append(rendered)
+                bucket[1].append((proof.method_name, rendered))
             extra_edits.extend(proof.cross_module_import_edits(snapshot, rationale))
 
         dropped_by_file: dict[str, list[ast.AST]] = {}
@@ -2166,12 +2166,17 @@ class PushConstantSubtypeAnswerOperation(RepositorySourceReprovedOperation):
                 continue
             if decl_entry is None and appended_entry is not None:
                 target_cls, methods = appended_entry
-                start, end, text = _class_append_span(
-                    geometry(target_cls.file_path),
-                    target_cls.node,
-                    "\n\n".join(methods),
-                )
-                add_span(target_cls.file_path, start, end, text)
+                for method_name, rendered in methods:
+                    extra_edits.extend(
+                        _class_append_edits(
+                            target_cls.file_path,
+                            geometry(target_cls.file_path),
+                            target_cls.node,
+                            rendered,
+                            member_names=(method_name,),
+                            rationale=rationale,
+                        )
+                    )
             elif decl_entry is not None and appended_entry is None:
                 target_cls, stmt = decl_entry
                 deletion = StatementDeletionSource(
@@ -2197,7 +2202,7 @@ class PushConstantSubtypeAnswerOperation(RepositorySourceReprovedOperation):
                     target_cls.file_path,
                     line_start,
                     end,
-                    _indent_methods(methods, indent),
+                    _indent_methods([rendered for _name, rendered in methods], indent),
                 )
                 dropped_by_file.setdefault(target_cls.file_path, []).append(stmt)
 

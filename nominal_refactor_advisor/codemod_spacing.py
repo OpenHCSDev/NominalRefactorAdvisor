@@ -7,14 +7,20 @@ from enum import StrEnum
 class SourceInsertionLayer(StrEnum):
     """Where an insertion's lines stand among the others at its line: a module's
     imports head it, so they lead every body insertion sharing their line,
-    whichever edit the plan produced first."""
+    whichever edit the plan produced first. Independent class-member insertions
+    commute within their layer and sort canonically by declared member name."""
 
     IMPORTS = "imports"
     BODY = "body"
+    CLASS_MEMBER = "class_member"
 
     @property
     def rank(self) -> int:
         return tuple(type(self)).index(self)
+
+    @property
+    def commutes_within_layer(self) -> bool:
+        return self is SourceInsertionLayer.CLASS_MEMBER
 
 
 class SourceInsertionBoundary(StrEnum):
