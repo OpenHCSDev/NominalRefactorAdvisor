@@ -375,9 +375,7 @@ class CapturedReferenceResolution(NativeScalarValueABC):
 
     def resolve_annotation_mutation(self, context, mutation, owner, occurrence, query):
         """Resolve an annotation mutation against this captured namespace."""
-        if not isinstance(self, NamespaceEvidenceABC):
-            return OpenCapturedReference(CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation)
-        return query.matching_item_write(owner, occurrence) if query.namespace is self and query.key == mutation.target.annotation_name else None
+        return OpenCapturedReference(CapturedReferenceViolation.UNKNOWN_RECEIVER, mutation)
 
 
 class InstanceProtocolEvidenceABC(CapturedReferenceResolution):
@@ -831,6 +829,9 @@ class NamespaceEvidenceABC(ABC):
         fresh-after-initial creation relation, not from representation type.
         """
         raise NotImplementedError
+
+    def resolve_annotation_mutation(self, context, mutation, owner, occurrence, query):
+        return query.matching_item_write(owner, occurrence) if query.namespace is self and query.key == mutation.target.annotation_name else None
 
 
 class RecordedNamespace(NamespaceEvidenceABC, ABC):

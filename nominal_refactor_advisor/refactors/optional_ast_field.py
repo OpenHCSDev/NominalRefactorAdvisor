@@ -2375,6 +2375,11 @@ class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
         """The values one node's field holds: none when absent."""
         raise NotImplementedError
 
+    @classmethod
+    def _is_variadic_arg_filter(cls, iterable: ast.expr, caller: OptionalAstFieldAuthority) -> bool:
+        """Whether `iterable` filters non-None `vararg`/`kwarg` of a proved `ast.arguments`."""
+        return False
+
 
 class CollectionDecoder(OptionalAstFieldDecoder, ABC):
     """A decoder that also splits a collection into present and absent elements."""
@@ -2505,6 +2510,17 @@ class DeclaredAnnotationDecoder(CollectionDecoder):
     @classmethod
     def single(cls, subject_source: str) -> str:
         return f"declared_annotations({subject_source})"
+
+    @classmethod
+    def _is_variadic_arg_filter(cls, iterable: ast.expr, caller: OptionalAstFieldAuthority) -> bool:
+        match iterable:
+            case ast.Call(func=ast.Name(id='filter'), args=[ast.Constant(value=None), ast.Tuple(elts=[ast.Attribute(value=owner1, attr='vararg' | 'kwarg'), ast.Attribute(value=owner2, attr='vararg' | 'kwarg')])], keywords=[]) if _same_expression(owner1, owner2) and caller.classes_of(owner1, iterable) == frozenset(('arguments',)):
+                return True
+            case ast.IfExp(test=test, body=ast.Tuple(elts=[ast.Attribute(value=owner, attr='vararg' | 'kwarg') as attr]), orelse=ast.Tuple(elts=[])) if (_same_expression(test, attr) or (isinstance(test, ast.Compare) and _same_expression(test.left, attr) and (len(test.ops) == 1) and isinstance(test.ops[0], ast.IsNot) and (len(test.comparators) == 1) and isinstance(test.comparators[0], ast.Constant) and (test.comparators[0].value is None))) and caller.classes_of(owner, iterable) == frozenset(('arguments',)):
+                return True
+            case ast.GeneratorExp(elt=ast.Name(id=elt_name), generators=[ast.comprehension(target=ast.Name(id=target_name), iter=ast.Tuple(elts=[ast.Attribute(value=owner1, attr='vararg' | 'kwarg'), ast.Attribute(value=owner2, attr='vararg' | 'kwarg')]), ifs=[ast.Compare(left=ast.Name(id=if_name), ops=[ast.IsNot()], comparators=[ast.Constant(value=None)])])]) if elt_name == target_name == if_name and _same_expression(owner1, owner2) and (caller.classes_of(owner1, iterable) == frozenset(('arguments',))):
+                return True
+        return False
 
 
 class VariadicParameterDecoder(OptionalAstFieldDecoder):
@@ -3520,71 +3536,7 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
     def _is_variadic_arg_filter(self, iterable: ast.expr) -> bool:
         """Whether `iterable` filters non-None `vararg`/`kwarg` of a proved `ast.arguments`."""
 
-        if self.decoder is not DeclaredAnnotationDecoder:
-            return False
-        match iterable:
-            case ast.Call(
-                func=ast.Name(id="filter"),
-                args=[
-                    ast.Constant(value=None),
-                    ast.Tuple(
-                        elts=[
-                            ast.Attribute(value=owner1, attr="vararg" | "kwarg"),
-                            ast.Attribute(value=owner2, attr="vararg" | "kwarg"),
-                        ]
-                    ),
-                ],
-                keywords=[],
-            ) if _same_expression(owner1, owner2) and (
-                self.classes_of(owner1, iterable) == frozenset(("arguments",))
-            ):
-                return True
-            case ast.IfExp(
-                test=test,
-                body=ast.Tuple(
-                    elts=[ast.Attribute(value=owner, attr="vararg" | "kwarg") as attr]
-                ),
-                orelse=ast.Tuple(elts=[]),
-            ) if (
-                _same_expression(test, attr)
-                or (
-                    isinstance(test, ast.Compare)
-                    and _same_expression(test.left, attr)
-                    and len(test.ops) == 1
-                    and isinstance(test.ops[0], ast.IsNot)
-                    and len(test.comparators) == 1
-                    and isinstance(test.comparators[0], ast.Constant)
-                    and test.comparators[0].value is None
-                )
-            ) and self.classes_of(owner, iterable) == frozenset(("arguments",)):
-                return True
-            case ast.GeneratorExp(
-                elt=ast.Name(id=elt_name),
-                generators=[
-                    ast.comprehension(
-                        target=ast.Name(id=target_name),
-                        iter=ast.Tuple(
-                            elts=[
-                                ast.Attribute(value=owner1, attr="vararg" | "kwarg"),
-                                ast.Attribute(value=owner2, attr="vararg" | "kwarg"),
-                            ]
-                        ),
-                        ifs=[
-                            ast.Compare(
-                                left=ast.Name(id=if_name),
-                                ops=[ast.IsNot()],
-                                comparators=[ast.Constant(value=None)],
-                            )
-                        ],
-                    )
-                ],
-            ) if (
-                elt_name == target_name == if_name
-                and _same_expression(owner1, owner2)
-                and self.classes_of(owner1, iterable) == frozenset(("arguments",))
-            ):
-                return True
-        return False
+        return self.decoder._is_variadic_arg_filter(iterable, self)
 
     def iterates_elements(self, iterable: ast.expr) -> bool:
         """Whether the iterable is proved a collection of the decoder's elements.

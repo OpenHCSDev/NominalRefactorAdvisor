@@ -1604,9 +1604,7 @@ class CodemodPlanDocument(SourceRewriteReferences, CodemodPlanRoot):
             self,
             recipes=tuple(
                 recipe.with_declared_architecture_guards(
-                    context.recipe_derivation_context(recipe)
-                    if isinstance(context, CodemodSourceSnapshot)
-                    else context
+                    context.context_for_recipe(recipe)
                 )
                 for recipe in self.recipes
             ),
