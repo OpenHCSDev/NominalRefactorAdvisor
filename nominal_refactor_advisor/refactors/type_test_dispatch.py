@@ -311,8 +311,26 @@ class DispatchSite(ABC):
         return False
 
     @property
+    def covers_whole_expression(self) -> bool:
+        """Whether this expression-level dispatch replaces the entire enclosing expression."""
+        return True
+
+    @property
     def reassigned_target(self) -> str | None:
         """Outer local explicitly passed in, rebound/augmented, and returned by the pushed method."""
+        return None
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        """Promote this void branch to return and assign `target_name` when supported."""
+
+        del target_name, arms, default_body, reassigned_target
         return None
 
 
@@ -333,6 +351,10 @@ class PrefixGuardedAndTernaryDispatchSite(TernaryDispatchSite):
     guard_expr: ast.expr
     short_circuit_expr: ast.expr
 
+    @property
+    def covers_whole_expression(self) -> bool:
+        return False
+
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         del line_indent
         return (
@@ -347,6 +369,10 @@ class PrefixGuardedOrTernaryDispatchSite(TernaryDispatchSite):
 
     guard_expr: ast.expr
     short_circuit_expr: ast.expr
+
+    @property
+    def covers_whole_expression(self) -> bool:
+        return False
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         del line_indent
@@ -381,6 +407,10 @@ class BoolOpSuffixDispatchSite(BooleanPredicateDispatchSite):
     """Suffix `isinstance(x, Sub) and/or REST` inside a longer `BoolOp`."""
 
     end_expr: ast.expr
+
+    @property
+    def covers_whole_expression(self) -> bool:
+        return False
 
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         start, _ = geometry.required_node_offsets(self.predicate_expr)
@@ -433,6 +463,79 @@ class StatementDispatchSite(DispatchSite):
     def is_void_method(self) -> bool:
         return True
 
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        return AssigningStatementDispatchSite(
+            subject=self.subject,
+            kind=self.kind,
+            arms=arms,
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=self.test_nodes,
+            replaced_nodes=self.replaced_nodes,
+            target_name=target_name,
+            _reassigned_target=reassigned_target,
+        )
+
+
+@dataclass(frozen=True)
+class AssigningStatementDispatchSite(StatementDispatchSite):
+    """Type-test branch computing or updating one local, replaced by `target = x.method(...)`."""
+
+    target_name: str
+    _reassigned_target: str | None = None
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return False
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return False
+
+    @property
+    def is_void_method(self) -> bool:
+        return False
+
+    @property
+    def reassigned_target(self) -> str | None:
+        return self._reassigned_target
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return f"{self.target_name} = {call_expr}"
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndAssigningDispatchSite(AssigningStatementDispatchSite):
+    """`if PREFIX and [not] TEST: target = ...` replaced by
+    `if PREFIX:\\n    target = x.method(...)`."""
+
+    guard_expr: ast.expr = ast.Constant(value=True)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return (
+            f"if {ast.unparse(self.guard_expr)}:\n"
+            f"{line_indent}    {self.target_name} = {call_expr}"
+        )
+
 
 @dataclass(frozen=True)
 class ReturningStatementDispatchSite(StatementDispatchSite):
@@ -454,6 +557,17 @@ class ReturningStatementDispatchSite(StatementDispatchSite):
         del line_indent
         return f"return {call_expr}"
 
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
+
 
 @dataclass(frozen=True)
 class PrefixGuardedStatementDispatchSite(StatementDispatchSite):
@@ -463,6 +577,66 @@ class PrefixGuardedStatementDispatchSite(StatementDispatchSite):
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         return f"if {ast.unparse(self.guard_expr)}:\n{line_indent}    {call_expr}"
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        return PrefixGuardedAndAssigningDispatchSite(
+            subject=self.subject,
+            kind=self.kind,
+            arms=arms,
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=self.test_nodes,
+            replaced_nodes=self.replaced_nodes,
+            target_name=target_name,
+            _reassigned_target=reassigned_target,
+            guard_expr=self.guard_expr,
+        )
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndReturningDispatchSite(StatementDispatchSite):
+    """Returning `if PREFIX and [not] TEST [and SUFFIX]: return ...` with a trivial pure
+    fallback return replaced by `if PREFIX:\\n    return x.method(...)\\n<fallback>`."""
+
+    guard_expr: ast.expr
+    fallback_return: ast.Return
+
+    @property
+    def checks_local_store_escapes(self) -> bool:
+        return False
+
+    @property
+    def propagates_function_return_type(self) -> bool:
+        return True
+
+    @property
+    def is_void_method(self) -> bool:
+        return False
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return (
+            f"if {ast.unparse(self.guard_expr)}:\n"
+            f"{line_indent}    return {call_expr}\n"
+            f"{line_indent}{ast.unparse(self.fallback_return)}"
+        )
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
 
 
 def _render_indented_statements(
@@ -507,6 +681,17 @@ class PrefixGuardedOrDispatchSite(StatementDispatchSite):
             (f"if {ast.unparse(self.guard_expr)}:", *body_lines, call_line)
         )
 
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
+
 
 @dataclass(frozen=True)
 class OrElseGuardedStatementDispatchSite(StatementDispatchSite):
@@ -526,6 +711,206 @@ class OrElseGuardedStatementDispatchSite(StatementDispatchSite):
                 f"{body_indent}{call_expr}",
             )
         )
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        arms: tuple[TypeTestArm, ...],
+        default_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> DispatchSite | None:
+        del target_name, arms, default_body, reassigned_target
+        return None
+
+
+def _is_trivial_pure_return_expr(expr: ast.expr) -> bool:
+    """Whether `expr` is a pure literal, local name, or small container of them with no calls or attributes."""
+
+    match expr:
+        case ast.Constant() | ast.Name():
+            return True
+        case ast.Tuple(elts=elts) | ast.List(elts=elts) | ast.Set(elts=elts):
+            return all(_is_trivial_pure_return_expr(elt) for elt in elts)
+        case ast.Dict(keys=[]):
+            return True
+    return False
+
+
+def _trivial_pure_return(statements: Sequence[ast.stmt]) -> ast.Return | None:
+    """Return the sole `return` statement when `statements` is one pure, call-free `return`."""
+
+    if len(statements) != 1 or not isinstance(statements[0], ast.Return):
+        return None
+    ret = statements[0]
+    if all(
+        _is_trivial_pure_return_expr(optional_value)
+        for optional_value in optional_values(ret)
+    ):
+        return ret
+    return None
+
+
+def _expr_loads_name(node: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(child, ast.Name)
+        and isinstance(child.ctx, ast.Load)
+        and child.id == name
+        for child in ast.walk(node)
+    )
+
+
+def _assign_targets_name(targets: Sequence[ast.expr], name: str) -> bool:
+    return any(
+        isinstance(child, ast.Name)
+        and isinstance(child.ctx, ast.Store)
+        and child.id == name
+        for target in targets
+        for child in ast.walk(target)
+    )
+
+
+def _definitely_assigns_in_block(stmts: Sequence[ast.stmt], name: str) -> bool:
+    for stmt in stmts:
+        match stmt:
+            case ast.Assign(targets=targets) if _assign_targets_name(targets, name):
+                return True
+            case ast.AnnAssign(target=ast.Name(id=target_name)) if (
+                target_name == name and bool(optional_values(stmt))
+            ):
+                return True
+            case ast.If(body=body, orelse=orelse) if orelse:
+                body_ok = _definitely_assigns_in_block(body, name) or _always_terminates(
+                    body
+                )
+                orelse_ok = _definitely_assigns_in_block(
+                    orelse, name
+                ) or _always_terminates(orelse)
+                if body_ok and orelse_ok:
+                    return True
+    return False
+
+
+def _reads_before_assign_in_block(stmts: Sequence[ast.stmt], name: str) -> bool:
+    for stmt in stmts:
+        match stmt:
+            case ast.Assign(targets=targets, value=val):
+                if _expr_loads_name(val, name):
+                    return True
+                if _assign_targets_name(targets, name):
+                    return False
+            case ast.AnnAssign(target=ast.Name(id=target_name)):
+                for val in optional_values(stmt):
+                    if _expr_loads_name(val, name):
+                        return True
+                    if target_name == name:
+                        return False
+            case ast.AugAssign(target=ast.Name(id=target_name), value=val):
+                if target_name == name or _expr_loads_name(val, name):
+                    return True
+            case ast.If(test=test, body=body, orelse=orelse):
+                if _expr_loads_name(test, name):
+                    return True
+                if _reads_before_assign_in_block(body, name):
+                    return True
+                if orelse and _reads_before_assign_in_block(orelse, name):
+                    return True
+                if (
+                    orelse
+                    and (
+                        _definitely_assigns_in_block(body, name)
+                        or _always_terminates(body)
+                    )
+                    and (
+                        _definitely_assigns_in_block(orelse, name)
+                        or _always_terminates(orelse)
+                    )
+                ):
+                    return False
+            case _:
+                if _expr_loads_name(stmt, name):
+                    return True
+    return False
+
+
+def _is_definitely_bound_before(
+    function: FunctionNode, target_stmt: ast.AST, name: str
+) -> bool:
+    args = function.args
+    param_names = {
+        arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+    }
+    for variadic in variadic_parameters(args):
+        param_names.add(variadic.arg)
+    if name in param_names:
+        return True
+
+    target_id = id(target_stmt)
+
+    def search(stmts: Sequence[ast.stmt], bound: bool) -> bool | None:
+        current = bound
+        for stmt in stmts:
+            if id(stmt) == target_id:
+                return current
+            match stmt:
+                case ast.If(body=body, orelse=orelse):
+                    for branch in (body, orelse):
+                        found = search(branch, current)
+                        if found is not None:
+                            return found
+                case (
+                    ast.For(target=loop_target, body=body, orelse=orelse)
+                    | ast.AsyncFor(target=loop_target, body=body, orelse=orelse)
+                ):
+                    loop_bound = current or _assign_targets_name((loop_target,), name)
+                    found = search(body, loop_bound)
+                    if found is not None:
+                        return found
+                    found = search(orelse, current)
+                    if found is not None:
+                        return found
+                case ast.While(body=body, orelse=orelse):
+                    for branch in (body, orelse):
+                        found = search(branch, current)
+                        if found is not None:
+                            return found
+                case (
+                    ast.With(items=items, body=body)
+                    | ast.AsyncWith(items=items, body=body)
+                ):
+                    with_bound = current or any(
+                        _assign_targets_name((opt,), name)
+                        for item in items
+                        if isinstance((opt := item.optional_vars), ast.expr)
+                    )
+                    found = search(body, with_bound)
+                    if found is not None:
+                        return found
+                case ast.Try(
+                    body=body, handlers=handlers, orelse=orelse, finalbody=finalbody
+                ):
+                    found = search(body, current)
+                    if found is not None:
+                        return found
+                    for handler in handlers:
+                        h_bound = current or handler.name == name
+                        found = search(handler.body, h_bound)
+                        if found is not None:
+                            return found
+                    for branch in (orelse, finalbody):
+                        found = search(branch, current)
+                        if found is not None:
+                            return found
+                case ast.Match(cases=cases):
+                    for case in cases:
+                        found = search(case.body, current)
+                        if found is not None:
+                            return found
+            if not current and _definitely_assigns_in_block((stmt,), name):
+                current = True
+        return None
+
+    return bool(search(function.body, False))
 
 
 def _is_docstring_stmt(statement: ast.stmt) -> bool:
@@ -1298,13 +1683,8 @@ def _extract_compound_if_site(
                     guard_body=tuple(stmt.body),
                 )
             return None
-        # Void `if PREFIX and [not] TEST [and SUFFIX]: body` preserves PREFIX short-circuiting.
-        if (
-            not isinstance(stmt.test.op, ast.And)
-            or stmt.orelse
-            or _has_any_return(stmt.body)
-            or _has_loop_escape(stmt.body)
-        ):
+        # `if PREFIX and [not] TEST [and SUFFIX]: body` preserves PREFIX short-circuiting.
+        if not isinstance(stmt.test.op, ast.And):
             return None
         match_index = None
         matched_test = None
@@ -1325,17 +1705,96 @@ def _extract_compound_if_site(
             else ast.BoolOp(op=ast.And(), values=prefix_values)
         )
         suffix_values = stmt.test.values[match_index + 1 :]
-        if suffix_values:
-            suffix_expr = (
+        suffix_expr: ast.expr | None = (
+            None
+            if not suffix_values
+            else (
                 suffix_values[0]
                 if len(suffix_values) == 1
                 else ast.BoolOp(op=ast.And(), values=suffix_values)
             )
-            hit_body: tuple[ast.stmt, ...] = (
-                ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),
+        )
+        if stmt.orelse:
+            if (
+                _always_terminates(stmt.body)
+                and _has_any_return(stmt.body)
+                and not _has_break_or_continue(stmt.body)
+                and (fallback := _trivial_pure_return(stmt.orelse)) is not None
+            ):
+                hit_body: tuple[ast.stmt, ...] = (
+                    (
+                        ast.If(
+                            test=suffix_expr,
+                            body=list(stmt.body),
+                            orelse=[fallback],
+                        ),
+                    )
+                    if suffix_expr is not None
+                    else tuple(stmt.body)
+                )
+                arm_body, default_body = _polarity_bodies(
+                    matched_test.negated, hit_body, (fallback,)
+                )
+                return PrefixGuardedAndReturningDispatchSite(
+                    subject=matched_test.subject,
+                    kind=matched_test.kind,
+                    arms=(
+                        TypeTestArm(
+                            matched_test.tested_exprs, arm_body, matched_test.exact
+                        ),
+                    ),
+                    default_body=default_body,
+                    is_whole_function=False,
+                    test_nodes=(matched_test.test_node,),
+                    replaced_nodes=(stmt,),
+                    guard_expr=guard_expr,
+                    fallback_return=fallback,
+                )
+            return None
+        tail = container[index + 1 :]
+        if (
+            tail
+            and _always_terminates(stmt.body)
+            and _has_any_return(stmt.body)
+            and not _has_break_or_continue(stmt.body)
+            and (fallback := _trivial_pure_return(tail)) is not None
+        ):
+            hit_body = (
+                (
+                    ast.If(
+                        test=suffix_expr,
+                        body=list(stmt.body),
+                        orelse=[fallback],
+                    ),
+                )
+                if suffix_expr is not None
+                else tuple(stmt.body)
             )
-        else:
-            hit_body = tuple(stmt.body)
+            arm_body, default_body = _polarity_bodies(
+                matched_test.negated, hit_body, (fallback,)
+            )
+            return PrefixGuardedAndReturningDispatchSite(
+                subject=matched_test.subject,
+                kind=matched_test.kind,
+                arms=(
+                    TypeTestArm(
+                        matched_test.tested_exprs, arm_body, matched_test.exact
+                    ),
+                ),
+                default_body=default_body,
+                is_whole_function=False,
+                test_nodes=(matched_test.test_node,),
+                replaced_nodes=tuple(container[index:]),
+                guard_expr=guard_expr,
+                fallback_return=fallback,
+            )
+        if _has_any_return(stmt.body) or _has_loop_escape(stmt.body):
+            return None
+        hit_body = (
+            (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
+            if suffix_expr is not None
+            else tuple(stmt.body)
+        )
         arm_body, default_body = _polarity_bodies(
             matched_test.negated, hit_body, (ast.Pass(),)
         )
@@ -1796,6 +2255,34 @@ def _extract_if_site(
             merged_arms.extend(nxt_arms)
             merged_test_nodes.extend(nxt_test_nodes)
             end_index += 1
+
+        if end_index == len(container) - 1:
+            match container[end_index]:
+                case ast.Return(value=ast.expr() as returned):
+                    trailing: DispatchSite | None = (
+                        _extract_ternary_site(returned, is_whole_return=False)
+                        if isinstance(returned, ast.IfExp)
+                        else _extract_boolean_expr_site(returned, is_whole_return=False)
+                    )
+                    if (
+                        trailing is not None
+                        and trailing.covers_whole_expression
+                        and ast.dump(trailing.subject) == subject_dump
+                        and type(trailing.kind) is type(first_test.kind)
+                    ):
+                        merged_arms.extend(trailing.arms)
+                        merged_test_nodes.extend(trailing.test_nodes)
+                        return _build_statement_site(
+                            first_test,
+                            tuple(merged_arms),
+                            trailing.default_body,
+                            tuple(container[index:]),
+                            container is whole_fn_body and index == 0,
+                            tuple(merged_test_nodes),
+                            container=container,
+                            index=index,
+                            whole_fn_body=whole_fn_body,
+                        )
 
     if end_index > index + 1:
         merged_tail = container[end_index:]
@@ -2458,6 +2945,257 @@ def _extract_ternary_site(
     return None
 
 
+def _node_covers_line(node: ast.AST, line: int | None) -> bool:
+    if line is None:
+        return True
+    start = getattr(node, "lineno", None)
+    if start is None:
+        return False
+    end = getattr(node, "end_lineno", start) or start
+    return start <= line <= end
+
+
+def _extract_multi_test_boolop_site(
+    expr: ast.BoolOp,
+    is_whole_return: bool,
+    test_line: int | None = None,
+) -> BooleanPredicateDispatchSite | None:
+    """Extract multi-arm same-subject `BoolOp` chains (`T1 or (T2 and C)`, `not T1 or T2`,
+    `T1 and not T2`, `not T1 and not T2`) into one polymorphic predicate dispatch."""
+
+    values = expr.values
+    is_or = isinstance(expr.op, ast.Or)
+    for start_idx, first_val in enumerate(values):
+        first = _parse_type_test(first_val)
+        if first is None:
+            continue
+        subject_dump = ast.dump(first.subject)
+        kind_cls = type(first.kind)
+        arms: list[TypeTestArm] = []
+        test_nodes: list[ast.AST] = []
+        end_idx = start_idx + 1
+        default_expr: ast.expr
+
+        if is_or and not first.negated:
+            # `TEST(A) or TEST(B) [or (TEST(C) and COND)] [or REST]`
+            arms.append(
+                TypeTestArm(
+                    first.tested_exprs,
+                    (ast.Return(value=ast.Constant(value=True)),),
+                    first.exact,
+                )
+            )
+            test_nodes.append(first.test_node)
+            while end_idx < len(values):
+                val = values[end_idx]
+                parsed = _parse_type_test(val)
+                if (
+                    parsed is not None
+                    and not parsed.negated
+                    and ast.dump(parsed.subject) == subject_dump
+                    and type(parsed.kind) is kind_cls
+                ):
+                    arms.append(
+                        TypeTestArm(
+                            parsed.tested_exprs,
+                            (ast.Return(value=ast.Constant(value=True)),),
+                            parsed.exact,
+                        )
+                    )
+                    test_nodes.append(parsed.test_node)
+                    end_idx += 1
+                    continue
+                if (
+                    end_idx == len(values) - 1
+                    and isinstance(val, ast.BoolOp)
+                    and isinstance(val.op, ast.And)
+                    and len(val.values) >= 2
+                ):
+                    head = _parse_type_test(val.values[0])
+                    if (
+                        head is not None
+                        and not head.negated
+                        and ast.dump(head.subject) == subject_dump
+                        and type(head.kind) is kind_cls
+                    ):
+                        cond_values = val.values[1:]
+                        cond_expr: ast.expr = (
+                            cond_values[0]
+                            if len(cond_values) == 1
+                            else ast.BoolOp(op=ast.And(), values=cond_values)
+                        )
+                        arms.append(
+                            TypeTestArm(
+                                head.tested_exprs,
+                                (ast.Return(value=cond_expr),),
+                                head.exact,
+                            )
+                        )
+                        test_nodes.append(head.test_node)
+                        end_idx += 1
+                break
+            rest_values = values[end_idx:]
+            default_expr = (
+                ast.Constant(value=False)
+                if not rest_values
+                else (
+                    rest_values[0]
+                    if len(rest_values) == 1
+                    else ast.BoolOp(op=ast.Or(), values=rest_values)
+                )
+            )
+        elif is_or and first.negated:
+            # `not TEST(A) or TEST(B1) [or TEST(B2)...] [or REST]`
+            # Positive overrides have priority over `A` (if `x` is both `A` and `B`, `True` wins).
+            positive_arms: list[TypeTestArm] = []
+            positive_nodes: list[ast.AST] = []
+            while end_idx < len(values):
+                parsed = _parse_type_test(values[end_idx])
+                if (
+                    parsed is not None
+                    and not parsed.negated
+                    and ast.dump(parsed.subject) == subject_dump
+                    and type(parsed.kind) is kind_cls
+                ):
+                    positive_arms.append(
+                        TypeTestArm(
+                            parsed.tested_exprs,
+                            (ast.Return(value=ast.Constant(value=True)),),
+                            parsed.exact,
+                        )
+                    )
+                    positive_nodes.append(parsed.test_node)
+                    end_idx += 1
+                    continue
+                break
+            if not positive_arms:
+                continue
+            rest_values = values[end_idx:]
+            a_expr: ast.expr = (
+                ast.Constant(value=False)
+                if not rest_values
+                else (
+                    rest_values[0]
+                    if len(rest_values) == 1
+                    else ast.BoolOp(op=ast.Or(), values=rest_values)
+                )
+            )
+            arms = [
+                *positive_arms,
+                TypeTestArm(first.tested_exprs, (ast.Return(value=a_expr),), first.exact),
+            ]
+            test_nodes = [*positive_nodes, first.test_node]
+            default_expr = ast.Constant(value=True)
+        elif not is_or and not first.negated:
+            # `TEST(A) and not TEST(B1) [and not TEST(B2)...] [and REST]`
+            # Negated exclusions have priority over `A` (if `x` is both `A` and `B`, `False` wins).
+            neg_arms: list[TypeTestArm] = []
+            neg_nodes: list[ast.AST] = []
+            while end_idx < len(values):
+                parsed = _parse_type_test(values[end_idx])
+                if (
+                    parsed is not None
+                    and parsed.negated
+                    and ast.dump(parsed.subject) == subject_dump
+                    and type(parsed.kind) is kind_cls
+                ):
+                    neg_arms.append(
+                        TypeTestArm(
+                            parsed.tested_exprs,
+                            (ast.Return(value=ast.Constant(value=False)),),
+                            parsed.exact,
+                        )
+                    )
+                    neg_nodes.append(parsed.test_node)
+                    end_idx += 1
+                    continue
+                break
+            if not neg_arms:
+                continue
+            rest_values = values[end_idx:]
+            a_expr = (
+                ast.Constant(value=True)
+                if not rest_values
+                else (
+                    rest_values[0]
+                    if len(rest_values) == 1
+                    else ast.BoolOp(op=ast.And(), values=rest_values)
+                )
+            )
+            arms = [
+                *neg_arms,
+                TypeTestArm(first.tested_exprs, (ast.Return(value=a_expr),), first.exact),
+            ]
+            test_nodes = [*neg_nodes, first.test_node]
+            default_expr = ast.Constant(value=False)
+        else:
+            # `not TEST(A) and not TEST(B) [...] [and REST]`
+            arms.append(
+                TypeTestArm(
+                    first.tested_exprs,
+                    (ast.Return(value=ast.Constant(value=False)),),
+                    first.exact,
+                )
+            )
+            test_nodes.append(first.test_node)
+            while end_idx < len(values):
+                parsed = _parse_type_test(values[end_idx])
+                if (
+                    parsed is not None
+                    and parsed.negated
+                    and ast.dump(parsed.subject) == subject_dump
+                    and type(parsed.kind) is kind_cls
+                ):
+                    arms.append(
+                        TypeTestArm(
+                            parsed.tested_exprs,
+                            (ast.Return(value=ast.Constant(value=False)),),
+                            parsed.exact,
+                        )
+                    )
+                    test_nodes.append(parsed.test_node)
+                    end_idx += 1
+                    continue
+                break
+            rest_values = values[end_idx:]
+            default_expr = (
+                ast.Constant(value=True)
+                if not rest_values
+                else (
+                    rest_values[0]
+                    if len(rest_values) == 1
+                    else ast.BoolOp(op=ast.And(), values=rest_values)
+                )
+            )
+
+        if len(arms) < 2:
+            continue
+        if not any(_node_covers_line(node, test_line) for node in test_nodes):
+            continue
+        default_body = (ast.Return(value=default_expr),)
+        if start_idx == 0:
+            return BooleanPredicateDispatchSite(
+                subject=first.subject,
+                kind=first.kind,
+                arms=tuple(arms),
+                default_body=default_body,
+                is_whole_function=is_whole_return,
+                test_nodes=tuple(test_nodes),
+                predicate_expr=expr,
+            )
+        return BoolOpSuffixDispatchSite(
+            subject=first.subject,
+            kind=first.kind,
+            arms=tuple(arms),
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=tuple(test_nodes),
+            predicate_expr=values[start_idx],
+            end_expr=values[-1],
+        )
+    return None
+
+
 def _extract_boolean_expr_site(
     expr: ast.expr,
     is_whole_return: bool,
@@ -2485,6 +3223,9 @@ def _extract_boolean_expr_site(
         )
     if not isinstance(expr, ast.BoolOp) or len(expr.values) < 2:
         return None
+    multi = _extract_multi_test_boolop_site(expr, is_whole_return, test_line=test_line)
+    if multi is not None:
+        return multi
     match_idx: int | None = None
     matched: ParsedTypeTest | None = None
     for idx, value in enumerate(expr.values):
@@ -2595,7 +3336,10 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                     returned.lineno == test_line
                     or (
                         isinstance(returned, ast.BoolOp)
-                        and any(value.lineno == test_line for value in returned.values)
+                        and any(
+                            _node_covers_line(value, test_line)
+                            for value in returned.values
+                        )
                     )
                 ):
                     is_whole = container is body and len(body) == 1
@@ -4583,6 +5327,125 @@ class NewDispatchMethod(DispatchMethodTarget):
         )
 
 
+def _rewrite_body_for_assigning_target(
+    body: tuple[ast.stmt, ...],
+    target_name: str,
+    *,
+    allow_target_store: bool,
+) -> tuple[ast.stmt, ...] | None:
+    """Transform one arm/default body to return the computed or preserved `target_name`."""
+
+    if _is_pass_only(body):
+        return (ast.Return(value=ast.Name(id=target_name, ctx=ast.Load())),)
+    if _always_terminates(body):
+        if not allow_target_store and target_name in _names_stored_in(body):
+            return None
+        return body
+    if (
+        body
+        and isinstance(body[-1], ast.Assign)
+        and len(body[-1].targets) == 1
+        and isinstance(body[-1].targets[0], ast.Name)
+        and body[-1].targets[0].id == target_name
+        and target_name not in _names_stored_in(body[:-1])
+    ):
+        return (*body[:-1], ast.Return(value=body[-1].value))
+    if not allow_target_store:
+        return None
+    return (*body, ast.Return(value=ast.Name(id=target_name, ctx=ast.Load())))
+
+
+def _upgrade_dispatch_site_to_assigning(
+    function: FunctionNode,
+    site: DispatchSite,
+    escaping: Sequence[str],
+) -> DispatchSite | None:
+    """Promote a void type-test branch assigning one escaping local into `target = x.method(...)`."""
+
+    if len(escaping) != 1:
+        return None
+    target_name = escaping[0]
+    replaced = site.replaced_ast_nodes()
+    if len(replaced) != 1:
+        return None
+    if any(arm.embeds_default or arm.falls_through_to_default for arm in site.arms):
+        return None
+    is_subject_name = (
+        isinstance(site.subject, ast.Name) and site.subject.id == target_name
+    )
+    if not is_subject_name and target_name in ("self", "cls"):
+        return None
+    if any(
+        isinstance(node, (ast.Global, ast.Nonlocal)) and target_name in node.names
+        for node in ast.walk(function)
+    ):
+        return None
+    all_bodies = (*(arm.body for arm in site.arms), site.default_body)
+    if any(
+        isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Del)
+        and node.id == target_name
+        for body in all_bodies
+        for stmt in body
+        for node in ast.walk(stmt)
+    ):
+        return None
+
+    def build(
+        *, allow_target_store: bool, reassigned_target: str | None
+    ) -> DispatchSite | None:
+        new_arms: list[TypeTestArm] = []
+        for arm in site.arms:
+            rewritten = _rewrite_body_for_assigning_target(
+                arm.body, target_name, allow_target_store=allow_target_store
+            )
+            if rewritten is None:
+                return None
+            new_arms.append(
+                TypeTestArm(
+                    arm.tested_exprs,
+                    rewritten,
+                    arm.exact,
+                    alias=arm.alias,
+                    embeds_default=arm.embeds_default,
+                    falls_through_to_default=arm.falls_through_to_default,
+                )
+            )
+        new_default = _rewrite_body_for_assigning_target(
+            site.default_body, target_name, allow_target_store=allow_target_store
+        )
+        if new_default is None:
+            return None
+        return site.with_assigning_target(
+            target_name,
+            tuple(new_arms),
+            new_default,
+            reassigned_target=reassigned_target,
+        )
+
+    # Definite single-target assignment across all arms + default without pre-reads.
+    if (
+        not is_subject_name
+        and not _is_pass_only(site.default_body)
+        and all(
+            _definitely_assigns_in_block(body, target_name) or _always_terminates(body)
+            for body in all_bodies
+        )
+        and not any(
+            _reads_before_assign_in_block(body, target_name) for body in all_bodies
+        )
+    ):
+        return build(allow_target_store=True, reassigned_target=None)
+
+    # Conditional rebind or augassign on an already-bound local (including subject self-rebind).
+    if _is_definitely_bound_before(function, replaced[0], target_name):
+        return build(
+            allow_target_store=not is_subject_name,
+            reassigned_target=None if is_subject_name else target_name,
+        )
+    return None
+
+
 @dataclass(frozen=True)
 class TypeTestDispatchProof:
     """A type test proved safe to push onto a closed scanned class family."""
@@ -4791,6 +5654,24 @@ class TypeTestDispatchProof:
             and not site.arms[0].exact
             and site.arms[0].embeds_default
         )
+        if site.checks_local_store_escapes and not folds_onto_base:
+            replaced_nodes = site.replaced_ast_nodes()
+            if replaced_nodes:
+                stored = _names_stored_in(
+                    tuple(
+                        stmt
+                        for body in (*(arm.body for arm in site.arms), site.default_body)
+                        for stmt in body
+                    )
+                )
+                used_outside = _names_referenced_outside(function, replaced_nodes)
+                escaping = sorted(stored & used_outside)
+                if escaping:
+                    upgraded = _upgrade_dispatch_site_to_assigning(
+                        function, site, escaping
+                    )
+                    if upgraded is not None:
+                        site = upgraded
         checked_arms = () if folds_onto_base else site.arms
         checked_arm_symbols: list[tuple[str, ...]] = (
             [] if folds_onto_base else resolved_arm_symbols

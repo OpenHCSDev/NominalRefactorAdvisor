@@ -2380,6 +2380,353 @@ def test_does_not_reuse_existing_method_when_subclass_override_diverges(
     assert NeededInput.OWNER_PICK in ev.needs
 
 
+def test_push_type_test_dispatch_prefix_guarded_and_returning(tmp_path: Path) -> None:
+    """`if PREFIX and isinstance(x, Sub) [and SUFFIX]: return ...` with a trivial pure
+    fallback return preserves PREFIX short-circuiting and pushes onto the family."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/cache.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Entry:\n"
+                "    pass\n\n\n"
+                "class LiveEntry(Entry):\n"
+                "    def __init__(self, value: str, ready: bool = True) -> None:\n"
+                "        self.value = value\n"
+                "        self.ready = ready\n\n\n"
+                "class StaleEntry(Entry):\n"
+                "    pass\n\n\n"
+                "def lookup_tail(entry: Entry, active: bool) -> str | None:\n"
+                "    if active and isinstance(entry, LiveEntry):\n"
+                "        return entry.value\n"
+                "    return None\n\n\n"
+                "def lookup_else(entry: Entry, active: bool, default: str) -> str:\n"
+                "    if active and isinstance(entry, LiveEntry) and entry.ready:\n"
+                "        return entry.value\n"
+                "    else:\n"
+                "        return default\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 2
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["lookup_tail"].stable_id,
+                owner="lookup_tail",
+                because="Entry owns live value extraction",
+                name="live_value",
+                judgement="Return live entry value or None.",
+            ),
+            OwnerPick(
+                finding=by_sym["lookup_else"].stable_id,
+                owner="lookup_else",
+                because="Entry owns ready value extraction",
+                name="ready_value",
+                judgement="Return ready live value or default.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied(findings)
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "cache.py").read_text()
+    assert "if active:\n        return entry.live_value()\n    return None" in after
+    assert "if active:\n        return entry.ready_value(default)\n    return default" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    live = ns["LiveEntry"]("ok", True)  # type: ignore[operator]
+    unready = ns["LiveEntry"]("no", False)  # type: ignore[operator]
+    stale = ns["StaleEntry"]()  # type: ignore[operator]
+    assert ns["lookup_tail"](live, True) == "ok"  # type: ignore[operator]
+    assert ns["lookup_tail"](live, False) is None  # type: ignore[operator]
+    assert ns["lookup_tail"](stale, True) is None  # type: ignore[operator]
+    assert ns["lookup_else"](live, True, "fb") == "ok"  # type: ignore[operator]
+    assert ns["lookup_else"](unready, True, "fb") == "fb"  # type: ignore[operator]
+    assert ns["lookup_else"](live, False, "fb") == "fb"  # type: ignore[operator]
+    assert ns["lookup_else"](stale, True, "fb") == "fb"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_push_type_test_dispatch_assigning_statement_and_prefix_guarded(
+    tmp_path: Path,
+) -> None:
+    """Single-target definite-assign, conditional rebind, subject self-rebind,
+    prefix-guarded assign, and AugAssign promote to `target = x.method(...)`,
+    while multi-local escapes remain refused."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/assigning.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Kind:\n"
+                "    pass\n\n\n"
+                "class SpecialKind(Kind):\n"
+                "    def __init__(self, label: str, bonus: int = 2) -> None:\n"
+                "        self.label = label\n"
+                "        self.bonus = bonus\n\n\n"
+                "class PlainKind(Kind):\n"
+                "    pass\n\n\n"
+                "def definite_assign(kind: Kind) -> str:\n"
+                "    if isinstance(kind, SpecialKind):\n"
+                "        tag = kind.label\n"
+                "    else:\n"
+                "        tag = 'plain'\n"
+                "    return f'[{tag}]'\n\n\n"
+                "def conditional_rebind(kind: Kind, upgrade: bool) -> Kind:\n"
+                "    effective = kind\n"
+                "    if isinstance(kind, SpecialKind) and upgrade:\n"
+                "        effective = PlainKind()\n"
+                "    return effective\n\n\n"
+                "def subject_rebind(kind: Kind) -> Kind:\n"
+                "    if isinstance(kind, SpecialKind):\n"
+                "        kind = PlainKind()\n"
+                "    return kind\n\n\n"
+                "def prefix_assign(kind: Kind, enabled: bool) -> str:\n"
+                "    tag = 'init'\n"
+                "    if enabled and isinstance(kind, SpecialKind):\n"
+                "        tag = kind.label\n"
+                "    return tag\n\n\n"
+                "def aug_assign(kind: Kind, total: int) -> int:\n"
+                "    if isinstance(kind, SpecialKind):\n"
+                "        total += kind.bonus\n"
+                "    return total\n\n\n"
+                "def two_escapes(kind: Kind) -> tuple[str, int]:\n"
+                "    a = 'base'\n"
+                "    b = 0\n"
+                "    if isinstance(kind, SpecialKind):\n"
+                "        a = kind.label\n"
+                "        b = kind.bonus\n"
+                "    return a, b\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {
+        "definite_assign",
+        "conditional_rebind",
+        "subject_rebind",
+        "prefix_assign",
+        "aug_assign",
+        "two_escapes",
+    }
+    snap = _snapshot(tmp_path)
+    ev_two = OwnTypeTestDetector().evaluate_recipe_for_finding(by_sym["two_escapes"], snap)
+    assert ev_two.recipe is None
+    assert "assigns outer local(s) a, b" in (ev_two.rejection_reason or "")
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["definite_assign"].stable_id,
+                owner="definite_assign",
+                because="Kind owns tag selection",
+                name="tag_name",
+                judgement="Tag string for this kind.",
+            ),
+            OwnerPick(
+                finding=by_sym["conditional_rebind"].stable_id,
+                owner="conditional_rebind",
+                because="Kind owns effective upgrade",
+                name="effective_kind",
+                judgement="Upgraded kind when enabled.",
+            ),
+            OwnerPick(
+                finding=by_sym["subject_rebind"].stable_id,
+                owner="subject_rebind",
+                because="Kind owns normalization",
+                name="normalized_kind",
+                judgement="Normalized kind instance.",
+            ),
+            OwnerPick(
+                finding=by_sym["prefix_assign"].stable_id,
+                owner="prefix_assign",
+                because="Kind owns override tag",
+                name="override_tag",
+                judgement="Override tag when enabled.",
+            ),
+            OwnerPick(
+                finding=by_sym["aug_assign"].stable_id,
+                owner="aug_assign",
+                because="Kind owns total contribution",
+                name="add_bonus",
+                judgement="Accumulate kind bonus into total.",
+            ),
+        ),
+    )
+    pushable = [
+        by_sym[name]
+        for name in (
+            "definite_assign",
+            "conditional_rebind",
+            "subject_rebind",
+            "prefix_assign",
+            "aug_assign",
+        )
+    ]
+    picked, _ = picks.applied(pushable)
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 5
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "assigning.py").read_text()
+    assert "tag = kind.tag_name()" in after
+    assert "effective = kind.effective_kind(upgrade, effective)" in after
+    assert "kind = kind.normalized_kind()" in after
+    assert "if enabled:\n        tag = kind.override_tag(tag)" in after
+    assert "total = kind.add_bonus(total)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    sp = ns["SpecialKind"]("hi", 5)  # type: ignore[operator]
+    pl = ns["PlainKind"]()  # type: ignore[operator]
+    assert ns["definite_assign"](sp) == "[hi]"  # type: ignore[operator]
+    assert ns["definite_assign"](pl) == "[plain]"  # type: ignore[operator]
+    assert isinstance(ns["conditional_rebind"](sp, True), ns["PlainKind"])  # type: ignore[arg-type,operator]
+    assert ns["conditional_rebind"](sp, False) is sp  # type: ignore[operator]
+    assert ns["conditional_rebind"](pl, True) is pl  # type: ignore[operator]
+    assert isinstance(ns["subject_rebind"](sp), ns["PlainKind"])  # type: ignore[arg-type,operator]
+    assert ns["subject_rebind"](pl) is pl  # type: ignore[operator]
+    assert ns["prefix_assign"](sp, True) == "hi"  # type: ignore[operator]
+    assert ns["prefix_assign"](sp, False) == "init"  # type: ignore[operator]
+    assert ns["prefix_assign"](pl, True) == "init"  # type: ignore[operator]
+    assert ns["aug_assign"](sp, 10) == 15  # type: ignore[operator]
+    assert ns["aug_assign"](pl, 10) == 10  # type: ignore[operator]
+    remaining = _findings(tmp_path)
+    assert [f.primary_evidence.symbol for f in remaining] == ["two_escapes"]
+
+
+def test_push_type_test_dispatch_multi_test_boolop(tmp_path: Path) -> None:
+    """Multi-arm `BoolOp` chains (`A or (B and C)`, `not A or B`, `A and not B`)
+    collapse all same-subject tests into one polymorphic predicate dispatch."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/moves.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Move:\n"
+                "    pass\n\n\n"
+                "class ExtractMixin(Move):\n"
+                "    pass\n\n\n"
+                "class ComposeExisting(Move):\n"
+                "    pass\n\n\n"
+                "class OtherMove(Move):\n"
+                "    pass\n\n\n"
+                "class Decl:\n"
+                "    pass\n\n\n"
+                "class AnswerFree(Decl):\n"
+                "    pass\n\n\n"
+                "class AnswerDecl(Decl):\n"
+                "    pass\n\n\n"
+                "class MixedDecl(AnswerDecl, AnswerFree):\n"
+                "    pass\n\n\n"
+                "class PlainDecl(Decl):\n"
+                "    pass\n\n\n"
+                "class Node:\n"
+                "    pass\n\n\n"
+                "class BranchNode(Node):\n"
+                "    pass\n\n\n"
+                "class ExcludedBranch(BranchNode):\n"
+                "    pass\n\n\n"
+                "def allows_move(move: type[Move], has_conflict: bool) -> bool:\n"
+                "    return move is ExtractMixin or (move is ComposeExisting and not has_conflict)\n\n\n"
+                "def contributes_to(owner: type[Decl]) -> bool:\n"
+                "    return not issubclass(owner, AnswerFree) or issubclass(owner, AnswerDecl)\n\n\n"
+                "def included_branch(node: Node) -> bool:\n"
+                "    return isinstance(node, BranchNode) and not isinstance(node, ExcludedBranch)\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    assert len(findings) == 3
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 3
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "moves.py").read_text()
+    assert "return move.allows_move(has_conflict)" in after
+    assert "return owner.contributes_to()" in after
+    assert "return node.included_branch()" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["allows_move"](ns["ExtractMixin"], True) is True  # type: ignore[operator]
+    assert ns["allows_move"](ns["ComposeExisting"], False) is True  # type: ignore[operator]
+    assert ns["allows_move"](ns["ComposeExisting"], True) is False  # type: ignore[operator]
+    assert ns["allows_move"](ns["OtherMove"], False) is False  # type: ignore[operator]
+    assert ns["contributes_to"](ns["PlainDecl"]) is True  # type: ignore[operator]
+    assert ns["contributes_to"](ns["AnswerFree"]) is False  # type: ignore[operator]
+    assert ns["contributes_to"](ns["AnswerDecl"]) is True  # type: ignore[operator]
+    assert ns["contributes_to"](ns["MixedDecl"]) is True  # type: ignore[operator]
+    assert ns["included_branch"](ns["Node"]()) is False  # type: ignore[operator]
+    assert ns["included_branch"](ns["BranchNode"]()) is True  # type: ignore[operator]
+    assert ns["included_branch"](ns["ExcludedBranch"]()) is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_push_type_test_dispatch_absorbs_trailing_boolean_return(tmp_path: Path) -> None:
+    """`if x is A: return E1; return x is B and E2` absorbs the trailing same-subject
+    boolean return into one whole-function dispatch executable without OWNER_PICK."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/plain.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Move:\n"
+                "    pass\n\n\n"
+                "class ExtractMixin(Move):\n"
+                "    pass\n\n\n"
+                "class ComposeExisting(Move):\n"
+                "    pass\n\n\n"
+                "class OtherMove(Move):\n"
+                "    pass\n\n\n"
+                "def is_plain(move: type[Move], owner: str | None) -> bool:\n"
+                "    if move is ExtractMixin:\n"
+                "        return True\n"
+                "    return move is ComposeExisting and owner is not None\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "plain.py").read_text()
+    assert "return move.is_plain(owner)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["is_plain"](ns["ExtractMixin"], None) is True  # type: ignore[operator]
+    assert ns["is_plain"](ns["ComposeExisting"], "ok") is True  # type: ignore[operator]
+    assert ns["is_plain"](ns["ComposeExisting"], None) is False  # type: ignore[operator]
+    assert ns["is_plain"](ns["OtherMove"], "ok") is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+
 
 
 

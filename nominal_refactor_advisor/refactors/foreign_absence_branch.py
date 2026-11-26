@@ -79,22 +79,26 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _body_without_docstring,
     _class_append_edits,
     _cross_module_imports_for_body,
+    _definitely_assigns_in_block,
     _ends_with_continue_only,
     _has_any_return,
     _has_break_or_continue,
     _has_loop_escape,
     _has_non_continue_loop_escape,
     _has_value_return,
+    _is_definitely_bound_before,
     _is_pure_subject,
     _names_referenced_outside,
     _names_stored_in,
     _normalized_body_dumps,
     _outer_receiver_aliases,
+    _reads_before_assign_in_block,
     _render_indented_statements,
     _render_method,
     _rewrite_loop_continues_to_returns,
     _rewrite_subject_to_receiver,
     _statement_list_children,
+    _trivial_pure_return,
 )
 
 NON_CONCRETE_OWNER_BASES = frozenset(
@@ -204,35 +208,6 @@ def _is_trivial_constant_expr(expr: ast.expr) -> bool:
         case ast.Tuple(elts=[]) | ast.List(elts=[]) | ast.Set(elts=[]) | ast.Dict(keys=[]):
             return True
     return False
-
-
-def _is_trivial_pure_return_expr(expr: ast.expr) -> bool:
-    """Whether `expr` is a pure literal, local name, or small container of them with no calls or attributes."""
-
-    match expr:
-        case ast.Constant() | ast.Name():
-            return True
-        case ast.Tuple(elts=elts) | ast.List(elts=elts) | ast.Set(elts=elts):
-            return all(_is_trivial_pure_return_expr(elt) for elt in elts)
-        case ast.Dict(keys=[]):
-            return True
-    return False
-
-
-def _trivial_pure_return(statements: Sequence[ast.stmt]) -> ast.Return | None:
-    """Return the sole `return` statement when `statements` is one pure, call-free `return`."""
-
-    if len(statements) != 1 or not isinstance(statements[0], ast.Return):
-        return None
-    ret = statements[0]
-    if all(
-        (
-            _is_trivial_pure_return_expr(optional_value)
-            for optional_value in optional_values(ret)
-        )
-    ):
-        return ret
-    return None
 
 
 def _replace_trailing_continue_with_return(
@@ -1605,152 +1580,6 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
             f"Push foreign absence branch on `{ast.unparse(proof.site.subject)}` in "
             f"`{proof.function.name}` onto `{proof.owner.qualname}.{self.method_name}`."
         )
-
-
-def _expr_loads_name(node: ast.AST, name: str) -> bool:
-    return any(
-        isinstance(child, ast.Name)
-        and isinstance(child.ctx, ast.Load)
-        and child.id == name
-        for child in ast.walk(node)
-    )
-
-
-def _assign_targets_name(targets: Sequence[ast.expr], name: str) -> bool:
-    return any(
-        isinstance(child, ast.Name)
-        and isinstance(child.ctx, ast.Store)
-        and child.id == name
-        for target in targets
-        for child in ast.walk(target)
-    )
-
-
-def _definitely_assigns_in_block(stmts: Sequence[ast.stmt], name: str) -> bool:
-    for stmt in stmts:
-        match stmt:
-            case ast.Assign(targets=targets) if _assign_targets_name(targets, name):
-                return True
-            case ast.AnnAssign(target=ast.Name(id=target_name)) if (
-                target_name == name and bool(optional_values(stmt))
-            ):
-                return True
-            case ast.If(body=body, orelse=orelse) if orelse:
-                body_ok = _definitely_assigns_in_block(body, name) or _always_terminates(body)
-                orelse_ok = _definitely_assigns_in_block(orelse, name) or _always_terminates(orelse)
-                if body_ok and orelse_ok:
-                    return True
-    return False
-
-
-def _reads_before_assign_in_block(stmts: Sequence[ast.stmt], name: str) -> bool:
-    for stmt in stmts:
-        match stmt:
-            case ast.Assign(targets=targets, value=val):
-                if _expr_loads_name(val, name):
-                    return True
-                if _assign_targets_name(targets, name):
-                    return False
-            case ast.AnnAssign(target=ast.Name(id=target_name)):
-                for val in optional_values(stmt):
-                    if _expr_loads_name(val, name):
-                        return True
-                    if target_name == name:
-                        return False
-            case ast.AugAssign(target=ast.Name(id=target_name), value=val):
-                if target_name == name or _expr_loads_name(val, name):
-                    return True
-            case ast.If(test=test, body=body, orelse=orelse):
-                if _expr_loads_name(test, name):
-                    return True
-                if _reads_before_assign_in_block(body, name):
-                    return True
-                if orelse and _reads_before_assign_in_block(orelse, name):
-                    return True
-                if (
-                    orelse
-                    and (_definitely_assigns_in_block(body, name) or _always_terminates(body))
-                    and (_definitely_assigns_in_block(orelse, name) or _always_terminates(orelse))
-                ):
-                    return False
-            case _:
-                if _expr_loads_name(stmt, name):
-                    return True
-    return False
-
-
-def _is_definitely_bound_before(
-    function: FunctionNode, target_stmt: ast.AST, name: str
-) -> bool:
-    args = function.args
-    param_names = {
-        arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
-    }
-    for variadic in variadic_parameters(args):
-        param_names.add(variadic.arg)
-    if name in param_names:
-        return True
-
-    target_id = id(target_stmt)
-
-    def search(stmts: Sequence[ast.stmt], bound: bool) -> bool | None:
-        current = bound
-        for stmt in stmts:
-            if id(stmt) == target_id:
-                return current
-            match stmt:
-                case ast.If(body=body, orelse=orelse):
-                    for branch in (body, orelse):
-                        found = search(branch, current)
-                        if found is not None:
-                            return found
-                case ast.For(target=loop_target, body=body, orelse=orelse) | ast.AsyncFor(
-                    target=loop_target, body=body, orelse=orelse
-                ):
-                    loop_bound = current or _assign_targets_name((loop_target,), name)
-                    found = search(body, loop_bound)
-                    if found is not None:
-                        return found
-                    found = search(orelse, current)
-                    if found is not None:
-                        return found
-                case ast.While(body=body, orelse=orelse):
-                    for branch in (body, orelse):
-                        found = search(branch, current)
-                        if found is not None:
-                            return found
-                case ast.With(items=items, body=body) | ast.AsyncWith(items=items, body=body):
-                    with_bound = current or any(
-                        _assign_targets_name((opt,), name)
-                        for item in items
-                        if isinstance((opt := item.optional_vars), ast.expr)
-                    )
-                    found = search(body, with_bound)
-                    if found is not None:
-                        return found
-                case ast.Try(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody):
-                    found = search(body, current)
-                    if found is not None:
-                        return found
-                    for handler in handlers:
-                        h_bound = current or handler.name == name
-                        found = search(handler.body, h_bound)
-                        if found is not None:
-                            return found
-                    for branch in (orelse, finalbody):
-                        found = search(branch, current)
-                        if found is not None:
-                            return found
-                case ast.Match(cases=cases):
-                    for case in cases:
-                        found = search(case.body, current)
-                        if found is not None:
-                            return found
-            if not current and _definitely_assigns_in_block((stmt,), name):
-                current = True
-        return None
-
-    return bool(search(function.body, False))
 
 
 def _upgrade_to_assigning_site(
