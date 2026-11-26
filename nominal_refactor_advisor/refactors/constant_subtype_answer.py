@@ -82,6 +82,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     FunctionEnclosure,
     FunctionNode,
     InstanceDispatchKind,
+    OrElseGuardedStatementDispatchSite,
     PrefixGuardedOrDispatchSite,
     PrefixGuardedStatementDispatchSite,
     ReturningStatementDispatchSite,
@@ -97,11 +98,12 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _cross_module_imports_for_body,
     _ends_with_continue_only,
     _has_any_return,
-    _has_loop_escape,
+    _has_non_continue_loop_escape,
     _has_value_return,
     _is_pure_subject,
     _outer_receiver_alias,
     _render_method,
+    _rewrite_loop_continues_to_returns,
     _rewrite_subject_to_receiver,
     _statement_list_children,
     _strip_trailing_bare_return,
@@ -131,24 +133,6 @@ class AnswerBranchSite:
 
     dispatch: DispatchSite
     arm_values: tuple[ConstantValue, ...]
-
-
-@dataclass(frozen=True)
-class OrElseGuardedStatementDispatchSite(StatementDispatchSite):
-    """Void `if PREFIX or [not] x.flag: body` replaced by `if PREFIX:\\n    body\\nelse:\\n    x.method(...)`."""
-
-    guard_expr: ast.expr
-    guard_body: tuple[ast.stmt, ...]
-
-    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
-        body_indent = f"{line_indent}    "
-        body_text = _render_block_at_indent(self.guard_body, body_indent)
-        return (
-            f"if {ast.unparse(self.guard_expr)}:\n"
-            f"{body_indent}{body_text}\n"
-            f"{line_indent}else:\n"
-            f"{body_indent}{call_expr}"
-        )
 
 
 def _extract_answer_read(expr: ast.expr, member_name: str) -> ast.expr | None:
@@ -382,9 +366,10 @@ def _extract_compound_answer_if(
                 in_loop_body
                 and tail
                 and _ends_with_continue_only(stmt.body)
-                and not _has_loop_escape(tail)
+                and not _has_non_continue_loop_escape(tail)
             ):
                 stripped = _strip_trailing_continue(stmt.body)
+                rewritten_tail = _rewrite_loop_continues_to_returns(tail)
                 fallback_body = (
                     (
                         ast.If(
@@ -392,10 +377,10 @@ def _extract_compound_answer_if(
                             body=[*stmt.body[:-1], ast.Return(value=None)],
                             orelse=[],
                         ),
-                        *tail,
+                        *rewritten_tail,
                     )
                     if suffix_expr is not None
-                    else tuple(tail)
+                    else rewritten_tail
                 )
                 arm_body = fallback_body if matched.negated else stripped
                 default_body = stripped if matched.negated else fallback_body
@@ -561,17 +546,18 @@ def _extract_compound_answer_if(
             in_loop_body
             and tail
             and _ends_with_continue_only(stmt.body)
-            and not _has_loop_escape(tail)
+            and not _has_non_continue_loop_escape(tail)
         ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
             cond_body = (
                 ast.If(
                     test=rest_expr,
                     body=list(_strip_trailing_continue(stmt.body)),
-                    orelse=list(tail),
+                    orelse=list(rewritten_tail),
                 ),
             )
-            arm_body = tuple(tail) if first.negated else cond_body
-            default_body = cond_body if first.negated else tuple(tail)
+            arm_body = rewritten_tail if first.negated else cond_body
+            default_body = cond_body if first.negated else rewritten_tail
             return AnswerBranchSite(
                 StatementDispatchSite(
                     subject=first.subject,
@@ -675,13 +661,14 @@ def _extract_compound_answer_if(
             in_loop_body
             and tail
             and _ends_with_continue_only(stmt.body)
-            and not _has_loop_escape(tail)
+            and not _has_non_continue_loop_escape(tail)
         ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
             arm_body = (
                 ast.If(
                     test=rest_expr,
                     body=list(_strip_trailing_continue(stmt.body)),
-                    orelse=list(tail),
+                    orelse=list(rewritten_tail),
                 ),
             )
             return AnswerBranchSite(
@@ -776,13 +763,14 @@ def _extract_answer_if(
             in_loop_body
             and tail
             and _ends_with_continue_only(stmt.body)
-            and not _has_loop_escape(tail)
+            and not _has_non_continue_loop_escape(tail)
         ):
+            rewritten_tail = _rewrite_loop_continues_to_returns(tail)
             return AnswerBranchSite(
                 StatementDispatchSite(
                     subject=first.subject,
                     kind=kind,
-                    arms=(_dummy_arm(tuple(tail)),),
+                    arms=(_dummy_arm(rewritten_tail),),
                     default_body=_strip_trailing_continue(stmt.body),
                     is_whole_function=False,
                     test_nodes=(first.test_node,),
@@ -869,15 +857,16 @@ def _extract_answer_if(
         in_loop_body
         and tail
         and all(_ends_with_continue_only(arm.body) for arm in arms_list)
-        and not _has_loop_escape(tail)
+        and not _has_non_continue_loop_escape(tail)
     ):
+        rewritten_tail = _rewrite_loop_continues_to_returns(tail)
         stripped_arms = tuple(_dummy_arm(_strip_trailing_continue(arm.body)) for arm in arms_list)
         return AnswerBranchSite(
             StatementDispatchSite(
                 subject=first.subject,
                 kind=kind,
                 arms=stripped_arms,
-                default_body=tuple(tail),
+                default_body=rewritten_tail,
                 is_whole_function=False,
                 test_nodes=tuple(test_nodes),
                 replaced_nodes=tuple(container[index:]),
