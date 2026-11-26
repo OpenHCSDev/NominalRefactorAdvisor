@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from nominal_refactor_advisor import class_identity_observations
 from nominal_refactor_advisor.analysis import (
     DetectorAnalysisWorkerPlan,
     analyze_path,
@@ -81,9 +80,7 @@ def test_cached_family_batch_loads_from_disk_and_overlap_reuses_it(
     assert len(projections) == len(fresh)
 
 
-def test_declared_identities_uses_disk_family_cache(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_declared_identities_uses_disk_family_cache(tmp_path: Path) -> None:
     root = tmp_path / "pkg"
     cache_dir = tmp_path / "cache"
     _write(
@@ -102,11 +99,13 @@ def test_declared_identities_uses_disk_family_cache(
         first_modules = ParsedModuleSet.of(parse_python_modules(root, cache_dir=cache_dir))
         first_identities = CodemodSourceSnapshot.from_modules(first_modules).declared_identities
 
-    def _fail_scope(*args, **kwargs):
-        del args, kwargs
-        raise AssertionError("warm DeclaredIdentityFamily disk cache should skip collect")
+    family_cache_dir = cache_dir / "collected-family"
+    before_entries = {
+        path.name: (path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in family_cache_dir.glob("*.pickle")
+    }
+    assert len(before_entries) == 2
 
-    monkeypatch.setattr(class_identity_observations, "ModuleReferenceScope", _fail_scope)
     with ScanCache.scope():
         second_modules = ParsedModuleSet.of(parse_python_modules(root, cache_dir=cache_dir))
         assert all(
@@ -118,6 +117,11 @@ def test_declared_identities_uses_disk_family_cache(
             module.has_family_batch(DeclaredIdentityFamily)
             for module in second_modules
         )
+    after_entries = {
+        path.name: (path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in family_cache_dir.glob("*.pickle")
+    }
+    assert after_entries == before_entries
     assert second_identities == first_identities
 
 
