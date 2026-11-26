@@ -907,10 +907,102 @@ def _ordered_definite_bindings(
     return tuple(names), annotations
 
 
+_PURE_BUILTINS: frozenset[str] = frozenset(
+    {
+        "abs",
+        "all",
+        "any",
+        "bool",
+        "dict",
+        "float",
+        "frozenset",
+        "int",
+        "len",
+        "list",
+        "max",
+        "min",
+        "repr",
+        "set",
+        "sorted",
+        "str",
+        "sum",
+        "tuple",
+    }
+)
+
+
+def _is_pure_builtin_call(call: ast.Call) -> bool:
+    return isinstance(call.func, ast.Name) and call.func.id in _PURE_BUILTINS
+
+
+def _is_pure_expr(expr: ast.expr) -> bool:
+    match expr:
+        case ast.Constant() | ast.Name():
+            return True
+        case ast.Attribute(value=inner):
+            return _is_pure_expr(inner)
+        case ast.UnaryOp(operand=operand):
+            return _is_pure_expr(operand)
+        case ast.BinOp(left=left, op=op, right=right):
+            return (
+                not isinstance(op, (ast.Div, ast.FloorDiv, ast.Mod))
+                and _is_pure_expr(left)
+                and _is_pure_expr(right)
+            )
+        case ast.Tuple(elts=elts) | ast.List(elts=elts) | ast.Set(elts=elts):
+            return all(_is_pure_expr(elt) for elt in elts)
+        case ast.Starred(value=inner):
+            return _is_pure_expr(inner)
+        case ast.Dict(keys=keys, values=values):
+            return all(
+                (key is None or _is_pure_expr(key)) and _is_pure_expr(value)
+                for key, value in zip(keys, values, strict=True)
+            )
+        case ast.JoinedStr(values=values):
+            return all(_is_pure_expr(part) for part in values)
+        case ast.FormattedValue(value=value, format_spec=spec):
+            return _is_pure_expr(value) and (spec is None or _is_pure_expr(spec))
+        case ast.GeneratorExp(elt=elt, generators=generators) | ast.ListComp(
+            elt=elt, generators=generators
+        ) | ast.SetComp(elt=elt, generators=generators):
+            return _is_pure_expr(elt) and all(
+                not gen.is_async
+                and _is_pure_expr(gen.iter)
+                and all(_is_pure_expr(cond) for cond in gen.ifs)
+                for gen in generators
+            )
+        case ast.Call(func=func, args=args, keywords=keywords):
+            is_str_join = (
+                isinstance(func, ast.Attribute)
+                and func.attr == "join"
+                and isinstance(func.value, ast.Constant)
+                and isinstance(func.value.value, str)
+                and len(args) == 1
+                and not keywords
+            )
+            if not (_is_pure_builtin_call(expr) or is_str_join):
+                return False
+            return all(_is_pure_expr(arg) for arg in args) and all(
+                _is_pure_expr(kw.value) for kw in keywords
+            )
+    return False
+
+
+def _is_pure_prep_stmt(stmt: ast.stmt) -> bool:
+    match stmt:
+        case ast.Assign(targets=[ast.Name()], value=value):
+            return _is_pure_expr(value)
+        case ast.AnnAssign(target=ast.Name(), value=value) if value is not None:
+            return _is_pure_expr(value)
+    return False
+
+
 def _leading_unconditional_step_expr(
     statement: ast.stmt,
     receiver_name: str,
     restated_calls: frozenset[str],
+    *,
+    scope_statements: Sequence[ast.stmt] | None = None,
 ) -> ast.expr | None:
     """First `self.<step>(...)` (or `await self.<step>(...)`) evaluated unconditionally
     at the start of `statement` before any impure call or short-circuit barrier."""
@@ -978,7 +1070,8 @@ def _leading_unconditional_step_expr(
                     walk(arg)
                 for kw in keywords:
                     walk(kw.value)
-                barrier_hit = True
+                if not _is_pure_builtin_call(node):
+                    barrier_hit = True
             case ast.Return(value=value) | ast.Expr(value=value) | ast.Assign(value=value):
                 walk(value)
             case ast.AnnAssign(value=value):
@@ -1026,9 +1119,11 @@ def _leading_unconditional_step_expr(
     ):
         return None
     target_dump = ast.dump(found, include_attributes=False)
+    checked_roots = scope_statements if scope_statements is not None else (statement,)
     occurrences = sum(
         1
-        for subnode in ast.walk(statement)
+        for root in checked_roots
+        for subnode in ast.walk(root)
         if isinstance(subnode, type(found))
         and ast.dump(subnode, include_attributes=False) == target_dump
     )
@@ -1185,6 +1280,72 @@ class NotImplementedHookDeclaration(HookDeclaration):
 
 
 @dataclass(frozen=True)
+class ReturnTrueHookDeclaration(HookDeclaration):
+    """Concrete declaring method preserves its default behavior when the hook returns `True`."""
+
+    body_line: ClassVar[str] = "return True"
+
+
+@dataclass(frozen=True)
+class ReturnFalseHookDeclaration(HookDeclaration):
+    """Concrete declaring method preserves its default behavior when the hook returns `False`."""
+
+    body_line: ClassVar[str] = "return False"
+
+
+@dataclass(frozen=True)
+class ConcreteMiddleHookDeclaration(HookDeclaration):
+    """Concrete declaring method preserves its own remaining middle body as the default hook."""
+
+    body_line: ClassVar[str] = "pass"
+    middle: tuple[ast.stmt, ...]
+    source: str
+    expr_replacement: tuple[int, ast.expr, str] | None = None
+
+    def render(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        indent: str,
+        method_kind: MethodKind,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams = ExtraHookParams(),
+        preserve_return_annotation: bool = True,
+    ) -> str:
+        header = _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=preserve_return_annotation,
+        )
+        indented_header = "\n".join(
+            f"{indent}{line}" if line.strip() else line
+            for line in header.splitlines()
+        )
+        dec_prefix = "".join(
+            f"{indent}@{dec}\n"
+            for dec in method_kind.hook_decorators(self.abstract_decorators())
+        )
+        inner_indent = f"{indent}    "
+        pieces: list[str] = [f"{dec_prefix}{indented_header}\n"]
+        for index, statement in enumerate(self.middle):
+            if self.expr_replacement is not None and index == self.expr_replacement[0]:
+                _idx, target_expr, var_name = self.expr_replacement
+                pieces.append(
+                    _render_statement_with_expr_replaced(
+                        self.source, statement, target_expr, var_name, inner_indent
+                    )
+                )
+            else:
+                pieces.append(
+                    _statement_source_block(source_lines, statement, inner_indent)
+                )
+        return "".join(pieces)
+
+
+@dataclass(frozen=True)
 class HoistedStepExpression:
     """An identical unconditional leading step call hoisted into a local variable on the template."""
 
@@ -1219,7 +1380,8 @@ class DirectMiddleHookBody(SiblingHookBody):
     """Renders the sibling's remaining middle statements directly."""
 
     middle: tuple[ast.stmt, ...]
-    leading_expr_replacement: tuple[ast.expr, str] | None = None
+    leading_expr_replacement: tuple[int, ast.expr, str] | None = None
+    preserve_return_annotation: bool = True
 
     def render_header(
         self,
@@ -1234,7 +1396,7 @@ class DirectMiddleHookBody(SiblingHookBody):
             hook_name,
             source_lines,
             extra_params=extra_params,
-            preserve_return_annotation=True,
+            preserve_return_annotation=self.preserve_return_annotation,
         )
 
     def render_body(
@@ -1245,11 +1407,136 @@ class DirectMiddleHookBody(SiblingHookBody):
     ) -> list[str]:
         pieces: list[str] = []
         for index, statement in enumerate(self.middle):
-            if index == 0 and self.leading_expr_replacement is not None:
-                target_expr, var_name = self.leading_expr_replacement
+            if (
+                self.leading_expr_replacement is not None
+                and index == self.leading_expr_replacement[0]
+            ):
+                _idx, target_expr, var_name = self.leading_expr_replacement
                 pieces.append(
                     _render_statement_with_expr_replaced(
                         source, statement, target_expr, var_name, inner_indent
+                    )
+                )
+            else:
+                pieces.append(
+                    _statement_source_block(source_lines, statement, inner_indent)
+                )
+        return pieces
+
+
+def _outer_loop_continues(statements: Sequence[ast.stmt]) -> tuple[ast.Continue, ...]:
+    """Every `continue` targeting the enclosing loop (skipping nested loops/defs/classes)."""
+
+    found: list[ast.Continue] = []
+
+    def walk(node: ast.AST) -> None:
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            return
+        if isinstance(node, ast.Continue):
+            found.append(node)
+            return
+        for child in ast.iter_child_nodes(node):
+            walk(child)
+
+    for stmt in statements:
+        walk(stmt)
+    return tuple(found)
+
+
+def _has_outer_loop_break(statements: Sequence[ast.stmt]) -> bool:
+    def walk(node: ast.AST) -> bool:
+        if isinstance(
+            node,
+            (
+                ast.For,
+                ast.AsyncFor,
+                ast.While,
+                ast.FunctionDef,
+                ast.AsyncFunctionDef,
+                ast.ClassDef,
+            ),
+        ):
+            return False
+        if isinstance(node, ast.Break):
+            return True
+        return any(walk(child) for child in ast.iter_child_nodes(node))
+
+    return any(walk(stmt) for stmt in statements)
+
+
+def _render_statement_with_continues_as_returns(
+    source: str,
+    statement: ast.stmt,
+    continues: Sequence[ast.Continue],
+    indent: str,
+) -> str:
+    geometry = SourceTextGeometry(source)
+    stmt_start, stmt_end = geometry.line_span_offsets(
+        statement.lineno, statement.end_lineno or statement.lineno
+    )
+    raw = source[stmt_start:stmt_end]
+    spans: list[tuple[int, int]] = []
+    for cont in continues:
+        c_start, c_end = geometry.required_node_offsets(cont)
+        if stmt_start <= c_start and c_end <= stmt_end:
+            spans.append((c_start - stmt_start, c_end - stmt_start))
+    spliced = raw
+    for rel_start, rel_end in sorted(spans, reverse=True):
+        spliced = f"{spliced[:rel_start]}return{spliced[rel_end:]}"
+    dedented = textwrap.dedent(spliced)
+    rendered_lines = [
+        f"{indent}{line}" if line.strip() else line
+        for line in dedented.splitlines(keepends=True)
+    ]
+    text = "".join(rendered_lines)
+    return text if text.endswith("\n") else f"{text}\n"
+
+
+@dataclass(frozen=True)
+class LoopBodyHookBody(SiblingHookBody):
+    """Renders a shared `for` loop's per-item body, turning outer `continue` into `return`."""
+
+    body: tuple[ast.stmt, ...]
+
+    def render_header(
+        self,
+        method: FunctionNode,
+        hook_name: str,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return _method_header_signature(
+            method,
+            hook_name,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=False,
+        )
+
+    def render_body(
+        self,
+        source: str,
+        source_lines: Sequence[str],
+        inner_indent: str,
+    ) -> list[str]:
+        pieces: list[str] = []
+        for statement in self.body:
+            continues = _outer_loop_continues((statement,))
+            if continues:
+                pieces.append(
+                    _render_statement_with_continues_as_returns(
+                        source, statement, continues, inner_indent
                     )
                 )
             else:
@@ -1418,6 +1705,15 @@ class SiblingBodyTemplate(ABC):
 
     @abstractmethod
     def import_checked_statements(self) -> tuple[ast.stmt, ...]: ...
+
+    def concrete_default_hook_for(
+        self,
+        declaring_sibling: _SiblingMethod,
+        first_sibling: _SiblingMethod,
+        prefix_locals: frozenset[str],
+    ) -> HookDeclaration | None:
+        del declaring_sibling, first_sibling, prefix_locals
+        return None
 
 
 @dataclass(frozen=True)
@@ -1607,6 +1903,25 @@ class TrailingGuardedStepTemplate(SiblingBodyTemplate):
     def import_checked_statements(self) -> tuple[ast.stmt, ...]:
         return self.guarded_body
 
+    def concrete_default_hook_for(
+        self,
+        declaring_sibling: _SiblingMethod,
+        first_sibling: _SiblingMethod,
+        prefix_locals: frozenset[str],
+    ) -> HookDeclaration | None:
+        stmts = declaring_sibling.statements
+        if _is_noop_statements(stmts):
+            return ReturnFalseHookDeclaration()
+        if _statement_blocks_semantically_equal(
+            first_sibling,
+            declaring_sibling,
+            self.guarded_body,
+            stmts,
+            prefix_locals,
+        ):
+            return ReturnTrueHookDeclaration()
+        return None
+
 
 @dataclass(frozen=True)
 class GuardedEarlyReturnSuffixTemplate(SiblingBodyTemplate):
@@ -1637,6 +1952,169 @@ class GuardedEarlyReturnSuffixTemplate(SiblingBodyTemplate):
 
     def import_checked_statements(self) -> tuple[ast.stmt, ...]:
         return (*self.early_return_body, *self.shared_tail)
+
+    def concrete_default_hook_for(
+        self,
+        declaring_sibling: _SiblingMethod,
+        first_sibling: _SiblingMethod,
+        prefix_locals: frozenset[str],
+    ) -> HookDeclaration | None:
+        stmts = declaring_sibling.statements
+        if _statement_blocks_semantically_equal(
+            first_sibling,
+            declaring_sibling,
+            self.early_return_body,
+            stmts,
+            prefix_locals,
+        ):
+            return ReturnTrueHookDeclaration()
+        if _statement_blocks_semantically_equal(
+            first_sibling,
+            declaring_sibling,
+            self.shared_tail,
+            stmts,
+            prefix_locals,
+        ):
+            return ReturnFalseHookDeclaration()
+        return None
+
+
+@dataclass(frozen=True)
+class SharedIfGuardTemplate(SiblingBodyTemplate):
+    """Every sibling is `if <identical step test>: <body_i>`, forwarding any walrus bindings."""
+
+    test: ast.expr
+    forward_return: bool
+
+    def render_hook_declaration(
+        self,
+        hook_declaration: HookDeclaration,
+        declaring_method: FunctionNode,
+        hook_name: str,
+        indent: str,
+        method_kind: MethodKind,
+        source_lines: Sequence[str],
+        *,
+        extra_params: ExtraHookParams,
+    ) -> str:
+        return hook_declaration.render(
+            declaring_method,
+            hook_name,
+            indent,
+            method_kind,
+            source_lines,
+            extra_params=extra_params,
+            preserve_return_annotation=self.forward_return,
+        )
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source_lines
+        test_src = _render_expr_source(hoist_source, self.test)
+        if isinstance(self.test, ast.NamedExpr) and not (
+            test_src.startswith("(") and test_src.endswith(")")
+        ):
+            test_src = f"({test_src})"
+        body_indent = f"{inner_indent}    "
+        call_line = (
+            f"{body_indent}return {hook_call}\n"
+            if self.forward_return
+            else f"{body_indent}{hook_call}\n"
+        )
+        return f"{inner_indent}if {test_src}:\n{call_line}"
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return (ast.Expr(value=self.test),)
+
+
+@dataclass(frozen=True)
+class SharedForLoopTemplate(SiblingBodyTemplate):
+    """Every sibling is `for <identical target> in <identical step iter>: <body_i>`."""
+
+    target: ast.expr
+    iter_expr: ast.expr
+
+    def render_template_call(
+        self,
+        hoist_source: str,
+        hoist_source_lines: Sequence[str],
+        hook_call: str,
+        inner_indent: str,
+    ) -> str:
+        del hoist_source_lines
+        target_src = _render_expr_source(hoist_source, self.target)
+        iter_src = _render_safe_expr(hoist_source, self.iter_expr)
+        return f"{inner_indent}for {target_src} in {iter_src}:\n{inner_indent}    {hook_call}\n"
+
+    def import_checked_statements(self) -> tuple[ast.stmt, ...]:
+        return (ast.Expr(value=self.iter_expr),)
+
+
+def _is_noop_statements(statements: Sequence[ast.stmt]) -> bool:
+    if not statements:
+        return True
+    if len(statements) != 1:
+        return False
+    match statements[0]:
+        case ast.Pass():
+            return True
+        case ast.Expr(value=ast.Constant(value=value)) if value is Ellipsis:
+            return True
+        case ast.Return(value=None):
+            return True
+        case ast.Return(value=ast.Constant(value=None)):
+            return True
+    return False
+
+
+def _statement_blocks_semantically_equal(
+    first: _SiblingMethod,
+    other: _SiblingMethod,
+    block_a: Sequence[ast.stmt],
+    block_b: Sequence[ast.stmt],
+    prefix_locals: frozenset[str],
+) -> bool:
+    if len(block_a) != len(block_b):
+        return False
+    local_names = set(prefix_locals)
+    for stmt_a, stmt_b in zip(block_a, block_b, strict=True):
+        if not SiblingOverrideStepHoist._statements_semantically_equal(
+            first, other, stmt_a, stmt_b, frozenset(local_names)
+        ):
+            return False
+        local_names.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((stmt_a,)))
+    return True
+
+
+def _ordered_target_names(target: ast.expr) -> tuple[str, ...] | None:
+    names: list[str] = []
+
+    def walk(node: ast.expr) -> bool:
+        match node:
+            case ast.Name(id=bound):
+                if bound not in names:
+                    names.append(bound)
+                return True
+            case ast.Tuple(elts=elts) | ast.List(elts=elts):
+                return all(walk(elt) for elt in elts)
+            case ast.Starred(value=inner):
+                return walk(inner)
+        return False
+
+    return tuple(names) if walk(target) and names else None
+
+
+def _ordered_named_expr_targets(expr: ast.expr) -> tuple[str, ...]:
+    names: list[str] = []
+    for node in ast.walk(expr):
+        if isinstance(node, ast.NamedExpr) and node.target.id not in names:
+            names.append(node.target.id)
+    return tuple(names)
 
 
 class SiblingRewrite(ABC):
@@ -1875,68 +2353,212 @@ class SiblingOverrideStepHoist:
                 NeededInput.PROOF,
             )
         restated_calls = frozenset(candidate.restated)
-        (
-            prefix_len,
-            suffix_len,
-            prefix_extra_names,
-            prefix_extra_annotations,
-        ) = cls._shared_prefix_and_suffix(
-            declaring_method, siblings, param_names
-        )
-        prefix = siblings[0].statements[:prefix_len]
-        suffix = (
-            siblings[0].statements[len(siblings[0].statements) - suffix_len :]
-            if suffix_len
-            else ()
-        )
-        raw_middles = tuple(
-            sibling.statements[
-                prefix_len : len(sibling.statements) - suffix_len
-            ]
-            for sibling in siblings
-        )
-        if not any(raw_middles):
-            raise NeedsInput(
-                f"every override of `{declaring.qualname}.{member_name}` is identical; "
-                "lift the whole method instead",
-                NeededInput.SOURCE_CHANGE,
+        needs_concrete_default = (
+            not candidate.unanswered
+            and not _calls_super_member(declaring_method, member_name)
+            and cls._has_live_base_method_callers(
+                snapshot,
+                verdicts,
+                declaring,
+                tuple(sibling.owner for sibling in siblings),
+                member_name,
             )
-
-        hoisted_edges = (*prefix, *suffix)
-        has_edge_step = bool(hoisted_edges) and _statement_calls_any_step(
-            hoisted_edges, receiver_name, restated_calls
         )
+        declaring_sibling: _SiblingMethod | None = (
+            cls._load_declaring_as_sibling(snapshot, declaring, declaring_method)
+            if needs_concrete_default
+            else None
+        )
+        declaring_is_generator = (
+            declaring_sibling is not None
+            and _contains_node_type(
+                declaring_sibling.statements, (ast.Yield, ast.YieldFrom)
+            )
+        )
+        if declaring_is_generator and isinstance(declaring_method, ast.AsyncFunctionDef):
+            declaring_sibling = None
+
+        hoist_source_owner = siblings[0].owner
+        concrete_default_hook: HookDeclaration | None = None
+        declaring_middle: tuple[ast.stmt, ...] = ()
         hoisted_step_expr: HoistedStepExpression | None = None
-        sibling_step_exprs: tuple[ast.expr, ...] = ()
+        sibling_step_matches: tuple[tuple[int, ast.expr], ...] = ()
+        declaring_step_match: tuple[int, ast.expr] | None = None
         matched_body_template: SiblingBodyTemplate | None = None
         matched_hook_bodies: tuple[SiblingHookBody, ...] = ()
-        extra_names = list(prefix_extra_names)
-        extra_annotations = dict(prefix_extra_annotations)
+        extra_names: list[str] = []
+        extra_annotations: dict[str, ast.expr] = {}
 
-        if not has_edge_step:
-            prefix_locals = frozenset(
-                (*param_names, *LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prefix))
+        # When concrete callers can hit `declaring.<member>` directly, first try factoring
+        # `declaring` alongside `siblings` so `declaring`'s own middle stays its default hook.
+        if declaring_sibling is not None:
+            combined_siblings = (declaring_sibling, *siblings)
+            (
+                c_prefix_len,
+                c_suffix_len,
+                c_extra_names,
+                c_extra_annotations,
+            ) = cls._shared_prefix_and_suffix(
+                declaring_method, combined_siblings, param_names
             )
-            step_match = cls._detect_hoisted_step_expr(
-                siblings,
-                raw_middles,
-                prefix_locals,
-                receiver_name,
-                restated_calls,
+            c_prefix = declaring_sibling.statements[:c_prefix_len]
+            c_suffix = (
+                declaring_sibling.statements[
+                    len(declaring_sibling.statements) - c_suffix_len :
+                ]
+                if c_suffix_len
+                else ()
             )
-            if step_match is not None:
-                hoisted_step_expr, sibling_step_exprs = step_match
-                extra_names.append(hoisted_step_expr.var_name)
-            elif not suffix and not is_generator:
-                template_match = cls._detect_body_template(
+            c_raw_middles = tuple(
+                sibling.statements[
+                    c_prefix_len : len(sibling.statements) - c_suffix_len
+                ]
+                for sibling in combined_siblings
+            )
+            c_has_edge = bool((*c_prefix, *c_suffix)) and _statement_calls_any_step(
+                (*c_prefix, *c_suffix), receiver_name, restated_calls
+            )
+            c_prefix_locals = frozenset(
+                (*param_names, *LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(c_prefix))
+            )
+            c_step_match = (
+                None
+                if c_has_edge
+                else cls._detect_hoisted_step_expr(
+                    combined_siblings,
+                    c_raw_middles,
+                    c_prefix_locals,
+                    receiver_name,
+                    restated_calls,
+                )
+            )
+            if (c_has_edge or c_step_match is not None) and any(c_raw_middles[1:]):
+                prefix_len = c_prefix_len
+                suffix_len = c_suffix_len
+                prefix = c_prefix
+                suffix = c_suffix
+                raw_middles = c_raw_middles[1:]
+                declaring_raw_middle = c_raw_middles[0]
+                has_edge_step = c_has_edge
+                extra_names = list(c_extra_names)
+                extra_annotations = dict(c_extra_annotations)
+                hoist_source_owner = declaring
+                is_generator = is_generator or declaring_is_generator
+                if c_step_match is not None:
+                    hoisted_step_expr, all_step_matches = c_step_match
+                    declaring_step_match = all_step_matches[0]
+                    sibling_step_matches = all_step_matches[1:]
+                    extra_names.append(hoisted_step_expr.var_name)
+                else:
+                    declaring_step_match = None
+                declaring_middle = declaring_raw_middle
+                if hoisted_step_expr is not None and declaring_step_match is not None:
+                    d_idx, d_expr = declaring_step_match
+                    d_stmt = declaring_raw_middle[d_idx]
+                    step_var = hoisted_step_expr.var_name
+                    match d_stmt:
+                        case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
+                            d_idx == 0 and bound == step_var and val is d_expr
+                        ):
+                            declaring_middle = declaring_raw_middle[1:]
+                            decl_expr_repl = None
+                        case ast.Expr(value=val) if d_idx == 0 and val is d_expr:
+                            declaring_middle = declaring_raw_middle[1:]
+                            decl_expr_repl = None
+                        case _:
+                            decl_expr_repl = (d_idx, d_expr, step_var)
+                else:
+                    decl_expr_repl = None
+                if not declaring_middle:
+                    concrete_default_hook = (
+                        EmptyGeneratorHookDeclaration()
+                        if is_generator
+                        else NoOpHookDeclaration()
+                    )
+                else:
+                    concrete_default_hook = ConcreteMiddleHookDeclaration(
+                        middle=declaring_middle,
+                        source=snapshot.sources_by_file_path[declaring.file_path],
+                        expr_replacement=decl_expr_repl,
+                    )
+
+        if concrete_default_hook is None:
+            (
+                prefix_len,
+                suffix_len,
+                prefix_extra_names,
+                prefix_extra_annotations,
+            ) = cls._shared_prefix_and_suffix(
+                declaring_method, siblings, param_names
+            )
+            prefix = siblings[0].statements[:prefix_len]
+            suffix = (
+                siblings[0].statements[len(siblings[0].statements) - suffix_len :]
+                if suffix_len
+                else ()
+            )
+            raw_middles = tuple(
+                sibling.statements[
+                    prefix_len : len(sibling.statements) - suffix_len
+                ]
+                for sibling in siblings
+            )
+            if not any(raw_middles):
+                raise NeedsInput(
+                    f"every override of `{declaring.qualname}.{member_name}` is identical; "
+                    "lift the whole method instead",
+                    NeededInput.SOURCE_CHANGE,
+                )
+
+            hoisted_edges = (*prefix, *suffix)
+            has_edge_step = bool(hoisted_edges) and _statement_calls_any_step(
+                hoisted_edges, receiver_name, restated_calls
+            )
+            extra_names = list(prefix_extra_names)
+            extra_annotations = dict(prefix_extra_annotations)
+
+            if not has_edge_step:
+                prefix_locals = frozenset(
+                    (*param_names, *LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(prefix))
+                )
+                step_match = cls._detect_hoisted_step_expr(
                     siblings,
                     raw_middles,
                     prefix_locals,
                     receiver_name,
                     restated_calls,
                 )
-                if template_match is not None:
-                    matched_body_template, matched_hook_bodies = template_match
+                if step_match is not None:
+                    hoisted_step_expr, sibling_step_matches = step_match
+                    extra_names.append(hoisted_step_expr.var_name)
+                elif not suffix and not is_generator:
+                    template_match = cls._detect_body_template(
+                        siblings,
+                        raw_middles,
+                        prefix_locals,
+                        receiver_name,
+                        restated_calls,
+                    )
+                    if template_match is not None:
+                        (
+                            matched_body_template,
+                            matched_hook_bodies,
+                            template_extra_names,
+                        ) = template_match
+                        extra_names.extend(template_extra_names)
+                        if (
+                            declaring_sibling is not None
+                            and not prefix
+                            and not suffix
+                            and not template_extra_names
+                        ):
+                            concrete_default_hook = (
+                                matched_body_template.concrete_default_hook_for(
+                                    declaring_sibling,
+                                    siblings[0],
+                                    prefix_locals,
+                                )
+                            )
 
         if (
             not has_edge_step
@@ -1960,26 +2582,28 @@ class SiblingOverrideStepHoist:
             )
 
         effective_middles: list[tuple[ast.stmt, ...]] = []
-        leading_replacements: list[tuple[ast.expr, str] | None] = []
+        leading_replacements: list[tuple[int, ast.expr, str] | None] = []
         extra_dropped: list[tuple[ast.stmt, ...]] = []
         if hoisted_step_expr is not None:
             step_var = hoisted_step_expr.var_name
-            for middle, step_expr in zip(raw_middles, sibling_step_exprs, strict=True):
-                first_stmt = middle[0]
-                match first_stmt:
+            for middle, (stmt_idx, step_expr) in zip(
+                raw_middles, sibling_step_matches, strict=True
+            ):
+                target_stmt = middle[stmt_idx]
+                match target_stmt:
                     case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
-                        bound == step_var and val is step_expr
+                        stmt_idx == 0 and bound == step_var and val is step_expr
                     ):
                         effective_middles.append(middle[1:])
                         leading_replacements.append(None)
-                        extra_dropped.append((first_stmt,))
-                    case ast.Expr(value=val) if val is step_expr:
+                        extra_dropped.append((target_stmt,))
+                    case ast.Expr(value=val) if stmt_idx == 0 and val is step_expr:
                         effective_middles.append(middle[1:])
                         leading_replacements.append(None)
-                        extra_dropped.append((first_stmt,))
+                        extra_dropped.append((target_stmt,))
                     case _:
                         effective_middles.append(middle)
-                        leading_replacements.append((step_expr, step_var))
+                        leading_replacements.append((stmt_idx, step_expr, step_var))
                         extra_dropped.append((ast.Expr(value=step_expr),))
         else:
             for middle in raw_middles:
@@ -1995,7 +2619,10 @@ class SiblingOverrideStepHoist:
                 NeededInput.SOURCE_CHANGE,
             )
 
-        cls._require_dataflow_safe(declaring, member_name, prefix, middles, suffix)
+        checked_middles = (declaring_middle, *middles) if declaring_middle else middles
+        cls._require_dataflow_safe(
+            declaring, member_name, prefix, checked_middles, suffix
+        )
         cls._require_mro_descendants_and_hook_safe(
             snapshot,
             verdicts,
@@ -2005,6 +2632,7 @@ class SiblingOverrideStepHoist:
             tuple(sibling.owner for sibling in siblings),
             member_name,
             hook_name,
+            preserves_base_behavior=concrete_default_hook is not None,
         )
         for sibling in siblings:
             child = sibling.owner
@@ -2042,21 +2670,25 @@ class SiblingOverrideStepHoist:
         declaring_proof.require_unchanged()
         NamespaceReaders(snapshot).require_unread(declaring.facts, declaring_names)
 
-        hook_declaration = cls._select_hook_declaration(
-            declaring_method,
-            has_empty_middle=any(not middle for middle in middles),
-            is_generator=is_generator,
+        hook_declaration = (
+            concrete_default_hook
+            if concrete_default_hook is not None
+            else cls._select_hook_declaration(
+                declaring_method,
+                has_empty_middle=any(not middle for middle in middles),
+                is_generator=is_generator,
+            )
         )
         if matched_body_template is not None:
             body_template: SiblingBodyTemplate = matched_body_template
         else:
             if is_generator:
                 forward_return = (not suffix) and any(
-                    _has_non_none_return(middle) for middle in middles
+                    _has_non_none_return(middle) for middle in checked_middles
                 )
             else:
                 any_middle_returns = any(
-                    _has_return_statement(middle) for middle in middles
+                    _has_return_statement(middle) for middle in checked_middles
                 )
                 forward_return = (not suffix) and (
                     any_middle_returns or not _returns_none_annotation(declaring_method)
@@ -2110,7 +2742,7 @@ class SiblingOverrideStepHoist:
             hook_declaration=hook_declaration,
             prefix=prefix,
             suffix=suffix,
-            hoist_source_owner=siblings[0].owner,
+            hoist_source_owner=hoist_source_owner,
             rewrites=tuple(rewrites_list),
             body_template=body_template,
             extra_params=extra_params,
@@ -2355,37 +2987,53 @@ class SiblingOverrideStepHoist:
         prefix_locals: frozenset[str],
         receiver_name: str,
         restated_calls: frozenset[str],
-    ) -> tuple[HoistedStepExpression, tuple[ast.expr, ...]] | None:
+    ) -> tuple[HoistedStepExpression, tuple[tuple[int, ast.expr], ...]] | None:
         if any(not middle for middle in raw_middles):
             return None
-        exprs: list[ast.expr] = []
+        matches: list[tuple[int, ast.expr]] = []
         for middle in raw_middles:
-            found = _leading_unconditional_step_expr(
-                middle[0], receiver_name, restated_calls
-            )
-            if found is None:
+            found_match: tuple[int, ast.expr] | None = None
+            prep_bound: set[str] = set()
+            for idx, stmt in enumerate(middle):
+                found = _leading_unconditional_step_expr(
+                    stmt,
+                    receiver_name,
+                    restated_calls,
+                    scope_statements=middle,
+                )
+                if found is not None:
+                    if _read_names((ast.Expr(value=found),)).isdisjoint(prep_bound):
+                        found_match = (idx, found)
+                    break
+                if not _is_pure_prep_stmt(stmt):
+                    break
+                prep_bound.update(LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names((stmt,)))
+            if found_match is None:
                 return None
-            exprs.append(found)
+            matches.append(found_match)
         first = siblings[0]
-        first_stmt = ast.Expr(value=exprs[0])
-        for sibling, expr in zip(siblings[1:], exprs[1:], strict=True):
+        first_expr = matches[0][1]
+        first_stmt = ast.Expr(value=first_expr)
+        for sibling, (_idx, expr) in zip(siblings[1:], matches[1:], strict=True):
             if not cls._statements_semantically_equal(
                 first, sibling, first_stmt, ast.Expr(value=expr), prefix_locals
             ):
                 return None
         # Choose a clean, collision-free parameter name for the hoisted step value.
         assigned_names: set[str] = set()
-        for middle, expr in zip(raw_middles, exprs, strict=True):
+        for middle, (stmt_idx, expr) in zip(raw_middles, matches, strict=True):
+            if stmt_idx != 0:
+                continue
             match middle[0]:
                 case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
                     val is expr
                 ):
                     assigned_names.add(bound)
         forbidden: set[str] = set(prefix_locals)
-        for middle, expr in zip(raw_middles, exprs, strict=True):
-            match middle[0]:
+        for middle, (stmt_idx, expr) in zip(raw_middles, matches, strict=True):
+            match middle[stmt_idx]:
                 case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
-                    val is expr and len(assigned_names) == 1
+                    stmt_idx == 0 and val is expr and len(assigned_names) == 1
                 ):
                     rest = middle[1:]
                 case _:
@@ -2401,10 +3049,10 @@ class SiblingOverrideStepHoist:
             ):
                 # Ensure no non-assigning sibling reads or binds `preferred` as a different name.
                 conflict = False
-                for middle, expr in zip(raw_middles, exprs, strict=True):
-                    match middle[0]:
+                for middle, (stmt_idx, expr) in zip(raw_middles, matches, strict=True):
+                    match middle[stmt_idx]:
                         case ast.Assign(targets=[ast.Name(id=bound)], value=val) if (
-                            bound == preferred and val is expr
+                            stmt_idx == 0 and bound == preferred and val is expr
                         ):
                             continue
                     if preferred in _read_names(middle) or preferred in LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(middle):
@@ -2412,13 +3060,13 @@ class SiblingOverrideStepHoist:
                         break
                 if not conflict:
                     return (
-                        HoistedStepExpression(var_name=preferred, expr=exprs[0]),
-                        tuple(exprs),
+                        HoistedStepExpression(var_name=preferred, expr=first_expr),
+                        tuple(matches),
                     )
         call_node = (
-            exprs[0].value
-            if isinstance(exprs[0], ast.Await) and isinstance(exprs[0].value, ast.Call)
-            else exprs[0]
+            first_expr.value
+            if isinstance(first_expr, ast.Await) and isinstance(first_expr.value, ast.Call)
+            else first_expr
         )
         call_path = (
             _receiver_call_path(call_node.func, receiver_name)
@@ -2444,7 +3092,7 @@ class SiblingOverrideStepHoist:
         )
         if var_name is None:
             return None
-        return HoistedStepExpression(var_name=var_name, expr=exprs[0]), tuple(exprs)
+        return HoistedStepExpression(var_name=var_name, expr=first_expr), tuple(matches)
 
     @classmethod
     def _detect_body_template(
@@ -2454,7 +3102,7 @@ class SiblingOverrideStepHoist:
         prefix_locals: frozenset[str],
         receiver_name: str,
         restated_calls: frozenset[str],
-    ) -> tuple[SiblingBodyTemplate, tuple[SiblingHookBody, ...]] | None:
+    ) -> tuple[SiblingBodyTemplate, tuple[SiblingHookBody, ...], tuple[str, ...]] | None:
         for detector in (
             cls._detect_return_call_template,
             cls._detect_variadic_return_call_template,
@@ -2470,8 +3118,139 @@ class SiblingOverrideStepHoist:
                 restated_calls,
             )
             if matched is not None:
-                return matched
+                return (*matched, ())
+        for extra_detector in (
+            cls._detect_shared_if_guard_template,
+            cls._detect_shared_for_loop_template,
+        ):
+            matched_extra = extra_detector(
+                siblings,
+                raw_middles,
+                prefix_locals,
+                receiver_name,
+                restated_calls,
+            )
+            if matched_extra is not None:
+                return matched_extra
         return None
+
+    @classmethod
+    def _detect_shared_if_guard_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[SharedIfGuardTemplate, tuple[SiblingHookBody, ...], tuple[str, ...]] | None:
+        tests: list[ast.expr] = []
+        bodies: list[tuple[ast.stmt, ...]] = []
+        for middle in raw_middles:
+            if len(middle) != 1:
+                return None
+            match middle[0]:
+                case ast.If(test=test, body=if_body, orelse=[]) if if_body:
+                    if _contains_node_type(
+                        if_body, (ast.Break, ast.Continue, ast.Yield, ast.YieldFrom)
+                    ):
+                        return None
+                    tests.append(test)
+                    bodies.append(tuple(if_body))
+                case _:
+                    return None
+        first_test = tests[0]
+        if not _statement_calls_any_step(
+            (ast.Expr(value=first_test),), receiver_name, restated_calls
+        ):
+            return None
+        first = siblings[0]
+        for sibling, other_test in zip(siblings[1:], tests[1:], strict=True):
+            if not cls._statements_semantically_equal(
+                first,
+                sibling,
+                ast.Expr(value=first_test),
+                ast.Expr(value=other_test),
+                prefix_locals,
+            ):
+                return None
+        walrus_names = _ordered_named_expr_targets(first_test)
+        needed_extra = tuple(
+            name
+            for name in walrus_names
+            if name not in prefix_locals
+            and any(name in _read_names(body) for body in bodies)
+        )
+        forward_return = any(_has_return_statement(body) for body in bodies)
+        template = SharedIfGuardTemplate(test=first_test, forward_return=forward_return)
+        hook_bodies = tuple(
+            DirectMiddleHookBody(
+                middle=body, preserve_return_annotation=forward_return
+            )
+            for body in bodies
+        )
+        return template, hook_bodies, needed_extra
+
+    @classmethod
+    def _detect_shared_for_loop_template(
+        cls,
+        siblings: tuple[_SiblingMethod, ...],
+        raw_middles: tuple[tuple[ast.stmt, ...], ...],
+        prefix_locals: frozenset[str],
+        receiver_name: str,
+        restated_calls: frozenset[str],
+    ) -> tuple[SharedForLoopTemplate, tuple[SiblingHookBody, ...], tuple[str, ...]] | None:
+        targets: list[ast.expr] = []
+        iters: list[ast.expr] = []
+        bodies: list[tuple[ast.stmt, ...]] = []
+        for middle in raw_middles:
+            if len(middle) != 1:
+                return None
+            match middle[0]:
+                case ast.For(target=target, iter=iter_expr, body=loop_body, orelse=[]) if loop_body:
+                    if (
+                        _has_return_statement(loop_body)
+                        or _has_outer_loop_break(loop_body)
+                        or _contains_node_type(loop_body, (ast.Yield, ast.YieldFrom))
+                    ):
+                        return None
+                    targets.append(target)
+                    iters.append(iter_expr)
+                    bodies.append(tuple(loop_body))
+                case _:
+                    return None
+        first_target = targets[0]
+        first_iter = iters[0]
+        target_names = _ordered_target_names(first_target)
+        if target_names is None:
+            return None
+        if not _statement_calls_any_step(
+            (ast.Expr(value=first_iter),), receiver_name, restated_calls
+        ):
+            return None
+        first_target_dump = ast.dump(first_target, include_attributes=False)
+        first = siblings[0]
+        for sibling, other_target, other_iter in zip(
+            siblings[1:], targets[1:], iters[1:], strict=True
+        ):
+            if ast.dump(other_target, include_attributes=False) != first_target_dump:
+                return None
+            if not cls._statements_semantically_equal(
+                first,
+                sibling,
+                ast.Expr(value=first_iter),
+                ast.Expr(value=other_iter),
+                prefix_locals,
+            ):
+                return None
+        needed_extra = tuple(
+            name
+            for name in target_names
+            if name not in prefix_locals
+            and any(name in _read_names(body) for body in bodies)
+        )
+        template = SharedForLoopTemplate(target=first_target, iter_expr=first_iter)
+        hook_bodies = tuple(LoopBodyHookBody(body=body) for body in bodies)
+        return template, hook_bodies, needed_extra
 
     @classmethod
     def _detect_return_call_template(
@@ -3034,6 +3813,52 @@ class SiblingOverrideStepHoist:
                 NeededInput.PROOF,
             )
 
+    @staticmethod
+    def _load_declaring_as_sibling(
+        snapshot: CodemodSourceSnapshot,
+        declaring: OverlapClass,
+        declaring_method: FunctionNode,
+    ) -> _SiblingMethod:
+        parsed = snapshot.parsed_module_for_source_path(declaring.file_path)
+        scope = ClassBodyModuleScope.for_lines(parsed, (declaring.node.lineno,))[
+            declaring.node.lineno
+        ]
+        class_bound = LEXICAL_SCOPE_BINDING_AUTHORITY.bound_names(declaring.node.body)
+        trimmed = tuple(_trim_leading_docstring(list(declaring_method.body)))
+        return _SiblingMethod(declaring, declaring_method, trimmed, scope, class_bound)
+
+    @classmethod
+    def _has_live_base_method_callers(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        verdicts: ClassOverlapVerdicts,
+        declaring: OverlapClass,
+        children: tuple[OverlapClass, ...],
+        member_name: str,
+    ) -> bool:
+        if not declaring.facts.abstract_method_names:
+            allowed_roles = frozenset((ClassReferenceRole.TYPE_TEST,))
+            for site in ClassReferenceSites(snapshot, frozenset((declaring.symbol,))).sites:
+                if not (site.is_base or site.is_annotation or site.role in allowed_roles):
+                    return True
+        class_index = verdicts.class_index
+        overriding_symbols = frozenset(child.symbol for child in children)
+        for desc_symbol in class_index.descendant_symbols(declaring.symbol):
+            if desc_symbol in overriding_symbols:
+                continue
+            order = verdicts.linearized(desc_symbol)
+            if declaring.symbol not in order:
+                continue
+            before_declaring = order[: order.index(declaring.symbol)]
+            if any(symbol in overriding_symbols for symbol in before_declaring):
+                continue
+            if (
+                next_binder(verdicts, before_declaring, member_name) is None
+                and not cls._remains_abstract(verdicts, order, member_name)
+            ):
+                return True
+        return False
+
     @classmethod
     def _require_mro_descendants_and_hook_safe(
         cls,
@@ -3045,6 +3870,8 @@ class SiblingOverrideStepHoist:
         children: tuple[OverlapClass, ...],
         member_name: str,
         hook_name: str,
+        *,
+        preserves_base_behavior: bool = False,
     ) -> None:
         del declaring_ancestry
         class_index = verdicts.class_index
@@ -3060,7 +3887,7 @@ class SiblingOverrideStepHoist:
                     NeededInput.SOURCE_CHANGE,
                 )
 
-        if not candidate.unanswered:
+        if not candidate.unanswered and not preserves_base_behavior:
             cls._require_declaring_not_directly_used(snapshot, declaring, member_name)
 
         overriding_symbols = frozenset(child.symbol for child in children)
@@ -3104,7 +3931,9 @@ class SiblingOverrideStepHoist:
                 continue
             binder = next_binder(verdicts, before_declaring, member_name)
             if binder is None:
-                if cls._remains_abstract(verdicts, order, member_name):
+                if preserves_base_behavior or cls._remains_abstract(
+                    verdicts, order, member_name
+                ):
                     continue
                 raise NeedsInput(
                     f"`{desc.qualname}` inherits `{declaring.qualname}.{member_name}` "
@@ -3390,6 +4219,7 @@ __all__ = (
     "BoolOpTemplate",
     "CachedPropertyMethodKind",
     "ClassMethodKind",
+    "ConcreteMiddleHookDeclaration",
     "DeleteEmptySiblingOverride",
     "DirectHookTemplate",
     "DirectMiddleHookBody",
@@ -3399,6 +4229,7 @@ __all__ = (
     "HoistSiblingOverrideStepOperation",
     "HoistedStepExpression",
     "HookDeclaration",
+    "LoopBodyHookBody",
     "MethodKind",
     "NoOpHookDeclaration",
     "NotImplementedHookDeclaration",
@@ -3406,10 +4237,14 @@ __all__ = (
     "PlainMethodKind",
     "PropertyMethodKind",
     "ReturnCallTemplate",
+    "ReturnFalseHookDeclaration",
+    "ReturnTrueHookDeclaration",
     "ReturningBoolOpHookBody",
     "ReturningExprHookBody",
     "ReturningTupleHookBody",
     "RewriteSiblingToHook",
+    "SharedForLoopTemplate",
+    "SharedIfGuardTemplate",
     "SiblingBodyTemplate",
     "SiblingHookBody",
     "SiblingOverrideStepCandidate",
