@@ -12,6 +12,7 @@ declaration itself is deleted in the same recipe.
 from __future__ import annotations
 
 import ast
+import copy
 import keyword as keyword_module
 from abc import ABC
 from collections import Counter
@@ -133,6 +134,70 @@ class AnswerBranchSite:
 
     dispatch: DispatchSite
     arm_values: tuple[ConstantValue, ...]
+
+
+ComprehensionNode = ast.GeneratorExp | ast.ListComp | ast.SetComp
+
+
+def _fresh_comp_item_name(function: FunctionNode, comp: ComprehensionNode) -> str:
+    used = {
+        node.id
+        for root in (function, comp)
+        for node in ast.walk(root)
+        if isinstance(node, ast.Name)
+    }
+    if "_item" not in used:
+        return "_item"
+    index = 1
+    while f"_item_{index}" in used:
+        index += 1
+    return f"_item_{index}"
+
+
+@dataclass(frozen=True)
+class SumComprehensionDispatchSite(DispatchSite):
+    """`sum(elt for ... if [PREFIX and] [not] subject.flag)` replaced by `sum(subject.method(...) for ... [if PREFIX])`."""
+
+    comp: ast.GeneratorExp
+    remaining_last_ifs: tuple[ast.expr, ...]
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        return geometry.required_node_offsets(self.comp)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        new_comp = copy.deepcopy(self.comp)
+        new_comp.elt = ast.parse(call_expr, mode="eval").body
+        new_comp.generators[-1].ifs = [copy.deepcopy(expr) for expr in self.remaining_last_ifs]
+        return ast.unparse(ast.fix_missing_locations(new_comp))
+
+
+@dataclass(frozen=True)
+class ComprehensionFilterDispatchSite(DispatchSite):
+    """Filtered `GeneratorExp`/`ListComp`/`SetComp` replaced by flattening `for _item in subject.method(...)`."""
+
+    comp: ComprehensionNode
+    remaining_last_ifs: tuple[ast.expr, ...]
+    trailing_ifs: tuple[ast.expr, ...]
+    item_name: str
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        return geometry.required_node_offsets(self.comp)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        new_comp = copy.deepcopy(self.comp)
+        new_comp.elt = ast.Name(id=self.item_name, ctx=ast.Load())
+        new_comp.generators[-1].ifs = [copy.deepcopy(expr) for expr in self.remaining_last_ifs]
+        new_comp.generators.append(
+            ast.comprehension(
+                target=ast.Name(id=self.item_name, ctx=ast.Store()),
+                iter=ast.parse(call_expr, mode="eval").body,
+                ifs=[copy.deepcopy(expr) for expr in self.trailing_ifs],
+                is_async=0,
+            )
+        )
+        return ast.unparse(ast.fix_missing_locations(new_comp))
 
 
 def _extract_answer_read(expr: ast.expr, member_name: str) -> ast.expr | None:
@@ -1073,6 +1138,160 @@ def _extract_answer_boolop(
     )
 
 
+def _match_comp_and_filter(
+    if_expr: ast.expr, test_line: int, member_name: str
+) -> tuple[ParsedAnswerTest, ast.expr | None, ast.expr | None] | None:
+    """Match `[PREFIX and] [not] subject.flag [and SUFFIX]` on `test_line`."""
+
+    direct = _parse_answer_test(if_expr, member_name)
+    if direct is not None and if_expr.lineno == test_line:
+        return (direct, None, None)
+    if (
+        isinstance(if_expr, ast.BoolOp)
+        and isinstance(if_expr.op, ast.And)
+        and len(if_expr.values) >= 2
+    ):
+        for idx, value in enumerate(if_expr.values):
+            if value.lineno != test_line:
+                continue
+            parsed = _parse_answer_test(value, member_name)
+            if parsed is None:
+                continue
+            prefix_values = if_expr.values[:idx]
+            suffix_values = if_expr.values[idx + 1 :]
+            prefix_expr: ast.expr | None = (
+                None
+                if not prefix_values
+                else (
+                    prefix_values[0]
+                    if len(prefix_values) == 1
+                    else ast.BoolOp(op=ast.And(), values=prefix_values)
+                )
+            )
+            suffix_expr: ast.expr | None = (
+                None
+                if not suffix_values
+                else (
+                    suffix_values[0]
+                    if len(suffix_values) == 1
+                    else ast.BoolOp(op=ast.And(), values=suffix_values)
+                )
+            )
+            return (parsed, prefix_expr, suffix_expr)
+    return None
+
+
+def _has_named_expr(nodes: Sequence[ast.AST]) -> bool:
+    return any(
+        isinstance(child, ast.NamedExpr)
+        for root in nodes
+        for child in ast.walk(root)
+    )
+
+
+def _extract_sum_comprehension(
+    call: ast.Call,
+    test_line: int,
+    member_name: str,
+    kind: DispatchKind,
+) -> AnswerBranchSite | None:
+    match call:
+        case ast.Call(
+            func=ast.Name(id="sum"),
+            args=[ast.GeneratorExp() as comp],
+            keywords=[],
+        ):
+            pass
+        case _:
+            return None
+    if not comp.generators or any(gen.is_async for gen in comp.generators):
+        return None
+    last_gen = comp.generators[-1]
+    if not last_gen.ifs or _has_named_expr((comp.elt, *last_gen.ifs)):
+        return None
+    matched = _match_comp_and_filter(last_gen.ifs[-1], test_line, member_name)
+    if matched is None:
+        return None
+    parsed, prefix_expr, suffix_expr = matched
+    if suffix_expr is not None:
+        return None
+    remaining_ifs: list[ast.expr] = list(last_gen.ifs[:-1])
+    if prefix_expr is not None:
+        remaining_ifs.append(prefix_expr)
+    present_body: tuple[ast.stmt, ...] = (ast.Return(value=comp.elt),)
+    absent_body: tuple[ast.stmt, ...] = (ast.Return(value=ast.Constant(value=0)),)
+    arm_body = absent_body if parsed.negated else present_body
+    default_body = present_body if parsed.negated else absent_body
+    return AnswerBranchSite(
+        SumComprehensionDispatchSite(
+            subject=parsed.subject,
+            kind=kind,
+            arms=(_dummy_arm(arm_body),),
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=(parsed.test_node,),
+            comp=comp,
+            remaining_last_ifs=tuple(remaining_ifs),
+        ),
+        (parsed.tested_value,),
+    )
+
+
+def _extract_comprehension_filter(
+    function: FunctionNode,
+    comp: ComprehensionNode,
+    test_line: int,
+    member_name: str,
+    kind: DispatchKind,
+) -> AnswerBranchSite | None:
+    if not comp.generators or any(gen.is_async for gen in comp.generators):
+        return None
+    last_gen = comp.generators[-1]
+    if not last_gen.ifs or _has_named_expr((comp.elt, *last_gen.ifs)):
+        return None
+    matched_idx: int | None = None
+    matched: tuple[ParsedAnswerTest, ast.expr | None, ast.expr | None] | None = None
+    for idx, if_expr in enumerate(last_gen.ifs):
+        candidate = _match_comp_and_filter(if_expr, test_line, member_name)
+        if candidate is not None:
+            matched_idx = idx
+            matched = candidate
+            break
+    if matched_idx is None or matched is None:
+        return None
+    parsed, prefix_expr, suffix_expr = matched
+    remaining_ifs: list[ast.expr] = list(last_gen.ifs[:matched_idx])
+    if prefix_expr is not None:
+        remaining_ifs.append(prefix_expr)
+    trailing_ifs: list[ast.expr] = []
+    if suffix_expr is not None:
+        trailing_ifs.append(suffix_expr)
+    trailing_ifs.extend(last_gen.ifs[matched_idx + 1 :])
+    present_body: tuple[ast.stmt, ...] = (
+        ast.Return(value=ast.Tuple(elts=[comp.elt], ctx=ast.Load())),
+    )
+    absent_body: tuple[ast.stmt, ...] = (
+        ast.Return(value=ast.Tuple(elts=[], ctx=ast.Load())),
+    )
+    arm_body = absent_body if parsed.negated else present_body
+    default_body = present_body if parsed.negated else absent_body
+    return AnswerBranchSite(
+        ComprehensionFilterDispatchSite(
+            subject=parsed.subject,
+            kind=kind,
+            arms=(_dummy_arm(arm_body),),
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=(parsed.test_node,),
+            comp=comp,
+            remaining_last_ifs=tuple(remaining_ifs),
+            trailing_ifs=tuple(trailing_ifs),
+            item_name=_fresh_comp_item_name(function, comp),
+        ),
+        (parsed.tested_value,),
+    )
+
+
 def find_answer_dispatch_site(
     function: FunctionNode,
     test_line: int,
@@ -1133,7 +1352,25 @@ def find_answer_dispatch_site(
         for node in ast.walk(function)
         if isinstance(node, (ast.If, ast.IfExp))
     }
+    comp_ifs = {
+        id(if_expr)
+        for node in ast.walk(function)
+        if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp))
+        for gen in node.generators
+        for if_expr in gen.ifs
+    }
     for node in ast.walk(function):
+        if isinstance(node, ast.Call):
+            extracted = _extract_sum_comprehension(node, test_line, member_name, kind)
+            if extracted is not None:
+                return extracted
+    for node in ast.walk(function):
+        if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
+            extracted = _extract_comprehension_filter(
+                function, node, test_line, member_name, kind
+            )
+            if extracted is not None:
+                return extracted
         if isinstance(node, ast.IfExp) and (
             node.test.lineno == test_line
             or (
@@ -1147,6 +1384,7 @@ def find_answer_dispatch_site(
         if (
             isinstance(node, ast.BoolOp)
             and id(node) not in branch_tests
+            and id(node) not in comp_ifs
             and any(value.lineno == test_line for value in node.values)
         ):
             extracted = _extract_answer_boolop(node, False, test_line, member_name, kind)

@@ -408,3 +408,140 @@ def test_pushes_prefix_guarded_or_early_return_and_non_first_compound_ternary(tm
     assert ns["select_keys"](False, True, ns["ViewportRequest"](), ["a"]) is None  # type: ignore[operator]
     assert _findings(tmp_path) == []
 
+
+def test_pushes_sum_and_comprehension_filter_answers_with_parity_and_deletes_flags(
+    tmp_path: Path,
+):
+    """`sum(1 for ... if x.flag)` (including inside an f-string) and filtered
+    `GeneratorExp`/`ListComp`/`frozenset(...)` comprehensions (including prefix-guarded
+    `and`, captured loop keys, and negated `@classmethod` filters) push cleanly onto
+    the family without introducing `ZERO_ONE_TUPLE` and delete the dead constant flags."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/filters.py": (
+                "from dataclasses import dataclass\n"
+                "from typing import ClassVar\n\n\n"
+                "class ShapeModel:\n"
+                "    bypasses: ClassVar[bool] = False\n\n\n"
+                "class BypassedModel(ShapeModel):\n"
+                "    bypasses: ClassVar[bool] = True\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Finding:\n"
+                "    model: ShapeModel\n\n\n"
+                "def summary_note(findings: list[Finding]) -> str:\n"
+                "    return f'bypass={sum(1 for f in findings if f.model.bypasses)}'\n\n\n"
+                "class State:\n"
+                "    def attention(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class AlertState(State):\n"
+                "    def __init__(self, label: str) -> None:\n"
+                "        self.label = label\n\n"
+                "    def attention(self) -> bool:\n"
+                "        return True\n\n\n"
+                "def ping_labels(states: list[State]) -> tuple[str, ...]:\n"
+                "    return tuple(f'ping:{state.label}' for state in states if state.attention())\n\n\n"
+                "class Status:\n"
+                "    def is_working(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class WorkingStatus(Status):\n"
+                "    def is_working(self) -> bool:\n"
+                "        return True\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Row:\n"
+                "    active: bool\n"
+                "    status: Status\n\n\n"
+                "def working_names(rows: dict[str, Row]) -> frozenset[str]:\n"
+                "    return frozenset(\n"
+                "        name for name, row in rows.items() if row.active and row.status.is_working()\n"
+                "    )\n\n\n"
+                "class Detector:\n"
+                "    @classmethod\n"
+                "    def prefers_in_process(cls) -> bool:\n"
+                "        return False\n\n\n"
+                "class LocalDetector(Detector):\n"
+                "    @classmethod\n"
+                "    def prefers_in_process(cls) -> bool:\n"
+                "        return True\n\n\n"
+                "def pooled_detectors(detectors: list[type[Detector]]) -> list[type[Detector]]:\n"
+                "    return [dt for dt in detectors if not dt.prefers_in_process()]\n\n\n"
+                "class Attempt:\n"
+                "    def __init__(self, owner: str) -> None:\n"
+                "        self.owner = owner\n\n"
+                "    def counts_as_started(self) -> bool:\n"
+                "        return False\n\n\n"
+                "class StartedAttempt(Attempt):\n"
+                "    def counts_as_started(self) -> bool:\n"
+                "        return True\n\n\n"
+                "def started_for(rows: dict[str, Attempt], owners: set[str]) -> frozenset[str]:\n"
+                "    return frozenset(\n"
+                "        key for key, row in rows.items() if row.counts_as_started() and row.owner in owners\n"
+                "    )\n"
+            ),
+        },
+    )
+
+    for member_name, consumer, method_name in (
+        ("bypasses", "summary_note", "bypass_count"),
+        ("attention", "ping_labels", "attention_pings"),
+        ("is_working", "working_names", "working_name_entries"),
+        ("prefers_in_process", "pooled_detectors", "pooled_entries"),
+        ("counts_as_started", "started_for", "started_key_entries"),
+    ):
+        findings = _findings(tmp_path)
+        target = next(f for f in findings if f.metrics.member_name == member_name)
+        unpicked = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            target, _snapshot(tmp_path)
+        )
+        assert unpicked.recipe is None
+        assert NeededInput.OWNER_PICK in unpicked.needs, (member_name, unpicked.rejection_reason)
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=target.stable_id,
+                    owner=consumer,
+                    because="family owns its own comprehension projection",
+                    name=method_name,
+                    judgement="Project member contribution for comprehension.",
+                ),
+            ),
+        )
+        picked, _ = picks.applied((target,))
+        ev = ConstantSubtypeAnswerDetector().evaluate_recipe_for_finding(
+            picked[0], _snapshot(tmp_path)
+        )
+        _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "filters.py").read_text()
+    for deleted in ("bypasses", "attention(", "is_working", "prefers_in_process"):
+        assert deleted not in after
+    assert "sum((f.model.bypass_count() for f in findings))" in after or "sum(f.model.bypass_count() for f in findings)" in after
+
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    Finding = ns["Finding"]
+    ShapeModel = ns["ShapeModel"]
+    BypassedModel = ns["BypassedModel"]
+    assert ns["summary_note"]([Finding(ShapeModel()), Finding(BypassedModel()), Finding(BypassedModel())]) == "bypass=2"  # type: ignore[operator]
+    assert ns["ping_labels"]([ns["State"](), ns["AlertState"]("a"), ns["AlertState"]("b")]) == ("ping:a", "ping:b")  # type: ignore[operator]
+    Row = ns["Row"]
+    assert ns["working_names"](  # type: ignore[operator]
+        {
+            "a": Row(True, ns["WorkingStatus"]()),
+            "b": Row(False, ns["WorkingStatus"]()),
+            "c": Row(True, ns["Status"]()),
+        }
+    ) == frozenset({"a"})
+    assert ns["pooled_detectors"]([ns["Detector"], ns["LocalDetector"]]) == [ns["Detector"]]  # type: ignore[operator]
+    Attempt = ns["Attempt"]
+    StartedAttempt = ns["StartedAttempt"]
+    assert ns["started_for"](  # type: ignore[operator]
+        {"k1": StartedAttempt("a"), "k2": StartedAttempt("b"), "k3": Attempt("a")},
+        {"a"},
+    ) == frozenset({"k1"})
+    assert _findings(tmp_path) == []
+
