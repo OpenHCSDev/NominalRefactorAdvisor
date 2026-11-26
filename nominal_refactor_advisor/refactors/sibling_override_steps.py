@@ -21,8 +21,10 @@ from typing import ClassVar
 
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
+    optional_values,
     variadic_parameters,
 )
+from nominal_refactor_advisor.ast_projection import CallKeywords
 from nominal_refactor_advisor.class_index import (
     PER_CLASS_NAMES,
     ClassBodyDeclarationKind,
@@ -855,7 +857,7 @@ def _calls_super_member(node: ast.AST, member_name: str) -> bool:
 def _has_non_none_return(statements: Sequence[ast.stmt]) -> bool:
     for statement in statements:
         for node in ast.walk(statement):
-            if isinstance(node, ast.Return) and node.value is not None:
+            if isinstance(node, ast.Return) and optional_values(node):
                 return True
     return False
 
@@ -1996,9 +1998,7 @@ class SiblingOverrideStepHoist:
         first_call = calls[0]
         if _receiver_call_path(first_call.func, receiver_name) not in restated_calls:
             return None
-        if any(isinstance(arg, ast.Starred) for arg in first_call.args) or any(
-            kw.arg is None for kw in first_call.keywords
-        ):
+        if any(isinstance(arg, ast.Starred) for arg in first_call.args) or CallKeywords.of(first_call.keywords).splats:
             return None
         kw_names = tuple(kw.arg for kw in first_call.keywords)
         first = siblings[0]

@@ -207,40 +207,7 @@ class OwnerPicks:
         """A roster's pick names the family the new base goes below, so a pick
         read against another finding's family is a disagreement, not a base."""
 
-        if pick.owner is None:
-            return OwnerPickOutcome(finding.stable_id, "declined", pick.because), None
-        expected_owner = (
-            finding.metrics.base_pick_owner_name(finding.authority_evidence)
-            if isinstance(finding.metrics, DeclaredBasePickMetrics)
-            else None
-        )
-        owner_label = (
-            finding.metrics.base_pick_owner_label()
-            if isinstance(finding.metrics, DeclaredBasePickMetrics)
-            else "declaring family"
-        )
-        if expected_owner is None or pick.owner != expected_owner:
-            return (
-                OwnerPickOutcome(
-                    finding.stable_id,
-                    "rejected",
-                    f"`{pick.owner}` is not the {owner_label} `{expected_owner}` for this finding",
-                ),
-                None,
-            )
-        if not pick.name or not pick.judgement:
-            return (
-                OwnerPickOutcome(
-                    finding.stable_id,
-                    "rejected",
-                    "a new base needs its class name and one-line judgement",
-                ),
-                None,
-            )
-        return (
-            OwnerPickOutcome(finding.stable_id, "picked", f"base `{pick.name}`"),
-            DeclaredBasePick(pick.name, pick.judgement),
-        )
+        return pick.base_outcome(finding)
 
     @property
     def picked_finding_ids(self) -> frozenset[str]:

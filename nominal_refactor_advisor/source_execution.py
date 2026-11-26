@@ -1243,14 +1243,7 @@ class SourceNativeStorageABC(
     def _local_store_resolution(
         self, binding: NativeBindingTransfer
     ) -> tuple[str, CapturedReferenceResolution]:
-        if binding.value is None:
-            raise ValueError("Native local store has no proved operand")
-        previous = self._preceding_native_local_value(
-            binding.name, binding.instruction_offset
-        )
-        if previous is not None:
-            previous.require_release_in(self.native_lookup_prefix.endpoint.frame)
-        return binding.name, self.native_value(binding.value)
+        return binding._local_store_resolution(self)
 
     def native_value(self, value: NativeProducedValue) -> CapturedReferenceResolution:
         self.require_native_value(value)

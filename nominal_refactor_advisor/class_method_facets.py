@@ -20,6 +20,7 @@ from typing import (
 )
 
 from nominal_refactor_advisor.ast_field_decoders import (
+    ParameterAnnotations,
     declared_annotations,
     variadic_parameters,
 )
@@ -342,8 +343,7 @@ def _method_annotation_nodes(
     return (
         *(
             argument.annotation
-            for argument in arguments
-            if argument.annotation is not None
+            for argument in ParameterAnnotations.of(arguments).annotated
         ),
         *declared_annotations(method),
     )

@@ -1501,35 +1501,7 @@ class ProductFlowRepository(
         line: int,
     ) -> CompactIndexedClass | None:
         """Resolve one exact class-object reference without crossing a local rebind."""
-        if context.declaration is not None and reference.root_name in {
-            parameter.name for parameter in context.declaration.signature.parameters
-        }:
-            return None
-        if not context.flow.owner.kind.is_module_scope:
-            if reference.root_name in context.flow.nonlocal_binding_names:
-                return None
-            if (
-                reference.root_name not in context.flow.global_binding_names
-                and reference.root_name in context.flow.mutations_by_root_name
-            ):
-                return None
-        symbol = self.class_resolver.symbol_for(
-            module_name=context.module_name,
-            reference_parts=reference.parts,
-            allow_unique_unqualified=False,
-        )
-        if symbol is None:
-            return None
-        declaration = self.class_index.class_for(symbol)
-        if declaration is None:
-            return None
-        if (
-            context.flow.owner.kind.is_module_scope
-            and declaration.module_name == context.module_name
-            and declaration.line >= line
-        ):
-            return None
-        return declaration
+        return context._class_for_reference(reference, self, line)
 
     @cached_property
     def function_call_resolutions(self) -> tuple[CompactFunctionCallResolution, ...]:

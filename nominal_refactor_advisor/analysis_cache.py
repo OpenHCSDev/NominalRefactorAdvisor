@@ -562,6 +562,17 @@ class CachedSourceFileSignature(FileStat):
     def source_file_signature(self) -> SourceFileSignature:
         return SourceFileSignature(path=self.path, source_hash=self.source_hash)
 
+    def record_semantic_hash(self, owner):
+        """Publish a worker's derived identity only against its original source."""
+        if self.semantic_hash is None:
+            raise ValueError('Semantic preparation returned no lexical identity')
+        path = Path(self.path)
+        current = owner.entries_by_path[self.path]
+        if not self.matches(path, path.stat()) or replace(current, semantic_hash=self.semantic_hash) != self:
+            raise ValueError(f'Source changed before semantic publication: {path}')
+        owner.entries_by_path[self.path] = self
+        return self.semantic_hash
+
 
 @dataclass(frozen=True)
 class SourceFileSignatureCachePayload:
@@ -1927,17 +1938,7 @@ class SourceFileSignatureCache:
 
     def record_semantic_hash(self, signature: CachedSourceFileSignature) -> str:
         """Publish a worker's derived identity only against its original source."""
-        if signature.semantic_hash is None:
-            raise ValueError("Semantic preparation returned no lexical identity")
-        path = Path(signature.path)
-        current = self.entries_by_path[signature.path]
-        if (
-            not signature.matches(path, path.stat())
-            or replace(current, semantic_hash=signature.semantic_hash) != signature
-        ):
-            raise ValueError(f"Source changed before semantic publication: {path}")
-        self.entries_by_path[signature.path] = signature
-        return signature.semantic_hash
+        return signature.record_semantic_hash(self)
 
     def store_if_dirty(self) -> None:
         self.entries_by_path.store_dirty()

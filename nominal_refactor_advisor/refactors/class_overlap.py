@@ -4032,9 +4032,7 @@ class MovedClosure:
 
     @classmethod
     def of(cls, snapshot: CodemodSourceSnapshot, declaration: SourceRewriteTarget) -> Self:
-        if declaration.file_path is None or declaration.qualname is None:
-            raise NeedsInput("a moved class needs its module and name", NeededInput.OPERATION)
-        return cls.of_roots(snapshot, declaration.file_path, (declaration.qualname,))
+        return declaration.of(snapshot, cls)
 
     @classmethod
     def of_roots(cls, snapshot: CodemodSourceSnapshot, file_path: str, roots: tuple[str, ...]) -> Self:

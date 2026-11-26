@@ -57,7 +57,11 @@ from nominal_refactor_advisor.receipts import (
     ReorderingReceipt,
     ScoredByReceipts,
 )
-from nominal_refactor_advisor.models import SourceLocation
+from nominal_refactor_advisor.models import (
+    DeclaredBasePick,
+    DeclaredBasePickMetrics,
+    SourceLocation,
+)
 from nominal_refactor_advisor.needed_input import NeededInput
 
 
@@ -393,6 +397,19 @@ class OwnerPick(SemanticRecord):
             hoisted_judgement=self.hoisted_judgement,
             candidate=candidate,
         )
+
+    def base_outcome(self, finding):
+        """A roster's pick names the family the new base goes below, so a pick
+    read against another finding's family is a disagreement, not a base."""
+        if self.owner is None:
+            return (OwnerPickOutcome(finding.stable_id, 'declined', self.because), None)
+        expected_owner = finding.metrics.base_pick_owner_name(finding.authority_evidence) if isinstance(finding.metrics, DeclaredBasePickMetrics) else None
+        owner_label = finding.metrics.base_pick_owner_label() if isinstance(finding.metrics, DeclaredBasePickMetrics) else 'declaring family'
+        if expected_owner is None or self.owner != expected_owner:
+            return (OwnerPickOutcome(finding.stable_id, 'rejected', f'`{self.owner}` is not the {owner_label} `{expected_owner}` for this finding'), None)
+        if not self.name or not self.judgement:
+            return (OwnerPickOutcome(finding.stable_id, 'rejected', 'a new base needs its class name and one-line judgement'), None)
+        return (OwnerPickOutcome(finding.stable_id, 'picked', f'base `{self.name}`'), DeclaredBasePick(self.name, self.judgement))
 
 
 class OwnerPickResolution(ABC):

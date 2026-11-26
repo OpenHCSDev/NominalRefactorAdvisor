@@ -201,6 +201,11 @@ class CompactMethodSpec:
             returned_call=returned_call,
         )
 
+    def returned(self, module, methods, pending, owner):
+        if self.returned_call is None:
+            return None
+        return owner.built(module, self.returned_call, methods, pending)
+
 
 @dataclass(frozen=True)
 class CompactServiceClass:
@@ -921,9 +926,7 @@ class ServiceReading:
         methods: Mapping[str, tuple[str, CompactMethodSpec]],
         pending: frozenset[str],
     ) -> tuple[str, str, tuple[str, ...]] | None:
-        if method.returned_call is None:
-            return None
-        return self.built(module, method.returned_call, methods, pending)
+        return method.returned(module, methods, pending, self)
 
 
 __all__ = (

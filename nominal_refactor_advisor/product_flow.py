@@ -3510,6 +3510,25 @@ class CompactFlowContext:
             return self.module_name
         return f"{self.module_name}.{self.flow.owner.qualname}"
 
+    def _class_for_reference(self, reference, owner, line):
+        """Resolve one exact class-object reference without crossing a local rebind."""
+        if self.declaration is not None and reference.root_name in {parameter.name for parameter in self.declaration.signature.parameters}:
+            return None
+        if not self.flow.owner.kind.is_module_scope:
+            if reference.root_name in self.flow.nonlocal_binding_names:
+                return None
+            if reference.root_name not in self.flow.global_binding_names and reference.root_name in self.flow.mutations_by_root_name:
+                return None
+        symbol = owner.class_resolver.symbol_for(module_name=self.module_name, reference_parts=reference.parts, allow_unique_unqualified=False)
+        if symbol is None:
+            return None
+        declaration = owner.class_index.class_for(symbol)
+        if declaration is None:
+            return None
+        if self.flow.owner.kind.is_module_scope and declaration.module_name == self.module_name and (declaration.line >= line):
+            return None
+        return declaration
+
 
 CompactDefinitionSource: TypeAlias = tuple[
     CompactFlowContext, CompactMutation[CompactDefinitionTarget]
