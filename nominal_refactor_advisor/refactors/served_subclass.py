@@ -18,7 +18,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import cached_property
 
-from nominal_refactor_advisor.ast_field_decoders import declared_annotations
+from nominal_refactor_advisor.ast_field_decoders import (
+    ParameterAnnotations,
+    declared_annotations,
+)
 from nominal_refactor_advisor.refactors.class_member_authority import (
     ClassMemberMoveProofContext,
     ClassMemberPromotionStatement,
@@ -357,12 +360,15 @@ def _class_scope_reads(statement: ast.stmt) -> frozenset[str]:
             *(default for default in arguments.kw_defaults if default is not None),
             *(
                 argument.annotation
-                for argument in (
-                    *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
-                    *((arguments.vararg,) if arguments.vararg else ()),
-                    *((arguments.kwarg,) if arguments.kwarg else ()),
-                )
-                if argument.annotation is not None
+                for argument in ParameterAnnotations.of(
+                    (
+                        *arguments.posonlyargs,
+                        *arguments.args,
+                        *arguments.kwonlyargs,
+                        *((arguments.vararg,) if arguments.vararg else ()),
+                        *((arguments.kwarg,) if arguments.kwarg else ()),
+                    )
+                ).annotated
             ),
             *declared_annotations(statement),
         )

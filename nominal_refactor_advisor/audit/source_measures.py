@@ -19,6 +19,7 @@ from typing import ClassVar
 
 from metaclass_registry.mro_dispatch import MroDispatch, handles
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.audit.findings import Package, RawShape
 from nominal_refactor_advisor.audit.identity import TypePositions
@@ -867,7 +868,7 @@ class UnannotatedParameter(PerFileOccurrenceMeasure):
             return 0
         arguments = node.args
         return sum(
-            argument.annotation is None and argument.arg not in ("self", "cls")
+            not declared_annotations(argument) and argument.arg not in ("self", "cls")
             for argument in (
                 *arguments.posonlyargs, *arguments.args, *arguments.kwonlyargs,
                 *filter(None, (arguments.vararg, arguments.kwarg)),

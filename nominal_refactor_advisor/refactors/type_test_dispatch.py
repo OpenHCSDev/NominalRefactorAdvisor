@@ -3212,8 +3212,11 @@ def _parameter_annotation_in_scope(
         for arg in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs):
             if arg.arg == name:
                 return arg.annotation
-        if (fn.args.vararg is not None and fn.args.vararg.arg == name) or (
-            fn.args.kwarg is not None and fn.args.kwarg.arg == name
+        if any(
+            (
+                variadic_parameter.arg == name
+                for variadic_parameter in variadic_parameters(fn.args)
+            )
         ):
             return None
         ann_candidates: list[ast.expr] = []

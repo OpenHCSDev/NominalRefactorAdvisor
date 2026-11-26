@@ -14,6 +14,10 @@ from typing import (
     cast,
 )
 
+from nominal_refactor_advisor.ast_field_decoders import (
+    ParameterAnnotations,
+    declared_annotations,
+)
 from nominal_refactor_advisor.refactors.function_projection_targets import (
     ProjectionTargetT,
     ResolvedFunctionProjectionTarget,
@@ -456,13 +460,14 @@ class DataclassInstanceFieldProjection:
         arguments = projection.node.args
         if any(
             argument.arg == name
-            and argument.annotation is not None
             and proof.annotation_resolves(argument.annotation)
-            for argument in (
-                *arguments.posonlyargs,
-                *arguments.args,
-                *arguments.kwonlyargs,
-            )
+            for argument in ParameterAnnotations.of(
+                (
+                    *arguments.posonlyargs,
+                    *arguments.args,
+                    *arguments.kwonlyargs,
+                )
+            ).annotated
         ):
             return True
         assignments = tuple(
@@ -541,16 +546,23 @@ class DataclassInstanceFieldProjection:
         return frozenset(
             statement.name
             for statement in authority.node.body
-            if isinstance(statement, ast.FunctionDef | ast.AsyncFunctionDef)
+            if isinstance(
+                statement, ast.FunctionDef | ast.AsyncFunctionDef
+            )
             and any(
-                ExpressionReference.decoded(decorator).terminal_name == "classmethod"
-                for decorator in statement.decorator_list
+                (
+                    ExpressionReference.decoded(
+                        decorator
+                    ).terminal_name
+                    == "classmethod"
+                    for decorator in statement.decorator_list
+                )
             )
-            and statement.returns is not None
-            and (
-                proof.annotation_is_self(statement.returns)
-                or proof.annotation_resolves(statement.returns)
+            for declared_annotation in declared_annotations(
+                statement
             )
+            if proof.annotation_is_self(declared_annotation)
+            or proof.annotation_resolves(declared_annotation)
         )
 
     @classmethod

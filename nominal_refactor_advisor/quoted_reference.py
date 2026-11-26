@@ -21,6 +21,7 @@ from functools import cached_property
 from itertools import pairwise
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_field_decoders import declared_annotations
 from nominal_refactor_advisor.lexical_bindings import (
     ImportAlias,
     ImportBoundNameProjection,
@@ -320,8 +321,8 @@ class ModuleReferenceScope:
                         *arguments.kwonlyargs,
                         *filter(None, (arguments.vararg, arguments.kwarg)),
                     ):
-                        if argument.annotation is not None:
-                            yield argument.annotation, True
+                        for declared_annotation in declared_annotations(argument):
+                            yield declared_annotation, True
                 case ast.AnnAssign(annotation=annotation):
                     yield annotation, True
                 case ast.ClassDef(bases=bases):

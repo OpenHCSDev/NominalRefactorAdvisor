@@ -4873,10 +4873,10 @@ def _match_bound_names(pattern: ast.pattern) -> tuple[str, ...]:
     return tuple(
         sorted(
             {
-                node.name
+                capture_name
                 for node in ast.walk(pattern)
                 if isinstance(node, (ast.MatchAs, ast.MatchStar))
-                and node.name is not None
+                for capture_name in capture_names(node)
             }
         )
     )

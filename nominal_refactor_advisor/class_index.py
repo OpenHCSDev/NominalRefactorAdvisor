@@ -52,10 +52,11 @@ from nominal_refactor_advisor.annotation_semantics import (
 from nominal_refactor_advisor.ast_field_decoders import (
     TYPE_PARAMETERS,
     declared_annotations,
+    optional_values,
     variadic_parameters,
 )
 from nominal_refactor_advisor.codemod_import_scopes import ModuleImportScope
-from nominal_refactor_advisor.ast_projection import ExpressionReference
+from nominal_refactor_advisor.ast_projection import CallKeyword, ExpressionReference
 from nominal_refactor_advisor.ast_projection import (
     CallKeywords,
     KeyT,
@@ -4505,10 +4506,12 @@ class ClassBodyNormalForm:
             or (
                 isinstance(stmt, ast.Return)
                 and (
-                    stmt.value is None
-                    or (
-                        isinstance(stmt.value, ast.Constant)
-                        and stmt.value.value is None
+                    all(
+                        (
+                            isinstance(optional_value, ast.Constant)
+                            and optional_value.value is None
+                            for optional_value in optional_values(stmt)
+                        )
                     )
                 )
             )
@@ -6312,13 +6315,13 @@ def _copied_keyword_fields(call: ast.Call) -> tuple[str, ...]:
     by_root: dict[str, list[str]] = defaultdict(list)
     for keyword in call.keywords:
         value = keyword.value
-        if (
-            keyword.arg is not None
-            and isinstance(value, ast.Attribute)
-            and value.attr == keyword.arg
-            and isinstance(value.value, ast.Name)
-        ):
-            by_root[value.value.id].append(keyword.arg)
+        for keyword_name in CallKeyword.decoded(keyword).names:
+            if (
+                isinstance(value, ast.Attribute)
+                and value.attr == keyword_name
+                and isinstance(value.value, ast.Name)
+            ):
+                by_root[value.value.id].append(keyword_name)
     return max(
         (tuple(sorted(names)) for names in by_root.values()),
         key=lambda names: (len(names), names),

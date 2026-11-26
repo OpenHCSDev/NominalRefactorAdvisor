@@ -103,9 +103,11 @@ class FunctionArgumentSource:
     ) -> tuple[ast.expr, ...]:
         """Project expressions, preserving the supplied argument-root order."""
         return tuple(
-            parameter.argument.annotation
+            declared_annotation
             for parameter in parameters
-            if parameter.argument.annotation is not None
+            for declared_annotation in declared_annotations(
+                parameter.argument
+            )
         ) + (() if returns is None else (returns,))
 
 
