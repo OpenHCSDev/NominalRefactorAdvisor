@@ -70,7 +70,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _always_void_terminates,
     _analyze_arm_bodies,
     _body_without_docstring,
-    _class_append_span,
+    _class_append_edits,
     _cross_module_imports_for_body,
     _ends_with_continue_only,
     _has_any_return,
@@ -1037,11 +1037,12 @@ class OwnerAbsenceMethodTarget(ABC):
     method_name: str
 
     @abstractmethod
-    def owner_replacements(
+    def owner_edits(
         self,
         proof: ForeignAbsenceBranchProof,
         owner_geometry: SourceTextGeometry,
-    ) -> tuple[tuple[int, int, str], ...]:
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
         raise NotImplementedError
 
     @abstractmethod
@@ -1062,12 +1063,13 @@ class OwnerAbsenceMethodTarget(ABC):
 class ExistingOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
     """Reuse an already-declared owner method whose body matches identically."""
 
-    def owner_replacements(
+    def owner_edits(
         self,
         proof: ForeignAbsenceBranchProof,
         owner_geometry: SourceTextGeometry,
-    ) -> tuple[tuple[int, int, str], ...]:
-        del proof, owner_geometry
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
+        del proof, owner_geometry, rationale
         return ()
 
     def import_edits(
@@ -1093,11 +1095,12 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
 
     docstring: str | None = None
 
-    def owner_replacements(
+    def owner_edits(
         self,
         proof: ForeignAbsenceBranchProof,
         owner_geometry: SourceTextGeometry,
-    ) -> tuple[tuple[int, int, str], ...]:
+        rationale: str,
+    ) -> tuple[NominalSourceEdit, ...]:
         params = tuple(arg.param_name for arg in proof.captured_args)
         method_source = _render_method(
             InstanceDispatchKind(),
@@ -1107,7 +1110,14 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
             is_async=proof.is_async,
             docstring=self.docstring,
         )
-        return (_class_append_span(owner_geometry, proof.owner.node, method_source),)
+        return _class_append_edits(
+            proof.owner.file_path,
+            owner_geometry,
+            proof.owner.node,
+            method_source,
+            member_names=(self.method_name,),
+            rationale=rationale,
+        )
 
     def import_edits(
         self,
@@ -1303,7 +1313,7 @@ class ForeignAbsenceBranchProof:
         owner_geometry = SourceTextGeometry(
             snapshot.sources_by_file_path[self.owner.file_path]
         )
-        owner_replacements = self.method_target.owner_replacements(self, owner_geometry)
+        owner_edits = self.method_target.owner_edits(self, owner_geometry, rationale)
 
         subject_source = ast.unparse(self.site.subject)
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
@@ -1319,32 +1329,18 @@ class ForeignAbsenceBranchProof:
             line_indent = ""
         replacement = self.site.render_call_replacement(call_expr, line_indent)
 
-        replacements_by_file: dict[str, list[tuple[int, int, str]]] = {}
-        for owner_span in owner_replacements:
-            replacements_by_file.setdefault(self.owner.file_path, []).append(owner_span)
-        replacements_by_file.setdefault(self.source_path, []).append(
-            (rep_start, rep_end, replacement)
-        )
-        geometries = {
-            self.owner.file_path: owner_geometry,
-            self.source_path: consumer_geometry,
-        }
-        span_edits = tuple(
-            geometries[file_path].nominal_edit(
-                file_path=file_path,
-                replacements=tuple(
-                    SourceTextSpanReplacement.from_offsets(
-                        start_offset=start,
-                        end_offset=end,
-                        replacement_source=text,
-                    )
-                    for start, end, text in spans
+        consumer_edit = consumer_geometry.nominal_edit(
+            file_path=self.source_path,
+            replacements=(
+                SourceTextSpanReplacement.from_offsets(
+                    start_offset=rep_start,
+                    end_offset=rep_end,
+                    replacement_source=replacement,
                 ),
-                rationale=rationale,
-            )
-            for file_path, spans in replacements_by_file.items()
+            ),
+            rationale=rationale,
         )
-        return (*span_edits, *import_edits)
+        return (*owner_edits, consumer_edit, *import_edits)
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -920,6 +920,7 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
     inserted_lines: tuple[str, ...] = ()
     leading_boundary: SourceInsertionBoundary = SourceInsertionBoundary.PRESERVE
     layer: SourceInsertionLayer = SourceInsertionLayer.BODY
+    declared_member_names: tuple[str, ...] = ()
 
     def original_span(self, geometry: SourceTextGeometry) -> SourceTextSpan:
         offset = geometry.line_anchor_offset(self.insertion_line)
@@ -957,18 +958,45 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
     ) -> SourceInsertion:
         unique_insertions: list[SourceInsertion] = []
         seen_sources: set[tuple[str, ...]] = set()
+        seen_member_names: set[str] = set()
         for insertion in insertions:
             if insertion.inserted_lines in seen_sources:
                 continue
+            overlap = seen_member_names.intersection(insertion.declared_member_names)
+            if overlap:
+                raise PhysicalSourceEditConflictError(
+                    "Conflicting class member insertions declare "
+                    f"{tuple(sorted(overlap))!r} at "
+                    f"{insertion.file_path}:{insertion.insertion_line}"
+                )
             seen_sources.add(insertion.inserted_lines)
+            seen_member_names.update(insertion.declared_member_names)
             unique_insertions.append(insertion)
-        unique_insertions.sort(key=lambda insertion: insertion.layer.rank)
+        unique_insertions.sort(
+            key=lambda insertion: (
+                insertion.layer.rank,
+                (
+                    insertion.declared_member_names
+                    if insertion.layer.commutes_within_layer
+                    else ()
+                ),
+                (
+                    insertion.inserted_lines
+                    if insertion.layer.commutes_within_layer
+                    else ()
+                ),
+            )
+        )
         coalesced_lines = unique_insertions[0].inserted_lines
         for insertion in unique_insertions[1:]:
             coalesced_lines = insertion.leading_boundary.coalesce_lines(
                 coalesced_lines, insertion.inserted_lines
             )
-        return replace(unique_insertions[0], inserted_lines=coalesced_lines)
+        return replace(
+            unique_insertions[0],
+            inserted_lines=coalesced_lines,
+            declared_member_names=tuple(sorted(seen_member_names)),
+        )
 
     def inserts_at_same_line(self, left):
         return left.insertion_line == self.insertion_line
