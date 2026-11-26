@@ -286,9 +286,9 @@ class CodemodSelectorContext(IndexedSourceAuthority, ABC):
         return DeclaredIdentities.from_modules(
             declared
             for file_path in self.source_file_paths
-            for declared in DeclaredIdentityFamily.collect(
-                self.parsed_module_for_source_path(file_path)
-            )
+            for declared in self.parsed_module_for_source_path(file_path)
+            .family_batch(DeclaredIdentityFamily)
+            .items
         )
 
     def direct_class_declaration_index_for_file(

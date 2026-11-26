@@ -5,6 +5,7 @@ from abc import (
     ABC,
     abstractmethod,
 )
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar
@@ -543,6 +544,19 @@ class DeclarationReferenceFindingRecipeSynthesizer(
         ReferenceEnumMemberOperation,
         ReferenceLookedUpMemberOperation,
     )
+
+    @classmethod
+    def prewarm_parallel_synthesis(
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        findings: Sequence[RefactorFinding],
+    ) -> None:
+        if any(
+            isinstance(finding.metrics, DeclarationReferenceMetrics)
+            and finding.metrics.carried_rewrites
+            for finding in findings
+        ):
+            _ = snapshot.declared_identities
 
     @staticmethod
     def reference_metrics(finding: RefactorFinding) -> DeclarationReferenceMetrics:

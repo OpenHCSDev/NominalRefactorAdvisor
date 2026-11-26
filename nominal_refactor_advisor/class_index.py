@@ -5986,7 +5986,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
         return repository_settled_projections(
             tuple(
                 cls._required_module_projection(module)
-                if module.has_family_batch(cls)
+                if module.cached_family_batch(cls) is not None
                 else module.fact(ModuleClassOverlapProjection).projection
                 for module in parsed_modules
             )

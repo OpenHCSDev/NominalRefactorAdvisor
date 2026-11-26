@@ -919,6 +919,32 @@ class ParsedModule(SourceFileIdentity):
             )
             self._family_batches[key] = CollectedFamilyBatch(items, signature)
 
+    def cached_family_batch(
+        self,
+        family: type[CollectedFamily[ShapeItemT]],
+        demand: object | None = None,
+    ) -> CollectedFamilyBatch[ShapeItemT] | None:
+        """Return this parse's already-collected family batch from memory or the
+        collected-family disk cache, without computing it on a miss."""
+
+        signature = (
+            "" if demand is None else collected_family_demand_cache_signature(demand)
+        )
+        batches = self._family_batches
+        key = (family, signature)
+        existing = batches.get(key)
+        if existing is not None:
+            return cast(CollectedFamilyBatch[ShapeItemT], existing)
+        cache = self.collected_family_cache
+        cached_items = cache.load_items(family, signature)
+        if cached_items is None:
+            return None
+        loaded = CollectedFamilyBatch(
+            cached_items, cache.load_content_signature(family, signature)
+        )
+        batches[key] = loaded
+        return cast(CollectedFamilyBatch[ShapeItemT], loaded)
+
     def family_batch(
         self,
         family: type[CollectedFamily[ShapeItemT]],
@@ -927,30 +953,24 @@ class ParsedModule(SourceFileIdentity):
         """One family's items from this parse, or one demanded view of them,
         collected once and retaining the signature returned by the cache authority."""
 
+        cached = self.cached_family_batch(family, demand)
+        if cached is not None:
+            return cached
         signature = (
             "" if demand is None else collected_family_demand_cache_signature(demand)
         )
-        batches = self._family_batches
-        key = (family, signature)
-        if key not in batches:
-            cache = self.collected_family_cache
-            cached_items = cache.load_items(family, signature)
-            if cached_items is not None:
-                batches[key] = CollectedFamilyBatch(
-                    cached_items, cache.load_content_signature(family, signature)
-                )
-            else:
-                items = tuple(
-                    item
-                    for item in COLLECTED_ITEM_PROJECTION.flatten(
-                        self._collected(family, demand)
-                    )
-                    if isinstance(item, family.item_type)
-                )
-                batches[key] = CollectedFamilyBatch(
-                    items, cache.store_items(family, items, signature)
-                )
-        return cast(CollectedFamilyBatch[ShapeItemT], batches[key])
+        items = tuple(
+            item
+            for item in COLLECTED_ITEM_PROJECTION.flatten(
+                self._collected(family, demand)
+            )
+            if isinstance(item, family.item_type)
+        )
+        loaded = CollectedFamilyBatch(
+            items, self.collected_family_cache.store_items(family, items, signature)
+        )
+        self._family_batches[(family, signature)] = loaded
+        return cast(CollectedFamilyBatch[ShapeItemT], loaded)
 
     def _collected(
         self, family: type[CollectedFamily[ShapeItemT]], demand: object | None
