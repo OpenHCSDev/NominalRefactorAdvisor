@@ -866,6 +866,91 @@ def test_a_legacy_path_with_live_consumers_stops_until_they_migrate(tmp_path: Pa
     assert "user.py" in evaluation.rejection_reason
 
 
+def test_a_legacy_path_stops_when_sibling_tools_or_tests_import_it(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    src = tmp_path / "src"
+    tools = tmp_path / "tools"
+    tests = tmp_path / "tests"
+    src.mkdir()
+    tools.mkdir()
+    tests.mkdir()
+    (tools / "carry.py").write_text(
+        "from old import TeamUpdateStore\n\n\ndef run():\n    return TeamUpdateStore()\n"
+    )
+    (tests / "test_old.py").write_text(
+        "from old import TeamUpdateStore\n\n\ndef test_it():\n    assert TeamUpdateStore\n"
+    )
+    (finding,) = _findings(
+        src,
+        LegacyPathMarkerDetector,
+        {
+            "old": "class TeamUpdateStore:\n"
+            '    """Legacy store."""\n'
+            "    pass\n",
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(src))
+    evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    assert "outside the scanned path" in evaluation.rejection_reason
+    assert "carry.py:1" in evaluation.rejection_reason
+    assert "test_old.py:1" in evaluation.rejection_reason
+
+
+def test_a_legacy_path_ignores_comment_only_mentions_outside_scan(tmp_path: Path):
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'demo'\n")
+    src = tmp_path / "src"
+    tools = tmp_path / "tools"
+    src.mkdir()
+    tools.mkdir()
+    (tools / "notes.py").write_text(
+        '"""Replaced TeamUpdateStore long ago."""\n'
+        "# TeamUpdateStore is gone\n"
+        "VALUE = 1\n"
+    )
+    (finding,) = _findings(
+        src,
+        LegacyPathMarkerDetector,
+        {
+            "old": "class TeamUpdateStore:\n"
+            '    """Legacy store."""\n'
+            "    pass\n",
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(src))
+    evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    (operation,) = evaluation.executable_recipe.operations
+    assert isinstance(operation, EraseDeadCompatibilityOperation)
+
+
+def test_a_legacy_path_uses_git_root_when_no_pyproject_is_present(tmp_path: Path):
+    (tmp_path / ".git").mkdir()
+    src = tmp_path / "src"
+    tools = tmp_path / "tools"
+    src.mkdir()
+    tools.mkdir()
+    (tools / "migrate.py").write_text(
+        "from old import legacy_load\n\n\nRESULT = legacy_load('a')\n"
+    )
+    (finding,) = _findings(
+        src,
+        LegacyPathMarkerDetector,
+        {
+            "old": "def load(path):\n    return path\n\n\n"
+            "def legacy_load(path):\n    return load(path)\n"
+        },
+    )
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(src))
+    evaluation = LegacyPathMarkerDetector().evaluate_recipe_for_finding(
+        finding, snapshot
+    )
+    assert "outside the scanned path" in evaluation.rejection_reason
+    assert "migrate.py:1" in evaluation.rejection_reason
+
+
 def test_a_marked_parameter_is_not_widened_to_its_function(tmp_path: Path):
     (finding,) = _findings(
         tmp_path,
