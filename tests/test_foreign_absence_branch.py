@@ -877,5 +877,397 @@ def test_preserved_owner_annotation_unlocks_follow_up_foreign_absence_push(
     assert ev2.needs == (NeededInput.OWNER_PICK,)
 
 
+def test_prefix_guarded_boolop_does_not_steal_earlier_line_probe(
+    tmp_path: Path,
+) -> None:
+    """In `if self.load is None or self.load.span is None or store.span is None:`,
+    targeting `store.span is None` keeps the earlier `self.load` prefix guard instead
+    of breaking on `self.load.span` and failing."""
+
+    _write(
+        tmp_path,
+        {
+            "win/__init__.py": "",
+            "win/store.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Site:\n"
+                "    span: tuple[int, int] | None\n\n\n"
+                "class Window:\n"
+                "    def __init__(self, load: Site | None) -> None:\n"
+                "        self.load = load\n\n"
+                "    def require_store(self, store: Site) -> None:\n"
+                "        if (\n"
+                "            self.load is None\n"
+                "            or self.load.span is None\n"
+                "            or store.span is None\n"
+                "        ):\n"
+                "            raise ValueError('missing span')\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    (store_finding,) = [
+        f for f in findings if f.metrics.subject_source == "store"
+    ]
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=store_finding.stable_id,
+                owner="Window.require_store",
+                because="site owns its span check",
+                name="require_span",
+                judgement="Raise when this site lacks a source span.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((store_finding,))
+    assert not report.unmatched
+    _apply_one(picked[0], snap)
+
+    after = (tmp_path / "win" / "store.py").read_text()
+    assert "if self.load is None or self.load.span is None:" in after
+    assert "store.require_span()" in after
+    assert "def require_span(self) -> None:" in after
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "win/store.py"), "exec"), ns)
+    Site = ns["Site"]
+    Window = ns["Window"]
+    Window(Site((0, 1))).require_store(Site((2, 3)))  # type: ignore[operator]
+    for load, store in (
+        (None, Site((2, 3))),
+        (Site(None), Site((2, 3))),
+        (Site((0, 1)), Site(None)),
+    ):
+        try:
+            Window(load).require_store(store)  # type: ignore[operator]
+            raise AssertionError("expected ValueError")
+        except ValueError:
+            pass
+
+
+def test_terminal_elif_and_returning_elif_else_push_onto_owner(
+    tmp_path: Path,
+) -> None:
+    """Terminal raising `elif` and returning `elif ... else:` rewrite to `else:`
+    calling the pushed owner method with runtime parity."""
+
+    _write(
+        tmp_path,
+        {
+            "el/__init__.py": "",
+            "el/intervals.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Interval:\n"
+                "    after: int | None\n\n\n"
+                "def check_interval(present: bool, interval: Interval) -> None:\n"
+                "    if present:\n"
+                "        return\n"
+                "    elif interval.after is not None:\n"
+                "        raise ValueError('must be initial')\n\n\n"
+                "def resolve_cut(override: int | None, interval: Interval) -> int:\n"
+                "    if override is not None:\n"
+                "        return override\n"
+                "    elif interval.after is not None:\n"
+                "        return interval.after\n"
+                "    else:\n"
+                "        return 0\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"check_interval", "resolve_cut"}
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["check_interval"].stable_id,
+                owner="check_interval",
+                because="interval validates initial state",
+                name="require_initial",
+                judgement="Raise if this interval has a predecessor.",
+            ),
+            OwnerPick(
+                finding=by_sym["resolve_cut"].stable_id,
+                owner="resolve_cut",
+                because="interval resolves its cut",
+                name="cut_or_zero",
+                judgement="Return the cut position or zero.",
+            ),
+        ),
+    )
+    picked, report = picks.applied(tuple(findings))
+    assert not report.unmatched
+    plan = codemod_plan_from_findings(picked, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "el" / "intervals.py").read_text()
+    assert "else:\n        interval.require_initial()" in after
+    assert "else:\n        return interval.cut_or_zero()" in after
+    after_mods, _after_snap, remaining = _scan(tmp_path)
+    assert remaining == []
+    with ScanCache.scope():
+        assert OwnStateBranchAnswerDetector().detect(after_mods, DetectorConfig()) == []
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "el/intervals.py"), "exec"), ns)
+    Interval = ns["Interval"]
+    ns["check_interval"](True, Interval(5))  # type: ignore[operator]
+    ns["check_interval"](False, Interval(None))  # type: ignore[operator]
+    try:
+        ns["check_interval"](False, Interval(5))  # type: ignore[operator]
+        raise AssertionError("expected ValueError")
+    except ValueError:
+        pass
+    assert ns["resolve_cut"](9, Interval(5)) == 9  # type: ignore[operator]
+    assert ns["resolve_cut"](None, Interval(5)) == 5  # type: ignore[operator]
+    assert ns["resolve_cut"](None, Interval(None)) == 0  # type: ignore[operator]
+
+
+def test_prefix_guarded_and_returning_pushes_trivial_tail_and_rejects_complex_tail(
+    tmp_path: Path,
+) -> None:
+    """`if graph is not None and graph.index is None and ...: return None, None`
+    followed by a trivial pure `return graph, token` pushes cleanly, while a
+    call-bearing fallback tail is refused to avoid duplicating computation."""
+
+    _write(
+        tmp_path,
+        {
+            "pg/__init__.py": "",
+            "pg/cache.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Graph:\n"
+                "    index: int | None\n\n\n"
+                "def compute_fallback(graph: Graph | None) -> int:\n"
+                "    return 0 if graph is None else 1\n\n\n"
+                "def latest_graph(graph: Graph | None, token: str, current: str) -> tuple[Graph | None, str | None]:\n"
+                "    if graph is not None and graph.index is None and token != current:\n"
+                "        return None, None\n"
+                "    return graph, token\n\n\n"
+                "def complex_tail(graph: Graph | None, token: str) -> int:\n"
+                "    if graph is not None and graph.index is None and token == 'bad':\n"
+                "        return -1\n"
+                "    return compute_fallback(graph)\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"latest_graph", "complex_tail"}
+
+    # Complex tail must NOT be duplicated.
+    complex_ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(
+        by_sym["complex_tail"], snap
+    )
+    assert complex_ev.recipe is None
+    assert "not a pushable branch shape" in complex_ev.rejection_reason
+
+    # Trivial pure tail pushes cleanly with OWNER_PICK.
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["latest_graph"].stable_id,
+                owner="latest_graph",
+                because="graph validates predecessor compatibility",
+                name="as_predecessor",
+                judgement="Return this graph and token if usable as a predecessor.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((by_sym["latest_graph"],))
+    assert not report.unmatched
+    _apply_one(picked[0], snap)
+
+    after = (tmp_path / "pg" / "cache.py").read_text()
+    assert (
+        "if graph is not None:\n"
+        "        return graph.as_predecessor(token, current)\n"
+        "    return (graph, token)"
+    ) in after
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "pg/cache.py"), "exec"), ns)
+    Graph = ns["Graph"]
+    assert ns["latest_graph"](None, "a", "b") == (None, "a")  # type: ignore[operator]
+    assert ns["latest_graph"](Graph(None), "a", "b") == (None, None)  # type: ignore[operator]
+    assert ns["latest_graph"](Graph(None), "a", "a") == (Graph(None), "a")  # type: ignore[operator]
+    assert ns["latest_graph"](Graph(7), "a", "b") == (Graph(7), "a")  # type: ignore[operator]
+
+
+def test_nested_if_loop_continue_tail_preserves_continue_and_rejects_fallthrough(
+    tmp_path: Path,
+) -> None:
+    """Inside a nested `if` within a `for` loop, an `if ns.sym is None: continue`
+    followed by a tail ending in `continue` pushes as `ns.method(...)\\ncontinue`,
+    preserving the loop skip; a nested `if` without trailing `continue` stays refused."""
+
+    _write(
+        tmp_path,
+        {
+            "lp/__init__.py": "",
+            "lp/scan.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Summary:\n"
+                "    sym: str | None\n\n\n"
+                "def collect_dirty(items: list[tuple[bool, Summary]]) -> tuple[list[str], list[str]]:\n"
+                "    dirty: list[str] = []\n"
+                "    fallback: list[str] = []\n"
+                "    for fast, ns in items:\n"
+                "        if fast:\n"
+                "            if ns.sym is None:\n"
+                "                continue\n"
+                "            if ns.sym.startswith('d'):\n"
+                "                dirty.append(ns.sym)\n"
+                "            continue\n"
+                "        fallback.append(str(ns.sym))\n"
+                "    return dirty, fallback\n\n\n"
+                "def fallthrough_nested(items: list[tuple[bool, Summary]]) -> list[str]:\n"
+                "    seen: list[str] = []\n"
+                "    for fast, ns in items:\n"
+                "        if fast:\n"
+                "            if ns.sym is None:\n"
+                "                continue\n"
+                "            seen.append(ns.sym)\n"
+                "        seen.append('after')\n"
+                "    return seen\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"collect_dirty", "fallthrough_nested"}
+
+    # Fallthrough nested `if` MUST stay refused (pushing it would drop `continue` or mis-continue).
+    ft_ev = ForeignAbsenceProbeDetector().evaluate_recipe_for_finding(
+        by_sym["fallthrough_nested"], snap
+    )
+    assert ft_ev.recipe is None
+    assert "not a pushable branch shape" in ft_ev.rejection_reason
+
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["collect_dirty"].stable_id,
+                owner="collect_dirty",
+                because="summary records dirty symbol when present",
+                name="record_dirty",
+                judgement="Record this summary symbol if dirty.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((by_sym["collect_dirty"],))
+    assert not report.unmatched
+    _apply_one(picked[0], snap)
+
+    after = (tmp_path / "lp" / "scan.py").read_text()
+    assert "ns.record_dirty(dirty)\n            continue" in after
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "lp/scan.py"), "exec"), ns)
+    Summary = ns["Summary"]
+    dirty, fallback = ns["collect_dirty"](  # type: ignore[operator]
+        [(True, Summary(None)), (True, Summary("d1")), (True, Summary("ok")), (False, Summary("x"))]
+    )
+    assert dirty == ["d1"]
+    assert fallback == ["x"]
+
+
+def test_composite_multi_ternary_expression_pushes_and_auto_reuses_on_second_site(
+    tmp_path: Path,
+) -> None:
+    """Two non-boolean `IfExp`s probing the same subject inside one tuple push as
+    one method on the owner, and a second function with the same tuple auto-reuses
+    that method with zero `OWNER_PICK` and zero `OwnStateBranchAnswer`."""
+
+    _write(
+        tmp_path,
+        {
+            "ct/__init__.py": "",
+            "ct/scope.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Scope:\n"
+                "    name: str\n"
+                "    decl: str | None\n"
+                "    final: str | None\n\n\n"
+                "def _slice(val: str, prefix: str) -> str:\n"
+                "    return f'{prefix}:{val}'\n\n\n"
+                "def build_seed_key(scope: Scope, prefix: str) -> tuple[str, str | None, str | None]:\n"
+                "    key = (\n"
+                "        scope.name,\n"
+                "        None if scope.decl is None else _slice(scope.decl, prefix),\n"
+                "        None if scope.final is None else _slice(scope.final, prefix),\n"
+                "    )\n"
+                "    return key\n\n\n"
+                "def build_live_key(scope: Scope, prefix: str) -> tuple[str, str | None, str | None]:\n"
+                "    key = (\n"
+                "        scope.name,\n"
+                "        None if scope.decl is None else _slice(scope.decl, prefix),\n"
+                "        None if scope.final is None else _slice(scope.final, prefix),\n"
+                "    )\n"
+                "    return key\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"build_seed_key", "build_live_key"}
+
+    # Push first site with OWNER_PICK.
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=by_sym["build_seed_key"].stable_id,
+                owner="build_seed_key",
+                because="scope owns its digest key",
+                name="digest_key",
+                judgement="Build the digest key tuple for this scope.",
+            ),
+        ),
+    )
+    picked, report = picks.applied((by_sym["build_seed_key"],))
+    assert not report.unmatched
+    _apply_one(picked[0], snap)
+
+    # Second site auto-reuses `Scope.digest_key` with ZERO OWNER_PICK!
+    _mods2, snap2, remaining2 = _scan(tmp_path)
+    assert [f.primary_evidence.symbol for f in remaining2] == ["build_live_key"]
+    _apply_one(remaining2[0], snap2)
+
+    after = (tmp_path / "ct" / "scope.py").read_text()
+    assert after.count("def digest_key(") == 1
+    assert after.count("scope.digest_key(prefix)") == 2
+    after_mods, _after_snap, remaining3 = _scan(tmp_path)
+    assert remaining3 == []
+    with ScanCache.scope():
+        assert OwnStateBranchAnswerDetector().detect(after_mods, DetectorConfig()) == []
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "ct/scope.py"), "exec"), ns)
+    Scope = ns["Scope"]
+    s1 = Scope("m", "a", None)
+    s2 = Scope("m", None, "b")
+    assert ns["build_seed_key"](s1, "p") == ("m", "p:a", None)  # type: ignore[operator]
+    assert ns["build_live_key"](s2, "p") == ("m", None, "p:b")  # type: ignore[operator]
+
+
+
 
 
