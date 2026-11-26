@@ -685,6 +685,8 @@ def test_routes_transforming_ternary_paired_variadic_and_local_binding_proofs(
         assert ns["require_assigned_value"](ann_val) is True  # type: ignore[operator]
     finally:
         sys.path.remove(str(tmp_path))
+        for mod_name in [m for m in sys.modules if m == "pkg_shapes" or m.startswith("pkg_shapes.")]:
+            sys.modules.pop(mod_name, None)
 
 
 def _write_declared_decoder_pkg(tmp_path: Path, mod_source: str) -> tuple[Path, list]:
@@ -801,4 +803,238 @@ def test_same_function_same_decoder_both_routable_compose_cleanly(
     assert "a = declared_annotations(argument)" in after
     assert "b = declared_annotations(node)" in after
     assert "is None" not in after
+
+
+def test_routes_comprehension_filter_disjunction_prefix_early_exit_guarded_ternary_and_terminal_elif(
+    tmp_path: Path,
+) -> None:
+    """Exercise all new sound shapes end-to-end with runtime parity:
+    - SingleNodeComprehensionFilterProbeSite (with pre/post guards)
+    - DisjunctiveAbsentProbeSite (`V.f is None or P(V.f)` inside `if` and `all(...)`)
+    - EarlyExitAbsentProbeSite with prefix `or` (`if not isinstance(...) or V.f is None:`)
+    - FallbackTernaryProbeSite with prefix `and` (`EXPR if guard and V.f is not None else fallback`)
+    - Terminal `elif` in IfPresentProbeSite + PresenceTestProbeSite `and`-narrowing fix
+    - Multi-line `if (...)` header wrapping in IfPresentProbeSite
+    """
+
+    package = tmp_path / "pkg_shapes"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    mod_path = package / "mod.py"
+    mod_path.write_text(
+        "from __future__ import annotations\n"
+        "import ast\n"
+        "from collections.abc import Iterator\n\n\n"
+        "def aliased_for(stmt: ast.Import, target: str) -> tuple[str, ...]:\n"
+        "    return tuple(\n"
+        "        alias.asname\n"
+        "        for alias in stmt.names\n"
+        "        if alias.asname is not None and alias.name == target\n"
+        "    )\n\n\n"
+        "def is_none_return(stmt: ast.stmt) -> bool:\n"
+        "    return all(\n"
+        "        isinstance(s, ast.Return)\n"
+        "        and (\n"
+        "            s.value is None\n"
+        "            or (\n"
+        "                isinstance(s.value, ast.Constant)\n"
+        "                and s.value.value is None\n"
+        "            )\n"
+        "        )\n"
+        "        for s in (stmt,)\n"
+        "    )\n\n\n"
+        "def import_from_module(stmt: ast.stmt) -> tuple[str, int] | None:\n"
+        "    if not isinstance(stmt, ast.ImportFrom) or stmt.module is None:\n"
+        "        return None\n"
+        "    return (stmt.module, stmt.level)\n\n\n"
+        "def maybe_return(fn: ast.FunctionDef, include: bool) -> str:\n"
+        "    return (\n"
+        "        ast.unparse(fn.returns)\n"
+        "        if include and fn.returns is not None\n"
+        "        else 'None'\n"
+        "    )\n\n\n"
+        "def import_bindings(stmt: ast.Import, target: str) -> Iterator[str]:\n"
+        "    for alias in stmt.names:\n"
+        "        if alias.asname is None and alias.name == target:\n"
+        "            yield alias.name\n"
+        "        elif alias.asname is not None and alias.name == target:\n"
+        "            yield alias.asname\n\n\n"
+        "def matching_kw_names(call: ast.Call) -> list[str]:\n"
+        "    out: list[str] = []\n"
+        "    for keyword in call.keywords:\n"
+        "        value = keyword.value\n"
+        "        if (\n"
+        "            keyword.arg is not None\n"
+        "            and isinstance(value, ast.Attribute)\n"
+        "            and value.attr == keyword.arg\n"
+        "            and isinstance(value.value, ast.Name)\n"
+        "        ):\n"
+        "            out.append(keyword.arg)\n"
+        "    return out\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+        and Path(finding.primary_evidence.file_path) == mod_path
+    ]
+    assert len(findings) >= 6
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert len(plan.document.recipes) == 1, [
+        (r.finding.primary_evidence.line, r.status, r.reason) for r in plan.records
+    ]
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "is None" not in after or after.count("is None") == 1  # Constant.value is None stays
+    assert "s.value is None" not in after
+    assert "stmt.module is None" not in after
+    assert "fn.returns is not None" not in after
+    assert "alias.asname is None" not in after
+    assert "alias.asname is not None" not in after
+    assert "keyword.arg is not None" not in after
+    assert "for import_alias in alias_names(alias)" in after
+    assert "for optional_value in optional_values(s)" in after
+    assert "for import_module in import_modules(stmt):" in after
+    assert "declared_annotations(fn) if include else ()" in after
+    assert max(len(line) for line in after.splitlines()) <= 88
+
+    ns: dict[str, object] = {}
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(after, str(mod_path), "exec"), ns)
+        imp = ast.parse("import os as operating_system, sys").body[0]
+        imp_from = ast.parse("from pkg.mod import x").body[0]
+        rel_from = ast.parse("from . import x").body[0]
+        fn = ast.parse("def g() -> int: return 1").body[0]
+        fn_bare = ast.parse("def g(): return").body[0]
+        call = ast.parse("f(a=x.a, b=x.c, **kw)").body[0].value  # type: ignore[attr-defined]
+        assert ns["aliased_for"](imp, "os") == ("operating_system",)  # type: ignore[operator]
+        assert ns["aliased_for"](imp, "sys") == ()  # type: ignore[operator]
+        assert ns["is_none_return"](ast.parse("return").body[0]) is True  # type: ignore[operator]
+        assert ns["is_none_return"](ast.parse("return None").body[0]) is True  # type: ignore[operator]
+        assert ns["is_none_return"](ast.parse("return 1").body[0]) is False  # type: ignore[operator]
+        assert ns["import_from_module"](imp_from) == ("pkg.mod", 0)  # type: ignore[operator]
+        assert ns["import_from_module"](rel_from) is None  # type: ignore[operator]
+        assert ns["import_from_module"](imp) is None  # type: ignore[operator]
+        assert ns["maybe_return"](fn, True) == "int"  # type: ignore[operator]
+        assert ns["maybe_return"](fn, False) == "None"  # type: ignore[operator]
+        assert ns["maybe_return"](fn_bare, True) == "None"  # type: ignore[operator]
+        assert list(ns["import_bindings"](imp, "sys")) == ["sys"]  # type: ignore[operator]
+        assert list(ns["import_bindings"](imp, "os")) == ["operating_system"]  # type: ignore[operator]
+        assert ns["matching_kw_names"](call) == ["a"]  # type: ignore[operator]
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [m for m in sys.modules if m == "pkg_shapes" or m.startswith("pkg_shapes.")]:
+            sys.modules.pop(mod_name, None)
+
+
+def test_proves_ast_types_through_assert_type_alias_match_subpattern_comprehension_and_typed_attr(
+    tmp_path: Path,
+) -> None:
+    """Exercise all new AST type proofs in OptionalAstFieldAuthority:
+    - Module-level TypeAlias (`FunctionNode`) + `for fn in (function, *reversed(enclosing)):`
+    - `assert isinstance(node, ast.ExceptHandler)`
+    - `match` keyword subpattern `args=arguments` + `filter(None, (arguments.vararg, arguments.kwarg))`
+    - Earlier comprehension `if isinstance(node, ast.Import)` clause
+    - Typed class attribute collection (`self.fixed_keywords: tuple[ast.keyword, ...]`)
+    """
+
+    package = tmp_path / "pkg_proofs"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    mod_path = package / "mod.py"
+    mod_path.write_text(
+        "from __future__ import annotations\n"
+        "import ast\n"
+        "from dataclasses import dataclass\n\n"
+        "FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef\n\n\n"
+        "def has_variadic_named(\n"
+        "    function: FunctionNode, enclosing: tuple[FunctionNode, ...], name: str\n"
+        ") -> bool:\n"
+        "    for fn in (function, *reversed(enclosing)):\n"
+        "        if (fn.args.vararg is not None and fn.args.vararg.arg == name) or (\n"
+        "            fn.args.kwarg is not None and fn.args.kwarg.arg == name\n"
+        "        ):\n"
+        "            return True\n"
+        "    return False\n\n\n"
+        "def assert_handler_name(node: ast.AST) -> list[str]:\n"
+        "    out: list[str] = []\n"
+        "    assert isinstance(node, ast.ExceptHandler)\n"
+        "    if node.name is not None:\n"
+        "        out.append(node.name)\n"
+        "    return out\n\n\n"
+        "def match_arg_annotations(node: ast.stmt) -> list[ast.expr]:\n"
+        "    out: list[ast.expr] = []\n"
+        "    match node:\n"
+        "        case ast.FunctionDef(args=arguments) | ast.AsyncFunctionDef(args=arguments):\n"
+        "            for argument in (\n"
+        "                *arguments.posonlyargs,\n"
+        "                *arguments.args,\n"
+        "                *arguments.kwonlyargs,\n"
+        "                *filter(None, (arguments.vararg, arguments.kwarg)),\n"
+        "            ):\n"
+        "                if argument.annotation is not None:\n"
+        "                    out.append(argument.annotation)\n"
+        "    return out\n\n\n"
+        "def aliased_imports(stmts: list[ast.stmt], target: str) -> list[ast.alias]:\n"
+        "    return [\n"
+        "        alias\n"
+        "        for node in stmts\n"
+        "        if isinstance(node, ast.Import)\n"
+        "        for alias in node.names\n"
+        "        if alias.asname is not None and alias.name == target\n"
+        "    ]\n\n\n"
+        "@dataclass(frozen=True)\n"
+        "class FixedCall:\n"
+        "    fixed_keywords: tuple[ast.keyword, ...]\n\n"
+        "    def named_keys(self) -> list[str]:\n"
+        "        return [kw.arg for kw in self.fixed_keywords if kw.arg is not None]\n"
+    )
+    modules = parse_python_modules(tmp_path)
+    findings = [
+        finding
+        for finding in ForeignAbsenceProbeDetector().detect(modules, DetectorConfig())
+        if finding.detector_id == "foreign_absence_probe"
+        and Path(finding.primary_evidence.file_path) == mod_path
+    ]
+    assert len(findings) == 5
+    snapshot = CodemodSourceSnapshot.from_modules(modules, findings)
+    plan = codemod_plan_from_findings(findings, selector_context=snapshot)
+    assert len(plan.document.recipes) == 1, [
+        (r.finding.primary_evidence.line, r.status, r.reason) for r in plan.records
+    ]
+    simulation = plan.document.simulate(snapshot)
+    assert simulation.is_clean
+    simulation.apply()
+    after = mod_path.read_text()
+    assert "is not None" not in after
+    assert "variadic_parameters(fn.args)" in after
+    assert "capture_names(node)" in after
+    assert "declared_annotations(argument)" in after
+    assert "alias_names(alias)" in after
+    assert "CallKeywords.of(self.fixed_keywords).named" in after
+
+    ns: dict[str, object] = {}
+    sys.path.insert(0, str(tmp_path))
+    try:
+        exec(compile(after, str(mod_path), "exec"), ns)
+        fn1 = ast.parse("def f(a: int, *v: str): pass").body[0]
+        fn2 = ast.parse("async def g(**k: bytes): pass").body[0]
+        handler = ast.parse("try:\n    pass\nexcept Exception as err:\n    pass").body[0].handlers[0]  # type: ignore[attr-defined]
+        imp = ast.parse("import os as o, sys").body[0]
+        call = ast.parse("f(a=1, **d)").body[0].value  # type: ignore[attr-defined]
+        assert ns["has_variadic_named"](fn1, (fn2,), "k") is True  # type: ignore[operator]
+        assert ns["has_variadic_named"](fn1, (), "k") is False  # type: ignore[operator]
+        assert ns["assert_handler_name"](handler) == ["err"]  # type: ignore[operator]
+        assert [ast.unparse(e) for e in ns["match_arg_annotations"](fn1)] == ["int", "str"]  # type: ignore[operator]
+        assert [a.asname for a in ns["aliased_imports"]([imp], "os")] == ["o"]  # type: ignore[operator]
+        assert ns["FixedCall"](tuple(call.keywords)).named_keys() == ["a"]  # type: ignore[operator]
+    finally:
+        sys.path.remove(str(tmp_path))
+        for mod_name in [m for m in sys.modules if m == "pkg_proofs" or m.startswith("pkg_proofs.")]:
+            sys.modules.pop(mod_name, None)
 

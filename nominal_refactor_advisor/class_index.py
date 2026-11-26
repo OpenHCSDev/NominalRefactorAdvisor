@@ -1990,6 +1990,8 @@ class CompactModuleClassProjection(
     annotated_function_returns: tuple[CompactAnnotatedFunctionReturn, ...] = ()
     type_variable_names: tuple[str, ...] = ()
     """Module-level names bound to a `TypeVar`, `ParamSpec` or `TypeVarTuple` call."""
+    type_aliases: tuple[tuple[str, str], ...] = ()
+    """Module-level `(name, expression_source)` pairs declaring a type alias."""
     repeated_keyed_family_roots: tuple[CompactRepeatedKeyedFamilyRoot, ...] = ()
     manual_subclass_roster_roots: tuple[CompactManualSubclassRosterRoot, ...] = ()
     latent_rosters: tuple[LatentRosterObservation, ...] = ()
@@ -6035,6 +6037,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                 )
             ),
             type_variable_names=_module_type_variable_names(parsed_module),
+            type_aliases=_module_type_aliases(parsed_module),
             annotated_function_returns=tuple(
                 CompactAnnotatedFunctionReturn(
                     node.name, node.lineno, ast.unparse(returns)
@@ -6082,6 +6085,7 @@ class CompactModuleClassProjectionFamily(CollectedFamily[CompactModuleClassProje
                     )
                 ),
                 type_variable_names=_module_type_variable_names(parsed_module),
+            type_aliases=_module_type_aliases(parsed_module),
                 annotated_function_returns=tuple(
                     CompactAnnotatedFunctionReturn(
                         node.name, node.lineno, ast.unparse(returns)
@@ -7597,6 +7601,64 @@ TYPE_VARIABLE_CONSTRUCTORS = frozenset(
     for module in ("typing", "typing_extensions")
     for name in ("TypeVar", "ParamSpec", "TypeVarTuple")
 )
+
+TYPE_ALIAS_ANNOTATIONS = frozenset(
+    f"{module}.TypeAlias" for module in ("typing", "typing_extensions")
+)
+
+
+def _is_type_union_expression(node: ast.expr) -> bool:
+    """Whether `node` is a `|` union of type-name/attribute/subscript/`None` expressions."""
+
+    def _is_type_atom(expr: ast.expr) -> bool:
+        match expr:
+            case ast.Name() | ast.Attribute() | ast.Subscript() | ast.Constant(value=None):
+                return True
+            case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+                return _is_type_atom(left) and _is_type_atom(right)
+        return False
+
+    match node:
+        case ast.BinOp(left=left, op=ast.BitOr(), right=right):
+            return _is_type_atom(left) and _is_type_atom(right)
+    return False
+
+
+def _module_type_aliases(parsed_module: ParsedModule) -> tuple[tuple[str, str], ...]:
+    """Module-level type alias declarations `(name, expression_source)`."""
+
+    aliases = module_import_aliases(parsed_module)
+    assigned_counts: dict[str, int] = {}
+    for statement in parsed_module.module.body:
+        match statement:
+            case ast.TypeAlias(name=ast.Name(id=name)):
+                assigned_counts[name] = assigned_counts.get(name, 0) + 1
+            case ast.AnnAssign(target=ast.Name(id=name)):
+                assigned_counts[name] = assigned_counts.get(name, 0) + 1
+            case ast.Assign(targets=targets):
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        assigned_counts[target.id] = assigned_counts.get(target.id, 0) + 1
+    found: list[tuple[str, str]] = []
+    for statement in parsed_module.module.body:
+        match statement:
+            case ast.TypeAlias(
+                name=ast.Name(id=name), type_params=[], value=value
+            ) if assigned_counts[name] == 1:
+                found.append((name, ast.unparse(value)))
+            case ast.AnnAssign(
+                target=ast.Name(id=name), annotation=annotation, value=ast.expr() as value
+            ) if assigned_counts[name] == 1:
+                parts = ExpressionReference.decoded(annotation).attribute_chain
+                if parts and parts[0] in aliases:
+                    qualified = ".".join((aliases[parts[0]], *parts[1:]))
+                    if qualified in TYPE_ALIAS_ANNOTATIONS:
+                        found.append((name, ast.unparse(value)))
+            case ast.Assign(
+                targets=[ast.Name(id=name)], value=value
+            ) if assigned_counts[name] == 1 and _is_type_union_expression(value):
+                found.append((name, ast.unparse(value)))
+    return tuple(found)
 
 
 def _module_type_variable_names(parsed_module: ParsedModule) -> tuple[str, ...]:

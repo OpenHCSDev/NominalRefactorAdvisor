@@ -23,7 +23,9 @@ from nominal_refactor_advisor.class_index import (
 )
 from nominal_refactor_advisor import declared_receivers
 from nominal_refactor_advisor.declared_receivers import (
+    DeclaredInstance,
     DeclaredReceiverTyping,
+    OUTSIDE_METHOD,
     ReceiverPathBuilder,
     ScannedClass,
     UndeclaredType,
@@ -611,3 +613,50 @@ def test_an_undecidable_branch_keeps_both_arms():
     )
     (branch,) = resolved.body
     assert isinstance(branch, ast.If)
+
+
+def test_declared_receiver_typing_expands_module_and_reexported_type_aliases(
+    tmp_path: Path,
+) -> None:
+    """PEP 695 `type`, `TypeAlias`, and union aliases expand across modules without cycling."""
+
+    pkg = tmp_path / "pkg"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("")
+    (pkg / "defs.py").write_text(
+        "from __future__ import annotations\n"
+        "from typing import TypeAlias\n\n"
+        "class Base:\n"
+        "    value: int\n\n"
+        "class Left(Base): pass\n"
+        "class Right(Base): pass\n\n"
+        "PairAlias: TypeAlias = Left | Right\n"
+        "UnionAlias = Left | Right\n"
+        "type Pep695Alias = Left | Right\n"
+        "CyclicA: TypeAlias = CyclicB | Left\n"
+        "CyclicB: TypeAlias = CyclicA | Right\n"
+    )
+    (pkg / "use.py").write_text(
+        "from __future__ import annotations\n"
+        "from pkg.defs import PairAlias, UnionAlias, Pep695Alias, CyclicA\n\n"
+        "def read(a: PairAlias, b: UnionAlias, c: Pep695Alias, d: CyclicA):\n"
+        "    return a, b, c, d\n"
+    )
+    modules = parse_python_modules(pkg)
+    projections = tuple(
+        CompactModuleClassProjectionFamily.collect_stub(module) for module in modules
+    )
+    class_index = CompactClassFamilyIndexBuilder(projections).build()
+    typing = DeclaredReceiverTyping.from_projections(projections, class_index)
+    use_mod = next(m for m in modules if m.module_name == "pkg.use")
+    expected = DeclaredInstance(("pkg.defs.Left", "pkg.defs.Right"))
+    for alias_name in ("PairAlias", "UnionAlias", "Pep695Alias"):
+        resolved = typing.annotation_source_type(
+            use_mod.module_name, alias_name, OUTSIDE_METHOD
+        )
+        assert resolved == expected
+    # Cyclic aliases terminate cleanly without infinite recursion.
+    cyclic = typing.annotation_source_type(
+        use_mod.module_name, "CyclicA", OUTSIDE_METHOD
+    )
+    assert isinstance(cyclic, UndeclaredType)
