@@ -76,6 +76,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     InstanceDispatchKind,
     OrElseGuardedStatementDispatchSite,
     OuterReceiverAlias,
+    PrefixGuardedAndReturningDispatchSite,
     PrefixGuardedOrDispatchSite,
     PrefixGuardedStatementDispatchSite,
     ResolvedMethodAnnotations,
@@ -91,10 +92,16 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _class_append_edits,
     _cross_module_imports_for_body,
     _ends_with_continue_only,
+    _expr_occurs_in_nodes,
     _has_any_return,
+    _has_break_or_continue,
     _has_non_continue_loop_escape,
     _has_value_return,
+    _is_dispatchable_match_subject,
     _is_pure_subject,
+    _names_referenced_outside,
+    _names_stored_in,
+    _node_covers_line,
     _outer_receiver_aliases,
     _render_method,
     _rewrite_loop_continues_to_returns,
@@ -102,6 +109,8 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _statement_list_children,
     _strip_trailing_bare_return,
     _strip_trailing_continue,
+    _trivial_pure_return,
+    _upgrade_dispatch_site_to_assigning,
 )
 from nominal_refactor_advisor.relocation_observations import (
     ClassBodyReading,
@@ -193,19 +202,56 @@ class ComprehensionFilterDispatchSite(DispatchSite):
         return ast.unparse(ast.fix_missing_locations(new_comp))
 
 
+def _is_pure_slice(expr: ast.expr) -> bool:
+    match expr:
+        case ast.Constant():
+            return True
+        case ast.Name() | ast.Attribute():
+            return _is_pure_subject(expr)
+        case ast.Tuple(elts=elts):
+            return all(_is_pure_slice(elt) for elt in elts)
+    return False
+
+
+def _is_pure_subscript(expr: ast.expr) -> bool:
+    match expr:
+        case ast.Subscript(value=value, slice=sl):
+            return (
+                _is_pure_subject(value) or _is_pure_subscript(value)
+            ) and _is_pure_slice(sl)
+        case ast.Attribute(value=value):
+            return _is_pure_subscript(value)
+    return False
+
+
+def _subject_allowed_for_site(site: DispatchSite) -> bool:
+    subject = site.subject
+    if _is_pure_subject(subject):
+        return True
+    if not _is_dispatchable_match_subject(subject):
+        return False
+    bodies = (*(arm.body for arm in site.arms), site.default_body)
+    statements = tuple(stmt for body in bodies for stmt in body)
+    if not _expr_occurs_in_nodes(ast.dump(subject), statements):
+        return True
+    return _is_pure_subscript(subject) and all(
+        len(body) == 1 and isinstance(body[0], ast.Return) for body in bodies
+    )
+
+
 def _extract_answer_read(expr: ast.expr, member_name: str) -> ast.expr | None:
     """Return `subject` when `expr` is `subject.<member_name>` or `subject.<member_name>()`."""
 
     match expr:
         case ast.Attribute(value=subject, attr=attr) if (
-            attr == member_name and _is_pure_subject(subject)
+            attr == member_name and _is_dispatchable_match_subject(subject)
         ):
             return subject
         case ast.Call(
             func=ast.Attribute(value=subject, attr=attr),
             args=[],
             keywords=[],
-        ) if attr == member_name and _is_pure_subject(subject):
+        ) if attr == member_name and _is_dispatchable_match_subject(subject):
             return subject
     return None
 
@@ -261,20 +307,54 @@ def _build_answer_statement_site(
     replaced_nodes: tuple[ast.stmt, ...],
     is_whole_function: bool,
     test_nodes: tuple[ast.AST, ...],
+    *,
+    container: list[ast.stmt] | None = None,
+    index: int | None = None,
+    whole_fn_body: list[ast.stmt] | None = None,
 ) -> AnswerBranchSite | None:
     all_bodies = (*(arm.body for arm in arms), default_body)
     if any(_has_any_return(body) for body in all_bodies):
-        if not all(_always_terminates(body) for body in all_bodies):
+        if all(_always_terminates(body) for body in all_bodies):
+            return AnswerBranchSite(
+                ReturningStatementDispatchSite(
+                    subject=first_test.subject,
+                    kind=kind,
+                    arms=arms,
+                    default_body=default_body,
+                    is_whole_function=is_whole_function,
+                    test_nodes=test_nodes,
+                    replaced_nodes=replaced_nodes,
+                ),
+                arm_values,
+            )
+        if container is None or index is None or whole_fn_body is None:
             return None
+        tail = tuple(container[index + 1 :])
+        if not tail or not _always_terminates(tail) or _has_break_or_continue(tail):
+            return None
+        if any(
+            not _always_terminates(body) and _has_break_or_continue(body)
+            for body in all_bodies
+        ):
+            return None
+        extended_default = (
+            default_body if _always_terminates(default_body) else (*default_body, *tail)
+        )
+        extended_arms = tuple(
+            arm
+            if _always_terminates(arm.body)
+            else _dummy_arm((*arm.body, *tail))
+            for arm in arms
+        )
         return AnswerBranchSite(
             ReturningStatementDispatchSite(
                 subject=first_test.subject,
                 kind=kind,
-                arms=arms,
-                default_body=default_body,
-                is_whole_function=is_whole_function,
+                arms=extended_arms,
+                default_body=extended_default,
+                is_whole_function=container is whole_fn_body and index == 0,
                 test_nodes=test_nodes,
-                replaced_nodes=replaced_nodes,
+                replaced_nodes=tuple(container[index:]),
             ),
             arm_values,
         )
@@ -306,13 +386,18 @@ def _extract_compound_answer_if(
         return None
     if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
         return None
-    first = _parse_answer_test(stmt.test.values[0], member_name)
+    first_value = stmt.test.values[0]
+    first = (
+        _parse_answer_test(first_value, member_name)
+        if _node_covers_line(first_value, test_line)
+        else None
+    )
     if first is None:
         match_index: int | None = None
         matched: ParsedAnswerTest | None = None
         for idx, value in enumerate(stmt.test.values[1:], start=1):
             parsed = _parse_answer_test(value, member_name)
-            if parsed is not None and value.lineno == test_line:
+            if parsed is not None and _node_covers_line(value, test_line):
                 match_index = idx
                 matched = parsed
                 break
@@ -459,12 +544,83 @@ def _extract_compound_answer_if(
                 )
             if stmt.orelse or _has_any_return(stmt.body):
                 return None
-        if stmt.orelse or _has_any_return(stmt.body):
-            return None
         if isinstance(stmt.test.op, ast.And):
+            if stmt.orelse:
+                if (
+                    _always_terminates(stmt.body)
+                    and _has_any_return(stmt.body)
+                    and not _has_break_or_continue(stmt.body)
+                    and (fallback := _trivial_pure_return(stmt.orelse)) is not None
+                ):
+                    hit_body: tuple[ast.stmt, ...] = (
+                        (
+                            ast.If(
+                                test=suffix_expr,
+                                body=list(stmt.body),
+                                orelse=[fallback],
+                            ),
+                        )
+                        if suffix_expr is not None
+                        else tuple(stmt.body)
+                    )
+                    arm_body = (fallback,) if matched.negated else hit_body
+                    default_body = hit_body if matched.negated else (fallback,)
+                    return AnswerBranchSite(
+                        PrefixGuardedAndReturningDispatchSite(
+                            subject=matched.subject,
+                            kind=kind,
+                            arms=(_dummy_arm(arm_body),),
+                            default_body=default_body,
+                            is_whole_function=False,
+                            test_nodes=(matched.test_node,),
+                            replaced_nodes=(stmt,),
+                            guard_expr=guard_expr,
+                            fallback_return=fallback,
+                        ),
+                        (matched.tested_value,),
+                    )
+                return None
+            tail = container[index + 1 :]
+            if (
+                tail
+                and _always_terminates(stmt.body)
+                and _has_any_return(stmt.body)
+                and not _has_break_or_continue(stmt.body)
+                and (fallback := _trivial_pure_return(tail)) is not None
+            ):
+                hit_body = (
+                    (
+                        ast.If(
+                            test=suffix_expr,
+                            body=list(stmt.body),
+                            orelse=[fallback],
+                        ),
+                    )
+                    if suffix_expr is not None
+                    else tuple(stmt.body)
+                )
+                arm_body = (fallback,) if matched.negated else hit_body
+                default_body = hit_body if matched.negated else (fallback,)
+                return AnswerBranchSite(
+                    PrefixGuardedAndReturningDispatchSite(
+                        subject=matched.subject,
+                        kind=kind,
+                        arms=(_dummy_arm(arm_body),),
+                        default_body=default_body,
+                        is_whole_function=False,
+                        test_nodes=(matched.test_node,),
+                        replaced_nodes=tuple(container[index:]),
+                        guard_expr=guard_expr,
+                        fallback_return=fallback,
+                    ),
+                    (matched.tested_value,),
+                )
+            if _has_any_return(stmt.body):
+                return None
             if (
                 container is whole_fn_body
                 and len(whole_fn_body) == 1
+                and _is_pure_subject(matched.subject)
                 and all(_is_pure_subject(val) for val in prefix_values)
             ):
                 other_values = [*prefix_values, *suffix_values]
@@ -511,6 +667,8 @@ def _extract_compound_answer_if(
                 (matched.tested_value,),
             )
         if isinstance(stmt.test.op, ast.Or):
+            if stmt.orelse or _has_any_return(stmt.body):
+                return None
             fallback_body: tuple[ast.stmt, ...] = (
                 (ast.If(test=suffix_expr, body=list(stmt.body), orelse=[]),)
                 if suffix_expr is not None
@@ -763,7 +921,12 @@ def _extract_answer_if(
     if first.negated:
         if stmt.orelse:
             if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
-                return None
+                branch_test = _parse_answer_test(stmt.orelse[0].test, member_name)
+                if (
+                    branch_test is not None
+                    and ast.dump(branch_test.subject) == subject_dump
+                ):
+                    return None
             return _build_answer_statement_site(
                 first,
                 kind,
@@ -773,6 +936,9 @@ def _extract_answer_if(
                 (stmt,),
                 container is whole_fn_body and len(whole_fn_body) == 1,
                 (first.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
         if len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Raise):
             return AnswerBranchSite(
@@ -788,7 +954,11 @@ def _extract_answer_if(
                 (first.tested_value,),
             )
         tail = container[index + 1 :]
-        if tail and _always_terminates(stmt.body) and _always_terminates(tail):
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+        ):
             return _build_answer_statement_site(
                 first,
                 kind,
@@ -798,6 +968,9 @@ def _extract_answer_if(
                 tuple(container[index:]),
                 container is whole_fn_body and index == 0,
                 (first.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
         if (
             container is whole_fn_body
@@ -858,11 +1031,9 @@ def _extract_answer_if(
     while len(current_orelse) == 1 and isinstance(current_orelse[0], ast.If):
         branch = current_orelse[0]
         branch_test = _parse_answer_test(branch.test, member_name)
-        if (
-            branch_test is None
-            or branch_test.negated
-            or ast.dump(branch_test.subject) != subject_dump
-        ):
+        if branch_test is None or ast.dump(branch_test.subject) != subject_dump:
+            break
+        if branch_test.negated:
             return None
         arms_list.append(_dummy_arm(tuple(branch.body)))
         values_list.append(branch_test.tested_value)
@@ -879,9 +1050,19 @@ def _extract_answer_if(
             (stmt,),
             container is whole_fn_body and len(whole_fn_body) == 1,
             tuple(test_nodes),
+            container=container,
+            index=index,
+            whole_fn_body=whole_fn_body,
         )
     tail = container[index + 1 :]
-    if all(_always_terminates(arm.body) for arm in arms_list) and tail and _always_terminates(tail):
+    if (
+        tail
+        and _always_terminates(tail)
+        and (
+            all(_always_terminates(arm.body) for arm in arms_list)
+            or any(_has_any_return(arm.body) for arm in arms_list)
+        )
+    ):
         return _build_answer_statement_site(
             first,
             kind,
@@ -891,6 +1072,9 @@ def _extract_answer_if(
             tuple(container[index:]),
             container is whole_fn_body and index == 0,
             tuple(test_nodes),
+            container=container,
+            index=index,
+            whole_fn_body=whole_fn_body,
         )
     if (
         container is whole_fn_body
@@ -981,6 +1165,7 @@ def _extract_answer_ternary(
     is_whole_return: bool,
     member_name: str,
     kind: DispatchKind,
+    test_line: int | None = None,
 ) -> AnswerBranchSite | None:
     parsed = _parse_answer_test(node.test, member_name)
     if parsed is not None:
@@ -1006,6 +1191,8 @@ def _extract_answer_ternary(
         match_idx: int | None = None
         matched: ParsedAnswerTest | None = None
         for idx, value in enumerate(node.test.values):
+            if test_line is not None and not _node_covers_line(value, test_line):
+                continue
             candidate = _parse_answer_test(value, member_name)
             if candidate is not None:
                 match_idx = idx
@@ -1071,7 +1258,7 @@ def _extract_answer_boolop(
     match_idx: int | None = None
     matched: ParsedAnswerTest | None = None
     for idx, value in enumerate(expr.values):
-        if value.lineno != test_line:
+        if not _node_covers_line(value, test_line):
             continue
         candidate = _parse_answer_test(value, member_name)
         if candidate is not None:
@@ -1137,7 +1324,7 @@ def _match_comp_and_filter(
     """Match `[PREFIX and] [not] subject.flag [and SUFFIX]` on `test_line`."""
 
     direct = _parse_answer_test(if_expr, member_name)
-    if direct is not None and if_expr.lineno == test_line:
+    if direct is not None and _node_covers_line(if_expr, test_line):
         return (direct, None, None)
     if (
         isinstance(if_expr, ast.BoolOp)
@@ -1145,7 +1332,7 @@ def _match_comp_and_filter(
         and len(if_expr.values) >= 2
     ):
         for idx, value in enumerate(if_expr.values):
-            if value.lineno != test_line:
+            if not _node_covers_line(value, test_line):
                 continue
             parsed = _parse_answer_test(value, member_name)
             if parsed is None:
@@ -1296,10 +1483,10 @@ def find_answer_dispatch_site(
     body = _body_without_docstring(function)
     for container, index, stmt, in_loop_body in _statement_list_children(body):
         if isinstance(stmt, ast.If) and (
-            stmt.test.lineno == test_line
+            _node_covers_line(stmt.test, test_line)
             or (
                 isinstance(stmt.test, ast.BoolOp)
-                and any(value.lineno == test_line for value in stmt.test.values)
+                and any(_node_covers_line(value, test_line) for value in stmt.test.values)
             )
         ):
             extracted = _extract_answer_if(
@@ -1312,24 +1499,33 @@ def find_answer_dispatch_site(
                 kind,
                 in_loop_body,
             )
-            if extracted is not None:
+            if extracted is not None and _subject_allowed_for_site(extracted.dispatch):
                 return extracted
         if isinstance(stmt, ast.Return):
             match stmt:
                 case ast.Return(value=ast.IfExp() as ifexp) if (
-                    ifexp.test.lineno == test_line
+                    _node_covers_line(ifexp.test, test_line)
                     or (
                         isinstance(ifexp.test, ast.BoolOp)
-                        and any(value.lineno == test_line for value in ifexp.test.values)
+                        and any(
+                            _node_covers_line(value, test_line)
+                            for value in ifexp.test.values
+                        )
                     )
                 ):
                     extracted = _extract_answer_ternary(
-                        ifexp, container is body and len(body) == 1, member_name, kind
+                        ifexp,
+                        container is body and len(body) == 1,
+                        member_name,
+                        kind,
+                        test_line=test_line,
                     )
-                    if extracted is not None:
+                    if extracted is not None and _subject_allowed_for_site(
+                        extracted.dispatch
+                    ):
                         return extracted
                 case ast.Return(value=ast.BoolOp() as boolop) if any(
-                    value.lineno == test_line for value in boolop.values
+                    _node_covers_line(value, test_line) for value in boolop.values
                 ):
                     extracted = _extract_answer_boolop(
                         boolop,
@@ -1338,7 +1534,9 @@ def find_answer_dispatch_site(
                         member_name,
                         kind,
                     )
-                    if extracted is not None:
+                    if extracted is not None and _subject_allowed_for_site(
+                        extracted.dispatch
+                    ):
                         return extracted
     branch_tests = {
         id(node.test)
@@ -1355,33 +1553,35 @@ def find_answer_dispatch_site(
     for node in ast.walk(function):
         if isinstance(node, ast.Call):
             extracted = _extract_sum_comprehension(node, test_line, member_name, kind)
-            if extracted is not None:
+            if extracted is not None and _subject_allowed_for_site(extracted.dispatch):
                 return extracted
     for node in ast.walk(function):
         if isinstance(node, (ast.GeneratorExp, ast.ListComp, ast.SetComp)):
             extracted = _extract_comprehension_filter(
                 function, node, test_line, member_name, kind
             )
-            if extracted is not None:
+            if extracted is not None and _subject_allowed_for_site(extracted.dispatch):
                 return extracted
         if isinstance(node, ast.IfExp) and (
-            node.test.lineno == test_line
+            _node_covers_line(node.test, test_line)
             or (
                 isinstance(node.test, ast.BoolOp)
-                and any(value.lineno == test_line for value in node.test.values)
+                and any(_node_covers_line(value, test_line) for value in node.test.values)
             )
         ):
-            extracted = _extract_answer_ternary(node, False, member_name, kind)
-            if extracted is not None:
+            extracted = _extract_answer_ternary(
+                node, False, member_name, kind, test_line=test_line
+            )
+            if extracted is not None and _subject_allowed_for_site(extracted.dispatch):
                 return extracted
         if (
             isinstance(node, ast.BoolOp)
             and id(node) not in branch_tests
             and id(node) not in comp_ifs
-            and any(value.lineno == test_line for value in node.values)
+            and any(_node_covers_line(value, test_line) for value in node.values)
         ):
             extracted = _extract_answer_boolop(node, False, test_line, member_name, kind)
-            if extracted is not None:
+            if extracted is not None and _subject_allowed_for_site(extracted.dispatch):
                 return extracted
     return None
 
@@ -1713,6 +1913,25 @@ class ConstantAnswerPushProof:
             and site.is_whole_function
             and method_name == function.name
         )
+        if not in_place and site.checks_local_store_escapes:
+            replaced_nodes = site.replaced_ast_nodes()
+            if replaced_nodes:
+                stored = _names_stored_in(
+                    tuple(
+                        stmt
+                        for body in (*(arm.body for arm in site.arms), site.default_body)
+                        for stmt in body
+                    )
+                )
+                used_outside = _names_referenced_outside(function, replaced_nodes)
+                escaping = sorted(stored & used_outside)
+                if escaping:
+                    upgraded = _upgrade_dispatch_site_to_assigning(
+                        function, site, escaping
+                    )
+                    if upgraded is not None:
+                        site = upgraded
+                        branch_site = AnswerBranchSite(site, branch_site.arm_values)
 
         verdicts = snapshot.class_overlap_verdicts
         index = verdicts.class_index
@@ -1934,7 +2153,13 @@ class ConstantAnswerPushProof:
         if self.in_place_base_method:
             return start, end, _render_block_at_indent(self.base_body, line_indent)
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
-        call = f"{ast.unparse(site.subject)}.{self.method_name}({call_args})"
+        subject_text = ast.unparse(site.subject)
+        match site.subject:
+            case ast.Name() | ast.Attribute() | ast.Call() | ast.Subscript():
+                pass
+            case _:
+                subject_text = f"({subject_text})"
+        call = f"{subject_text}.{self.method_name}({call_args})"
         if self.is_async:
             call = f"await {call}"
         return start, end, site.render_call_replacement(call, line_indent)
