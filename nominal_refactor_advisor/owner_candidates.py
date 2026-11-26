@@ -196,6 +196,10 @@ class BlockOwnerCandidate(OwnerCandidate, ABC):
     """Whether both classes keep their own values of the block afterwards: true
     for every owner the two compose, false for an owner that removes a copy."""
 
+    def with_kept_copy_refusal(self, refusal):
+        """Attach a kept-copy refusal receipt when this candidate keeps both copies."""
+        return replace(self, receipts=(*self.receipts, refusal))
+
 
 @dataclass(frozen=True, kw_only=True)
 class ScannedClassOwner(BlockOwnerCandidate, ABC):
@@ -260,6 +264,9 @@ class CopySourceOwner(BlockOwnerCandidate, ABC):
         """The copying class."""
         return self.composers
 
+    def with_kept_copy_refusal(self, refusal):
+        return self
+
 
 @dataclass(frozen=True, kw_only=True)
 class DeleteAndRedirectOwner(CopySourceOwner):
@@ -305,6 +312,11 @@ class NewMixinOwner(BlockOwnerCandidate):
     def describe(self) -> str:
         return f"new mixin in `{self.module_name}`"
 
+    @classmethod
+    def declaration_location_phrase(cls, module_name):
+        """Describe where a new mixin of this kind is declared."""
+        return f'a new class in `{module_name}`'
+
 
 @dataclass(frozen=True, kw_only=True)
 class NewModuleMixinOwner(NewMixinOwner):
@@ -313,6 +325,10 @@ class NewModuleMixinOwner(NewMixinOwner):
 
     def describe(self) -> str:
         return f"new mixin in a new module of `{self.module_name}`"
+
+    @classmethod
+    def declaration_location_phrase(cls, module_name):
+        return f'a new class in a new module of `{module_name}`'
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -769,9 +785,7 @@ class BlockOwnerQuestion:
         return ranked(
             (
                 *(
-                    replace(candidate, receipts=(*candidate.receipts, refusal))
-                    if candidate.keeps_both_copies
-                    else candidate
+                    candidate.with_kept_copy_refusal(refusal)
                     for candidate in found
                 ),
                 copy_owner,
@@ -1244,9 +1258,7 @@ class BlockOwnerQuestion:
                 Receipt(
                     OwnerReceiptKind.NEW_CLASS,
                     (
-                        f"a new class in a new module of `{module_name}`"
-                        if kind is NewModuleMixinOwner
-                        else f"a new class in `{module_name}`"
+                        kind.declaration_location_phrase(module_name)
                     )
                     + f" declares the {len(self.block)}-declaration block, "
                     f"copied from `{anchor.qualname}`",

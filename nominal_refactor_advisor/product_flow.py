@@ -157,8 +157,7 @@ class CompactTransparentSignatureDecorator(StrEnum):
 
     def matches(self, decorator: CompactValueExpression) -> bool:
         return bool(
-            isinstance(decorator, LexicalValueReference)
-            and decorator.parts in self._accepted_reference_parts
+            decorator.matches_reference_parts(self)
         )
 
     def matches_any(self, decorators: tuple[CompactValueExpression, ...]) -> bool:

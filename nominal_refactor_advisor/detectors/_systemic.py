@@ -3631,6 +3631,10 @@ class CompactDataclassNamespaceCliMirrorCandidateBase(
         del config
         return _dataclass_namespace_cli_mirror_candidates_from_projections(projections)
 
+    @classmethod
+    def has_required_target_projections(cls, families, target_projections_by_family):
+        return any((target_projections_by_family.get(family, ()) for family in families))
+
 
 declare_candidate_rule_detector(
     DataclassNamespaceCliMirrorCandidate,

@@ -160,6 +160,10 @@ class CompactValueExpression(ValueExpressionShapeABC):
         """An assigned value is the latest direct write of its name."""
         writes[name] = row
 
+    def matches_reference_parts(self, owner):
+        """Check whether this value expression is a lexical reference in accepted parts."""
+        return False
+
 
 @dataclass(frozen=True)
 class LexicalValueReference(CompactValueExpression):
@@ -241,6 +245,9 @@ class LexicalValueReference(CompactValueExpression):
                 ctx=ast.Load(),
             )
         return expression
+
+    def matches_reference_parts(self, owner):
+        return self.parts in owner._accepted_reference_parts
 
 
 @dataclass(frozen=True)

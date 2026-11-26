@@ -2143,6 +2143,15 @@ class CollectedFamilyCachePayload(Generic[ShapeItemT]):
     checkout_root: str | None = None
     """The checkout these items still spell after relocation; None when portable."""
 
+    def serialized_payload_bytes(self, owner, prefix):
+        """Serialize this collected-family cache payload with its signature prefix."""
+        if owner.relocation is None:
+            return prefix + pickle.dumps(self, protocol=pickle.HIGHEST_PROTOCOL)
+        data, portable = owner.relocation.portable_dumps(self)
+        if portable:
+            return prefix + data
+        return prefix + pickle.dumps(replace(self, checkout_root=owner.relocation.root_texts[0]), protocol=pickle.HIGHEST_PROTOCOL)
+
 
 @dataclass(frozen=True)
 class _SplitCollectedFamilyCacheHeader:
@@ -2159,6 +2168,17 @@ class _PreSerializedFamilyCachePayload(CollectedFamilyCachePayload[ShapeItemT]):
 
     pickled_items: bytes = b""
     portable: bool = True
+
+    def serialized_payload_bytes(self, owner, prefix):
+        checkout_root = None if self.portable or owner.relocation is None else owner.relocation.root_texts[0]
+        header = _SplitCollectedFamilyCacheHeader(identity=self.identity, ast_free=self.ast_free, checkout_root=checkout_root)
+        if owner.relocation is not None and self.portable:
+            header_bytes, header_portable = owner.relocation.portable_dumps(header)
+            if header_portable:
+                return prefix + header_bytes + self.pickled_items
+            header = _SplitCollectedFamilyCacheHeader(identity=self.identity, ast_free=self.ast_free, checkout_root=owner.relocation.root_texts[0])
+            return prefix + pickle.dumps(header, protocol=pickle.HIGHEST_PROTOCOL) + pickle.dumps(self.items, protocol=pickle.HIGHEST_PROTOCOL)
+        return prefix + pickle.dumps(header, protocol=pickle.HIGHEST_PROTOCOL) + self.pickled_items
 
 
 def _registry_member_key(registered_type: type[_TRegistered]) -> tuple[str, int, str]:
@@ -2525,6 +2545,10 @@ class StableCacheDigest:
             hasher.feed(value)
         return cls(hasher.hexdigest(), hasher.retains_syntax)
 
+    def cache_payload(self, identity, items):
+        """Construct the collected-family cache payload for this digest."""
+        return CollectedFamilyCachePayload(identity=identity, items=items, ast_free=True)
+
 
 @dataclass(frozen=True)
 class PreSerializedCacheDigest(StableCacheDigest):
@@ -2532,6 +2556,9 @@ class PreSerializedCacheDigest(StableCacheDigest):
 
     pickled_items: bytes
     portable: bool
+
+    def cache_payload(self, identity, items):
+        return _PreSerializedFamilyCachePayload(identity=identity, items=items, ast_free=True, pickled_items=self.pickled_items, portable=self.portable)
 
 
 class _StableDigestPickler(pickle.Pickler):
@@ -2966,45 +2993,7 @@ class CollectedFamilyCacheContext:
         prefix = signature.encode("ascii")
         if len(prefix) != self.SIGNATURE_BYTES:
             raise ValueError(f"content signature {signature!r} is not 32 characters")
-        if isinstance(payload, _PreSerializedFamilyCachePayload):
-            checkout_root = (
-                None
-                if payload.portable or self.relocation is None
-                else self.relocation.root_texts[0]
-            )
-            header = _SplitCollectedFamilyCacheHeader(
-                identity=payload.identity,
-                ast_free=payload.ast_free,
-                checkout_root=checkout_root,
-            )
-            if self.relocation is not None and payload.portable:
-                header_bytes, header_portable = self.relocation.portable_dumps(header)
-                if header_portable:
-                    return prefix + header_bytes + payload.pickled_items
-                header = _SplitCollectedFamilyCacheHeader(
-                    identity=payload.identity,
-                    ast_free=payload.ast_free,
-                    checkout_root=self.relocation.root_texts[0],
-                )
-                return (
-                    prefix
-                    + pickle.dumps(header, protocol=pickle.HIGHEST_PROTOCOL)
-                    + pickle.dumps(payload.items, protocol=pickle.HIGHEST_PROTOCOL)
-                )
-            return (
-                prefix
-                + pickle.dumps(header, protocol=pickle.HIGHEST_PROTOCOL)
-                + payload.pickled_items
-            )
-        if self.relocation is None:
-            return prefix + pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-        data, portable = self.relocation.portable_dumps(payload)
-        if portable:
-            return prefix + data
-        return prefix + pickle.dumps(
-            replace(payload, checkout_root=self.relocation.root_texts[0]),
-            protocol=pickle.HIGHEST_PROTOCOL,
-        )
+        return payload.serialized_payload_bytes(self, prefix)
 
     def read_signature(self, path: Path) -> str | None:
         with path.open("rb") as handle:
@@ -3166,19 +3155,7 @@ class CollectedFamilyCacheContext:
             return None
         identity = self.identity(family, demand_signature)
         payload: CollectedFamilyCachePayload[ShapeItemT] = (
-            _PreSerializedFamilyCachePayload(
-                identity=identity,
-                items=items,
-                ast_free=True,
-                pickled_items=stable.pickled_items,
-                portable=stable.portable,
-            )
-            if isinstance(stable, PreSerializedCacheDigest)
-            else CollectedFamilyCachePayload(
-                identity=identity,
-                items=items,
-                ast_free=True,
-            )
+            stable.cache_payload(identity, items)
         )
         try:
             payload_bytes = self.payload_bytes(payload, stable.signature)

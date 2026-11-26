@@ -906,6 +906,10 @@ class AnalysisCacheEntryContext:
     )
     schema: AnalysisCacheSchema = analysis_cache_schema
 
+    def store_summary_and_latest_pointer(self, storage, owner, findings, latest_pointer_policy):
+        """Store the finding summary and update the latest pointer for full cache identities."""
+        pass
+
 
 @dataclass(frozen=True, kw_only=True)
 class AnalysisOrchestrationContext(AnalysisCacheEntryContext):
@@ -1039,6 +1043,11 @@ class AnalysisCacheIdentity(AnalysisOrchestrationContext):
 
         payload = repr((self.roots, self.source_files)).encode("utf-8")
         return hashlib.blake2s(payload, digest_size=16).hexdigest()
+
+    def store_summary_and_latest_pointer(self, storage, owner, findings, latest_pointer_policy):
+        owner._store_summary(self, FindingSummary.from_findings(findings), storage)
+        if latest_pointer_policy is AnalysisLatestPointerPolicy.UPDATE:
+            owner._store_latest(self, findings, storage)
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -2152,14 +2161,7 @@ class AnalysisFindingCache:
                 ),
             )
             storage.store_finding_payload_atomic(storage.entry_path(identity), payload)
-            if isinstance(identity, AnalysisCacheIdentity):
-                self._store_summary(
-                    identity,
-                    FindingSummary.from_findings(findings),
-                    storage,
-                )
-                if latest_pointer_policy is AnalysisLatestPointerPolicy.UPDATE:
-                    self._store_latest(identity, findings, storage)
+            identity.store_summary_and_latest_pointer(storage, self, findings, latest_pointer_policy)
         except (OSError, CacheCheckoutPathError):
             return
 

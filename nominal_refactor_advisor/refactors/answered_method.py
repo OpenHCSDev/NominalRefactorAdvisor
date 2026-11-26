@@ -271,8 +271,7 @@ class AnsweredMethod:
                 _name_scopes(receiver.anchor, parents),
             )
             if bound is not None:
-                if bound.reaches_family():
-                    reached.append((receiver, bound))
+                bound.record_if_reaching(reached, receiver)
                 continue
             owner = ProbeOwnerResolver.of(receiver.parsed).owner(receiver.expression).resolved(typing)
             spans = owner.type_checker_spans()
@@ -401,6 +400,10 @@ class ClassBinding(ReceiverBinding):
     def reaches_family(self) -> bool:
         return True
 
+    def record_if_reaching(self, reached, receiver):
+        """Append this binding to reached when it resolves into the family."""
+        reached.append((receiver, self))
+
 
 @dataclass(frozen=True)
 class ForeignClass(ClassBinding):
@@ -408,6 +411,9 @@ class ForeignClass(ClassBinding):
 
     def reaches_family(self) -> bool:
         return False
+
+    def record_if_reaching(self, reached, receiver):
+        pass
 
 
 @dataclass(frozen=True)

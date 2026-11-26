@@ -109,10 +109,21 @@ class SourceNodeDecoratorPolicy(Case):
 
         return None
 
+    @classmethod
+    def node_start_line(cls, node, self):
+        """Return the starting line of a node according to this decorator policy."""
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            return self.decorated_node_start_line(node)
+        return node.lineno
+
 
 class Exclude(SourceNodeDecoratorPolicy):
     value = "exclude"
     includes_decorators = False
+
+    @classmethod
+    def node_start_line(cls, node, self):
+        return node.lineno
 
 
 class Include(SourceNodeDecoratorPolicy):
@@ -2081,11 +2092,7 @@ class SourceTextGeometry(SourceLineSegmentAuthority):
     def node_start_line(self, span: SourceNodeSpan) -> int:
         """Project the exact generic marker through this span's decorator policy."""
         node = span.node
-        if span.decorator_policy.includes_decorators and isinstance(
-            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
-        ):
-            return self.decorated_node_start_line(node)
-        return node.lineno
+        return span.decorator_policy.node_start_line(node, self)
 
     def node_line_span(self, span: SourceNodeSpan) -> SourceLineSpan:
         return SourceLineSpan(self.node_start_line(span), span.end_line)
