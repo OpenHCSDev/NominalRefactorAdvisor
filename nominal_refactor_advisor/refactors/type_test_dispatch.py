@@ -304,6 +304,36 @@ class TernaryDispatchSite(DispatchSite):
 
 
 @dataclass(frozen=True)
+class PrefixGuardedAndTernaryDispatchSite(TernaryDispatchSite):
+    """`A if PREFIX and [not] TEST else B` replaced by `x.method(...) if PREFIX else B`."""
+
+    guard_expr: ast.expr
+    short_circuit_expr: ast.expr
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return (
+            f"{call_expr} if {ast.unparse(self.guard_expr)} "
+            f"else {ast.unparse(self.short_circuit_expr)}"
+        )
+
+
+@dataclass(frozen=True)
+class PrefixGuardedOrTernaryDispatchSite(TernaryDispatchSite):
+    """`A if PREFIX or [not] TEST else B` replaced by `A if PREFIX else x.method(...)`."""
+
+    guard_expr: ast.expr
+    short_circuit_expr: ast.expr
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return (
+            f"{ast.unparse(self.short_circuit_expr)} if {ast.unparse(self.guard_expr)} "
+            f"else {call_expr}"
+        )
+
+
+@dataclass(frozen=True)
 class BooleanPredicateDispatchSite(DispatchSite):
     """`return isinstance(x, Sub)` replaced by `return x.method()`."""
 
@@ -499,10 +529,12 @@ def _always_terminates(statements: Sequence[ast.stmt]) -> bool:
             return True
         case ast.If(body=body, orelse=orelse) if orelse:
             return _always_terminates(body) and _always_terminates(orelse)
-        case ast.Try(body=body, handlers=handlers, orelse=[], finalbody=[]) if handlers:
-            return _always_terminates(body) and all(
-                _always_terminates(handler.body) for handler in handlers
-            )
+        case ast.Try(body=body, handlers=handlers, orelse=[]):
+            if handlers:
+                return _always_terminates(body) and all(
+                    _always_terminates(handler.body) for handler in handlers
+                )
+            return bool(last.finalbody) and _always_terminates(body)
         case ast.Match(cases=cases) if (
             cases
             and cases[-1].guard is None
@@ -796,7 +828,12 @@ def _extract_compound_if_site(
         return None
     if len(stmt.orelse) == 1 and isinstance(stmt.orelse[0], ast.If):
         return None
-    first_test = _parse_type_test(stmt.test.values[0])
+    first_value = stmt.test.values[0]
+    first_test = (
+        _parse_type_test(first_value)
+        if first_value.lineno <= test_line <= (first_value.end_lineno or first_value.lineno)
+        else None
+    )
     if first_test is None:
         if isinstance(stmt.test.op, ast.Or):
             match_index: int | None = None
@@ -1433,7 +1470,98 @@ def _extract_if_site(
             whole_fn_body=whole_fn_body,
         )
 
-    # No explicit `else:`: either early-return chain followed by terminating tail, void early-return, loop continue, or void `if`.
+    # No explicit `else:`: absorb consecutive terminating `if` chains on the same subject
+    # (e.g. `if isinstance(x, A): return ...; if isinstance(x, B): return ...; <tail>`),
+    # then handle early-return tail, void early-return, loop continue, or void `if`.
+    merged_arms = list(arms_list)
+    merged_test_nodes = list(test_nodes)
+    end_index = index + 1
+    if all(_always_terminates(arm.body) for arm in merged_arms):
+        while end_index < len(container):
+            nxt = container[end_index]
+            if not isinstance(nxt, ast.If):
+                break
+            nxt_test = _parse_type_test(nxt.test)
+            if (
+                nxt_test is None
+                or nxt_test.negated
+                or ast.dump(nxt_test.subject) != subject_dump
+                or type(nxt_test.kind) is not type(first_test.kind)
+            ):
+                break
+            nxt_arms: list[TypeTestArm] = [
+                TypeTestArm(nxt_test.tested_exprs, tuple(nxt.body), nxt_test.exact)
+            ]
+            nxt_test_nodes: list[ast.AST] = [nxt_test.test_node]
+            nxt_orelse = nxt.orelse
+            valid_chain = True
+            while len(nxt_orelse) == 1 and isinstance(nxt_orelse[0], ast.If):
+                branch = nxt_orelse[0]
+                branch_test = _parse_type_test(branch.test)
+                if (
+                    branch_test is None
+                    or branch_test.negated
+                    or ast.dump(branch_test.subject) != subject_dump
+                    or type(branch_test.kind) is not type(first_test.kind)
+                ):
+                    valid_chain = False
+                    break
+                nxt_arms.append(
+                    TypeTestArm(
+                        branch_test.tested_exprs, tuple(branch.body), branch_test.exact
+                    )
+                )
+                nxt_test_nodes.append(branch_test.test_node)
+                nxt_orelse = branch.orelse
+            if (
+                not valid_chain
+                or nxt_orelse
+                or not all(_always_terminates(arm.body) for arm in nxt_arms)
+            ):
+                break
+            merged_arms.extend(nxt_arms)
+            merged_test_nodes.extend(nxt_test_nodes)
+            end_index += 1
+
+    if end_index > index + 1:
+        merged_tail = container[end_index:]
+        if merged_tail and _always_terminates(merged_tail):
+            return _build_statement_site(
+                first_test,
+                tuple(merged_arms),
+                tuple(merged_tail),
+                tuple(container[index:]),
+                container is whole_fn_body and index == 0,
+                tuple(merged_test_nodes),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
+            )
+        if (
+            container is whole_fn_body
+            and merged_tail
+            and all(_always_void_terminates(arm.body) for arm in merged_arms)
+            and not _has_value_return(merged_tail)
+        ):
+            stripped_merged = tuple(
+                TypeTestArm(
+                    arm.tested_exprs,
+                    _strip_trailing_bare_return(arm.body),
+                    arm.exact,
+                    alias=arm.alias,
+                )
+                for arm in merged_arms
+            )
+            return StatementDispatchSite(
+                subject=first_test.subject,
+                kind=first_test.kind,
+                arms=stripped_merged,
+                default_body=tuple(merged_tail),
+                is_whole_function=index == 0,
+                test_nodes=tuple(merged_test_nodes),
+                replaced_nodes=tuple(container[index:]),
+            )
+
     tail = container[index + 1 :]
     if (
         tail
@@ -1913,28 +2041,147 @@ def _extract_match_site(
     return None
 
 
+def _is_pure_short_circuit_expr(expr: ast.expr) -> bool:
+    """Whether `expr` is a side-effect-free literal or pure name/attribute chain safe to retain at an `IfExp` guard."""
+
+    match expr:
+        case (
+            ast.Constant()
+            | ast.Tuple(elts=[])
+            | ast.List(elts=[])
+            | ast.Set(elts=[])
+            | ast.Dict(keys=[])
+        ):
+            return True
+    return _is_pure_subject(expr)
+
+
 def _extract_ternary_site(
     node: ast.IfExp,
     is_whole_return: bool,
+    test_line: int | None = None,
 ) -> TernaryDispatchSite | None:
     parsed = _parse_type_test(node.test)
-    if parsed is None:
+    if parsed is not None:
+        if parsed.negated:
+            arm_body = (ast.Return(value=node.orelse),)
+            default_body = (ast.Return(value=node.body),)
+        else:
+            arm_body = (ast.Return(value=node.body),)
+            default_body = (ast.Return(value=node.orelse),)
+        return TernaryDispatchSite(
+            subject=parsed.subject,
+            kind=parsed.kind,
+            arms=(TypeTestArm(parsed.tested_exprs, arm_body, parsed.exact),),
+            default_body=default_body,
+            is_whole_function=is_whole_return,
+            test_nodes=(parsed.test_node,),
+            node=node,
+        )
+    if not isinstance(node.test, ast.BoolOp) or len(node.test.values) < 2:
         return None
-    if parsed.negated:
-        arm_body = (ast.Return(value=node.orelse),)
-        default_body = (ast.Return(value=node.body),)
-    else:
-        arm_body = (ast.Return(value=node.body),)
-        default_body = (ast.Return(value=node.orelse),)
-    return TernaryDispatchSite(
-        subject=parsed.subject,
-        kind=parsed.kind,
-        arms=(TypeTestArm(parsed.tested_exprs, arm_body, parsed.exact),),
-        default_body=default_body,
-        is_whole_function=is_whole_return,
-        test_nodes=(parsed.test_node,),
-        node=node,
+    match_idx: int | None = None
+    matched: ParsedTypeTest | None = None
+    for idx, value in enumerate(node.test.values):
+        if test_line is not None and not (
+            value.lineno <= test_line <= (value.end_lineno or value.lineno)
+        ):
+            continue
+        candidate = _parse_type_test(value)
+        if candidate is not None:
+            match_idx = idx
+            matched = candidate
+            break
+    if match_idx is None or matched is None:
+        return None
+    prefix_values = node.test.values[:match_idx]
+    suffix_values = node.test.values[match_idx + 1 :]
+    suffix_expr: ast.expr | None = (
+        None
+        if not suffix_values
+        else (
+            suffix_values[0]
+            if len(suffix_values) == 1
+            else ast.BoolOp(op=node.test.op, values=suffix_values)
+        )
     )
+    if isinstance(node.test.op, ast.And):
+        hit_expr: ast.expr = (
+            ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
+            if suffix_expr is not None
+            else node.body
+        )
+        miss_expr: ast.expr = node.orelse
+        arm_body, default_body = _polarity_bodies(
+            matched.negated, (ast.Return(value=hit_expr),), (ast.Return(value=miss_expr),)
+        )
+        if not prefix_values:
+            return TernaryDispatchSite(
+                subject=matched.subject,
+                kind=matched.kind,
+                arms=(TypeTestArm(matched.tested_exprs, arm_body, matched.exact),),
+                default_body=default_body,
+                is_whole_function=is_whole_return,
+                test_nodes=(matched.test_node,),
+                node=node,
+            )
+        if not _is_pure_short_circuit_expr(node.orelse):
+            return None
+        guard_expr: ast.expr = (
+            prefix_values[0]
+            if len(prefix_values) == 1
+            else ast.BoolOp(op=ast.And(), values=prefix_values)
+        )
+        return PrefixGuardedAndTernaryDispatchSite(
+            subject=matched.subject,
+            kind=matched.kind,
+            arms=(TypeTestArm(matched.tested_exprs, arm_body, matched.exact),),
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=(matched.test_node,),
+            node=node,
+            guard_expr=guard_expr,
+            short_circuit_expr=node.orelse,
+        )
+    if isinstance(node.test.op, ast.Or):
+        hit_expr = node.body
+        miss_expr = (
+            ast.IfExp(test=suffix_expr, body=node.body, orelse=node.orelse)
+            if suffix_expr is not None
+            else node.orelse
+        )
+        arm_body, default_body = _polarity_bodies(
+            matched.negated, (ast.Return(value=hit_expr),), (ast.Return(value=miss_expr),)
+        )
+        if not prefix_values:
+            return TernaryDispatchSite(
+                subject=matched.subject,
+                kind=matched.kind,
+                arms=(TypeTestArm(matched.tested_exprs, arm_body, matched.exact),),
+                default_body=default_body,
+                is_whole_function=is_whole_return,
+                test_nodes=(matched.test_node,),
+                node=node,
+            )
+        if not _is_pure_short_circuit_expr(node.body):
+            return None
+        guard_expr = (
+            prefix_values[0]
+            if len(prefix_values) == 1
+            else ast.BoolOp(op=ast.Or(), values=prefix_values)
+        )
+        return PrefixGuardedOrTernaryDispatchSite(
+            subject=matched.subject,
+            kind=matched.kind,
+            arms=(TypeTestArm(matched.tested_exprs, arm_body, matched.exact),),
+            default_body=default_body,
+            is_whole_function=False,
+            test_nodes=(matched.test_node,),
+            node=node,
+            guard_expr=guard_expr,
+            short_circuit_expr=node.body,
+        )
+    return None
 
 
 def _extract_boolean_expr_site(
@@ -1967,7 +2214,9 @@ def _extract_boolean_expr_site(
     match_idx: int | None = None
     matched: ParsedTypeTest | None = None
     for idx, value in enumerate(expr.values):
-        if test_line is not None and value.lineno != test_line:
+        if test_line is not None and not (
+            value.lineno <= test_line <= (value.end_lineno or value.lineno)
+        ):
             continue
         candidate = _parse_type_test(value)
         if candidate is not None:
@@ -2061,9 +2310,13 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             )
         if isinstance(stmt, ast.Return):
             match stmt:
-                case ast.Return(value=ast.IfExp() as ifexp) if ifexp.test.lineno == test_line:
+                case ast.Return(value=ast.IfExp() as ifexp) if (
+                    ifexp.test.lineno <= test_line <= (ifexp.test.end_lineno or ifexp.test.lineno)
+                ):
                     is_whole = container is body and len(body) == 1
-                    return _extract_ternary_site(ifexp, is_whole)
+                    extracted = _extract_ternary_site(ifexp, is_whole, test_line=test_line)
+                    if extracted is not None:
+                        return extracted
                 case ast.Return(value=ast.expr() as returned) if (
                     returned.lineno == test_line
                     or (
@@ -2075,19 +2328,52 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
                     extracted = _extract_boolean_expr_site(returned, is_whole, test_line)
                     if extracted is not None:
                         return extracted
-    # Fallback: ternary `IfExp` or non-branching compound `BoolOp` anywhere inside the function on `test_line`.
-    branch_tests = {
-        id(node.test)
-        for node in ast.walk(function)
-        if isinstance(node, (ast.If, ast.IfExp))
-    }
+    # Fallback: ternary `IfExp`, non-branching compound `BoolOp`, or bare boolean type-test
+    # expression (e.g. inside `any(...)`, `all(...)`, assignments, comprehensions) on `test_line`.
+    branch_tests: set[int] = set()
+    excluded_bare_tests: set[int] = set()
     for node in ast.walk(function):
-        if isinstance(node, ast.IfExp) and node.test.lineno == test_line:
-            return _extract_ternary_site(node, is_whole_return=False)
+        if isinstance(node, (ast.If, ast.IfExp)):
+            branch_tests.add(id(node.test))
+            excluded_bare_tests.add(id(node.test))
+            if isinstance(node.test, ast.BoolOp):
+                for val in node.test.values:
+                    excluded_bare_tests.add(id(val))
+        elif (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.Not)
+            and _parse_type_test(node) is not None
+        ):
+            excluded_bare_tests.add(id(node.operand))
+    for node in ast.walk(function):
+        if isinstance(node, ast.IfExp) and (
+            node.test.lineno <= test_line <= (node.test.end_lineno or node.test.lineno)
+        ):
+            extracted = _extract_ternary_site(
+                node, is_whole_return=False, test_line=test_line
+            )
+            if extracted is not None:
+                return extracted
+    for node in ast.walk(function):
         if (
             isinstance(node, ast.BoolOp)
             and id(node) not in branch_tests
-            and any(value.lineno == test_line for value in node.values)
+            and any(
+                value.lineno <= test_line <= (value.end_lineno or value.lineno)
+                for value in node.values
+            )
+        ):
+            extracted = _extract_boolean_expr_site(
+                node, is_whole_return=False, test_line=test_line
+            )
+            if extracted is not None:
+                return extracted
+    for node in ast.walk(function):
+        if (
+            isinstance(node, ast.expr)
+            and id(node) not in excluded_bare_tests
+            and node.lineno <= test_line <= (node.end_lineno or node.lineno)
+            and _parse_type_test(node) is not None
         ):
             extracted = _extract_boolean_expr_site(
                 node, is_whole_return=False, test_line=test_line
