@@ -28,6 +28,7 @@ from metaclass_registry import AutoRegisterMeta
 
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
+    match_patterns,
     variadic_parameters,
 )
 from nominal_refactor_advisor.ast_projection import (
@@ -2011,7 +2012,7 @@ def declared_type(
             isinstance(pattern, ast.MatchMapping)
             and any(
                 isinstance(value, ast.MatchAs)
-                and value.pattern is None
+                and not match_patterns(value)
                 and value.name == name
                 for value in pattern.patterns
             )

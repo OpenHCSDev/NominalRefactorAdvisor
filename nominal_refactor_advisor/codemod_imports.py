@@ -15,6 +15,7 @@ from enum import StrEnum
 from functools import cached_property
 from pathlib import Path
 
+from nominal_refactor_advisor.ast_field_decoders import end_column_offsets
 from nominal_refactor_advisor.codemod_import_scopes import (
     ImportStatement,
     ModuleImportScope,
@@ -351,11 +352,12 @@ def _trailing_comment(source: str, statement: ast.stmt) -> str | None:
     rewrite of the statement keeps it there. A statement spanning lines, or sharing its line
     with another statement, has no trailing comment of its own."""
 
-    if statement.lineno != statement.end_lineno or statement.end_col_offset is None:
-        return None
-    line = source.splitlines()[statement.lineno - 1].encode()
-    tail = line[statement.end_col_offset:].decode().strip()
-    return tail if tail.startswith("#") else None
+    if statement.lineno == statement.end_lineno:
+        for end_column in end_column_offsets(statement):
+            line = source.splitlines()[statement.lineno - 1].encode()
+            tail = line[end_column:].decode().strip()
+            return tail if tail.startswith("#") else None
+    return None
 
 
 def _node_contains_comment(source: str, node: ast.AST) -> bool:

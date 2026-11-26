@@ -20,6 +20,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_field_decoders import end_line_numbers
 from nominal_refactor_advisor.audit.family import snake_case
 from nominal_refactor_advisor.codemod_module_declarations import SourceTopLevelDeclarationIndex
 from nominal_refactor_advisor.codemod_payload import (
@@ -756,18 +757,28 @@ class HiddenImportCuts:
                 f"{len(moved) + len(remaining_declarations)} declaration(s) out of `{hub}`"
             )
         moved_lines = sum(
-            (statement.end_lineno - statement.lineno + 1)
+            end_line - statement.lineno + 1
             for statement in module_body
-            if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            if isinstance(
+                statement,
+                ast.ClassDef
+                | ast.FunctionDef
+                | ast.AsyncFunctionDef,
+            )
             and statement.name in moved
-            and statement.end_lineno is not None
+            for end_line in end_line_numbers(statement)
         )
         remaining_lines = sum(
-            (statement.end_lineno - statement.lineno + 1)
+            end_line - statement.lineno + 1
             for statement in module_body
-            if isinstance(statement, ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef)
+            if isinstance(
+                statement,
+                ast.ClassDef
+                | ast.FunctionDef
+                | ast.AsyncFunctionDef,
+            )
             and statement.name not in moved
-            and statement.end_lineno is not None
+            for end_line in end_line_numbers(statement)
         )
         reader_source = self.snapshot.module_import_graph.unique_source_file_for_module_name(reader)
         reader_lines = (

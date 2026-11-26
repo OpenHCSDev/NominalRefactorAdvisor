@@ -27,6 +27,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from functools import cached_property
 
+from nominal_refactor_advisor.ast_field_decoders import match_guards, match_patterns
 from nominal_refactor_advisor.ast_tools import ParsedModule
 from nominal_refactor_advisor.foreign_family import FunctionDefinition
 from nominal_refactor_advisor.models import SourceLocation
@@ -274,7 +275,9 @@ class StringKeySiteFamily(ShapeFamily[StringKeySiteModule]):
             literals = cls.pattern_literals(case.pattern)
             if literals:
                 arms.extend((literal, case.body) for literal in literals)
-            elif isinstance(case.pattern, ast.MatchAs) and case.pattern.pattern is None and case.guard is None:
+            elif isinstance(case.pattern, ast.MatchAs) and not match_patterns(
+                case.pattern
+            ) and not match_guards(case):
                 default = case.body
         return cls._site(parsed_module, function, node, node.subject, arms, default, decoder)
 
