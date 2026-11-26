@@ -74,6 +74,7 @@ from nominal_refactor_advisor.refactors.type_test_dispatch import (
     _cross_module_imports_for_body,
     _ends_with_continue_only,
     _has_any_return,
+    _has_break_or_continue,
     _has_loop_escape,
     _has_non_continue_loop_escape,
     _has_value_return,
@@ -440,15 +441,29 @@ def _extract_absence_if_site(
         is_whole = container is whole_fn_body and len(whole_fn_body) == 1
         any_returns = _has_any_return(replaced)
         if any_returns:
-            if not (_always_terminates(stmt.body) and _always_terminates(stmt.orelse)):
-                return None
-            return ReturningAbsenceBranchSite(
-                subject=subject,
-                probe_nodes=probe_nodes,
-                method_body=replaced,
-                is_whole_function=is_whole,
-                replaced_nodes=replaced,
-            )
+            if _always_terminates(stmt.body) and _always_terminates(stmt.orelse):
+                return ReturningAbsenceBranchSite(
+                    subject=subject,
+                    probe_nodes=probe_nodes,
+                    method_body=replaced,
+                    is_whole_function=is_whole,
+                    replaced_nodes=replaced,
+                )
+            tail = container[index + 1 :]
+            if (
+                tail
+                and _always_terminates(tail)
+                and not _has_break_or_continue((stmt, *tail))
+            ):
+                extended = tuple(container[index:])
+                return ReturningAbsenceBranchSite(
+                    subject=subject,
+                    probe_nodes=probe_nodes,
+                    method_body=extended,
+                    is_whole_function=container is whole_fn_body and index == 0,
+                    replaced_nodes=extended,
+                )
+            return None
         if _has_loop_escape(replaced):
             return None
         return VoidAbsenceBranchSite(
@@ -459,9 +474,14 @@ def _extract_absence_if_site(
             replaced_nodes=replaced,
         )
 
-    # No explicit `else:`: terminating tail, void early-return tail, loop continue tail, or void `if`.
+    # No explicit `else:`: terminating/partial-return tail, void early-return tail, loop continue tail, or void `if`.
     tail = container[index + 1 :]
-    if tail and _always_terminates(stmt.body) and _always_terminates(tail):
+    if (
+        tail
+        and _always_terminates(tail)
+        and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+        and not _has_break_or_continue((stmt, *tail))
+    ):
         replaced = tuple(container[index:])
         is_whole = container is whole_fn_body and index == 0
         if _has_any_return(replaced):
@@ -1191,8 +1211,8 @@ class ForeignAbsenceBranchProof:
                 f"`{method_name}` is not a valid non-dunder method name",
                 NeededInput.OWNER_PICK,
             )
-        source_path, _enclosure, function = TypeTestDispatchProof.locate_function(
-            snapshot, target
+        source_path, enclosure, function = TypeTestDispatchProof.locate_function(
+            snapshot, target, test_line=test_line
         )
         source_text = snapshot.sources_by_file_path[source_path]
         site = find_absence_branch_site(
@@ -1225,8 +1245,9 @@ class ForeignAbsenceBranchProof:
                 )
 
         adapter = site.as_dispatch_adapter()
+        enclosing_locals = enclosure.enclosing_local_names()
         outer_receiver_param = _outer_receiver_alias(
-            function, adapter, (site.method_body,)
+            function, adapter, (site.method_body,), enclosing_locals=enclosing_locals
         )
         rewritten_body = _rewrite_subject_to_receiver(
             site.method_body,
@@ -1235,7 +1256,11 @@ class ForeignAbsenceBranchProof:
             outer_receiver_param=outer_receiver_param,
         )
         captured_args, is_async = _analyze_arm_bodies(
-            function, adapter, (rewritten_body,), outer_receiver_param=outer_receiver_param
+            function,
+            adapter,
+            (rewritten_body,),
+            outer_receiver_param=outer_receiver_param,
+            enclosing_locals=enclosing_locals,
         )
 
         # Verify cross-module imports are cycle-free and resolvable.
@@ -1424,7 +1449,7 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
         )
         try:
             _path, _enclosure, function = TypeTestDispatchProof.locate_function(
-                snapshot, target
+                snapshot, target, test_line=probe_lines[0]
             )
         except ValueError as error:
             return self.stopped_evaluation(error)

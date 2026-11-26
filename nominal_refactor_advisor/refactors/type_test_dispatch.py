@@ -62,7 +62,7 @@ from nominal_refactor_advisor.codemod_spacing import (
     SourceInsertionBoundary,
     SourceInsertionLayer,
 )
-from nominal_refactor_advisor.models import RefactorFinding
+from nominal_refactor_advisor.models import OwnTypeTestMetrics, RefactorFinding
 from nominal_refactor_advisor.module_node_index import ModuleNodeIndex
 from nominal_refactor_advisor.needed_input import NeededInput, NeedsInput
 from nominal_refactor_advisor.probe_owner import InferredReceiverType, ReceiverSpan
@@ -442,6 +442,13 @@ def _always_terminates(statements: Sequence[ast.stmt]) -> bool:
             return _always_terminates(body) and all(
                 _always_terminates(handler.body) for handler in handlers
             )
+        case ast.Match(cases=cases) if (
+            cases
+            and cases[-1].guard is None
+            and isinstance(cases[-1].pattern, ast.MatchAs)
+            and cases[-1].pattern.pattern is None
+        ):
+            return all(_always_terminates(case.body) for case in cases)
     return False
 
 
@@ -965,7 +972,13 @@ def _extract_compound_if_site(
                 index=index,
                 whole_fn_body=whole_fn_body,
             )
-        if _always_terminates(stmt.body) and tail and _always_terminates(tail):
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+            and not _has_break_or_continue(stmt.body)
+            and not _has_break_or_continue(tail)
+        ):
             hit_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
@@ -1068,7 +1081,11 @@ def _extract_compound_if_site(
                 index=index,
                 whole_fn_body=whole_fn_body,
             )
-        if _always_terminates(stmt.body) and tail and _always_terminates(tail):
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+        ):
             miss_body = (
                 ast.If(test=rest_expr, body=list(stmt.body), orelse=[]),
                 *tail,
@@ -1084,6 +1101,9 @@ def _extract_compound_if_site(
                 tuple(container[index:]),
                 is_whole,
                 (first_test.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
         if (
             container is whole_fn_body
@@ -1191,7 +1211,11 @@ def _extract_if_site(
             )
         # Guard without else: early return followed by tail, loop continue, or void/raising `if not test:`.
         tail = container[index + 1 :]
-        if tail and _always_terminates(stmt.body) and _always_terminates(tail):
+        if (
+            tail
+            and _always_terminates(tail)
+            and (_always_terminates(stmt.body) or _has_any_return(stmt.body))
+        ):
             replaced = tuple(container[index:])
             is_whole = container is whole_fn_body and index == 0
             arms = (TypeTestArm(first_test.tested_exprs, tuple(tail), first_test.exact),)
@@ -1202,6 +1226,9 @@ def _extract_if_site(
                 replaced,
                 is_whole,
                 (first_test.test_node,),
+                container=container,
+                index=index,
+                whole_fn_body=whole_fn_body,
             )
         if (
             container is whole_fn_body
@@ -1287,7 +1314,14 @@ def _extract_if_site(
 
     # No explicit `else:`: either early-return chain followed by terminating tail, void early-return, loop continue, or void `if`.
     tail = container[index + 1 :]
-    if all(_always_terminates(arm.body) for arm in arms_list) and tail and _always_terminates(tail):
+    if (
+        tail
+        and _always_terminates(tail)
+        and (
+            all(_always_terminates(arm.body) for arm in arms_list)
+            or any(_has_any_return(arm.body) for arm in arms_list)
+        )
+    ):
         replaced = tuple(container[index:])
         is_whole = container is whole_fn_body and index == 0
         return _build_statement_site(
@@ -1297,6 +1331,9 @@ def _extract_if_site(
             replaced,
             is_whole,
             tuple(test_nodes),
+            container=container,
+            index=index,
+            whole_fn_body=whole_fn_body,
         )
     if (
         container is whole_fn_body
@@ -1433,44 +1470,140 @@ def _build_statement_site(
     )
 
 
+@dataclass(frozen=True)
+class _ExtractedMatchClassCase:
+    """One class-pattern `match` case with its tested class(es), optional alias, and keyword patterns."""
+
+    tested_exprs: tuple[ast.expr, ...]
+    alias: str | None
+    kwd_attrs: tuple[str, ...]
+    kwd_patterns: tuple[ast.pattern, ...]
+
+    @property
+    def has_subpatterns(self) -> bool:
+        return any(
+            not (
+                isinstance(pat, ast.MatchAs)
+                and pat.pattern is None
+                and isinstance(pat.name, str)
+            )
+            for pat in self.kwd_patterns
+        )
+
+
 def _extract_match_pattern_classes(
     pattern: ast.pattern,
-) -> tuple[tuple[ast.expr, ...], str | None, tuple[tuple[str, str], ...]] | None:
+) -> _ExtractedMatchClassCase | None:
     match pattern:
         case ast.MatchClass(
             cls=cls_expr, patterns=[], kwd_attrs=kwd_attrs, kwd_patterns=kwd_patterns
         ):
-            bindings: list[tuple[str, str]] = []
-            for attr, subpattern in zip(kwd_attrs, kwd_patterns, strict=True):
-                match subpattern:
-                    case ast.MatchAs(pattern=None, name=str() as bound_name):
-                        bindings.append((attr, bound_name))
-                    case _:
-                        return None
-            return ((cls_expr,), None, tuple(bindings))
+            return _ExtractedMatchClassCase(
+                tested_exprs=(cls_expr,),
+                alias=None,
+                kwd_attrs=tuple(kwd_attrs),
+                kwd_patterns=tuple(kwd_patterns),
+            )
         case ast.MatchAs(
             pattern=ast.MatchClass(
                 cls=cls_expr, patterns=[], kwd_attrs=kwd_attrs, kwd_patterns=kwd_patterns
             ),
             name=str() as alias,
         ):
-            bindings = []
-            for attr, subpattern in zip(kwd_attrs, kwd_patterns, strict=True):
-                match subpattern:
-                    case ast.MatchAs(pattern=None, name=str() as bound_name):
-                        bindings.append((attr, bound_name))
-                    case _:
-                        return None
-            return ((cls_expr,), alias, tuple(bindings))
+            return _ExtractedMatchClassCase(
+                tested_exprs=(cls_expr,),
+                alias=alias,
+                kwd_attrs=tuple(kwd_attrs),
+                kwd_patterns=tuple(kwd_patterns),
+            )
         case ast.MatchOr(patterns=subpatterns) if subpatterns:
             classes: list[ast.expr] = []
             for sub in subpatterns:
                 extracted = _extract_match_pattern_classes(sub)
-                if extracted is None or extracted[1] is not None or extracted[2]:
+                if extracted is None or extracted.alias is not None or extracted.kwd_attrs:
                     return None
-                classes.extend(extracted[0])
-            return (tuple(classes), None, ())
+                classes.extend(extracted.tested_exprs)
+            return _ExtractedMatchClassCase(
+                tested_exprs=tuple(classes),
+                alias=None,
+                kwd_attrs=(),
+                kwd_patterns=(),
+            )
     return None
+
+
+def _is_pass_only(statements: Sequence[ast.stmt]) -> bool:
+    return len(statements) == 1 and isinstance(statements[0], ast.Pass)
+
+
+def _is_dispatchable_match_subject(expr: ast.expr) -> bool:
+    for node in ast.walk(expr):
+        if isinstance(node, (ast.Yield, ast.YieldFrom, ast.NamedExpr, ast.Lambda)):
+            return False
+    return True
+
+
+def _expr_occurs_in_nodes(expr_dump: str, nodes: Sequence[ast.AST]) -> bool:
+    for root in nodes:
+        for node in ast.walk(root):
+            if isinstance(node, ast.expr) and ast.dump(node) == expr_dump:
+                return True
+    return False
+
+
+def _build_match_arm_body(
+    subject: ast.expr,
+    extracted: _ExtractedMatchClassCase,
+    guard: ast.expr | None,
+    case_body: tuple[ast.stmt, ...],
+    fallback_body: tuple[ast.stmt, ...],
+) -> tuple[ast.stmt, ...]:
+    if not extracted.has_subpatterns:
+        binding_stmts: tuple[ast.stmt, ...] = tuple(
+            ast.Assign(
+                targets=[ast.Name(id=cast(str, cast(ast.MatchAs, pat).name), ctx=ast.Store())],
+                value=ast.Attribute(
+                    value=copy.deepcopy(subject), attr=attr, ctx=ast.Load()
+                ),
+            )
+            for attr, pat in zip(extracted.kwd_attrs, extracted.kwd_patterns, strict=True)
+        )
+        if guard is None:
+            return (*binding_stmts, *case_body)
+        orelse = [] if _is_pass_only(fallback_body) else list(fallback_body)
+        return (
+            *binding_stmts,
+            ast.If(test=copy.deepcopy(guard), body=list(case_body), orelse=orelse),
+        )
+
+    attr_exprs: list[ast.expr] = [
+        ast.Attribute(value=copy.deepcopy(subject), attr=attr, ctx=ast.Load())
+        for attr in extracted.kwd_attrs
+    ]
+    if len(attr_exprs) == 1:
+        inner_subject: ast.expr = attr_exprs[0]
+        inner_pattern: ast.pattern = copy.deepcopy(extracted.kwd_patterns[0])
+    else:
+        inner_subject = ast.Tuple(elts=attr_exprs, ctx=ast.Load())
+        inner_pattern = ast.MatchSequence(
+            patterns=[copy.deepcopy(pat) for pat in extracted.kwd_patterns]
+        )
+    inner_cases = [
+        ast.match_case(
+            pattern=inner_pattern,
+            guard=None if guard is None else copy.deepcopy(guard),
+            body=list(case_body),
+        )
+    ]
+    if not _is_pass_only(fallback_body):
+        inner_cases.append(
+            ast.match_case(
+                pattern=ast.MatchAs(pattern=None, name=None),
+                guard=None,
+                body=list(fallback_body),
+            )
+        )
+    return (ast.Match(subject=inner_subject, cases=inner_cases),)
 
 
 def _extract_match_site(
@@ -1478,95 +1611,166 @@ def _extract_match_site(
     index: int,
     stmt: ast.Match,
     whole_fn_body: list[ast.stmt],
+    in_loop_body: bool = False,
 ) -> DispatchSite | None:
-    if not _is_pure_subject(stmt.subject) or not stmt.cases:
+    if not stmt.cases or not _is_dispatchable_match_subject(stmt.subject):
         return None
-    arms: list[TypeTestArm] = []
-    default_body: tuple[ast.stmt, ...] | None = None
+    raw_arms: list[tuple[_ExtractedMatchClassCase, ast.expr | None, tuple[ast.stmt, ...]]] = []
+    explicit_default: tuple[ast.stmt, ...] | None = None
     for case_idx, case in enumerate(stmt.cases):
-        match case:
-            case ast.match_case(guard=ast.expr()):
-                return None
         match case.pattern:
-            case ast.MatchAs(pattern=None, name=None):
+            case ast.MatchAs(pattern=None, name=None) if case.guard is None:
                 if case_idx != len(stmt.cases) - 1:
                     return None
-                default_body = tuple(case.body)
+                explicit_default = tuple(case.body)
                 continue
         extracted = _extract_match_pattern_classes(case.pattern)
         if extracted is None:
             return None
-        cls_exprs, alias, attr_bindings = extracted
-        binding_stmts: tuple[ast.stmt, ...] = tuple(
-            ast.Assign(
-                targets=[ast.Name(id=bound_name, ctx=ast.Store())],
-                value=ast.Attribute(
-                    value=copy.deepcopy(stmt.subject), attr=attr, ctx=ast.Load()
-                ),
-            )
-            for attr, bound_name in attr_bindings
-        )
-        arms.append(
-            TypeTestArm(cls_exprs, (*binding_stmts, *case.body), False, alias=alias)
-        )
-    if not arms:
+        raw_arms.append((extracted, case.guard, tuple(case.body)))
+    if not raw_arms:
         return None
-    if default_body is None:
-        tail = container[index + 1 :]
-        if all(_always_terminates(arm.body) for arm in arms) and tail and _always_terminates(tail):
-            replaced = tuple(container[index:])
-            is_whole = container is whole_fn_body and index == 0
-            default_body = tuple(tail)
-        elif (
-            container is whole_fn_body
-            and tail
-            and all(_always_void_terminates(arm.body) for arm in arms)
-            and not _has_value_return(tail)
+    # A case with a guard or nested subpattern may fail at runtime and fall through;
+    # allow it only on the last class arm so failure always reaches `default_body`.
+    for extracted, guard, _body in raw_arms[:-1]:
+        if guard is not None or extracted.has_subpatterns:
+            return None
+
+    # For impure subjects (e.g. `match BuiltinCall.decoded(node):`), ensure no arm or
+    # default body re-evaluates the subject expression directly.
+    impure_subject = not _is_pure_subject(stmt.subject)
+    subject_dump = ast.dump(stmt.subject) if impure_subject else ""
+    if impure_subject:
+        check_nodes: list[ast.AST] = [
+            node
+            for _ex, guard, body in raw_arms
+            for node in (*body, *((guard,) if guard is not None else ()))
+        ]
+        if explicit_default is not None:
+            check_nodes.extend(explicit_default)
+        if _expr_occurs_in_nodes(subject_dump, check_nodes):
+            return None
+
+    has_last_fallthrough = raw_arms[-1][1] is not None or raw_arms[-1][0].has_subpatterns
+
+    def finalize(
+        default_body: tuple[ast.stmt, ...],
+        replaced: tuple[ast.stmt, ...],
+        is_whole: bool,
+        *,
+        strip_bare_return: bool = False,
+        strip_continue: bool = False,
+        include_container: bool = False,
+    ) -> DispatchSite | None:
+        if impure_subject and explicit_default is None and _expr_occurs_in_nodes(
+            subject_dump, default_body
         ):
-            arms = [
+            return None
+        arms: list[TypeTestArm] = []
+        for idx, (extracted, guard, raw_body) in enumerate(raw_arms):
+            case_body = raw_body
+            if strip_bare_return:
+                case_body = _strip_trailing_bare_return(case_body)
+            elif strip_continue:
+                case_body = _strip_trailing_continue(case_body)
+            is_conditional = idx == len(raw_arms) - 1 and has_last_fallthrough
+            built_body = _build_match_arm_body(
+                stmt.subject,
+                extracted,
+                guard,
+                case_body,
+                default_body if is_conditional else (ast.Pass(),),
+            )
+            arms.append(
                 TypeTestArm(
-                    arm.tested_exprs,
-                    _strip_trailing_bare_return(arm.body),
-                    arm.exact,
-                    alias=arm.alias,
+                    extracted.tested_exprs, built_body, False, alias=extracted.alias
                 )
-                for arm in arms
-            ]
-            replaced = tuple(container[index:])
-            is_whole = index == 0
-            default_body = tuple(tail)
+            )
+        test_nodes = tuple(expr for arm in arms for expr in arm.tested_exprs)
+        if strip_bare_return or strip_continue:
             return StatementDispatchSite(
                 subject=stmt.subject,
                 kind=InstanceDispatchKind(),
                 arms=tuple(arms),
                 default_body=default_body,
                 is_whole_function=is_whole,
-                test_nodes=tuple(expr for arm in arms for expr in arm.tested_exprs),
+                test_nodes=test_nodes,
                 replaced_nodes=replaced,
             )
-        elif not any(_has_any_return(arm.body) for arm in arms):
-            replaced = (stmt,)
-            is_whole = container is whole_fn_body and len(whole_fn_body) == 1
-            default_body = (ast.Pass(),)
-        else:
-            return None
-    else:
-        replaced = (stmt,)
-        is_whole = container is whole_fn_body and len(whole_fn_body) == 1
-    synthetic_test = ParsedTypeTest(
-        stmt.subject, arms[0].tested_exprs, InstanceDispatchKind(), False, False, stmt.subject
-    )
-    return _build_statement_site(
-        synthetic_test,
-        tuple(arms),
-        default_body,
-        replaced,
-        is_whole,
-        tuple(expr for arm in arms for expr in arm.tested_exprs),
-        container=container,
-        index=index,
-        whole_fn_body=whole_fn_body,
-    )
+        synthetic_test = ParsedTypeTest(
+            stmt.subject,
+            arms[0].tested_exprs,
+            InstanceDispatchKind(),
+            False,
+            False,
+            stmt.subject,
+        )
+        return _build_statement_site(
+            synthetic_test,
+            tuple(arms),
+            default_body,
+            replaced,
+            is_whole,
+            test_nodes,
+            container=container if include_container else None,
+            index=index if include_container else None,
+            whole_fn_body=whole_fn_body if include_container else None,
+        )
+
+    if explicit_default is not None:
+        return finalize(
+            explicit_default,
+            (stmt,),
+            container is whole_fn_body and len(whole_fn_body) == 1,
+            include_container=True,
+        )
+
+    tail = container[index + 1 :]
+    if (
+        tail
+        and _always_terminates(tail)
+        and (
+            all(_always_terminates(body) for _ex, _g, body in raw_arms)
+            or any(_has_any_return(body) for _ex, _g, body in raw_arms)
+        )
+    ):
+        return finalize(
+            tuple(tail),
+            tuple(container[index:]),
+            container is whole_fn_body and index == 0,
+            include_container=True,
+        )
+    if (
+        container is whole_fn_body
+        and tail
+        and all(_always_void_terminates(body) for _ex, _g, body in raw_arms)
+        and not _has_value_return(tail)
+    ):
+        return finalize(
+            tuple(tail),
+            tuple(container[index:]),
+            index == 0,
+            strip_bare_return=True,
+        )
+    if (
+        in_loop_body
+        and tail
+        and all(_ends_with_continue_only(body) for _ex, _g, body in raw_arms)
+        and not _has_non_continue_loop_escape(tail)
+    ):
+        return finalize(
+            _rewrite_loop_continues_to_returns(tail),
+            tuple(container[index:]),
+            False,
+            strip_continue=True,
+        )
+    if not any(_has_any_return(body) for _ex, _g, body in raw_arms):
+        return finalize(
+            (ast.Pass(),),
+            (stmt,),
+            container is whole_fn_body and len(whole_fn_body) == 1,
+        )
+    return None
 
 
 def _extract_ternary_site(
@@ -1712,7 +1916,9 @@ def find_dispatch_site(function: FunctionNode, test_line: int) -> DispatchSite |
             stmt.lineno == test_line
             or any(case.pattern.lineno == test_line for case in stmt.cases)
         ):
-            return _extract_match_site(container, index, stmt, body)
+            return _extract_match_site(
+                container, index, stmt, body, in_loop_body=in_loop_body
+            )
         if isinstance(stmt, ast.Return):
             match stmt:
                 case ast.Return(value=ast.IfExp() as ifexp) if ifexp.test.lineno == test_line:
@@ -1779,13 +1985,14 @@ def _outer_receiver_alias(
     function: FunctionNode,
     site: DispatchSite,
     raw_bodies: Sequence[tuple[ast.stmt, ...]],
+    enclosing_locals: frozenset[str] = frozenset(),
 ) -> str | None:
     """Fresh parameter name when the outer function binds `receiver` independently of `site.subject`."""
 
     receiver = site.kind.receiver
     if isinstance(site.subject, ast.Name) and site.subject.id == receiver:
         return None
-    fn_locals = _function_local_names(function)
+    fn_locals = _function_local_names(function) | enclosing_locals
     if receiver not in fn_locals:
         return None
     subject_dump = ast.dump(site.subject)
@@ -1854,10 +2061,11 @@ def _analyze_arm_bodies(
     site: DispatchSite,
     rewritten_bodies: Sequence[tuple[ast.stmt, ...]],
     outer_receiver_param: str | None = None,
+    enclosing_locals: frozenset[str] = frozenset(),
 ) -> tuple[tuple[CapturedArgument, ...], bool]:
     """Validate purity of rewritten bodies and return `(captured_args, is_async)`."""
 
-    fn_locals = _function_local_names(function)
+    fn_locals = _function_local_names(function) | enclosing_locals
     receiver = site.kind.receiver
     captured: list[CapturedArgument] = []
     seen_captured: set[str] = set()
@@ -1959,7 +2167,7 @@ def _unpack_union_annotations(expr: ast.expr) -> tuple[ast.expr, ...]:
 
 
 class FunctionEnclosure(ABC):
-    """Whether a consumer function is module-level or a method of a scanned class."""
+    """Whether a consumer function is module-level, a class method, or nested in a function."""
 
     @abstractmethod
     def body_statements(self, module: ast.Module) -> list[ast.stmt]:
@@ -1972,6 +2180,9 @@ class FunctionEnclosure(ABC):
     def field_annotation(self, field_name: str) -> ast.expr | None:
         del field_name
         return None
+
+    def enclosing_local_names(self) -> frozenset[str]:
+        return frozenset()
 
 
 @dataclass(frozen=True)
@@ -2003,6 +2214,63 @@ class ClassEnclosure(FunctionEnclosure):
                 ) if target_name == field_name:
                     return ann
         return None
+
+
+@dataclass(frozen=True)
+class NestedFunctionEnclosure(FunctionEnclosure):
+    """Function nested inside one or more enclosing functions (optionally inside a class)."""
+
+    enclosing_functions: tuple[FunctionNode, ...]
+    enclosing_class: ClassEnclosure | None = None
+
+    def body_statements(self, module: ast.Module) -> list[ast.stmt]:
+        del module
+        return self.enclosing_functions[-1].body
+
+    def enclosing_local_names(self) -> frozenset[str]:
+        return frozenset().union(
+            *(_function_local_names(fn) for fn in self.enclosing_functions)
+        )
+
+
+def _find_child_function(
+    statements: list[ast.stmt],
+    name: str,
+    *,
+    test_line: int | None = None,
+    search_nested_blocks: bool = False,
+) -> FunctionNode | None:
+    """Locate `def name` in `statements` (optionally inside compound blocks, never crossing inner defs/classes)."""
+
+    candidates: list[FunctionNode] = []
+    if search_nested_blocks:
+        for _container, _idx, stmt, _in_loop in _statement_list_children(statements):
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == name:
+                candidates.append(stmt)
+    else:
+        for stmt in statements:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)) and stmt.name == name:
+                candidates.append(stmt)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    if test_line is not None:
+        containing = [
+            fn
+            for fn in candidates
+            if fn.lineno <= test_line <= (fn.end_lineno or fn.lineno)
+        ]
+        if len(containing) == 1:
+            return containing[0]
+    return None
+
+
+def _format_receiver_call(subject: ast.expr, method_name: str, call_args: str) -> str:
+    subject_source = ast.unparse(subject)
+    if isinstance(subject, (ast.Name, ast.Attribute, ast.Call, ast.Subscript)):
+        return f"{subject_source}.{method_name}({call_args})"
+    return f"({subject_source}).{method_name}({call_args})"
 
 
 def _resolve_subject_roots(
@@ -2477,37 +2745,77 @@ class TypeTestDispatchProof:
 
     @classmethod
     def locate_function(
-        cls, snapshot: CodemodSourceSnapshot, target: SourceRewriteTarget
+        cls,
+        snapshot: CodemodSourceSnapshot,
+        target: SourceRewriteTarget,
+        *,
+        test_line: int | None = None,
     ) -> tuple[str, FunctionEnclosure, FunctionNode]:
         source_path = target.file_path
         if not source_path or source_path not in snapshot.module_nodes_by_file_path:
             raise NeedsInput("target module is not in the source snapshot", NeededInput.SOURCE_CHANGE)
         qualname = target.qualname or ""
-        class_name, _, function_name = qualname.rpartition(".")
+        parts = [part for part in qualname.split(".") if part and part != "<locals>"]
+        if not parts:
+            raise NeedsInput(
+                f"`{qualname}` is not a top-level function or method in `{source_path}`",
+                NeededInput.SOURCE_CHANGE,
+            )
+        function_name = parts[-1]
+        owner_parts = parts[:-1]
         module = snapshot.module_nodes_by_file_path[source_path]
-        if class_name:
-            try:
-                owner = ResolvedClassTarget.from_rewrite_target(
-                    snapshot,
-                    SourceRewriteTarget(file_path=source_path, qualname=class_name),
-                )
-            except ValueError as error:
+
+        enclosing_class: ClassEnclosure | None = None
+        enclosing_functions: list[FunctionNode] = []
+        current_body: list[ast.stmt] = module.body
+        class_prefix: list[str] = []
+
+        for part in owner_parts:
+            if not enclosing_functions:
+                candidate_class_name = ".".join((*class_prefix, part))
+                try:
+                    owner = ResolvedClassTarget.from_rewrite_target(
+                        snapshot,
+                        SourceRewriteTarget(
+                            file_path=source_path, qualname=candidate_class_name
+                        ),
+                    )
+                except ValueError:
+                    owner = None
+                if owner is not None:
+                    class_prefix.append(part)
+                    enclosing_class = ClassEnclosure(owner)
+                    current_body = owner.node.body
+                    continue
+            outer_fn = _find_child_function(
+                current_body,
+                part,
+                test_line=test_line,
+                search_nested_blocks=bool(enclosing_functions),
+            )
+            if outer_fn is None:
                 raise NeedsInput(
-                    f"`{qualname}` is nested inside non-class `{class_name}`",
+                    f"`{qualname}` is nested inside non-class `{'.'.join(owner_parts)}`",
                     NeededInput.SOURCE_CHANGE,
-                ) from error
-            enclosure: FunctionEnclosure = ClassEnclosure(owner)
+                )
+            enclosing_functions.append(outer_fn)
+            current_body = outer_fn.body
+
+        if enclosing_functions:
+            enclosure: FunctionEnclosure = NestedFunctionEnclosure(
+                enclosing_functions=tuple(enclosing_functions),
+                enclosing_class=enclosing_class,
+            )
+        elif enclosing_class is not None:
+            enclosure = enclosing_class
         else:
             enclosure = ModuleEnclosure()
-        body = enclosure.body_statements(module)
-        function = next(
-            (
-                node
-                for node in body
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-                and node.name == function_name
-            ),
-            None,
+
+        function = _find_child_function(
+            current_body,
+            function_name,
+            test_line=test_line,
+            search_nested_blocks=bool(enclosing_functions),
         )
         if function is None:
             raise NeedsInput(
@@ -2525,6 +2833,8 @@ class TypeTestDispatchProof:
         base_selection: TargetBaseSelection,
         method_name: str,
         docstring: str | None = None,
+        *,
+        required_tested_symbols: Sequence[str] = (),
     ) -> TypeTestDispatchProof:
         if (
             not method_name.isidentifier()
@@ -2535,7 +2845,9 @@ class TypeTestDispatchProof:
                 f"`{method_name}` is not a valid non-dunder method name",
                 NeededInput.OWNER_PICK,
             )
-        source_path, enclosure, function = cls.locate_function(snapshot, target)
+        source_path, enclosure, function = cls.locate_function(
+            snapshot, target, test_line=test_line
+        )
         site = find_dispatch_site(function, test_line)
         if site is None:
             raise NeedsInput(
@@ -2566,6 +2878,14 @@ class TypeTestDispatchProof:
                 all_tested_symbols.append(symbol)
             resolved_arm_symbols.append(tuple(symbols_for_arm))
 
+        if required_tested_symbols and not frozenset(required_tested_symbols).issubset(
+            all_tested_symbols
+        ):
+            raise NeedsInput(
+                f"type test at {source_path}:{test_line} is not a pushable dispatch shape",
+                NeededInput.SOURCE_CHANGE,
+            )
+
         subject_roots = _resolve_subject_roots(
             snapshot, resolver, enclosure, function, site, parents, source_path
         )
@@ -2585,58 +2905,86 @@ class TypeTestDispatchProof:
             snapshot, subject_roots, all_tested_symbols, ast.unparse(site.subject)
         )
 
+        # When the sole non-exact arm tests `base_symbol` itself, every member of
+        # `subject_family` enters that arm; push its body directly onto `base` with no overrides.
+        folds_onto_base = (
+            len(site.arms) == 1
+            and resolved_arm_symbols == [(base_symbol,)]
+            and not site.arms[0].exact
+        )
+        checked_arms = () if folds_onto_base else site.arms
+        checked_arm_symbols: list[tuple[str, ...]] = (
+            [] if folds_onto_base else resolved_arm_symbols
+        )
+
         cls._require_dispatch_mro_safe(
             snapshot,
             subject_family,
             base,
             base_symbol,
-            site.arms,
-            resolved_arm_symbols,
+            checked_arms,
+            checked_arm_symbols,
             method_name,
         )
 
         receiver = site.kind.receiver
+        enclosing_locals = enclosure.enclosing_local_names()
+        raw_bodies: tuple[tuple[ast.stmt, ...], ...] = (
+            (site.arms[0].body,)
+            if folds_onto_base
+            else (*(arm.body for arm in site.arms), site.default_body)
+        )
         outer_receiver_param = _outer_receiver_alias(
-            function, site, (*(arm.body for arm in site.arms), site.default_body)
+            function, site, raw_bodies, enclosing_locals=enclosing_locals
         )
         rewritten_arms: list[ResolvedTargetArm] = []
-        for arm, arm_symbols in zip(site.arms, resolved_arm_symbols):
-            targets = tuple(
-                ResolvedClassTarget.from_rewrite_target(
-                    snapshot,
-                    SourceRewriteTarget(
-                        file_path=classes_by_symbol[sym].file_path,
-                        qualname=classes_by_symbol[sym].qualname,
-                    ),
-                )
-                for sym in arm_symbols
+        if folds_onto_base:
+            rewritten_default = _rewrite_subject_to_receiver(
+                site.arms[0].body,
+                site.subject,
+                receiver,
+                alias=site.arms[0].alias,
+                outer_receiver_param=outer_receiver_param,
             )
-            rewritten_arms.append(
-                ResolvedTargetArm(
-                    targets=targets,
-                    symbols=arm_symbols,
-                    body=_rewrite_subject_to_receiver(
-                        arm.body,
-                        site.subject,
-                        receiver,
-                        alias=arm.alias,
-                        outer_receiver_param=outer_receiver_param,
-                    ),
-                    exact=arm.exact,
+        else:
+            for arm, arm_symbols in zip(site.arms, resolved_arm_symbols):
+                targets = tuple(
+                    ResolvedClassTarget.from_rewrite_target(
+                        snapshot,
+                        SourceRewriteTarget(
+                            file_path=classes_by_symbol[sym].file_path,
+                            qualname=classes_by_symbol[sym].qualname,
+                        ),
+                    )
+                    for sym in arm_symbols
                 )
+                rewritten_arms.append(
+                    ResolvedTargetArm(
+                        targets=targets,
+                        symbols=arm_symbols,
+                        body=_rewrite_subject_to_receiver(
+                            arm.body,
+                            site.subject,
+                            receiver,
+                            alias=arm.alias,
+                            outer_receiver_param=outer_receiver_param,
+                        ),
+                        exact=arm.exact,
+                    )
+                )
+            rewritten_default = _rewrite_subject_to_receiver(
+                site.default_body,
+                site.subject,
+                receiver,
+                outer_receiver_param=outer_receiver_param,
             )
-        rewritten_default = _rewrite_subject_to_receiver(
-            site.default_body,
-            site.subject,
-            receiver,
-            outer_receiver_param=outer_receiver_param,
-        )
 
         captured_args, is_async = _analyze_arm_bodies(
             function,
             site,
             (*(arm.body for arm in rewritten_arms), rewritten_default),
             outer_receiver_param=outer_receiver_param,
+            enclosing_locals=enclosing_locals,
         )
 
         # Verify cross-module imports are cycle-free and unambiguous during proof.
@@ -2812,7 +3160,7 @@ class TypeTestDispatchProof:
         # 1. Consumer call replacement.
         call_args = ", ".join(arg.call_expr for arg in self.captured_args)
         param_names = tuple(arg.param_name for arg in self.captured_args)
-        call = f"{ast.unparse(self.site.subject)}.{self.method_name}({call_args})"
+        call = _format_receiver_call(self.site.subject, self.method_name, call_args)
         if self.is_async:
             call = f"await {call}"
         source_geometry = geometry(self.source_path)
@@ -2922,6 +3270,11 @@ class TypeTestDispatchProof:
             for arm in self.arms
             for cls in arm.targets
         )
+        if not targets:
+            return (
+                f"Pushes the type test in `{self.function.name}` onto "
+                f"`{self.base.qualname}.{self.method_name}`."
+            )
         return (
             f"Pushes the type test in `{self.function.name}` onto "
             f"`{self.base.qualname}.{self.method_name}` with overrides on {targets}."
@@ -2989,7 +3342,7 @@ class OwnTypeTestFindingRecipeSynthesizer(
         pick = finding.metrics.picked_base
         try:
             _path, _owner, function = TypeTestDispatchProof.locate_function(
-                snapshot, target
+                snapshot, target, test_line=primary.line
             )
         except ValueError as error:
             return self.stopped_evaluation(error)
@@ -3001,6 +3354,11 @@ class OwnTypeTestFindingRecipeSynthesizer(
                     NeededInput.SOURCE_CHANGE,
                 )
             )
+        required_tested_symbols = (
+            finding.metrics.tested_symbols
+            if isinstance(finding.metrics, OwnTypeTestMetrics)
+            else ()
+        )
         if pick is not None:
             method_name = pick.name
             docstring: str | None = pick.judgement
@@ -3020,6 +3378,7 @@ class OwnTypeTestFindingRecipeSynthesizer(
                     SharedAncestorBaseSelection(),
                     probe_name,
                     None,
+                    required_tested_symbols=required_tested_symbols,
                 )
             except ValueError as error:
                 return self.stopped_evaluation(error)
@@ -3040,6 +3399,7 @@ class OwnTypeTestFindingRecipeSynthesizer(
                 SharedAncestorBaseSelection(),
                 method_name,
                 docstring,
+                required_tested_symbols=required_tested_symbols,
             )
         except ValueError as error:
             return self.stopped_evaluation(error)

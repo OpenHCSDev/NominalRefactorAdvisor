@@ -1423,4 +1423,178 @@ def test_two_own_type_tests_pushing_distinct_methods_onto_same_pass_class_family
     assert _findings(tmp_path) == []
 
 
+def test_partial_return_if_without_else_falls_through_to_terminating_tail(
+    tmp_path: Path,
+) -> None:
+    """`if isinstance(x, Sub): if cond: return A` without `else:` followed by a
+    terminating tail extends the arm with the tail and pushes onto the family."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/partial.py": (
+                "class Evaluator:\n"
+                "    def fallback(self, target: int) -> bool:\n"
+                "        return target > 0\n\n\n"
+                "class DelegatedEvaluator(Evaluator):\n"
+                "    def shortcut(self, target: int) -> bool | None:\n"
+                "        return True if target == 42 else None\n\n\n"
+                "def check(evaluator: Evaluator, target: int) -> bool:\n"
+                "    if isinstance(evaluator, DelegatedEvaluator):\n"
+                "        possible = evaluator.shortcut(target)\n"
+                "        if possible is not None:\n"
+                "            return possible\n"
+                "    return evaluator.fallback(target)\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "partial.py").read_text()
+    assert "isinstance" not in after
+    assert "return evaluator.check(target)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["check"](ns["Evaluator"](), 5) is True  # type: ignore[operator]
+    assert ns["check"](ns["Evaluator"](), -1) is False  # type: ignore[operator]
+    assert ns["check"](ns["DelegatedEvaluator"](), 42) is True  # type: ignore[operator]
+    assert ns["check"](ns["DelegatedEvaluator"](), -1) is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_match_with_call_subject_subpatterns_and_guard_folds_and_evaluates_once(
+    tmp_path: Path,
+) -> None:
+    """`match <call>:` with keyword subpatterns and a guard evaluates `<call>` once,
+    folds single-arm base matches directly onto the base class, and pushes subclass
+    matches onto the tested subclass."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/match_dispatch.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Payload:\n"
+                "    value: int\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Lookup:\n"
+                "    hit: bool\n"
+                "    payload: Payload | None\n\n\n"
+                "class Loader:\n"
+                "    def __init__(self, lookup: Lookup) -> None:\n"
+                "        self.lookup = lookup\n"
+                "        self.calls = 0\n\n"
+                "    def load(self) -> Lookup:\n"
+                "        self.calls += 1\n"
+                "        return self.lookup\n\n\n"
+                "def resolve_payload(loader: Loader, fallback: int) -> Payload:\n"
+                "    match loader.load():\n"
+                "        case Lookup(hit=hit, payload=Payload() as payload) if hit:\n"
+                "            return payload\n"
+                "    return Payload(fallback)\n\n\n"
+                "class CallExpr:\n"
+                "    pass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class SetattrCall(CallExpr):\n"
+                "    target: str\n\n\n"
+                "def decode_call(name: str, counter: list[int]) -> CallExpr:\n"
+                "    counter.append(1)\n"
+                "    return SetattrCall(name) if name else CallExpr()\n\n\n"
+                "def collect_type_setattr(name: str, counter: list[int], out: list[str]) -> None:\n"
+                "    match decode_call(name, counter):\n"
+                "        case SetattrCall(target=target) as call if target.endswith('type'):\n"
+                "            out.append(f'{call.target}!')\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    # 3 findings: outer Lookup match, nested Payload subpattern on the same line, and SetattrCall match.
+    # Only the outer Lookup and SetattrCall findings execute; nested Payload must neither piggyback nor collide.
+    assert len(findings) == 3
+    snap = _snapshot(tmp_path)
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "pkg" / "match_dispatch.py").read_text()
+    assert "case Lookup(" not in after
+    assert "case SetattrCall(" not in after
+    assert "return loader.load().resolve_payload(fallback)" in after
+    assert "decode_call(name, counter).collect_type_setattr(out)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    Lookup = ns["Lookup"]
+    Payload = ns["Payload"]
+    Loader = ns["Loader"]
+    loader_hit = Loader(Lookup(True, Payload(7)))  # type: ignore[operator]
+    assert ns["resolve_payload"](loader_hit, 0) == Payload(7)  # type: ignore[operator]
+    assert loader_hit.calls == 1
+    loader_miss = Loader(Lookup(False, Payload(7)))  # type: ignore[operator]
+    assert ns["resolve_payload"](loader_miss, 9) == Payload(9)  # type: ignore[operator]
+    assert loader_miss.calls == 1
+    counter: list[int] = []
+    out: list[str] = []
+    ns["collect_type_setattr"]("my_type", counter, out)  # type: ignore[operator]
+    ns["collect_type_setattr"]("other", counter, out)  # type: ignore[operator]
+    ns["collect_type_setattr"]("", counter, out)  # type: ignore[operator]
+    assert counter == [1, 1, 1]
+    assert out == ["my_type!"]
+    remaining = _findings(tmp_path)
+    assert len(remaining) == 1
+    assert "Payload" in remaining[0].summary
+
+
+def test_nested_function_dispatch_captures_enclosing_locals_and_outer_self(
+    tmp_path: Path,
+) -> None:
+    """A type test inside a nested helper captures enclosing-function locals and
+    aliases outer `self` cleanly instead of refusing `nested inside non-class`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/nested.py": (
+                "class Item:\n"
+                "    pass\n\n\n"
+                "class SpecialItem(Item):\n"
+                "    pass\n\n\n"
+                "class Formatter:\n"
+                "    def __init__(self, tag: str) -> None:\n"
+                "        self.tag = tag\n\n"
+                "    def render_all(self, prefix: str, items: list[Item]) -> list[str]:\n"
+                "        def format_one(item: Item) -> str:\n"
+                "            if isinstance(item, SpecialItem):\n"
+                "                return f'{prefix}:{self.tag}:special'\n"
+                "            return f'{prefix}:{self.tag}:plain'\n"
+                "        return [format_one(item) for item in items]\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "nested.py").read_text()
+    assert "isinstance" not in after
+    assert "return item.format_one(prefix, self)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    fmt = ns["Formatter"]("v1")  # type: ignore[operator]
+    assert fmt.render_all("p", [ns["Item"](), ns["SpecialItem"]()]) == [
+        "p:v1:plain",
+        "p:v1:special",
+    ]
+    assert _findings(tmp_path) == []
+
+
 

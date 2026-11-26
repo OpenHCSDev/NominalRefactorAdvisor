@@ -771,4 +771,65 @@ def test_two_foreign_absence_branches_pushing_distinct_methods_onto_same_owner_c
     assert ns["collect_pending"]([Sig("abc"), Sig(None)]) == [Sig(None)]  # type: ignore[operator]
 
 
+def test_partial_return_if_without_else_and_nested_function_foreign_absence_push(
+    tmp_path: Path,
+) -> None:
+    """Partial-return `if box.cached is not None:` without `else:` followed by a
+    terminating tail, and a foreign absence probe inside a nested helper capturing
+    enclosing locals, both push cleanly onto their scanned owner class."""
+
+    _write(
+        tmp_path,
+        {
+            "ext/__init__.py": "",
+            "ext/boxes.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Box:\n"
+                "    cached: int | None\n\n\n"
+                "def read_positive(box: Box, default: int) -> int:\n"
+                "    if box.cached is not None:\n"
+                "        if box.cached > 0:\n"
+                "            return box.cached\n"
+                "    return default\n\n\n"
+                "class Collector:\n"
+                "    def __init__(self, scale: int) -> None:\n"
+                "        self.scale = scale\n\n"
+                "    def collect(self, offset: int, boxes: list[Box]) -> list[int]:\n"
+                "        out: list[int] = []\n"
+                "        def record_box(box: Box) -> None:\n"
+                "            if box.cached is not None:\n"
+                "                out.append(box.cached * self.scale + offset)\n"
+                "        for box in boxes:\n"
+                "            record_box(box)\n"
+                "        return out\n"
+            ),
+        },
+    )
+    _mods, snap, findings = _scan(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"read_positive", "Collector.collect.record_box"}
+    plan = codemod_plan_from_findings(findings, selector_context=snap)
+    assert plan.candidate_count == 2
+    sim = plan.document.simulate(snap)
+    assert sim.is_clean
+    sim.apply()
+
+    after = (tmp_path / "ext" / "boxes.py").read_text()
+    assert "box.cached" not in after
+    assert "return box.read_positive(default)" in after
+    assert "box.record_box(out, offset, self)" in after
+    _after_mods, _after_snap, remaining = _scan(tmp_path)
+    assert remaining == []
+
+    ns: dict[str, object] = {}
+    exec(compile(after, str(tmp_path / "ext/boxes.py"), "exec"), ns)
+    Box = ns["Box"]
+    assert ns["read_positive"](Box(5), -1) == 5  # type: ignore[operator]
+    assert ns["read_positive"](Box(0), -1) == -1  # type: ignore[operator]
+    assert ns["read_positive"](Box(None), -1) == -1  # type: ignore[operator]
+    collector = ns["Collector"](10)  # type: ignore[operator]
+    assert collector.collect(1, [Box(2), Box(None), Box(4)]) == [21, 41]
+
+
 

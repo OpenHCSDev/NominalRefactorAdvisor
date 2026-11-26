@@ -1719,7 +1719,9 @@ class ConstantAnswerPushProof:
             if family is not None
             else ConstantAnswerFamily.resolve(snapshot, base_target, member_name)
         )
-        source_path, enclosure, function = TypeTestDispatchProof.locate_function(snapshot, target)
+        source_path, enclosure, function = TypeTestDispatchProof.locate_function(
+            snapshot, target, test_line=test_line
+        )
         raw_site = find_answer_dispatch_site(
             function, test_line, member_name, InstanceDispatchKind()
         )
@@ -1872,7 +1874,10 @@ class ConstantAnswerPushProof:
                 raw_body_for(base_value),
                 *(raw_body_for(val) for _, val in override_symbols),
             )
-            outer_receiver_param = _outer_receiver_alias(function, site, raw_bodies)
+            enclosing_locals = enclosure.enclosing_local_names()
+            outer_receiver_param = _outer_receiver_alias(
+                function, site, raw_bodies, enclosing_locals=enclosing_locals
+            )
             base_body = _rewrite_subject_to_receiver(
                 raw_body_for(base_value),
                 site.subject,
@@ -1902,6 +1907,7 @@ class ConstantAnswerPushProof:
                 site,
                 (base_body, *(body for _, body in overrides)),
                 outer_receiver_param=outer_receiver_param,
+                enclosing_locals=enclosing_locals,
             )
             local_exclusions = frozenset(
                 (receiver, *(arg.param_name for arg in captured_args))

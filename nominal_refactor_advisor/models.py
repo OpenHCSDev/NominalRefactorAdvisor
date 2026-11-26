@@ -828,6 +828,7 @@ class OwnTypeTestMetrics(DeclaredBasePickMetrics):
 
     consumer_symbol: str
     test_line: int
+    tested_symbols: tuple[str, ...] = ()
 
     def base_pick_owner_name(
         self, authority_evidence: SourceLocation | None
@@ -839,6 +840,8 @@ class OwnTypeTestMetrics(DeclaredBasePickMetrics):
         return "consumer"
 
     def action_key_child_subject(self) -> str | None:
+        if self.tested_symbols:
+            return f"line:{self.test_line}:{','.join(self.tested_symbols)}"
         return f"line:{self.test_line}"
 
 
