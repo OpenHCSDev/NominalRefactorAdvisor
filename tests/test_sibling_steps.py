@@ -708,3 +708,210 @@ def test_hoisting_stops_on_dunder_method_and_hook_collision(tmp_path: Path):
     _finding, _snapshot, evaluation = _apply_finding(tmp_path)
     assert "already binds hook name `_history_painted_step`" in evaluation.rejection_reason
     assert NeededInput.SOURCE_CHANGE in evaluation.needs
+
+
+def test_hoisting_leading_step_inside_subscript_slice(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Registry(ABC):\n"
+        "    def canonical_name(self, name: str) -> str:\n"
+        "        return name.strip().lower()\n\n"
+        "    @abstractmethod\n"
+        "    def generation(self, name: str) -> int:\n"
+        "        ...\n\n\n"
+        "class LiveRegistry(Registry):\n"
+        "    def __init__(self, gens: dict[str, int]) -> None:\n"
+        "        self.live = gens\n\n"
+        "    def generation(self, name: str) -> int:\n"
+        "        return self.live[self.canonical_name(name)]\n\n\n"
+        "class SnapshotRegistry(Registry):\n"
+        "    def __init__(self, gens: dict[str, int]) -> None:\n"
+        "        self.saved = gens\n\n"
+        "    def generation(self, name: str) -> int:\n"
+        "        return self.saved[self.canonical_name(name)]\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/registry.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/registry.py")]
+    assert "canonical_name = self.canonical_name(name)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "registry.py", "exec"), namespace)
+    assert namespace["LiveRegistry"]({"a": 3}).generation(" A ") == 3  # type: ignore[operator]
+    assert namespace["SnapshotRegistry"]({"a": 7}).generation(" A ") == 7  # type: ignore[operator]
+
+    (tmp_path / "pkg/registry.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_void_trailing_call_template_with_prep_statements(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Bus:\n"
+        "    def __init__(self) -> None:\n"
+        "        self.items: list[str] = []\n\n"
+        "    def publish(self, item: str) -> None:\n"
+        "        self.items.append(item)\n\n\n"
+        "class ContentEffect(ABC):\n"
+        "    def __init__(self, bus: Bus) -> None:\n"
+        "        self.bus = bus\n\n"
+        "    @abstractmethod\n"
+        "    def emit(self, text: str) -> None:\n"
+        "        ...\n\n\n"
+        "class UserEffect(ContentEffect):\n"
+        "    def emit(self, text: str) -> None:\n"
+        "        self.bus.publish(f'user:{text}')\n\n\n"
+        "class AgentEffect(ContentEffect):\n"
+        "    def emit(self, text: str) -> None:\n"
+        "        formatted = text\n"
+        "        if formatted.startswith('err:'):\n"
+        "            formatted = formatted + '!'\n"
+        "        self.bus.publish(f'agent:{formatted}')\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/effects.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/effects.py")]
+    assert "_step_value = self._emit_step(text)" in rewritten
+    assert "self.bus.publish(_step_value)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "effects.py", "exec"), namespace)
+    bus = namespace["Bus"]()  # type: ignore[operator]
+    namespace["UserEffect"](bus).emit("hi")  # type: ignore[operator]
+    namespace["AgentEffect"](bus).emit("err:boom")  # type: ignore[operator]
+    assert bus.items == ["user:hi", "agent:err:boom!"]  # type: ignore[attr-defined]
+
+    (tmp_path / "pkg/effects.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_trailing_boolop_template_preserves_short_circuit(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Rule(ABC):\n"
+        "    def __init__(self) -> None:\n"
+        "        self.scope_calls = 0\n\n"
+        "    def scope_applies(self, owner: str) -> bool:\n"
+        "        self.scope_calls += 1\n"
+        "        return owner == 'ok'\n\n"
+        "    @abstractmethod\n"
+        "    def applies(self, owner: str, tag: str) -> bool:\n"
+        "        ...\n\n\n"
+        "class AuthorRule(Rule):\n"
+        "    def applies(self, owner: str, tag: str) -> bool:\n"
+        "        return tag == 'author' and self.scope_applies(owner)\n\n\n"
+        "class RecipientRule(Rule):\n"
+        "    def applies(self, owner: str, tag: str) -> bool:\n"
+        "        return tag == 'recipient' and owner != '' and self.scope_applies(owner)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/rules.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/rules.py")]
+    assert "return self._applies_step(owner, tag) and self.scope_applies(owner)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "rules.py", "exec"), namespace)
+    author = namespace["AuthorRule"]()  # type: ignore[operator]
+    assert author.applies("ok", "wrong") is False
+    assert author.scope_calls == 0
+    assert author.applies("ok", "author") is True
+    assert author.scope_calls == 1
+    recip = namespace["RecipientRule"]()  # type: ignore[operator]
+    assert recip.applies("", "recipient") is False
+    assert recip.scope_calls == 0
+    assert recip.applies("ok", "recipient") is True
+    assert recip.scope_calls == 1
+
+    (tmp_path / "pkg/rules.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_trailing_guarded_step_template(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Resolution(ABC):\n"
+        "    def __init__(self) -> None:\n"
+        "        self.released = 0\n"
+        "        self.admitted = 0\n\n"
+        "    def require_release(self) -> None:\n"
+        "        self.released += 1\n\n"
+        "    def require_admitted(self) -> None:\n"
+        "        self.admitted += 1\n\n"
+        "    @abstractmethod\n"
+        "    def check(self, keep: bool) -> None:\n"
+        "        ...\n\n\n"
+        "class NativeRes(Resolution):\n"
+        "    def check(self, keep: bool) -> None:\n"
+        "        if not keep:\n"
+        "            self.require_release()\n\n\n"
+        "class DictRes(Resolution):\n"
+        "    def check(self, keep: bool) -> None:\n"
+        "        self.require_admitted()\n"
+        "        if keep:\n"
+        "            self.require_release()\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/res.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/res.py")]
+    assert "if self._check_step(keep):\n            self.require_release()" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "res.py", "exec"), namespace)
+    native = namespace["NativeRes"]()  # type: ignore[operator]
+    native.check(True)
+    assert native.released == 0
+    native.check(False)
+    assert native.released == 1
+    created = namespace["DictRes"]()  # type: ignore[operator]
+    created.check(True)
+    assert (created.admitted, created.released) == (1, 1)
+
+    (tmp_path / "pkg/res.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
+
+
+def test_hoisting_guarded_early_return_before_shared_tail(tmp_path: Path):
+    source = (
+        "from abc import ABC, abstractmethod\n\n\n"
+        "class Attachment(ABC):\n"
+        "    def root_source(self, msg: str) -> str:\n"
+        "        return f'root:{msg}'\n\n"
+        "    @abstractmethod\n"
+        "    def current_roots(self, msg: str, allow: bool) -> str | None:\n"
+        "        ...\n\n\n"
+        "class Supersession(Attachment):\n"
+        "    def current_roots(self, msg: str, allow: bool) -> str | None:\n"
+        "        if not allow:\n"
+        "            return None\n"
+        "        return self.root_source(msg)\n\n\n"
+        "class Scoped(Attachment):\n"
+        "    def current_roots(self, msg: str, allow: bool) -> str | None:\n"
+        "        if not msg:\n"
+        "            return None\n"
+        "        return self.root_source(msg)\n"
+    )
+    _write(tmp_path, {"pkg/__init__.py": "", "pkg/attach.py": source})
+    _finding, snapshot, evaluation = _apply_finding(tmp_path)
+    simulation = evaluation.executable_recipe.simulate(snapshot)
+    assert simulation.is_clean, simulation.preflight_report
+    rewritten = simulation.simulation.rewritten_sources[str(tmp_path / "pkg/attach.py")]
+    assert "if self._current_roots_step(msg, allow):\n            return None" in rewritten
+    assert "return self.root_source(msg)" in rewritten
+
+    namespace: dict[str, object] = {}
+    exec(compile(rewritten, "attach.py", "exec"), namespace)
+    assert namespace["Supersession"]().current_roots("m", False) is None  # type: ignore[operator]
+    assert namespace["Supersession"]().current_roots("m", True) == "root:m"  # type: ignore[operator]
+    assert namespace["Scoped"]().current_roots("", True) is None  # type: ignore[operator]
+    assert namespace["Scoped"]().current_roots("x", False) == "root:x"  # type: ignore[operator]
+
+    (tmp_path / "pkg/attach.py").write_text(rewritten)
+    assert _findings(tmp_path) == []
