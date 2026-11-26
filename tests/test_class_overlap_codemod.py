@@ -1610,3 +1610,84 @@ def test_compose_existing_allows_descendant_super_call_to_deleted_restated_metho
     ns: dict[str, object] = {}
     exec((tmp_path / "pkg/m.py").read_text(), ns)
     assert ns["Child"]().tag() == "child:owner"  # type: ignore[operator]
+
+
+def test_compose_existing_composes_owner_with_inherited_declarations_and_field_order(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Base:\n"
+                "    a: int\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Owner(Base):\n"
+                "    b: int\n"
+                "    c: int\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Restating:\n"
+                "    a: int\n"
+                "    b: int\n"
+                "    c: int\n"
+                "    d: int\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/m.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Restating"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
+    )
+    simulation = (
+        RefactorRecipe(recipe_id="class-overlap").with_operation(operation).simulate(snapshot)
+    )
+    assert simulation.is_clean
+    simulation.apply()
+    after = (tmp_path / "pkg/m.py").read_text()
+    assert "class Restating(Owner):" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    inst = ns["Restating"](1, 2, 3, 4)  # type: ignore[operator]
+    assert (inst.a, inst.b, inst.c, inst.d) == (1, 2, 3, 4)  # type: ignore[attr-defined]
+
+
+def test_compose_existing_refuses_when_gained_ancestor_is_identity_tested(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/m.py": (
+                "from dataclasses import dataclass\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Base:\n"
+                "    a: int\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Owner(Base):\n"
+                "    b: int\n"
+                "    c: int\n\n\n"
+                "@dataclass(frozen=True)\n"
+                "class Restating:\n"
+                "    a: int\n"
+                "    b: int\n"
+                "    c: int\n"
+                "    d: int\n\n\n"
+                "def check_base(value: object) -> bool:\n"
+                "    return isinstance(value, Base)\n"
+            ),
+        },
+    )
+    path = (tmp_path / "pkg/m.py").as_posix()
+    snapshot = CodemodSourceSnapshot.from_modules(parse_python_modules(tmp_path))
+    operation = ComposeExistingClassOperation(
+        target=SourceRewriteTarget(file_path=path, qualname="Restating"),
+        owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
+    )
+    with pytest.raises(NeedsInput):
+        operation.source_edits(snapshot)

@@ -173,7 +173,10 @@ class ClassOverlapMove(Case):
     @classmethod
     @abstractmethod
     def guarded_classes(
-        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+        cls,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
     ) -> tuple[CompactIndexedClass, ...]:
         """The classes whose type identity this move changes."""
 
@@ -182,13 +185,27 @@ class ClassOverlapMove(Case):
     @classmethod
     def changed_answers(
         cls,
-        owner: CompactIndexedClass,
+        guarded_class: CompactIndexedClass,
         restating: CompactIndexedClass,
         class_index: CompactClassFamilyIndex,
     ) -> SubclassAnswers:
         """Which identity reads of a guarded class the move answers otherwise."""
 
         return EveryAnswer()
+
+    @classmethod
+    def inherited_checked_symbols(
+        cls,
+        overlap: ClassBodyOverlap,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        co_restating: CompactIndexedClass | None,
+    ) -> frozenset[str]:
+        """The classes whose own declarations this move deletes, so an inherited
+        copy on any of them cannot be deleted."""
+
+        del owner, restating, co_restating
+        return frozenset((overlap.first.symbol, overlap.second.symbol))
 
     @classmethod
     def receiving_classes(
@@ -218,8 +235,12 @@ class DeleteAndRedirect(ClassOverlapMove):
 
     @classmethod
     def guarded_classes(
-        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+        cls,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
     ) -> tuple[CompactIndexedClass, ...]:
+        del class_index
         return (restating, owner)
 
     @classmethod
@@ -236,12 +257,14 @@ class DeleteAndRedirect(ClassOverlapMove):
 
 
 class ComposeExisting(ClassOverlapMove):
-    """The restating class inherits the owner: the owner gains a descendant.
+    """The restating class inherits the owner: the owner and any newly gained
+    ancestors gain a descendant.
 
-    Only a type test on the owner can answer differently afterwards, since the
-    restating class's instances become owner instances. The restating class
-    keeps its own type, so `isinstance(x, Restating)`, `type(x) is Restating`
-    and a dispatch keyed by it answer as before.
+    Only a type test on the owner or a newly gained ancestor can answer
+    differently afterwards, since the restating class's instances become
+    instances of those classes. The restating class keeps its own type, so
+    `isinstance(x, Restating)`, `type(x) is Restating` and a dispatch keyed by
+    it answer as before.
     """
 
     value = "compose_existing"
@@ -249,18 +272,46 @@ class ComposeExisting(ClassOverlapMove):
 
     @classmethod
     def guarded_classes(
-        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
-    ) -> tuple[CompactIndexedClass, ...]:
-        return (owner,)
-
-    @classmethod
-    def changed_answers(
         cls,
         owner: CompactIndexedClass,
         restating: CompactIndexedClass,
         class_index: CompactClassFamilyIndex,
+    ) -> tuple[CompactIndexedClass, ...]:
+        restating_ancestors = frozenset(class_index.ancestor_symbols(restating.symbol))
+        gained = tuple(
+            ancestor
+            for symbol in class_index.ancestor_symbols(owner.symbol)
+            if symbol not in restating_ancestors
+            and (ancestor := class_index.class_for(symbol)) is not None
+        )
+        return (owner, *gained)
+
+    @classmethod
+    def changed_answers(
+        cls,
+        guarded_class: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
     ) -> SubclassAnswers:
-        return AnswersFor.gaining(owner.symbol, (restating.symbol,), class_index)
+        return AnswersFor.gaining(guarded_class.symbol, (restating.symbol,), class_index)
+
+    @classmethod
+    def inherited_checked_symbols(
+        cls,
+        overlap: ClassBodyOverlap,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        co_restating: CompactIndexedClass | None,
+    ) -> frozenset[str]:
+        """Composing an existing owner deletes copies only from the restating
+        class(es); the owner keeps both its own and its inherited declarations."""
+
+        del overlap, owner
+        return frozenset(
+            composer.symbol
+            for composer in (restating, co_restating)
+            if composer is not None
+        )
 
     @classmethod
     def receiving_classes(
@@ -291,8 +342,12 @@ class PromoteToSharedBase(ClassOverlapMove):
 
     @classmethod
     def guarded_classes(
-        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+        cls,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
     ) -> tuple[CompactIndexedClass, ...]:
+        del owner, restating, class_index
         return ()
 
 
@@ -312,9 +367,24 @@ class ExtractMixin(ClassOverlapMove):
 
     @classmethod
     def guarded_classes(
-        cls, owner: CompactIndexedClass, restating: CompactIndexedClass
+        cls,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        class_index: CompactClassFamilyIndex,
     ) -> tuple[CompactIndexedClass, ...]:
+        del owner, restating, class_index
         return ()
+
+    @classmethod
+    def inherited_checked_symbols(
+        cls,
+        overlap: ClassBodyOverlap,
+        owner: CompactIndexedClass,
+        restating: CompactIndexedClass,
+        co_restating: CompactIndexedClass | None,
+    ) -> frozenset[str]:
+        del overlap, owner, restating, co_restating
+        return frozenset()
 
 
 FEW_SHARED_DECLARATIONS = 3
@@ -2469,10 +2539,11 @@ class ClassOverlapVerdicts(DeclaredC3):
                     )
                 ),
                 *difference_receipts,
-                *(
-                    self._inherited_receipts(overlap)
-                    if move is not ExtractMixin
-                    else ()
+                *self._inherited_receipts(
+                    overlap,
+                    move.inherited_checked_symbols(
+                        overlap, owner, restating, co_restating
+                    ),
                 ),
                 *self._size_receipts(extractable, first, second),
                 *self._member_receipts(overlap, members),
@@ -2788,10 +2859,15 @@ class ClassOverlapVerdicts(DeclaredC3):
         )
 
     @staticmethod
-    def _inherited_receipts(overlap: ClassBodyOverlap) -> tuple[Receipt, ...]:
+    def _inherited_receipts(
+        overlap: ClassBodyOverlap,
+        checked_symbols: frozenset[str],
+    ) -> tuple[Receipt, ...]:
         """A move deletes a class's own copies; an inherited copy is its
         ancestor's, which the move does not touch."""
 
+        if not checked_symbols:
+            return ()
         return tuple(
             Receipt(
                 OverlapReceiptKind.INHERITED_DECLARATION,
@@ -2804,7 +2880,8 @@ class ClassOverlapVerdicts(DeclaredC3):
                 (overlap.first, shared.first_owner),
                 (overlap.second, shared.second_owner),
             )
-            if owner.symbol != indexed_class.symbol
+            if indexed_class.symbol in checked_symbols
+            and owner.symbol != indexed_class.symbol
         )
 
     @staticmethod
@@ -3077,10 +3154,10 @@ class ClassOverlapVerdicts(DeclaredC3):
     ) -> tuple[Receipt, ...]:
         """Uses that tell apart, by type, a class whose identity the move changes."""
 
-        guarded = move.guarded_classes(owner, restating)
-        answers = move.changed_answers(owner, restating, self.class_index)
+        guarded = move.guarded_classes(owner, restating, self.class_index)
         receipts: list[Receipt] = []
         for indexed_class in guarded:
+            answers = move.changed_answers(indexed_class, restating, self.class_index)
             identity_uses = tuple(
                 use
                 for use in self.uses.uses_of(indexed_class)

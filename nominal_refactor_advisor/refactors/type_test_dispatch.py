@@ -2607,12 +2607,8 @@ class TypeTestDispatchProof:
         method_name: str,
     ) -> None:
         classes_by_symbol = snapshot.required_class_family_index.classes_by_symbol
-        if method_name in base.bound_names:
-            raise NeedsInput(
-                f"`{base.qualname}` already binds `{method_name}`",
-                NeededInput.OWNER_PICK,
-            )
         owner_arm: dict[str, int | None] = {base_symbol: None}
+        arm_targets: list[tuple[str, ResolvedClassTarget]] = []
         for arm_idx, symbols_for_arm in enumerate(resolved_arm_symbols):
             for sym in symbols_for_arm:
                 if sym in owner_arm:
@@ -2627,33 +2623,14 @@ class TypeTestDispatchProof:
                         qualname=classes_by_symbol[sym].qualname,
                     ),
                 )
-                if method_name in target_cls.bound_names:
-                    raise NeedsInput(
-                        f"`{target_cls.qualname}` already binds `{method_name}`",
-                        NeededInput.OWNER_PICK,
-                    )
-                # When a tested class is a mixin outside `base`'s subtree, verify no
-                # ancestor or descendant of the mixin already binds `method_name`.
-                compact_index = snapshot.compact_class_index
-                compact_classes = compact_index.classes_by_symbol
-                if base_symbol not in (sym, *compact_index.ancestor_symbols(sym)):
-                    for related in (
-                        *compact_index.ancestor_symbols(sym),
-                        *compact_index.descendant_symbols(sym),
-                    ):
-                        related_decl = compact_classes.get(related)
-                        if (
-                            related_decl is not None
-                            and method_name in related_decl.member_binding_names
-                        ):
-                            raise NeedsInput(
-                                f"`{related_decl.qualname}` already declares `{method_name}` "
-                                f"along mixin `{target_cls.qualname}`'s hierarchy",
-                                NeededInput.OWNER_PICK,
-                            )
+                arm_targets.append((sym, target_cls))
                 owner_arm[sym] = arm_idx
 
+        # Check name-independent MRO dispatch soundness (PROOF) before name-dependent
+        # binding collisions (OWNER_PICK), so unfixable MRO/order mismatches never ask
+        # the owner to pick a method name that still fails dispatch proof.
         authority = snapshot.compact_class_index.declared_mro_authority
+        resolved_mros: list[tuple[str, tuple[object, ...], str]] = []
         for symbol in sorted(subject_family):
             mro = authority.resolve(symbol).mro_type
             if mro is None:
@@ -2679,12 +2656,6 @@ class TypeTestDispatchProof:
                 if decl.symbol in owner_arm:
                     winner_symbol = decl.symbol
                     break
-                if method_name in decl.member_binding_names:
-                    raise NeedsInput(
-                        f"`{decl.symbol}` already declares `{method_name}` ahead of "
-                        f"`{base.qualname}` for `{symbol}`",
-                        NeededInput.OWNER_PICK,
-                    )
             if winner_symbol is None:
                 raise NeedsInput(
                     f"`{symbol}` reaches neither `{base.qualname}` nor any tested class",
@@ -2696,6 +2667,49 @@ class TypeTestDispatchProof:
                     "which disagrees with the original type-test branch order",
                     NeededInput.PROOF,
                 )
+            resolved_mros.append((symbol, mro.declarations, winner_symbol))
+
+        if method_name in base.bound_names:
+            raise NeedsInput(
+                f"`{base.qualname}` already binds `{method_name}`",
+                NeededInput.OWNER_PICK,
+            )
+        compact_index = snapshot.compact_class_index
+        compact_classes = compact_index.classes_by_symbol
+        for sym, target_cls in arm_targets:
+            if method_name in target_cls.bound_names:
+                raise NeedsInput(
+                    f"`{target_cls.qualname}` already binds `{method_name}`",
+                    NeededInput.OWNER_PICK,
+                )
+            # When a tested class is a mixin outside `base`'s subtree, verify no
+            # ancestor or descendant of the mixin already binds `method_name`.
+            if base_symbol not in (sym, *compact_index.ancestor_symbols(sym)):
+                for related in (
+                    *compact_index.ancestor_symbols(sym),
+                    *compact_index.descendant_symbols(sym),
+                ):
+                    related_decl = compact_classes.get(related)
+                    if (
+                        related_decl is not None
+                        and method_name in related_decl.member_binding_names
+                    ):
+                        raise NeedsInput(
+                            f"`{related_decl.qualname}` already declares `{method_name}` "
+                            f"along mixin `{target_cls.qualname}`'s hierarchy",
+                            NeededInput.OWNER_PICK,
+                        )
+
+        for symbol, declarations, winner_symbol in resolved_mros:
+            for decl in declarations:
+                if decl.symbol == winner_symbol:
+                    break
+                if method_name in decl.member_binding_names:
+                    raise NeedsInput(
+                        f"`{decl.symbol}` already declares `{method_name}` ahead of "
+                        f"`{base.qualname}` for `{symbol}`",
+                        NeededInput.OWNER_PICK,
+                    )
 
     def edits(
         self, snapshot: CodemodSourceSnapshot, rationale: str

@@ -1281,3 +1281,34 @@ def test_boolop_suffix_preserves_balanced_parens_around_trailing_boolop(tmp_path
     assert ns["check"](False, ns["DeclOwner"](), None) is False  # type: ignore[operator]
     assert _findings(tmp_path) == []
 
+
+def test_mro_dispatch_order_proof_fails_before_owner_pick_on_name_collision(
+    tmp_path: Path,
+) -> None:
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/order.py": (
+                "class Base:\n"
+                "    def handle(self) -> int:\n"
+                "        return -1\n\n\n"
+                "class Mid(Base):\n"
+                "    pass\n\n\n"
+                "class Leaf(Mid):\n"
+                "    pass\n\n\n"
+                "def handle(x: Base) -> int:\n"
+                "    if isinstance(x, Mid):\n"
+                "        return 1\n"
+                "    elif isinstance(x, Leaf):\n"
+                "        return 2\n"
+                "    return 0\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.recipe is None
+    assert ev.needs == (NeededInput.PROOF,)
+    assert "branch order" in (ev.rejection_reason or "")
+
