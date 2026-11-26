@@ -130,6 +130,64 @@ def exception_types(node: ast.ExceptHandler) -> tuple[ast.expr, ...]:
     return ()
 
 
+def match_guards(node: ast.match_case) -> tuple[ast.expr, ...]:
+    """The `if ...` guard expression a `case` carries: none when unguarded."""
+
+    match node:
+        case ast.match_case(guard=ast.expr() as guard):
+            return (guard,)
+    return ()
+
+
+def match_patterns(node: ast.MatchAs) -> tuple[ast.pattern, ...]:
+    """The inner pattern a `MatchAs` wraps: none for a bare capture or `_`."""
+
+    match node:
+        case ast.MatchAs(pattern=ast.pattern() as pattern):
+            return (pattern,)
+    return ()
+
+
+def end_line_numbers(
+    node: (
+        ast.stmt
+        | ast.expr
+        | ast.excepthandler
+        | ast.arg
+        | ast.keyword
+        | ast.alias
+        | ast.pattern
+        | ast.type_param
+    ),
+) -> tuple[int, ...]:
+    """The closing source line number an AST node records: none when absent."""
+
+    match node.end_lineno:
+        case int() as end_line:
+            return (end_line,)
+    return ()
+
+
+def end_column_offsets(
+    node: (
+        ast.stmt
+        | ast.expr
+        | ast.excepthandler
+        | ast.arg
+        | ast.keyword
+        | ast.alias
+        | ast.pattern
+        | ast.type_param
+    ),
+) -> tuple[int, ...]:
+    """The closing UTF-8 column offset an AST node records: none when absent."""
+
+    match node.end_col_offset:
+        case int() as end_col:
+            return (end_col,)
+    return ()
+
+
 TypeParameterDefinition = ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef
 
 
@@ -170,8 +228,12 @@ __all__ = (
     "alias_names",
     "capture_names",
     "declared_annotations",
+    "end_column_offsets",
+    "end_line_numbers",
     "exception_types",
     "import_modules",
+    "match_guards",
+    "match_patterns",
     "optional_values",
     "variadic_parameters",
 )

@@ -615,7 +615,7 @@ def _format_if_header(indentation: str, condition: str, line_length: int) -> str
 def _negated_guard_source(
     guard: ast.expr, authority: OptionalAstFieldAuthority
 ) -> str:
-    """Boolean negation of `guard`, stripping a redundant outer `not`."""
+    """Boolean negation of `guard`, simplifying unary `not` and single comparisons."""
 
     match guard:
         case ast.UnaryOp(op=ast.Not(), operand=inner):
@@ -623,6 +623,14 @@ def _negated_guard_source(
             if isinstance(inner, ast.BoolOp | ast.NamedExpr | ast.IfExp | ast.Lambda):
                 return f"({text})"
             return text
+        case ast.Compare(left=left, ops=[ast.NotEq()], comparators=[right]):
+            return f"{authority.source_of(left)} == {authority.source_of(right)}"
+        case ast.Compare(left=left, ops=[ast.Eq()], comparators=[right]):
+            return f"{authority.source_of(left)} != {authority.source_of(right)}"
+        case ast.Compare(left=left, ops=[ast.Is()], comparators=[right]):
+            return f"{authority.source_of(left)} is not {authority.source_of(right)}"
+        case ast.Compare(left=left, ops=[ast.IsNot()], comparators=[right]):
+            return f"{authority.source_of(left)} is {authority.source_of(right)}"
     text = authority.source_of(guard)
     if isinstance(guard, ast.BoolOp | ast.NamedExpr | ast.IfExp | ast.Lambda):
         return f"not ({text})"
@@ -2288,15 +2296,26 @@ class OptionalAstFieldDecoder(ABC, metaclass=AutoRegisterMeta):
     def field_names(cls) -> frozenset[str]:
         return frozenset(cls.fields.values())
 
+    @staticmethod
+    def _ast_subclass_names(root: type[ast.AST]) -> frozenset[str]:
+        found: set[str] = set()
+        stack: list[type[ast.AST]] = [root]
+        while stack:
+            cur = stack.pop()
+            if cur.__name__ not in found:
+                found.add(cur.__name__)
+                stack.extend(cur.__subclasses__())
+        return frozenset(found)
+
     @classmethod
     def classes_with(cls, field: str) -> frozenset[str]:
-        """The ast classes on which ``field`` is the optional field this decoder owns."""
+        """The ast classes (including ast subclasses) on which ``field`` is owned."""
 
-        return frozenset(
-            node_type.__name__
-            for node_type, owned in cls.fields.items()
-            if owned == field
-        )
+        names: set[str] = set()
+        for node_type, owned in cls.fields.items():
+            if owned == field:
+                names.update(cls._ast_subclass_names(node_type))
+        return frozenset(names)
 
     @classmethod
     def collects(
@@ -2540,6 +2559,73 @@ class ExceptionTypeDecoder(ExceptHandlerDecoder):
     @classmethod
     def single(cls, subject_source: str) -> str:
         return f"exception_types({subject_source})"
+
+
+class MatchGuardDecoder(OptionalAstFieldDecoder):
+    """The optional ``if ...`` guard expression on an ``ast.match_case``."""
+
+    fields = {ast.match_case: "guard"}
+    owners = (ast_field_decoders.match_guards,)
+
+    @classmethod
+    def collected_classes(cls) -> frozenset[str]:
+        return frozenset(("match_case",))
+
+    @classmethod
+    def collects(cls, collection, authority) -> bool:
+        if collection.attr != "cases":
+            return False
+        owner_classes = authority.classes_of(collection.value, collection)
+        return bool(owner_classes) and owner_classes <= frozenset(("Match",))
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"match_guards({subject_source})"
+
+
+class MatchPatternDecoder(OptionalAstFieldDecoder):
+    """The optional inner pattern wrapped by an ``ast.MatchAs``."""
+
+    fields = {ast.MatchAs: "pattern"}
+    owners = (ast_field_decoders.match_patterns,)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"match_patterns({subject_source})"
+
+
+_LOCATED_AST_BASES: tuple[type[ast.AST], ...] = (
+    ast.stmt,
+    ast.expr,
+    ast.excepthandler,
+    ast.arg,
+    ast.keyword,
+    ast.alias,
+    ast.pattern,
+    ast.type_param,
+)
+
+
+class EndLineDecoder(OptionalAstFieldDecoder):
+    """The optional closing line number ``end_lineno`` on a located AST node."""
+
+    fields = {base: "end_lineno" for base in _LOCATED_AST_BASES}
+    owners = (ast_field_decoders.end_line_numbers,)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"end_line_numbers({subject_source})"
+
+
+class EndColumnDecoder(OptionalAstFieldDecoder):
+    """The optional closing UTF-8 column offset ``end_col_offset`` on a located AST node."""
+
+    fields = {base: "end_col_offset" for base in _LOCATED_AST_BASES}
+    owners = (ast_field_decoders.end_column_offsets,)
+
+    @classmethod
+    def single(cls, subject_source: str) -> str:
+        return f"end_column_offsets({subject_source})"
 
 
 @dataclass(frozen=True)
@@ -3054,8 +3140,8 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
                 ):
                     if found := self._positive_isinstance_classes(test, subject):
                         return found
-                case ast.match_case(pattern=pattern, body=body) if any(
-                    statement is child for statement in body
+                case ast.match_case(pattern=pattern, guard=case_guard, body=body) if (
+                    child is case_guard or any(statement is child for statement in body)
                 ):
                     match_node = self.parents.get(parent)
                     if isinstance(match_node, ast.Match):
@@ -3300,6 +3386,9 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             ):
                 if found := self.classes_of(elt, gen, _seen):
                     return found
+            case ast.Subscript(value=seq):
+                if found := self._iterable_ast_classes(seq, at, _seen):
+                    return found
         return self.guarded(subject, at) or self._declared_ast_classes(subject)
 
     def proves(self, subject: ast.expr, field: str, at: ast.AST) -> bool:
@@ -3318,11 +3407,12 @@ class OptionalAstFieldAuthority(FunctionRewriteAuthority):
             "names": (frozenset(("Import", "ImportFrom")), "alias"),
             "handlers": (frozenset(("Try", "TryStar")), "ExceptHandler"),
             "keywords": (frozenset(("Call",)), "keyword"),
+            "cases": (frozenset(("Match",)), "match_case"),
         }
         for child, parent in self.ancestors(at):
             match parent:
-                case ast.match_case(pattern=pattern, body=body) if any(
-                    statement is child for statement in body
+                case ast.match_case(pattern=pattern, guard=case_guard, body=body) if (
+                    child is case_guard or any(statement is child for statement in body)
                 ):
                     stack: list[ast.AST] = [pattern]
                     while stack:
@@ -4278,10 +4368,14 @@ __all__ = (
     "DeclaredAnnotationDecoder",
     "DisjunctiveAbsentProbeSite",
     "EarlyExitAbsentProbeSite",
+    "EndColumnDecoder",
+    "EndLineDecoder",
     "ExceptionTypeDecoder",
     "FallbackTernaryProbeSite",
     "ImportAliasDecoder",
     "ImportModuleDecoder",
+    "MatchGuardDecoder",
+    "MatchPatternDecoder",
     "OptionalAstFieldAuthority",
     "OptionalAstFieldDecoder",
     "OptionalAstFieldDecoderFindingRecipeSynthesizer",
