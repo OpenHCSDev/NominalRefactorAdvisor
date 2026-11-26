@@ -281,6 +281,22 @@ class AbsenceBranchSite(ABC):
     def is_void_method(self) -> bool:
         return False
 
+    @property
+    def reassigned_target(self) -> str | None:
+        return None
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        method_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> AbsenceBranchSite | None:
+        """Promote this void branch to return and assign `target_name` when supported."""
+
+        del target_name, method_body, reassigned_target
+        return None
+
     def covers_lines(self, lines: Sequence[int]) -> bool:
         nodes = self.replaced_ast_nodes()
         if not nodes:
@@ -299,12 +315,19 @@ class AbsenceBranchSite(ABC):
             default_body=self.method_body,
             is_whole_function=self.is_whole_function,
             test_nodes=self.probe_nodes,
+            _reassigned_target=self.reassigned_target,
         )
 
 
 @dataclass(frozen=True)
 class _AbsenceDispatchAdapter(DispatchSite):
     """Internal adapter so `type_test_dispatch` body-analysis helpers operate on an absence site."""
+
+    _reassigned_target: str | None = None
+
+    @property
+    def reassigned_target(self) -> str | None:
+        return self._reassigned_target
 
     def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
         raise NotImplementedError
@@ -363,6 +386,62 @@ class VoidAbsenceBranchSite(AbsenceBranchSite):
     def is_void_method(self) -> bool:
         return True
 
+    def with_assigning_target(
+        self,
+        target_name: str,
+        method_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> AbsenceBranchSite | None:
+        return AssigningAbsenceBranchSite(
+            subject=self.subject,
+            probe_nodes=self.probe_nodes,
+            method_body=method_body,
+            is_whole_function=False,
+            replaced_nodes=self.replaced_nodes,
+            target_name=target_name,
+            _reassigned_target=reassigned_target,
+        )
+
+
+@dataclass(frozen=True)
+class AssigningAbsenceBranchSite(AbsenceBranchSite):
+    """Absence branch computing or updating one local, replaced by `target = subject.method(...)`."""
+
+    replaced_nodes: tuple[ast.stmt, ...]
+    target_name: str
+    _reassigned_target: str | None = None
+
+    def replaced_offsets(self, geometry: SourceTextGeometry) -> tuple[int, int]:
+        start, _ = geometry.required_node_offsets(self.replaced_nodes[0])
+        _, end = geometry.required_node_offsets(self.replaced_nodes[-1])
+        return start, end
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        del line_indent
+        return f"{self.target_name} = {call_expr}"
+
+    def replaced_ast_nodes(self) -> tuple[ast.AST, ...]:
+        return self.replaced_nodes
+
+    @property
+    def reassigned_target(self) -> str | None:
+        return self._reassigned_target
+
+
+@dataclass(frozen=True)
+class PrefixGuardedAndAssigningAbsenceBranchSite(AssigningAbsenceBranchSite):
+    """`if PREFIX and subject.attr is [not] None: target = ...` replaced by
+    `if PREFIX:\\n    target = subject.method(...)`."""
+
+    guard_expr: ast.expr = ast.Constant(value=True)
+
+    def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
+        return (
+            f"if {ast.unparse(self.guard_expr)}:\n"
+            f"{line_indent}    {self.target_name} = {call_expr}"
+        )
+
 
 @dataclass(frozen=True)
 class ContinuingAbsenceBranchSite(VoidAbsenceBranchSite):
@@ -370,6 +449,16 @@ class ContinuingAbsenceBranchSite(VoidAbsenceBranchSite):
 
     def render_call_replacement(self, call_expr: str, line_indent: str = "") -> str:
         return f"{call_expr}\n{line_indent}continue"
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        method_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> AbsenceBranchSite | None:
+        del target_name, method_body, reassigned_target
+        return None
 
 
 @dataclass(frozen=True)
@@ -400,6 +489,26 @@ class ElifAbsenceBranchSite(AbsenceBranchSite):
     @property
     def is_void_method(self) -> bool:
         return self.inner.is_void_method
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        method_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> AbsenceBranchSite | None:
+        promoted = self.inner.with_assigning_target(
+            target_name, method_body, reassigned_target=reassigned_target
+        )
+        if promoted is None:
+            return None
+        return ElifAbsenceBranchSite(
+            subject=self.subject,
+            probe_nodes=self.probe_nodes,
+            method_body=promoted.method_body,
+            is_whole_function=False,
+            inner=promoted,
+        )
 
 
 @dataclass(frozen=True)
@@ -492,6 +601,24 @@ class PrefixGuardedAndAbsenceBranchSite(AbsenceBranchSite):
     @property
     def is_void_method(self) -> bool:
         return True
+
+    def with_assigning_target(
+        self,
+        target_name: str,
+        method_body: tuple[ast.stmt, ...],
+        *,
+        reassigned_target: str | None = None,
+    ) -> AbsenceBranchSite | None:
+        return PrefixGuardedAndAssigningAbsenceBranchSite(
+            subject=self.subject,
+            probe_nodes=self.probe_nodes,
+            method_body=method_body,
+            is_whole_function=False,
+            replaced_nodes=self.replaced_nodes,
+            target_name=target_name,
+            _reassigned_target=reassigned_target,
+            guard_expr=self.guard_expr,
+        )
 
 
 @dataclass(frozen=True)
@@ -1480,6 +1607,224 @@ class NewOwnerAbsenceMethod(OwnerAbsenceMethodTarget):
         )
 
 
+def _expr_loads_name(node: ast.AST, name: str) -> bool:
+    return any(
+        isinstance(child, ast.Name)
+        and isinstance(child.ctx, ast.Load)
+        and child.id == name
+        for child in ast.walk(node)
+    )
+
+
+def _assign_targets_name(targets: Sequence[ast.expr], name: str) -> bool:
+    return any(
+        isinstance(child, ast.Name)
+        and isinstance(child.ctx, ast.Store)
+        and child.id == name
+        for target in targets
+        for child in ast.walk(target)
+    )
+
+
+def _definitely_assigns_in_block(stmts: Sequence[ast.stmt], name: str) -> bool:
+    for stmt in stmts:
+        match stmt:
+            case ast.Assign(targets=targets) if _assign_targets_name(targets, name):
+                return True
+            case ast.AnnAssign(target=ast.Name(id=target_name)) if (
+                target_name == name and bool(optional_values(stmt))
+            ):
+                return True
+            case ast.If(body=body, orelse=orelse) if orelse:
+                body_ok = _definitely_assigns_in_block(body, name) or _always_terminates(body)
+                orelse_ok = _definitely_assigns_in_block(orelse, name) or _always_terminates(orelse)
+                if body_ok and orelse_ok:
+                    return True
+    return False
+
+
+def _reads_before_assign_in_block(stmts: Sequence[ast.stmt], name: str) -> bool:
+    for stmt in stmts:
+        match stmt:
+            case ast.Assign(targets=targets, value=val):
+                if _expr_loads_name(val, name):
+                    return True
+                if _assign_targets_name(targets, name):
+                    return False
+            case ast.AnnAssign(target=ast.Name(id=target_name)):
+                for val in optional_values(stmt):
+                    if _expr_loads_name(val, name):
+                        return True
+                    if target_name == name:
+                        return False
+            case ast.AugAssign(target=ast.Name(id=target_name), value=val):
+                if target_name == name or _expr_loads_name(val, name):
+                    return True
+            case ast.If(test=test, body=body, orelse=orelse):
+                if _expr_loads_name(test, name):
+                    return True
+                if _reads_before_assign_in_block(body, name):
+                    return True
+                if orelse and _reads_before_assign_in_block(orelse, name):
+                    return True
+                if (
+                    orelse
+                    and (_definitely_assigns_in_block(body, name) or _always_terminates(body))
+                    and (_definitely_assigns_in_block(orelse, name) or _always_terminates(orelse))
+                ):
+                    return False
+            case _:
+                if _expr_loads_name(stmt, name):
+                    return True
+    return False
+
+
+def _is_definitely_bound_before(
+    function: FunctionNode, target_stmt: ast.AST, name: str
+) -> bool:
+    args = function.args
+    param_names = {
+        arg.arg for arg in (*args.posonlyargs, *args.args, *args.kwonlyargs)
+    }
+    for variadic in variadic_parameters(args):
+        param_names.add(variadic.arg)
+    if name in param_names:
+        return True
+
+    target_id = id(target_stmt)
+
+    def search(stmts: Sequence[ast.stmt], bound: bool) -> bool | None:
+        current = bound
+        for stmt in stmts:
+            if id(stmt) == target_id:
+                return current
+            match stmt:
+                case ast.If(body=body, orelse=orelse):
+                    for branch in (body, orelse):
+                        found = search(branch, current)
+                        if found is not None:
+                            return found
+                case ast.For(target=loop_target, body=body, orelse=orelse) | ast.AsyncFor(
+                    target=loop_target, body=body, orelse=orelse
+                ):
+                    loop_bound = current or _assign_targets_name((loop_target,), name)
+                    found = search(body, loop_bound)
+                    if found is not None:
+                        return found
+                    found = search(orelse, current)
+                    if found is not None:
+                        return found
+                case ast.While(body=body, orelse=orelse):
+                    for branch in (body, orelse):
+                        found = search(branch, current)
+                        if found is not None:
+                            return found
+                case ast.With(items=items, body=body) | ast.AsyncWith(items=items, body=body):
+                    with_bound = current or any(
+                        _assign_targets_name((opt,), name)
+                        for item in items
+                        if isinstance((opt := item.optional_vars), ast.expr)
+                    )
+                    found = search(body, with_bound)
+                    if found is not None:
+                        return found
+                case ast.Try(body=body, handlers=handlers, orelse=orelse, finalbody=finalbody):
+                    found = search(body, current)
+                    if found is not None:
+                        return found
+                    for handler in handlers:
+                        h_bound = current or handler.name == name
+                        found = search(handler.body, h_bound)
+                        if found is not None:
+                            return found
+                    for branch in (orelse, finalbody):
+                        found = search(branch, current)
+                        if found is not None:
+                            return found
+                case ast.Match(cases=cases):
+                    for case in cases:
+                        found = search(case.body, current)
+                        if found is not None:
+                            return found
+            if not current and _definitely_assigns_in_block((stmt,), name):
+                current = True
+        return None
+
+    return bool(search(function.body, False))
+
+
+def _upgrade_to_assigning_site(
+    function: FunctionNode,
+    site: AbsenceBranchSite,
+    escaping: Sequence[str],
+) -> AbsenceBranchSite | None:
+    """Promote a void absence branch assigning one escaping local into `target = subject.method(...)`."""
+
+    if len(escaping) != 1:
+        return None
+    target_name = escaping[0]
+    if len(site.method_body) != 1 or not isinstance(site.method_body[0], ast.If):
+        return None
+    if_stmt = site.method_body[0]
+    if any(
+        isinstance(node, (ast.Global, ast.Nonlocal)) and target_name in node.names
+        for node in ast.walk(function)
+    ):
+        return None
+    if any(
+        isinstance(node, ast.Name)
+        and isinstance(node.ctx, ast.Del)
+        and node.id == target_name
+        for node in ast.walk(if_stmt)
+    ):
+        return None
+
+    is_subject_name = isinstance(site.subject, ast.Name) and site.subject.id == target_name
+
+    # Definite single-target assignment across all arms of an `if ... else:` without pre-reads.
+    if (
+        if_stmt.orelse
+        and not is_subject_name
+        and _definitely_assigns_in_block((if_stmt,), target_name)
+        and not _reads_before_assign_in_block((if_stmt,), target_name)
+    ):
+        new_body = (if_stmt, ast.Return(value=ast.Name(id=target_name, ctx=ast.Load())))
+        return site.with_assigning_target(target_name, new_body, reassigned_target=None)
+
+    # Single-branch conditional rebind or augassign on an already-bound local.
+    replaced = site.replaced_ast_nodes()
+    if (
+        not if_stmt.orelse
+        and replaced
+        and _is_definitely_bound_before(function, replaced[0], target_name)
+    ):
+        body = if_stmt.body
+        if (
+            body
+            and isinstance(body[-1], ast.Assign)
+            and len(body[-1].targets) == 1
+            and isinstance(body[-1].targets[0], ast.Name)
+            and body[-1].targets[0].id == target_name
+            and target_name not in _names_stored_in(body[:-1])
+        ):
+            rewritten_if = ast.If(
+                test=if_stmt.test,
+                body=[*body[:-1], ast.Return(value=body[-1].value)],
+                orelse=[],
+            )
+            new_body = (
+                rewritten_if,
+                ast.Return(value=ast.Name(id=target_name, ctx=ast.Load())),
+            )
+            return site.with_assigning_target(target_name, new_body, reassigned_target=None)
+        if not is_subject_name:
+            new_body = (if_stmt, ast.Return(value=ast.Name(id=target_name, ctx=ast.Load())))
+            return site.with_assigning_target(
+                target_name, new_body, reassigned_target=target_name
+            )
+    return None
+
+
 @dataclass(frozen=True)
 class ForeignAbsenceBranchProof:
     """A foreign absence probe proved safe to push onto the scanned owner class."""
@@ -1551,10 +1896,14 @@ class ForeignAbsenceBranchProof:
             used_outside = _names_referenced_outside(function, site.replaced_ast_nodes())
             escaping = sorted(stored & used_outside)
             if escaping:
-                raise NeedsInput(
-                    f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside the absence branch",
-                    NeededInput.SOURCE_CHANGE,
-                )
+                upgraded = _upgrade_to_assigning_site(function, site, escaping)
+                if upgraded is not None:
+                    site = upgraded
+                else:
+                    raise NeedsInput(
+                        f"`{function.name}` assigns outer local(s) {', '.join(escaping)} inside the absence branch",
+                        NeededInput.SOURCE_CHANGE,
+                    )
 
         adapter = site.as_dispatch_adapter()
         enclosing_locals = enclosure.enclosing_local_names()
@@ -1853,9 +2202,11 @@ class ForeignAbsenceProbeFindingRecipeSynthesizer(
 
 __all__ = (
     "AbsenceBranchSite",
+    "AssigningAbsenceBranchSite",
     "ForeignAbsenceBranchProof",
     "ForeignAbsenceProbeFindingRecipeSynthesizer",
     "ParsedAbsenceProbe",
+    "PrefixGuardedAndAssigningAbsenceBranchSite",
     "PushForeignAbsenceBranchOperation",
     "ReturningAbsenceBranchSite",
     "TernaryAbsenceBranchSite",
