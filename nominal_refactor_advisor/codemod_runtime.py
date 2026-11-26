@@ -3743,7 +3743,7 @@ class FindingRecipePlanBuilder:
             )
         seen_prewarms: set[object] = set()
         for det in detector_by_id.values():
-            prewarm_fn = type(det).prewarm_parallel_synthesis
+            prewarm_fn = det.prewarm_parallel_synthesis.__func__
             if prewarm_fn in seen_prewarms:
                 continue
             seen_prewarms.add(prewarm_fn)
