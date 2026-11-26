@@ -1097,3 +1097,187 @@ def test_except_handler_variable_is_not_captured_as_outer_param(tmp_path: Path):
         assert ns[fn_name](ns["CutPlan"](True)) == "err:bad cut"  # type: ignore[operator]
     assert _findings(tmp_path) == []
 
+
+def test_pushes_negated_void_and_prefix_guarded_negated_and_positive_or(tmp_path: Path):
+    """Covers symmetric polarities: standalone void `if not isinstance`,
+    `if PREFIX and not issubclass`, and `if PREFIX or cls is Sub`."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/neg.py": (
+                "class Ref:\n"
+                "    def __init__(self) -> None:\n"
+                "        self.admitted = 0\n\n"
+                "    def admit(self) -> None:\n"
+                "        self.admitted += 1\n\n\n"
+                "class OpenRef(Ref):\n"
+                "    pass\n\n\n"
+                "class Cmd:\n"
+                "    pass\n\n\n"
+                "class PlanCmd(Cmd):\n"
+                "    pass\n\n\n"
+                "def admit_all(refs: list[Ref]) -> None:\n"
+                "    for ref in refs:\n"
+                "        if not isinstance(ref, OpenRef):\n"
+                "            ref.admit()\n\n\n"
+                "def record_non_plan(flag: bool, cls: type[Cmd], log: list[str]) -> None:\n"
+                "    if flag and not issubclass(cls, PlanCmd):\n"
+                "        log.append(cls.__name__)\n\n\n"
+                "def route_cmd(fast: bool, cls: type[Cmd]) -> str:\n"
+                "    if fast or cls is PlanCmd:\n"
+                "        return 'direct'\n"
+                "    return 'fallback'\n"
+            ),
+        },
+    )
+    findings = _findings(tmp_path)
+    by_sym = {f.primary_evidence.symbol: f for f in findings}
+    assert set(by_sym) == {"admit_all", "record_non_plan", "route_cmd"}
+
+    det = OwnTypeTestDetector()
+    for sym, method_name, judgement in (
+        ("admit_all", "admit_if_closed", "Admit non-open references."),
+        ("record_non_plan", "record_if_non_plan", "Record non-plan command names."),
+        ("route_cmd", "route_label", "Return routing label."),
+    ):
+        current = next(f for f in _findings(tmp_path) if f.primary_evidence.symbol == sym)
+        picks = OwnerPicks(
+            "picks.json",
+            "",
+            (
+                OwnerPick(
+                    finding=current.stable_id,
+                    owner=sym,
+                    because="family owns dispatch",
+                    name=method_name,
+                    judgement=judgement,
+                ),
+            ),
+        )
+        picked, _ = picks.applied((current,))
+        ev = det.evaluate_recipe_for_finding(picked[0], _snapshot(tmp_path))
+        assert ev.recipe is not None, ev.rejection_reason
+        _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "neg.py").read_text()
+    assert "isinstance" not in after
+    assert "issubclass" not in after
+    assert " is PlanCmd" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    r1, r2 = ns["Ref"](), ns["OpenRef"]()  # type: ignore[operator]
+    ns["admit_all"]([r1, r2])  # type: ignore[operator]
+    assert (r1.admitted, r2.admitted) == (1, 0)  # type: ignore[attr-defined]
+    log: list[str] = []
+    ns["record_non_plan"](False, ns["Cmd"], log)  # type: ignore[operator]
+    ns["record_non_plan"](True, ns["PlanCmd"], log)  # type: ignore[operator]
+    ns["record_non_plan"](True, ns["Cmd"], log)  # type: ignore[operator]
+    assert log == ["Cmd"]
+    assert ns["route_cmd"](True, ns["Cmd"]) == "direct"  # type: ignore[operator]
+    assert ns["route_cmd"](False, ns["PlanCmd"]) == "direct"  # type: ignore[operator]
+    assert ns["route_cmd"](False, ns["Cmd"]) == "fallback"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_pushes_if_elif_else_with_mixed_early_returns_and_terminating_tail(tmp_path: Path):
+    """An `if/elif/else` where some arms return early and others assign a local
+    consumed by a terminating tail absorbs the tail into non-terminating arms."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/moves.py": (
+                "class Move:\n"
+                "    pass\n\n\n"
+                "class Compose(Move):\n"
+                "    pass\n\n\n"
+                "class Extract(Move):\n"
+                "    pass\n\n\n"
+                "def build(move: type[Move], ok: bool) -> str:\n"
+                "    if move is Compose:\n"
+                "        if not ok:\n"
+                "            return 'bad-compose'\n"
+                "        label = 'composed'\n"
+                "    elif move is Extract:\n"
+                "        label = 'extracted'\n"
+                "    else:\n"
+                "        return 'unsupported'\n"
+                "    return f'done:{label}'\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "moves.py").read_text()
+    assert " is Compose" not in after
+    assert " is Extract" not in after
+    assert "return move.build(ok)" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["build"](ns["Compose"], False) == "bad-compose"  # type: ignore[operator]
+    assert ns["build"](ns["Compose"], True) == "done:composed"  # type: ignore[operator]
+    assert ns["build"](ns["Extract"], False) == "done:extracted"  # type: ignore[operator]
+    assert ns["build"](ns["Move"], True) == "unsupported"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
+
+def test_boolop_suffix_preserves_balanced_parens_around_trailing_boolop(tmp_path: Path):
+    """`BoolOpSuffixDispatchSite` consumes the closing `)` of a parenthesized
+    trailing `BoolOp` so `if not (a and isinstance(x, Sub) and (p or q)):` stays valid."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/parens.py": (
+                "class Owner:\n"
+                "    pass\n\n\n"
+                "class DeclOwner(Owner):\n"
+                "    pass\n\n\n"
+                "def check(ready: bool, owner: Owner, pos: int | None) -> bool:\n"
+                "    if not (\n"
+                "        ready\n"
+                "        and isinstance(owner, DeclOwner)\n"
+                "        and (pos is None or pos > 0)\n"
+                "    ):\n"
+                "        return False\n"
+                "    return True\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    picks = OwnerPicks(
+        "picks.json",
+        "",
+        (
+            OwnerPick(
+                finding=finding.stable_id,
+                owner="check",
+                because="Owner owns position match",
+                name="matches_pos",
+                judgement="Return whether owner matches position.",
+            ),
+        ),
+    )
+    picked, _ = picks.applied((finding,))
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(picked[0], _snapshot(tmp_path))
+    assert ev.recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "parens.py").read_text()
+    assert "isinstance" not in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    assert ns["check"](True, ns["DeclOwner"](), None) is True  # type: ignore[operator]
+    assert ns["check"](True, ns["DeclOwner"](), 5) is True  # type: ignore[operator]
+    assert ns["check"](True, ns["DeclOwner"](), 0) is False  # type: ignore[operator]
+    assert ns["check"](True, ns["Owner"](), None) is False  # type: ignore[operator]
+    assert ns["check"](False, ns["DeclOwner"](), None) is False  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
