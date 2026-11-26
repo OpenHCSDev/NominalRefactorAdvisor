@@ -229,6 +229,11 @@ class OverlapClass(ABC):
     ) -> ProvedClassBodyDeclaration:
         """The class's resolved declaration of `name` (own or inherited)."""
 
+        own = snapshot.class_overlap_verdicts.bodies.declarations_of(self.symbol).get(
+            name
+        )
+        if own is not None:
+            return own.require_proved(f"`{self.qualname}.{name}`")
         resolved = snapshot.class_overlap_verdicts.resolved_declarations(
             self.symbol
         ).get(name)
@@ -1979,7 +1984,10 @@ class ComposedAncestry:
                 f"Composing gives `{self.composer.qualname}` the metaclass of `{indexed.qualname}`",
                 NeededInput.PROOF,
             )
-        if any(declaration.kind.is_field for declaration in indexed.body_declarations):
+        if any(
+            declaration.kind.is_field and declaration.name not in self.deleted
+            for declaration in indexed.body_declarations
+        ):
             raise NeedsInput(
                 f"Composing gives `{self.composer.qualname}` the fields of `{indexed.qualname}`",
                 NeededInput.PROOF,
@@ -2074,21 +2082,17 @@ class ClassComposition:
         ):
             raise NeedsInput(f"`{owner.qualname}` runs statements beyond declarations", NeededInput.SOURCE_CHANGE)
         verdicts = snapshot.class_overlap_verdicts
-        owner_resolved = verdicts.resolved_declarations(owner.symbol)
-        restating_resolved = verdicts.resolved_declarations(restating.symbol)
+        class_index = verdicts.class_index
         restating_own = verdicts.bodies.declarations_of(restating.symbol)
-        for name, owner_entry in owner_resolved.items():
-            rest_entry = restating_resolved.get(name)
-            if rest_entry is None or not owner_entry.declaration.require_proved(
-                f"`{owner.qualname}.{name}`"
-            ).same_declaration_as(
-                rest_entry.declaration.require_proved(f"`{restating.qualname}.{name}`")
-            ):
-                raise NeedsInput(
-                    f"`{restating.qualname}.{name}` differs from `{owner.qualname}.{name}`",
-                    NeededInput.SOURCE_CHANGE,
-                )
-        restated_names = tuple(name for name in owner_resolved if name in restating_own)
+        owner_own = verdicts.bodies.declarations_of(owner.symbol)
+        candidate_names: list[str] = list(owner_own)
+        for ancestor_symbol in class_index.ancestor_symbols(owner.symbol):
+            if class_index.class_for(ancestor_symbol) is None:
+                continue
+            for name in verdicts.bodies.declarations_of(ancestor_symbol):
+                if name in restating_own and name not in owner_own:
+                    candidate_names.append(name)
+        restated_names = tuple(dict.fromkeys(candidate_names))
         restated = RestatedDeclarations.require(
             snapshot,
             owner,
@@ -2096,27 +2100,48 @@ class ClassComposition:
             restated_names,
         )
         composition = cls(snapshot, owner, restating, restated)
-        class_index = verdicts.class_index
-        restating_ancestors = frozenset(class_index.ancestor_symbols(restating.symbol))
-        gained_ancestors = frozenset(
-            symbol
-            for symbol in verdicts.linearized(owner.symbol)
-            if class_index.class_for(symbol) is not None
-            and symbol not in restating_ancestors
-        )
         NeedsInput.every(
             composition.require_owner_is_a_root,
+            composition.require_resolved_declarations_match,
             composition.require_field_order,
             lambda: restated.require_no_owner_bound_values(snapshot),
-            lambda: ClassReferenceSites(snapshot, gained_ancestors).require_no_identity_reads(
-                {
-                    symbol: AnswersFor.gaining(symbol, (restating.symbol,), class_index)
-                    for symbol in gained_ancestors
-                }
-            ),
+            composition.require_no_gained_identity_reads,
             lambda: owner.file_path != restating.file_path or composition.relocation.require_safe(snapshot),
         )
         return composition
+
+    def require_resolved_declarations_match(self) -> None:
+        verdicts = self.snapshot.class_overlap_verdicts
+        owner_resolved = verdicts.resolved_declarations(self.owner.symbol)
+        restating_resolved = verdicts.resolved_declarations(self.restating.symbol)
+        for name, owner_entry in owner_resolved.items():
+            rest_entry = restating_resolved.get(name)
+            if rest_entry is None or not owner_entry.declaration.require_proved(
+                f"`{self.owner.qualname}.{name}`"
+            ).same_declaration_as(
+                rest_entry.declaration.require_proved(f"`{self.restating.qualname}.{name}`")
+            ):
+                raise NeedsInput(
+                    f"`{self.restating.qualname}.{name}` differs from `{self.owner.qualname}.{name}`",
+                    NeededInput.SOURCE_CHANGE,
+                )
+
+    def require_no_gained_identity_reads(self) -> None:
+        verdicts = self.snapshot.class_overlap_verdicts
+        class_index = verdicts.class_index
+        restating_ancestors = frozenset(class_index.ancestor_symbols(self.restating.symbol))
+        gained_ancestors = frozenset(
+            symbol
+            for symbol in verdicts.linearized(self.owner.symbol)
+            if class_index.class_for(symbol) is not None
+            and symbol not in restating_ancestors
+        )
+        ClassReferenceSites(self.snapshot, gained_ancestors).require_no_identity_reads(
+            {
+                symbol: AnswersFor.gaining(symbol, (self.restating.symbol,), class_index)
+                for symbol in gained_ancestors
+            }
+        )
 
     def require_owner_is_a_root(self) -> None:
         owner, restating = self.owner, self.restating

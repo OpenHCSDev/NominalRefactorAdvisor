@@ -1689,5 +1689,5 @@ def test_compose_existing_refuses_when_gained_ancestor_is_identity_tested(
         target=SourceRewriteTarget(file_path=path, qualname="Restating"),
         owner=SourceRewriteTarget(file_path=path, qualname="Owner"),
     )
-    with pytest.raises(NeedsInput):
+    with pytest.raises(CodemodOperationPreflightError):
         operation.source_edits(snapshot)
