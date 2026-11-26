@@ -2296,6 +2296,91 @@ def test_staticmethod_first_param_uses_declared_annotation_not_enclosing_class(
     assert _findings(tmp_path) == []
 
 
+def test_reuses_existing_matching_family_method_without_owner_pick(
+    tmp_path: Path,
+) -> None:
+    """When the base and tested classes already declare a polymorphic method whose
+    C3 dispatch matches every family member's arm body identically, NRA auto-reuses
+    it with zero OWNER_PICK and zero duplicate methods."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/context.py": (
+                "from __future__ import annotations\n\n\n"
+                "class SelectorContext:\n"
+                "    def context_for_recipe(self, recipe: str) -> SelectorContext:\n"
+                "        '''Return the context used for a recipe.'''\n"
+                "        return self\n\n\n"
+                "class SourceSnapshot(SelectorContext):\n"
+                "    def recipe_derivation_context(self, recipe: str) -> SelectorContext:\n"
+                "        return self\n\n"
+                "    def context_for_recipe(self, recipe: str) -> SelectorContext:\n"
+                "        return self.recipe_derivation_context(recipe)\n\n\n"
+                "class OtherContext(SelectorContext):\n"
+                "    pass\n"
+            ),
+            "pkg/consumer.py": (
+                "from __future__ import annotations\n\n"
+                "from pkg.context import SelectorContext, SourceSnapshot\n\n\n"
+                "def derive_all(ctx: SelectorContext, recipes: list[str]) -> list[SelectorContext]:\n"
+                "    return [\n"
+                "        ctx.recipe_derivation_context(r)\n"
+                "        if isinstance(ctx, SourceSnapshot)\n"
+                "        else ctx\n"
+                "        for r in recipes\n"
+                "    ]\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.executable_recipe is not None, ev.rejection_reason
+    _apply(tmp_path, ev.executable_recipe)
+
+    after_context = (tmp_path / "pkg" / "context.py").read_text()
+    after_consumer = (tmp_path / "pkg" / "consumer.py").read_text()
+    assert after_context.count("def context_for_recipe") == 2
+    assert "ctx.context_for_recipe(r)" in after_consumer
+    assert "SourceSnapshot" not in after_consumer
+    assert _findings(tmp_path) == []
+
+
+def test_does_not_reuse_existing_method_when_subclass_override_diverges(
+    tmp_path: Path,
+) -> None:
+    """An existing base method is NOT reused if any family subclass overrides it
+    with a body that disagrees with the consumer's type test."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/family.py": (
+                "from __future__ import annotations\n\n\n"
+                "class Node:\n"
+                "    def label(self) -> str:\n"
+                "        return 'default'\n\n\n"
+                "class SpecialNode(Node):\n"
+                "    def label(self) -> str:\n"
+                "        return 'special'\n\n\n"
+                "class DivergentNode(Node):\n"
+                "    def label(self) -> str:\n"
+                "        return 'divergent'\n\n\n"
+                "def format_node(node: Node) -> str:\n"
+                "    tag = 'special' if isinstance(node, SpecialNode) else 'default'\n"
+                "    return f'[{tag}]'\n"
+            ),
+        },
+    )
+    (finding,) = _findings(tmp_path)
+    ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+    assert ev.recipe is None
+    assert NeededInput.OWNER_PICK in ev.needs
+
+
+
 
 
 
