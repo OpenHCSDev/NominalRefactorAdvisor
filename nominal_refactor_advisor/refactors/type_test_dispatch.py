@@ -27,6 +27,8 @@ from typing import ClassVar, cast
 
 from nominal_refactor_advisor.ast_field_decoders import (
     declared_annotations,
+    match_guards,
+    match_patterns,
     optional_values,
     variadic_parameters,
 )
@@ -552,9 +554,9 @@ def _always_terminates(statements: Sequence[ast.stmt]) -> bool:
             return bool(last.finalbody) and _always_terminates(body)
         case ast.Match(cases=cases) if (
             cases
-            and cases[-1].guard is None
+            and not match_guards(cases[-1])
             and isinstance(cases[-1].pattern, ast.MatchAs)
-            and cases[-1].pattern.pattern is None
+            and not match_patterns(cases[-1].pattern)
         ):
             return all(_always_terminates(case.body) for case in cases)
     return False
@@ -1763,7 +1765,7 @@ class _ExtractedMatchClassCase:
         return any(
             not (
                 isinstance(pat, ast.MatchAs)
-                and pat.pattern is None
+                and not match_patterns(pat)
                 and isinstance(pat.name, str)
             )
             for pat in self.kwd_patterns
@@ -1898,7 +1900,7 @@ def _extract_match_site(
     explicit_default: tuple[ast.stmt, ...] | None = None
     for case_idx, case in enumerate(stmt.cases):
         match case.pattern:
-            case ast.MatchAs(pattern=None, name=None) if case.guard is None:
+            case ast.MatchAs(pattern=None, name=None) if (not match_guards(case)):
                 if case_idx != len(stmt.cases) - 1:
                     return None
                 explicit_default = tuple(case.body)

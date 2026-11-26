@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import ClassVar
 from weakref import WeakValueDictionary
 
+from nominal_refactor_advisor.ast_field_decoders import (
+    end_column_offsets,
+    end_line_numbers,
+)
 from nominal_refactor_advisor.codemod_payload import (
     CodemodPayloadRecord,
     RequiredIntegerPayloadValueCodec,
@@ -163,14 +167,15 @@ class SourceByteSpan(CodemodPayloadRecord):
         cls,
         node: ast.expr | ast.stmt,
     ) -> SourceByteSpan | None:
-        if node.end_lineno is None or node.end_col_offset is None:
-            return None
-        return cls(
-            start_line_index=node.lineno - 1,
-            end_line_index=node.end_lineno - 1,
-            start_byte=node.col_offset,
-            end_byte=node.end_col_offset,
-        )
+        for end_line in end_line_numbers(node):
+            for end_column in end_column_offsets(node):
+                return cls(
+                    start_line_index=node.lineno - 1,
+                    end_line_index=end_line - 1,
+                    start_byte=node.col_offset,
+                    end_byte=end_column,
+                )
+        return None
 
     @classmethod
     def require_node(cls, node: ast.expr | ast.stmt) -> SourceByteSpan:

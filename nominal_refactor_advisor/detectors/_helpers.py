@@ -24,6 +24,7 @@ from typing import (
 
 from nominal_refactor_advisor.ast_field_decoders import (
     ParameterAnnotations,
+    end_line_numbers,
     variadic_parameters,
 )
 from nominal_refactor_advisor.class_families.parsed_index import (
@@ -1733,7 +1734,7 @@ def _repeated_base_bundle_candidates(
 ) -> tuple[RepeatedBaseBundleCandidate, ...]:
     grouped: BaseBundleClassGroups = defaultdict(list)
     for node in module.module.body:
-        if not isinstance(node, ast.ClassDef) or node.end_lineno is None:
+        if not isinstance(node, ast.ClassDef) or not end_line_numbers(node):
             continue
         for bundle in _contiguous_base_bundles(_declared_base_name_sequence(node)):
             grouped[bundle].append(node)

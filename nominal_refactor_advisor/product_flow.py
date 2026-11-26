@@ -32,6 +32,7 @@ from nominal_refactor_advisor.ast_field_decoders import (
     capture_names,
     declared_annotations,
     exception_types,
+    match_guards,
 )
 from nominal_refactor_advisor.ast_projection import (
     NoStatementValue,
@@ -4823,8 +4824,8 @@ class _CompactFlowCollector(
                     case.pattern,
                     CompactMutationKind.PATTERN_BINDING,
                 )
-            if case.guard is not None:
-                self.visit(case.guard)
+            for match_guard in match_guards(case):
+                self.visit(match_guard)
             self._collect_branch(
                 case.body,
                 CompactControlBranchKind.MATCH_CASE,
