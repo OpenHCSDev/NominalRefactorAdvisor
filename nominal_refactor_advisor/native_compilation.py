@@ -2195,6 +2195,11 @@ class NativeInstructionSite:
             return None
         return SourceByteSpan(line - 1, end_line - 1, column, end_column)
 
+    def require_source_span(self) -> None:
+        """Raise when this instruction site lacks a source span."""
+        if self.source_span is None:
+            raise ValueError('Native store requires complete production and target spans')
+
 
 @dataclass(frozen=True, eq=False)
 class NativeReturn(DataclassGraphValue, NativeValueInventoryABC):
@@ -2421,14 +2426,9 @@ class NativeValueStoreWindow(NativeOperandObservation):
         pass
 
     def require_store(self, store: NativeInstructionSite) -> None:
-        if (
-            self.load is None
-            or self.load.source_span is None
-            or store.source_span is None
-        ):
-            raise ValueError(
-                "Native store requires complete production and target spans"
-            )
+        if self.load is None or self.load.source_span is None:
+            raise ValueError('Native store requires complete production and target spans')
+        store.require_source_span()
 
     def observe(self, instruction: dis.Instruction) -> None:
         if self.closed:

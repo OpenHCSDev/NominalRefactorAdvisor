@@ -1317,10 +1317,8 @@ class AdmittedExecutionPrefixABC(ABC):
                         raise ValueError(
                             "Execution intervals must join the same activation cut"
                         )
-                elif interval.after is not None:
-                    raise ValueError(
-                        "A prefix cannot omit its activation's earlier interval"
-                    )
+                else:
+                    interval.require_initial_interval()
                 cuts[activation] = interval
             return cuts
 
@@ -1546,6 +1544,11 @@ class SingleFlowPrefix(AdmittedExecutionPrefixABC):
         if self.position is None:
             raise ValueError('Child entry requires a parent cut and a fresh child interval')
         child.require_fresh_child_interval()
+
+    def require_initial_interval(self) -> None:
+        """Raise when this interval carries a predecessor cut."""
+        if self.after is not None:
+            raise ValueError("A prefix cannot omit its activation's earlier interval")
 
 
 @dataclass(frozen=True, eq=False)
