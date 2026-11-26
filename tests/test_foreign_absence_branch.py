@@ -275,7 +275,9 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
                 "    return box.value\n\n\n"
                 "def nested_short_circuit_guard(ready: bool, flag: bool, box: Box | None) -> None:\n"
                 "    if ready and (flag or box.value is not None):\n"
-                "        raise ValueError('boom')\n"
+                "        raise ValueError('boom')\n\n\n"
+                "def zero_one_tuple_ternary(box: Box) -> tuple[int, ...]:\n"
+                "    return (box.value,) if box.value is not None else ()\n"
             ),
         },
     )
@@ -289,6 +291,7 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
         "proto_consumer",
         "existing",
         "nested_short_circuit_guard",
+        "zero_one_tuple_ternary",
     }
 
     det = ForeignAbsenceProbeDetector()
@@ -298,6 +301,7 @@ def test_soundness_refusals_for_bool_predicates_escaping_locals_protocols_and_co
         "mutates_outer_local",
         "proto_consumer",
         "nested_short_circuit_guard",
+        "zero_one_tuple_ternary",
     ):
         ev = det.evaluate_recipe_for_finding(by_sym[sym], snap)
         assert ev.rejection_reason != "", f"{sym} must be refused"

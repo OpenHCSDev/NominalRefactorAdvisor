@@ -1041,3 +1041,59 @@ def test_pushes_multi_continue_loop_and_refuses_escaping_loop_local(tmp_path: Pa
     assert ns["collect"]([Item(), Named(""), Named("ok")]) == ["ok"]  # type: ignore[operator]
     assert [f.primary_evidence.symbol for f in _findings(tmp_path)] == ["escaping_local"]
 
+
+def test_except_handler_variable_is_not_captured_as_outer_param(tmp_path: Path):
+    """An `except ValueError as error:` binding inside a pushed arm is bound locally
+    in that arm and must never be captured as a parameter from the caller."""
+
+    _write(
+        tmp_path,
+        {
+            "pkg/__init__.py": "",
+            "pkg/plans.py": (
+                "class Plan:\n"
+                "    pass\n\n\n"
+                "class CutPlan(Plan):\n"
+                "    def __init__(self, fail: bool) -> None:\n"
+                "        self.fail = fail\n\n"
+                "    def run(self) -> str:\n"
+                "        if self.fail:\n"
+                "            raise ValueError('bad cut')\n"
+                "        return 'cut'\n\n\n"
+                "def execute(plan: Plan) -> str:\n"
+                "    if isinstance(plan, CutPlan):\n"
+                "        try:\n"
+                "            return plan.run()\n"
+                "        except ValueError as error:\n"
+                "            return f'err:{error}'\n"
+                "    return 'skip'\n\n\n"
+                "def execute_trailing(plan: Plan) -> str:\n"
+                "    if isinstance(plan, CutPlan):\n"
+                "        try:\n"
+                "            result = plan.run()\n"
+                "        except ValueError as error:\n"
+                "            return f'err:{error}'\n"
+                "        return result\n"
+                "    return 'skip'\n"
+            ),
+        },
+    )
+    for sym in ("execute", "execute_trailing"):
+        findings = _findings(tmp_path)
+        finding = next(f for f in findings if f.primary_evidence.symbol == sym)
+        ev = OwnTypeTestDetector().evaluate_recipe_for_finding(finding, _snapshot(tmp_path))
+        _apply(tmp_path, ev.executable_recipe)
+
+    after = (tmp_path / "pkg" / "plans.py").read_text()
+    assert "plan.execute()" in after
+    assert "plan.execute_trailing()" in after
+    assert "def execute(self):" in after
+    assert "def execute_trailing(self):" in after
+    ns: dict[str, object] = {}
+    exec(after, ns)
+    for fn_name in ("execute", "execute_trailing"):
+        assert ns[fn_name](ns["Plan"]()) == "skip"  # type: ignore[operator]
+        assert ns[fn_name](ns["CutPlan"](False)) == "cut"  # type: ignore[operator]
+        assert ns[fn_name](ns["CutPlan"](True)) == "err:bad cut"  # type: ignore[operator]
+    assert _findings(tmp_path) == []
+
