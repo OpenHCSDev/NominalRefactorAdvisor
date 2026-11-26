@@ -7,16 +7,13 @@ from pathlib import Path
 
 import pytest
 
+from nominal_refactor_advisor import class_identity_observations
 from nominal_refactor_advisor.analysis import (
     DetectorAnalysisWorkerPlan,
     analyze_path,
     default_detector_types_for_analysis,
 )
-from nominal_refactor_advisor.ast_tools import (
-    ParsedModule,
-    ParsedModuleSet,
-    parse_python_modules,
-)
+from nominal_refactor_advisor.ast_tools import ParsedModuleSet, parse_python_modules
 from nominal_refactor_advisor.class_identity_observations import DeclaredIdentityFamily
 from nominal_refactor_advisor.class_index import (
     CompactModuleClassProjectionFamily,
@@ -105,14 +102,22 @@ def test_declared_identities_uses_disk_family_cache(
         first_modules = ParsedModuleSet.of(parse_python_modules(root, cache_dir=cache_dir))
         first_identities = CodemodSourceSnapshot.from_modules(first_modules).declared_identities
 
-    def _fail_collect(self, family, demand=None):
-        del self, family, demand
+    def _fail_scope(*args, **kwargs):
+        del args, kwargs
         raise AssertionError("warm DeclaredIdentityFamily disk cache should skip collect")
 
-    monkeypatch.setattr(ParsedModule, "_collected", _fail_collect)
+    monkeypatch.setattr(class_identity_observations, "ModuleReferenceScope", _fail_scope)
     with ScanCache.scope():
         second_modules = ParsedModuleSet.of(parse_python_modules(root, cache_dir=cache_dir))
+        assert all(
+            not module.has_family_batch(DeclaredIdentityFamily)
+            for module in second_modules
+        )
         second_identities = CodemodSourceSnapshot.from_modules(second_modules).declared_identities
+        assert all(
+            module.has_family_batch(DeclaredIdentityFamily)
+            for module in second_modules
+        )
     assert second_identities == first_identities
 
 
