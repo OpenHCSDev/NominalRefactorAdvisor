@@ -86,10 +86,7 @@ class SiblingOverrideDetector(
             else ""
         )
         home = (
-            ""
-            if candidate.home is None
-            else f"; `{candidate.home.qualname}` already exists to hold it: every one of them inherits it"
-            + (" and no class answering otherwise does" if candidate.answering_otherwise else "")
+            candidate.existing_home_note()
         )
         return self.build_finding(
             f"{classes} each override `{declaring}.{candidate.name}` with the same declaration: {owner}{others}{home}{unordered}.",

@@ -556,6 +556,10 @@ class PhysicalSourceEdit(SourceEditWindowABC, NominalSourceEdit, ABC):
                     )
         return edits
 
+    def inserts_at_same_line(self, left):
+        """Check whether this edit is a source insertion at the same line as left."""
+        return False
+
 
 @dataclass(frozen=True)
 class CoalescedSourceWindow(SourceEditWindowABC):
@@ -961,6 +965,9 @@ class SourceInsertion(KeyedSourceEditCoalescence, PhysicalSourceEdit):
                 coalesced_lines, insertion.inserted_lines
             )
         return replace(unique_insertions[0], inserted_lines=coalesced_lines)
+
+    def inserts_at_same_line(self, left):
+        return left.insertion_line == self.insertion_line
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -53,53 +53,7 @@ class DataclassFieldNameCollectionProjectionDerivation(
             authority_reference,
             projection_reference,
         )
-        if boundary.authority_import_source is not None:
-            raise ValueError(
-                "Dataclass field-name projection requires an existing runtime "
-                "authority reference"
-            )
-        candidates = (
-            DataclassFieldNameCollectionProjectionTarget.candidates_from_function(
-                boundary.function,
-                boundary.authority,
-            )
-        )
-        if len(candidates) != 1:
-            raise ValueError(
-                "Dataclass authority and projection function must expose exactly "
-                f"one exhaustive field-name collection; found {len(candidates)}"
-            )
-        projection = candidates[0]
-        dataclasses_reference = DataclassesModuleReference.from_projection(
-            context,
-            projection,
-        )
-        if dataclasses_reference is None:
-            raise ValueError(
-                "Dataclass field-name projection has no collision-free dataclasses "
-                "reference"
-            )
-        source_replacement = cls.projection_replacement(
-            context,
-            boundary.authority,
-            projection,
-            dataclasses_reference,
-        )
-        if source_replacement is None:
-            raise ValueError(
-                "Dataclass field-name projection cannot preserve its source span"
-            )
-        return cls(
-            authority=boundary.authority,
-            projection=projection,
-            source_replacement=source_replacement,
-            import_sources=(
-                (dataclasses_reference.import_source,)
-                if dataclasses_reference.import_source is not None
-                else ()
-            ),
-            dataclasses_reference=dataclasses_reference,
-        )
+        return boundary.require_existing_runtime_authority(context, cls)
 
     @staticmethod
     def projection_replacement(

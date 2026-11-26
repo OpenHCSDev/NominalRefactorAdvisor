@@ -1028,6 +1028,22 @@ class DataclassProjectionBoundary:
             authority_import_source=reference.required_import_source(context),
         )
 
+    def require_existing_runtime_authority(self, context, cls):
+        """Raise when this boundary would need a new authority import."""
+        if self.authority_import_source is not None:
+            raise ValueError('Dataclass field-name projection requires an existing runtime authority reference')
+        candidates = DataclassFieldNameCollectionProjectionTarget.candidates_from_function(self.function, self.authority)
+        if len(candidates) != 1:
+            raise ValueError(f'Dataclass authority and projection function must expose exactly one exhaustive field-name collection; found {len(candidates)}')
+        projection = candidates[0]
+        dataclasses_reference = DataclassesModuleReference.from_projection(context, projection)
+        if dataclasses_reference is None:
+            raise ValueError('Dataclass field-name projection has no collision-free dataclasses reference')
+        source_replacement = cls.projection_replacement(context, self.authority, projection, dataclasses_reference)
+        if source_replacement is None:
+            raise ValueError('Dataclass field-name projection cannot preserve its source span')
+        return cls(authority=self.authority, projection=projection, source_replacement=source_replacement, import_sources=(dataclasses_reference.import_source,) if dataclasses_reference.import_source is not None else (), dataclasses_reference=dataclasses_reference)
+
 
 @dataclass(frozen=True)
 class SourceDerivedDataclassProjection(Generic[ProjectionTargetT]):
