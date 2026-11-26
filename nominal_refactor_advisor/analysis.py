@@ -4507,10 +4507,7 @@ class IncrementalAnalysisCacheResolver:
                     "without inheriting ContextualGlobalCacheContract"
                 )
             detector = detector_type()
-            semantic_detector = isinstance(
-                detector,
-                SemanticDescentGraphIssueDetector,
-            )
+            semantic_detector = detector.uses_semantic_descent_graph()
             # A repository semantic-source token is an exact, conservative
             # identity for every contextual-global detector.  Resolve the cache
             # with it before constructing a detector-specific whole-repository

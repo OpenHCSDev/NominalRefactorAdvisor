@@ -523,6 +523,10 @@ class NativeCallSlotABC(ABC):
     ) -> tuple[NativeProducedValue, NativeCallSlotABC]:
         raise NotImplementedError
 
+    def is_call_marker(self) -> bool:
+        """Whether this call slot is a call marker."""
+        return True
+
 
 class NativeCallOperandRole(IntEnum):
     """Semantic positions in the native call-prefix product."""
@@ -580,7 +584,7 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
         # Both supported ABIs place an implicit object after its callable.
         # The enum selects the dispatch operand using its NULL layout; neither
         # position can then contain a protocol marker in this object form.
-        if any(not isinstance(value, NativeProducedValue) for value in operands):
+        if any(value.is_call_marker() for value in operands):
             raise ValueError("Native implicit call prefix requires Python operands")
         callee, argument = operands
         return callee, argument
@@ -610,6 +614,9 @@ class NativeProducedValue(DataclassGraphNode, NativeCallSlotABC):
         self, resolver: NativeValueResolverABC[NativeResolutionT]
     ) -> NativeResolutionT:
         return resolver._unproved_native_value_resolution(self)
+
+    def is_call_marker(self) -> bool:
+        return False
 
 
 @dataclass(frozen=True)

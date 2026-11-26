@@ -660,6 +660,10 @@ class MethodKind(ABC):
             return CachedPropertyMethodKind()
         return PlainMethodKind()
 
+    def is_cached_property(self) -> bool:
+        """Whether this method kind is a cached property."""
+        return False
+
 
 @dataclass(frozen=True)
 class PlainMethodKind(MethodKind):
@@ -709,6 +713,9 @@ class CachedPropertyMethodKind(MethodKind):
             for dec in method.decorator_list
             if _decorator_terminal_name(dec) != "cached_property"
         )
+
+    def is_cached_property(self) -> bool:
+        return True
 
 
 def _forwarded_hook_call(
@@ -2077,7 +2084,7 @@ class SiblingOverrideStepHoist:
             isinstance(declaring_kind, PropertyMethodKind)
             and candidate.unanswered
             and sibling_kinds
-            and all(isinstance(kind, CachedPropertyMethodKind) for kind in sibling_kinds)
+            and all(kind.is_cached_property() for kind in sibling_kinds)
         ):
             effective_kind = CachedPropertyMethodKind()
         for sibling, child_kind in zip(siblings, sibling_kinds, strict=True):

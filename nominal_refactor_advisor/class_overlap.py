@@ -226,6 +226,20 @@ class ClassOverlapMove(Case):
                 receipts.append(KeywordCuredReceipt(OverlapReceiptKind.POSITIONAL_CONSTRUCTION, f'`{indexed_class.qualname}` is constructed by position or unpacking in {len(positional)} place(s); moving its fields ahead of its own would rebind them', tuple((use.location for use in positional[:4])), constructed=(indexed_class.symbol,)))
         return tuple(receipts)
 
+    @classmethod
+    def finish_ladder_candidate(cls, judged, overlap: ClassBodyOverlap, shape, extractable, members, shared_receipts, caller: ClassOverlapVerdicts, first, second, axis_receipts, differing_receipts) -> ClassOverlapCandidate | None:
+        """Finish a ladder overlap candidate for this move."""
+        extraction = caller._candidate(overlap, shape, PairRepair(ExtractMixin, first, second, None), extractable, members, shared_receipts, (*axis_receipts, *differing_receipts))
+        own = frozenset(((receipt.kind, receipt.detail) for receipt in extraction.refusals))
+        if not own.isdisjoint(((receipt.kind, receipt.detail) for receipt in judged.refusals)) or not any((owner.permitted or owner.keyword_cure for owner in extraction.owner_candidates)):
+            return judged
+        return replace(judged, offered=replace(extraction, receipts=(*extraction.receipts, Receipt(OverlapReceiptKind.STRONGER_MOVE_NEEDS, f'`{cls.value}` would need: ' + '; '.join((receipt.detail for receipt in judged.refusals)) + ', so the pair shares a mixin and keeps both identities', tuple((location for receipt in judged.refusals for location in receipt.evidence))))))
+
+    @classmethod
+    def overlap_owner_candidates(cls, first, second, caller: ClassOverlapVerdicts, extractable: tuple[SharedClassBodyDeclaration, ...]):
+        """Return candidate owner groups for this overlap move."""
+        return ()
+
 
 class DeleteAndRedirect(ClassOverlapMove):
     """Delete the restating class and point its uses at the owner: its identity is gone."""
@@ -385,6 +399,14 @@ class ExtractMixin(ClassOverlapMove):
     ) -> frozenset[str]:
         del overlap, owner, restating, co_restating
         return frozenset()
+
+    @classmethod
+    def finish_ladder_candidate(cls, judged, overlap: ClassBodyOverlap, shape, extractable, members, shared_receipts, caller: ClassOverlapVerdicts, first, second, axis_receipts, differing_receipts) -> ClassOverlapCandidate | None:
+        return judged
+
+    @classmethod
+    def overlap_owner_candidates(cls, first, second, caller: ClassOverlapVerdicts, extractable: tuple[SharedClassBodyDeclaration, ...]):
+        return caller.owner_question(first, second, tuple((shared.name for shared in extractable)), {shared.name: shared.kind.shared_receipt.weight for shared in extractable}).candidates()
 
 
 FEW_SHARED_DECLARATIONS = 3
@@ -2450,48 +2472,9 @@ class ClassOverlapVerdicts(DeclaredC3):
             shared_receipts,
             (*axis_receipts, *differing_receipts),
         )
-        if judged.permitted or judged.move is ExtractMixin:
+        if judged.permitted:
             return judged
-        extraction = self._candidate(
-            overlap,
-            shape,
-            PairRepair(ExtractMixin, first, second, None),
-            extractable,
-            members,
-            shared_receipts,
-            (*axis_receipts, *differing_receipts),
-        )
-        # paper1 Thm 4.8: when only the move itself refuses (it changes an
-        # identity, keeps an owner whose construction, inherited copies or
-        # ancestry the others lack), the implementations still agree, so the
-        # verdict offers the rung below: share them on a mixin, keep identities.
-        # A rung is offered only when it is a repair: one of its owners is
-        # permitted, or permitted once built by keyword.
-        own = frozenset((receipt.kind, receipt.detail) for receipt in extraction.refusals)
-        if not own.isdisjoint(
-            (receipt.kind, receipt.detail) for receipt in judged.refusals
-        ) or not any(
-            owner.permitted or owner.keyword_cure for owner in extraction.owner_candidates
-        ):
-            return judged
-        return replace(
-            judged,
-            offered=replace(
-                extraction,
-                receipts=(
-                    *extraction.receipts,
-                    Receipt(
-                        OverlapReceiptKind.STRONGER_MOVE_NEEDS,
-                        f"`{judged.move.value}` would need: "
-                        + "; ".join(receipt.detail for receipt in judged.refusals)
-                        + ", so the pair shares a mixin and keeps both identities",
-                        tuple(
-                            location for receipt in judged.refusals for location in receipt.evidence
-                        ),
-                    ),
-                ),
-            ),
-        )
+        return judged.move.finish_ladder_candidate(judged, overlap, shape, extractable, members, shared_receipts, self, first, second, axis_receipts, differing_receipts)
 
     def _candidate(
         self,
@@ -2515,14 +2498,7 @@ class ClassOverlapVerdicts(DeclaredC3):
             overlap=overlap,
             co_restating=co_restating,
             owner_candidates=(
-                self.owner_question(
-                    first,
-                    second,
-                    tuple(shared.name for shared in extractable),
-                    {shared.name: shared.kind.shared_receipt.weight for shared in extractable},
-                ).candidates()
-                if move is ExtractMixin
-                else ()
+                move.overlap_owner_candidates(first, second, self, extractable)
             ),
             receipts=(
                 *shared_receipts,
